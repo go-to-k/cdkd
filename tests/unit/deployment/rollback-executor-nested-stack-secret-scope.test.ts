@@ -77,6 +77,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   AwsClients: vi.fn(),
 }));
 
+const QUEUE = 'AWS::SQS::Queue';
 const NESTED = 'AWS::CloudFormation::Stack';
 
 function res(overrides: Partial<ResourceState> = {}): ResourceState {
@@ -296,15 +297,22 @@ describe('rollback-executor binds the nested-stack secrets scope (#2086)', () =>
       {
         logicalId: 'Child',
         changeType: 'UPDATE',
-        resourceType: NESTED,
+        // A NAMED queue, not a nested-stack row: since #3979 a nested stack's
+        // collision never reaches delete-new-first (its child name is a state
+        // key, so no AWS collision proves the new stack holds it). The scope
+        // binding under test is the same for every type.
+        resourceType: QUEUE,
         physicalId: 'new-child',
         previousState: res({
+          resourceType: QUEUE,
           physicalId: 'old-child',
-          properties: { Parameters: { DbPassword: SECRET_EXPR }, TemplateURL: 'child.json' },
+          properties: { QueueName: 'q', Password: SECRET_EXPR },
         }),
       },
     ];
-    const state: Record<string, ResourceState> = { Child: res({ physicalId: 'new-child' }) };
+    const state: Record<string, ResourceState> = {
+      Child: res({ resourceType: QUEUE, physicalId: 'new-child', properties: { QueueName: 'q' } }),
+    };
 
     const result = await replayRollback(ops, state, 'Parent', ctx);
 

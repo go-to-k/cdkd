@@ -173,7 +173,9 @@ describe('rollback executor — a provider-reported delete skip (#1762)', () => 
       .fn()
       .mockRejectedValue(awsSdkError("Resource of type 'AWS::S3::Bucket' already exists."));
     const { ctx } = makeCtx({ delete: del, create });
-    const prev = res({ physicalId: 'old-b', properties: { a: 1 } });
+    // Both records name the bucket `b`: the new resource holds the name the
+    // re-create collided on, so delete-new-first is reached (#3979).
+    const prev = res({ physicalId: 'old-b', properties: { BucketName: 'b', a: 1 } });
     const ops: CompletedOperation[] = [
       {
         logicalId: 'B',
@@ -183,7 +185,9 @@ describe('rollback executor — a provider-reported delete skip (#1762)', () => 
         previousState: prev,
       },
     ];
-    const state: Record<string, ResourceState> = { B: res({ physicalId: 'new-b' }) };
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'new-b', properties: { BucketName: 'b' } }),
+    };
 
     const result = await replayRollback(ops, state, 'S', ctx);
 

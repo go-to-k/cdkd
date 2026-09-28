@@ -884,12 +884,12 @@ describe('replayRollback', () => {
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
     const afterOp = vi.fn();
-    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } });
+    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } });
     const ops: CompletedOperation[] = [
       { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 } }),
+      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }),
     };
     const result = await replayRollback(ops, state, 'S', ctx, {
       afterOp,
@@ -943,7 +943,7 @@ describe('replayRollback', () => {
     ctx.recordEvent = (e) => {
       if (e.error) failures.push(e.error);
     };
-    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } });
+    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } });
     const ops: CompletedOperation[] = [
       {
         logicalId: 'B',
@@ -954,7 +954,7 @@ describe('replayRollback', () => {
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 } }),
+      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }),
     };
 
     const result = await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
@@ -987,7 +987,7 @@ describe('replayRollback', () => {
       .mockResolvedValue({ physicalId: 'phys-old' });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
-    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } });
+    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } });
     const ops: CompletedOperation[] = [
       {
         logicalId: 'B',
@@ -998,7 +998,7 @@ describe('replayRollback', () => {
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 } }),
+      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }),
     };
 
     const result = await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
@@ -1243,12 +1243,12 @@ describe('replayRollback', () => {
       .mockResolvedValue({ physicalId: 'phys-old' });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
-    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } });
+    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } });
     const ops: CompletedOperation[] = [
       { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 } }),
+      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }),
     };
     const result = await replayRollback(ops, state, 'S', ctx);
     expect(result.failures).toBe(0);
@@ -1288,12 +1288,12 @@ describe('replayRollback', () => {
     const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
-    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } });
+    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } });
     const ops: CompletedOperation[] = [
       { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 } }),
+      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }),
     };
     const result = await replayRollback(ops, state, 'S', ctx);
     expect(result.failures).toBe(1);
@@ -1424,19 +1424,26 @@ describe('replayRollback', () => {
     const create = vi
       .fn()
       .mockRejectedValueOnce(awsSdkError('Queue already exists'))
-      .mockResolvedValue({ physicalId: 'phys-old', effectiveProperties: { a: 1, fixed: true } });
+      .mockResolvedValue({
+        physicalId: 'phys-old',
+        effectiveProperties: { QueueName: 'q', a: 1, fixed: true },
+      });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
-    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1, fixed: 'malformed' } });
+    const prev = res({
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-old',
+      properties: { QueueName: 'q', a: 1, fixed: 'malformed' },
+    });
     const ops: CompletedOperation[] = [
       { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 } }),
+      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }),
     };
     await replayRollback(ops, state, 'S', ctx);
     expect(create).toHaveBeenCalledTimes(2);
-    expect(state.B!.properties).toEqual({ a: 1, fixed: true });
+    expect(state.B!.properties).toEqual({ QueueName: 'q', a: 1, fixed: true });
   });
 
   it('reverse-replacement same-id ADOPT path records effectiveProperties too (issue #1682 x #1247)', async () => {
@@ -1506,12 +1513,12 @@ describe('replayRollback', () => {
       .mockResolvedValue({ physicalId: 'phys-new' });
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ create, delete: del });
-    const prev = res({ resourceType: 'AWS::Some::NamedType', physicalId: 'phys-old', properties: { a: 1 } });
+    const prev = res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } });
     const ops: CompletedOperation[] = [
-      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::Some::NamedType', physicalId: 'phys-new', previousState: prev },
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ resourceType: 'AWS::Some::NamedType', physicalId: 'phys-new', properties: { a: 2 } }),
+      B: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }),
     };
     // silentLogger.warn accumulates across tests in this file (no global
     // mock clearing) — snapshot the call count so the negative assertion
@@ -2894,7 +2901,8 @@ describe('rollback of a Glue replacement that kept the id (issue #3892)', () => 
     ]
       .map((c) => String(c[0]))
       .join('\n');
-    expect(logged).toContain('does not hold the old table');
+    expect(logged).toContain('is under DatabaseName');
+    expect(logged).toContain('Nothing was deleted');
     expect(state.B).toMatchObject({ physicalId: ID, properties: NEW });
   });
 

@@ -35,6 +35,13 @@ const ELBV2_MESSAGE =
   "A target group with the same name 'CdkdX-Tg' exists, but with different settings";
 const ELBV2_NAME = 'DuplicateTargetGroupNameException';
 const TYPE = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+const TG_NAME = 'CdkdX-Tg';
+/**
+ * The new target group's ARN, naming `CdkdX-Tg`: ELBv2's provider rewrites
+ * the name it sends, so only an id naming the sent name proves the holder
+ * (#3979) — a recorded `Name` does not.
+ */
+const NEW_ARN = `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${TG_NAME}/0123456789abcdef`;
 
 const silentLogger = {
   debug: vi.fn(),
@@ -61,8 +68,10 @@ function reverseReplacementOp(): CompletedOperation {
     logicalId: 'Tg',
     changeType: 'UPDATE',
     resourceType: TYPE,
-    physicalId: 'arn-new',
-    previousState: res({ physicalId: 'arn-old', resourceType: TYPE }),
+    physicalId: NEW_ARN,
+    // The re-create sends `CdkdX-Tg`, the name the ELBv2 message quotes, and
+    // the new target group's ARN names it: the new one holds it (#3979).
+    previousState: res({ physicalId: 'arn-old', resourceType: TYPE, properties: { Name: TG_NAME } }),
   };
 }
 
@@ -102,7 +111,9 @@ describe('the reverse-replacement arm routes a NAME-only collision to delete-new
       return undefined;
     });
     const ctx = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+    const state: Record<string, ResourceState> = {
+      Tg: res({ physicalId: NEW_ARN, properties: { Name: TG_NAME } }),
+    };
 
     return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
       expect(result.failures).toBe(0);
@@ -126,13 +137,15 @@ describe('the reverse-replacement arm routes a NAME-only collision to delete-new
     });
     const del = vi.fn().mockResolvedValue(undefined);
     const ctx = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+    const state: Record<string, ResourceState> = {
+      Tg: res({ physicalId: NEW_ARN, properties: { Name: TG_NAME } }),
+    };
 
     return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
       expect(result.failures).toBe(1);
       expect(del).not.toHaveBeenCalled();
       // The new resource is still recorded — nothing was destroyed.
-      expect(state['Tg']?.physicalId).toBe('arn-new');
+      expect(state['Tg']?.physicalId).toBe(NEW_ARN);
     });
   });
 
@@ -145,12 +158,14 @@ describe('the reverse-replacement arm routes a NAME-only collision to delete-new
     });
     const del = vi.fn().mockResolvedValue(undefined);
     const ctx = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+    const state: Record<string, ResourceState> = {
+      Tg: res({ physicalId: NEW_ARN, properties: { Name: TG_NAME } }),
+    };
 
     return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
       expect(result.failures).toBe(1);
       expect(del).not.toHaveBeenCalled();
-      expect(state['Tg']?.physicalId).toBe('arn-new');
+      expect(state['Tg']?.physicalId).toBe(NEW_ARN);
     });
   });
 });
@@ -169,12 +184,14 @@ describe('a cdkd refusal quoting a template value does not reach delete-new-firs
     });
     const del = vi.fn().mockResolvedValue(undefined);
     const ctx = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Tg: res({ physicalId: 'arn-new' }) };
+    const state: Record<string, ResourceState> = {
+      Tg: res({ physicalId: NEW_ARN, properties: { Name: TG_NAME } }),
+    };
 
     return replayRollback([reverseReplacementOp()], state, 'CdkdX', ctx).then((result) => {
       expect(result.failures).toBe(1);
       expect(del).not.toHaveBeenCalled();
-      expect(state['Tg']?.physicalId).toBe('arn-new');
+      expect(state['Tg']?.physicalId).toBe(NEW_ARN);
     });
   });
 });

@@ -443,19 +443,53 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
   });
 
   it('the delete-new-first fallback re-creates with the OLD type too', async () => {
+    // Two types that share one name space (#3979): only across such a pair
+    // can the new resource hold the name the old one's re-create collides on.
+    const oldType = 'AWS::DynamoDB::Table';
+    const newType = 'AWS::DynamoDB::GlobalTable';
     const { ctx, providerFor } = makeCtx();
-    providerFor(OLD_TYPE)
+    providerFor(oldType)
       .create.mockRejectedValueOnce(
-        ccAlreadyExistsError(`CREATE failed for Thing: Resource of type '${OLD_TYPE}' already exists.`)
+        ccAlreadyExistsError(`CREATE failed for Thing: Resource of type '${oldType}' already exists.`)
       )
-      .mockResolvedValue({ physicalId: RECREATED_OLD_ID, attributes: {} });
+      .mockResolvedValue({ physicalId: 'tbl', attributes: {} });
+    const state: Record<string, ResourceState> = {
+      Thing: res({ physicalId: 'tbl', resourceType: newType, properties: { TableName: 'tbl' } }),
+    };
+    const op = typeChangeOp({
+      resourceType: newType,
+      physicalId: 'tbl',
+      previousResourceType: oldType,
+      previousState: res({ physicalId: 'tbl', resourceType: oldType, properties: { TableName: 'tbl' } }),
+    });
+    const result = await replayRollback([op], state, STACK, ctx);
+    expect(result.failures).toBe(0);
+    const create = providerFor(oldType).create;
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1]![1]).toBe(oldType);
+    expect(providerFor(newType).delete).toHaveBeenCalledTimes(1);
+    // The delete-first note names the pair as one name space.
+    expect(vi.mocked(silentLogger.info)).toHaveBeenCalledWith(
+      expect.stringContaining(`${newType} -> ${oldType}, which share a name space)`)
+    );
+  });
+
+  it('across types that do NOT share a name space, a collision deletes nothing (#3979)', async () => {
+    // cdkd knows no name space an SSM parameter shares with an SNS topic, so
+    // it cannot prove the topic holds the name: deleting it is refused.
+    const { ctx, providerFor } = makeCtx();
+    providerFor(OLD_TYPE).create.mockRejectedValueOnce(
+      ccAlreadyExistsError(`CREATE failed for Thing: Resource of type '${OLD_TYPE}' already exists.`)
+    );
     const state: Record<string, ResourceState> = { Thing: newRecord() };
     const result = await replayRollback([typeChangeOp()], state, STACK, ctx);
-    expect(result.failures).toBe(0);
-    const create = providerFor(OLD_TYPE).create;
-    expect(create).toHaveBeenCalledTimes(2);
-    expect(create.mock.calls[1]![1]).toBe(OLD_TYPE);
-    expect(providerFor(NEW_TYPE).delete).toHaveBeenCalledTimes(1);
+    expect(result.failures).toBe(1);
+    expect(providerFor(OLD_TYPE).create).toHaveBeenCalledTimes(1);
+    expect(providerFor(NEW_TYPE).delete).not.toHaveBeenCalled();
+    expect(state['Thing']?.physicalId).toBe(NEW_ID);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('which cdkd does not know to share a name space with AWS::SSM::Parameter')
+    );
   });
 
   it('re-adopt replay: deletes the new resource through the NEW type, restores the OLD record', async () => {
