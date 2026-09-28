@@ -4,6 +4,7 @@ import {
   pasteableCommand,
   type CommandArg,
   type PasteableCommand,
+  type WithholdReason,
 } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -22,7 +23,7 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
-import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
+import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 import {
   hasReadableResources,
   isReadableResourceEntry,
@@ -3332,6 +3333,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             logger.info(`  ${preDeletedLine(entry.physicalId)}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
+            const orphan = orphanCommandFor(resolvedStackName, targetRegion);
             throw new Error(
               `Phase 1 (IMPORT) succeeded; pre-delete of ${entry.logicalId} ` +
                 `(${entry.resourceType}, physicalId: ${showRecordValue(entry.physicalId)}) failed: ` +
@@ -3353,8 +3355,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                 `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
                 `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
                 `         --template-body file://<full-template.json>\n` +
-                `  4. Once phase 2 succeeds, run: ${orphanCommandFor(resolvedStackName, targetRegion)}\n` +
-                `     to clean up cdkd's stale state record.`
+                `  4. Once phase 2 succeeds, clean up cdkd's stale state record.${orphan.note}\n` +
+                `     Run: ${orphan.command}`
             );
           }
         }
@@ -3402,6 +3404,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                 `phase 2 (Stage etc.). They are gone in AWS but absent from the CFn stack. ` +
                 `Running phase 2 UPDATE manually will CFn-CREATE them fresh.\n`
               : '';
+          const orphan = orphanCommandFor(resolvedStackName, targetRegion);
           throw new Error(
             `Phase 1 (IMPORT) succeeded; phase 2 (UPDATE) failed: ${displayAwsMessage(msg)}\n\n` +
               `The CloudFormation stack '${cfnStackName}' now contains the imported ` +
@@ -3416,8 +3419,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
               `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
               `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
               `         --template-body file://<full-template.json>\n` +
-              `  3. Once phase 2 succeeds, run: ${orphanCommandFor(resolvedStackName, targetRegion)}\n` +
-              `     to clean up cdkd's stale state record.`
+              `  3. Once phase 2 succeeds, clean up cdkd's stale state record.${orphan.note}\n` +
+              `     Run: ${orphan.command}`
           );
         }
       }
@@ -4215,37 +4218,120 @@ export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[
  * region, which is wider than any of these messages describes. A helper whose
  * job is to make a destructive suggestion safe should not have an arm that
  * widens one.
+ *
+ * Built through the shared `pasteableCommand` gate (go-to-k/cdkd#3436), which
+ * this function used to copy by hand — sanitize-and-compare against the raw
+ * value, the stack-ref cap, and the leading-`-` refusal a record named
+ * `--state-bucket=attacker` needs, since the shell strips `shellQuote`'s quotes
+ * and Commander parses that argv entry as the FLAG.
+ *
+ * A withheld value names NO target, both holes rather than one: the identity
+ * the message printed above may not be this record's. `note` says why, from
+ * the gate's own reasons, and each caller puts it on the line ABOVE the
+ * command, which is unwrapped on a line of its own — labelled and last in the
+ * single-command messages, one per line in the nested-export tail's list. On
+ * the same line as a sentence, an apostrophe in that sentence (`the parent's
+ * record`) flips the shell quote so a pasted `'x; touch OWNED; #'` runs
+ * (go-to-k/cdkd#3436's shape C, measured by this change's paste case).
  */
-function orphanCommandFor(stackName: unknown, region: unknown): string {
-  const shownStack = safeSegment(stackName);
-  // Compared against the RAW values, and `typeof`-guarded first so a non-string
-  // — which `safeSegment` renders but no comparison can match — fails CLOSED.
-  const exact =
-    typeof stackName === 'string' &&
-    shownStack === stackName &&
-    // A record named `--state-bucket=attacker` renders EXACTLY, so the raw
-    // compare admits it — and the shell strips the quotes `shellQuote` adds,
-    // handing Commander an argv entry it parses as that FLAG. A
-    // record-DELETING command would then be pointed at an attacker-named
-    // bucket. The same rule `pasteableCommand`'s `printable()` applies
-    // (M4 of the go-to-k/cdkd#3499 review).
-    !stackName.startsWith('-') &&
-    typeof region === 'string' &&
-    safeSegment(region) === region &&
-    !region.startsWith('-');
-  if (!exact) {
-    // Names no target: the identity above it may not be this record's. List the
-    // records AS STORED and act on the one whose stackName and region match.
-    return (
-      `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')} — ` +
-      `spelled out because this record's ` +
-      `name or region does NOT render exactly, so another record may render identically; ` +
-      `list them as stored with 'cdkd state list --json' and act on the one whose stackName ` +
-      `and region match, ` +
-      `replacing each quoted hole, quotes included, with the shell-quoted value`
-    );
+function orphanCommandFor(stackName: unknown, region: unknown): OrphanCommand {
+  // `unknown`, and handed to the gate UNCONVERTED (go-to-k/cdkd#3369): a
+  // non-string is withheld as `altered`, since `displaySafe` renders it as a
+  // different value. Never `String(x)` — that would make `123` exact and name
+  // it.
+  const built = pasteableCommand('cdkd state orphan', [
+    { value: stackName as string, hole: 'stack' },
+    { flag: '--stack-region', value: region as string, hole: 'region' },
+  ]);
+  if (built.exact) return { command: built.command, note: '' };
+  const reasons = [
+    orphanWithheldPart('stack name', stackName, built, 'stack'),
+    orphanWithheldPart('region', region, built, 'region'),
+  ].filter((part) => part !== '');
+  // A STACK NAME beginning with `-` must NOT be filled back in: quoted or
+  // not, Commander reads `'--all'` in the positional as the option (a bare `-`
+  // it takes positionally, but the gate refuses every leading `-`), so the
+  // fill-in instruction would rebuild the command the gate refused. The
+  // region is a flag's value, which Commander takes as given, so filling that
+  // hole is safe; the other reasons are about a SPELLING the listing hands
+  // back. Keyed on the RAW name's leading `-`, not on the reason: the gate
+  // reports `altered` / `too-long` FIRST, so `'--' + 'x'.repeat(1153)` is
+  // withheld as too long and would otherwise be handed the fill-in
+  // instruction. `typeof` first, or a non-string record throws here — inside
+  // the state-deletion warn's `catch`, where it would abort the cleanup loop.
+  const dashName = typeof stackName === 'string' && stackName.startsWith('-');
+  return {
+    command: `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')}`,
+    // Addressed to "the next line's command", not "this record": a caller
+    // listing several records prints one note line above each command line.
+    note:
+      ` The next line's command names neither value, because its record's ` +
+      `${reasons.join('; and its ')}. List the records as stored with ` +
+      `'cdkd state list --json' and ` +
+      (dashName
+        ? `repair or remove the one whose stackName and region match by hand — this stack ` +
+          `name begins with a '-' and could parse as an option in that position, so do not ` +
+          `fill a hole with it.`
+        : `act on the one whose stackName and region match, replacing each quoted hole, ` +
+          `quotes included, with the shell-quoted value.`),
+  };
+}
+
+/** What {@link orphanCommandFor} returns. */
+interface OrphanCommand {
+  /** The command, on a line of its own after the note, unwrapped. */
+  readonly command: string;
+  /** `''` when the command names the record, else a sentence with a leading space. */
+  readonly note: string;
+}
+
+/**
+ * One value's half of {@link orphanCommandFor}'s note, from the gate's REASON
+ * rather than from a predicate of this site's own, so the sentence cannot
+ * disagree with the hole (M11 of the go-to-k/cdkd#3499 review). `''` when the
+ * gate named the value.
+ */
+function orphanWithheldPart(
+  what: string,
+  raw: unknown,
+  built: PasteableCommand,
+  hole: string
+): string {
+  const reason = built.withheld.find((w) => w.hole === hole)?.reason;
+  if (reason === undefined) return '';
+  if (typeof raw !== 'string') return `${what} is not a string`;
+  return `${what} ${orphanWithholdWhy(reason, hole === 'stack')}`;
+}
+
+/** Exported for unit testing: two of its arms are unreachable through {@link orphanCommandFor}. */
+export function orphanWithholdWhy(reason: WithholdReason, positional: boolean): string {
+  switch (reason) {
+    case 'altered':
+      return 'does NOT render exactly (another record may render identically)';
+    case 'empty':
+      return 'is empty';
+    case 'too-long':
+      return 'is too long to print';
+    // Only the POSITIONAL parses as a flag: Commander takes the word after
+    // `--stack-region` as its value even when it begins with `-` (measured).
+    // The gate refuses both anyway, conservatively, and the region's sentence
+    // says that rather than claiming a parse that does not happen.
+    case 'option-shaped':
+      return positional
+        ? `begins with a '-', which 'cdkd state orphan' could parse as a flag`
+        : `begins with a '-', which cdkd refuses to print as an argument`;
+    // Unreachable (both need a gate option this site does not pass), and
+    // answered with a TRUE sentence rather than a throw, as
+    // `refreshWithheldReason` does: a throw here would escape the
+    // state-deletion warn's `catch`.
+    case 'pattern-shaped':
+    case 'not-plain':
+      return `cannot be printed as an argument to 'cdkd state orphan'`;
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error(`orphanWithholdWhy: unhandled WithholdReason ${String(_exhaustive)}`);
+    }
   }
-  return `cdkd state orphan ${shellQuote(shownStack)} --stack-region ${shellQuote(safeSegment(region))}`;
 }
 
 /**
@@ -4368,13 +4454,14 @@ async function walkCdkdStateStackTree(
     const childStackName = `${stackName}~${logicalId}`;
     const childResult = await stateBackend.getState(childStackName, region);
     if (!childResult) {
+      const orphan = orphanCommandFor(stackName, region);
       throw new Error(
         `cdkd state is missing nested-child '${safeSegment(childStackName)}' (${safeSegment(region)}). ` +
           `Parent stack '${safeSegment(stackName)}' lists '${safeSegment(logicalId)}' as an ` +
           `${NESTED_STACK_RESOURCE_TYPE} row but no child state file exists at ` +
           `'cdkd/${safeSegment(childStackName)}/${safeSegment(region)}/state.json'. The cdkd state tree is ` +
           `inconsistent — re-deploy the parent stack to refresh, or drop the parent's record ` +
-          `and re-import with: ${orphanCommandFor(stackName, region)}`
+          `and re-import.${orphan.note}\nDrop it with: ${orphan.command}`
       );
     }
     // Sanity-check the child's recorded region against the walker's
@@ -4734,13 +4821,14 @@ export function buildPerStackImportNodes(
     for (const [childLogicalId, childNode] of node.nestedChildren) {
       const childTemplatePath = nodeNestedTemplatePaths[childLogicalId];
       if (!childTemplatePath) {
+        const orphan = orphanCommandFor(childNode.stackName, childNode.region);
         throw new Error(
           `cdkd export: nested-stack child '${safeSegment(childLogicalId)}' under parent ` +
             `'${safeSegment(node.stackName)}' has cdkd state but no Metadata['aws:asset:path'] ` +
             `in the parent template's '${safeSegment(childLogicalId)}' row. The synth output ` +
             `and the cdkd state tree are out of sync — re-deploy the parent stack ` +
-            `to refresh, or remove the cdkd state for the orphaned child with ` +
-            `${orphanCommandFor(childNode.stackName, childNode.region)}`
+            `to refresh, or remove the cdkd state for the orphaned child.${orphan.note}\n` +
+            `Remove it with: ${orphan.command}`
         );
       }
       const { template: childTemplate, format: childFormat } = readNestedChildTemplateFile(
@@ -8005,8 +8093,27 @@ export async function runPerStackImportLoop(args: {
         .slice(i + 1)
         .map((p) => safeSegment(p.cdkdName))
         .join(', ');
+      // One command per line of its own, and a withheld plan's note on the line
+      // ABOVE its command (go-to-k/cdkd#3436): printing `.command` alone would
+      // drop the note, and with it the "do not fill a leading-`-` name" rule.
+      // In a LIST of both-hole lines "the next line's command" does not say
+      // WHICH record, so the note names it by its CloudFormation stack name,
+      // never by the withheld cdkd name. Only when that name is a PLAIN
+      // identifier (it always is unless an override bypassed the CFn check):
+      // `displayIdent`'s JSON quotes would still let a `$(...)` override run
+      // in a pasted clause, so any other name is described, not printed —
+      // `plainOrDescribed`'s rule, spelled out for this sentence's grammar.
       const orphanLines = (plans: readonly PerStackPlan[]): string =>
-        plans.map((p) => `\n  ${orphanCommandFor(p.cdkdName, p.region)}`).join('');
+        plans
+          .map((p) => {
+            const orphan = orphanCommandFor(p.cdkdName, p.region);
+            const target = isPasteableIdent(p.cfnName)
+              ? `CloudFormation stack ${p.cfnName}`
+              : 'a CloudFormation stack whose name is not a plain identifier';
+            const note = orphan.note ? `\n  For the record targeting ${target}:${orphan.note}` : '';
+            return `${note}\n  ${orphan.command}`;
+          })
+          .join('');
       // The WHOLE tree is refused on a re-run: `assertCfnStackAbsent` checks
       // every stack's CloudFormation name up front.
       const refusal =
@@ -8476,6 +8583,7 @@ export async function runPerStackImportLoop(args: {
             region: node.region,
             reason: err instanceof Error ? err.message : String(err),
           });
+          const orphan = orphanCommandFor(node.stackName, node.region);
           logger.warn(
             `Failed to delete cdkd state for '${safeSegment(node.stackName)}' ` +
               `(${safeSegment(node.region)}): ` +
@@ -8484,8 +8592,8 @@ export async function runPerStackImportLoop(args: {
               // (the identifier helper's contract is a record field or a key
               // segment).
               `${safeDetail(err)}. ` +
-              `The stack IS CFn-managed; clean up with: ` +
-              `${orphanCommandFor(node.stackName, node.region)}`
+              `The stack IS CFn-managed; clean up its state record.${orphan.note}\n` +
+              `Clean up with: ${orphan.command}`
           );
         }
       }

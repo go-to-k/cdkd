@@ -31,6 +31,7 @@ import { LockManager } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
+  displayStackName,
   isPasteableIdent,
   safeMsg,
   truncateCodePoints,
@@ -2154,8 +2155,16 @@ async function stateOrphanCommand(
               stateBucket: setup.bucket,
               statePrefix: options.statePrefix,
             });
+            // The name in `displayStackName`'s identifier boundary, never inside
+            // cdkd's own `'...'`: `asciiOnly` keeps `'`, `$` and `(`, so a name
+            // `x'$(touch OWNED) #` closed a hand-written quote and the rest ran
+            // when the sentence was pasted (go-to-k/cdkd#3436). The same head
+            // shape `buildLockContentionMessage` takes, at the same cap. Its
+            // double quotes do not stop `$(...)` or a backtick: the sentence is
+            // inert because ` (region)` follows the name, which aborts the span
+            // before expansion — selecting the name alone still runs those two.
             throw new Error(
-              `Stack '${displaySafe(stackName, { asciiOnly: true })}' (${where}) is locked. ` +
+              `Stack ${displayStackName(stackName)} (${where}) is locked. ` +
                 // Through the shared builder rather than hand-interpolated
                 // (issue #2170): `target.region` comes from an S3 key segment
                 // or a legacy state body, so a raw `\n` here forged a second

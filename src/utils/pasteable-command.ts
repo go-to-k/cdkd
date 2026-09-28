@@ -18,10 +18,15 @@
  *    CLOSES that wrapper when the span is pasted WITH its quotes and the rest
  *    runs as shell: `'cdkd state orphan S --state-bucket 'b; printf X; #''`
  *    printed `X`. Quoting the value does not help — the wrapper is what
- *    inverts. So a command is printed UNWRAPPED on its own labelled line, and
+ *    inverts. So a command is printed UNWRAPPED on a line of its own, and
  *    this module returns the text for exactly that.
  *
- *    **UNWRAPPED always; LAST only when the message prints ONE command.** A
+ *    **UNWRAPPED always; on its OWN line always; LAST only when the message
+ *    prints ONE command.** A message LISTING several records' commands
+ *    (`cli/commands/export.ts`'s nested resume tail) prints one per line, each
+ *    withheld one after a note naming its record, and may carry prose after
+ *    the list — a single-root failure there prints a one-item list followed by
+ *    prose, which is why the count of commands alone does not decide it. A
  *    message offering a READ and a DESTRUCTIVE template prints one command per
  *    LINE, and there the read ends a line while the TEMPLATE is last — the
  *    rule `.claude/rules/state-malformed-containers.md` states for
@@ -39,7 +44,7 @@
  *    quote that closes at the value's own opening quote, leaving the value
  *    bare. This module cannot reach that one — a value in prose is not a
  *    command — which is why the rule it belongs to is "a shell-quoted value
- *    goes on a labelled trailing line, never inside a sentence", and why
+ *    goes on a line of its own, never inside a sentence", and why
  *    deleting apostrophes is NOT the remedy (the next sentence re-opens it).
  *
  * What this module owns is the ARGUMENT side of shape 1 and shape 2: every
@@ -60,11 +65,11 @@
  * these are kinds of site, and each kind has more members than the examples.
  *
  * - **Its own copy of the gate.** The `cdkd orphan` properties refusal
- *   (`state/malformed-resources-bag.ts`, go-to-k/cdkd#3523), `orphanCommandFor`
- *   (`cli/commands/export.ts`), and others in `deployment/deploy-engine.ts` and
- *   `deployment/rollback-executor.ts` (`cli/commands/gc.ts` and
- *   `buildForceUnlockCommand` left this list in go-to-k/cdkd#3436's second
- *   half). They behave the same way; they are not this function, so a rule
+ *   (`state/malformed-resources-bag.ts`, go-to-k/cdkd#3523), and others in
+ *   `deployment/deploy-engine.ts` and `deployment/rollback-executor.ts`
+ *   (`cli/commands/gc.ts`, `buildForceUnlockCommand` and `cli/commands/
+ *   export.ts`'s `orphanCommandFor` left this list in go-to-k/cdkd#3436's
+ *   second half). They behave the same way; they are not this function, so a rule
  *   change reaches them only by hand.
  * - **A command in prose quotes with a RAW value**, outside the modules
  *   migrated here — `provisioning/providers/**` (Route 53, DynamoDB),
@@ -251,11 +256,16 @@ export interface WithheldValue {
 /** What {@link pasteableCommand} returns. */
 export interface PasteableCommand {
   /**
-   * The command, ready to print UNWRAPPED on a labelled line of its own. Never
-   * put it back inside quotes — that is the shape this module exists to close.
+   * The command, ready to print UNWRAPPED on a line of its own — labelled in a
+   * single-command message. Never put it back inside quotes — that is the
+   * shape this module exists to close.
    *
    * LAST is a property of the MESSAGE, not of this string. A message printing
-   * one command prints it last; a message offering a read AND a destructive
+   * one command prints it last, except the nested resume tail, whose list may
+   * hold one command and still carry prose after it; a message LISTING several records' commands
+   * (`cli/commands/export.ts`'s nested resume tail) prints one per line, each
+   * withheld one after a note naming its record, and may carry prose after
+   * the list (go-to-k/cdkd#3436); a message offering a read AND a destructive
    * template gives each its own line and ends on the TEMPLATE, so the READ is
    * legitimately not last (go-to-k/cdkd#3516, and M17 of go-to-k/cdkd#3499's
    * review — this JSDoc is what a caller building the `Inspect it with:` line
