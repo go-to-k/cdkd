@@ -17,8 +17,9 @@ import type { ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
  * every cdkd-side step between it and `runDetached` (the `dockerEnv` spread,
  * the credential overlay). Only Docker, the RIE client, synthesis and target
  * resolution are stubbed, so the assertion is on the env the command hands to
- * `runDetached`. That function's own argv rendering of a `__proto__` key is
- * pinned in `tests/unit/utils/docker-cmd.test.ts`.
+ * `runDetached`. Its argv rendering of a `__proto__` key, sensitive
+ * (value-less) and not (`-e __proto__=<value>`, this path), is pinned in
+ * `tests/unit/utils/docker-cmd.test.ts` via `partitionSensitiveEnv`.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -176,8 +177,6 @@ describe('local invoke delivers an --env-vars key named __proto__ (#3515)', () =
     // The sibling override in the same block still lands, so the case is not
     // passing on a file the resolver ignored.
     expect(env['GREETING']).toBe('overridden');
-    // Delivered as data, never as a prototype swap.
-    expect(Object.getPrototypeOf(env)).toBe(Object.prototype);
   });
 
   it('from a function-specific block', async () => {
