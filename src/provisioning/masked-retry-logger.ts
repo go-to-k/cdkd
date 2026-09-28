@@ -96,6 +96,122 @@ export function createMaskedRetryLogger(
 }
 
 /**
+ * The masked sinks ONE provider operation routes every log line through
+ * (issue [#2177](https://github.com/go-to-k/cdkd/issues/2177)).
+ *
+ * This is the `ssm-parameter-provider.ts` shape — one masked sink per
+ * operation, so a line added later is masked by construction — shared rather
+ * than re-spelled per file, for the reason this module's header gives for
+ * {@link createMaskedRetryLogger}: per-file copies of a security contract
+ * drift apart.
+ *
+ * Build it per CALL from the operation's own context; never cache it on the
+ * provider instance, which serves concurrent resources.
+ */
+export interface MaskedLogSinks {
+  /** The masker itself (identity when none was supplied), for a helper taking one. */
+  readonly mask: MaskerFn;
+  /**
+   * Mask ONE interpolated value RAW, before it joins a sentence. Only the raw
+   * value reaches the masker's WHOLE-VALUE arm, so a secret shorter than the
+   * substring arm's floor is caught here and nowhere else (see
+   * {@link maskDeep}'s LENGTH note). `String()` first, which renders exactly
+   * what `${value}` would: a bag value typed only by a cast can be a
+   * non-string at runtime, and the masker calls `.replace` on its input.
+   */
+  readonly value: (value: unknown) => string;
+  /** `logger.debug`, with the finished message routed through the masker. */
+  readonly debug: (message: string) => void;
+  /** `logger.warn`, with the finished message routed through the masker. */
+  readonly warn: (message: string) => void;
+}
+
+/**
+ * Build {@link MaskedLogSinks} over `logger` and the masker a caller supplied.
+ * Absent means identity, exactly as {@link maskerOrIdentity}.
+ */
+export function createMaskedLogSinks(
+  logger: { debug(message: string): void; warn(message: string): void },
+  maskSecrets: MaskerFn | undefined
+): MaskedLogSinks {
+  const mask = maskerOrIdentity(maskSecrets);
+  return {
+    mask,
+    value: (value: unknown) => mask(String(value)),
+    debug: (message: string) => logger.debug(mask(message)),
+    warn: (message: string) => logger.warn(mask(message)),
+  };
+}
+
+/**
+ * Extend `sinks` so a name DERIVED from a secret-bearing template value is
+ * masked too (issue [#2177](https://github.com/go-to-k/cdkd/issues/2177)
+ * security review).
+ *
+ * A provider that builds its physical name with
+ * `generateResourceNameWithFallback` hands the masker a REWRITTEN value — the
+ * stack-name prefix, `[^A-Za-z0-9-]` replaced by `-`, and past `maxLength` a
+ * truncation plus hash — and the masker matches LITERALLY, so neither of its
+ * arms recognises `stack-alice-example-com` as the secret `alice@example.com`.
+ * The derived spelling is what every log line, pasteable command and AWS echo
+ * then carries.
+ *
+ * Each pair is `[raw template value, name derived from it]`. A derived name is
+ * added as a needle ONLY when the raw value is secret-derived, so an ordinary
+ * name is left alone. Secret-derived means either of:
+ *
+ *  - the caller's own masker changes it — a RESOLVED value this deploy recorded
+ *    (the desired bag), or one embedding such a value;
+ *  - it still spells a `{{resolve:` reference. That is the shape a PREVIOUS
+ *    bag read from state carries: redaction persists a secret leaf as its
+ *    reference, while a public ssm value is stored resolved, so a surviving
+ *    reference IS a secret — and its plaintext need not be in THIS deploy's
+ *    bag at all (a rotated or re-pointed secret), so the masker cannot say so.
+ *
+ * NO length floor, unlike `maskSecretsInText`'s substring arm, and on purpose:
+ * that floor trades a leak for fewer incidental matches, and a derived name
+ * that is short is still the secret's spelling. The failure without a floor is
+ * over-masking unrelated text in this operation's lines, never disclosure.
+ *
+ * The derived name is replaced wherever it OCCURS — including inside an ARN
+ * built from it — before the base masker runs, and the returned `mask` is the
+ * extended one, so a `pasteableAwsCommand(mask)` WITHHOLDS a command naming it.
+ */
+export function withDerivedNameMasks(
+  logger: { debug(message: string): void; warn(message: string): void },
+  sinks: MaskedLogSinks,
+  pairs: ReadonlyArray<readonly [raw: unknown, derived: string | undefined]>
+): MaskedLogSinks {
+  const needles = pairs
+    .filter(
+      (pair): pair is readonly [string, string] =>
+        typeof pair[0] === 'string' &&
+        pair[0] !== '' &&
+        typeof pair[1] === 'string' &&
+        pair[1] !== '' &&
+        (sinks.mask(pair[0]) !== pair[0] || pair[0].includes('{{resolve:'))
+    )
+    .map(([, derived]) => derived)
+    // Longest first, so a needle that contains another is replaced whole.
+    .sort((a, b) => b.length - a.length);
+  if (needles.length === 0) return sinks;
+  const base = sinks.mask;
+  const mask: MaskerFn = (text: string) => {
+    let out = text;
+    // The same marker the depth cap substitutes, which is fenced against
+    // `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
+    for (const needle of needles) out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
+    return base(out);
+  };
+  return {
+    mask,
+    value: (value: unknown) => mask(String(value)),
+    debug: (message: string) => logger.debug(mask(message)),
+    warn: (message: string) => logger.warn(mask(message)),
+  };
+}
+
+/**
  * Depth cap for {@link maskDeep}.
  *
  * What it actually bounds is unbounded WORK on a pathologically deep bag — see

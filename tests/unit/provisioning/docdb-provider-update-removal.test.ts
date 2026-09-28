@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
+import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
 
 describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
   let provider: DocDBProvider;
@@ -179,8 +180,10 @@ describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
   });
 
   describe('DBSubnetGroup update (ModifyDBSubnetGroup)', () => {
+    // The subnet group has its own provider (issue #3866).
+    const subnetGroupProvider = new DocDBSubnetGroupProvider();
     const mockSubnetGroupUpdate = () => {
-      // updateDBSubnetGroup does 2 sends: ModifyDBSubnetGroup + describe.
+      // update() does 2 sends: ModifyDBSubnetGroup + describe.
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValueOnce({ DBSubnetGroups: [{}] });
     };
@@ -188,7 +191,7 @@ describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
     it('resets a removed description to the create-time fallback', async () => {
       mockSubnetGroupUpdate();
 
-      await provider.update(
+      await subnetGroupProvider.update(
         'MySG',
         'my-subnet-group',
         'AWS::DocDB::DBSubnetGroup',
@@ -206,7 +209,7 @@ describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
     it('leaves a never-present description absent and passes a kept one through', async () => {
       mockSubnetGroupUpdate();
 
-      await provider.update(
+      await subnetGroupProvider.update(
         'MySG',
         'my-subnet-group',
         'AWS::DocDB::DBSubnetGroup',
@@ -220,7 +223,7 @@ describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
       vi.clearAllMocks();
       mockSubnetGroupUpdate();
 
-      await provider.update(
+      await subnetGroupProvider.update(
         'MySG',
         'my-subnet-group',
         'AWS::DocDB::DBSubnetGroup',

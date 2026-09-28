@@ -1,5 +1,5 @@
 import { getLogger } from '../utils/logger.js';
-import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
   equalIdNamesSameResource,
@@ -4037,7 +4037,7 @@ export class DeployEngine {
       // the legacy PR #608 fail-fast was reversed by #614 to a default-on
       // auto-route — but this step CAN still refuse, and the comment said
       // it could not until issue #3028. A drop on a type the Cloud Control
-      // route cannot serve (`isNonProvisionable`, or a provider declaring
+      // route cannot serve (`hasNoCloudControlHandlers`, or a provider declaring
       // `disableCcApiFallback`) has nowhere to be auto-routed, so
       // `ProviderRegistry.reportSilentDropDecisions` throws rather than
       // letting the route fail later with an opaque error. That refusal
@@ -5126,19 +5126,28 @@ export class DeployEngine {
       // journal segment so the interrupted deploy is REVERTIBLE (not just
       // resumable), and let the caller exit.
       //
-      // `InterruptedError` is this module's own and is NOT exported, so it can
-      // only ever be raised HERE — by the engine's own interrupt poll between
-      // operations. An interrupt raised inside a provider's wait (issues #2053
-      // / #1952 thread one into every `withRetry` under
-      // `src/provisioning/**`) arrives as an `InterruptedWaitError`, and by the
-      // time it reaches this catch it is WRAPPED: every provider catch
-      // re-throws AWS failures as a `ProvisioningError` threading the original
-      // as `cause` (issue #2040). Matching only the private class meant a
-      // Ctrl-C during a provider backoff read as a genuine resource failure and
-      // rolled the whole stack back automatically — strictly worse than the
-      // unresponsiveness the threading removes. `isInterruptedWaitError` walks
-      // the cause chain to a bounded depth for exactly that reason.
-      if (error instanceof InterruptedError || isInterruptedWaitError(error)) {
+      // A user interrupt reaches this catch in three shapes, and all three must
+      // take this branch — the other one rolls the stack back on a Ctrl-C:
+      //
+      //  - the engine's own `InterruptedError`, raised by its between-ops poll;
+      //  - an `InterruptedWaitError` from a provider's wait, WRAPPED by the
+      //    provider's `ProvisioningError` (issue #2040), which
+      //    `isInterruptedWaitError` finds on the cause chain;
+      //  - an `InterruptedError` WRAPPED by `provisionResource`'s own
+      //    `ProvisioningError`: one raised by this engine's retry backoff
+      //    (`onInterrupted`), or by a NESTED child engine's poll, which reaches
+      //    the parent through `NestedStackProvider` (go-to-k/cdkd#3875).
+      //
+      // The last shape is keyed on this engine's own `interruptCause`, not on
+      // the class: `InterruptedError` does not carry its cause, and a child's
+      // `'sibling-failure'` one must still roll back. The SIGINT handler sets
+      // `'user'` before any poll or backoff can observe the signal, and a row
+      // failure's `??= 'sibling-failure'` never overwrites it.
+      if (
+        error instanceof InterruptedError ||
+        isInterruptedWaitError(error) ||
+        this.interruptCause === 'user'
+      ) {
         await this.writeRollbackJournalSegment(
           stackName,
           completedOperations,
@@ -5166,8 +5175,10 @@ export class DeployEngine {
         );
         this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
         this.logger.warn(
-          "Partial state has been saved. Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, " +
-            'or destroy to clean up.'
+          'Partial state has been saved. ' +
+            this.recoveryHint(
+              "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+            )
         );
       } else {
         // Automatic in-process rollback. Write a journal segment FIRST so a
@@ -5610,7 +5621,7 @@ export class DeployEngine {
         completedOperations,
         stateResources,
         stackName,
-        this.rollbackExecutorContext(previousState)
+        this.rollbackExecutorContext(previousState, stackName)
       ),
       run: scope,
     }));
@@ -5736,7 +5747,9 @@ export class DeployEngine {
     } catch (err) {
       this.logger.warn(
         `Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
-          `The journal keeps the full segment; a later 'cdkd rollback' replay is idempotent.`
+          // No command named: a nested child's stack-less `cdkd rollback` would
+          // resolve to the top-level stack (go-to-k/cdkd#3864).
+          `The journal keeps the full segment; a later rollback replay is idempotent.`
       );
       return false;
     }
@@ -5784,8 +5797,30 @@ export class DeployEngine {
     });
   }
 
+  /**
+   * The recovery sentence a `--no-rollback` failure ends on. A NESTED child
+   * engine does not name a command: a stack-less `cdkd rollback` resolves to
+   * the top-level stack, and the child's failure fails the parent's row, whose
+   * engine (sharing `noRollback` through the option spread) prints its own
+   * `--no-rollback` message right after (go-to-k/cdkd#3864). NOT used on the
+   * interrupted path: a child's poll `InterruptedError` reaches the parent
+   * wrapped and is not recognised as an interrupt there (go-to-k/cdkd#3875),
+   * so no message of the parent's can be promised to follow.
+   */
+  private recoveryHint(topLevel: string): string {
+    const parent = this.options.parentStackInfo;
+    if (parent === undefined) return topLevel;
+    return (
+      `This is a nested stack: recover it through its top-level stack ` +
+      `${quotedOrDescribed(parent.parentStack.split('~')[0]!, 'stack name')}, whose own message follows.`
+    );
+  }
+
   /** Build the {@link RollbackExecutorContext} from the engine's fields. */
-  private rollbackExecutorContext(previousState: StackState): RollbackExecutorContext {
+  private rollbackExecutorContext(
+    previousState: StackState,
+    stackName: string
+  ): RollbackExecutorContext {
     return {
       providerRegistry: this.providerRegistry,
       region: this.stackRegion,
@@ -5796,6 +5831,10 @@ export class DeployEngine {
       // opt-out the engine's own delete sites use.
       finalSnapshotClients: this.options.finalSnapshotClients,
       skipFinalSnapshot: this.options.skipFinalSnapshot,
+      // A nested child's own rollback: its segment is replayed only by a
+      // rollback of the CHILD, so the refusals' `--orphan` command names it
+      // (go-to-k/cdkd#3859).
+      ...(this.options.parentStackInfo && { nestedChildStack: stackName }),
       // Issue #2057: the producer regions this stack reads across, so the
       // replay refuses a region-LESS `{{resolve:...}}` expression rather than
       // re-resolving it here and writing a same-named foreign secret to a live

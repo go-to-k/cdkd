@@ -50,10 +50,11 @@ Each exclusion is derivable offline, so the predicate stays a table lookup.
 | A `'cc-broken'` sticky-CC exemption (`AWS::Scheduler::Schedule`) | Its Cloud Control handler cannot manage the type: a schedule in a custom group fails UPDATE with NotFound, so routing a real new property would break a deploy that works today. |
 | A key the state record holds unchanged (compared as JSON, so a prototype or key-order difference is not a change; a recorded `{{resolve:...}}` secret cannot be compared and counts as unchanged) | Zero regression for existing deployments. Without it, an unrelated update would flip an SDK resource to Cloud Control, failing on a typo or on a type whose SDK physical id is not Cloud Control's identifier. Changing or adding the key is what routes. |
 
-The generator folds the last two rows into `ccRouteUnavailable`, reading
-`disableCcApiFallback` from provider source and the `'cc-broken'` entries from
-`STICKY_CC_MIGRATION_EXEMPT`; a unit test binds it to the runtime flag and
-table in both directions.
+The generator folds the no-route rows into `ccRouteUnavailable`, reading
+`disableCcApiFallback` from provider source, the `'cc-broken'` entries from
+`STICKY_CC_MIGRATION_EXEMPT`, and the registered NON_PROVISIONABLE types from
+`SDK_PROVIDER_NON_PROVISIONABLE_TYPES` (#3871); a unit test binds it to the
+runtime flag and tables in both directions.
 
 What stays on the SDK route is still warned about, naming which of the three
 reasons applies (read-only, unroutable type, unchanged since an SDK-route

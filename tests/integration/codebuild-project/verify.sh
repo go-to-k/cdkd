@@ -16,6 +16,12 @@
 #
 # Then destroys and confirms a clean teardown.
 #
+# Phase 0 first deploys with CDKD_TEST_NONPROV_REFUSAL=true, which adds a
+# `Visibility` property the SDK provider does not handle, and asserts the
+# deploy is refused pre-flight with nothing provisioned (issue #3866).
+# Phase 1b asserts `--recreate-via-cc-api` on the deployed project is refused
+# and leaves it intact (issue #3887).
+#
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   - defaults to us-east-1
@@ -146,6 +152,50 @@ assert_field() { # usage: assert_field <description> <jq-path> <expected>
   echo "    ok: ${desc} = ${got}"
 }
 
+# --- Phase 0: issue #3866 pre-flight refusal --------------------------
+# AWS::CodeBuild::Project is NON_PROVISIONABLE (Cloud Control has no handlers),
+# so a property its SDK provider does not handle must stop the deploy BEFORE
+# anything is provisioned. Before #3866 the resource was auto-routed to Cloud
+# Control, which failed mid-deploy with UnsupportedActionException after the
+# role had been created -- also a non-zero exit, so the rc alone proves
+# nothing: the refusal's own wording is the discriminator.
+echo "==> Phase 0: a Visibility property is refused pre-flight (issue #3866)"
+if REFUSAL_OUT="$(env CDKD_TEST_NONPROV_REFUSAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1)"; then
+  printf '%s\n' "${REFUSAL_OUT}" >&2
+  echo "FAIL: Phase 0 deploy exited 0; a Visibility property on AWS::CodeBuild::Project must be refused" >&2
+  exit 1
+fi
+REFUSAL_PLAIN="$(printf '%s\n' "${REFUSAL_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
+printf '%s\n' "${REFUSAL_PLAIN}" >&2
+if printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF 'UnsupportedActionException'; then
+  echo "FAIL: Phase 0 routed the project to Cloud Control (the pre-#3866 behavior) instead of refusing pre-flight" >&2
+  exit 1
+fi
+for needle in \
+  'AWS::CodeBuild::Project uses properties' \
+  'cannot fall back to Cloud Control API' \
+  '- Visibility: ' \
+  '--prefer-sdk-route AWS::CodeBuild::Project:Visibility'; do
+  if ! printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF -- "${needle}"; then
+    echo "FAIL: Phase 0 output lacks the pre-flight refusal wording: '${needle}'" >&2
+    exit 1
+  fi
+done
+# Nothing may be provisioned by a pre-flight refusal. Unsilenced, so a
+# throttle / auth failure aborts under `set -e` instead of reading as absent.
+NOT_FOUND_P0="$(aws codebuild batch-get-projects --names "${PROJECT_NAME}" \
+  --region "${REGION}" --query 'length(projectsNotFound)' --output text)"
+if [ "${NOT_FOUND_P0}" != "1" ]; then
+  echo "FAIL: Phase 0 created CodeBuild project ${PROJECT_NAME} (projectsNotFound=${NOT_FOUND_P0}); the refusal must precede provisioning" >&2
+  exit 1
+fi
+assert_gone "Phase 0 wrote state file ${STATE_KEY}; the refusal must precede provisioning" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    ok: refused pre-flight, no project created, no state written"
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -165,6 +215,55 @@ assert_field "cache.type"                      '.cache.type'             'LOCAL'
 assert_field "logsConfig.cloudWatchLogs.status" '.logsConfig.cloudWatchLogs.status' 'DISABLED'
 
 PROJECT_ARN_P1="$(project_field '.arn')"
+PROJECT_CREATED_P1="$(project_field '.created')"
+
+# --- Phase 1b: issue #3887 recreate refusal ----------------------------
+# AWS::CodeBuild::Project has no Cloud Control handlers. `--recreate-via-cc-api`
+# deletes the resource through its SDK provider BEFORE asking Cloud Control to
+# create the replacement, so the refusal must come before any delete. This
+# redeploys the Phase 1 template unchanged, and a recreate target whose diff is
+# NO_CHANGE is ignored today (#2651), so the pre-#3887 binary exited 0 here:
+# the exit code and the refusal wording discriminate. The project is also
+# asserted untouched -- same ARN and same creation time, since the ARN alone is
+# derived from the fixed name and survives a same-name re-create.
+echo "==> Phase 1b: --recreate-via-cc-api on the project is refused, project intact (issue #3887)"
+PROJECT_LID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r \
+  '[.resources | to_entries[] | select(.value.resourceType == "AWS::CodeBuild::Project") | .key] | first // ""')"
+if [ -z "${PROJECT_LID}" ]; then
+  echo "FAIL: could not read the project's logical id from ${STATE_KEY}" >&2
+  exit 1
+fi
+if RECREATE_OUT="$(node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-cc-api "${PROJECT_LID}" \
+  --yes 2>&1)"; then
+  printf '%s\n' "${RECREATE_OUT}" >&2
+  echo "FAIL: Phase 1b deploy exited 0; --recreate-via-cc-api on AWS::CodeBuild::Project must be refused" >&2
+  exit 1
+fi
+RECREATE_PLAIN="$(printf '%s\n' "${RECREATE_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
+printf '%s\n' "${RECREATE_PLAIN}" >&2
+for needle in \
+  'resource(s) of types Cloud Control API cannot create:' \
+  "  - ${PROJECT_LID} (AWS::CodeBuild::Project) — ProvisioningType: NON_PROVISIONABLE" \
+  'None of these resources was touched.'; do
+  if ! printf '%s\n' "${RECREATE_PLAIN}" | grep -qF -- "${needle}"; then
+    echo "FAIL: Phase 1b output lacks the recreate refusal wording: '${needle}'" >&2
+    exit 1
+  fi
+done
+PROJECT_ARN_P1B="$(project_field '.arn')"
+if [ "${PROJECT_ARN_P1B}" != "${PROJECT_ARN_P1}" ]; then
+  echo "FAIL: the refused recreate touched the project (ARN ${PROJECT_ARN_P1} -> ${PROJECT_ARN_P1B}); it must be left intact" >&2
+  exit 1
+fi
+PROJECT_CREATED_P1B="$(project_field '.created')"
+if [ "${PROJECT_CREATED_P1B}" != "${PROJECT_CREATED_P1}" ]; then
+  echo "FAIL: the refused recreate re-created the project (created ${PROJECT_CREATED_P1} -> ${PROJECT_CREATED_P1B}); it must be left intact" >&2
+  exit 1
+fi
+echo "    ok: recreate refused, project intact (${PROJECT_ARN_P1B}, created ${PROJECT_CREATED_P1B})"
 
 # --- Phase 2: removal redeploy ---------------------------------------
 echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops all eight)"

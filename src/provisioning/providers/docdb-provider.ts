@@ -8,13 +8,6 @@ import {
   DeleteDBInstanceCommand,
   ModifyDBInstanceCommand,
   DescribeDBInstancesCommand,
-  CreateDBSubnetGroupCommand,
-  DeleteDBSubnetGroupCommand,
-  DescribeDBSubnetGroupsCommand,
-  ModifyDBSubnetGroupCommand,
-  ListTagsForResourceCommand,
-  AddTagsToResourceCommand,
-  RemoveTagsFromResourceCommand,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -22,7 +15,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
-import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -33,6 +26,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
 
 /**
  * The attribute map a DocumentDB DB cluster records (issue #3650), under
@@ -90,9 +84,11 @@ function instanceAttributes(
  * AWS DocumentDB Provider
  *
  * Implements resource provisioning for DocumentDB resources:
- * - AWS::DocDB::DBSubnetGroup
  * - AWS::DocDB::DBCluster
  * - AWS::DocDB::DBInstance
+ *
+ * `AWS::DocDB::DBSubnetGroup` has its own provider,
+ * `DocDBSubnetGroupProvider`: see {@link DocDBProvider.disableCcApiFallback}.
  *
  * WHY a dedicated SDK provider (instead of CC API fallback):
  *   1. Owns the `--remove-protection` flip-off for `AWS::DocDB::DBCluster`.
@@ -113,11 +109,22 @@ export class DocDBProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('DocDBProvider');
 
+  /**
+   * `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
+   * `ProvisioningType: NON_PROVISIONABLE` — Cloud Control has no handlers for
+   * them — so the #614 silent-drop auto-route must not send a template using
+   * an unhandled property (`EnableCloudwatchLogsExports`, `StorageType`,
+   * `CACertificateIdentifier`, ...) to CC, where it fails mid-deploy with an
+   * opaque UnsupportedActionException. With this opt-out the registry refuses
+   * such a template pre-flight (issue #3866).
+   *
+   * The flag is per PROVIDER, which is why `AWS::DocDB::DBSubnetGroup` — a
+   * type Cloud Control CAN manage — lives in `DocDBSubnetGroupProvider`, keeping
+   * its Cloud Control route. Do not register it on this class again.
+   */
+  readonly disableCcApiFallback = true;
+
   handledProperties = new Map<string, ReadonlySet<string>>([
-    [
-      'AWS::DocDB::DBSubnetGroup',
-      new Set(['DBSubnetGroupName', 'DBSubnetGroupDescription', 'SubnetIds', 'Tags']),
-    ],
     [
       'AWS::DocDB::DBCluster',
       new Set([
@@ -175,8 +182,6 @@ export class DocDBProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
-      case 'AWS::DocDB::DBSubnetGroup':
-        return this.createDBSubnetGroup(logicalId, resourceType, properties);
       case 'AWS::DocDB::DBCluster':
         return this.createDBCluster(logicalId, resourceType, properties);
       case 'AWS::DocDB::DBInstance':
@@ -198,14 +203,6 @@ export class DocDBProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
-      case 'AWS::DocDB::DBSubnetGroup':
-        return this.updateDBSubnetGroup(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties
-        );
       case 'AWS::DocDB::DBCluster':
         return this.updateDBCluster(
           logicalId,
@@ -240,8 +237,6 @@ export class DocDBProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
-      case 'AWS::DocDB::DBSubnetGroup':
-        return this.deleteDBSubnetGroup(logicalId, physicalId, resourceType, context);
       case 'AWS::DocDB::DBCluster':
         return this.deleteDBCluster(logicalId, physicalId, resourceType, context);
       case 'AWS::DocDB::DBInstance':
@@ -253,160 +248,6 @@ export class DocDBProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-    }
-  }
-
-  // ─── DBSubnetGroup ────────────────────────────────────────────────
-
-  private async createDBSubnetGroup(
-    logicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>
-  ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating DocDB DBSubnetGroup ${logicalId}`);
-
-    const dbSubnetGroupName =
-      (properties['DBSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
-
-    try {
-      const tags = this.buildTags(properties);
-
-      await this.getClient().send(
-        new CreateDBSubnetGroupCommand({
-          DBSubnetGroupName: dbSubnetGroupName,
-          DBSubnetGroupDescription:
-            (properties['DBSubnetGroupDescription'] as string) || `Subnet group for ${logicalId}`,
-          SubnetIds: properties['SubnetIds'] as string[],
-          ...(tags.length > 0 && { Tags: tags }),
-        })
-      );
-
-      this.logger.debug(
-        `Successfully created DocDB DBSubnetGroup ${logicalId}: ${dbSubnetGroupName}`
-      );
-
-      return {
-        physicalId: dbSubnetGroupName,
-        attributes: {
-          DBSubnetGroupName: dbSubnetGroupName,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DocDB DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        dbSubnetGroupName,
-        cause
-      );
-    }
-  }
-
-  private async updateDBSubnetGroup(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
-  ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating DocDB DBSubnetGroup ${logicalId}: ${physicalId}`);
-
-    try {
-      // Class 2 — `SubnetIds: []` would be rejected by AWS as a structurally
-      // invalid input (DBSubnetGroup requires ≥ 2 subnets in distinct AZs).
-      // Skip the field when empty so the ModifyDBSubnetGroup call is a no-op
-      // for the subnet list (description-only updates are legitimate).
-      const subnetIds = properties['SubnetIds'] as string[] | undefined;
-      const sendSubnetIds = subnetIds !== undefined && subnetIds.length > 0;
-      const modifyInput = {
-        DBSubnetGroupName: physicalId,
-        // #1160 reset-on-removal: CFn declares DBSubnetGroupDescription
-        // required, so a CFn-valid template can never remove it — but
-        // cdkd's create() tolerates absence with the `Subnet group for
-        // <logicalId>` fallback, so removal resets to the same fallback for
-        // create/update parity instead of silently keeping the old value.
-        DBSubnetGroupDescription: clearOnUpdateRemoval(
-          properties['DBSubnetGroupDescription'] as string | undefined,
-          previousProperties['DBSubnetGroupDescription'] as string | undefined,
-          `Subnet group for ${logicalId}`
-        ),
-        ...(sendSubnetIds && { SubnetIds: subnetIds }),
-      } as ConstructorParameters<typeof ModifyDBSubnetGroupCommand>[0];
-      await this.getClient().send(new ModifyDBSubnetGroupCommand(modifyInput));
-
-      // Apply tag diff. DocDB uses ARN-keyed AddTagsToResource /
-      // RemoveTagsFromResource. DescribeDBSubnetGroups returns the ARN.
-      const desc = await this.getClient().send(
-        new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: physicalId })
-      );
-      const arn = desc.DBSubnetGroups?.[0]?.DBSubnetGroupArn;
-      if (arn) {
-        await this.applyTagDiff(
-          arn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
-        );
-      }
-
-      this.logger.debug(`Successfully updated DocDB DBSubnetGroup ${logicalId}`);
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          DBSubnetGroupName: physicalId,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DocDB DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
-    }
-  }
-
-  private async deleteDBSubnetGroup(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    context?: DeleteContext
-  ): Promise<void> {
-    this.logger.debug(`Deleting DocDB DBSubnetGroup ${logicalId}: ${physicalId}`);
-
-    try {
-      await this.getClient().send(
-        new DeleteDBSubnetGroupCommand({
-          DBSubnetGroupName: physicalId,
-        })
-      );
-      this.logger.debug(`Successfully deleted DocDB DBSubnetGroup ${logicalId}`);
-    } catch (error) {
-      if (this.isNotFoundError(error, 'DBSubnetGroupNotFoundFault')) {
-        const clientRegion = await this.getClient().config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`DocDB DBSubnetGroup ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DocDB DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
     }
   }
 
@@ -568,7 +409,9 @@ export class DocDBProvider implements ResourceProvider {
       const described = await this.describeDBCluster(physicalId);
 
       if (described?.DBClusterArn) {
-        await this.applyTagDiff(
+        await applyDocDBTagDiff(
+          this.getClient(),
+          this.logger,
           described.DBClusterArn,
           previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
           properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
@@ -618,7 +461,7 @@ export class DocDBProvider implements ResourceProvider {
             `Disabled DeletionProtection on DocDB DBCluster ${logicalId} before delete`
           );
         } catch (disableError) {
-          if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
+          if (!isDocDBNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
               `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
             );
@@ -648,7 +491,7 @@ export class DocDBProvider implements ResourceProvider {
       // Wait for cluster to be fully deleted
       await this.waitForClusterDeleted(physicalId);
     } catch (error) {
-      if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
+      if (isDocDBNotFoundError(error, 'DBClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
           clientRegion,
@@ -772,7 +615,9 @@ export class DocDBProvider implements ResourceProvider {
       const described = await this.describeDBInstance(physicalId);
 
       if (described?.DBInstanceArn) {
-        await this.applyTagDiff(
+        await applyDocDBTagDiff(
+          this.getClient(),
+          this.logger,
           described.DBInstanceArn,
           previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
           properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
@@ -822,7 +667,7 @@ export class DocDBProvider implements ResourceProvider {
       // Wait for instance to be fully deleted
       await this.waitForInstanceDeleted(physicalId);
     } catch (error) {
-      if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) {
+      if (isDocDBNotFoundError(error, 'DBInstanceNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
           clientRegion,
@@ -847,64 +692,9 @@ export class DocDBProvider implements ResourceProvider {
 
   // ─── Helpers ──────────────────────────────────────────────────────
 
-  /**
-   * Apply a diff between old and new CFn-shape Tags arrays via DocDB's
-   * `AddTagsToResource` / `RemoveTagsFromResource` APIs (keyed by
-   * `ResourceName=arn`).
-   */
-  private async applyTagDiff(
-    arn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
-  ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
-    }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
-
-    if (tagsToRemove.length > 0) {
-      await this.getClient().send(
-        new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
-      );
-      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from DocDB resource ${arn}`);
-    }
-    if (tagsToAdd.length > 0) {
-      await this.getClient().send(
-        new AddTagsToResourceCommand({ ResourceName: arn, Tags: tagsToAdd })
-      );
-      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on DocDB resource ${arn}`);
-    }
-  }
-
   private buildTags(properties: Record<string, unknown>): Array<{ Key: string; Value: string }> {
     if (!properties['Tags']) return [];
     return properties['Tags'] as Array<{ Key: string; Value: string }>;
-  }
-
-  private isNotFoundError(error: unknown, faultName: string): boolean {
-    if (!(error instanceof Error)) return false;
-    const name = (error as { name?: string }).name ?? '';
-    const message = error.message.toLowerCase();
-    return (
-      name === faultName || message.includes('not found') || message.includes('does not exist')
-    );
   }
 
   private async describeDBCluster(dbClusterIdentifier: string) {
@@ -973,7 +763,7 @@ export class DocDBProvider implements ResourceProvider {
 
         if (!cluster) return;
       } catch (error) {
-        if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
+        if (isDocDBNotFoundError(error, 'DBClusterNotFoundFault')) {
           return;
         }
         throw error;
@@ -1029,7 +819,7 @@ export class DocDBProvider implements ResourceProvider {
 
         if (!instance) return;
       } catch (error) {
-        if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) {
+        if (isDocDBNotFoundError(error, 'DBInstanceNotFoundFault')) {
           return;
         }
         throw error;
@@ -1049,9 +839,9 @@ export class DocDBProvider implements ResourceProvider {
   /**
    * Adopt an existing DocDB resource into cdkd state.
    *
-   * Supported types: `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`,
-   * `AWS::DocDB::DBSubnetGroup`. Identifier name properties (`DBInstance
-   * Identifier` / `DBClusterIdentifier` / `DBSubnetGroupName`) are usually
+   * Supported types: `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`.
+   * Identifier name properties (`DBInstanceIdentifier` /
+   * `DBClusterIdentifier`) are usually
    * present in CDK templates and are resolved via the corresponding
    * `Describe*` existence check. There is no `aws:cdk:path` tag fallback:
    * AWS rejects `aws:`-prefixed tag writes, so that tag never exists on a
@@ -1063,8 +853,6 @@ export class DocDBProvider implements ResourceProvider {
         return this.importDBInstance(input);
       case 'AWS::DocDB::DBCluster':
         return this.importDBCluster(input);
-      case 'AWS::DocDB::DBSubnetGroup':
-        return this.importDBSubnetGroup(input);
       default:
         return null;
     }
@@ -1090,8 +878,6 @@ export class DocDBProvider implements ResourceProvider {
         return this.readCurrentStateDBInstance(physicalId);
       case 'AWS::DocDB::DBCluster':
         return this.readCurrentStateDBCluster(physicalId);
-      case 'AWS::DocDB::DBSubnetGroup':
-        return this.readCurrentStateDBSubnetGroup(physicalId);
       default:
         return undefined;
     }
@@ -1104,7 +890,7 @@ export class DocDBProvider implements ResourceProvider {
     try {
       inst = await this.describeDBInstance(physicalId);
     } catch (err) {
-      if (this.isNotFoundError(err, 'DBInstanceNotFoundFault')) return undefined;
+      if (isDocDBNotFoundError(err, 'DBInstanceNotFoundFault')) return undefined;
       throw err;
     }
     if (!inst) return undefined;
@@ -1124,7 +910,8 @@ export class DocDBProvider implements ResourceProvider {
     if (inst.AutoMinorVersionUpgrade !== undefined) {
       result['AutoMinorVersionUpgrade'] = inst.AutoMinorVersionUpgrade;
     }
-    if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
+    if (inst.DBInstanceArn)
+      await attachDocDBTags(this.getClient(), this.logger, result, inst.DBInstanceArn);
     return result;
   }
 
@@ -1135,7 +922,7 @@ export class DocDBProvider implements ResourceProvider {
     try {
       cluster = await this.describeDBCluster(physicalId);
     } catch (err) {
-      if (this.isNotFoundError(err, 'DBClusterNotFoundFault')) return undefined;
+      if (isDocDBNotFoundError(err, 'DBClusterNotFoundFault')) return undefined;
       throw err;
     }
     if (!cluster) return undefined;
@@ -1170,63 +957,9 @@ export class DocDBProvider implements ResourceProvider {
     if (cluster.DeletionProtection !== undefined) {
       result['DeletionProtection'] = cluster.DeletionProtection;
     }
-    if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
+    if (cluster.DBClusterArn)
+      await attachDocDBTags(this.getClient(), this.logger, result, cluster.DBClusterArn);
     return result;
-  }
-
-  private async readCurrentStateDBSubnetGroup(
-    physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
-    let resp: {
-      DBSubnetGroups?: Array<{
-        DBSubnetGroupName?: string;
-        DBSubnetGroupArn?: string;
-        DBSubnetGroupDescription?: string;
-        Subnets?: Array<{ SubnetIdentifier?: string }>;
-      }>;
-    };
-    try {
-      resp = (await this.getClient().send(
-        new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: physicalId })
-      )) as unknown as typeof resp;
-    } catch (err) {
-      if (this.isNotFoundError(err, 'DBSubnetGroupNotFoundFault')) return undefined;
-      throw err;
-    }
-    const sg = resp.DBSubnetGroups?.[0];
-    if (!sg) return undefined;
-
-    const result: Record<string, unknown> = {};
-    if (sg.DBSubnetGroupName !== undefined) result['DBSubnetGroupName'] = sg.DBSubnetGroupName;
-    if (sg.DBSubnetGroupDescription !== undefined) {
-      result['DBSubnetGroupDescription'] = sg.DBSubnetGroupDescription;
-    }
-    result['SubnetIds'] = (sg.Subnets ?? [])
-      .map((s) => s.SubnetIdentifier)
-      .filter((id): id is string => !!id);
-    if (sg.DBSubnetGroupArn) await this.attachTags(result, sg.DBSubnetGroupArn);
-    return result;
-  }
-
-  /**
-   * Fetch tags via `ListTagsForResource(ResourceName=arn)` and merge them
-   * into the result under `Tags` (CFn shape, `aws:*` filtered out, omitted
-   * when empty). Best-effort: tag-fetch failures are logged at debug and
-   * the key is simply left out — drift detection on configuration is more
-   * important than fail-closing on a missing tag permission.
-   */
-  private async attachTags(result: Record<string, unknown>, arn: string): Promise<void> {
-    try {
-      const tagsResp = await this.getClient().send(
-        new ListTagsForResourceCommand({ ResourceName: arn })
-      );
-      const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
-      result['Tags'] = tags;
-    } catch (err) {
-      this.logger.debug(
-        `DocDB ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
-      );
-    }
   }
 
   private async importDBInstance(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -1275,27 +1008,6 @@ export class DocDBProvider implements ResourceProvider {
     // No `aws:cdk:path` tag walk: the tag never exists on a real resource
     // (issue #1134). A DBCluster reaching here needs an explicit `--resource`
     // override or a `DBClusterIdentifier` in the template.
-    return null;
-  }
-
-  private async importDBSubnetGroup(
-    input: ResourceImportInput
-  ): Promise<ResourceImportResult | null> {
-    const explicit = resolveExplicitPhysicalId(input, 'DBSubnetGroupName');
-    if (explicit) {
-      try {
-        await this.getClient().send(
-          new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: explicit })
-        );
-        return { physicalId: explicit, attributes: {} };
-      } catch (err) {
-        if ((err as { name?: string }).name === 'DBSubnetGroupNotFoundFault') return null;
-        throw err;
-      }
-    }
-    // No `aws:cdk:path` tag walk: the tag never exists on a real resource
-    // (issue #1134). A DBSubnetGroup reaching here needs an explicit
-    // `--resource` override or a `DBSubnetGroupName` in the template.
     return null;
   }
 }

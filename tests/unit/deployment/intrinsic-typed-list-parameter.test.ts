@@ -4,6 +4,8 @@ import {
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -45,6 +47,16 @@ const USER_PARAMETERS = {
   Ports: '80, 443',
   Name: 'my-app',
 };
+
+const refusalOf = (
+  resolver: IntrinsicFunctionResolver,
+  value: unknown,
+  context: ResolverContext
+): Promise<unknown> =>
+  resolver.resolve(value, context).then(
+    () => undefined,
+    (e: unknown) => e
+  );
 
 const buildContext = async (): Promise<ResolverContext> => {
   const resolver = new IntrinsicFunctionResolver('us-east-1');
@@ -157,50 +169,119 @@ describe('a List<AWS::...> parameter resolves to a LIST end to end', () => {
     expect(conditions['IsProdList']).toBe(true);
   });
 
-  it('Fn::Sub over a list-typed parameter loses the padding whitespace the raw string kept', async () => {
-    // The FIFTH reader, and the only one whose change is neither a hard failure
-    // nor a silent wrong shape -- it is a silently DIFFERENT string.
-    //
-    // `resolveSub` substitutes `String(await this.resolveRef(name))`. Pre-#2347
-    // a `List<AWS::EC2::Subnet::Id>` parameter resolved to the user's raw text,
-    // so `'subnet-a, subnet-b'` was substituted verbatim, padding and all. It
-    // now resolves to an ARRAY, and `String(['subnet-a','subnet-b'])` joins on
-    // a bare comma -- so the same template renders `subnet-a,subnet-b`.
-    //
-    // Pinned rather than "fixed": the array IS the value the parameter's
-    // declared type says it has, and CloudFormation's own comma-delimited
-    // parameter semantics space-trim each member, so the padded spelling was
-    // never meaningful data. What matters is that the difference is RECORDED,
-    // because a template embedding this substitution in a user-visible string
-    // (a tag value, a description, a UserData line) renders differently after
-    // upgrading, with nothing failing to announce it.
+  it('Fn::Sub over a list-typed parameter is REFUSED, as CloudFormation refuses it (issue #3809)', async () => {
+    // The FIFTH reader. Pre-#2347 a `List<AWS::EC2::Subnet::Id>` parameter
+    // was the user's raw string, so `${SubnetIds}` rendered it verbatim; after
+    // #2347 it is an ARRAY, and `String()` rendered `subnet-a,subnet-b`.
+    // Neither is CloudFormation's answer: CreateStack rejects the template
+    // with "variable SubnetIds in Fn::Sub expression does not resolve to a
+    // string" (measured by an A/B for a CommaDelimitedList and a List<Number>
+    // parameter). A String parameter carrying the same text still renders.
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const template = {
       Parameters: {
         SubnetIds: { Type: 'List<AWS::EC2::Subnet::Id>' },
+        Azs: { Type: 'CommaDelimitedList' },
+        Ports: { Type: 'List<Number>' },
         Raw: { Type: 'String' },
       },
       Resources: {},
     } as unknown as CloudFormationTemplate;
     const parameters = await resolver.resolveParameters(template, {
       SubnetIds: 'subnet-a, subnet-b',
+      Azs: 'us-east-1a, us-east-1b',
+      Ports: '80, 443',
       Raw: 'subnet-a, subnet-b',
     });
-
-    // The discriminator: the two parameters carry the SAME user input and
-    // differ only in declared type, so anything that renders them identically
-    // has not read the coercion at all.
-    expect(parameters).toEqual({
-      SubnetIds: ['subnet-a', 'subnet-b'],
-      Raw: 'subnet-a, subnet-b',
-    });
-
     const context = { resources: {}, template, parameters };
-    const listSub = await resolver.resolve({ 'Fn::Sub': 'subnets=${SubnetIds}' }, context);
-    const stringSub = await resolver.resolve({ 'Fn::Sub': 'subnets=${Raw}' }, context);
 
-    expect(listSub).toBe('subnets=subnet-a,subnet-b');
-    expect(stringSub).toBe('subnets=subnet-a, subnet-b');
-    expect(listSub).not.toBe(stringSub);
+    for (const name of ['SubnetIds', 'Azs', 'Ports']) {
+      const error = await refusalOf(resolver, { 'Fn::Sub': `v=\${${name}}` }, context);
+      expect(error, name).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect(isMarkedNonRetryable(error), name).toBe(true);
+      expect((error as Error).message, name).toContain(
+        `Fn::Sub: the variable \${${name}} resolves to a list (an array of 2 items), not a string.`
+      );
+      expect((error as Error).message, name).toContain('Fn::Join');
+    }
+    expect(await resolver.resolve({ 'Fn::Sub': 'v=${Raw}' }, context)).toBe(
+      'v=subnet-a, subnet-b'
+    );
+  });
+
+  it('a variable-map value that is a list is REFUSED even when unused, and the Fn::Join remedy renders', async () => {
+    // CloudFormation validates EVERY value of the map ("every value of the
+    // context object of every Fn::Sub object must be a string or a function
+    // that returns a string"), including one the template never names.
+    const context = await buildContext();
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    for (const body of ['ids=${Ids}', 'region-only']) {
+      const error = await refusalOf(
+        resolver,
+        { 'Fn::Sub': [body, { Ids: { Ref: 'SubnetIds' } }] },
+        context
+      );
+      expect(error, body).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect(isMarkedNonRetryable(error), body).toBe(true);
+      expect((error as Error).message, body).toContain(
+        'Fn::Sub: the variable-map value Ids resolves to a list (an array of 3 items)'
+      );
+    }
+    // The remedy the message names.
+    expect(
+      await resolver.resolve(
+        { 'Fn::Sub': ['ids=${Ids}', { Ids: { 'Fn::Join': [',', { Ref: 'SubnetIds' }] } }] },
+        context
+      )
+    ).toBe('ids=subnet-a,subnet-b,subnet-c');
+  });
+
+  it('a literal-array or EMPTY-list variable-map value is refused, and the count reads right', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = await buildContext();
+    const literal = await refusalOf(resolver, { 'Fn::Sub': ['v', { L: ['a', 'b'] }] }, context);
+    expect((literal as Error).message).toContain(
+      'Fn::Sub: the variable-map value L resolves to a list (an array of 2 items)'
+    );
+    const empty = await refusalOf(
+      resolver,
+      { 'Fn::Sub': ['v', { E: { Ref: 'AWS::NotificationARNs' } }] },
+      context
+    );
+    expect((empty as Error).message).toContain(
+      'Fn::Sub: the variable-map value E resolves to a list (an array of 0 items)'
+    );
+    const one = await refusalOf(resolver, { 'Fn::Sub': ['v', { O: ['a'] }] }, context);
+    expect((one as Error).message).toContain('(an array of 1 item)');
+  });
+
+  it('a list-valued Fn::GetAtt placeholder is REFUSED rather than comma-joined', async () => {
+    // CloudFormation fails the resource with "variable
+    // Vpc.CidrBlockAssociations in Fn::Sub expression does not resolve to a
+    // string" (measured).
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context: ResolverContext = {
+      template: {
+        Resources: { Vpc: { Type: 'AWS::EC2::VPC', Properties: {} } },
+      } as unknown as CloudFormationTemplate,
+      resources: {
+        Vpc: {
+          physicalId: 'vpc-1',
+          resourceType: 'AWS::EC2::VPC',
+          properties: {},
+          attributes: { CidrBlockAssociations: ['assoc-a', 'assoc-b'] },
+        },
+      } as unknown as ResolverContext['resources'],
+    };
+    const error = await refusalOf(
+      resolver,
+      { 'Fn::Sub': 'v=${Vpc.CidrBlockAssociations}' },
+      context
+    );
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect((error as Error).message).toContain(
+      'Fn::Sub: the variable ${Vpc.CidrBlockAssociations} resolves to a list (an array of 2 items)'
+    );
   });
 });

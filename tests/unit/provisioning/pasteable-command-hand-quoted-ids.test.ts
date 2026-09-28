@@ -83,6 +83,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { SSMParameterProvider } from '../../../src/provisioning/providers/ssm-parameter-provider.js';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import type { MaskerFn } from '../../../src/provisioning/masked-retry-logger.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 /** Every warning the run emitted, joined — the assertions match substrings. */
 const warnings = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
@@ -252,10 +253,10 @@ describe('pasteable provider commands sanitize, quote and suppress their id (#31
      * ARN carries — and the `:` is also why the CLEAN case must render BARE:
      * `shellQuote` allows `:`, so a well-formed ARN needs no quotes.
      */
-    const refusalMessage = async (explicit: string): Promise<string> => {
+    const refusalMessage = async (explicit: string, logicalId = 'MyParam'): Promise<string> => {
       try {
         await new SSMParameterProvider().import({
-          logicalId: 'MyParam',
+          logicalId,
           resourceType: 'AWS::SSM::Parameter',
           stackName: 'MyStack',
           region: 'us-east-1',
@@ -279,6 +280,90 @@ describe('pasteable provider commands sanitize, quote and suppress their id (#31
         expect(mockSend).not.toHaveBeenCalled();
       });
     }
+
+    /**
+     * The OTHER pasteable span in the same refusal: the `--resource` remedy
+     * fragment, which interpolated the TEMPLATE logical id raw and ended in a
+     * bare `<parameterName>` (go-to-k/cdkd#3436's checkbox for this file). Both
+     * directions are pinned, because a gate that holes everything and one that
+     * names everything each satisfy one of them alone.
+     */
+    const ARN = 'arn:aws:ssm:us-east-1:111122223333:parameter/clean';
+
+    it('names a PLAIN logical id in the --resource remedy, with the placeholder quoted', async () => {
+      const message = await refusalMessage(ARN, 'MyParam');
+      // The id is bare (a plain identifier needs no quoting) and the
+      // placeholder is `commandHole`'s quoted form -- bare, `<parameterName>`
+      // is two redirections once anything after it is pasted with it.
+      expect(message).toContain("pass the parameter NAME instead: --resource MyParam='<parameterName>'");
+      expect(message).not.toContain('<parameterName>.');
+    });
+
+    it('HOLES a logical id the --resource split or the shell would reshape', async () => {
+      // `A=B` is the id `--resource` itself splits wrong (first `=`), and it
+      // carries no space, quote or control byte -- so a gate keyed on those
+      // instead of on `isPasteableIdent` names it, which is why it is here
+      // beside the shell-shaped one. The `$( )` id would run when pasted.
+      for (const hostile of ['A=B', 'P$(touch OWNED)', "P'; touch OWNED; #"]) {
+        const message = await refusalMessage(ARN, hostile);
+        expect(message, hostile).toContain(
+          "pass the parameter NAME instead: --resource '<logicalId>'='<parameterName>'"
+        );
+        // Nothing of the id survives in the pasteable fragment. The PROSE still
+        // displays it (`Cannot adopt SSM parameter ...`), which is a display
+        // question and not this one.
+        const fragment = message.split('pass the parameter NAME instead: ')[1] ?? '';
+        expect(fragment, hostile).not.toContain(hostile);
+        expect(fragment, hostile).not.toContain('--resource ' + hostile);
+      }
+    });
+
+    it('displays a long plain id WHOLE, at the cap the --resource fragment is gated at', async () => {
+      // `isPasteableIdent` admits up to the 1152 stack-ref cap, so the prose
+      // beside the fragment renders at the same cap: a 256-1152 code-point id
+      // was named in `--resource` under a sentence that cut it at 255 (code
+      // review of go-to-k/cdkd#3764). Plain letters, one over 255.
+      // Pinned at the BOUNDARY, both sides: at 1152 the prose and the fragment
+      // carry the id whole; one over, the prose cuts it and the fragment holes
+      // it (a case at 256 alone let a 256 cap pass -- Codex on this round).
+      const at = 'p'.repeat(1152);
+      const atCap = await refusalMessage(ARN, at);
+      expect(atCap).toContain(`Cannot adopt SSM parameter ${at} from an ARN`);
+      expect(atCap).toContain(`--resource ${at}='<parameterName>'`);
+      const over = await refusalMessage(ARN, 'p'.repeat(1153));
+      expect(over).not.toContain('p'.repeat(1153));
+      expect(over).toContain('p'.repeat(1152));
+      expect(over).toContain("--resource '<logicalId>'='<parameterName>'");
+    });
+
+    it('pastes nothing runnable at any granularity, through the provider itself', async () => {
+      // The paste fence for THIS site: the refusal as `import()` renders it,
+      // with the plain id (named) and each payload family as the logical id
+      // (holed, and still displayed in prose), fed to bash at line, sentence
+      // and clause granularity with decoys planted for every hole
+      // (`tests/unit/utils/paste-harness.ts`).
+      const named = await refusalMessage(ARN, 'MyParam');
+      const withheld: Array<{ value: string; message: string }> = [];
+      for (const { value } of PASTE_PAYLOADS) {
+        withheld.push({ value, message: await refusalMessage(ARN, value) });
+      }
+      withPasteDir((dir) => {
+        expect(spansThatRun(named, dir)).toEqual([]);
+        // A withheld id is still DISPLAYED in the opening sentence; the first
+        // cut rendered it through bare `displaySafe` and the separator payload
+        // ran three spans of it.
+        for (const { value, message } of withheld) {
+          // The prose boundary, pinned DIRECTLY: every clause holding the id
+          // also holds `('arn...')`, a bash syntax error, so the paste alone
+          // cannot see the quote kind (a shell-quoted prose survives it). `displayIdent` JSON-quotes a non-plain id.
+          expect(message, value).toContain(`Cannot adopt SSM parameter ${JSON.stringify(value)} from an ARN`);
+          // And nothing runs at any granularity here -- the stronger contract,
+          // which holds because of that same `(`; assert it rather than the
+          // residual criterion that would accept a future running display.
+          expect(spansThatRun(message, dir), value).toEqual([]);
+        }
+      });
+    }, 120_000);
   });
 
   describe('S3BucketProvider partial-create cleanup, both arms', () => {

@@ -21,6 +21,8 @@ import {
   type RecreateTarget,
 } from '../../../src/deployment/recreate-targets.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { NoSuchBucket, NotFound, type S3Client } from '@aws-sdk/client-s3';
 import {
@@ -1220,6 +1222,7 @@ function emptyValidation(
     blockedAlreadySdk: [],
     blockedAlreadyCcApi: [],
     blockedNoSdkProvider: [],
+    blockedNoCcRoute: [],
     conflictingDirections: [],
     nestedStackLogicalIds: [],
     blockedNestedStackTargets: [],
@@ -2200,6 +2203,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedAlreadySdk: [],
       blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
+      blockedNoCcRoute: [],
       conflictingDirections: [],
       nestedStackLogicalIds: [],
       blockedNestedStackTargets: [],
@@ -2275,6 +2279,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedAlreadySdk: [],
       blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
+      blockedNoCcRoute: [],
       conflictingDirections: [],
       nestedStackLogicalIds: [],
       blockedNestedStackTargets: [],
@@ -2308,6 +2313,18 @@ describe('deploy.ts hands the probes the DEPLOY-region clients (source-level pin
     .filter((line) => !line.trimStart().startsWith('//') && !line.trimStart().startsWith('*'))
     .join('\n');
 
+  // Issue #3887: without this argument only the NON_PROVISIONABLE fallback
+  // refuses, and a provider opting out via `disableCcApiFallback`
+  // (AWS::EMR::InstanceGroupConfig) is deleted and never recreated.
+  it("hands validateRecreateTargets the registry's ccRouteUnavailableReason", () => {
+    const callIdx = liveLines.indexOf('validateRecreateTargets({');
+    expect(callIdx, 'live validateRecreateTargets call not found').toBeGreaterThan(-1);
+    const call = liveLines.slice(callIdx, liveLines.indexOf('});', callIdx));
+    expect(call).toContain(
+      'ccRouteUnavailableReason: (rt) => stackProviderRegistry.ccRouteUnavailableReason(rt)'
+    );
+  });
+
   it('calls probeAndRevalidateStateful with both stack-region clients', () => {
     const callIdx = liveLines.indexOf('probeAndRevalidateStateful({');
     expect(callIdx, 'live probeAndRevalidateStateful call not found').toBeGreaterThan(-1);
@@ -2328,5 +2345,89 @@ describe('deploy.ts hands the probes the DEPLOY-region clients (source-level pin
     const ctorIdx = liveLines.indexOf('const stackAwsClients = new AwsClients({');
     expect(ctorIdx, 'stackAwsClients construction not found').toBeGreaterThan(-1);
     expect(liveLines.slice(ctorIdx, ctorIdx + 200)).toContain('region: stackRegion');
+  });
+});
+
+describe('--recreate-via-cc-api on a type Cloud Control cannot create (#3887)', () => {
+  // The REAL registry's predicate, as deploy.ts wires it.
+  const registry = new ProviderRegistry();
+  registerAllProviders(registry);
+  const viaRegistry = (rt: string): string | undefined => registry.ccRouteUnavailableReason(rt);
+
+  function validate(
+    templateType: string,
+    stateType: string,
+    opts: {
+      direction?: 'to-cc-api' | 'to-sdk';
+      withRegistry?: boolean;
+      provisionedBy?: 'sdk' | 'cc-api';
+    } = {}
+  ) {
+    const direction = opts.direction ?? 'to-cc-api';
+    return validateRecreateTargets({
+      template: { Resources: { Target: { Type: templateType, Properties: {} } } },
+      state: st('S', {
+        Target: res(stateType, { physicalId: 'phys', provisionedBy: opts.provisionedBy ?? 'sdk' }),
+      }),
+      recreateViaCcApi: direction === 'to-cc-api' ? ['Target'] : [],
+      recreateViaSdkProvider: direction === 'to-sdk' ? ['Target'] : [],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: true,
+      ...(opts.withRegistry !== false && { ccRouteUnavailableReason: viaRegistry }),
+    });
+  }
+
+  it('refuses a NON_PROVISIONABLE SDK type, naming why and that nothing was changed', () => {
+    const v = validate('AWS::CodeBuild::Project', 'AWS::CodeBuild::Project');
+    expect(v.blockedNoCcRoute.map((t) => [t.logicalId, t.templateType])).toEqual([
+      ['Target', 'AWS::CodeBuild::Project'],
+    ]);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toContain('--recreate-via-cc-api named 1 resource(s) of types Cloud Control API cannot create:');
+    expect(error).toContain(
+      '  - Target (AWS::CodeBuild::Project) — ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it'
+    );
+    expect(error).toContain('None of these resources was touched.');
+    expect(error).toContain('There is no bypass flag.');
+  });
+
+  it('refuses it even when the caller passes no registry predicate', () => {
+    const v = validate('AWS::IAM::Policy', 'AWS::IAM::Policy', { withRegistry: false });
+    expect(v.blockedNoCcRoute.map((t) => t.logicalId)).toEqual(['Target']);
+    expect(v.blockedNoCcRoute[0]!.reason).toContain('NON_PROVISIONABLE');
+  });
+
+  it('refuses a provisionable type whose provider opts out of Cloud Control, via the registry predicate', () => {
+    // AWS::EMR::InstanceGroupConfig: not NON_PROVISIONABLE, provider declares
+    // disableCcApiFallback — only the registry knows.
+    expect(validate('AWS::EMR::InstanceGroupConfig', 'AWS::EMR::InstanceGroupConfig', { withRegistry: false }).blockedNoCcRoute).toEqual([]);
+    const v = validate('AWS::EMR::InstanceGroupConfig', 'AWS::EMR::InstanceGroupConfig');
+    expect(v.blockedNoCcRoute.map((t) => t.logicalId)).toEqual(['Target']);
+    expect(v.blockedNoCcRoute[0]!.reason).toContain('disableCcApiFallback');
+  });
+
+  it('accepts a type Cloud Control can create', () => {
+    const v = validate('AWS::Lambda::Function', 'AWS::Lambda::Function');
+    expect(v.blockedNoCcRoute).toEqual([]);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+
+  it('judges the TEMPLATE type, which the Cloud Control create runs on', () => {
+    expect(validate('AWS::CodeBuild::Project', 'AWS::Lambda::Function').blockedNoCcRoute.map((t) => t.templateType)).toEqual(['AWS::CodeBuild::Project']);
+    expect(validate('AWS::Lambda::Function', 'AWS::CodeBuild::Project').blockedNoCcRoute).toEqual([]);
+  });
+
+  it('does not apply to --recreate-via-sdk-provider, whose create runs on the SDK provider', () => {
+    const v = validate('AWS::CodeBuild::Project', 'AWS::CodeBuild::Project', {
+      direction: 'to-sdk',
+      provisionedBy: 'cc-api',
+    });
+    expect(v.blockedNoCcRoute).toEqual([]);
+  });
+
+  it('leaves a nested-stack row to its own refusal rather than listing it twice', () => {
+    const v = validate('AWS::CloudFormation::Stack', 'AWS::CloudFormation::Stack');
+    expect(v.blockedNestedStackTargets.map((t) => t.logicalId)).toEqual(['Target']);
+    expect(v.blockedNoCcRoute).toEqual([]);
   });
 });

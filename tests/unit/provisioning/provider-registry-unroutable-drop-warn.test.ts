@@ -21,6 +21,10 @@ vi.mock('../../../src/provisioning/unsupported-types.js', async (importOriginal)
     ...actual,
     isNonProvisionable: (resourceType: string): boolean =>
       extraNonProvisionable.has(resourceType) || actual.isNonProvisionable(resourceType),
+    // The predicate the route reads calls the module's own isNonProvisionable,
+    // which the override above cannot reach, so it is overridden alike.
+    hasNoCloudControlHandlers: (resourceType: string): boolean =>
+      extraNonProvisionable.has(resourceType) || actual.hasNoCloudControlHandlers(resourceType),
   };
 });
 

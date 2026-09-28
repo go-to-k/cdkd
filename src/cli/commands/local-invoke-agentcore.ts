@@ -17,7 +17,14 @@ import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils
 import { displayAssemblyPath } from '../../utils/assembly-path.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { foldRegionOption } from '../region-options.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import {
+  applyRoleArnIfSet,
+  assertFlagRoleArn,
+  assertSendableRoleArn,
+  explicitRoleArnOrThrow,
+  isIamRoleArn,
+  sendableAssumeRoleCommand,
+} from '../../utils/role-arn.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from 'cdk-local';
 import { resolveSingleTarget } from '../../local/target-picker.js';
@@ -383,6 +390,23 @@ async function localInvokeAgentCoreCommand(
   );
 
   try {
+    // Refuse a malformed explicit `--assume-role <arn>` BEFORE any AWS call,
+    // docker probe or synthesis (issue #2348); `resolveAssumeRoleArn` repeats
+    // the same check where the value is used.
+    if (typeof options.assumeRole === 'string') {
+      explicitRoleArnOrThrow(
+        '--assume-role',
+        options.assumeRole,
+        (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ASSUME_ROLE_INVALID')
+      );
+    }
+    if (options.ecrRoleArn !== undefined) {
+      assertFlagRoleArn(
+        '--ecr-role-arn',
+        options.ecrRoleArn,
+        (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ECR_ROLE_ARN_INVALID')
+      );
+    }
     await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
     await ensureDockerAvailable();
 
@@ -430,10 +454,11 @@ async function localInvokeAgentCoreCommand(
         ),
     });
 
-    // Build a `--from-cfn-stack` image-resolution context BEFORE resolving the
-    // target, so a same-stack AWS::ECR::Repository Fn::Join ContainerUri (or an
-    // Fn::Sub asset URI) reduces to the deployed image URI. The state load is
-    // shared with the env-substitution + role-from-state steps below.
+    // Build a state-source (`--from-state` / `--from-cfn-stack`)
+    // image-resolution context BEFORE resolving the target, so a same-stack
+    // AWS::ECR::Repository Fn::Join ContainerUri (or an Fn::Sub asset URI)
+    // reduces to the deployed image URI. The state load is shared with the
+    // env-substitution + role-from-state steps below.
     const candidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
     stateProvider = createLocalStateProvider(
       options,
@@ -1684,8 +1709,8 @@ function describeIntrinsic(value: unknown): string {
 }
 
 /**
- * Build the `--from-cfn-stack` image-resolution context + return the loaded
- * state record (loaded once, reused by env substitution + role resolution).
+ * Build the state-source (`--from-state` / `--from-cfn-stack`) image-resolution
+ * context + return the loaded state record (loaded once, reused by env substitution + role resolution).
  * Mirrors `run-task`'s `buildEcsImageResolutionContext`: pseudo parameters
  * (region + STS account id), the deployed resources, and SSM template
  * parameters (decrypted SecureString logical ids flagged sensitive).
@@ -1705,10 +1730,10 @@ export async function buildAgentCoreImageContext(
 
   let accountId: string | undefined;
   try {
-    accountId = await resolveCallerAccountId(region, options.profile);
+    accountId = await resolveStackAccountId(region, options.profile, options.fromState);
   } catch (err) {
     logger.warn(
-      `--from-cfn-stack: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `${stateProvider.label}: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
         'A same-stack ECR image URI referencing ${AWS::AccountId} may not resolve.'
     );
   }
@@ -1731,20 +1756,41 @@ export async function buildAgentCoreImageContext(
   return { context, loaded: loaded ?? undefined };
 }
 
-/** STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter (threads `--profile`). */
-async function resolveCallerAccountId(
+/**
+ * STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter
+ * (threads `--profile`). The account follows the SOURCE the stack was read
+ * from (issue go-to-k/cdkd#3230): under `--from-state` it is the account of the
+ * identity that read the state record — the `--role-arn` role when one is
+ * published — and under `--from-cfn-stack` it stays the caller's own.
+ */
+async function resolveStackAccountId(
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  fromState: boolean
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({
-    // `ignoreAssumedRole` -- this resolves the `${AWS::AccountId}` the emulated agent sees,
-    // so it must be the caller's own identity, never a `--role-arn` assumed
+  let sts: InstanceType<typeof STSClient>;
+  if (fromState) {
+    // cdkd-local-role-identity: `--from-state` read the state record through
+    // `awsClientDefaults`, so as a `--role-arn` role when one is published, and
+    // `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account — the
+    // account the stack lives in (issue go-to-k/cdkd#3230). Only the account ID
+    // is taken; no credential reaches the emulated agent.
+    sts = new STSClient({
+      ...awsClientDefaults({ profile }),
+      ...(region && { region }),
+      ...(profile && { profile }),
+    });
+  } else {
+    // `ignoreAssumedRole` -- under `--from-cfn-stack` the `${AWS::AccountId}` the
+    // emulated agent sees stays the caller's own, never a `--role-arn` assumed
     // for cdkd's own calls. See that option's JSDoc.
-    ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
-    ...(region && { region }),
-    ...(profile && { profile }),
-  });
+    sts = new STSClient({
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      ...(region && { region }),
+      ...(profile && { profile }),
+    });
+  }
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
@@ -1887,13 +1933,54 @@ export function resolveAssumeRoleArn(
   resolved: ResolvedAgentCoreRuntime,
   loaded: LocalStateRecord | undefined
 ): string | undefined {
-  if (typeof options.assumeRole === 'string') return options.assumeRole;
+  // One run asks this up to three times (`--sigv4`, the fromS3 download, the
+  // container env), and each ask used to re-emit its warnings. Memoized on the
+  // run's own `resolved` object, and only for the same `options` / `loaded`.
+  const hit = assumeRoleResolutionMemo.get(resolved);
+  if (hit && hit.options === options && hit.loaded === loaded) return hit.value;
+  const value = resolveAssumeRoleArnUncached(options, resolved, loaded);
+  assumeRoleResolutionMemo.set(resolved, { options, loaded, value });
+  return value;
+}
+
+const assumeRoleResolutionMemo = new WeakMap<
+  ResolvedAgentCoreRuntime,
+  {
+    options: LocalInvokeAgentCoreOptions;
+    loaded: LocalStateRecord | undefined;
+    value: string | undefined;
+  }
+>();
+
+function resolveAssumeRoleArnUncached(
+  options: LocalInvokeAgentCoreOptions,
+  resolved: ResolvedAgentCoreRuntime,
+  loaded: LocalStateRecord | undefined
+): string | undefined {
+  // Issue #2348: a malformed explicit ARN is a HARD error rather than a send
+  // that fails and quietly falls back to the developer's shell credentials;
+  // a malformed template `RoleArn` is warned about and the state lookup runs.
+  if (typeof options.assumeRole === 'string') {
+    return explicitRoleArnOrThrow(
+      '--assume-role',
+      options.assumeRole,
+      (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ASSUME_ROLE_INVALID')
+    );
+  }
   if (options.assumeRole === true) {
-    if (resolved.roleArn) return resolved.roleArn;
+    if (resolved.roleArn !== undefined && isIamRoleArn(resolved.roleArn)) return resolved.roleArn;
+    if (resolved.roleArn?.startsWith('arn:')) {
+      getLogger().warn(
+        `--assume-role: the template RoleArn for '${displayIdent(resolved.logicalId)}' is not a well-formed IAM role ARN: ` +
+          `${displayIdent(resolved.roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. Ignoring it.`
+      );
+    }
     if (loaded) {
       const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
       if (fromState) {
-        getLogger().debug(`--assume-role: resolved RoleArn from state: ${displayIdent(fromState)}`);
+        getLogger().debug(
+          `--assume-role: resolved RoleArn from state: ${displayIdent(fromState, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+        );
         return fromState;
       }
     }
@@ -2067,7 +2154,8 @@ async function assumeAgentCoreExecutionRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
+  assertSendableRoleArn(roleArn);
+  const { STSClient } = await import('@aws-sdk/client-sts');
   // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
@@ -2077,7 +2165,7 @@ async function assumeAgentCoreExecutionRole(
   });
   try {
     const response = await sts.send(
-      new AssumeRoleCommand({
+      sendableAssumeRoleCommand({
         RoleArn: roleArn,
         RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-agentcore-${Date.now()}`,
         DurationSeconds: 3600,

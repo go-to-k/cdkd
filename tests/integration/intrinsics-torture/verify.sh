@@ -18,8 +18,8 @@
 #   Fn::Cidr, Fn::FindInMap, Fn::GetAZs + Fn::Select, Fn::Base64,
 #   nested Fn::Split + Fn::Select + Fn::Join, deeply-nested two-arg Fn::Sub
 #   with a ${Resource.Attr} GetAtt + ${AWS::Region} + a literal var map, and
-#   ALL pseudo-parameters (AccountId / Region / Partition / StackName /
-#   URLSuffix / NotificationARNs).
+#   the string pseudo-parameters (AccountId / Region / Partition /
+#   StackName / URLSuffix).
 #
 # BSD/macOS-portable: no `grep -P`, no `date -d`, no `grep -o` PCRE. Real
 # exit-code capture (`...; rc=$?`) so a piped/teed harness can't mask a
@@ -230,15 +230,11 @@ case "${NESTED_SUB}" in
     ;;
 esac
 
-# -- 7. ALL pseudo-parameters via Fn::Sub --
-# cdkd has no stack-notification-ARN concept (no CFn notification ARN list in
-# cdkd's model), so AWS::NotificationARNs is always an empty list. Matching
-# CloudFormation, an empty AWS::NotificationARNs list resolves to an EMPTY
-# STRING inside an Fn::Sub body — so `notif=` (nothing after the `=`). A
-# regression that left the literal `${AWS::NotificationARNs}` placeholder
-# (or crashed) would flip this assertion.
-PSEUDO_EXPECTED="account=${ACCOUNT_ID};region=${REGION};partition=${PARTITION};stack=${STACK};urlsuffix=amazonaws.com;notif="
-assert_param "all pseudo-parameters (Fn::Sub)" "${PFX}/pseudo" "${PSEUDO_EXPECTED}"
+# -- 7. The string pseudo-parameters via Fn::Sub --
+# AWS::NotificationARNs is a LIST, which CloudFormation and cdkd both refuse
+# inside Fn::Sub (#3809), so it is not part of this arm.
+PSEUDO_EXPECTED="account=${ACCOUNT_ID};region=${REGION};partition=${PARTITION};stack=${STACK};urlsuffix=amazonaws.com"
+assert_param "string pseudo-parameters (Fn::Sub)" "${PFX}/pseudo" "${PSEUDO_EXPECTED}"
 
 # -- 8. Fn::Sub with pseudo params + a Ref to the SNS topic --
 # topicArn = Ref to the SNS topic, whose physical id IS the topic ARN:

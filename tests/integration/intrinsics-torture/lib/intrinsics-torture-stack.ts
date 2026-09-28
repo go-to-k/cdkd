@@ -26,8 +26,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * + IAM role): Fn::Cidr, Fn::FindInMap, Fn::GetAZs + Fn::Select, Fn::Base64,
  * deeply-nested Fn::Split/Select/Join, deeply-nested Fn::Sub with a
  * ${Resource.Attr} GetAtt + ${AWS::Region} + a literal variable map, and
- * ALL pseudo-parameters (AWS::AccountId / AWS::Region / AWS::Partition /
- * AWS::StackName / AWS::URLSuffix / AWS::NotificationARNs).
+ * the string pseudo-parameters (AWS::AccountId / AWS::Region / AWS::Partition /
+ * AWS::StackName / AWS::URLSuffix).
  *
  * The stack is intentionally cheap: an SNS topic + an SQS queue (to give the
  * GetAtt-bearing Fn::Sub a real ARN attribute to resolve) plus a fistful of
@@ -197,12 +197,10 @@ export class IntrinsicsTortureStack extends cdk.Stack {
     );
 
     // -----------------------------------------------------------------
-    // 7. ALL pseudo-parameters, each fed through Fn::Sub into a parameter
-    //    value so verify.sh can read back the resolved concrete value.
-    //    AWS::NotificationARNs is a LIST pseudo param that is always empty in
-    //    cdkd's CloudFormation-free model (there is no notification ARN list).
-    //    Matching CloudFormation, an empty list resolves to an EMPTY STRING
-    //    inside Fn::Sub, so `notif=` is empty. verify.sh asserts this.
+    // 7. The string pseudo-parameters, each fed through Fn::Sub into a
+    //    parameter value so verify.sh can read back the resolved value.
+    //    AWS::NotificationARNs is absent on purpose: it is a LIST, and
+    //    CloudFormation rejects it inside Fn::Sub, as cdkd does (#3809).
     // -----------------------------------------------------------------
     intrinsicParam(
       'PseudoParam',
@@ -210,9 +208,9 @@ export class IntrinsicsTortureStack extends cdk.Stack {
       {
         'Fn::Sub':
           'account=${AWS::AccountId};region=${AWS::Region};partition=${AWS::Partition};' +
-          'stack=${AWS::StackName};urlsuffix=${AWS::URLSuffix};notif=${AWS::NotificationARNs}',
+          'stack=${AWS::StackName};urlsuffix=${AWS::URLSuffix}',
       },
-      'All pseudo-parameters via Fn::Sub (AccountId/Region/Partition/StackName/URLSuffix/NotificationARNs)'
+      'String pseudo-parameters via Fn::Sub (AccountId/Region/Partition/StackName/URLSuffix)'
     );
 
     // -----------------------------------------------------------------
