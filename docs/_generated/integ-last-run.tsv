@@ -121,8 +121,8 @@ eventbridge-pipes	2026-09-28T09:48:54Z	PASS	181	verify.sh	rc ok, orph clean (#38
 eventbridge-scheduler	2026-09-24T22:46:12Z	PASS	58	verify.sh	rc ok, 0 orphans (#3663)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
-export	2026-09-28T09:48:54Z	PASS	240	verify.sh	rc ok, orph clean (#3808/#3899)
-export-nested-stack	2026-09-28T06:54:26Z	PASS	180	verify.sh	PR #3912 merge-gate run; rc ok, orph clean
+export	2026-09-28T10:13:08Z	PASS	231	verify.sh	PR #3946 merge-gate run head b8532dd18; rc ok, orph clean
+export-nested-stack	2026-09-28T10:13:08Z	PASS	170	verify.sh	PR #3946 merge-gate run head b8532dd18; rc ok, orph clean
 fifo-sqs-event-source	2026-09-27T12:27:25Z	PASS	105	verify.sh	rc ok, orph clean (#3861)
 fsx-lustre	2026-09-24T22:46:12Z	PASS	895	verify.sh	rc ok, 0 orphans (#3663)
 fsx-ontap	2026-08-02T06:33:37Z	PASS	1704	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup
@@ -151,10 +151,10 @@ import-deployed-parameter-secret	2026-09-24T08:06:51Z	PASS	311	verify.sh	rc ok, 
 import-heal-prefix-record	2026-09-25T10:36:04Z	PASS	165	verify.sh	rc ok, orph clean; resolver at origin/main leaves all 4 rows wrong
 import-lambda-url-attributes	2026-09-24T09:53:01Z	PASS	115	verify.sh	rc ok, orph clean; pre-fix mutant FAILs at step 4
 import-migrate-vpc	2026-09-25T05:37:37Z	PASS	335	verify.sh	rc ok, orph clean; 31 imported 0 failed; VPCCidrBlock recorded as <assoc>|<vpc> (#3672)
-import-nested-stack	2026-09-28T07:03:42Z	PASS	165	verify.sh	PR #3912 merge-gate run; rc ok, orph clean
+import-nested-stack	2026-09-28T10:13:08Z	PASS	150	verify.sh	PR #3946 merge-gate run head b8532dd18; rc ok, orph clean
 import-retain-destroy	2026-09-24T12:30:44Z	PASS	65	verify.sh	rc ok, orph clean; import.ts at origin/main deletes the Retain param
 import-secret-observed	2026-09-24T08:09:52Z	PASS	145	verify.sh	rc ok, orph clean; #2872 lane
-import-value-strong-ref	2026-09-28T07:22:06Z	PASS	150	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
+import-value-strong-ref	2026-09-28T10:13:08Z	PASS	150	verify.sh	PR #3946 merge-gate run head b8532dd18; rc ok, orph clean
 importvalue-chain	2026-09-15T17:56:40Z	PASS	116	verify.sh	rc ok, 3 stacks destroyed 0 err, exports index purged, orph clean (#3176 review round 2)
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
@@ -221,7 +221,7 @@ loggroup-kms-associate	2026-09-24T03:51:15Z	PASS	60	verify.sh	rc ok, orph clean 
 loggroup-never-expire-guard	2026-09-06T08:17:58Z	PASS	110	verify.sh	PR2695 gate run; 9 phases incl. new 4b string-retention + 4c observed-only arms, destroy 3 deleted 0 errors, 0 orphans
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 microservices	2026-08-13T18:47:41Z	PASS	44	standard	Issue #1874 broad integ at rebased head 133a9660 (merged PR #1884 region fold + PR #1885); 19 created / 19 deleted, 0 errors, 0 orphans
-migrate-from-cfn	2026-09-28T07:22:06Z	PASS	381	run.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
+migrate-from-cfn	2026-09-28T10:13:08Z	PASS	361	run.sh	PR #3946 merge-gate run head b8532dd18; rc ok, orph clean
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
@@ -305,7 +305,7 @@ sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN bui
 sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean (#3861)
 ssm-secure-dynamic-ref	2026-09-27T14:06:33Z	PASS	135	verify.sh	go-to-k/cdkd#3870 head e6df2f358: rc ok, 0 surviving object versions, orph clean
 stack-lock-renewal	2026-09-25T22:24:46Z	PASS	511	verify.sh	rc ok, orph clean; force-unlock path (#3027 PR #3796)
-stage-assets	2026-09-28T07:43:19Z	PASS	85	verify.sh	PR 3935 (scrub names the failed Stage, Phase 2c) head 87984ff4e: rc ok, orph clean (2 stale implicit Lambda log groups from an earlier run deleted)
+stage-assets	2026-09-28T10:13:08Z	PASS	80	verify.sh	PR #3946 (import names the failed Stage, Phase 2d) head b8532dd18: rc ok, orph clean (2 implicit Lambda log groups the run created deleted by hand)
 stale-attribute-heal	2026-09-19T20:26:58Z	PASS	62	verify.sh	first run; rc ok, orph clean; red at phase 4 on the pre-#1852 engine
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-09-15T20:40:17Z	PASS	210	verify.sh	rc 0, depth>=1 arm, destroy 1 del 0 err, 3 planted keys 0 versions
