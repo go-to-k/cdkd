@@ -1661,6 +1661,70 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     });
   }, 120_000);
 
+  // Phase 1B (go-to-k/cdkd#3967): A and B import and finish, the root's 1A (the
+  // third wait) succeeds, and its adoption of A and B (the fourth) fails.
+  it('phase 1B: gives the gated, region-bearing tail, never a bare cdkd state orphan <stack>', async () => {
+    const err = await runTree({ A: 'us-east-1', B: 'us-east-1' }, 4);
+    expect(waitChangeSetCreate).toHaveBeenCalledTimes(4);
+    const { message } = err;
+    expect(message).toContain("Phase 1B (nested-child adoption) IMPORT changeset failed for parent 'Root'");
+    // The by-hand adoption guidance and the destroy warning stay.
+    expect(message).toContain('re-attempt the parent-side nested adoption by hand');
+    expect(message).toContain('Do NOT run cdkd destroy on the tree');
+    expect(message).not.toContain('<stack>');
+    expect(message).toContain(
+      'Re-running `cdkd export` is refused for the whole tree: CloudFormation stacks now exist ' +
+        'for this stack and every one IMPORTed before it.'
+    );
+    // The children finished phase 2: clean them up now.
+    expect(message).toMatch(
+      /still have cdkd state[^\n]*:\n {2}cdkd state orphan 'Root~A' --stack-region us-east-1\n {2}cdkd state orphan 'Root~B' --stack-region us-east-1\n/
+    );
+    // The root's record waits for its adoption AND its phase 2, which never ran.
+    expect(message).toContain(
+      "Once this stack's nested-child adoption and phase 2 succeed by hand, clean up its record " +
+        'the same way:\n  cdkd state orphan Root --stack-region us-east-1\n'
+    );
+    expect(message).toContain('Stacks not yet imported (still cdkd-managed): (none).');
+    expect(message).not.toContain('No stack was imported');
+  });
+
+  it('phase 1B: a withheld plan gets its note directly above its command', async () => {
+    const err = await runTree({ A: WITHHELD, B: 'us-east-1' }, 4);
+    expect(err.message).toContain('Phase 1B (nested-child adoption) IMPORT changeset failed');
+    expect(expectEveryHoleNoted(err.message)).toBe(1);
+    const lines = err.message.split('\n');
+    expect(lines[lines.indexOf(noteLine('Root-A')) + 1]).toBe(HOLES);
+  });
+
+  it('phase 1B: pastes nothing runnable from the tail for payload names and regions, named or withheld', async () => {
+    const messages: string[] = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      const cases: Array<[{ A: string; B: string }, { root?: string; A?: string }]> = [
+        [{ A: 'us-east-1', B: 'us-east-1' }, { A: `A${value}` }],
+        [{ A: 'us-east-1', B: 'us-east-1' }, { root: `-${value}` }],
+        [{ A: `us-east-1${value}`, B: 'us-east-1' }, {}],
+        [{ A: `-${value}`, B: 'us-east-1' }, {}],
+      ];
+      for (const [regions, names] of cases) {
+        waitChangeSetCreate.mockReset();
+        const message = (await runTree(regions, 4, names)).message;
+        // The premise: this IS the Phase 1B failure, and its tail holds commands.
+        expect(message).toContain('Phase 1B (nested-child adoption) IMPORT changeset failed');
+        messages.push(message);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const message of messages) {
+        const at = message.indexOf('Re-running `cdkd export`');
+        expect(at, message).toBeGreaterThan(-1);
+        const tail = message.slice(at);
+        expect(tail).toContain('cdkd state orphan');
+        expect(spansThatRun(tail, dir), message).toEqual([]);
+      }
+    });
+  }, 120_000);
+
   it('pastes nothing runnable from the tail, named or withheld', async () => {
     const messages: string[] = [];
     for (const { value } of PASTE_PAYLOADS) {

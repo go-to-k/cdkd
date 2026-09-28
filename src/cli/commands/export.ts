@@ -8082,12 +8082,14 @@ export async function runPerStackImportLoop(args: {
     const importedStacks: ImportedStackRecord[] = [];
 
     // What a failure of stack i leaves to do (go-to-k/cdkd#3910), shared by the
-    // Phase 1A, pre-delete and phase-2 failures. `phase1`: stack i's own IMPORT
-    // failed, so its CloudFormation stack may or may not exist; `phase2`: it
-    // exists. A re-run does not resume either way; the stacks after i are
-    // untouched; and stack i's cdkd record is cleaned up once it is finished
-    // by hand.
-    const nestedResumeTail = (i: number, failed: 'phase1' | 'phase2'): string => {
+    // Phase 1A, Phase 1B, pre-delete and phase-2 failures. `phase1`: stack i's
+    // own IMPORT failed, so its CloudFormation stack may or may not exist;
+    // `phase1b`: it exists, but the adoption of its nested children failed
+    // (go-to-k/cdkd#3967); `phase2`: it exists. A re-run does not resume in any
+    // case; the stacks after i are untouched; and stack i's cdkd record is
+    // cleaned up once it is finished by hand — never before, since before its
+    // phase 2 that record is the only one of what phase 2 would create.
+    const nestedResumeTail = (i: number, failed: 'phase1' | 'phase1b' | 'phase2'): string => {
       const completed = perStackPlans.slice(0, i);
       const notYetImported = perStackPlans
         .slice(i + 1)
@@ -8117,7 +8119,7 @@ export async function runPerStackImportLoop(args: {
       // The WHOLE tree is refused on a re-run: `assertCfnStackAbsent` checks
       // every stack's CloudFormation name up front.
       const refusal =
-        failed === 'phase2'
+        failed !== 'phase1'
           ? `Re-running \`cdkd export\` is refused for the whole tree: CloudFormation stacks now ` +
             `exist for this stack and every one IMPORTed before it. `
           : completed.length > 0
@@ -8152,15 +8154,18 @@ export async function runPerStackImportLoop(args: {
           : '') +
         (failed === 'phase2'
           ? `Once this stack's phase 2 succeeds by hand, clean up its record the same way:`
-          : `Once this stack's IMPORT and phase 2 succeed by hand, clean up its record the ` +
-            `same way` +
-            // Its children finished as standalone stacks and wait for this
-            // stack's Phase 1B adoption, which the by-hand IMPORT must do too.
-            (perStackPlans[i]!.nestedStackRows.length > 0
-              ? ` (its IMPORT must also adopt its already-imported nested children, per the AWS ` +
-                `docs "Nest an existing stack" procedure)`
-              : '') +
-            `:`) +
+          : failed === 'phase1b'
+            ? `Once this stack's nested-child adoption and phase 2 succeed by hand, clean up its ` +
+              `record the same way:`
+            : `Once this stack's IMPORT and phase 2 succeed by hand, clean up its record the ` +
+              `same way` +
+              // Its children finished as standalone stacks and wait for this
+              // stack's Phase 1B adoption, which the by-hand IMPORT must do too.
+              (perStackPlans[i]!.nestedStackRows.length > 0
+                ? ` (its IMPORT must also adopt its already-imported nested children, per the AWS ` +
+                  `docs "Nest an existing stack" procedure)`
+                : '') +
+              `:`) +
         `${orphanLines([perStackPlans[i]!])}\n` +
         `Stacks not yet imported (still cdkd-managed): ${notYetImported || '(none)'}. ` +
         (notYetImported
@@ -8429,13 +8434,19 @@ export async function runPerStackImportLoop(args: {
                 `exists with its ${plan.phase1Imports.length} leaf resource(s); ` +
                 `${plan.nestedStackRows.length} nested-child adoption(s) did NOT complete. ` +
                 `Stacks IMPORTed so far (each is a standalone CFn stack): ${importedSummary}. ` +
-                `cdkd state for every stack in the tree is preserved. To recover: (1) fix the ` +
+                `cdkd state for every stack in the tree is preserved. To recover, fix the ` +
                 `underlying cause (typically a template-match validation error per AWS-docs ` +
-                `"Nested stack import validation"); (2) clear cdkd state for the migrated stacks ` +
-                `via 'cdkd state orphan <stack>' (do NOT 'cdkd destroy' — that would tear down ` +
-                `the live AWS resources); (3) re-attempt the parent-side nested adoption ` +
-                `manually via the AWS console or CLI per the AWS docs procedure. ` +
-                `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}`,
+                `"Nested stack import validation"), then re-attempt the parent-side nested ` +
+                `adoption by hand via the AWS console or CLI, per the AWS docs "Nest an existing ` +
+                `stack" procedure. Do NOT run cdkd destroy on the tree: that would tear down the ` +
+                `live AWS resources. ` +
+                // Bounded and folded, as at Phase 1A (go-to-k/cdkd#3910).
+                `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
+                // Which records to clean up, and when, go through the same gated,
+                // region-bearing tail as the other nested failures — never a
+                // bare `cdkd state orphan <stack>`, which drops that name's
+                // record in EVERY region (go-to-k/cdkd#3967).
+                nestedResumeTail(i, 'phase1b'),
               { cause: err instanceof Error ? err : undefined }
             );
           }
