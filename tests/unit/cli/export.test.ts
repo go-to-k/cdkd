@@ -3974,6 +3974,8 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         expect(m).toContain('cdkd state list --json');
         expect(m).not.toContain('--long');
         expect(m).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+        // `state list --json` prints {stackName, region}, not a key.
+        expect(m).toContain('act on the one whose stackName and region match');
         expect(m).not.toMatch(/cdkd state orphan 'Root~A'/);
       },
     ],
@@ -4209,19 +4211,30 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       fileURLToPath(new URL('../../../src/cli/commands/export.ts', import.meta.url)),
       'utf-8'
     );
-    const reads = /\bphysicalId\b|\b(?:properties|attributes)\[|\bresourceIdentifier\b|\bpropertiesOverlay\b/;
+    // One regex PER BRANCH, each with its own floor where the tree has sites,
+    // so one broken branch cannot hide behind another's matches
+    // (go-to-k/cdkd#3910). `attributes[`, `resourceIdentifier` and
+    // `propertiesOverlay` have NO interpolated site today — every such value
+    // reaches a message through a local — so they carry no floor: they stay
+    // watched, and the first site they match gets the boundary requirement.
+    const branches: Array<{ name: string; re: RegExp; floor: number }> = [
+      { name: 'physicalId', re: /\bphysicalId\b/, floor: 20 },
+      { name: 'properties[', re: /\bproperties\[/, floor: 1 },
+      { name: 'attributes[', re: /\battributes\[/, floor: 0 },
+      { name: 'resourceIdentifier', re: /\bresourceIdentifier\b/, floor: 0 },
+      { name: 'propertiesOverlay', re: /\bpropertiesOverlay\b/, floor: 0 },
+    ];
     const rendered = /^(?:showRecordValue|preDeletedLine|commandHole)\(/;
-    const interpolations = [...source.matchAll(/\$\{([^{}`]*)\}/g)]
+    const all = [...source.matchAll(/\$\{([^{}`]*)\}/g)]
       .map((m) => ({ expr: (m[1] as string).trim(), at: m.index ?? 0 }))
-      .filter(({ expr }) => reads.test(expr))
       // `Object.keys(...)` of a `resourceIdentifier` lists the splitter's own
       // field-name constants, never a recorded value.
       .filter(({ expr }) => !expr.startsWith('Object.keys('));
-    // Non-vacuity: the shape this case watches exists, and is rendered, at
-    // many sites — a regex that stopped matching cannot pass.
-    expect(interpolations.filter(({ expr }) => rendered.test(expr)).length).toBeGreaterThanOrEqual(
-      20
-    );
+    for (const { name, re, floor } of branches) {
+      const hits = all.filter(({ expr }) => re.test(expr) && rendered.test(expr));
+      expect(hits.length, `rendered sites for the ${name} branch`).toBeGreaterThanOrEqual(floor);
+    }
+    const interpolations = all.filter(({ expr }) => branches.some(({ re }) => re.test(expr)));
     expect(
       interpolations
         .filter(({ expr }) => !rendered.test(expr))
