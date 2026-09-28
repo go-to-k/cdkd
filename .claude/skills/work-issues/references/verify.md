@@ -7,8 +7,8 @@
 - **After round two, name what the rounds have in common**, then take the narrow
   fix and FILE the structural one — across PRs too: narrowing a classifier that
   gates a DELETE met a deeper feeder each review (#3826 → #3972 → #3978), and
-  the bound was an ownership proof at the deleting consumer (#3979). Ask for
-  that guard first.
+  the bound is an ownership proof at the deleting consumer (#3979, still open).
+  Ask for that guard first.
 - **A cascade stops when the artifact CLAIMS LESS** — tally the blockers by
   PART of the diff and offer that part's DELETION; stop reviewing the patch and
   question its SHAPE.
@@ -25,10 +25,12 @@ THIS branch changes too, so a set marker on a MERGEABLE PR needs no rebase
 it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
-  scoped touch buys another real-AWS run, comment-only deltas included; a
-  comment-only nit found after the integ rides this run's next lane on that
-  file, whose integ re-runs anyway, named in both PR bodies (#3963 → #3977). Scope the reviewers to the
-  delta and paste its COMMIT MESSAGE into the brief: they read `gh pr diff`.
+  scoped touch buys another real-AWS run, comment-only deltas included. The one
+  exception to §8-h's "nits included": a COMMENT-ONLY nit found after the integ
+  may ride this run's next lane on that file, whose integ re-runs anyway, named
+  in that lane's PR body (#3963 → #3977); with no such lane, fix it here and
+  re-run. Scope the reviewers to the delta and paste its COMMIT MESSAGE into the
+  brief: they read `gh pr diff`, not `git log`.
 
 ### 8-c. The live-test tiers
 
