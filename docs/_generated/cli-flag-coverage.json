@@ -61,6 +61,7 @@
     {
       "flag": "--app",
       "integs": [
+        "destroy-interrupt",
         "intrinsics-torture-2",
         "nested-stack-deep",
         "stage-assets"
@@ -1338,6 +1339,7 @@
     {
       "flag": "--state-prefix",
       "integs": [
+        "destroy-interrupt",
         "importvalue-chain"
       ]
     },

@@ -26,6 +26,7 @@ import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
+  CdkdError,
   NestedStackChildDirectDestroyError,
   PartialFailureError,
   StackTerminationProtectionError,
@@ -334,6 +335,10 @@ async function destroyCommand(
     // stack to one (#3507).
     let failedStages: readonly FailedStage[] = [];
     let synthesized = false;
+    // Why synth failed, carried to the refusals below as their `cause` so the
+    // operator sees what to fix. Unset when synth succeeded or no app is
+    // configured at all.
+    let synthError: Error | undefined;
 
     if (appCmd) {
       try {
@@ -370,9 +375,51 @@ async function destroyCommand(
         }));
         failedStages = result.failedStages;
         synthesized = true;
-      } catch {
+      } catch (error) {
+        synthError = error instanceof Error ? error : new Error(String(error));
         logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
+    }
+
+    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
+    const wildcardPatterns = stackPatterns.filter((p) => p.includes('*') || p.includes('?'));
+    // --all and a wildcard select among the stacks the APP synthesizes. With no
+    // app stack to select among, the state fallback below would widen either
+    // one to every stack in the bucket, other apps' included, so both are
+    // refused here -- before the bucket is even listed. An exact physical name
+    // still resolves through the fallback: it names one stack, and it is how a
+    // stack is reached without a working app.
+    if (appStacks.length === 0 && (options.all || wildcardPatterns.length > 0)) {
+      // The operator's own argv, but rendered as text all the same.
+      const selector = options.all
+        ? '--all'
+        : wildcardPatterns.map((p) => displaySafe(p)).join(', ');
+      if (synthesized) {
+        // The app synthesized NO stacks -- every stack under a Stage that
+        // failed to load, say (#3507).
+        throw new Error(
+          `${selector} selects among the stacks this app synthesizes, and it synthesized none; ` +
+            'refusing to fall back to every stack in state' +
+            (failedStageNote(options.all ? [] : wildcardPatterns, failedStages) || '.')
+        );
+      }
+      // No synthesized app -- synth failed, or no app is configured -- so there
+      // is no app scope at all (#3839). The hint names no batch form: every
+      // batch over state is cross-app.
+      const hole = commandHole('stack');
+      throw new CdkdError(
+        `${selector} selects among the stacks this app synthesizes, and ` +
+          (synthError ? 'the app could not be synthesized' : 'no app is configured') +
+          '; refusing to fall back to every stack in state, which spans every app ' +
+          'sharing this state bucket. ' +
+          (synthError
+            ? 'Fix the app so it synthesizes'
+            : 'Configure the app with --app or cdk.json') +
+          `, or name each stack exactly: cdkd destroy ${hole}, or cdkd state destroy ${hole}, ` +
+          'which needs no app.',
+        'DESTROY_NO_APP_SCOPE',
+        synthError
+      );
     }
 
     // Determine candidate stacks. State only carries physical names + regions
@@ -384,27 +431,14 @@ async function destroyCommand(
     // stack has multiple region keys). Synth-driven destroy is single-region:
     // if synth.region matches one of the records we use it; otherwise we
     // surface a clear error.
-    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
-    const wildcardPatterns = stackPatterns.filter((p) => p.includes('*') || p.includes('?'));
     let candidateStacks: StackLike[];
     if (appStacks.length > 0) {
       // App synth succeeded: only consider stacks from this app
       const stateNames = new Set(allStateRefs.map((r) => r.stackName));
       candidateStacks = appStacks.filter((s) => stateNames.has(s.stackName));
-    } else if (synthesized && (options.all || wildcardPatterns.length > 0)) {
-      // The state fallback below is for an app that could not be synthesized.
-      // One that synthesized NO stacks -- every stack under a Stage that failed
-      // to load, say -- would otherwise turn --all or a wildcard into every
-      // stack in the bucket, other apps' included (#3507). An exact physical
-      // name still resolves through the fallback: it names one stack.
-      const selector = options.all ? '--all' : wildcardPatterns.join(', ');
-      throw new Error(
-        `${selector} selects among the stacks this app synthesizes, and it synthesized none; ` +
-          'refusing to fall back to every stack in state' +
-          (failedStageNote(options.all ? [] : wildcardPatterns, failedStages) || '.')
-      );
-    } else if (stackArgs.length > 0 || options.stack || options.all) {
-      // No synth but explicit stack names or --all given: use state stacks
+    } else if (stackArgs.length > 0 || options.stack) {
+      // No app stacks but explicit exact names given (--all and wildcards were
+      // refused above): use state stacks
       // (deduplicate by name so a stack with two region records appears once
       // — the per-stack loop handles the multi-region case explicitly)
       const seen = new Set<string>();
@@ -415,15 +449,16 @@ async function destroyCommand(
         candidateStacks.push({ stackName: ref.stackName });
       }
     } else {
-      // No synth and no explicit stacks: refuse to guess
-      // `--all` is refused above once synth succeeded, so it is only advice
-      // when synth failed.
-      throw new Error(
+      // No app stacks and no stack named: refuse to guess. Reached whether
+      // synth failed, found no app, or synthesized zero stacks, so the code
+      // names the missing SELECTION rather than a missing app. `--all` is
+      // refused above in every one of those cases, so it is never offered here.
+      throw new CdkdError(
         'Could not determine which stacks belong to this app. ' +
-          (synthesized
-            ? 'Specify stack names explicitly, or ensure --app / cdk.json is configured'
-            : 'Specify stack names explicitly, use --all, or ensure --app / cdk.json is configured') +
-          (failedStageNote([], failedStages) || '.')
+          'Specify stack names explicitly, or ensure --app / cdk.json is configured' +
+          (failedStageNote([], failedStages) || '.'),
+        'DESTROY_NO_STACK_SELECTED',
+        synthError
       );
     }
 
