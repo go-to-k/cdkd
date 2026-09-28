@@ -298,11 +298,14 @@ describe('S3BucketProvider per-config appliers: template refuses, replay warns (
 
   it('the provider holds no field noWriteProbe() does not stub or treat as inert (a new client would escape the probe)', () => {
     // `noWriteProbe()` replaces `s3Client` and `logger` only; the two maps are
-    // read-only property metadata. A new own field — above all a second AWS
-    // client — must be added to the probe's stubbing before it lands here.
+    // read-only property metadata, and `opMask` is a pure masker the probe
+    // inherits from the operation's view (issue #2177). A new own field —
+    // above all a second AWS client — must be added to the probe's stubbing
+    // before it lands here.
     expect(Object.keys(new S3BucketProvider()).sort()).toEqual([
       'handledProperties',
       'logger',
+      'opMask',
       's3Client',
       'unhandledByDesign',
     ]);

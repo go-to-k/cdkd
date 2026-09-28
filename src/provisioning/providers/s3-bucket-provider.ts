@@ -72,7 +72,7 @@ import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { displayIdent, displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import {
@@ -87,7 +87,14 @@ import {
   type ConfigStringOptions,
 } from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
-import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskDeep,
+  maskerOrIdentity,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import type {
@@ -124,12 +131,12 @@ import type {
  * [#3269](https://github.com/go-to-k/cdkd/issues/3269)): unlike the command, a
  * sanitized prose name names no target, so it is rendered rather than withheld.
  *
- * `maskSecrets` is REQUIRED rather than optional, and both call sites build it
- * from `context?.maskSecrets` (security review of #3136, which found these two
- * arms reaching no masker at all). It does two things: the arms now route
- * their whole warning through it, and it makes `renderDisableCommand` SUPPRESS
- * the command for a secret-bearing bucket name — which a message-level mask
- * could not catch once `shellQuote` has escaped an inner quote.
+ * `maskSecrets` is REQUIRED rather than optional (security review of #3136,
+ * which found these two arms reaching no masker at all). Both call sites pass
+ * the operation's masker (`shownMask`, issue #2177), whose view logger also
+ * masks the whole warning; here it makes `renderDisableCommand` SUPPRESS the
+ * command for a secret-bearing bucket name — which a message-level mask could
+ * not catch once `shellQuote` has escaped an inner quote.
  */
 function manualBucketDeletionClause(bucketName: string, maskSecrets: MaskerFn): string {
   const command = renderDisableCommand({
@@ -1849,6 +1856,14 @@ function shownLifecycleRuleId(id: unknown): string {
 export class S3BucketProvider implements ResourceProvider {
   private s3Client: S3Client;
   private logger = getLogger().child('S3BucketProvider');
+  /**
+   * The masker every name this OPERATION prints goes through (issue
+   * [#2177](https://github.com/go-to-k/cdkd/issues/2177)). ABSENT on the
+   * singleton, which is also how `create()` / `update()` know they have not yet
+   * re-entered on a {@link maskedView}: only a view carries a deploy's masker,
+   * so none is ever cached on the instance concurrent resources share.
+   */
+  private opMask: MaskerFn | undefined = undefined;
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::S3::Bucket',
@@ -2020,7 +2035,9 @@ export class S3BucketProvider implements ResourceProvider {
         },
       })
     );
-    this.logger.debug(`Applied versioning (${status}) to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(
+      `Applied versioning (${this.shown(status)}) to bucket ${this.shown(bucketName)}`
+    );
     return true;
   }
 
@@ -2039,7 +2056,7 @@ export class S3BucketProvider implements ResourceProvider {
         },
       })
     );
-    this.logger.debug(`Applied ${tags.length} tags to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied ${tags.length} tags to bucket ${this.shown(bucketName)}`);
   }
 
   /**
@@ -2080,7 +2097,7 @@ export class S3BucketProvider implements ResourceProvider {
             Bucket: bucketName,
           })
         );
-        this.logger.debug(`Cleared tags from bucket ${displaySafe(bucketName)}`);
+        this.logger.debug(`Cleared tags from bucket ${this.shown(bucketName)}`);
       } catch (err) {
         // Some S3 API versions reject empty TagSet on Put; fall back to
         // re-Put. The `NoSuchTagSet` (already-empty) response is fine.
@@ -2097,7 +2114,7 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(
-      `Replaced tag set on bucket ${displaySafe(bucketName)} (${newNorm.length} tags)`
+      `Replaced tag set on bucket ${this.shown(bucketName)} (${newNorm.length} tags)`
     );
   }
 
@@ -2131,7 +2148,7 @@ export class S3BucketProvider implements ResourceProvider {
         },
       })
     );
-    this.logger.debug(`Applied CORS configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied CORS configuration to bucket ${this.shown(bucketName)}`);
   }
 
   /**
@@ -2373,7 +2390,7 @@ export class S3BucketProvider implements ResourceProvider {
           // S3 rejects ExpiredObjectDeleteMarker combined with Days / Date, so
           // one of the two has to go. Warn instead of dropping in silence.
           this.logger.warn(
-            `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} sets ` +
+            `Lifecycle rule ${shownLifecycleRuleId(maskDeep(rule['Id'], this.shownMask))} on ${this.shown(bucketName)} sets ` +
               `ExpiredObjectDeleteMarker alongside an expiration Days/Date; S3 forbids ` +
               `combining them, so the delete-marker cleanup was not applied.`
           );
@@ -2424,9 +2441,9 @@ export class S3BucketProvider implements ResourceProvider {
         | undefined;
       const allNvts = mergeLegacySingular(nvts, singularNvt, (sc) =>
         this.logger.warn(
-          `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} declares ` +
+          `Lifecycle rule ${shownLifecycleRuleId(maskDeep(rule['Id'], this.shownMask))} on ${this.shown(bucketName)} declares ` +
             `both NoncurrentVersionTransitions and the legacy NoncurrentVersionTransition for ` +
-            `storage class ${displaySafe(sc)}; S3 rejects duplicates, so the legacy singular was ignored.`
+            `storage class ${this.shown(sc)}; S3 rejects duplicates, so the legacy singular was ignored.`
         )
       );
       if (allNvts.length > 0) {
@@ -2447,8 +2464,8 @@ export class S3BucketProvider implements ResourceProvider {
       const singularTransition = rule['Transition'] as Record<string, unknown> | undefined;
       const allTransitions = mergeLegacySingular(transitions, singularTransition, (sc) =>
         this.logger.warn(
-          `Lifecycle rule ${shownLifecycleRuleId(rule['Id'])} on ${displaySafe(bucketName)} declares ` +
-            `both Transitions and the legacy Transition for storage class ${displaySafe(sc)}; S3 rejects ` +
+          `Lifecycle rule ${shownLifecycleRuleId(maskDeep(rule['Id'], this.shownMask))} on ${this.shown(bucketName)} declares ` +
+            `both Transitions and the legacy Transition for storage class ${this.shown(sc)}; S3 rejects ` +
             `duplicates, so the legacy singular was ignored.`
         )
       );
@@ -2530,7 +2547,7 @@ export class S3BucketProvider implements ResourceProvider {
         ] as import('@aws-sdk/client-s3').TransitionDefaultMinimumObjectSize | undefined,
       })
     );
-    this.logger.debug(`Applied lifecycle configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied lifecycle configuration to bucket ${this.shown(bucketName)}`);
     return true;
   }
 
@@ -2557,7 +2574,7 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(
-      `Applied public access block configuration to bucket ${displaySafe(bucketName)}`
+      `Applied public access block configuration to bucket ${this.shown(bucketName)}`
     );
   }
 
@@ -2620,7 +2637,7 @@ export class S3BucketProvider implements ResourceProvider {
         ServerSideEncryptionConfiguration: { Rules: rules },
       })
     );
-    this.logger.debug(`Applied encryption configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied encryption configuration to bucket ${this.shown(bucketName)}`);
   }
 
   /**
@@ -2709,7 +2726,7 @@ export class S3BucketProvider implements ResourceProvider {
           BucketLoggingStatus: {},
         })
       );
-      this.logger.debug(`Cleared logging configuration on bucket ${displaySafe(bucketName)}`);
+      this.logger.debug(`Cleared logging configuration on bucket ${this.shown(bucketName)}`);
       return true;
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2754,7 +2771,7 @@ export class S3BucketProvider implements ResourceProvider {
         BucketLoggingStatus: { LoggingEnabled: loggingEnabled },
       })
     );
-    this.logger.debug(`Applied logging configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied logging configuration to bucket ${this.shown(bucketName)}`);
     return true;
   }
 
@@ -2830,7 +2847,7 @@ export class S3BucketProvider implements ResourceProvider {
         WebsiteConfiguration: sdkConfig,
       })
     );
-    this.logger.debug(`Applied website configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied website configuration to bucket ${this.shown(bucketName)}`);
   }
 
   /**
@@ -2851,7 +2868,7 @@ export class S3BucketProvider implements ResourceProvider {
         },
       })
     );
-    this.logger.debug(`Applied accelerate configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied accelerate configuration to bucket ${this.shown(bucketName)}`);
   }
 
   /**
@@ -2977,7 +2994,7 @@ export class S3BucketProvider implements ResourceProvider {
         NotificationConfiguration: cfg,
       })
     );
-    this.logger.debug(`Applied notification configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied notification configuration to bucket ${this.shown(bucketName)}`);
     return true;
   }
 
@@ -3114,7 +3131,7 @@ export class S3BucketProvider implements ResourceProvider {
       );
     }
     this.logger.debug(
-      `Applied ${configs.length - skipped.length} metrics configuration(s) to bucket ${displaySafe(bucketName)}`
+      `Applied ${configs.length - skipped.length} metrics configuration(s) to bucket ${this.shown(bucketName)}`
     );
     return { skipped, substituted: new Map() };
   }
@@ -3421,7 +3438,7 @@ export class S3BucketProvider implements ResourceProvider {
       if (sentItem !== config) substituted.set(index, sentItem);
     }
     this.logger.debug(
-      `Applied ${configs.length - skipped.length} analytics configuration(s) to bucket ${displaySafe(bucketName)}`
+      `Applied ${configs.length - skipped.length} analytics configuration(s) to bucket ${this.shown(bucketName)}`
     );
     return { skipped, substituted };
   }
@@ -3538,7 +3555,7 @@ export class S3BucketProvider implements ResourceProvider {
     }
     this.logger.debug(
       `Applied ${configs.length - skipped.length} intelligent tiering configuration(s) to bucket ` +
-        `${displaySafe(bucketName)}`
+        `${this.shown(bucketName)}`
     );
     return { skipped, substituted };
   }
@@ -3837,7 +3854,7 @@ export class S3BucketProvider implements ResourceProvider {
       if (sentItem !== config) substituted.set(index, sentItem);
     }
     this.logger.debug(
-      `Applied ${configs.length - skipped.length} inventory configuration(s) to bucket ${displaySafe(bucketName)}`
+      `Applied ${configs.length - skipped.length} inventory configuration(s) to bucket ${this.shown(bucketName)}`
     );
     return { skipped, substituted };
   }
@@ -4101,7 +4118,7 @@ export class S3BucketProvider implements ResourceProvider {
         },
       })
     );
-    this.logger.debug(`Applied replication configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied replication configuration to bucket ${this.shown(bucketName)}`);
     return true;
   }
 
@@ -4193,7 +4210,7 @@ export class S3BucketProvider implements ResourceProvider {
         ObjectLockConfiguration: objectLockConfig,
       })
     );
-    this.logger.debug(`Applied object lock configuration to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied object lock configuration to bucket ${this.shown(bucketName)}`);
     return true;
   }
 
@@ -4329,7 +4346,7 @@ export class S3BucketProvider implements ResourceProvider {
         },
       })
     );
-    this.logger.debug(`Applied ownership controls to bucket ${displaySafe(bucketName)}`);
+    this.logger.debug(`Applied ownership controls to bucket ${this.shown(bucketName)}`);
   }
 
   /**
@@ -4475,6 +4492,75 @@ export class S3BucketProvider implements ResourceProvider {
       error: silent,
     });
     return probe;
+  }
+
+  /**
+   * A view of this provider for ONE `create()` / `update()` call whose logger
+   * routes every line through `sinks` (issue
+   * [#2177](https://github.com/go-to-k/cdkd/issues/2177)).
+   *
+   * The one-masked-sink shape (`createMaskedLogSinks`), extended to the private
+   * appliers those two methods reach: `create()` / `update()` re-enter
+   * themselves on the view, so their whole body and every applier it calls
+   * logs through the view's `this.logger` and a line added later is masked by
+   * construction. Re-entering, rather than calling the appliers on a `view`
+   * local, keeps every call spelled `this.<method>(...)`, which is what the
+   * repo's AST critics (`gen:update-wrap-coverage`, `handled-property-wiring`)
+   * follow. Meanwhile
+   * {@link shown} masks each interpolated value RAW, the only arm a secret
+   * shorter than `MIN_NEEDLE_LENGTH` reaches. A fresh object per call (its
+   * prototype is `this`), like {@link noWriteProbe}, so concurrent resources on
+   * this singleton never share a masker. `delete()` does not build one: it has
+   * no masker to thread (issue [#2007](https://github.com/go-to-k/cdkd/issues/2007)).
+   */
+  private maskedView(sinks: MaskedLogSinks): S3BucketProvider {
+    const view = Object.create(this) as S3BucketProvider;
+    const base = this.logger;
+    const route =
+      (level: 'debug' | 'info' | 'warn' | 'error') =>
+      (message: string, ...args: unknown[]): void =>
+        base[level](
+          sinks.mask(message),
+          // An `Error` passes as its CLASS only. Its text is a sentence, where the
+          // masker's substring arm cannot see a secret shorter than
+          // `MIN_NEEDLE_LENGTH`, and `maskDeep` would render it `{}` anyway
+          // (message and stack are non-enumerable).
+          ...args.map((arg) =>
+            arg instanceof Error ? sinks.mask(arg.name) : maskDeep(arg, sinks.mask)
+          )
+        );
+    view.logger = Object.assign(Object.create(base) as typeof base, {
+      debug: route('debug'),
+      info: route('info'),
+      warn: route('warn'),
+      error: route('error'),
+    });
+    view.opMask = sinks.mask;
+    return view;
+  }
+
+  /**
+   * A value as a log line or message prints it: masked RAW through this
+   * operation's masker (leaves and keys, via `maskDeep`), then `displaySafe`.
+   * On the singleton the masker is identity, so this is plain `displaySafe`.
+   */
+  private shown(value: unknown): string {
+    return displaySafe(maskDeep(value, this.shownMask));
+  }
+
+  /** This operation's masker, or identity outside one (the singleton, `delete()`). */
+  private get shownMask(): MaskerFn {
+    return maskerOrIdentity(this.opMask);
+  }
+
+  /**
+   * One string masked RAW through this operation's masker, for a message half
+   * not rendered by {@link shown}. It spells `maskerOrIdentity(this.opMask)`
+   * rather than calling the {@link shownMask} getter: `gen:update-wrap-coverage`
+   * cannot resolve a getter CALL and would then mark `update()` unverifiable.
+   */
+  private maskRaw(text: string): string {
+    return maskerOrIdentity(this.opMask)(text);
   }
 
   /**
@@ -4876,7 +4962,7 @@ export class S3BucketProvider implements ResourceProvider {
     // The REAL masker for this call, not a decorative parameter: the
     // destination-shape refusals below quote values read straight off the
     // desired `properties` bag, which arrives RESOLVED (issue #2178).
-    const maskSecrets = maskerOrIdentity(context?.maskSecrets);
+    const maskSecrets = this.shownMask;
     /** Record a WHOLE-BLOCK skip: the effective value is the previous one. */
     const retainPrevious = (key: string): void => {
       overrides.set(key, previousProperties[key]);
@@ -4933,7 +5019,7 @@ export class S3BucketProvider implements ResourceProvider {
         // rather than dropped silently, because reaching it means a skip went
         // UNRECORDED and the phantom drift this method removes is back.
         this.logger.debug(
-          `Bucket ${displaySafe(bucketName)}: ${skippedIds.size + sentItems.size} skipped or substituted ` +
+          `Bucket ${this.shown(bucketName)}: ${skippedIds.size + sentItems.size} skipped or substituted ` +
             `${key} item(s) could not be recorded — the desired value is not an array`
         );
         return;
@@ -5015,7 +5101,7 @@ export class S3BucketProvider implements ResourceProvider {
     // deploy would be noise about something this run was never going to do.
     if (versioningRefusal !== undefined && versioningChanged) {
       this.logger.warn(
-        `Bucket ${displaySafe(bucketName)}: ${versioningRefusal}. Leaving the bucket's LIVE versioning state ` +
+        `Bucket ${this.shown(bucketName)}: ${versioningRefusal}. Leaving the bucket's LIVE versioning state ` +
           `unchanged — neither enabling nor suspending it; the same value is REFUSED on a ` +
           `template-path create`
       );
@@ -5109,7 +5195,7 @@ export class S3BucketProvider implements ResourceProvider {
           return;
         }
         await this.s3Client.send(new DeleteBucketOwnershipControlsCommand({ Bucket: bucketName }));
-        this.logger.debug(`Deleted ownership controls on bucket ${displaySafe(bucketName)}`);
+        this.logger.debug(`Deleted ownership controls on bucket ${this.shown(bucketName)}`);
       }
     );
 
@@ -5154,7 +5240,7 @@ export class S3BucketProvider implements ResourceProvider {
           return;
         }
         await this.s3Client.send(new DeleteBucketEncryptionCommand({ Bucket: bucketName }));
-        this.logger.debug(`Deleted bucket encryption on bucket ${displaySafe(bucketName)}`);
+        this.logger.debug(`Deleted bucket encryption on bucket ${this.shown(bucketName)}`);
       }
     );
 
@@ -5180,7 +5266,7 @@ export class S3BucketProvider implements ResourceProvider {
           if (context?.desiredFromAwsReadback === true) {
             await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
             this.logger.debug(
-              `Deleted lifecycle configuration on bucket ${displaySafe(bucketName)} (reverting to an unset baseline)`
+              `Deleted lifecycle configuration on bucket ${this.shown(bucketName)} (reverting to an unset baseline)`
             );
             return;
           }
@@ -5205,7 +5291,7 @@ export class S3BucketProvider implements ResourceProvider {
       },
       async () => {
         await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
-        this.logger.debug(`Deleted lifecycle configuration on bucket ${displaySafe(bucketName)}`);
+        this.logger.debug(`Deleted lifecycle configuration on bucket ${this.shown(bucketName)}`);
       }
     );
 
@@ -5224,7 +5310,7 @@ export class S3BucketProvider implements ResourceProvider {
           if (context?.desiredFromAwsReadback === true) {
             await this.s3Client.send(new DeleteBucketCorsCommand({ Bucket: bucketName }));
             this.logger.debug(
-              `Deleted CORS configuration on bucket ${displaySafe(bucketName)} (reverting to an unset baseline)`
+              `Deleted CORS configuration on bucket ${this.shown(bucketName)} (reverting to an unset baseline)`
             );
             return;
           }
@@ -5240,7 +5326,7 @@ export class S3BucketProvider implements ResourceProvider {
       },
       async () => {
         await this.s3Client.send(new DeleteBucketCorsCommand({ Bucket: bucketName }));
-        this.logger.debug(`Deleted CORS configuration on bucket ${displaySafe(bucketName)}`);
+        this.logger.debug(`Deleted CORS configuration on bucket ${this.shown(bucketName)}`);
       }
     );
 
@@ -5252,7 +5338,7 @@ export class S3BucketProvider implements ResourceProvider {
       async (cfg) => this.applyWebsiteConfiguration(bucketName, cfg),
       async () => {
         await this.s3Client.send(new DeleteBucketWebsiteCommand({ Bucket: bucketName }));
-        this.logger.debug(`Deleted website configuration on bucket ${displaySafe(bucketName)}`);
+        this.logger.debug(`Deleted website configuration on bucket ${this.shown(bucketName)}`);
       }
     );
 
@@ -5322,7 +5408,7 @@ export class S3BucketProvider implements ResourceProvider {
       },
       async () => {
         await this.s3Client.send(new DeleteBucketReplicationCommand({ Bucket: bucketName }));
-        this.logger.debug(`Deleted replication configuration on bucket ${displaySafe(bucketName)}`);
+        this.logger.debug(`Deleted replication configuration on bucket ${this.shown(bucketName)}`);
       }
     );
 
@@ -5347,7 +5433,7 @@ export class S3BucketProvider implements ResourceProvider {
             ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
           })
         );
-        this.logger.debug(`Cleared object lock rule on bucket ${displaySafe(bucketName)}`);
+        this.logger.debug(`Cleared object lock rule on bucket ${this.shown(bucketName)}`);
       }
     );
 
@@ -5382,7 +5468,7 @@ export class S3BucketProvider implements ResourceProvider {
           new DeleteBucketMetricsConfigurationCommand({ Bucket: bucketName, Id: id })
         );
         this.logger.debug(
-          `Deleted metrics configuration ${displaySafe(id)} on bucket ${displaySafe(bucketName)}`
+          `Deleted metrics configuration ${this.shown(id)} on bucket ${this.shown(bucketName)}`
         );
       }
     );
@@ -5414,7 +5500,7 @@ export class S3BucketProvider implements ResourceProvider {
           new DeleteBucketAnalyticsConfigurationCommand({ Bucket: bucketName, Id: id })
         );
         this.logger.debug(
-          `Deleted analytics configuration ${displaySafe(id)} on bucket ${displaySafe(bucketName)}`
+          `Deleted analytics configuration ${this.shown(id)} on bucket ${this.shown(bucketName)}`
         );
       }
     );
@@ -5446,7 +5532,7 @@ export class S3BucketProvider implements ResourceProvider {
           })
         );
         this.logger.debug(
-          `Deleted intelligent tiering configuration ${displaySafe(id)} on bucket ${displaySafe(bucketName)}`
+          `Deleted intelligent tiering configuration ${this.shown(id)} on bucket ${this.shown(bucketName)}`
         );
       }
     );
@@ -5473,7 +5559,7 @@ export class S3BucketProvider implements ResourceProvider {
           new DeleteBucketInventoryConfigurationCommand({ Bucket: bucketName, Id: id })
         );
         this.logger.debug(
-          `Deleted inventory configuration ${displaySafe(id)} on bucket ${displaySafe(bucketName)}`
+          `Deleted inventory configuration ${this.shown(id)} on bucket ${this.shown(bucketName)}`
         );
       }
     );
@@ -5506,7 +5592,7 @@ export class S3BucketProvider implements ResourceProvider {
       };
       if (hasObjectLock(properties) || hasObjectLock(previousProperties)) {
         this.logger.warn(
-          `Bucket ${displaySafe(bucketName)}: versioning would be suspended (VersioningConfiguration removed ` +
+          `Bucket ${this.shown(bucketName)}: versioning would be suspended (VersioningConfiguration removed ` +
             `or set to Suspended), but the bucket has Object Lock enabled and S3 does not allow ` +
             `suspending versioning on it. Leaving versioning enabled.`
         );
@@ -5544,7 +5630,7 @@ export class S3BucketProvider implements ResourceProvider {
     // The REAL masker for this call, not a decorative parameter: the
     // destination-shape refusals below quote values read straight off the
     // desired `properties` bag, which arrives RESOLVED (issue #2178).
-    const maskSecrets = maskerOrIdentity(context?.maskSecrets);
+    const maskSecrets = this.shownMask;
     /**
      * Record a WHOLE-BLOCK fold: the effective value is what was SENT (issue
      * #1748). The create-path twin of `applySubConfigDiffs`'s helper of the same
@@ -5909,7 +5995,7 @@ export class S3BucketProvider implements ResourceProvider {
   ): never {
     throw markNonRetryable(
       new ProvisioningError(
-        `Refusing to adopt existing S3 bucket ${displaySafe(bucketName)} for ${displaySafe(logicalId)} ` +
+        `Refusing to adopt existing S3 bucket ${this.shown(bucketName)} for ${displaySafe(logicalId)} ` +
           `(${resourceType}): it is owned by this account but lives in ${actualRegion}, ` +
           `while this stack deploys to ${wantRegion}. S3 bucket names are globally ` +
           `unique, so owning the name (which is what 'BucketAlreadyOwnedByYou' and a ` +
@@ -6105,7 +6191,7 @@ export class S3BucketProvider implements ResourceProvider {
     if (probe.kind === 'indeterminate') {
       // AWS's raw text goes to debug and nowhere else; the warn gets the class.
       this.logger.debug(
-        `GetBucketLocation failed for S3 bucket ${displaySafe(physicalId)} (${displaySafe(logicalId)}) before ` +
+        `GetBucketLocation failed for S3 bucket ${this.shown(physicalId)} (${displaySafe(logicalId)}) before ` +
           `${operation}: ${probe.reason}`
       );
       this.announceUnverifiedBucketIdentity(
@@ -6144,7 +6230,7 @@ export class S3BucketProvider implements ResourceProvider {
 
     throw markNonRetryable(
       new ProvisioningError(
-        `Refusing to ${operation} S3 bucket ${displaySafe(physicalId)} for ${displaySafe(logicalId)} (${resourceType}): ` +
+        `Refusing to ${operation} S3 bucket ${this.shown(physicalId)} for ${displaySafe(logicalId)} (${resourceType}): ` +
           `the bucket lives in ${probe.region}, while this stack's state is for ${wantRegion}. ` +
           `S3 bucket names are globally unique, so a state record can name a bucket in another ` +
           `region — records written before the create-path region guard can carry one. ` +
@@ -6195,7 +6281,7 @@ export class S3BucketProvider implements ResourceProvider {
     cause: UnverifiedIdentityCause
   ): void {
     const message =
-      `Could not confirm which bucket ${displaySafe(physicalId)} for ${displaySafe(logicalId)} is before ${operation}: ` +
+      `Could not confirm which bucket ${this.shown(physicalId)} for ${displaySafe(logicalId)} is before ${operation}: ` +
       `${cause.why}, so the cross-region guard did NOT run and cdkd is proceeding on the ` +
       `recorded physical id alone.`;
 
@@ -6218,6 +6304,19 @@ export class S3BucketProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // Issue #2177: ONE masked sink set per operation. The body runs on a
+    // per-call view (see `maskedView`) whose logger masks every line, so it is
+    // re-entered there first; `this` below is that view. A `BucketName` read off
+    // the bag is used VERBATIM (never rewritten the way `generateResourceName`
+    // rewrites a logical id), so the base masker already recognises it.
+    if (this.opMask === undefined) {
+      return this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(
+        logicalId,
+        resourceType,
+        properties,
+        context
+      );
+    }
     this.logger.debug(`Creating S3 bucket ${displaySafe(logicalId)}`);
 
     const bucketName =
@@ -6479,14 +6578,14 @@ export class S3BucketProvider implements ResourceProvider {
           // having refused everything else, so the message cannot name a region
           // its own explanation does not apply to.
           this.logger.warn(
-            `S3 bucket ${displaySafe(bucketName)} for ${displaySafe(logicalId)} (${resourceType}) already existed in ` +
+            `S3 bucket ${this.shown(bucketName)} for ${displaySafe(logicalId)} (${resourceType}) already existed in ` +
               `${preflight.region} and was ADOPTED, not created. In us-east-1 S3 answers a ` +
               `re-create of a bucket you already own with 200 OK and RESETS that bucket's ` +
-              `access control lists, so any ACL previously set on ${displaySafe(bucketName)} is now the ` +
+              `access control lists, so any ACL previously set on ${this.shown(bucketName)} is now the ` +
               `default. cdkd will not delete this bucket if the rest of this create fails.`
           );
         }
-        this.logger.debug(`Created S3 bucket: ${displaySafe(bucketName)}`);
+        this.logger.debug(`Created S3 bucket: ${this.shown(bucketName)}`);
       } catch (createError) {
         // A cdkd REFUSAL is not an AWS failure to classify. The only one that
         // can arrive here is the foreign-region adopt raised in the `try`
@@ -6529,7 +6628,7 @@ export class S3BucketProvider implements ResourceProvider {
             createError
           );
           this.logger.debug(
-            `S3 bucket ${displaySafe(bucketName)} already exists and is owned by you`
+            `S3 bucket ${this.shown(bucketName)} already exists and is owned by you`
           );
         } else {
           throw createError;
@@ -6559,7 +6658,7 @@ export class S3BucketProvider implements ResourceProvider {
           try {
             await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
             this.logger.debug(
-              `Cleaned up partially-created S3 bucket ${displaySafe(logicalId)} (${displaySafe(bucketName)}) after wiring failure`
+              `Cleaned up partially-created S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) after wiring failure`
             );
           } catch (cleanupError) {
             // Class at warn, AWS's own text at debug — the sibling arm below
@@ -6572,21 +6671,19 @@ export class S3BucketProvider implements ResourceProvider {
             // and was the last reader in this file still interpolating an AWS
             // message into a warn.
             this.logger.debug(
-              `DeleteBucket cleanup failed for S3 bucket ${displaySafe(logicalId)} (${displaySafe(bucketName)}): ${describeAwsFailure(cleanupError).detail}`
+              `DeleteBucket cleanup failed for S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}): ${describeAwsFailure(cleanupError).detail}`
             );
             // Routed through the caller's masker (security review of issue
             // #3136): `bucketName` is a RESOLVED property value, so a
             // `{{resolve:secretsmanager:...}}` is plaintext here, and a
-            // provider's own `logger.warn` reaches NO engine sink. Both arms
-            // of this catch now take it.
-            const maskSecrets = maskerOrIdentity(context?.maskSecrets);
+            // provider's own `logger.warn` reaches NO engine sink. The view's
+            // logger masks the line; the clause takes the masker so it can
+            // WITHHOLD a command naming a secret-bearing bucket.
             this.logger.warn(
-              maskSecrets(
-                `Failed to clean up partially-created S3 bucket ${displaySafe(logicalId)} (${displaySafe(maskSecrets(bucketName))}) ` +
-                  `(${cleanupError instanceof Error ? cleanupError.name : typeof cleanupError}). ` +
-                  `Re-run with --verbose for AWS's own message. ` +
-                  manualBucketDeletionClause(bucketName, maskSecrets)
-              )
+              safeMsg`Failed to clean up partially-created S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) ` +
+                safeMsg`(${cleanupError instanceof Error ? cleanupError.name : typeof cleanupError}). ` +
+                `Re-run with --verbose for AWS's own message. ` +
+                safeMsg`${manualBucketDeletionClause(bucketName, this.shownMask)}`
             );
           }
         } else if (preflight.kind === 'indeterminate') {
@@ -6605,20 +6702,17 @@ export class S3BucketProvider implements ResourceProvider {
           // the guard's copy left this one printing the identical string to the
           // identical sink.
           this.logger.debug(
-            `GetBucketLocation failed for S3 bucket ${displaySafe(bucketName)} (${displaySafe(logicalId)}) during create: ` +
+            `GetBucketLocation failed for S3 bucket ${this.shown(bucketName)} (${displaySafe(logicalId)}) during create: ` +
               `${preflight.reason}`
           );
           // Masked for the same reason as the sibling arm above.
-          const maskSecrets = maskerOrIdentity(context?.maskSecrets);
           this.logger.warn(
-            maskSecrets(
-              `Not cleaning up S3 bucket ${displaySafe(logicalId)} (${displaySafe(maskSecrets(bucketName))}) after a wiring failure: ` +
-                `this deploy could not confirm whether it created the bucket (region probe failed: ` +
-                `${preflight.errorName}), and in us-east-1 a successful CreateBucket does not ` +
-                `prove it. Re-run with --verbose for AWS's own message. If cdkd created it, the ` +
-                `bucket is an orphan. ` +
-                manualBucketDeletionClause(bucketName, maskSecrets)
-            )
+            safeMsg`Not cleaning up S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) after a wiring failure: ` +
+              `this deploy could not confirm whether it created the bucket (region probe failed: ` +
+              safeMsg`${preflight.errorName}), and in us-east-1 a successful CreateBucket does not ` +
+              `prove it. Re-run with --verbose for AWS's own message. If cdkd created it, the ` +
+              `bucket is an orphan. ` +
+              safeMsg`${manualBucketDeletionClause(bucketName, this.shownMask)}`
           );
         }
         // The bucket itself is in hand: an "already exists" from its wiring is
@@ -6629,7 +6723,7 @@ export class S3BucketProvider implements ResourceProvider {
       const attributes = await this.buildAttributes(bucketName);
 
       this.logger.debug(
-        `Successfully created S3 bucket ${displaySafe(logicalId)}: ${displaySafe(bucketName)}`
+        `Successfully created S3 bucket ${displaySafe(logicalId)}: ${this.shown(bucketName)}`
       );
 
       // Anything a replay downgrade SKIPPED is dropped from the recorded bag,
@@ -6669,14 +6763,33 @@ export class S3BucketProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating S3 bucket ${displaySafe(logicalId)}: ${displaySafe(physicalId)}`);
+    // Issue #2177 -- see `create()`. The recorded name is ALSO a needle when the
+    // PREVIOUS `BucketName` it came from is secret-derived: after a rotated or
+    // re-pointed secret, that previous value is the `{{resolve:` reference
+    // state holds, and the OLD plaintext is in no masker bag of this deploy.
+    if (this.opMask === undefined) {
+      const sinks = withDerivedNameMasks(
+        this.logger,
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        [[previousProperties['BucketName'], physicalId]]
+      );
+      return this.maskedView(sinks).update(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context
+      );
+    }
+    this.logger.debug(`Updating S3 bucket ${displaySafe(logicalId)}: ${this.shown(physicalId)}`);
 
     const newBucketName = properties['BucketName'] as string | undefined;
 
     // Bucket name is immutable - if changed, requires replacement
     if (newBucketName && newBucketName !== physicalId) {
       this.logger.debug(
-        `Bucket name changed (${displaySafe(physicalId)} -> ${displaySafe(newBucketName)}), replacement required`
+        `Bucket name changed (${this.shown(physicalId)} -> ${this.shown(newBucketName)}), replacement required`
       );
       return {
         physicalId,
@@ -6709,7 +6822,7 @@ export class S3BucketProvider implements ResourceProvider {
       const refusal = S3BucketProvider.versioningOrLoggingRefusal(properties, previousProperties);
       if (refusal !== undefined) {
         throw new ProvisioningError(
-          `${refusal}. Nothing was applied to bucket ${displaySafe(physicalId)}; fix the template value`,
+          `${refusal}. Nothing was applied to bucket ${this.shown(physicalId)}; fix the template value`,
           resourceType,
           logicalId,
           physicalId
@@ -6733,7 +6846,7 @@ export class S3BucketProvider implements ResourceProvider {
           throw error;
         }
         throw new ProvisioningError(
-          `${error.message}. Nothing was applied to bucket ${displaySafe(physicalId)}; fix the ` +
+          `${this.maskRaw(error.message)}. Nothing was applied to bucket ${this.shown(physicalId)}; fix the ` +
             `template value`,
           resourceType,
           logicalId,
@@ -6956,11 +7069,13 @@ export class S3BucketProvider implements ResourceProvider {
     const failure = describeAwsFailure(error);
     if (failure.redacted) {
       this.logger.debug(
-        `Failed to ${operation} S3 bucket ${displaySafe(logicalId)} (${displaySafe(physicalId)}): ${failure.detail}`
+        `Failed to ${operation} S3 bucket ${displaySafe(logicalId)} (${this.shown(physicalId)}): ${this.maskRaw(failure.detail)}`
       );
     }
+    // Both halves masked RAW as well (issue #2177): the engine masks the thrown
+    // message, but only a raw value reaches the masker's whole-value arm.
     const wrapped = new ProvisioningError(
-      `Failed to ${operation} S3 bucket ${displaySafe(logicalId)}: ${failure.summary}`,
+      `Failed to ${operation} S3 bucket ${displaySafe(logicalId)}: ${this.maskRaw(failure.summary)}`,
       resourceType,
       logicalId,
       physicalId,
