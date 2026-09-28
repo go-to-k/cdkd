@@ -1170,6 +1170,8 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
     // Root was never imported.
     expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
     expect(err.message).toContain('"Nest an existing stack"');
+    // Outside a Phase 1B failure, the pointer to that message stays.
+    expect(err.message).toContain('procedure (as the Phase 1B adoption failure message describes).');
     // Root is not given an orphan command: it is still cdkd's to migrate.
     expect(err.message).not.toMatch(/cdkd state orphan Root --stack-region/);
   });
