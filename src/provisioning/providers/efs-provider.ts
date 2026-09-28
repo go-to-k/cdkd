@@ -31,6 +31,8 @@ import {
   type ReplicationOverwriteProtection,
   type AccessPointDescription,
   type CreateAccessPointCommandInput,
+  type PosixUser,
+  type RootDirectory,
 } from '@aws-sdk/client-efs';
 import { createHash } from 'node:crypto';
 import { getLogger } from '../../utils/logger.js';
@@ -57,6 +59,59 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+
+/**
+ * Whether an access point's `PosixUser` is the one a `CreateAccessPoint`
+ * request asked for (issue #3894), used to confirm an adoption.
+ *
+ * EFS puts an unset POSIX user on the wire as `null` (measured through the
+ * AWS CLI, issue #2442), and the SDK deserializer drops that null member, so
+ * the description reaches here without the key. An absent request therefore
+ * matches a described user that is absent OR null. `SecondaryGids` is a set,
+ * so an omitted list equals an empty one and order is ignored.
+ */
+function samePosixUser(
+  requested: PosixUser | undefined,
+  described: PosixUser | null | undefined
+): boolean {
+  if (requested == null || described == null) return requested == null && described == null;
+  const gids = (user: PosixUser): string =>
+    JSON.stringify([...new Set(user.SecondaryGids ?? [])].sort((a, b) => a - b));
+  return (
+    requested.Uid === described.Uid &&
+    requested.Gid === described.Gid &&
+    gids(requested) === gids(described)
+  );
+}
+
+/**
+ * Whether an access point's `RootDirectory` is the one a `CreateAccessPoint`
+ * request asked for (issue #3894), used to confirm an adoption.
+ *
+ * EFS reads an omitted `RootDirectory` back as `{ Path: "/" }` (measured,
+ * issue #2442), so both sides are read through that default before
+ * comparing; comparing raw would decline every adoption of a default-root
+ * access point. A root with `CreationInfo` but no `Path` is ASSUMED to default
+ * the same way -- unmeasured, and the `?? '/'` on both sides matches whether
+ * EFS answers `/` or omits the member. `Permissions` is an octal string (`^[0-7]{3,4}$`), so `755`
+ * and `0755` are the same mode.
+ */
+function sameRootDirectory(
+  requested: RootDirectory | undefined,
+  described: RootDirectory | null | undefined
+): boolean {
+  if ((requested?.Path ?? '/') !== (described?.Path ?? '/')) return false;
+  const want = requested?.CreationInfo ?? undefined;
+  const have = described?.CreationInfo ?? undefined;
+  if (want === undefined || have === undefined) return want === undefined && have === undefined;
+  const mode = (p: string | undefined): number | string | undefined =>
+    p !== undefined && /^[0-7]+$/.test(p) ? parseInt(p, 8) : p;
+  return (
+    want.OwnerUid === have.OwnerUid &&
+    want.OwnerGid === have.OwnerGid &&
+    mode(want.Permissions) === mode(have.Permissions)
+  );
+}
 
 /**
  * SDK Provider for AWS EFS resources
@@ -1110,28 +1165,31 @@ export class EFSProvider implements ResourceProvider {
    * `CreateAccessPoint`, with the retry-replay case ADOPTED rather than failed
    * (issue [#2080](https://github.com/go-to-k/cdkd/issues/2080)).
    *
-   * When EFS REPLAYS a seen token it answers with the access point the lost
-   * response described and this method returns it like any other success. When
-   * it instead REFUSES the repeat -- `AccessPointAlreadyExists`, which the
-   * `CreateAccessPoint` reference documents with no window attached -- the
-   * first attempt's access point is live AND absent from state, which is the
-   * orphan the token exists to prevent, now with a failed deploy on top. How
-   * often each happens is not something EFS documents for this call (see the
-   * DERIVATION note in `createAccessPoint`), so this arm is written as the
-   * ORDINARY recovery path rather than a rare one.
-   * `route53-provider.ts`'s `createOrAdoptHostedZone` is the same pattern for
-   * the same issue family.
+   * EFS REFUSES a repeated token -- `AccessPointAlreadyExists`, naming the
+   * first access point's id -- which is what issue #2442 measured on real EFS,
+   * whether or not the repeat's parameters matched. The first attempt's access point is then live AND absent from
+   * state, which is the orphan the token exists to prevent, now with a failed
+   * deploy on top, so this arm is the ORDINARY recovery path for a lost
+   * response. A REPLAY of the first response was never observed, but nothing
+   * documents that it cannot happen (see the DERIVATION note in
+   * `createAccessPoint`); if it does, this method returns it like any other
+   * success. `route53-provider.ts`'s `createOrAdoptHostedZone` is the same
+   * pattern for the same issue family.
    *
-   * Adoption is CONFIRMED rather than assumed, on two axes: the token (cdkd
+   * Adoption is CONFIRMED rather than assumed, on four axes: the token (cdkd
    * mints a per-process value, so only an attempt of THIS create can hold it --
    * the parameter type requires one, so there is no "both undefined" way to
-   * satisfy the comparison vacuously) and the file system (structural rather
-   * than contingent on the engine resolving properties once per create, which
-   * is true today and is not this method's to rely on).
+   * satisfy the comparison vacuously), the file system, and the `PosixUser` and
+   * `RootDirectory` (issue #3894). The last three are structural rather than
+   * contingent on the engine resolving properties once per create, which is
+   * true today and is not this method's to rely on: because the refusal does
+   * not depend on the parameters, a token re-sent with different ones would
+   * otherwise be adopted. `PosixUser` and `RootDirectory` are compared through
+   * EFS's defaults (`samePosixUser`, `sameRootDirectory`).
    *
    * Every way the confirmation can fail -- no id on the error, a read-back that
-   * throws, a token or file system that does not match, a description with no
-   * ARN -- DECLINES the adoption, says so at `warn`, and rethrows carrying the
+   * throws, a token, file system, POSIX user or root directory that does not
+   * match, a description with no ARN -- DECLINES the adoption, says so at `warn`, and rethrows carrying the
    * AWS error as `cause`. A conflict cdkd cannot attribute to itself is not
    * something to paper over, and a lookup failure must never REPLACE the
    * diagnosis: a missing `elasticfilesystem:DescribeAccessPoints` permission
@@ -1298,6 +1356,16 @@ export class EFSProvider implements ResourceProvider {
       }
       if (existing.FileSystemId !== input.FileSystemId) {
         return decline(`access point ${existingId} belongs to a different file system`);
+      }
+      // EFS refuses a repeated token whether or not its parameters match
+      // (issue #2442), so the token alone does not prove the access point is
+      // the one THIS request described. The reasons name the field, never its
+      // value -- same withholding as every other reason here.
+      if (!samePosixUser(input.PosixUser, existing.PosixUser)) {
+        return decline(`access point ${existingId} has a different PosixUser`);
+      }
+      if (!sameRootDirectory(input.RootDirectory, existing.RootDirectory)) {
+        return decline(`access point ${existingId} has a different RootDirectory`);
       }
       if (!existing.AccessPointId) {
         return decline(`access point ${existingId} was read back without an id`);
