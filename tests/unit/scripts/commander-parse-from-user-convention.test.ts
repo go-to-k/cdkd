@@ -683,12 +683,16 @@ function collectAritySites(files: string[]): { sites: AritySite[]; unresolved: s
 const KNOWN_DARK: Record<string, number> = {
   // `...baseArgs()` and `...nestedTree(...)`: spreads of a call's result.
   'tests/unit/cli/export-non-interactive-confirm.test.ts': 1,
+  // `...dryRunArgs()` and `...realRunArgs()`: spreads of a call's result.
+  'tests/unit/cli/export-plan-record-display.test.ts': 1,
   // `STACK` is a template literal, which may begin with `-`.
   'tests/unit/cli/force-unlock-display.test.ts': 1,
   // `realArgs`, a conditional slice of the wrapper's parameter.
   'tests/unit/cli/import.test.ts': 1,
   // The subcommand is named by a loop variable.
   'tests/unit/cli/local-assume-role-negation.test.ts': 1,
+  // The receiver is built by `make()`, a factory passed in as a parameter.
+  'tests/unit/cli/local-invoke-assume-role-entry.test.ts': 1,
   // Three `shim()` receivers built with `new Command`, and one subcommand
   // named by a loop variable.
   'tests/unit/cli/local-shim-region-fold.test.ts': 4,
