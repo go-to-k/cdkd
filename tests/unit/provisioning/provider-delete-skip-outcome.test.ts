@@ -302,6 +302,15 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
         ),
     },
     {
+      name: 'AWS::Lambda::Permission — no StatementId',
+      head: 'has no StatementId in its physicalId',
+      qualifier: 'UNLESS the function itself is part of this stack',
+      run: () =>
+        new LambdaPermissionProvider().delete('MyPerm', 'my-fn|', 'AWS::Lambda::Permission', {
+          FunctionName: 'my-fn',
+        }),
+    },
+    {
       name: 'AWS::IAM::Policy — no policy name',
       head: "and no PolicyName in the state record's",
       qualifier: 'UNLESS the role / group / user it is attached to is itself part of this stack',
@@ -353,8 +362,11 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       expect(text).toContain(head);
       expect(text).toContain(qualifier);
       // Region-scoped: without --stack-region the command drops that stack
-      // name's record in EVERY region (go-to-k/cdkd#3996).
-      expect(text).toContain('cdkd state orphan <stack> --stack-region <region>');
+      // name's record in EVERY region; and it drops every record in that
+      // region, not just this one (go-to-k/cdkd#3996).
+      expect(text).toContain(
+        "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region"
+      );
     }
   );
 

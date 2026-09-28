@@ -533,7 +533,7 @@ export class IAMPolicyProvider implements ResourceProvider {
           `properties — skipping deletion. No AWS call is issued, so the inline policy is LEFT ` +
           `ATTACHED to its roles / groups / users, UNLESS the role / group / user it is attached ` +
           `to is itself part of this stack (deleting that principal removes its inline policies, ` +
-          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>'). ` +
+          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
           `Otherwise repair the physicalId in state.json and re-run, or delete the inline policy ` +
           `by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -577,7 +577,7 @@ export class IAMPolicyProvider implements ResourceProvider {
           `attachment, so with no principal named there is no delete to issue and the policy is ` +
           `LEFT ATTACHED wherever it is, UNLESS the role / group / user it is attached to is ` +
           `itself part of this stack (deleting that principal removes its inline policies, and ` +
-          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>'). ` +
+          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
           `Otherwise restore Roles / Groups / Users in state.json and re-run, or delete the ` +
           `inline policy by hand. ${DEPLOY_SKIP_CAVEAT}`
       );

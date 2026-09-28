@@ -444,7 +444,7 @@ describe('cdkd state destroy', () => {
     expect(message).toMatch(/2 resource error\(s\).*State preserved/);
     // Region-scoped (go-to-k/cdkd#3996).
     expect(message).toContain(
-      "'cdkd state orphan <stack> --stack-region <region>' removes the state record"
+      "'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record)"
     );
   });
 

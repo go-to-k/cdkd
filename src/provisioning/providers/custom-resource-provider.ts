@@ -168,7 +168,8 @@ export const CR_DELETE_INVOKE_FAILED_SKIP_REASON =
  * exit-code question). `cdkd destroy` has no such flag — a skip raises
  * `PartialFailureError` unconditionally (`src/cli/commands/destroy.ts`) — so
  * there the remedy is the one that command's own summary names: confirm the
- * resource is gone, then drop the record with `cdkd state orphan <stack>`.
+ * resource is gone, then drop the record with
+ * `cdkd state orphan <stack> --stack-region <region>`.
  * Messages must not offer the flag on the destroy path, which is the path this
  * arm is mostly reached from.
  *

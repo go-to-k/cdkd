@@ -1023,14 +1023,33 @@ describe('CustomResourceProvider', () => {
       ).rejects.toThrow(/Custom Resource MyCustomResource: ServiceToken is not a resolved string ARN \(got object\)/);
     });
 
-    it('error message mentions the recovery path so users know the fix', async () => {
+    it.each([
+      [
+        'create',
+        () => provider.create('MyCustomResource', 'Custom::MyType', { ServiceToken: rawIntrinsic }),
+      ],
+      [
+        'update',
+        () =>
+          provider.update(
+            'MyCustomResource',
+            'existing-physical-id',
+            'Custom::MyType',
+            { ServiceToken: rawIntrinsic },
+            { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:old' }
+          ),
+      ],
+      [
+        'delete',
+        () =>
+          provider.delete('MyCustomResource', 'physical-id', 'Custom::MyType', {
+            ServiceToken: rawIntrinsic,
+          }),
+      ],
+    ])('%s: the error names the recovery path so users know the fix', async (_, run) => {
       // The whole point of the typed error is to make the bug class
       // actionable. Verify the suggested-action sentence is there.
-      await expect(
-        provider.delete('MyCustomResource', 'physical-id', 'Custom::MyType', {
-          ServiceToken: rawIntrinsic,
-        })
-      ).rejects.toThrow(
+      await expect(run()).rejects.toThrow(
         // Region-scoped (go-to-k/cdkd#3996), and quoted rather than
         // backticked, which would run the command when pasted.
         "re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover."
