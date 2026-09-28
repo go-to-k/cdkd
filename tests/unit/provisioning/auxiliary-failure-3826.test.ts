@@ -35,15 +35,18 @@ import { CloudTrailClient } from '@aws-sdk/client-cloudtrail';
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 import { CodeCommitClient } from '@aws-sdk/client-codecommit';
 import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { ECRClient } from '@aws-sdk/client-ecr';
 import { EFSClient } from '@aws-sdk/client-efs';
 import { IAMClient } from '@aws-sdk/client-iam';
 import { ElasticLoadBalancingV2Client } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
+import { KinesisClient } from '@aws-sdk/client-kinesis';
 import { KMSClient } from '@aws-sdk/client-kms';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { RDSClient } from '@aws-sdk/client-rds';
+import { Route53Client } from '@aws-sdk/client-route-53';
 import { S3Client } from '@aws-sdk/client-s3';
 import { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
 import { SNSClient } from '@aws-sdk/client-sns';
@@ -65,6 +68,7 @@ import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtra
 import { CodeCommitRepositoryProvider } from '../../../src/provisioning/providers/codecommit-repository-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
+import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js';
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
@@ -75,10 +79,12 @@ import { IAMInstanceProfileProvider } from '../../../src/provisioning/providers/
 import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
+import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
 import { KMSProvider } from '../../../src/provisioning/providers/kms-provider.js';
 import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { RDSDBProxyTargetGroupProvider } from '../../../src/provisioning/providers/rds-dbproxy-targetgroup-provider.js';
+import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
@@ -92,6 +98,27 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 /** An SDK client class; its `send` lives on the shared Smithy base prototype. */
 type ClientClass = { prototype: object };
 type Sendable = { send: (command: unknown) => Promise<unknown> };
+
+/**
+ * One more auxiliary arm behind a case's mark site, for a call that needs a
+ * different create path to reach it.
+ */
+interface AuxArm {
+  command: string;
+  /** Test-title label; defaults to `command`. */
+  label?: string;
+  /** Merged over the case's `properties`; an `undefined` value drops the key. */
+  patch?: Record<string, unknown>;
+  /**
+   * A fresh handler per run, consulted before the canned responses: return a
+   * response, throw, or return `undefined` to fall through.
+   */
+  override?: () => (name: string, input: Record<string, unknown>) => unknown;
+  /** Commands the arm's path must send, proving it took that path. */
+  mustSend?: string[];
+  /** A subset the failing command's INPUT must match. */
+  failingInput?: Record<string, unknown>;
+}
 
 interface Case {
   /**
@@ -108,6 +135,12 @@ interface Case {
   main?: string;
   /** An auxiliary command the create path sends after (or before) `main`. */
   aux: string;
+  /**
+   * More auxiliary commands behind the SAME mark site, each failed in a run of
+   * its own. They raise the generic stand-in, except an entry whose command
+   * IS `aux`, which raises `auxAwsError` when one is set.
+   */
+  alsoAux?: Array<string | AuxArm>;
   /** Canned responses by command name. */
   responses?: Record<string, unknown>;
   /** The AWS error the AUXILIARY command raises, when a real spelling is known. */
@@ -609,6 +642,175 @@ const CASES: Case[] = [
     },
   },
   {
+    // One site, behind a flag set when the zone is created or ADOPTED. The main half
+    // uses the stand-in: Route 53 allows duplicate zone NAMES, and its own
+    // `HostedZoneAlreadyExists` is a caller-reference replay that the provider
+    // ADOPTS (#2039) and whose text says "already been created".
+    name: 'route53 AWS::Route53::HostedZone',
+    provider: () => new Route53Provider(),
+    resourceType: 'AWS::Route53::HostedZone',
+    properties: {
+      Name: 'example.com',
+      VPCs: [
+        { VPCId: 'vpc-1', VPCRegion: 'us-east-1' },
+        { VPCId: 'vpc-2', VPCRegion: 'us-east-1' },
+      ],
+      HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+    },
+    clients: [Route53Client],
+    main: 'CreateHostedZoneCommand',
+    aux: 'AssociateVPCWithHostedZoneCommand',
+    // The Accelerated Recovery arm throws its OWN ProvisioningError, which the
+    // outer catch rethrows as-is: the mark must sit before that rethrow.
+    alsoAux: [
+      'UpdateHostedZoneFeaturesCommand',
+      {
+        // A replayed create ADOPTS the zone the lost first attempt made (#2039);
+        // the auxiliary failing after that is still not this zone's collision.
+        command: 'AssociateVPCWithHostedZoneCommand',
+        label: 'AssociateVPCWithHostedZoneCommand after an adopted replay',
+        override: () => {
+          let callerReference: unknown;
+          return (name, input) => {
+            if (name === 'CreateHostedZoneCommand') {
+              callerReference = input['CallerReference'];
+              throw awsSdkError(
+                'A hosted zone has already been created with the specified caller reference.',
+                'HostedZoneAlreadyExists'
+              );
+            }
+            const zone = { Id: '/hostedzone/Z1', Name: 'example.com.', CallerReference: callerReference };
+            if (name === 'ListHostedZonesByNameCommand') return { HostedZones: [zone], IsTruncated: false };
+            if (name === 'GetHostedZoneCommand') {
+              return { HostedZone: zone, DelegationSet: { NameServers: ['ns-1.awsdns-01.org'] } };
+            }
+            return undefined;
+          };
+        },
+        mustSend: ['ListHostedZonesByNameCommand', 'GetHostedZoneCommand'],
+      },
+    ],
+    responses: {
+      CreateHostedZoneCommand: {
+        HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
+        DelegationSet: { NameServers: ['ns-1.awsdns-01.org'] },
+      },
+    },
+  },
+  {
+    name: 'kinesis AWS::Kinesis::Stream',
+    provider: () => new KinesisStreamProvider(),
+    resourceType: 'AWS::Kinesis::Stream',
+    properties: {
+      Name: 'stream',
+      ShardCount: 1,
+      Tags: [{ Key: 'k', Value: 'v' }],
+      RetentionPeriodHours: 48,
+      StreamEncryption: { EncryptionType: 'KMS', KeyId: 'alias/aws/kinesis' },
+      DesiredShardLevelMetrics: ['IncomingBytes'],
+    },
+    clients: [KinesisClient],
+    main: 'CreateStreamCommand',
+    mainAwsError: {
+      name: 'ResourceInUseException',
+      message: 'Stream stream under account 123456789012 already exists.',
+    },
+    aux: 'AddTagsToStreamCommand',
+    alsoAux: [
+      'IncreaseStreamRetentionPeriodCommand',
+      'StartStreamEncryptionCommand',
+      'EnableEnhancedMonitoringCommand',
+      {
+        // Below the 24-hour default (AWS refuses it, but create() sends it).
+        command: 'DecreaseStreamRetentionPeriodCommand',
+        patch: { RetentionPeriodHours: 12 },
+      },
+    ],
+    responses: {
+      DescribeStreamCommand: {
+        StreamDescription: {
+          StreamStatus: 'ACTIVE',
+          StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/stream',
+        },
+      },
+    },
+  },
+  {
+    // One site, in the catch that already rolls a partial table back.
+    name: 'dynamodb-table AWS::DynamoDB::Table',
+    provider: () => new DynamoDBTableProvider(),
+    resourceType: 'AWS::DynamoDB::Table',
+    properties: {
+      TableName: 'table',
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+      BillingMode: 'PAY_PER_REQUEST',
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+      TimeToLiveSpecification: { AttributeName: 'ttl', Enabled: true },
+      KinesisStreamSpecification: {
+        StreamArn: 'arn:aws:kinesis:us-east-1:123456789012:stream/s',
+      },
+      ContributorInsightsSpecification: { Enabled: true },
+      StreamSpecification: {
+        StreamViewType: 'NEW_IMAGE',
+        Tags: [{ Key: 'k', Value: 'v' }],
+        ResourcePolicy: {
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [
+              {
+                Effect: 'Allow',
+                Principal: { AWS: 'arn:aws:iam::123456789012:root' },
+                Action: 'dynamodb:GetRecords',
+                Resource: '*',
+              },
+            ],
+          },
+        },
+      },
+    },
+    clients: [DynamoDBClient],
+    main: 'CreateTableCommand',
+    mainAwsError: { name: 'ResourceInUseException', message: 'Table already exists: table' },
+    aux: 'UpdateContinuousBackupsCommand',
+    alsoAux: [
+      'UpdateTimeToLiveCommand',
+      'EnableKinesisStreamingDestinationCommand',
+      'UpdateContributorInsightsCommand',
+      {
+        // The PER-INDEX setting: the same command, with an IndexName (#1782).
+        command: 'UpdateContributorInsightsCommand',
+        label: 'UpdateContributorInsightsCommand for an index',
+        patch: {
+          ContributorInsightsSpecification: undefined,
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'gsi',
+              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              ContributorInsightsSpecification: { Enabled: true },
+            },
+          ],
+        },
+        failingInput: { IndexName: 'gsi' },
+      },
+      // The two stream members act on the STREAM arn (#3458).
+      'TagResourceCommand',
+      'PutResourcePolicyCommand',
+    ],
+    responses: {
+      DescribeTableCommand: {
+        Table: {
+          TableStatus: 'ACTIVE',
+          TableArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/table',
+          TableId: 't1',
+          LatestStreamArn:
+            'arn:aws:dynamodb:us-east-1:123456789012:table/table/stream/2026-01-01T00:00:00.000',
+        },
+      },
+    },
+  },
+  {
     name: 'ssm-parameter AWS::SSM::Parameter',
     provider: () => new SSMParameterProvider(),
     resourceType: 'AWS::SSM::Parameter',
@@ -621,28 +823,41 @@ const CASES: Case[] = [
   },
 ];
 
-function stubClients(c: Case, failing: string): string[] {
+function stubClients(
+  c: Case,
+  failing: string,
+  arm?: AuxArm
+): { sent: string[]; failingInputs: Record<string, unknown>[] } {
   const sent: string[] = [];
+  const failingInputs: Record<string, unknown>[] = [];
+  const override = arm?.override?.();
   for (const client of c.clients) {
     vi.spyOn(client.prototype as Sendable, 'send').mockImplementation(async (command: unknown) => {
       const name = (command as { constructor: { name: string } }).constructor.name;
+      const input = (command as { input?: Record<string, unknown> }).input ?? {};
       sent.push(name);
       if (name === failing) {
-        const real = failing === c.aux ? c.auxAwsError : c.mainAwsError;
+        failingInputs.push(input);
+        const real =
+          failing === c.main ? c.mainAwsError : failing === c.aux ? c.auxAwsError : undefined;
         throw real !== undefined
           ? awsSdkError(real.message, real.name)
           : awsSdkError(`${COLLISION_TEXT}.`, 'AlreadyExistsException');
       }
+      const overridden = override?.(name, input);
+      if (overridden !== undefined) return structuredClone(overridden);
       return structuredClone(c.responses?.[name] ?? {});
     });
   }
-  return sent;
+  return { sent, failingInputs };
 }
 
-async function createError(c: Case): Promise<unknown> {
+async function createError(c: Case, patch?: Record<string, unknown>): Promise<unknown> {
+  const properties = { ...c.properties, ...patch };
+  for (const [k, v] of Object.entries(properties)) if (v === undefined) delete properties[k];
   return c
     .provider()
-    .create(LOGICAL_ID, c.resourceType, structuredClone(c.properties))
+    .create(LOGICAL_ID, c.resourceType, structuredClone(properties))
     .then(
       () => undefined,
       (e: unknown) => e
@@ -663,14 +878,21 @@ describe('auxiliary create failures do not classify as a name collision (#3826)'
   });
 
   describe.each(CASES)('$name', (c) => {
-    it(`an "already exists" from ${c.aux} is not credited to the resource`, async () => {
+    const arms: AuxArm[] = [c.aux, ...(c.alsoAux ?? [])].map((a) =>
+      typeof a === 'string' ? { command: a } : a
+    );
+    it.each(arms.map((arm) => [arm.label ?? arm.command, arm] as const))(`an "already exists" from %s is not credited to the resource`, async (_title, arm) => {
       applyEnv(c);
-      const sent = stubClients(c, c.aux);
-      const error = await createError(c);
+      const { sent, failingInputs } = stubClients(c, arm.command, arm);
+      const error = await createError(c, arm.patch);
 
       // The auxiliary call was REACHED, after the main create succeeded (or,
       // for a call made before it, with the main create never sent).
-      expect(sent).toContain(c.aux);
+      expect(sent).toContain(arm.command);
+      for (const needed of arm.mustSend ?? []) expect(sent).toContain(needed);
+      if (arm.failingInput !== undefined) {
+        expect(failingInputs).toContainEqual(expect.objectContaining(arm.failingInput));
+      }
       if (c.main !== undefined) {
         if (c.auxRunsFirst === true) expect(sent).not.toContain(c.main);
         else expect(sent).toContain(c.main);
@@ -687,7 +909,7 @@ describe('auxiliary create failures do not classify as a name collision (#3826)'
     it.skipIf(main === undefined || c.mainCollisionNotRaised !== undefined)(`an "already exists" from ${main ?? '(no main create)'} still classifies`, async () => {
       if (main === undefined) return;
       applyEnv(c);
-      const sent = stubClients(c, main);
+      const { sent } = stubClients(c, main);
       const error = await createError(c);
 
       expect(sent).toContain(main);

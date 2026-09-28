@@ -24,6 +24,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { readConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -342,6 +343,11 @@ export class KinesisStreamProvider implements ResourceProvider {
       }
     }
 
+    // Set once CreateStream returns. No failure after it is this stream's name
+    // collision: it is an auxiliary call's (AddTagsToStream, the retention
+    // change, StartStreamEncryption, EnableEnhancedMonitoring) or an ACTIVE
+    // wait's, so every one is marked (#3826, #3877).
+    let streamCreated = false;
     try {
       // Determine stream mode
       const streamModeDetails = properties['StreamModeDetails'] as
@@ -374,6 +380,7 @@ export class KinesisStreamProvider implements ResourceProvider {
           ...(maxRecordSizeInKiB !== undefined && { MaxRecordSizeInKiB: maxRecordSizeInKiB }),
         })
       );
+      streamCreated = true;
 
       this.logger.debug(`CreateStream initiated for ${streamName}, waiting for ACTIVE status`);
 
@@ -483,6 +490,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         ...this.effectiveMetricsProperties(properties, desiredMetrics),
       };
     } catch (error) {
+      if (streamCreated) markAuxiliaryFailure(error, logicalId);
       if (error instanceof ProvisioningError) {
         throw error;
       }
