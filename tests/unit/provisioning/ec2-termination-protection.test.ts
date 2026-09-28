@@ -35,7 +35,7 @@ describe('ec2-termination-protection helpers', () => {
       const send = vi.fn((_cmd: unknown) => Promise.resolve({}));
       const client = { send } as unknown as EC2Client;
 
-      await disableInstanceApiTermination(client, 'i-abc', logger);
+      await expect(disableInstanceApiTermination(client, 'i-abc', logger)).resolves.toBe(true);
 
       expect(send).toHaveBeenCalledTimes(1);
       const cmd = send.mock.calls[0]![0] as { constructor: { name: string }; input: unknown };
@@ -47,7 +47,9 @@ describe('ec2-termination-protection helpers', () => {
       const send = vi.fn(() => Promise.reject(new Error('AccessDenied')));
       const client = { send } as unknown as EC2Client;
 
-      await expect(disableInstanceApiTermination(client, 'i-abc', logger)).resolves.toBeUndefined();
+      // `false`, not a throw: the caller still attempts the delete, and a
+      // retrying caller knows this instance is not flipped yet.
+      await expect(disableInstanceApiTermination(client, 'i-abc', logger)).resolves.toBe(false);
     });
   });
 

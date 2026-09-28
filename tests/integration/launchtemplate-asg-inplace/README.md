@@ -1,6 +1,6 @@
 # launchtemplate-asg-inplace
 
-Regression integ for two bugs:
+Regression integ for three bugs:
 
 - **Issue #985**: an in-place UPDATE that changes a `Fn::GetAtt`-consumed
   derived attribute must propagate to a dependent that the diff would
@@ -9,6 +9,10 @@ Regression integ for two bugs:
   reset to its CFn default on UPDATE — `UpdateAutoScalingGroup` has merge
   semantics (absent = unchanged), so pre-fix the old live value silently
   survived the removal.
+- **Issue #3995**: `MetricsCollection` and `NotificationConfigurations` are not
+  `CreateAutoScalingGroup` members, and pre-fix `create()` never sent
+  `EnableMetricsCollection` / `PutNotificationConfiguration`, so CDK
+  `groupMetrics` / `notifications` were missing after the FIRST deploy.
 
 The fixture is a VPC + `ec2.LaunchTemplate` + `autoscaling.AutoScalingGroup`.
 CDK renders the ASG's `LaunchTemplate.Version` as
@@ -33,7 +37,10 @@ deploy is cheap and the destroy is fast (no instance teardown wait).
 
 1. Phase 1: the LaunchTemplate is at version 1, the ASG's live
    `LaunchTemplate.Version` (`aws autoscaling describe-auto-scaling-groups`) is
-   "1", and the three non-default ASG properties are live.
+   "1", and the three non-default ASG properties are live. The group metrics
+   (`GroupMinSize`, `GroupMaxSize`) and the SNS notifications
+   (`EC2_INSTANCE_LAUNCH`, `EC2_INSTANCE_TERMINATE`) are live after this first
+   deploy (issue #3995).
 2. UPDATE phase (`CDKD_TEST_UPDATE=true`, changes only `instanceType`): the
    LaunchTemplate advances to version 2 AND the ASG's live
    `LaunchTemplate.Version` is "2" in the same deploy — NOT "1" (the #985
