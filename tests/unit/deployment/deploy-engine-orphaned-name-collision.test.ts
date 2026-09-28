@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { markAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ChangeType, ResourceChange } from '../../../src/types/state.js';
@@ -243,6 +244,34 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
       `${STACK}-${LOGICAL}`
     );
     expect(adviceIn(await attempt())).toBeUndefined();
+  });
+
+  it('says nothing when the collision is a replay after an auxiliary failure (#3972)', async () => {
+    // A DECIDED loss, not an oversight: `withRetry` carries an auxiliary
+    // attempt's mark onto the replay's "already exists", and this advice reads
+    // the same anchored classifier. Its text (an orphan of an EARLIER run, a
+    // `Retain`) would misdescribe what is this run's own first attempt. The
+    // first attempt fails on a throttled auxiliary call (1s of real backoff),
+    // the replay collides.
+    const collision = createError;
+    let calls = 0;
+    provider.create = vi.fn().mockImplementation(async () => {
+      if (calls++ > 0) throw collision;
+      throw markAuxiliaryFailure(
+        new ProvisioningError(
+          `Failed to create ${LOGICAL}: Rate exceeded`,
+          TYPE,
+          LOGICAL,
+          `${STACK}-${LOGICAL}`,
+          awsSdkError('Rate exceeded', 'ThrottlingException')
+        ),
+        LOGICAL
+      );
+    });
+    const lines = await attempt();
+
+    expect(calls).toBe(2);
+    expect(adviceIn(lines)).toBeUndefined();
   });
 
   it('says nothing, and prints no `undefined`, when the error carries no id', async () => {

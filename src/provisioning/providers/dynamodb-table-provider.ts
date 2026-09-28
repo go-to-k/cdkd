@@ -1653,7 +1653,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     }
 
     // Tracks whether CreateTable succeeded this call, so the catch can roll
-    // back a table whose post-ACTIVE config step (PITR / TTL) failed —
+    // back a table whose post-create step (PITR, TTL, Kinesis streaming,
+    // Contributor Insights, a stream-arn tag or policy) failed —
     // otherwise create() throws before returning the physicalId, the deploy
     // engine never learns the table exists, and it orphans. The same flag
     // marks every failure after it: each is an auxiliary call's or an ACTIVE
