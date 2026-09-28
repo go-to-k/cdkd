@@ -8558,8 +8558,8 @@ export async function runPerStackImportLoop(args: {
             const handler = PRE_DELETE_HANDLERS[entry.resourceType];
             if (!handler) {
               throw new Error(
-                `No pre-delete handler registered for ${entry.resourceType} ` +
-                  `(${entry.logicalId}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
+                `No pre-delete handler registered for ${displayIdent(entry.resourceType)} ` +
+                  `(${displayIdent(entry.logicalId)}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
                   `resource is in IMPORT_UNSUPPORTED_RECREATABLE_TYPES but lacks a ` +
                   `PRE_DELETE_HANDLERS entry.\n` +
                   // Its CloudFormation stack exists by now, so even a cdkd bug
