@@ -1602,8 +1602,8 @@ export class CustomResourceProvider implements ResourceProvider {
           `manages is LEFT IN PLACE. CloudFormation does not support secure (secretsmanager / ` +
           `ssm-secure) dynamic references in custom resources, and for those a re-deploy of the ` +
           `same template records the same reference again. Tear the resource down by hand, then clear ` +
-          `the stack's records with 'cdkd state orphan <stack>' — that command drops EVERY ` +
-          `record for the stack, not just this one. Restoring ServiceToken (the provider's ` +
+          `the stack's records with 'cdkd state orphan <stack> --stack-region <region>' — that ` +
+          `command drops EVERY record for the stack in that region, not just this one. Restoring ServiceToken (the provider's ` +
           `Lambda function or SNS topic ARN) in state.json and re-running helps only while that ` +
           `handler still exists: a destroy goes on to delete its backing Lambda. ` +
           safeMsg`${DEPLOY_SKIP_CAVEAT}`

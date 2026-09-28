@@ -216,7 +216,9 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
       'CloudFormation does not support secure (secretsmanager / ssm-secure) dynamic references'
     );
     expect(text).toContain('LEFT IN PLACE');
-    expect(text).toContain("'cdkd state orphan <stack>'");
+    // Region-scoped, and scoped to that region's records (go-to-k/cdkd#3996).
+    expect(text).toContain("'cdkd state orphan <stack> --stack-region <region>'");
+    expect(text).toContain('drops EVERY record for the stack in that region');
     expect(text).toContain('helps only while that handler still exists');
     expect(text).toContain('https://github.com/go-to-k/cdkd/issues/1762');
     // The logical id names the record; the expression (which names the
