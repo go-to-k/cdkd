@@ -1065,6 +1065,12 @@
       ]
     },
     {
+      "flag": "--stack",
+      "integs": [
+        "local-invoke-stage"
+      ]
+    },
+    {
       "flag": "--stack-concurrency",
       "integs": [
         "cross-region-concurrent-stacks",
@@ -1651,7 +1657,6 @@
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
     "--prefix-user-supplied-names",
-    "--stack",
     "--strict"
   ],
   "unknownFlagsInIntegs": [

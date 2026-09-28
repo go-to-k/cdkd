@@ -43,7 +43,8 @@ references, leaving every other intrinsic alone.
   excludes `AWS::CDK::Metadata`, so `CDKMetadata/Default` is never orphanable.
 - The stack is the LONGEST display-path prefix ending at a `/`, never the first
   segment: a Stage stack's path is hierarchical
-  ([#3943](https://github.com/go-to-k/cdkd/issues/3943)).
+  ([#3943](https://github.com/go-to-k/cdkd/issues/3943)). `stackForConstructPath`
+  in `cdk-path.ts` is the one copy; the `cdkd local` resolvers use it too.
 - Unresolvable references hard-fail; `--force` falls back to
   `state.attributes`.
 - WRITE-CAPABLE, so it refuses a record it could not read — the root, `outputs`,

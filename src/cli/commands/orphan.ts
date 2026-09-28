@@ -24,7 +24,11 @@ import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
-import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cdk-path.js';
+import {
+  buildCdkPathIndex,
+  resolveCdkPathToLogicalIds,
+  stackForConstructPath,
+} from '../cdk-path.js';
 import {
   rewriteResourceReferences,
   type OrphanRewrite,
@@ -621,37 +625,6 @@ function resolveConstructPaths(
     throw new Error('No construct paths supplied.');
   }
   return { stack, logicalIds };
-}
-
-/**
- * The stack a construct path addresses: the one whose `displayName` (or
- * `stackName`) followed by `/` is the LONGEST prefix of `path`.
- *
- * Longest wins because a Stage nests: `Outer/Inner/Api/Bucket` must pick
- * `Outer/Inner/Api` even if a stack displayed `Outer` exists. The trailing `/`
- * keeps `MyStage/Api` from claiming `MyStage/ApiV2/Bucket`. On a tie in length
- * a `displayName` beats another stack's `stackName`, the precedence the
- * first-segment lookup this replaced gave the two maps (go-to-k/cdkd#3943).
- */
-function stackForConstructPath(path: string, stacks: readonly StackInfo[]): StackInfo | undefined {
-  let best: StackInfo | undefined;
-  let bestRank = -1;
-  for (const s of stacks) {
-    const names: Array<[string | undefined, number]> = [
-      [s.displayName, 1],
-      [s.stackName, 0],
-    ];
-    for (const [name, preference] of names) {
-      if (typeof name !== 'string' || name.length === 0) continue;
-      if (!path.startsWith(`${name}/`)) continue;
-      const rank = name.length * 2 + preference;
-      if (rank > bestRank) {
-        best = s;
-        bestRank = rank;
-      }
-    }
-  }
-  return best;
 }
 
 /**

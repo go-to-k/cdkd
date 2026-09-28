@@ -1535,6 +1535,13 @@
       ]
     },
     {
+      "name": "local-invoke-stage",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
       "name": "local-run-task",
       "annotated": true,
       "scenarios": [
@@ -2728,7 +2735,8 @@
         "local-invoke-layers",
         "local-invoke-provided",
         "local-invoke-python",
-        "local-invoke-ruby"
+        "local-invoke-ruby",
+        "local-invoke-stage"
       ]
     },
     {

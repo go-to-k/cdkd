@@ -2,7 +2,11 @@ import { existsSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
-import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
+import {
+  buildCdkPathIndex,
+  resolveCdkPathToLogicalIds,
+  stackForPathFormTarget,
+} from '../cli/cdk-path.js';
 import { matchStacks } from '../cli/stack-matcher.js';
 import { derivePseudoParametersFromRegion, tryResolveImageFnJoin } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
@@ -302,7 +306,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   }
 
   const parsed = parseTarget(target);
-  const stack = pickStack(parsed, stacks);
+  const stack = pickStack(parsed, stacks, target);
 
   const template = stack.template;
   const resources = template.Resources ?? {};
@@ -364,7 +368,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
  * user may omit the stack prefix. Otherwise an explicit stack pattern is
  * required.
  */
-function pickStack(parsed: ParsedTarget, stacks: StackInfo[]): StackInfo {
+function pickStack(parsed: ParsedTarget, stacks: StackInfo[], target: string): StackInfo {
   if (parsed.stackPattern === null) {
     if (stacks.length === 1) return stacks[0]!;
     throw new LocalInvokeResolutionError(
@@ -373,6 +377,13 @@ function pickStack(parsed: ParsedTarget, stacks: StackInfo[]): StackInfo {
         `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
     );
   }
+
+  // A path-form target's stack is the LONGEST display-path prefix, not the
+  // first segment, which is the Stage id for a Stage stack
+  // (go-to-k/cdkd#3953). A head no display path prefixes -- a wildcard such
+  // as `My*` -- still goes to matchStacks.
+  const byPrefix = stackForPathFormTarget(parsed, target, stacks);
+  if (byPrefix) return byPrefix;
 
   // Reuse the shared stack-matcher so display-path / wildcard semantics
   // line up with deploy / diff / destroy.
