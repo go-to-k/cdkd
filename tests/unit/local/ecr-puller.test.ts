@@ -55,7 +55,10 @@ vi.mock('node:child_process', async () => {
   return {
     ...actual,
     spawn: (...args: unknown[]) => {
-      spawnForegroundMock(...args);
+      // A number returned by the stub is the child's exit code (default 0),
+      // so a case can fail the pull with `spawnForegroundMock.mockReturnValueOnce(1)`.
+      const stubbed: unknown = spawnForegroundMock(...args);
+      const exitCode = typeof stubbed === 'number' ? stubbed : 0;
       const handlers: Record<string, ((arg?: unknown) => void)[]> = {};
       const proc = {
         stdin: { write: vi.fn(), end: vi.fn() },
@@ -64,11 +67,11 @@ vi.mock('node:child_process', async () => {
         on: (evt: string, cb: (arg?: unknown) => void) => {
           (handlers[evt] ??= []).push(cb);
           if (evt === 'close') {
-            setImmediate(() => cb(0));
+            setImmediate(() => cb(exitCode));
           }
         },
         once: (evt: string, cb: (arg?: unknown) => void) => {
-          if (evt === 'close') setImmediate(() => cb(0));
+          if (evt === 'close') setImmediate(() => cb(exitCode));
         },
         kill: vi.fn(),
       };
@@ -1117,6 +1120,55 @@ describe('pullEcrImage', () => {
     expect(inspectCall).toBeDefined();
     expect((inspectCall![0] as string[])[2]).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
     expect(result).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
+  });
+
+  // Issue #1817: the two user-facing failure messages name the image, and
+  // the name they print must be the canonical spelling docker was handed —
+  // not the raw mixed-case input.
+  it('--no-pull cache miss: the error names the canonical (lower-case host) URI', async () => {
+    runDockerMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'image' && args[1] === 'inspect') {
+        throw new Error('Error: No such image');
+      }
+      return { stdout: '', stderr: '' };
+    });
+
+    const err = await pullEcrImage('111111111111.dkr.ecr.US-EAST-1.amazonaws.com/Team/App:V1', {
+      skipPull: true,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LocalInvokeBuildError);
+    expect((err as Error).message).toBe(
+      "Image '111111111111.dkr.ecr.us-east-1.amazonaws.com/Team/App:V1' is not in the local " +
+        'docker cache and --no-pull was set. Either remove --no-pull (cdkd will pull from ECR) ' +
+        'or pre-pull the image manually with `docker pull`.'
+    );
+  });
+
+  it('docker pull failure: the error names the canonical (lower-case host) URI', async () => {
+    vi.stubEnv('CDK_DOCKER', '');
+    try {
+      stsSendMock.mockResolvedValue({ Account: '111111111111' });
+      ecrSendMock.mockResolvedValue({
+        authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
+      });
+      process.env['AWS_REGION'] = 'us-east-1';
+      // The pull is the only foreground spawn; exit 1 fails it.
+      spawnForegroundMock.mockReturnValueOnce(1);
+
+      const err = await pullEcrImage('111111111111.dkr.ecr.US-EAST-1.amazonaws.com/Team/App:V1', {
+        skipPull: false,
+      }).catch((e: unknown) => e);
+
+      expect(spawnForegroundMock).toHaveBeenCalledTimes(1);
+      expect(err).toBeInstanceOf(LocalInvokeBuildError);
+      expect((err as Error).message).toBe(
+        'docker pull 111111111111.dkr.ecr.us-east-1.amazonaws.com/Team/App:V1 failed: ' +
+          'docker exited with code 1'
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('does not log a spurious cross-region pull when only the CASE differs', async () => {
