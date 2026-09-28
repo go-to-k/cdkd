@@ -14,6 +14,7 @@ import {
   displayIdent,
   displaySafe,
   isPasteableIdent,
+  safeMsg,
   truncateCodePoints,
 } from '../../utils/display-safe.js';
 import {
@@ -7789,7 +7790,7 @@ export async function runPerStackImportLoop(args: {
     const message = err instanceof Error ? err.message : String(err);
     if (!options.dryRun || !message.startsWith('buildResolvedParametersPerStack:')) throw err;
     logger.warn(
-      `${message} --dry-run plans without the nested stacks' Parameter values; a real run ` +
+      safeMsg`${message} --dry-run plans without the nested stacks' Parameter values; a real run ` +
         `refuses here.`
     );
     resolved = {
