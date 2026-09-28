@@ -32,6 +32,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -76,6 +77,8 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
   let callOrder: string[];
   let sdkProvider: ResourceProvider;
   let ccProvider: ResourceProvider;
+  /** What the registry answers for `ccRouteUnavailableReason` (issue #3899). */
+  let ccRouteUnavailable: string | undefined;
   let getProviderForCalls: Array<{
     resourceType: string;
     provisionedBy?: 'sdk' | 'cc-api';
@@ -85,6 +88,7 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
   beforeEach(() => {
     callOrder = [];
     getProviderForCalls = [];
+    ccRouteUnavailable = undefined;
 
     sdkProvider = {
       create: vi.fn(),
@@ -148,6 +152,7 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockImplementation(() => ccRouteUnavailable),
     };
 
     return new DeployEngine(
@@ -343,5 +348,51 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
     // AlreadyExists collision the destroy-then-create order was designed
     // to avoid).
     expect(ccProvider.create).not.toHaveBeenCalled();
+  });
+
+  describe('a type Cloud Control cannot create (issue #3899)', () => {
+    // `validateRecreateTargets` refuses such a type pre-flight (#3887); this is
+    // the engine's own guard, for a caller that hands it recreate targets
+    // without running that validator. `forceCcApi` routes the create to Cloud
+    // Control whatever the type, so without the guard the old resource is
+    // deleted and the create then fails.
+    it('refuses BEFORE the old resource is deleted, naming the reason', async () => {
+      ccRouteUnavailable = 'no Cloud Control handlers';
+      const engine = makeEngine();
+
+      const err = await invokeProvision(
+        engine,
+        makeUpdateChange(),
+        makeState(),
+        makeTemplate()
+      ).then(
+        () => null,
+        (e) => (e as { cause?: unknown }).cause as Error & { code?: string }
+      );
+
+      expect(err).not.toBeNull();
+      expect(err!.code).toBe('RECREATE_TARGETS_INVALID');
+      expect(err!.message).toContain('no Cloud Control handlers');
+      expect(err!.message).toContain('Nothing was deleted');
+      expect(isMarkedNonRetryable(err)).toBe(true);
+      expect(sdkProvider.delete).not.toHaveBeenCalled();
+      expect(ccProvider.create).not.toHaveBeenCalled();
+      expect(callOrder).toEqual([]);
+    });
+
+    it('asks about the TEMPLATE type', async () => {
+      // A Type-change row, so the two candidate types differ.
+      const state = makeState();
+      state.MyLambda!.resourceType = 'AWS::SQS::Queue';
+      const engine = makeEngine();
+      await invokeProvision(engine, makeUpdateChange(), state, makeTemplate());
+      const registry = (engine as unknown as {
+        providerRegistry: { ccRouteUnavailableReason: ReturnType<typeof vi.fn> };
+      }).providerRegistry;
+      expect(registry.ccRouteUnavailableReason).toHaveBeenCalledWith('AWS::Lambda::Function');
+      expect(registry.ccRouteUnavailableReason).not.toHaveBeenCalledWith('AWS::SQS::Queue');
+      // The type is routable, so the recreate ran.
+      expect(callOrder).toEqual(['sdk.delete', 'cc.create']);
+    });
   });
 });

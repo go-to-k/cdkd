@@ -92,6 +92,7 @@ describe('the property-driven stateful guard exempts a --recreate-via-* target (
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
     };
     return new DeployEngine(
       mockStateBackend as unknown as never,

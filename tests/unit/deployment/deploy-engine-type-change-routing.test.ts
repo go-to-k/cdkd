@@ -132,6 +132,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     getRegisteredTypes: ReturnType<typeof vi.fn>;
     validateResourceTypes: ReturnType<typeof vi.fn>;
     validateResourceProperties: ReturnType<typeof vi.fn>;
+    ccRouteUnavailableReason: ReturnType<typeof vi.fn>;
   };
   let mockExportIndexStore: {
     updateForStack: ReturnType<typeof vi.fn>;
@@ -186,6 +187,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
     };
     mockStateBackend = {
       getState: vi.fn(),

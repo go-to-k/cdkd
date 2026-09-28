@@ -233,6 +233,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
     };
     mockStateBackend = {
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),

@@ -30,9 +30,16 @@ export class LambdaDurableReplacementStack extends cdk.Stack {
     super(scope, id, props);
 
     const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    // Issue #3808's phase only: an explicit name ANOTHER function (created out
+    // of band by verify.sh) already holds. `FunctionName` is create-only, so
+    // this is a replacement whose create-first attempt collides with a
+    // resource that is NOT the one being replaced.
+    const heldName = process.env.CDKD_TEST_HELD_NAME;
 
     const fn = new lambda.Function(this, 'DurableFn', {
-      // No `functionName` on purpose — see the class docstring.
+      // No `functionName` on purpose — see the class docstring — except in the
+      // held-name phase above.
+      ...(heldName !== undefined && heldName !== '' && { functionName: heldName }),
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'index.handler',
       code: lambda.Code.fromInline('exports.handler = async () => ({});'),

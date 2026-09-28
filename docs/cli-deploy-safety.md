@@ -728,7 +728,7 @@ shapes hit this, and both name `--replace` in their error text:
 
 | Failure | What happened | Without `--replace` | With `--replace` |
 | --- | --- | --- | --- |
-| `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name |
+| `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name — unless [another resource holds the new name](#when-the-new-name-belongs-to-another-resource) |
 | `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The Create API is name-idempotent, so the create returned the OLD resource's physical id instead of a new one — for example `CreateQueue` with an unchanged `QueueName` | Deploy fails rather than deleting the resource it just reported as created | Same delete-first path |
 
 `cdkd rollback` raises `NAMED_REPLACEMENT_COLLISION` too, and neither column
@@ -744,6 +744,20 @@ that one resource alone and let the rest of the rollback finish, re-run with
 The resource is briefly unavailable while it is deleted and recreated. The
 alternative remedy in both messages is to rename the resource so the
 create-first order has a free name to take.
+
+#### When the new name belongs to another resource
+
+A replacement that also **changes** the physical name can collide with a
+resource that is not the one being replaced — for example, you renamed a
+function to a name another stack already uses. Deleting the old resource first
+cannot free that name, so cdkd does not offer `--replace` there:
+
+- It compares the name your template declares with the name the old resource
+  holds, from state and its physical id.
+- When they differ, the deploy fails with `NAMED_REPLACEMENT_COLLISION` saying
+  the name is held by another resource. **Even with `--replace`, nothing is
+  deleted.**
+- Pick a free name, or delete the resource holding it if it is yours.
 
 `UpdateReplacePolicy: Retain` hard-fails in both shapes **regardless of
 `--replace`**: with Retain the old resource keeps the name, so a same-name
