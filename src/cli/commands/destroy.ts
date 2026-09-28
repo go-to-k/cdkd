@@ -22,7 +22,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
@@ -486,7 +486,7 @@ async function destroyCommand(
       // Single stack: auto-select (CDK CLI compatible)
       stackNames = candidateStacks.map((s) => s.stackName);
     } else if (candidateStacks.length === 0) {
-      logger.info('No stacks found in state' + failedStageNote([], failedStages));
+      logger.info(safeMsg`No stacks found in state${failedStageNote([], failedStages)}`);
       return;
     } else {
       throw new Error(
@@ -538,7 +538,7 @@ async function destroyCommand(
         }
       }
       logger.info(
-        'No matching stacks found in state' + failedStageNote(stackPatterns, failedStages)
+        safeMsg`No matching stacks found in state${failedStageNote(stackPatterns, failedStages)}`
       );
       return;
     }
