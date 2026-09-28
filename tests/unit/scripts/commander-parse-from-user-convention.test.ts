@@ -482,6 +482,10 @@ function resolveReceiver(
   const chained = /\b(\w+)\s*\(\s*\)\s*(?:\.\s*\w+\s*\([^()]*\)\s*)*$/.exec(before);
   if (chained && FACTORIES.has(chained[1]!)) return { factory: chained[1]!, via: 'chained' };
   const recv = /(\w+)\s*$/.exec(before)?.[1];
+  const at = before.length;
+  const enclosing = headers.filter((h) => h.body && h.body[0] < at && at < h.body[1]).at(-1);
+  // A parameter is a binding too, and its argument is not traced.
+  if (recv !== undefined && enclosing?.params.includes(recv)) return undefined;
   const called = recv === undefined ? undefined : factoryCalled(initializerOf(before, recv));
   if (called === undefined) return undefined;
   if (FACTORIES.has(called)) return { factory: called, via: 'direct' };
@@ -510,7 +514,11 @@ function initializerOf(text: string, name: string): string | undefined {
 }
 
 function factoryCalled(init: string | undefined): string | undefined {
-  return init === undefined ? undefined : /^(?:await\s+)?(\w+)\s*\(\s*\)/.exec(init)?.[1];
+  // Only the factory's own command, optionally through `this`-returning
+  // calls: `createX().commands[0]` holds a CHILD, which must not be replayed
+  // from the factory's root.
+  const call = /^(?:await\s+)?(\w+)\s*\(\s*\)(?:\s*\.\s*\w+\s*\([^()]*\))*\s*$/;
+  return init === undefined ? undefined : call.exec(init)?.[1];
 }
 
 interface AritySite {
@@ -779,6 +787,16 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     ).toBeUndefined();
     // An initializer-less redeclaration shadows an earlier factory binding.
     expect(resolve('const cmd = createDeployCommand();\nlet cmd: Command;\ncmd')).toBeUndefined();
+    // A child of the factory's command is not the factory's command.
+    expect(resolve('const cmd = createLocalCommand().commands[0]!;\ncmd')).toBeUndefined();
+    // A parameter shadows an earlier factory binding.
+    expect(
+      resolve('const cmd = createDeployCommand();\nfunction run(cmd: Command) {\ncmd\n}')
+    ).toBeUndefined();
+    expect(resolve('const cmd = createDeployCommand().exitOverride();\ncmd')).toEqual({
+      factory: 'createDeployCommand',
+      via: 'direct',
+    });
     expect(resolve('const cmd = createDeployCommand();\ncmd')).toEqual({
       factory: 'createDeployCommand',
       via: 'direct',
