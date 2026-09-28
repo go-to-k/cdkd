@@ -73,6 +73,10 @@ preflight_clean() {
     echo "ERROR: CloudFormation stack '${stack}' already exists. Delete it first." >&2
     exit 1
   fi
+  # No state and no stack by this name, so any `/aws/lambda/<stack>-` group is
+  # an earlier FAILED run's leftover: this runner has no cleanup trap, and its
+  # post-destroy sweep only runs on success.
+  sweep_stack_lambda_log_groups "${stack}" "${REGION}"
 }
 
 assert_state_present() {
@@ -323,6 +327,8 @@ assert_state_history_survives() {
   echo "  ok: ${rows} noncurrent state.json version(s) survive the destroy, as sites 1-3 intend"
 }
 
+. "${TEST_DIR}/../cr-log-groups.sh"
+
 run_one() {
   local stack="$1"
   preflight_clean "${stack}"
@@ -406,6 +412,12 @@ run_one() {
 
   log "[${stack}] cdkd destroy"
   AWS_REGION="${REGION}" ${CDKD} destroy "${stack}" --force
+
+  # Lambda creates `/aws/lambda/<stack>-CustomS3AutoDeleteObjects...` when the
+  # S3 auto-delete custom resource runs, and nothing in the stack owns it, so
+  # destroy leaves it behind (#3885). Swept BEFORE the assertions: this runner
+  # has no cleanup trap, so a failing assertion would otherwise skip it.
+  sweep_stack_lambda_log_groups "${stack}" "${REGION}"
 
   log "[${stack}] post-destroy assertions"
   assert_state_absent "${stack}"

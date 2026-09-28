@@ -150,6 +150,12 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # sibling `sns-subscription-update` fixture does, and its `mktemp -d` was
 # created at variable-definition time and destroyed by exactly this pre-run
 # call. If this fixture ever grows one, create it AFTER the pre-run call.
+# Lambda creates `/aws/lambda/<function>` the first time each function runs, and
+# nothing in the stack owns those groups, so destroy leaves them behind (#3885):
+# the CDK autoDeleteObjects handler plus this stack's own provider-framework and
+# handler Lambdas, all named `<stack>-...`.
+. ../cr-log-groups.sh
+
 cleanup() {
   echo "==> Cleanup: dropping the refused parameter, then any leftover state"
   set +eu
@@ -178,6 +184,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
+  sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   set -eu
 }
 

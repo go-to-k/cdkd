@@ -144,6 +144,11 @@ EVENTS_TABLE_NAME="events"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Lambda creates `/aws/lambda/<stack>-CustomS3AutoDeleteObjects...` when the S3
+# auto-delete custom resource runs, and nothing in the stack owns it, so destroy
+# leaves it behind (#3885).
+. ../cr-log-groups.sh
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
@@ -165,6 +170,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   set -eu
 }
 
