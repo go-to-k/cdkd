@@ -953,7 +953,7 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     // `displaySafe(JSON.stringify(maskDeep(...)))` only sanitizes a value that
     // is still INTERPOLATED, so the site stays a counted, masked sink (issue
     // #3269). Re-derived here rather than quoted, so the bound's "measured
-    // zero" fails if the corpus grows a sixth.
+    // zero" fails if the corpus grows a seventh.
     const files: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir).sort()) {

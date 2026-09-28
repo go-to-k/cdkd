@@ -2391,8 +2391,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // (.claude/rules/providers.md, issue #1612). An ABSENT previous
           // means the key is absent from the effective bag — there is nothing
           // to retain, and an explicit `undefined` would survive the spread
-          // and read differently across `JSON.stringify` on the two sides of
-          // the next diff.
+          // and any `Object.keys` walk over the recorded bag.
           //
           // Deliberately NOT paired with a `canonicalizeDesiredProperties`
           // twin: a SKIP is not a pure function of the desired bag, and
