@@ -106,7 +106,7 @@ ecs-fargate	2026-09-25T19:22:55Z	PASS	386	verify.sh	rc ok, orph clean (#3136 PR 
 ecs-schedule-targets	2026-09-14T21:27:55Z	PASS	83	verify.sh	#3125 gating: GetAtt Vpc.DefaultSecurityGroup consumer; 21 deleted 0 err 0 orph
 ecs-service-update-props	2026-08-26T08:19:23Z	PASS	107	verify.sh	issue 1861 lane, final run on the merge-ready tree (3rd: rounds 2 and 3 each edited ecs-provider.ts, which is in integ-destroy's hash:diff scope); both #1861 arms green - removal resets to true/{BOUNDED_PERCENT,50}, never-declared out-of-band false/{COUNT,9} survives a Rollback flip inside the block; destroy 15 deleted 0 errors, 0 orphans
 efs-immutable-replacement	2026-09-28T08:03:34Z	PASS	70	verify.sh	rc ok, orph clean (#3894)
-efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
+efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-09-28T07:21:28Z	PASS	170	verify.sh	rc ok, orph clean (#3894)
 elasticache-replicationgroup-getatt	2026-09-24T22:46:12Z	PASS	592	verify.sh	rc ok, 0 orphans (#3663)
 elbv2-same-name-replacement	2026-09-28T05:34:18Z	PASS	70	verify.sh	rc ok, create-first collision -> delete-first replace exercised, orph clean (#3879 aux-collision-credit @5b42c39)
