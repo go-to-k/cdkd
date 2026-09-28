@@ -560,7 +560,12 @@ function pathValue(bag: Record<string, unknown> | undefined, path: readonly stri
 /**
  * The `SENT_NAME_REWRITTEN` rule: see {@link reverseReplacementNewHoldsName}.
  * Called in the re-create's own async scope, so the generator reads the same
- * stack name and prefix flag the provider's create just read.
+ * stack name and prefix flag the provider's create just read. On EITHER route
+ * the records' names are never compared: the NEW resource may have been made
+ * through the SDK provider (a replacement routes afresh, so an old
+ * `cc-api` record can sit beside a new SDK one), whose rewritten name its
+ * template-valued record does not show. A Cloud Control re-create sends its
+ * bag verbatim, so there the sent name is the requested one.
  */
 function rewrittenNameHolds(
   input: {
@@ -571,21 +576,31 @@ function rewrittenNameHolds(
     mask?: ((value: string) => string) | undefined;
   },
   rewrite: { readonly property: string; readonly maxLength: number },
+  viaCloudControl: boolean,
   labels: string,
   newResource: string,
   r: Renderer
 ): ReverseReplacementHolderVerdict {
   const declared = valueAt(input.requested, [rewrite.property]);
-  const logicalId = typeof input.logicalId === 'string' ? input.logicalId : undefined;
-  if (declared === undefined && logicalId === undefined) {
+  const logicalId =
+    typeof input.logicalId === 'string' && input.logicalId !== '' ? input.logicalId : undefined;
+  if (declared === undefined && (viaCloudControl || logicalId === undefined)) {
     return unproven(
       `the re-create named no ${labels}, and cdkd cannot derive the name its provider generates, ` +
         `so it cannot show that ${newResource} holds it`
     );
   }
-  const sent = generateResourceNameWithFallback(declared, logicalId ?? '', {
-    maxLength: rewrite.maxLength,
-  });
+  const sent = viaCloudControl
+    ? (declared as string)
+    : generateResourceNameWithFallback(declared, logicalId ?? '', {
+        maxLength: rewrite.maxLength,
+      });
+  if (sent === '') {
+    return unproven(
+      `the name the re-create sends for ${labels} is empty, so cdkd cannot show that ` +
+        `${newResource} holds it`
+    );
+  }
   // The provider rewrites the name (prefix, charset, truncation), so a masker
   // matching the declared value may not match what it became: a declared
   // value the mask touches is never followed by its derived spelling.
@@ -594,18 +609,20 @@ function rewrittenNameHolds(
   const wanted =
     declared === undefined
       ? `the re-create named no ${labels}, and its provider generates ${prop} ${r.quoted(sent)} here`
-      : secretDerived
-        ? `the re-create asked for ${prop} ${r.quoted(declared)}, which its provider rewrites before ` +
-          `sending it`
-        : `the re-create asked for ${prop} ${r.quoted(declared)}, which its provider sends as ` +
-          `${r.quoted(sent)} here`;
+      : viaCloudControl
+        ? `the re-create asked for ${prop} ${r.quoted(declared)}`
+        : secretDerived
+          ? `the re-create asked for ${prop} ${r.quoted(declared)}, which its provider rewrites before ` +
+            `sending it`
+          : `the re-create asked for ${prop} ${r.quoted(declared)}, which its provider sends as ` +
+            `${r.quoted(sent)} here`;
   const fold = CASE_INSENSITIVE_NAME_TYPES.has(input.oldResourceType)
     ? (v: string): string => v.toLowerCase()
     : (v: string): string => v;
   if (input.physicalId !== '' && holderIdNames(fold(input.physicalId), fold(sent))) return HOLDS;
   return unproven(
-    `${wanted}, and cdkd cannot show that ${newResource} holds that name (this provider ` +
-      `rewrites the name it sends, so a recorded name is no proof)`
+    `${wanted}, and cdkd cannot show that ${newResource} holds that name (this type's provider ` +
+      `rewrites the names it sends, so a recorded name is no proof)`
   );
 }
 
@@ -646,11 +663,12 @@ function rewrittenNameHolds(
  * - `AWS::Route53::RecordSet` compares the zone and the DNS name; then a CNAME
  *   beside a non-CNAME holds, and two records of one kind need the same type
  *   and SetIdentifier.
- * - A type in `SENT_NAME_REWRITTEN` on an SDK route: its provider derives
- *   the name it sends (stack prefix, charset folding, truncation), so the
- *   records' names are not compared at all. The name is derived here, in the
- *   caller's scope, with the provider's own generator, and only the new
- *   resource's physical id naming it proves a holder.
+ * - A type in `SENT_NAME_REWRITTEN`: its SDK provider derives the name it
+ *   sends (stack prefix, charset folding, truncation), so the records' names
+ *   are never compared, on either route. The sent name is derived here, in the
+ *   caller's scope, with the provider's own generator (on a Cloud Control
+ *   route it is the requested one), and only the new resource's physical id
+ *   naming it proves a holder.
  * - A `Type` change holds only between types that share one name space
  *   (`SHARED_NAME_SPACES`); any other pair is undecided. A type in
  *   `NOT_NAME_KEYED_TYPES`, or one with no name key at all, never holds.
@@ -716,9 +734,16 @@ export function reverseReplacementNewHoldsName(input: {
         `, so cdkd cannot compare it with ${newResource}`
     );
   }
-  const rewrite = input.createdVia === 'cc-api' ? undefined : SENT_NAME_REWRITTEN[oldResourceType];
+  const rewrite = SENT_NAME_REWRITTEN[oldResourceType];
   if (rewrite !== undefined) {
-    return rewrittenNameHolds(input, rewrite, labels, newResource, r);
+    return rewrittenNameHolds(
+      input,
+      rewrite,
+      input.createdVia === 'cc-api',
+      labels,
+      newResource,
+      r
+    );
   }
   let generatedName = false;
   let namePath = oldKey.name.find((path) => valueAt(requested, path) !== undefined);

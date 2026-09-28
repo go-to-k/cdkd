@@ -633,10 +633,65 @@ describe('a provider that rewrites the name it sends (review M1, #4018)', () => 
     }
   });
 
-  it('on the Cloud Control route the bag IS what was sent, so the recorded rule applies', () => {
+  it('on the Cloud Control route the bag IS what was sent, proven only by the new id', () => {
     expect(withStackName('Stk', () => role({ createdVia: 'cc-api', physicalId: 'my-role' }))).toEqual({
       holds: true,
     });
+    // The NEW resource may have been made by the SDK provider (a replacement
+    // routes afresh): its record keeps the template value while AWS holds the
+    // rewritten name, so an equal recorded name must not prove it.
+    const sdkMadeRole = refusal(
+      withStackName('Stk', () =>
+        role({
+          createdVia: 'cc-api',
+          requested: { RoleName: 'my_role' },
+          recorded: { RoleName: 'my_role' },
+          physicalId: 'Stk-my-role',
+        })
+      )
+    );
+    expect(sdkMadeRole.known).toBe(false);
+    const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    const sdkMadeTg = refusal(
+      withStackName('Stk', () =>
+        ask({
+          oldResourceType: TG,
+          newResourceType: TG,
+          createdVia: 'cc-api',
+          requested: { Name: 'tg' },
+          recorded: { Name: 'tg' },
+          physicalId: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/Stk-tg/abc',
+        })
+      )
+    );
+    expect(sdkMadeTg.known).toBe(false);
+    // A nameless Cloud Control bag has nothing to compare.
+    expect(refusal(role({ createdVia: 'cc-api', requested: {}, physicalId: 'MyRole' })).known).toBe(false);
+  });
+
+  it('an EMPTY sent name, or an empty logical id, never proves a holder', () => {
+    // Outside a stack scope, `___` sanitises to nothing; an empty id then
+    // "names" it by equality.
+    const empty = refusal(role({ requested: { RoleName: '___' }, recorded: {}, physicalId: '' }));
+    expect(empty.diagnosis).toContain('sends for RoleName is empty');
+    const noId = refusal(role({ requested: {}, recorded: {}, logicalId: '', physicalId: '' }));
+    expect(noId.diagnosis).toContain('cannot derive the name its provider generates');
+  });
+
+  it('a managed policy ARN with a path names the policy through its last segment', () => {
+    const MP = 'AWS::IAM::ManagedPolicy';
+    expect(
+      withStackName('Stk', () =>
+        ask({
+          oldResourceType: MP,
+          newResourceType: MP,
+          requested: { ManagedPolicyName: 'p' },
+          recorded: {},
+          logicalId: 'P',
+          physicalId: 'arn:aws:iam::123456789012:policy/team/app/Stk-p',
+        })
+      )
+    ).toEqual({ holds: true });
   });
 
   it('a secret-derived declared name is never followed by its rewritten spelling', () => {
@@ -670,6 +725,34 @@ describe('the rewriting-types table matches every caller of generateResourceName
     'iam-role-provider.ts': ['AWS::IAM::Role'],
     'iam-user-group-provider.ts': ['AWS::IAM::User', 'AWS::IAM::Group'],
   };
+  /**
+   * Call sites per file, a LITERAL measured 2026-09-29: two types sharing one
+   * property and maxLength (ELBv2's `Name` / 32) cannot be told apart by the
+   * table check, so a dropped call is caught here.
+   */
+  const FILE_CALLS: Record<string, number> = {
+    'elbv2-provider.ts': 2,
+    'iam-instance-profile-provider.ts': 1,
+    'iam-managed-policy-provider.ts': 2,
+    'iam-role-provider.ts': 2,
+    'iam-user-group-provider.ts': 3,
+  };
+
+  /** The text of each `generateResourceNameWithFallback(...)` call, cut at its own closing paren. */
+  function callsIn(text: string): string[] {
+    const out: string[] = [];
+    const needle = 'generateResourceNameWithFallback(';
+    for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) {
+      let depth = 0;
+      let end = at + needle.length - 1;
+      for (; end < text.length; end += 1) {
+        if (text[end] === '(') depth += 1;
+        else if (text[end] === ')' && --depth === 0) break;
+      }
+      out.push(text.slice(at + needle.length, end));
+    }
+    return out;
+  }
 
   it('each call site is a table entry, and each entry is a call site', () => {
     const table = reverseReplacementRewrittenNameTypes();
@@ -685,15 +768,19 @@ describe('the rewriting-types table matches every caller of generateResourceName
         if (!m) throw new Error(`${file}: unresolved maxLength ${expr}`);
         return Number(m[1]);
       };
-      const sites = [...text.matchAll(/generateResourceNameWithFallback\(([\s\S]*?)\{ maxLength: ([\w.]+) \}\s*\)/g)];
-      const bare = text.split('generateResourceNameWithFallback(').length - 1;
-      if (bare === 0) continue;
+      const bodies = callsIn(text);
+      if (bodies.length === 0) continue;
       callers.push(file);
-      // Every call is parsed: none escapes the regex's shape.
-      expect(sites.length, file).toBe(bare);
+      expect(bodies.length, `${file}: call sites`).toBe(FILE_CALLS[file]);
       const types = FILE_TYPES[file];
       expect(types, `${file} calls the generator but is not mapped`).toBeDefined();
-      for (const [, args, max] of sites) {
+      for (const body of bodies) {
+        // The options must be exactly `{ maxLength: <n> }`, the call's last
+        // argument: any other option would change the name the table derives.
+        const options = /,\s*\{ maxLength: ([\w.]+) \}\s*,?\s*$/.exec(body);
+        expect(options, `${file}: options other than { maxLength } in ${body}`).not.toBeNull();
+        const [, max] = options!;
+        const args = body.slice(0, options!.index);
         calls += 1;
         const prop = /properties\['(\w+)'\]/.exec(args!)?.[1];
         const pairs: Array<[string, number]> =
@@ -735,5 +822,23 @@ describe('the rewriting-types table matches every caller of generateResourceName
       ].sort()
     );
     expect([...seen].sort()).toEqual(Object.keys(table).sort());
+    // Nothing reaches the generator under another name, and no provider
+    // applies the user-supplied prefix rule by calling the inner generator.
+    for (const f of (readdirSync(src, { recursive: true }) as string[]).filter((x) => x.endsWith('.ts'))) {
+      const text = readFileSync(join(src, f), 'utf8');
+      expect(/generateResourceNameWithFallback\s+as\s/.test(text), `${f}: aliased import`).toBe(false);
+      if (f.startsWith('provisioning/providers/') || f.startsWith('provisioning\\providers\\')) {
+        expect(/userSupplied:\s*true/.test(text), `${f}: a direct userSupplied rewrite`).toBe(false);
+      }
+    }
+  });
+
+  it('the call parser cuts each call at its own paren and sees an options drift', () => {
+    const bodies = callsIn(
+      "generateResourceNameWithFallback(properties['RoleName'] as string, logicalId, OPTS);\n" +
+        'generateResourceName(logicalId, { maxLength: 64 });'
+    );
+    expect(bodies).toEqual(["properties['RoleName'] as string, logicalId, OPTS"]);
+    expect(/,\s*\{ maxLength: ([\w.]+) \}\s*,?\s*$/.test(bodies[0]!)).toBe(false);
   });
 });
