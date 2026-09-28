@@ -43,6 +43,7 @@ Two things, both of which changed the shape of the assertions:
 | Phase | Env / flags | What it proves |
 | --- | --- | --- |
 | 1 | — | the function is created WITH `DurableConfig`, SDK-routed |
+| 1b | `CDKD_TEST_HELD_NAME=<holder>` + `--replace` | issue #3808: renaming onto a name an out-of-band function holds REFUSES, says another resource holds it, and deletes nothing — managed function and holder both survive |
 | 2 | `CDKD_TEST_REMOVAL=true` | the deploy REFUSES with cdkd's actionable replacement-collision error (naming `--replace`), and the live function is untouched |
 | 3 | `CDKD_TEST_REMOVAL=true` + `--replace` | the delete-first fallback executes: durable config gone, new description applied, state row still points at the function |
 | 4 | — | destroy leaves no function and no state |

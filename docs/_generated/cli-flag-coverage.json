@@ -1754,6 +1754,7 @@
     "--group-id",
     "--group-ids",
     "--group-name",
+    "--handler",
     "--help",
     "--host",
     "--host-port",
@@ -1905,6 +1906,7 @@
     "--revert-failed",
     "--reverts",
     "--rm",
+    "--role",
     "--role-name",
     "--role-session-name",
     "--route-id",
@@ -1913,6 +1915,7 @@
     "--rule",
     "--rule-arns",
     "--run",
+    "--runtime",
     "--scalable-dimension",
     "--scope",
     "--secret",
@@ -1993,6 +1996,7 @@
     "--vpc-ids",
     "--wait-time-seconds",
     "--watch",
-    "--ws"
+    "--ws",
+    "--zip-file"
   ]
 }

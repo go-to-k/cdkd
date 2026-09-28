@@ -102,6 +102,7 @@ describe('recreate targets apply only to the stack they were validated against (
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
     };
     return new DeployEngine(
       mockStateBackend as unknown as never,

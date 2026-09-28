@@ -30,6 +30,11 @@
 #
 # Phases:
 #   1. baseline deploy — function created WITH DurableConfig; assert it is live.
+#   1b. (issue #3808) a function created OUT OF BAND holds a name; the template
+#      renames the managed function onto it and deploys WITH --replace. The
+#      name belongs to another resource, so delete-first cannot free it: the
+#      deploy must refuse saying so, and the managed function must SURVIVE. A
+#      pre-fix binary deleted it first and then collided again.
 #   2. drop DurableConfig WITHOUT --replace — the deploy must FAIL with cdkd's
 #      actionable replacement-collision error, and the live function must be
 #      UNTOUCHED (still durable, still the old description).
@@ -101,6 +106,9 @@ assert_gone_eventually() { # usage: assert_gone_eventually <timeout-s> "<desc>" 
 cd "$(dirname "$0")"
 
 STACK="CdkdLambdaDurableReplacementExample"
+# Phase 1b's out-of-band name holder (issue #3808). Deterministic so `cleanup`
+# can delete it even when the phase never ran.
+HOLDER="${STACK}-NameHolder"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
@@ -120,6 +128,8 @@ cleanup() {
   # `FN` was never resolved (a failure before phase 1's state read).
   aws lambda delete-function --function-name "${STACK}-DurableFn" --region "${REGION}" >/dev/null 2>&1
   aws lambda delete-function --function-name "${FN:-}" --region "${REGION}" >/dev/null 2>&1
+  aws lambda delete-function --function-name "${HOLDER}" --region "${REGION}" >/dev/null 2>&1
+  if [ -n "${HOLDER_DIR:-}" ]; then rm -rf "${HOLDER_DIR}"; fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
@@ -198,6 +208,84 @@ assert_eq "baseline DurableConfig.ExecutionTimeout" "3600" \
 assert_eq "baseline DurableConfig.RetentionPeriodInDays" "14" \
   "$(fncfg 'DurableConfig.RetentionPeriodInDays')"
 assert_eq "baseline description" "cdkd-integ durable present" "$(fncfg 'Description')"
+
+# --- Phase 1b: rename onto a name ANOTHER function holds, WITH --replace -----
+# Issue #3808. The holder is created with the managed function's own execution
+# role (already trusted by Lambda, so no propagation wait) and inline code.
+echo "==> Phase 1b: rename onto a name another function holds, WITH --replace (must refuse, delete nothing)"
+ROLE_ARN="$(fncfg 'Role')"
+# The identity the survival check below compares: a re-created function would
+# carry the same template values but a new LastModified. Waited first, since
+# cdkd does not wait for Active and a state transition must not read as a
+# re-creation.
+aws lambda wait function-active-v2 --function-name "${FN}" --region "${REGION}"
+aws lambda wait function-updated-v2 --function-name "${FN}" --region "${REGION}"
+MODIFIED_BEFORE="$(fncfg 'LastModified')"
+HOLDER_DIR="$(mktemp -d)"
+python3 - "${HOLDER_DIR}/holder.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w') as z:
+    z.writestr('index.js', 'exports.handler = async () => ({});\n')
+PY
+aws lambda create-function --function-name "${HOLDER}" --runtime nodejs22.x \
+  --handler index.handler --role "${ROLE_ARN}" --description "cdkd-integ third-party holder" \
+  --zip-file "fileb://${HOLDER_DIR}/holder.zip" --region "${REGION}" >/dev/null
+aws lambda wait function-active-v2 --function-name "${HOLDER}" --region "${REGION}"
+
+set +e
+HELD_OUT="$(CDKD_TEST_HELD_NAME="${HOLDER}" env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --replace \
+  --yes 2>&1)"
+HELD_RC=$?
+set -e
+if [ "${HELD_RC}" -eq 0 ]; then
+  echo "FAIL: renaming onto a name another function holds SUCCEEDED" >&2
+  printf '%s\n' "${HELD_OUT}" >&2
+  exit 1
+fi
+echo "    OK: deploy refused (rc=${HELD_RC})"
+if ! printf '%s' "${HELD_OUT}" | grep -q 'held by ANOTHER existing resource'; then
+  echo "FAIL: the refusal does not say the name is held by another resource" >&2
+  printf '%s\n' "${HELD_OUT}" >&2
+  exit 1
+fi
+if ! printf '%s' "${HELD_OUT}" | grep -q -- '--replace was NOT applied and nothing was deleted'; then
+  echo "FAIL: the refusal does not say --replace was withheld" >&2
+  printf '%s\n' "${HELD_OUT}" >&2
+  exit 1
+fi
+echo "    OK: refusal names another holder and withholds --replace"
+# The delete-first fallback's own log line; the refusal above is already proven
+# present, so an absence here is not a wording drift.
+if printf '%s' "${HELD_OUT}" | grep -q 'deleting old'; then
+  echo "FAIL: the delete-first fallback ran against the managed function" >&2
+  printf '%s\n' "${HELD_OUT}" >&2
+  exit 1
+fi
+# The feared end state: the managed function deleted. The unchanged
+# LastModified proves it is the same function, not a re-creation carrying the
+# same values.
+assert_eq "managed function is the same function (LastModified)" "${MODIFIED_BEFORE}" \
+  "$(fncfg 'LastModified')"
+assert_eq "managed function survived (DurableConfig)" "3600" \
+  "$(fncfg 'DurableConfig.ExecutionTimeout')"
+assert_eq "managed function survived (description)" "cdkd-integ durable present" \
+  "$(fncfg 'Description')"
+HOLDER_DESC="$(aws lambda get-function-configuration --function-name "${HOLDER}" \
+  --region "${REGION}" --query 'Description' --output text)"
+assert_eq "the holder is untouched" "cdkd-integ third-party holder" "${HOLDER_DESC}"
+STATE_AFTER_HELD="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+assert_eq "state still points at the managed function" "${FN}" \
+  "$(echo "${STATE_AFTER_HELD}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId')"
+
+aws lambda delete-function --function-name "${HOLDER}" --region "${REGION}"
+assert_gone_eventually 60 "the out-of-band holder ${HOLDER} still exists after its delete" \
+  aws lambda get-function --function-name "${HOLDER}" --region "${REGION}"
+rm -rf "${HOLDER_DIR}"
+HOLDER_DIR=""
+echo "    OK: holder removed"
 
 # --- Phase 2: drop DurableConfig WITHOUT --replace --------------------------
 # The template change is classified as a REPLACEMENT, the create-first attempt
@@ -304,4 +392,4 @@ assert_gone "state file still exists after destroy" \
 echo "    OK: state file is gone"
 
 trap - EXIT INT TERM
-echo "==> lambda-durable-replacement test passed (#1625 replacement refused without --replace, executed with it, clean destroy)"
+echo "==> lambda-durable-replacement test passed (#1625 replacement refused without --replace, executed with it, clean destroy; #3808 rename onto a held name refused without deleting)"
