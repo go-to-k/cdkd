@@ -339,12 +339,14 @@ function countOperands(root: Command, tokens: Token[]): Resolved | string {
   const isOption = (t: Token) => t.kind === 'lit' && t.text.length > 1 && t.text.startsWith('-');
   const done = (stoppedOn?: Token): Resolved | string => {
     // An opaque token may expand to any number of operands, so a count that
-    // stops on one is a usable lower bound only where the arity is unbounded
-    // and nothing it hides could be a surplus.
-    if (stoppedOn && (operands.length === 0 || Number.isFinite(maxOperands(cmd)))) {
+    // stops on one is a usable lower bound only where the arity is unbounded,
+    // or where what was read already exceeds a finite one. In between, the
+    // tail could carry the surplus.
+    const max = maxOperands(cmd);
+    if (stoppedOn && (operands.length === 0 || (Number.isFinite(max) && operands.length <= max))) {
       return `opaque ${stoppedOn.text}`;
     }
-    return { path: chain.map((c) => c.name()).join(' '), max: maxOperands(cmd), operands };
+    return { path: chain.map((c) => c.name()).join(' '), max, operands };
   };
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i]!;
@@ -479,11 +481,12 @@ for (const entry of readdirSync(COMMANDS_DIR, { recursive: true, encoding: 'utf8
 }
 
 /**
- * Calls after a factory that return the SAME command. `.command('x')` returns
- * a new child, so an open method list would resolve it as its parent.
+ * Calls after a factory that return the SAME command with the same arity rule.
+ * `.command('x')` returns a new child, and `.allowExcessArguments()` changes
+ * the very rule checked here, so neither resolves.
  */
 const SELF_CHAIN =
-  '(?:\\s*\\.\\s*(?:exitOverride|configureOutput|allowUnknownOption|allowExcessArguments|showHelpAfterError|hook|action)\\s*\\([^()]*\\))*';
+  '(?:\\s*\\.\\s*(?:exitOverride|configureOutput|allowUnknownOption|showHelpAfterError|hook|action)\\s*\\([^()]*\\))*';
 
 interface Receiver {
   readonly factory: string;
@@ -974,6 +977,10 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     const runTask = () => FACTORIES.get('createLocalRunTaskCommand')!();
     // A finite arity can be exceeded by whatever an opaque tail expands to.
     expect(countOperands(runTask(), [lit('TD'), spread('extra')])).toBe('opaque extra');
+    // A surplus already read stays a verdict, whatever the tail holds.
+    expect(countOperands(runTask(), [lit('TD'), lit('X'), spread('extra')])).toMatchObject({
+      operands: ['TD', 'X'],
+    });
     // An unbounded one cannot, so the operands read are a usable lower bound.
     expect(
       countOperands(FACTORIES.get('createDestroyCommand')!(), [lit('A'), spread('extra')])
@@ -1046,6 +1053,7 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     ).toEqual({ factory: 'createDiffCommand', via: 'chained' });
     // `.command('x')` returns a new child, not the factory's command.
     expect(resolve("const cmd = createLocalCommand().command('x');\ncmd")).toBeUndefined();
+    expect(resolve('const cmd = createLocalCommand().allowExcessArguments();\ncmd')).toBeUndefined();
     expect(resolveReceiver("createLocalCommand().command('x')", "createLocalCommand().command('x')", [])).toBeUndefined();
     expect(resolve('const cmd = createDeployCommand().exitOverride();\ncmd')).toEqual({
       factory: 'createDeployCommand',
