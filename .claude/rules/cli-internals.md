@@ -97,9 +97,8 @@ which throws `CdkdError` with code `NON_INTERACTIVE_CONFIRM` (exit 1) BEFORE
 `--force` short-circuit, so a flagged run never consults stdin, and supplies its
 own refusal message naming that command's flag. `promptYesNo` in the same module
 is the deliberate default-YES carve-out (`deploy.ts` short-circuits on a non-TTY
-before reaching it); `destroy-runner.ts` and `state destroy --all` keep their own
-inline guards. `tests/unit/cli/readline-prompt-population.test.ts` fences the
-POPULATION: every `readline.createInterface` in `src/` must be listed with a
+before reaching it); `destroy-runner.ts` keeps its own inline guard.
+`tests/unit/cli/readline-prompt-population.test.ts` fences the POPULATION: every `readline.createInterface` in `src/` must be listed with a
 reason, so a new unguarded copy cannot be written.
 
 ## The two unsupported-* escape hatches

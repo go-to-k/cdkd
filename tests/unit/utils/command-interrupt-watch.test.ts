@@ -1,11 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
-import { createInterface } from 'node:readline/promises';
-import { PassThrough } from 'node:stream';
-import {
-  forwardSigtermToSigint,
-  isPromptAbortError,
-  watchCommandInterrupt,
-} from '../../../src/utils/interrupt-signals.js';
+import { forwardSigtermToSigint, watchCommandInterrupt } from '../../../src/utils/interrupt-signals.js';
 import {
   beginCommandInterruptScope,
   disarmInterruptWatchForTests,
@@ -17,7 +11,7 @@ import {
 /**
  * Issue #2117 — the command-scoped SIGINT record the destroy commands lacked.
  *
- * These pin the helper in isolation. The wiring into the `--all` loops is
+ * These pin the helper in isolation. The wiring into the multi-stack loops is
  * pinned at the command level in `tests/unit/cli/destroy-command-sigint.test.ts`
  * and `tests/unit/cli/state-destroy-command-sigint.test.ts`, because the defect
  * this issue names is a loop reading a stale value — which no test of this file
@@ -132,46 +126,6 @@ describe('watchCommandInterrupt (issue #2117)', () => {
     }
   });
 
-  it('aborts the prompt signal as soon as the first signal is recorded', () => {
-    // Recording a flag serves everything that POLLS and nothing that BLOCKS.
-    // `state.ts`'s batch confirm prompt is the blocked one: `rl.question`
-    // waits on the USER, and registering any SIGINT listener disables Node's
-    // default terminate, so without this abort a Ctrl-C at that prompt parked
-    // `cdkd state destroy --all` forever where it used to exit 130.
-    const cap = captureStderr();
-    try {
-      const watch = arm();
-      expect(watch.signal.aborted).toBe(false);
-
-      process.emit('SIGINT', 'SIGINT');
-
-      expect(watch.signal.aborted).toBe(true);
-      expect(watch.interrupted()).toBe(true);
-    } finally {
-      cap.restore();
-    }
-  });
-
-  it('aborts the prompt signal from INSIDE a stack bracket too', async () => {
-    // The deferral branch records the signal without printing or exiting, and
-    // it must still release anything blocked: `runDestroyForStack`'s own
-    // per-stack prompt sits inside this bracket.
-    const cap = captureStderr();
-    const removeRunner = installRunnerHandler();
-    try {
-      const watch = arm();
-      await watch.runStack(async () => {
-        process.emit('SIGINT', 'SIGINT');
-      });
-      expect(watch.signal.aborted).toBe(true);
-      // Confirms it was the DEFERRAL branch, not one of the quitting ones.
-      expect(cap.output.join('')).toBe('');
-    } finally {
-      removeRunner();
-      cap.restore();
-    }
-  });
-
   /**
    * Stand in for `runDestroyForStack`'s own SIGINT handler.
    *
@@ -231,11 +185,16 @@ describe('watchCommandInterrupt (issue #2117)', () => {
       expect(cap.output.join('')).toContain('armed its per-stack teardown');
       // The message must be honest about what quitting here does and does not
       // guarantee. It used to claim flatly "Nothing was deleted and no stack
-      // lock is held", and on an `--all` run whose earlier stacks already
+      // lock is held", and on a multi-stack run whose earlier stacks already
       // completed BOTH halves are false — including the lock, for exactly the
       // reason the second-signal branch above is already hedged:
       // `destroy-runner.ts` catches a failing `releaseLock` and only warns.
       expect(cap.output.join('')).toContain('No delete was issued for this stack');
+      // Names the run shape both destroy commands have, not `--all`, which
+      // `cdkd state destroy` no longer takes (go-to-k/cdkd#3865).
+      expect(cap.output.join('')).toContain(
+        'on a multi-stack run, stacks processed earlier are already destroyed'
+      );
       expect(cap.output.join('')).not.toContain('no stack lock is held');
       // Hedged the same way the branch above is, so the user losing the
       // process is still told how to recover.
@@ -399,61 +358,5 @@ describe('forwardSigtermToSigint unwinds its own interrupt scope on a throw', ()
       probe.dispose();
       unforward();
     }
-  });
-});
-
-describe('isPromptAbortError pins the shape readline actually rejects with', () => {
-  it('accepts the REAL rejection from an aborted readline/promises question', async () => {
-    // The command suites mock `node:readline/promises` wholesale and hand-build
-    // an `AbortError`, so nothing anywhere pinned the predicate against what
-    // Node genuinely throws. This drives the real module: an interface over a
-    // stream that never produces a line, a question carrying the watch's own
-    // signal shape, and the abort that the SIGINT handler performs.
-    const input = new PassThrough();
-    const output = new PassThrough();
-    output.resume();
-    const rl = createInterface({ input, output });
-    const controller = new AbortController();
-    try {
-      const pending = rl.question('answer? ', { signal: controller.signal });
-      controller.abort();
-      const error = await pending.then(
-        () => undefined,
-        (rejection: unknown) => rejection
-      );
-
-      expect(isPromptAbortError(error)).toBe(true);
-      // Both fields, spelled out: this is the observation the two arm-isolating
-      // cases below are derived from, so if a future Node changes either one
-      // this case names which.
-      expect((error as { name?: unknown }).name).toBe('AbortError');
-      expect((error as { code?: unknown }).code).toBe('ABORT_ERR');
-    } finally {
-      rl.close();
-      input.destroy();
-      output.destroy();
-    }
-  });
-
-  it('accepts the NAME arm on its own', () => {
-    // The `DOMException` spelling some Node versions reject with. Isolated from
-    // the code arm so each is individually load-bearing.
-    expect(isPromptAbortError({ name: 'AbortError' })).toBe(true);
-  });
-
-  it('accepts the CODE arm on its own', () => {
-    // Removing `code === 'ABORT_ERR'` from the predicate reddened NOTHING
-    // before this case, because every fixture also carried the name.
-    expect(isPromptAbortError({ name: 'Error', code: 'ABORT_ERR' })).toBe(true);
-  });
-
-  it('rejects an ordinary failure and the non-object shapes', () => {
-    // The negative control: without it a predicate hardcoded to `true` would
-    // satisfy all three cases above.
-    expect(isPromptAbortError(new Error('readline blew up'))).toBe(false);
-    expect(isPromptAbortError({ name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE' })).toBe(false);
-    expect(isPromptAbortError(null)).toBe(false);
-    expect(isPromptAbortError('AbortError')).toBe(false);
-    expect(isPromptAbortError(undefined)).toBe(false);
   });
 });

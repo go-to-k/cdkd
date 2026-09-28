@@ -54,6 +54,12 @@ used to fall back to every stack record in the state bucket, other apps'
 included. Both must exit 1 before any prompt, lock or delete, surfacing the
 synth error, while an exact stack name still reaches the state fallback.
 
+### #3865 — `cdkd state destroy --all` is removed
+
+`--all` destroyed every stack in the state bucket, which every CDK app in the
+account shares. Passing it, alone or beside a stack name, must exit 1 with
+cdkd's own refusal rather than commander's unknown-option error.
+
 ## What `verify.sh` asserts
 
 1. **Deploy** clean; state file present.
@@ -65,6 +71,12 @@ synth error, while an exact stack name still reaches the state fallback.
    EMPTY `--state-prefix`, so a regressed `--all` can never reach another
    stack: `--all` exits 1 with the same refusal, and the exact name exits 0
    (`No matching stacks found in state`) instead of being refused.
+   Under the same empty prefix, `state destroy --all --yes` and
+   `state destroy '<stack>' --all --yes` exit 1 with the removal refusal
+   (before the fix both exited 0, listing nothing), and
+   `state destroy '<stack>' --yes` alone exits 1 with `No state found for
+   stack(s)`, i.e. it reached the state listing; the stack's own state
+   object is unchanged.
 3. **First Ctrl-C**: launch `cdkd destroy --force` in the background,
    poll its log for delete-loop evidence (bounded ~30s), send ONE
    `kill -INT`. When the interrupt lands mid-destroy: (a) the drain

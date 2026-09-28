@@ -11,8 +11,9 @@ of them synthesizes and none of them needs the source that deployed a stack —
 which is what makes them work from a CI runner after the branch is gone, or
 from a laptop that never had the repository. The unit of work is the state
 record, not the stack in your app: `cdkd state list` shows everything the
-bucket knows about, and `--all` — on `state destroy` and
-`state refresh-observed` — acts across the whole estate in one invocation.
+bucket knows about, and `state refresh-observed --all` acts across the whole
+estate in one invocation. `state destroy` does not: it deletes only the stacks
+you name.
 
 ```bash
 cdkd state info                          # which bucket, which region, how many stacks
@@ -575,7 +576,6 @@ block.
 ```bash
 cdkd state destroy MyStack --yes
 cdkd state destroy StackA StackB --yes
-cdkd state destroy --all --yes
 cdkd state destroy MyStack --remove-protection --yes
 ```
 
@@ -586,14 +586,13 @@ handling, strong-reference blocks, lock behavior, and exit codes are the same.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stacks...]` | — | Stack name(s) to destroy, as physical CloudFormation names. Required unless `--all` is given. |
-| `--all` | off | Destroy every stack in the state bucket. |
+| `[stacks...]` | — | Stack name(s) to destroy, as physical CloudFormation names. Required. |
 | `--remove-protection` | off | Turn per-resource deletion protection off in place before deleting. |
 | `--skip-final-snapshot` | off | Delete `DeletionPolicy: Snapshot` resources without taking the final snapshot. |
 | `--allow-unsupported-types <types>` | — | Comma-separated escape hatch routing otherwise-unprovisionable types through Cloud Control. |
 | `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation has been running longer than this. Repeatable. |
 | `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that exceeds this. Repeatable. |
-| `--stack-region <region>` | — | Act on the record in this region, plus any record that does not name a region at all. A name whose only record is elsewhere is warned about and skipped; omitting the flag on a name with records in several regions is an error, `--all` included. |
+| `--stack-region <region>` | — | Act on the record in this region, plus any record that does not name a region at all. A name whose only record is elsewhere is warned about and skipped; omitting the flag on a name with records in several regions is an error. |
 
 Three differences from `cdkd destroy` are worth knowing before you script it:
 
@@ -606,9 +605,11 @@ Three differences from `cdkd destroy` are worth knowing before you script it:
 
 Naming a stack that has no record at all is an error, not a silent skip.
 
-`--all` raises a single batch prompt listing every stack before anything is
-touched, and the per-stack prompts are then skipped. Interrupting at that
-prompt exits `130` with nothing read, locked, or deleted.
+There is no `--all`. The state bucket is shared by every CDK app deployed to
+the account, so a flag selecting every stack in it destroyed stacks across
+apps; it was removed, and passing it now fails with exit `1` before anything is
+read. Name each stack instead (`cdkd state list` shows them), or run
+`cdkd destroy --all` from the CDK app, which destroys only that app's stacks.
 
 The flag semantics, the data guards, and the confirmation matrix are documented
 once, on the destroy page:
@@ -782,7 +783,7 @@ record without touching the AWS resources.
 | `0` | Success, including a declined confirmation prompt and a no-op run. |
 | `1` | The command failed — missing record, ambiguous region, lock contention, a refused prompt in a non-interactive shell, or an AWS/S3 error. |
 | `2` | Partial completion. `state destroy`: per-resource delete failures, skips, or an interruption with targets left. `state refresh-observed`: per-resource readback failures. |
-| `130` | Interrupted at the `state destroy --all` batch prompt, or by a second Ctrl-C during a destroy. |
+| `130` | Interrupted by a second Ctrl-C during a destroy. |
 
 Every mutating subcommand refuses its confirmation prompt with exit `1` in a
 non-interactive shell rather than hanging or assuming yes — pass `-y` / `--yes`

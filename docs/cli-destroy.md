@@ -82,15 +82,13 @@ reference dangling.
 | --- | --- | --- |
 | Per-stack (`Are you sure you want to destroy stack "X" ...`) | `cdkd destroy '<stack>'`, `cdkd destroy --all` | `-y` / `--yes`, `-f` / `--force` |
 | Per-stack, same prompt | `cdkd state destroy '<stack>'` | `-y` / `--yes` only — `cdkd state destroy` does not accept `-f` / `--force` |
-| Batch — one prompt for the whole batch, asked before anything is touched | `cdkd state destroy --all` | `-y` / `--yes` |
 
 Under `--remove-protection` the per-stack prompt names the protected resources
 (`About to destroy N resources from stack "X", REMOVING DELETION PROTECTION on
 K of them. Continue? (y/N)`) and its default flips from `Y/n` to `y/N`.
 
 Nested-stack children are destroyed as part of their parent's cascade and never
-prompt separately. `cdkd state destroy --all`'s per-stack prompts are skipped
-once its batch prompt is answered.
+prompt separately.
 
 ### Non-interactive runs
 
@@ -106,14 +104,9 @@ Refusing rather than auto-confirming is the deliberate choice for a destroy:
 whereas silently answering "yes" for an absent operator here would delete every
 resource in the stack.
 
-What each refusal guarantees:
-
-- **Batch prompt.** Nothing is read, locked or deleted. A signal delivered at
-  that prompt cancels it and exits 130, also without reading, locking or
-  deleting anything.
-- **Per-stack prompt.** Nothing is locked and nothing is deleted, but the
-  refusal is preceded by the strong-reference scan, which READS other stacks'
-  state records. That is a weaker guarantee than the batch prompt's.
+What the refusal guarantees: nothing is locked and nothing is deleted, but the
+refusal is preceded by the strong-reference scan, which READS other stacks'
+state records.
 
 A stack whose state record holds ZERO resources never reaches the per-stack
 refusal at all: that branch returns earlier, having taken the lock and deleted
@@ -131,7 +124,7 @@ too](#every-other-mutating-confirmation-prompt-is-interactive-only-too).
 | `0` | Everything was destroyed. |
 | `1` | Hard error, including a confirmation prompt refused on a non-interactive stdin. |
 | `2` | Partial: resources failed or were skipped, or the run was interrupted with work left. `state.json` is preserved; re-run to finish. |
-| `130` | A signal arrived at the `cdkd state destroy --all` batch prompt. Nothing was read, locked or deleted. |
+| `130` | Force-quit by Ctrl-C: a second one, or one that arrived before the stack's own graceful stop was armed. A stack lock may be left behind; the message names `cdkd force-unlock`. |
 
 The full cross-command table is in the [CLI Reference](cli-reference.md).
 
@@ -751,8 +744,7 @@ hand-edited or truncated one can hold a string, a list, a number, a boolean or
 
 The destroy therefore refuses before the per-stack confirmation prompt
 (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the record and the region.
-`cdkd state destroy --all` raises its batch prompt first, so there the operator
-confirms the batch and the refusal follows. The refusal sits inside
+The refusal sits inside
 `runDestroyForStack`, so every route into a destroy inherits it — including a
 nested **child** record reached through its parent's destroy.
 Reading the bag as empty — the repair `cdkd diff` and `cdkd state show` apply —
