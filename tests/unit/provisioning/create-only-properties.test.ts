@@ -529,6 +529,212 @@ describe('cancelling a prefetch (issue #3718)', () => {
   });
 });
 
+describe('a PROMOTED prefetch call backs off on a REF\'d timer (issue #3939)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCloudFormationSend.mockReset();
+    clearCreateOnlyPropertiesCache();
+  });
+
+  const throttle = (): Error =>
+    Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+
+  /**
+   * Hold every DescribeType backoff-step timer (`withRetry` sleeps in steps of
+   * at most 1 s, all from `backoffSleep`) instead of letting it fire: each is a
+   * real timer, so its ref state is the production one, but set 60 s out, and
+   * `fire()` runs the pending ones by hand, recording whether each was ref'd at
+   * that moment. Timers from anywhere else pass straight through, and nothing
+   * depends on wall-clock timing.
+   */
+  function holdBackoffTimers(): {
+    timers: NodeJS.Timeout[];
+    refAtFire: boolean[];
+    fire: () => void;
+    drive: <T>(promise: Promise<T>) => Promise<T>;
+    restore: () => void;
+  } {
+    const timers: NodeJS.Timeout[] = [];
+    const refAtFire: boolean[] = [];
+    const pending = new Map<NodeJS.Timeout, () => void>();
+    const realSetTimeout = globalThis.setTimeout;
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms?: number
+    ) => {
+      if (!new Error().stack?.includes('backoffSleep')) return realSetTimeout(fn, ms);
+      const timer = realSetTimeout(fn, 60_000);
+      timers.push(timer);
+      pending.set(timer, fn);
+      return timer;
+    }) as typeof setTimeout);
+    const fire = (): void => {
+      for (const [timer, fn] of [...pending]) {
+        pending.delete(timer);
+        refAtFire.push(timer.hasRef());
+        clearTimeout(timer);
+        fn();
+      }
+    };
+    const drive = async <T>(promise: Promise<T>): Promise<T> => {
+      let done = false;
+      promise.then(
+        () => (done = true),
+        () => (done = true)
+      );
+      for (let i = 0; i < 200 && !done; i++) {
+        fire();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      return promise;
+    };
+    const restore = (): void => {
+      for (const timer of pending.keys()) clearTimeout(timer);
+      pending.clear();
+      spy.mockRestore();
+    };
+    return { timers, refAtFire, fire, drive, restore };
+  }
+
+  const settle = async (until: () => boolean): Promise<void> => {
+    for (let i = 0; i < 50 && !until(); i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+
+  it('promoted MID-backoff: the live timer is ref\'d at once, and every later one is too', async () => {
+    mockCloudFormationSend
+      .mockRejectedValueOnce(throttle())
+      .mockRejectedValueOnce(throttle())
+      .mockResolvedValueOnce(schemaResponse(['/properties/X']));
+    const held = holdBackoffTimers();
+    const prefetch = prefetchCreateOnlyPropertyPaths(['AWS::Test::MidBackoff']);
+    let awaited: Promise<ReadonlyArray<readonly string[]>> | undefined;
+    try {
+      await settle(() => held.timers.length > 0);
+      expect(held.timers, 'the background backoff never started').toHaveLength(1);
+      // Nobody awaits it yet: it must not hold the process open.
+      expect(held.timers[0]!.hasRef()).toBe(false);
+
+      awaited = getCreateOnlyPropertyPaths('AWS::Test::MidBackoff');
+      // The command now waits on this very sleep; an unref'd one lets the
+      // event loop drain under it and the process exit 0 mid-command.
+      expect(held.timers[0]!.hasRef(), 'the live backoff timer stayed unref\'d').toBe(true);
+
+      expect((await held.drive(awaited)).map((p) => p.join('.'))).toEqual(['X']);
+      // The first step plus the second throttle's 2 s backoff (two 1 s steps).
+      expect(held.refAtFire).toEqual([true, true, true]);
+    } finally {
+      prefetch.cancel();
+      // A promoted call cannot be cancelled: let it finish, so a failure here
+      // does not leave it holding a slot the next case counts.
+      if (awaited) await held.drive(awaited);
+      held.restore();
+    }
+  });
+
+  it('promoted while QUEUED: its backoff, once it runs, is ref\'d', async () => {
+    const queued = 'AWS::Test::QueuedThenPromoted';
+    let queuedSends = 0;
+    mockCloudFormationSend.mockImplementation(
+      (command: { input: { TypeName: string } }, options?: { abortSignal?: AbortSignal }) => {
+        if (command.input.TypeName !== queued) {
+          // Holds its slot until the prefetch withdraws it.
+          return new Promise((_resolve, reject) => {
+            options?.abortSignal?.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        queuedSends++;
+        return queuedSends === 1
+          ? Promise.reject(throttle())
+          : Promise.resolve(schemaResponse(['/properties/Q']));
+      }
+    );
+    const held = holdBackoffTimers();
+    const fillers = Array.from(
+      { length: DESCRIBE_TYPE_MAX_IN_FLIGHT },
+      (_, i) => `AWS::Test::Filler${i}`
+    );
+    const prefetch = prefetchCreateOnlyPropertyPaths([...fillers, queued]);
+    try {
+      await flushMicrotasks();
+      expect(describeTypeQueueDepth().pending, 'the type never queued').toBe(1);
+
+      const awaited = getCreateOnlyPropertyPaths(queued);
+      // Withdrawing the fillers frees the slots the promoted call runs in.
+      prefetch.cancel();
+      expect((await held.drive(awaited)).map((p) => p.join('.'))).toEqual(['Q']);
+      expect(held.refAtFire, 'a promoted call backed off on an unref\'d timer').toEqual([true]);
+    } finally {
+      prefetch.cancel();
+      held.restore();
+    }
+  });
+
+  it('an awaited call QUEUED behind a full limiter of backoffs refs every one of them', async () => {
+    // Every slot is held by a background call asleep in its backoff, and the
+    // command awaits a type the prefetch queued behind them: that call cannot
+    // start until one of those sleeps ends, so the command is waiting on all
+    // of them. Unref'd, the loop drained and the process exited 0.
+    const throttledOnce = new Set<string>();
+    mockCloudFormationSend.mockImplementation((command: { input: { TypeName: string } }) => {
+      const type = command.input.TypeName;
+      if (throttledOnce.has(type)) return Promise.resolve(schemaResponse(['/properties/Name']));
+      throttledOnce.add(type);
+      return Promise.reject(throttle());
+    });
+    const held = holdBackoffTimers();
+    const all = Array.from({ length: DESCRIBE_TYPE_MAX_IN_FLIGHT + 1 }, (_, i) => `AWS::Test::Q${i}`);
+    const prefetch = prefetchCreateOnlyPropertyPaths(all);
+    let awaited: Promise<ReadonlyArray<readonly string[]>> | undefined;
+    try {
+      await settle(() => held.timers.length >= DESCRIBE_TYPE_MAX_IN_FLIGHT);
+      expect(held.timers).toHaveLength(DESCRIBE_TYPE_MAX_IN_FLIGHT);
+      expect(describeTypeQueueDepth().pending).toBe(1);
+      expect(held.timers.filter((t) => t.hasRef())).toHaveLength(0);
+
+      awaited = getCreateOnlyPropertyPaths(all[DESCRIBE_TYPE_MAX_IN_FLIGHT]!);
+      expect(
+        held.timers.filter((t) => !t.hasRef()),
+        'a running backoff the awaited call is queued behind stayed unref\'d'
+      ).toHaveLength(0);
+      expect((await held.drive(awaited)).map((p) => p.join('.'))).toEqual(['Name']);
+    } finally {
+      prefetch.cancel();
+      if (awaited) await held.drive(awaited);
+      held.restore();
+    }
+  });
+
+  it('promoting ONE call leaves another background call\'s live backoff unref\'d', async () => {
+    let answerAwaited!: () => void;
+    mockCloudFormationSend.mockImplementation((command: { input: { TypeName: string } }) =>
+      command.input.TypeName === 'AWS::Test::Awaited'
+        ? new Promise((resolve) => {
+            answerAwaited = () => resolve(schemaResponse(['/properties/A']));
+          })
+        : Promise.reject(throttle())
+    );
+    const held = holdBackoffTimers();
+    const prefetch = prefetchCreateOnlyPropertyPaths(['AWS::Test::Awaited', 'AWS::Test::Left']);
+    try {
+      // `Left` is asleep in its backoff BEFORE the other call is promoted.
+      await settle(() => held.timers.length > 0);
+      expect(held.timers).toHaveLength(1);
+      expect(held.timers[0]!.hasRef()).toBe(false);
+
+      const awaited = getCreateOnlyPropertyPaths('AWS::Test::Awaited');
+      expect(held.timers[0]!.hasRef(), 'a promotion elsewhere ref\'d this sleep').toBe(false);
+      answerAwaited();
+      expect((await awaited).map((p) => p.join('.'))).toEqual(['A']);
+      expect(held.timers[0]!.hasRef()).toBe(false);
+    } finally {
+      prefetch.cancel();
+      held.restore();
+    }
+  });
+});
+
 describe('scheduling and fallback details (issue #3718 review)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
