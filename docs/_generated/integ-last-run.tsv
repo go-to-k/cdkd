@@ -133,7 +133,7 @@ gc-custom-asset-names	2026-08-28T10:39:47Z	PASS	214	verify.sh	issue 2346 lane, s
 getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 getstackoutput-crossregion	2026-09-25T09:36:54Z	PASS	71	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 glue-securityconfig-replace	2026-09-26T01:30:00Z	PASS	60	verify.sh	maintainer merge-gate run of PR #3817; rc ok, orph clean (solo rerun; a parallel run failed phase 2 unexplained)
-glue-update-hardening	2026-09-26T01:30:00Z	PASS	206	verify.sh	maintainer merge-gate run of PR #3817; rc ok, orph clean
+glue-update-hardening	2026-09-28T06:54:31Z	PASS	220	verify.sh	rc ok, orph clean; '|'-named table deploy/Ref/update (PR #3891)
 healthimaging-stateful-update-fallback	2026-09-27T20:36:35Z	PASS	296	verify.sh	rc ok, orph clean (#2515)
 iam-access-key	2026-09-27T14:13:26Z	PASS	85	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 iam-managed-policy	2026-09-27T16:47:18Z	PASS	35	verify.sh	PR #3886 merge-gate run; rc ok, orph clean

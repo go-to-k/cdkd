@@ -1513,7 +1513,7 @@ per-type notes.
 | `AWS::EC2::Route` | `<routeTableId>\|<destination>` (`destination` is the `DestinationCidrBlock`, `DestinationIpv6CidrBlock`, or `DestinationPrefixListId` the route declares) |
 | `AWS::EC2::SecurityGroupIngress` | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>` (an omitted port is recorded as `-1`) |
 | `AWS::EC2::VPCGatewayAttachment` | `<internetGatewayId>\|<vpcId>` (note the order — CloudFormation's own identifier is `VpcId` first) |
-| `AWS::Glue::Table` | `<databaseName>\|<tableName>` |
+| `AWS::Glue::Table` | `<databaseName>\|<tableName>` (the table name may itself contain `\|`: cdkd reads it as everything after the recorded `DatabaseName`) |
 | `AWS::Lambda::EventInvokeConfig` | `<functionName>\|<qualifier>` (a bare function name is read as qualifier `$LATEST`) |
 | `AWS::Route53::RecordSet` | `<hostedZoneId>\|<name>\|<type>` |
 | `AWS::S3Tables::Namespace` | `<tableBucketARN>\|<namespaceName>` |
@@ -1547,7 +1547,7 @@ anything; the table is here because the difference is visible when you compare
 | `AWS::AppSync::DataSource` | the data source **ARN** |
 | `AWS::AppSync::Resolver` | the resolver **ARN** |
 | `AWS::EC2::EIP` | the public IP (the segment before the first `\|`) |
-| `AWS::Glue::Table` | the table name (the segment after the `\|`) |
+| `AWS::Glue::Table` | the table name — everything after the recorded `DatabaseName` and its `\|`, so a table named `a\|b` resolves to `a\|b` |
 | `AWS::Route53::RecordSet` | the record **name** — the MIDDLE segment |
 | `AWS::S3Tables::Namespace` / `::Table` | the namespace / table name (the segment after the last `\|`) |
 
@@ -1687,14 +1687,16 @@ Two more types **accept** a composite id without producing one:
 > `|` is an ordinary character in JSON.
 
 > [!IMPORTANT]
-> The separator is **not escaped**, so cdkd cannot manage a resource whose own
-> name contains a `|` even where AWS and CloudFormation can. A Glue table named
-> `a|b` in database `mydb` would be recorded as `mydb|a|b`, which is ambiguous:
-> a `Ref` to it would resolve to `b`, and a reader without the recorded
-> database name would read it as table `a`. Rather than record an ambiguous id,
-> `cdkd deploy` **refuses at pre-flight** with a message naming the offending
-> segment. Rename the resource, or manage it with the CDK CLI. This is a
-> known limitation.
+> The separator is **not escaped**, so a segment that contains a `|` would
+> make the id ambiguous. `cdkd deploy` **refuses at pre-flight**, naming the
+> offending segment, rather than record such an id. The one exception is the
+> `AWS::Glue::Table` table name: a table named `a|b` in database `mydb` is
+> recorded as `mydb|a|b`, and cdkd reads the table name back as everything
+> after the recorded `DatabaseName` — for update, destroy, drift and `Ref`
+> alike. A Glue *database* name that contains `|` is still refused, as is
+> an `AWS::Route53::RecordSet` record name that contains one. For every
+> other type, AWS's own naming rules and generated ids keep `|` out of the
+> value.
 
 #### Purpose of attributes
 

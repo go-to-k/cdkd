@@ -31,10 +31,31 @@ import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
  * `TableInput.Name: 'a|b'` succeeds — and CloudFormation manages the resource
  * fine. The limitation is cdkd's own, so the honest answer is to REFUSE at
  * deploy time with a message that says so, rather than to record an id that
- * silently names something else. `AWS::Glue::Table`'s decode sites now anchor
- * on the recorded `DatabaseName` instead of splitting, but its `Ref`
- * extraction still takes the last segment, so the refusal stays for it too.
- * Escaping the separator is the general fix and remains open on #1672.
+ * silently names something else.
+ *
+ * ## The one segment that may carry it: the LAST, when every reader can say so
+ *
+ * A separator inside the FINAL segment is not ambiguous by itself. If every
+ * earlier segment is refused a `|`, the first `|` in the id is always a real
+ * separator, and everything after the last real separator is the final
+ * segment — `mydb|a|b` can only be table `a|b` in database `mydb`. What makes
+ * it ambiguous is a READER that splits differently: a bare `split('|')`
+ * destructuring, or a `lastIndexOf('|')`.
+ *
+ * So {@link CompositeIdSegment.mayContainSeparator} exempts the final segment,
+ * and it is a claim about the type's READERS rather than about the value: set
+ * it only once every decode site of the type takes the final segment as
+ * "everything after the leading segments" (or anchors on a recorded leading
+ * segment with {@link segmentAfterAnchor}), and its `Ref` extraction does the
+ * same. `AWS::Glue::Table` is the one type that sets it (issue #1672): a table
+ * name may contain `|` (the API accepts it; live probe, us-east-1 2026-08-12),
+ * its decode sites anchor on the recorded `DatabaseName`, and its `Ref` takes
+ * the table name the same way. The database name is still refused (issue #3892).
+ *
+ * The per-type audit (2026-09-28, issue #1672) found no other type whose
+ * AWS-accepted segment values can contain `|`, apart from
+ * `AWS::Route53::RecordSet`'s record name — tracked in issue #3890. For every
+ * other type the refusal below never blocks a valid template.
  *
  * ## Two entry points, mirroring `config-shape.ts`
  *
@@ -87,8 +108,28 @@ import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
 /** The character every composite physicalId in this codebase joins segments with. */
 export const COMPOSITE_ID_SEPARATOR = '|';
 
-/** The issue tracking the real fix (escaping, or not packing at all). */
-const COMPOSITE_ID_ISSUE_URL = 'https://github.com/go-to-k/cdkd/issues/1672';
+/**
+ * The sentence naming the open parity issue, for each type whose refused
+ * value the AWS API admits — where the refusal is a cdkd limitation rather
+ * than a value no deploy could use. The per-type audit behind this list is
+ * issue #1672 (comment 5857791844, amended for the Glue database name). It
+ * covers cdkd's SDK packers only; a type absent from it gets a NEUTRAL
+ * sentence (`parityClause`), since `cc-import-identifier.ts` also calls the
+ * refusal for arbitrary Cloud Control types nobody audited.
+ */
+const PARITY_GAP: ReadonlyMap<string, string> = new Map([
+  // Only the DATABASE name is refused; the table name is exempt (see above).
+  [
+    'AWS::Glue::Table',
+    `The Glue API's name pattern admits '|' in a database name (not live-probed), and cdkd ` +
+      `does not support it yet: tracked in https://github.com/go-to-k/cdkd/issues/3892.`,
+  ],
+  [
+    'AWS::Route53::RecordSet',
+    `Route 53's domain-name format admits '|' in a record name (per its docs), and cdkd ` +
+      `does not support it yet: tracked in https://github.com/go-to-k/cdkd/issues/3890.`,
+  ],
+]);
 
 /**
  * One segment of a composite physicalId.
@@ -122,6 +163,16 @@ export interface CompositeIdSegment {
    * a way that decodes to a DIFFERENT resource.
    */
   readonly value: unknown;
+  /**
+   * Exempt this segment from the separator refusal. Only the FINAL segment may
+   * set it — {@link packCompositeId} throws on any other position, since a `|`
+   * inside a leading segment moves every separator after it.
+   *
+   * It is a claim about the type's READERS, not about the value: set it only
+   * once every decode site and the `Ref` extraction of the type take the final
+   * segment as everything after the leading ones. See the module header.
+   */
+  readonly mayContainSeparator?: true;
 }
 
 /** Options shared by {@link packCompositeId}. */
@@ -161,6 +212,44 @@ export interface CompositeIdOptions {
   readonly maskSecrets?: MaskerFn | undefined;
 }
 
+/**
+ * True when the segment at `index` may carry the separator.
+ *
+ * @throws Error when a segment other than the last claims the exemption — a
+ *   programming error in the caller, since a `|` in a leading segment shifts
+ *   every separator after it and no reader can undo that.
+ */
+function exemptFromRefusal(segment: CompositeIdSegment, index: number, count: number): boolean {
+  if (segment.mayContainSeparator !== true) return false;
+  if (index !== count - 1) {
+    throw new Error(
+      `Internal: composite id segment '${segment.name}' claims mayContainSeparator, but only ` +
+        `the last segment may carry '${COMPOSITE_ID_SEPARATOR}'`
+    );
+  }
+  return true;
+}
+
+/**
+ * The final segment of a composite id whose leading segments are exactly
+ * `anchor`, or `undefined` when `anchor` does not prefix it.
+ *
+ * This is how a reader takes a final segment that may itself contain the
+ * separator ({@link CompositeIdSegment.mayContainSeparator}) without guessing
+ * where the leading segments end: the anchor is the leading part as recorded
+ * somewhere else (a state record's property), so `mydb|a|b` with anchor `mydb`
+ * is `a|b`. Returns `undefined` for a non-string or empty anchor, an id that
+ * does not start with `<anchor>|`, and an empty remainder — each is "this
+ * anchor cannot place the separator", and the caller falls back.
+ */
+export function segmentAfterAnchor(physicalId: string, anchor: unknown): string | undefined {
+  if (typeof anchor !== 'string' || anchor === '') return undefined;
+  const prefix = `${anchor}${COMPOSITE_ID_SEPARATOR}`;
+  if (!physicalId.startsWith(prefix)) return undefined;
+  const rest = physicalId.slice(prefix.length);
+  return rest === '' ? undefined : rest;
+}
+
 /** Render `<a>|<b>|<c>` from the segment names. */
 function idShape(segments: readonly CompositeIdSegment[]): string {
   return segments.map((segment) => `<${segment.name}>`).join(COMPOSITE_ID_SEPARATOR);
@@ -183,8 +272,10 @@ export function compositeIdSeparatorRefusal(
   // The STRINGIFIED form, not `typeof value === 'string'` — identical for a
   // real string, and the only spelling that catches the array / boxed shapes an
   // unvalidated `as string` cast lets through. See {@link CompositeIdSegment.value}.
-  const offending = segments.filter((segment) =>
-    String(segment.value).includes(COMPOSITE_ID_SEPARATOR)
+  const offending = segments.filter(
+    (segment, index) =>
+      !exemptFromRefusal(segment, index, segments.length) &&
+      String(segment.value).includes(COMPOSITE_ID_SEPARATOR)
   );
   if (offending.length === 0) return undefined;
 
@@ -205,9 +296,20 @@ export function compositeIdSeparatorRefusal(
     `as the separator in this type's physical id (${idShape(segments)}). Recording it would ` +
     `produce an id that decodes back to a DIFFERENT resource, so a later cdkd destroy / drift / ` +
     `update would target the wrong one — or silently skip it while the real resource stays ` +
-    `alive. AWS accepts the name and CloudFormation manages such a resource fine; this is a ` +
-    `cdkd limitation tracked in ${COMPOSITE_ID_ISSUE_URL}. Rename the resource so no segment ` +
-    `contains '${COMPOSITE_ID_SEPARATOR}', or manage it outside cdkd.`
+    `alive. ${parityClause(resourceType)} Change the named value so it does not contain ` +
+    `'${COMPOSITE_ID_SEPARATOR}', or manage the resource outside cdkd.`
+  );
+}
+
+/**
+ * The parity sentence for this type, or a neutral one where nobody audited it.
+ * `resourceType` is matched EXACTLY against cdkd literals, so template text
+ * cannot select a sentence or inject one.
+ */
+function parityClause(resourceType: string): string {
+  return (
+    PARITY_GAP.get(resourceType) ??
+    `cdkd cannot record a value containing '${COMPOSITE_ID_SEPARATOR}' in this position.`
   );
 }
 

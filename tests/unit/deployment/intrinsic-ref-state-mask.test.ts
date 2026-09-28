@@ -248,6 +248,71 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     }
   );
 
+  // Issue #1672: `AWS::Glue::Table` reads `DatabaseName` from state to place a
+  // table name that contains `|`, but only for an id with more than one `|`.
+  // Unlike every other state-recovered `Ref`, a masked anchor is NOT a redacted
+  // read: the fallback (after the first `|`) is exact for every id the current
+  // binary records, so refusing would refuse a correct value. The lookup reads
+  // with `reportMasked: false`, and the mask is never served.
+  describe('AWS::Glue::Table DatabaseName anchor', () => {
+    it('records NO read for a masked anchor on a `|`-named table, and serves the fallback', async () => {
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
+      const context = contextFor(
+        {
+          resourceType: 'AWS::Glue::Table',
+          physicalId: 'mydb|a|b',
+          properties: { DatabaseName: SECRET_MASK },
+        },
+        redactedAttributeReads
+      );
+
+      const value = await resolver.resolve({ Ref: 'T' }, context);
+
+      expect(value).toBe('a|b');
+      expect(redactedAttributeReads).toEqual([]);
+    });
+
+    // The seam half: the option suppresses only the REPORT, never the skip. A
+    // masked leaf is still not returned as a value.
+    it('suppresses only the report: the masked leaf is still skipped', () => {
+      const reported: string[] = [];
+      const lookup = refStateLookupFromResource(
+        { properties: { DatabaseName: SECRET_MASK } },
+        (key) => reported.push(key)
+      );
+
+      expect(lookup(['DatabaseName'], { reportMasked: false })).toBeUndefined();
+      expect(reported).toEqual([]);
+      expect(lookup(['DatabaseName'])).toBeUndefined();
+      expect(reported).toEqual(['DatabaseName']);
+    });
+
+    it('records nothing for a two-segment id, masked anchor or not', async () => {
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
+      const context = contextFor(
+        {
+          resourceType: 'AWS::Glue::Table',
+          physicalId: 'mydb|orders',
+          properties: { DatabaseName: SECRET_MASK },
+        },
+        redactedAttributeReads
+      );
+
+      await expect(resolver.resolve({ Ref: 'T' }, context)).resolves.toBe('orders');
+      expect(redactedAttributeReads).toEqual([]);
+    });
+
+    it('never serves the mask as the table name when no bag is declared', async () => {
+      const context = contextFor({
+        resourceType: 'AWS::Glue::Table',
+        physicalId: 'mydb|a|b',
+        properties: { DatabaseName: SECRET_MASK },
+      });
+
+      await expect(resolver.resolve({ Ref: 'T' }, context)).resolves.toBe('a|b');
+    });
+  });
+
   it('serves the MASK when the context declares no redactedAttributeReads bag', async () => {
     // The resolver-level half of the opt-in, and INVERTED in round 3 for the
     // same reason as the seam case above. `cdkd diff`, `cdkd scrub` and

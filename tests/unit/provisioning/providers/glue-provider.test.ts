@@ -68,6 +68,10 @@ import {
 } from '../../../../src/provisioning/providers/glue-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 import {
+  cfnRefValueFromPhysicalId,
+  refStateLookupFromResource,
+} from '../../../../src/deployment/intrinsic-function-resolver.js';
+import {
   isMarkedNonRetryable,
   isNameCollisionErrorFrom,
 } from '../../../../src/deployment/retryable-errors.js';
@@ -250,7 +254,11 @@ describe('GlueProvider import', () => {
   // Same question on the composite branch: the composite's own database
   // segment must win over a template DatabaseName that disagrees.
   it("Table prefers a composite override's database segment over a DIFFERENT template DatabaseName", async () => {
-    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+    // Since #1672 the id is also probed as a bare table name in the template's
+    // database (`template_db`, `overridden_db|my_table`); that one is absent.
+    mockGlueSend
+      .mockResolvedValueOnce({ Table: { Name: 'my_table' } })
+      .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
 
     const result = await provider.import(
       makeTableInput({
@@ -296,57 +304,502 @@ describe('GlueProvider import', () => {
 
   // AWS accepts a Glue table literally named `a|b` — verified by live probe in
   // us-east-1 on 2026-08-12; `glue:CreateTable` with `TableInput.Name: 'a|b'`
-  // succeeded. The "lowercase alphanumerics and underscore" rule usually quoted
-  // is the Athena convention, not the API's constraint.
-  //
-  // Such a table is deliberately NOT adoptable. cdkd's id space cannot hold it:
-  // `updateTable` / `deleteTable` / `readTable` destructure the stored id into
-  // exactly TWO segments, so a recorded `mydb|a|b` decodes as database `mydb`,
-  // table `a` — a DIFFERENT table, which delete would then delete. Writing a
-  // record cdkd cannot decode is the #1658 failure mode and is strictly worse
-  // than the loud not-found here. An earlier revision of this fix retried the
-  // bare reading and produced exactly that record.
-  it('Table never records a physicalId whose segments contain a pipe', async () => {
-    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'a|b' } });
+  // succeeded — and CloudFormation manages it. Since issue #1672 such a table
+  // is adoptable: the recorded `<db>|a|b` is decoded by anchoring on the
+  // recorded `DatabaseName` (the template's, which import records), by the
+  // provider and by the `Ref` resolver alike. The condition is that pairing:
+  // a `|` table name is accepted only with the template's own DatabaseName.
+  describe('Table names containing the separator (issue #1672)', () => {
+    function probes(): { DatabaseName: string; Name: string }[] {
+      return mockGlueSend.mock.calls.map(
+        ([c]) => (c as { input: { DatabaseName: string; Name: string } }).input
+      );
+    }
 
-    const result = await provider.import(
-      makeTableInput({
-        properties: { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } },
-      })
-    );
+    it('adopts a template-named `a|b` table as <db>|a|b', async () => {
+      mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'a|b' } });
 
-    expect(result).toBeNull();
-    // Refused BEFORE any AWS call: adopting it and then discarding the result
-    // would be wasted work, and probing tells us nothing we can act on.
-    expect(mockGlueSend).not.toHaveBeenCalled();
-    // Pin the two things the message must carry, not its prose: that the
-    // SEPARATOR is the reason (so the user knows what to rename) and the
-    // tracking issue for the limitation (so it does not read as permanent).
-    const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(warned).toContain('separator');
-    expect(warned).toContain('1672');
-  });
+      const result = await provider.import(
+        makeTableInput({ properties: { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } } })
+      );
 
-  // The 3-segment shape is on the INVITED path, which is what makes it worth a
-  // test of its own: the refusal warning tells the user to pass
-  // `<databaseName>|<tableName>`, so someone whose table is named `a|b` types
-  // `mydb|a|b`. Destructuring the first two segments would read that as
-  // database `mydb`, table `a` — a DIFFERENT table, adopted under an id that
-  // round-trips cleanly and therefore never looks wrong again. Reviewers found
-  // this escaping the pipe guard, which only inspects the segments AFTER the
-  // split.
-  it('Table refuses a physical id with MORE than two segments instead of truncating it', async () => {
-    const result = await provider.import(
-      makeTableInput({
-        knownPhysicalId: 'mydb|a|b',
-        properties: { DatabaseName: 'mydb' },
-      })
-    );
+      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: {} });
+      expect(probes()).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
+    });
 
-    expect(result).toBeNull();
-    // The load-bearing assertion: a truncating implementation would probe
-    // `{DatabaseName: 'mydb', Name: 'a'}` here and adopt whatever it finds.
-    expect(mockGlueSend).not.toHaveBeenCalled();
+    // The shape the old refusal warning INVITED (`<databaseName>|<tableName>`
+    // for a table named `a|b`). Destructuring the first two segments would
+    // read it as table `a` — a DIFFERENT table; the anchor reads `a|b`.
+    it('reads a composite id anchored on the template DatabaseName as the whole remainder', async () => {
+      mockGlueSend
+        .mockResolvedValueOnce({ Table: { Name: 'a|b' } })
+        .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+      const result = await provider.import(
+        makeTableInput({ knownPhysicalId: 'mydb|a|b', properties: { DatabaseName: 'mydb' } })
+      );
+
+      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: {} });
+      expect(probes()).toEqual([
+        { DatabaseName: 'mydb', Name: 'a|b' },
+        { DatabaseName: 'mydb', Name: 'mydb|a|b' },
+      ]);
+    });
+
+    // CloudFormation's own id for a table named `a|b` is the bare `a|b` — the
+    // CFn-migration (auto-mode) path. It reads as the established two-segment
+    // composite AND as the bare name in the template's database; every reading
+    // is probed, and the one that exists is adopted.
+    it('adopts the bare CloudFormation reading when the two-segment composite is not found', async () => {
+      mockGlueSend
+        .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }))
+        .mockResolvedValueOnce({ Table: { Name: 'a|b' } });
+
+      const result = await provider.import(
+        makeTableInput({ knownPhysicalId: 'a|b', properties: { DatabaseName: 'mydb' } })
+      );
+
+      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: {} });
+      expect(probes()).toEqual([
+        { DatabaseName: 'a', Name: 'b' },
+        { DatabaseName: 'mydb', Name: 'a|b' },
+      ]);
+    });
+
+    it('adopts the two-segment composite when the bare reading is not found', async () => {
+      mockGlueSend
+        .mockResolvedValueOnce({ Table: { Name: 'b' } })
+        .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+      const result = await provider.import(
+        makeTableInput({ knownPhysicalId: 'a|b', properties: { DatabaseName: 'mydb' } })
+      );
+
+      expect(result).toEqual({ physicalId: 'a|b', attributes: {} });
+      expect(probes()).toEqual([
+        { DatabaseName: 'a', Name: 'b' },
+        { DatabaseName: 'mydb', Name: 'a|b' },
+      ]);
+    });
+
+    // Both readings exist: a table `b` in a database `a`, and a table `a|b` in
+    // `mydb`. Adopting the first found could record the wrong one, which
+    // `cdkd destroy` would then delete. The template's own TableInput.Name
+    // settles which one this resource is. (A template name equal to the id
+    // itself takes the bare-only arm instead; see the test below.)
+    it('lets the template TableInput.Name choose when both readings exist', async () => {
+      mockGlueSend
+        .mockResolvedValueOnce({ Table: { Name: 'b' } })
+        .mockResolvedValueOnce({ Table: { Name: 'a|b' } });
+
+      const result = await provider.import(
+        makeTableInput({
+          knownPhysicalId: 'a|b',
+          properties: { DatabaseName: 'mydb', TableInput: { Name: 'b' } },
+        })
+      );
+
+      expect(result).toEqual({ physicalId: 'a|b', attributes: {} });
+      expect(mockGlueSend).toHaveBeenCalledTimes(2);
+    });
+
+    // A reading already found does not license adopting it while another
+    // reading's answer is UNKNOWN: that other table might exist too.
+    it('rethrows a non-not-found error on a later reading even after one was found', async () => {
+      mockGlueSend
+        .mockResolvedValueOnce({ Table: { Name: 'b' } })
+        .mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'));
+
+      const refused = provider.import(
+        makeTableInput({ knownPhysicalId: 'a|b', properties: { DatabaseName: 'mydb' } })
+      );
+      await expect(refused).rejects.toThrow(
+        /could not check whether table a\|b exists in database mydb \(the bare reading/
+      );
+      await expect(refused).rejects.toMatchObject({
+        cause: { message: expect.stringContaining('Rate exceeded') },
+      });
+      expect(mockGlueSend).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ['no template TableInput.Name', { DatabaseName: 'mydb' }],
+      ['a template name neither reading carries', { DatabaseName: 'mydb', TableInput: { Name: 'other' } }],
+    ])('refuses as ambiguous when both readings exist and %s', async (_n, properties) => {
+      mockGlueSend
+        .mockResolvedValueOnce({ Table: { Name: 'b' } })
+        .mockResolvedValueOnce({ Table: { Name: 'a|b' } });
+
+      const result = await provider.import(makeTableInput({ knownPhysicalId: 'a|b', properties }));
+
+      expect(result).toBeNull();
+      expect(mockGlueSend).toHaveBeenCalledTimes(2);
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('names more than one existing table');
+    });
+
+    // CloudFormation's bare id that IS the template's table name is read only
+    // as that name. Split, `a|b` anchors on a template DatabaseName `a` as
+    // table `b` — an unrelated table the template does not declare.
+    it.each([
+      ['anchoring', { DatabaseName: 'a', TableInput: { Name: 'a|b' } }, { DatabaseName: 'a', Name: 'a|b' }],
+      ['two-segment', { DatabaseName: 'x', TableInput: { Name: 'a|b' } }, { DatabaseName: 'x', Name: 'a|b' }],
+    ])('reads an id equal to the template table name only as that name (%s)', async (_n, properties, only) => {
+      mockGlueSend.mockRejectedValueOnce(
+        new EntityNotFoundException({ message: 'nf', $metadata: {} })
+      );
+
+      const result = await provider.import(makeTableInput({ knownPhysicalId: 'a|b', properties }));
+
+      expect(result).toBeNull();
+      expect(probes()).toEqual([only]);
+    });
+
+    // The bare-only arm pairs the name with the template's DatabaseName and
+    // nothing else: without a usable one it does NOT fall back to splitting
+    // the id (which is what it did before this arm existed).
+    // The `unpairable` remedy (`--resource '<db>|a|b'`) would itself be refused
+    // as unanchored, so this names the one that works: set DatabaseName.
+    it('refuses an id equal to the template name as unplaceable when the template DatabaseName is unresolved', async () => {
+      const result = await provider.import(
+        makeTableInput({
+          knownPhysicalId: 'a|b',
+          properties: { DatabaseName: { Ref: 'Db' }, TableInput: { Name: 'a|b' } },
+        })
+      );
+
+      expect(result).toBeNull();
+      expect(mockGlueSend).not.toHaveBeenCalled();
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain("the '|' in a name cannot be placed");
+      expect(warned).toContain("Set the template's DatabaseName");
+      expect(warned).not.toContain('Pass the composite form');
+    });
+
+    it('adopts an id equal to the template name as <templateDb>|<name>', async () => {
+      mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'a|b' } });
+
+      const result = await provider.import(
+        makeTableInput({
+          knownPhysicalId: 'a|b',
+          properties: { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } },
+        })
+      );
+
+      expect(result).toEqual({ physicalId: 'mydb|a|b', attributes: {} });
+      expect(probes()).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
+    });
+
+    // An anchored id is ALSO read as a bare table name in the template's
+    // database (#3891 security review): CloudFormation's id for a table named
+    // `mydb|a` is `mydb|a`, and the anchored reading alone would adopt an
+    // unrelated table `a` that `cdkd destroy` then deletes. Never the
+    // two-segment composite as well: the anchor already says where the
+    // database ends.
+    describe('an id the template DatabaseName anchors', () => {
+      const ID = 'mydb|a';
+      const PROPS = { DatabaseName: 'mydb' };
+
+      it('probes the anchored and the bare reading, and returns null when neither exists', async () => {
+        mockGlueSend.mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} })).mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+        const result = await provider.import(
+          makeTableInput({ knownPhysicalId: ID, properties: PROPS })
+        );
+
+        expect(result).toBeNull();
+        expect(probes()).toEqual([
+          { DatabaseName: 'mydb', Name: 'a' },
+          { DatabaseName: 'mydb', Name: 'mydb|a' },
+        ]);
+      });
+
+      it('adopts the bare table when only it exists', async () => {
+        mockGlueSend
+          .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }))
+          .mockResolvedValueOnce({ Table: { Name: 'mydb|a' } });
+
+        const result = await provider.import(
+          makeTableInput({ knownPhysicalId: ID, properties: PROPS })
+        );
+
+        expect(result).toEqual({ physicalId: 'mydb|mydb|a', attributes: {} });
+      });
+
+      it('adopts the anchored table when only it exists', async () => {
+        mockGlueSend
+          .mockResolvedValueOnce({ Table: { Name: 'a' } })
+          .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+        const result = await provider.import(
+          makeTableInput({ knownPhysicalId: ID, properties: PROPS })
+        );
+
+        expect(result).toEqual({ physicalId: 'mydb|a', attributes: {} });
+      });
+
+      it('refuses when both exist and the template names neither', async () => {
+        mockGlueSend
+          .mockResolvedValueOnce({ Table: { Name: 'a' } })
+          .mockResolvedValueOnce({ Table: { Name: 'mydb|a' } });
+
+        const result = await provider.import(
+          makeTableInput({ knownPhysicalId: ID, properties: PROPS })
+        );
+
+        expect(result).toBeNull();
+        const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('names more than one existing table');
+        expect(warned).toContain("'a' in mydb, 'mydb|a' in mydb");
+        expect(warned).toContain("Set the template's TableInput.Name");
+        expect(warned).toContain("--resource 'MyTable=<databaseName>|<databaseName>|<rest of the name>'");
+        // The #1651 shape: never a remedy that re-spells the same ambiguous id.
+        expect(warned).not.toContain('with the database spelled out');
+      });
+
+      // Each remedy the refusal names, fed back in with BOTH tables still
+      // present, must adopt exactly one — not refuse again.
+      it.each([
+        ['TableInput.Name set to the anchored table', ID, { ...PROPS, TableInput: { Name: 'a' } }, 'mydb|a'],
+        ['TableInput.Name set to the bare table', ID, { ...PROPS, TableInput: { Name: 'mydb|a' } }, 'mydb|mydb|a'],
+        ['the id with the database doubled', 'mydb|mydb|a', PROPS, 'mydb|mydb|a'],
+      ])('adopts one table after the suggested remedy: %s', async (_n, id, properties, expected) => {
+        // Both tables exist; a third name is absent.
+        mockGlueSend.mockImplementation(async (command: { input: { Name: string } }) => {
+          if (command.input.Name === 'a' || command.input.Name === 'mydb|a') {
+            return { Table: { Name: command.input.Name } };
+          }
+          throw new EntityNotFoundException({ message: 'nf', $metadata: {} });
+        });
+
+        const result = await provider.import(makeTableInput({ knownPhysicalId: id, properties }));
+
+        expect(result).toEqual({ physicalId: expected, attributes: {} });
+        mockGlueSend.mockReset();
+      });
+
+      // The label is the one the refusal prints; each reading must carry its own.
+      it('names the anchored reading when its probe cannot answer', async () => {
+        mockGlueSend.mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'));
+
+        await expect(
+          provider.import(makeTableInput({ knownPhysicalId: ID, properties: PROPS }))
+        ).rejects.toThrow(/could not check whether table a exists in database mydb \(the anchored reading/);
+      });
+
+      // Glue caps a table name at 255 characters, so an id longer than that
+      // cannot be a bare table name: probing it could only fail an import that
+      // used to work (#3891 code review).
+      it('skips the bare reading for an id longer than a Glue table name can be', async () => {
+        const table = 't'.repeat(251);
+        mockGlueSend.mockResolvedValueOnce({ Table: { Name: table } });
+
+        const result = await provider.import(
+          makeTableInput({ knownPhysicalId: `mydb|${table}`, properties: PROPS })
+        );
+
+        expect(`mydb|${table}`).toHaveLength(256);
+        expect(result).toEqual({ physicalId: `mydb|${table}`, attributes: {} });
+        expect(probes()).toEqual([{ DatabaseName: 'mydb', Name: table }]);
+      });
+
+      it('keeps the bare reading for an id of exactly the limit', async () => {
+        const table = 't'.repeat(250);
+        mockGlueSend.mockResolvedValueOnce({ Table: { Name: table } }).mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+        await provider.import(makeTableInput({ knownPhysicalId: `mydb|${table}`, properties: PROPS }));
+
+        expect(`mydb|${table}`).toHaveLength(255);
+        expect(probes()).toHaveLength(2);
+      });
+
+      // A lone reading's error is left as AWS raised it.
+      it('rethrows a lone reading error unchanged', async () => {
+        mockGlueSend.mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'));
+
+        await expect(
+          provider.import(makeTableInput({ knownPhysicalId: 'mydb|a', properties: {} }))
+        ).rejects.toThrow(/^ThrottlingException: Rate exceeded$/);
+      });
+    });
+
+    // A throttle or an authorization failure is an UNKNOWN answer. Moving on to
+    // the next reading could adopt a different table than the one that exists.
+    it('stops at a non-not-found error, naming the reading, instead of trying the next one', async () => {
+      mockGlueSend.mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'));
+
+      const refused = provider.import(
+        makeTableInput({ knownPhysicalId: 'a|b', properties: { DatabaseName: 'mydb' } })
+      );
+      await expect(refused).rejects.toThrow(
+        /could not check whether table b exists in database a \(the composite reading/
+      );
+      await expect(refused).rejects.toThrow(/Grant glue:GetTable on that table and database/);
+      // A re-spelled id would be read the same ways again, so none is offered.
+      await expect(refused).rejects.not.toThrow(/--resource/);
+      expect(mockGlueSend).toHaveBeenCalledTimes(1);
+    });
+
+    // The error CLASS is named; AWS's message (which can quote the account and
+    // role) is not, and rides only as `cause`.
+    it('names the probe error by class, never by its message', async () => {
+      const denied = Object.assign(
+        new Error('User: arn:aws:iam::123456789012:role/x is not authorized'),
+        { name: 'AccessDeniedException' }
+      );
+      mockGlueSend.mockRejectedValueOnce(denied);
+
+      const refused = provider.import(
+        makeTableInput({ knownPhysicalId: 'a|b', properties: { DatabaseName: 'mydb' } })
+      );
+      await expect(refused).rejects.toThrow(/AccessDeniedException/);
+      await expect(refused).rejects.not.toThrow(/123456789012/);
+      await expect(refused).rejects.toMatchObject({ cause: denied });
+    });
+
+    // CatalogId goes on EVERY reading's probe, not just the first.
+    it('sends the template CatalogId on every reading it probes', async () => {
+      mockGlueSend.mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} })).mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+      await provider.import(
+        makeTableInput({
+          knownPhysicalId: 'a|b',
+          properties: { DatabaseName: 'mydb', CatalogId: '123456789012' },
+        })
+      );
+
+      expect(probes()).toEqual([
+        { DatabaseName: 'a', Name: 'b', CatalogId: '123456789012' },
+        { DatabaseName: 'mydb', Name: 'a|b', CatalogId: '123456789012' },
+      ]);
+    });
+
+    it('returns null when no reading exists', async () => {
+      const nf = () => new EntityNotFoundException({ message: 'nf', $metadata: {} });
+      mockGlueSend.mockRejectedValueOnce(nf()).mockRejectedValueOnce(nf());
+
+      const result = await provider.import(
+        makeTableInput({ knownPhysicalId: 'a|b', properties: { DatabaseName: 'mydb' } })
+      );
+
+      expect(result).toBeNull();
+      expect(mockGlueSend).toHaveBeenCalledTimes(2);
+    });
+
+    // Three segments the template's DatabaseName does not anchor: the only
+    // reading kept is the bare name in the template's database. The
+    // first-`|` composite (`other`, `a|b`) is NOT probed — it would record a
+    // `|` table name beside a DatabaseName that does not anchor it.
+    it('probes only the bare reading for an unanchored id of three segments', async () => {
+      mockGlueSend.mockRejectedValueOnce(
+        new EntityNotFoundException({ message: 'nf', $metadata: {} })
+      );
+
+      const result = await provider.import(
+        makeTableInput({ knownPhysicalId: 'other|a|b', properties: { DatabaseName: 'mydb' } })
+      );
+
+      expect(result).toBeNull();
+      expect(probes()).toEqual([{ DatabaseName: 'mydb', Name: 'other|a|b' }]);
+    });
+
+    // Nothing anchors or pairs it: `x|a|b` could be table `a|b` in `x` or
+    // table `b` in a database `x|a`.
+    it('refuses an unanchored id of three segments when the template has no DatabaseName', async () => {
+      const result = await provider.import(
+        makeTableInput({ knownPhysicalId: 'x|a|b', properties: {} })
+      );
+
+      expect(result).toBeNull();
+      expect(mockGlueSend).not.toHaveBeenCalled();
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain("the '|' in a name cannot be placed");
+      expect(warned).toContain('separator');
+    });
+
+    // An unresolved template DatabaseName is no anchor and no pairing: the
+    // unanchored three-segment id is refused as unplaceable, not probed.
+    it('refuses a three-segment id when the template DatabaseName is an unresolved intrinsic', async () => {
+      const result = await provider.import(
+        makeTableInput({
+          knownPhysicalId: 'mydb|a|b',
+          properties: { DatabaseName: { Ref: 'Db' }, TableInput: { Name: 'a|b' } },
+        })
+      );
+
+      expect(result).toBeNull();
+      expect(mockGlueSend).not.toHaveBeenCalled();
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain("the '|' in a name cannot be placed");
+    });
+
+    // The database-name refusal sits in the one place every reading passes,
+    // so it holds for the anchored and bare readings, not only the template one.
+    it.each([
+      ['anchored', 'my|db|orders'],
+      ['bare', 'x|a|b'],
+    ])('refuses a template database name containing the separator on the %s reading', async (_n, id) => {
+      const result = await provider.import(
+        makeTableInput({ knownPhysicalId: id, properties: { DatabaseName: 'my|db' } })
+      );
+
+      expect(result).toBeNull();
+      expect(mockGlueSend).not.toHaveBeenCalled();
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('a database name containing');
+    });
+
+    it('refuses a template database name containing the separator', async () => {
+      const result = await provider.import(
+        makeTableInput({ properties: { DatabaseName: 'my|db', TableInput: { Name: 'orders' } } })
+      );
+
+      expect(result).toBeNull();
+      expect(mockGlueSend).not.toHaveBeenCalled();
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('a database name containing');
+    });
+
+    // `db|` is a composite missing its table, not a table named `db|`: the bare
+    // reading must not swallow it and turn the guidance into a silent not-found.
+    it.each(['mydb|', '|mydb'])('keeps an id with an empty segment unpairable (%s)', async (id) => {
+      const result = await provider.import(
+        makeTableInput({ knownPhysicalId: id, properties: { DatabaseName: 'mydb' } })
+      );
+
+      expect(result).toBeNull();
+      expect(mockGlueSend).not.toHaveBeenCalled();
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('cannot resolve a database for physical id');
+    });
+
+    // The whole point of the pairing condition: the adopted record — its id AND
+    // the template bag import records beside it — must address the probed table
+    // at every later reader. Driven through the REAL decode (`delete`) and the
+    // REAL `Ref` extraction rather than a restated split.
+    it.each([
+      ['template name', { properties: { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } } }],
+      ['anchored composite', { knownPhysicalId: 'mydb|a|b', properties: { DatabaseName: 'mydb' } }],
+    ])('records an id the delete and the Ref resolve back to the probed table (%s)', async (_n, over) => {
+      mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'a|b' } }).mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+      const input = makeTableInput(over);
+      const result = await provider.import(input);
+      expect(result).not.toBeNull();
+      const probed = probes()[0]!;
+
+      mockGlueSend.mockReset();
+      mockGlueSend.mockResolvedValue({});
+      await provider.delete('MyTable', result!.physicalId, 'AWS::Glue::Table', input.properties);
+      expect(probes()).toEqual([{ DatabaseName: probed.DatabaseName, Name: probed.Name }]);
+
+      expect(
+        cfnRefValueFromPhysicalId(
+          'AWS::Glue::Table',
+          result!.physicalId,
+          refStateLookupFromResource({ properties: input.properties })
+        )
+      ).toBe(probed.Name);
+    });
   });
 
   // Round-trip fence: whatever id import records must decode back to the pair

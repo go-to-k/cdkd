@@ -45,6 +45,13 @@
 #  10. Database `DatabaseInput.TargetDatabase` malformed on a template-path
 #      update (issue #3740). It used to warn and re-send the previous block;
 #      the deploy must now be REFUSED before any Glue call, the link intact.
+#  11. Table whose NAME contains `|` (issue #1672). AWS accepts it and
+#      CloudFormation manages it; cdkd refused it at deploy because its
+#      `<db>|<name>` id was read back by the last `|`. Asserted: the deploy
+#      records `<db>|<name>`, the `Ref` output is the WHOLE name, and the update
+#      reaches that table. (Its absence after destroy is checked too, but proves
+#      nothing about its own DELETE: deleting the database removes its tables.
+#      The anchored delete is pinned by unit tests and by phase 2b.)
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -111,12 +118,14 @@ DECOY_TABLE_NAME="x"
 # unmanaged decoy planted under the second one before the rename.
 RENAME_FROM="${LOWER}-rename-a"
 RENAME_TO="${LOWER}-rename-b"
+# Assertion 11: the managed table whose name carries the separator.
+SEP_TABLE_NAME="${LOWER}-sep|table"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   local t
-  for t in "${PIPE_TABLE_NAME}" "${DECOY_TABLE_NAME}" "${RENAME_TO}"; do
+  for t in "${PIPE_TABLE_NAME}" "${DECOY_TABLE_NAME}" "${RENAME_TO}" "${SEP_TABLE_NAME}"; do
     aws glue delete-table --database-name "${TABLE_DB_NAME}" --name "${t}" \
       --region "${REGION}" >/dev/null 2>&1
   done
@@ -406,6 +415,37 @@ assert_default_permissions() { # usage: assert_default_permissions <want perms, 
 assert_resource_link 'create'
 assert_default_permissions 'SELECT' 'create'
 
+# --- Assertion 11: a Table NAME containing '|' (issue #1672) ------------
+# Before the fix the deploy above REFUSED this table (its `<db>|<name>` id was
+# read back by the last `|`, so `Ref` would have been `table`). Now the record
+# is `<db>|<name>`, and the `Ref` output must be the WHOLE name.
+assert_separator_table() { # usage: assert_separator_table <want description> <phase label>
+  local want="$1" phase="$2" state got_id got_ref got_desc
+  # `|| return 1` on every capture (#1120): errexit is CLEARED inside `$( )`.
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet) || return 1
+  got_id=$(printf '%s' "${state}" | jq -r '.resources.SeparatorTable.physicalId // "<absent>"') || return 1
+  if [ "${got_id}" != "${TABLE_DB_NAME}|${SEP_TABLE_NAME}" ]; then
+    echo "FAIL: ${phase}: state records SeparatorTable as '${got_id}', expected '${TABLE_DB_NAME}|${SEP_TABLE_NAME}' (issue #1672)" >&2
+    exit 1
+  fi
+  got_ref=$(printf '%s' "${state}" | jq -r '.outputs.SeparatorTableRef // "<absent>"') || return 1
+  if [ "${got_ref}" != "${SEP_TABLE_NAME}" ]; then
+    echo "FAIL: ${phase}: the SeparatorTableRef output (the table's Ref) is '${got_ref}', expected the whole name '${SEP_TABLE_NAME}' (issue #1672)" >&2
+    exit 1
+  fi
+  got_desc=$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${SEP_TABLE_NAME}" \
+    --region "${REGION}" --query 'Table.Description' --output text) || return 1
+  if [ "${got_desc}" != "${want}" ]; then
+    echo "FAIL: ${phase}: table '${SEP_TABLE_NAME}' has description '${got_desc}', expected '${want}' (issue #1672)" >&2
+    exit 1
+  fi
+  echo "    OK: ${phase}: '${SEP_TABLE_NAME}' recorded as '${got_id}', Ref '${got_ref}', description '${got_desc}'"
+}
+assert_separator_table 'separator table initial' 'create' || {
+  echo "FAIL: create: could not read the separator table or its state record" >&2
+  exit 1
+}
+
 # --- Sanity: trigger exists -------------------------------------------
 if aws glue get-trigger --name "${TRIGGER_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "    OK: trigger ${TRIGGER_NAME} exists"
@@ -458,12 +498,20 @@ assert_default_permissions 'ALL,DROP' 'update'
 # a carry-forward of the create-phase value would still read 'US'.
 assert_skewed_info 'CA' 'update'
 
+# The UPDATE of the separator-named table goes through `UpdateTable`, addressed
+# by the id's DatabaseName-anchored decode: a bare split would read table
+# '${LOWER}-sep' and fail (or update a different table).
+assert_separator_table 'separator table updated' 'update' || {
+  echo "FAIL: update: could not read the separator table or its state record" >&2
+  exit 1
+}
+
 # --- Phase 2b: a table id carrying the separator deletes the RIGHT table (#1672)
 # A table named `x|y` records `<db>|x|y`, which a bare split reads as table `x`.
-# cdkd refuses that name on a template create, so the record is injected the way
-# a state-replay create or an older binary leaves it, beside a DECOY table `x`.
-# The redeploy's template-removal DELETE must remove `x|y` and leave `x` alone;
-# before the fix it deleted the decoy and left `x|y` behind.
+# The record is injected (a resource the template does not declare, so the
+# redeploy DELETEs it) beside a DECOY table `x`. The template-removal DELETE
+# must remove `x|y` and leave `x` alone; before the fix it deleted the decoy and
+# left `x|y` behind.
 echo "==> Phase 2b: template-removal DELETE of a '|'-named Glue table"
 aws glue create-table --database-name "${TABLE_DB_NAME}" --region "${REGION}" \
   --table-input "{\"Name\":\"${PIPE_TABLE_NAME}\"}"
@@ -698,6 +746,7 @@ for chk in \
   "get-workflow --name ${WORKFLOW_NAME}" \
   "get-table --database-name ${SKEWED_DB_NAME} --name ${SKEWED_TABLE_NAME}" \
   "get-table --database-name ${TABLE_DB_NAME} --name ${RENAME_TO}" \
+  "get-table --database-name ${TABLE_DB_NAME} --name ${SEP_TABLE_NAME}" \
   "get-database --name ${SKEWED_DB_NAME}" \
   "get-database --name ${LINK_DB_NAME}" \
   "get-database --name ${PERM_DB_NAME}"; do
@@ -736,4 +785,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update/destroy + clean destroy)"

@@ -546,6 +546,34 @@ describe('rewriteResourceReferences', () => {
     expect(result.unresolvable[0]?.reason).toContain('TableName');
   });
 
+  // Issue #1672: a Glue table name may contain `|`, and for an id with more
+  // than one `|` the `Ref` anchors on the recorded DatabaseName. A masked
+  // anchor is NOT a refusal there (the lookup reads with `reportMasked: false`):
+  // the fallback after the first `|` is exact for every id cdkd records, so the
+  // reference is rewritten to the table name, never to the mask.
+  it.each([
+    ['a `|`-named table with a masked anchor', 'mydb|a|b', 'a|b'],
+    ['a two-segment Glue id with a masked anchor', 'mydb|orders', 'orders'],
+  ])('rewrites %s to the table name', async (_n, physicalId, tableName) => {
+    const state = baseState({
+      Tbl: {
+        physicalId,
+        resourceType: 'AWS::Glue::Table',
+        properties: { DatabaseName: SECRET_MASK },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
+
+    expect(result.unresolvable).toHaveLength(0);
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: tableName });
+  });
+
   it('--force substitutes the MASK, never the physical id, so downstream readers still catch it', async () => {
     // THE ROUND-2 SECURITY FINDING. `--force`'s contract is "use a
     // possibly-wrong value rather than stranding me", so the escape hatch
