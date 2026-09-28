@@ -683,7 +683,7 @@ function collectAritySites(files: string[]): { sites: AritySite[]; unresolved: s
 const KNOWN_DARK: Record<string, number> = {
   // `...baseArgs()` and `...nestedTree(...)`: spreads of a call's result.
   'tests/unit/cli/export-non-interactive-confirm.test.ts': 1,
-  // `...dryRunArgs()` and `...realRunArgs()`: spreads of a call's result.
+  // `dryRunArgs()` / `realRunArgs()` call results passed to `runExport`.
   'tests/unit/cli/export-plan-record-display.test.ts': 1,
   // `STACK` is a template literal, which may begin with `-`.
   'tests/unit/cli/force-unlock-display.test.ts': 1,
