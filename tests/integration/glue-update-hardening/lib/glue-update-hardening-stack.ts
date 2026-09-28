@@ -46,6 +46,10 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  * 10. A malformed `DatabaseInput.TargetDatabase` on a template-path update
  *     (issue #3740) is refused before any Glue call, the link intact;
  *     CDKD_TEST_DBINPUT_MALFORMED sets it.
+ * 11. A Glue Table whose NAME contains `|` (issue #1672), which AWS accepts and
+ *     CloudFormation manages: cdkd deploys it (recording `<db>|<name>`),
+ *     updates it (CDKD_TEST_UPDATE flips its description) and resolves its
+ *     `Ref` to the WHOLE name (the `SeparatorTableRef` output).
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -218,6 +222,21 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     });
     renameTable.addDependency(tableDb);
 
+    // 11. A table NAME containing cdkd's composite-id separator (issue #1672).
+    //     The id is `<db>|<name>`, so `<db>|sep|table`: every reader must place
+    //     the name by the recorded DatabaseName. The output is the `Ref`, which
+    //     CloudFormation resolves to the whole name; after-LAST-pipe gave `table`.
+    const separatorTable = new glue.CfnTable(this, 'SeparatorTable', {
+      catalogId: this.account,
+      databaseName: `${this.stackName}-table-db`.toLowerCase(),
+      tableInput: {
+        name: `${this.stackName}-sep|table`.toLowerCase(),
+        tableType: 'EXTERNAL_TABLE',
+        description: isUpdate ? 'separator table updated' : 'separator table initial',
+      },
+    });
+    separatorTable.addDependency(tableDb);
+
     // 7. Glue Database `TargetDatabase` / `CreateTableDefaultPermissions`
     //    (issue #1807). `buildDatabaseInput` named only Description /
     //    LocationUri / Parameters, so both blocks were dropped on the floor:
@@ -297,6 +316,7 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SkewedTableDbName', {
       value: `${this.stackName}-table-db`.toLowerCase(),
     });
+    new cdk.CfnOutput(this, 'SeparatorTableRef', { value: separatorTable.ref });
     new cdk.CfnOutput(this, 'SkewedTableName', {
       value: `${this.stackName}-skewed-table`.toLowerCase(),
     });

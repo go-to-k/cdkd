@@ -100,6 +100,7 @@ import { hasReadableOutputs } from '../state/malformed-resources-bag.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 import { isSettledInstanceState } from '../provisioning/ec2-instance-state.js';
+import { COMPOSITE_ID_SEPARATOR, segmentAfterAnchor } from '../provisioning/composite-id.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import {
@@ -138,8 +139,10 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *    `ResourceProvider`'s read-side methods receive a single string. Here the
  *    extraction is load-bearing on the ORDINARY deploy path and there is no
  *    pipe-free variant to fall through. `AWS::S3Tables::Namespace` /
- *    `::Table` (whose per-routing split is spelled out at their entry) and
- *    `AWS::Glue::Table` (issue #1667) are these.
+ *    `::Table` (whose per-routing split is spelled out at their entry) are
+ *    these. `AWS::Glue::Table` was too (issue #1667) until its table name was
+ *    allowed to contain `|` (issue #1672); it now takes
+ *    {@link glueTableRefFromPhysicalId}.
  *
  * The per-type map:
  *   - AWS::ApiGateway::Model            `<restApiId>|<modelName>`     -> model name
@@ -164,7 +167,6 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   - AWS::AppConfig::ConfigurationProfile   `<appId>|<profileId>`           -> profile id
  *   - AWS::AppConfig::HostedConfigurationVersion `<appId>|<profileId>|<ver>` -> version number
  *   - AWS::AppConfig::Deployment             `<appId>|<envId>|<deployNum>`   -> deployment number
- *   - AWS::Glue::Table                       `<databaseName>|<tableName>`    -> table name
  *
  * The extraction takes the segment after the LAST pipe (see
  * {@link IntrinsicFunctionResolver.resolveRefValue}) so it is correct for both
@@ -208,8 +210,9 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * AUDIT RECORD (2026-08-12, issue #1667) — every type in the composite-id table
  * of `docs/state-management.md` was re-checked against its docs-verified `Ref`,
  * plus the two types that table lists as ACCEPTING a composite without
- * producing one. `AWS::Glue::Table` was the one this Set could fix and is added
- * below. The types deliberately NOT in either Set, with the reason:
+ * producing one. `AWS::Glue::Table` was the one this Set could fix and was
+ * added here; it has since moved to {@link glueTableRefFromPhysicalId} (issue
+ * #1672), because its table name may contain `|`. The types deliberately NOT in either Set, with the reason:
  *   - correct to exclude, `Ref` is a synthetic / AWS-generated id no segment
  *     reconstructs: ApiGateway::Method, EC2::NetworkAclEntry ("the ID of the
  *     network ACL entry"), EC2::Route, EC2::VPCGatewayAttachment,
@@ -274,34 +277,10 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   // namespace name; Table `Ref` returns the table name.
   'AWS::S3Tables::Namespace',
   'AWS::S3Tables::Table',
-  // AWS::Glue::Table (issue #1667). Like the S3Tables children this is an
-  // SDK-provisioned compound: `GlueProvider.createTable` / `importTable` store
-  // `<databaseName>|<tableName>` because `GetTable` / `UpdateTable` /
-  // `DeleteTable` all need both segments while `ResourceProvider`'s read-side
-  // methods receive a single string. CloudFormation's `Ref` for the type
-  // returns the TABLE NAME (docs-verified) — the segment after the pipe — so
-  // without this entry a `{Ref: <Table>}` consumer (a Glue crawler's
-  // `Targets.CatalogTargets[].Tables`, a `CfnOutput`, a Lake Formation
-  // permission) received `mydb|my_table` and pushed it to AWS.
-  //
-  // The after-LAST-pipe extraction is correct for every id cdkd can now write
-  // on either path: `resolveTableIdentity` (IMPORT) refuses a segment
-  // containing `|`, and since issue #1672 `createTable` (DEPLOY) packs through
-  // `packCompositeId`, which refuses one too — so the recorded id has exactly
-  // two segments and the extraction cannot mis-target. The one route left to a
-  // mis-arity'd id is the rollback executor's reverse-replacement REPLAY, where
-  // that refusal deliberately downgrades to a warning (a state record cannot be
-  // edited from the template, so refusing would leave the resource
-  // unrestorable — see `.claude/rules/providers.md`). For such an id this
-  // extraction returns the last segment, while `deleteTable` / `updateTable` /
-  // `readTable` decode it correctly by anchoring on the recorded
-  // `DatabaseName`. This mismatch is why `createTable` still refuses a `|`
-  // (issue #1672).
-  //
-  // Pre-#1651 the Ref path was unreachable for `cdk deploy`-managed stacks
-  // (they could not be imported at all); making them adoptable is what widened
-  // its reach and is why the fix is worth making now.
-  'AWS::Glue::Table',
+  // AWS::Glue::Table is NOT here, though its id is `<databaseName>|<tableName>`
+  // and its `Ref` is the table name: a table name may itself contain `|`, so
+  // after-LAST-pipe would return only its tail. It takes
+  // {@link glueTableRefFromPhysicalId} instead (issue #1672).
 ]);
 
 /**
@@ -459,7 +438,21 @@ export function isStalePlaceholderArnAttribute(
  * create time (`TableName`) or an enriched attribute is reachable. Returns the
  * stringified value for the first key present, or `undefined` when none match.
  */
-export type RefStateLookup = (keys: readonly string[]) => string | undefined;
+export type RefStateLookup = (
+  keys: readonly string[],
+  options?: RefStateLookupOptions
+) => string | undefined;
+
+/** Per-call options for a {@link RefStateLookup}. */
+export interface RefStateLookupOptions {
+  /**
+   * `false` when the caller has a CORRECT answer without the key, so a masked
+   * leaf must not be reported as a redacted read (which refuses the deploy or
+   * the output). Only {@link glueTableRefFromPhysicalId} passes it: its
+   * fallback is exact for every id the current binary records. Default: report.
+   */
+  readonly reportMasked?: boolean;
+}
 
 /**
  * Build a {@link RefStateLookup} from a resource's stored state maps, checking
@@ -553,7 +546,7 @@ export function refStateLookupFromResource(
   },
   onMaskedValue?: (key: string) => void
 ): RefStateLookup {
-  return (keys) => {
+  return (keys, options) => {
     // THE KEY AND ITS NOTIFIER ARE RECORDED TOGETHER, so the invariant is
     // type-level rather than a comment: a skipped mask exists only where there
     // is a callback to report it to. An earlier revision kept a bare
@@ -581,9 +574,58 @@ export function refStateLookupFromResource(
         }
       }
     }
-    if (masked !== undefined) masked.notify(masked.key);
+    if (masked !== undefined && options?.reportMasked !== false) masked.notify(masked.key);
     return undefined;
   };
+}
+
+/**
+ * The `Ref` value of an `AWS::Glue::Table` — its table name — from cdkd's
+ * `<databaseName>|<tableName>` physical id, or `undefined` for a pipe-free id
+ * (which the caller passes through unchanged).
+ *
+ * A table name may itself contain `|` (issue #1672: AWS accepts one, and
+ * CloudFormation manages such a table), so neither after-LAST-pipe nor a bare
+ * split can find it: `mydb|a|b` is table `a|b`. The id is read the way
+ * `GlueProvider`'s decode sites read it (`decodeTableId`), so a `{Ref}` names
+ * the table they address:
+ *
+ * 1. With more than one `|`, anchor on the `DatabaseName` recorded in state —
+ *    the table name is everything after `<DatabaseName>|`. This is also what
+ *    reads a record whose DATABASE name carries a `|` (an older binary, or a
+ *    rollback replay, which downgrades `createTable`'s refusal to a warning).
+ * 2. Otherwise everything after the FIRST `|`: `createTable` and `import()`
+ *    refuse a `|` in the database name, so on every id they write the first
+ *    `|` is the boundary. A two-segment id never consults state, so an
+ *    ordinary table's `Ref` reads nothing but its id, as it always has.
+ *
+ * Unlike the decode sites, which WRITE and so skip an id they cannot anchor,
+ * this must return SOME value, and step 2 is the right one for everything the
+ * current binary records.
+ *
+ * A MASKED `DatabaseName` in step 1 is never used as the anchor: the mask
+ * prefixes nothing, so step 2 answers. It is deliberately NOT reported as a
+ * redacted read (`reportMasked: false`), unlike every other state-recovered
+ * `Ref`: those have only the raw physical id to fall back to — the wrong value
+ * the refusal's message warns about — while step 2 here is exact for every id
+ * the current binary records. Only a legacy record whose DATABASE name
+ * carries a `|` and whose `DatabaseName` is masked would read wrong, and
+ * refusing every such deploy to guard it would refuse correct values too.
+ */
+export function glueTableRefFromPhysicalId(
+  physicalId: string,
+  stateLookup?: RefStateLookup
+): string | undefined {
+  const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
+  if (firstPipe < 0) return undefined;
+  if (physicalId.includes(COMPOSITE_ID_SEPARATOR, firstPipe + 1) && stateLookup) {
+    const tableName = segmentAfterAnchor(
+      physicalId,
+      stateLookup(['DatabaseName'], { reportMasked: false })
+    );
+    if (tableName !== undefined) return tableName;
+  }
+  return physicalId.substring(firstPipe + 1);
 }
 
 /**
@@ -599,7 +641,9 @@ export function refStateLookupFromResource(
  * in a UUID (not the table name CFn `Ref` returns), so the name is read from
  * the stored `TableName` property/attribute instead (issue #974) — and, since
  * issue #1681, the {@link REF_RETURNS_ARN_FROM_STATE} types, whose `Ref` is an
- * ARN that is no segment of their compound id.
+ * ARN that is no segment of their compound id — and, since issue #1672,
+ * `AWS::Glue::Table`, whose recorded `DatabaseName` places a table name that
+ * contains `|` ({@link glueTableRefFromPhysicalId}).
  */
 export function cfnRefValueFromPhysicalId(
   resourceType: string,
@@ -621,6 +665,14 @@ export function cfnRefValueFromPhysicalId(
   if (resourceType === 'AWS::S3Tables::Table' && !physicalId.includes('|') && stateLookup) {
     const tableName = stateLookup(['TableName', 'Name']);
     if (tableName) {
+      return tableName;
+    }
+  }
+  // AWS::Glue::Table: the table name, which may itself contain `|` (issue
+  // #1672) — see the helper for why no generic Set can extract it.
+  if (resourceType === 'AWS::Glue::Table') {
+    const tableName = glueTableRefFromPhysicalId(physicalId, stateLookup);
+    if (tableName !== undefined) {
       return tableName;
     }
   }
@@ -4764,8 +4816,9 @@ export class IntrinsicFunctionResolver {
    * segment. Most are compound because Cloud Control provisions them (either
    * they have no SDK provider, or the #614 silent-drop routing sent an
    * SDK-backed type through CC) and its primaryIdentifier is compound; the rest
-   * — `AWS::S3Tables::Namespace` / `::Table` and `AWS::Glue::Table` — are
-   * compound because their own SDK provider packs the segments. The Set's
+   * — `AWS::S3Tables::Namespace` / `::Table` — are compound because their own
+   * SDK provider packs the segments. (`AWS::Glue::Table` packs one too, but
+   * takes {@link glueTableRefFromPhysicalId}: its last segment may contain `|`.) The Set's
    * header records the split per type; examples:
    *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
    *     `<restApiId>|<modelName>`. A method wiring
@@ -4889,7 +4942,8 @@ export class IntrinsicFunctionResolver {
    * `key` is never masked before interpolation because it is not template text:
    * it comes from the fixed key lists `cfnRefValueFromPhysicalId` passes
    * (`TableName` / `Name` / `SelectionId` / `RepositoryId` / the AppSync ARN
-   * attributes), all cdkd literals.
+   * attributes), all cdkd literals. (`AWS::Glue::Table`'s `DatabaseName` read
+   * passes `reportMasked: false` and never reaches here.)
    */
   private noteRefStateMask(logicalId: string, key: string, context: ResolverContext): void {
     this.pushRedactedAttributeRead(context, {

@@ -103,7 +103,12 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { DeleteTableCommand, GetTableCommand, UpdateTableCommand } from '@aws-sdk/client-glue';
+import {
+  CreateTableCommand,
+  DeleteTableCommand,
+  GetTableCommand,
+  UpdateTableCommand,
+} from '@aws-sdk/client-glue';
 import { GlueProvider } from '../../../src/provisioning/providers/glue-provider.js';
 import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-provider.js';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
@@ -134,25 +139,49 @@ beforeEach(() => {
 });
 
 describe('AWS::Glue::Table composite id guard', () => {
-  it('refuses a table name containing the separator, before CreateTable runs', async () => {
+  // Issue #1672: AWS accepts a table named `a|b` and CloudFormation manages it.
+  // The decode sites and the `Ref` resolver both place the table name by the
+  // recorded `DatabaseName`, so the create no longer refuses it.
+  it('accepts a table name containing the separator and records <db>|<name>', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
     const provider = new GlueProvider();
-    await expect(
-      provider.create('MyTable', 'AWS::Glue::Table', {
-        DatabaseName: 'mydb',
-        TableInput: { Name: 'a|b' },
-      })
-    ).rejects.toThrow(/tableName 'a\|b'/);
+    const result = await provider.create('MyTable', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+      TableInput: { Name: 'a|b' },
+    });
+    expect(result.physicalId).toBe('mydb|a|b');
+    const creates = mockGlueSend.mock.calls
+      .map(([c]) => c as { input: Record<string, unknown> })
+      .filter((c) => c instanceof CreateTableCommand);
+    expect(creates).toHaveLength(1);
+    expect(creates[0]!.input).toMatchObject({
+      DatabaseName: 'mydb',
+      TableInput: { Name: 'a|b' },
+    });
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a database name containing the separator, before CreateTable runs', async () => {
+    const provider = new GlueProvider();
+    const refusal = provider.create('MyTable', 'AWS::Glue::Table', {
+      DatabaseName: 'my|db',
+      TableInput: { Name: 'orders' },
+    });
+    await expect(refusal).rejects.toThrow(ProvisioningError);
+    await expect(refusal).rejects.toThrow(/databaseName 'my\|db'/);
     expect(mockGlueSend).not.toHaveBeenCalled();
   });
 
-  it('refuses a database name containing the separator', async () => {
+  it('names only the database when both names carry the separator', async () => {
+    // The table-name exemption must not drop the database segment from the
+    // refusal, and must not add the table name to it either.
     const provider = new GlueProvider();
-    await expect(
-      provider.create('MyTable', 'AWS::Glue::Table', {
-        DatabaseName: 'my|db',
-        TableInput: { Name: 'orders' },
-      })
-    ).rejects.toThrow(ProvisioningError);
+    const refusal = provider.create('MyTable', 'AWS::Glue::Table', {
+      DatabaseName: 'my|db',
+      TableInput: { Name: 'a|b' },
+    });
+    await expect(refusal).rejects.toThrow(/databaseName 'my\|db' contains/);
+    await expect(refusal).rejects.not.toThrow(/tableName 'a/);
     expect(mockGlueSend).not.toHaveBeenCalled();
   });
 
@@ -166,7 +195,7 @@ describe('AWS::Glue::Table composite id guard', () => {
     expect(result.physicalId).toBe('mydb|orders');
   });
 
-  it('downgrades to a warning on a state replay', async () => {
+  it('downgrades the database-name refusal to a warning on a state replay', async () => {
     // The reverse-replacement rollback arm: the properties are a cdkd STATE
     // record, so refusing would leave the old table unrestorable with only a
     // hand-edit of state.json as a remedy.
@@ -175,17 +204,17 @@ describe('AWS::Glue::Table composite id guard', () => {
     const result = await provider.create(
       'MyTable',
       'AWS::Glue::Table',
-      { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } },
+      { DatabaseName: 'my|db', TableInput: { Name: 'orders' } },
       REPLAY
     );
-    expect(result.physicalId).toBe('mydb|a|b');
-    expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining("tableName 'a|b'"));
+    expect(result.physicalId).toBe('my|db|orders');
+    expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining("databaseName 'my|db'"));
   });
 });
 
 describe('AWS::Glue::Table composite id decode', () => {
-  // `mydb|a|b` is what a state-replay create (above) records, and what binaries
-  // before the create-time refusal recorded. A bare split reads it as table `a`.
+  // `mydb|a|b` is what a create of a table named `a|b` records (above). A bare
+  // split reads it as table `a`.
   const ID = 'mydb|a|b';
   const PROPS = { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } };
 
@@ -214,6 +243,36 @@ describe('AWS::Glue::Table composite id decode', () => {
       PROPS
     );
     expect(sent(GetTableCommand)).toEqual([{ DatabaseName: 'mydb', Name: 'a|b' }]);
+    expect(sent(UpdateTableCommand)).toEqual([
+      expect.objectContaining({ DatabaseName: 'mydb', TableInput: expect.objectContaining({ Name: 'a|b' }) }),
+    ]);
+  });
+
+  // `update` passes the previous bag first and the deployed bag second. A
+  // previous bag with no usable anchor must not end the search: the second
+  // bag's DatabaseName still places the table.
+  // ...and a first bag whose DatabaseName is a STRING that does not prefix the
+  // id (a renamed database) must not end the search either.
+  it('anchors on the second bag when the first bag names a database that does not prefix the id', async () => {
+    mockGlueSend.mockResolvedValue({});
+    await new GlueProvider().update('MyTable', ID, 'AWS::Glue::Table', PROPS, {
+      DatabaseName: 'otherdb',
+      TableInput: { Name: 'a|b' },
+    });
+    expect(sent(UpdateTableCommand)).toEqual([
+      expect.objectContaining({ DatabaseName: 'mydb', TableInput: expect.objectContaining({ Name: 'a|b' }) }),
+    ]);
+  });
+
+  it('anchors on the second bag when the first has no usable DatabaseName', async () => {
+    mockGlueSend.mockResolvedValue({});
+    await new GlueProvider().update(
+      'MyTable',
+      ID,
+      'AWS::Glue::Table',
+      PROPS,
+      { DatabaseName: { Ref: 'Db' }, TableInput: { Name: 'a|b' } }
+    );
     expect(sent(UpdateTableCommand)).toEqual([
       expect.objectContaining({ DatabaseName: 'mydb', TableInput: expect.objectContaining({ Name: 'a|b' }) }),
     ]);

@@ -1,3 +1,4 @@
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   GlueClient,
   CreateDatabaseCommand,
@@ -87,6 +88,7 @@ import {
   compositeIdFormatMessage,
   compositeIdSkipResult,
   packCompositeId,
+  segmentAfterAnchor,
   type CompositeIdFormat,
 } from '../composite-id.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -123,15 +125,24 @@ const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
  * The separator is unescaped (issue #1672), so a bare split of an id whose
  * table name carries a `|` returns a DIFFERENT table — `mydb|a|b` splits to
  * `mydb.a`, both halves non-empty, and a delete of it would hit the wrong
- * table. Such ids exist: a state-replay create warns and packs one anyway, and
+ * table. Such ids are ordinary since issue #1672 lifted `createTable`'s refusal
+ * of a `|` in the TABLE name (the database name is still refused), and older
+ * ones exist too: a state-replay create warns and packs one anyway, and
  * binaries before the #1719 refusal recorded them. The recorded `DatabaseName`
  * disambiguates the id without re-deriving the identity from the bag: it is
- * used only when the id starts with it, and the table name is the remainder.
+ * used only when the id starts with it, and the table name is the remainder
+ * ({@link segmentAfterAnchor}). The `Ref` resolver anchors the same way
+ * (`glueTableRefFromPhysicalId` in `intrinsic-function-resolver.ts`), so a
+ * `{Ref: <Table>}` names the table these sites address.
  *
  * `bags` are tried in order, so pass the one describing what was DEPLOYED
  * first. With no usable anchor only an id with exactly one separator decodes;
- * anything longer is ambiguous and returns `undefined`, the malformed-id arm
- * every caller already has.
+ * anything longer returns `undefined`, the malformed-id arm every caller
+ * already has. That is deliberately stricter than the `Ref` fallback (which
+ * takes everything after the FIRST `|`): these sites WRITE — `deleteTable`
+ * deletes what they decode — and a record left by an older binary or a replay
+ * may carry the `|` in its database name, where the first-`|` reading names a
+ * different table. A loud skip is the safe failure for a write.
  */
 function decodeTableId(
   physicalId: string,
@@ -139,10 +150,9 @@ function decodeTableId(
 ): { databaseName: string; tableName: string } | undefined {
   for (const bag of bags) {
     const databaseName = bag?.['DatabaseName'];
-    if (typeof databaseName !== 'string' || databaseName === '') continue;
-    if (!physicalId.startsWith(`${databaseName}|`)) continue;
-    const tableName = physicalId.slice(databaseName.length + 1);
-    if (tableName !== '') return { databaseName, tableName };
+    if (typeof databaseName !== 'string') continue;
+    const tableName = segmentAfterAnchor(physicalId, databaseName);
+    if (tableName !== undefined) return { databaseName, tableName };
   }
   const parts = physicalId.split('|');
   if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
@@ -348,54 +358,87 @@ function logCatalogScopedDeleteSkip(
 }
 
 /**
- * Resolve the `(databaseName, tableName)` pair an `AWS::Glue::Table` import
- * should probe, from either physicalId shape (issue #1651).
+ * Resolve the `(databaseName, tableName)` pairs an `AWS::Glue::Table` import
+ * should probe, in order, from either physicalId shape (issue #1651).
  *
  * cdkd's physicalId for a Glue Table is the composite `<databaseName>|<tableName>`
  * (built by `createTable`), because `GetTable` / `UpdateTable` / `DeleteTable`
  * all need both while `ResourceProvider`'s read-side methods receive a single
  * string. CloudFormation's physicalId for the same type is the TABLE NAME
- * ALONE — `Ref` returns it, and it never contains `|`. Auto-mode import merges
- * CloudFormation-derived ids into the overrides before the loop (#1128 / #1130),
- * so `knownPhysicalId` legitimately arrives in either shape and both must
- * resolve; treating the bare form as malformed reported every `cdk deploy`-managed
- * table as not-found while pointing the user at the very id it had just rejected.
+ * ALONE — `Ref` returns it. Auto-mode import merges CloudFormation-derived ids
+ * into the overrides before the loop (#1128 / #1130), so `knownPhysicalId`
+ * legitimately arrives in either shape and both must resolve; treating the bare
+ * form as malformed reported every `cdk deploy`-managed table as not-found while
+ * pointing the user at the very id it had just rejected.
  *
- * `|` is the discriminator, and its limit is worth stating precisely rather
- * than assuming: the "lowercase alphanumerics and underscore" rule usually
- * quoted for Glue names is the Athena / Data Catalog CONVENTION, not the API's
- * constraint. Live probe (us-east-1, 2026-08-12): `glue:CreateTable` ACCEPTS a
- * table literally named `a|b`.
+ * `|` is the usual discriminator, but it is not a clean one: the "lowercase
+ * alphanumerics and underscore" rule usually quoted for Glue names is the Athena
+ * / Data Catalog CONVENTION, not the API's constraint. Live probe (us-east-1,
+ * 2026-08-12): `glue:CreateTable` ACCEPTS a table literally named `a|b`, and
+ * CloudFormation manages it, reporting the bare `a|b` as its physical id.
  *
- * Such a table is not adoptable TODAY, and the refusal is deliberate — but the
- * limitation is cdkd's own and is fixable, so do not read this as a law of
- * nature. CloudFormation manages such a table fine: it keeps the physical id
- * and `DatabaseName` as separate values, whereas cdkd's `ResourceProvider`
- * passes a single identity string, so this provider PACKS both into
- * `<db>|<table>` with no escaping. `updateTable` / `deleteTable` / `readTable`
- * decode it by anchoring on the recorded `DatabaseName` ({@link decodeTableId}),
- * but the `Ref` resolver still takes the segment after the LAST `|`, so a
- * `<db>|a|b` record would hand `b` to every `{Ref: <Table>}` consumer. Issue
- * #1672 tracks lifting that; `createTable` refuses the same shape until then.
+ * Such a table IS adoptable since issue #1672, on one condition: the record
+ * must decode back to the same table. A `|` in the TABLE name is decodable —
+ * `updateTable` / `deleteTable` / `readTable` anchor on the recorded
+ * `DatabaseName` ({@link decodeTableId}) and so does the `Ref` resolver — but
+ * only when that recorded `DatabaseName` IS the database probed. Import records
+ * the template's bag, so a table name carrying `|` is accepted only paired with
+ * the template's own `DatabaseName`; paired with anything else (a composite
+ * naming another database, or an unresolved template intrinsic) the record
+ * would carry no anchor, and without one the writers decode only the exact
+ * two-segment form. A `|` in the DATABASE name is refused everywhere, as
+ * `createTable` refuses it: it is what would make the first `|` a lie.
  *
- * Until then, refusing is right: writing a record cdkd cannot decode is the
- * failure mode of issue #1658 (`AWS::Route53::RecordSet` accepted
- * CloudFormation's id verbatim and made the stack undestroyable), which is
- * strictly worse than the loud not-found this returns. An earlier revision of
- * this fix retried the bare reading as a fallback and produced exactly that
- * record; three independent reviewers caught it.
+ * A `|`-bearing known id that EQUALS the template's `TableInput.Name` is read
+ * only as that bare name in the template's database: it is CloudFormation's id
+ * for the table the template declares. Otherwise it yields:
+ *
+ * 1. `<templateDb>|<rest>` — anchored on the template's `DatabaseName`: the
+ *    table is everything after it.
+ * 2. Otherwise, for EXACTLY two segments, the composite `(<a>, <b>)` — the
+ *    established contract, including a composite naming a database other than
+ *    the template's.
+ * 3. And, beside either, when the template's `DatabaseName` is usable, the
+ *    BARE reading: the whole id is a table name in that database. This is the
+ *    CloudFormation migration path for a table named `a|b`, whose CFn id is
+ *    `a|b` — and for one named `mydb|a` in database `mydb`, whose id the
+ *    anchored reading would otherwise take for table `a`. It costs an
+ *    ordinary `<db>|<table>` import a second `GetTable`; correctness of the
+ *    adopted table outweighs that.
+ *
+ * `importTable` probes them ALL and adopts a reading only when it is the one
+ * that exists, or the one of several whose table name is the template's
+ * `TableInput.Name`; otherwise it refuses as ambiguous. An id of
+ * three or more segments that the template's `DatabaseName` does not anchor and
+ * cannot pair with (it is unusable) is refused: `x|a|b` could be table `a|b` in
+ * `x` or table `b` in a database `x|a`, and nothing says which. An earlier
+ * revision of #1651 retried the bare reading and recorded an id the writers
+ * could not decode — the #1658 failure mode (`AWS::Route53::RecordSet`
+ * accepted CloudFormation's id verbatim and made the stack undestroyable). The
+ * pairing condition above is what keeps reading 3 from repeating it.
  *
  * On failure it returns the REASON rather than a bare `undefined`, because the
  * three causes need three different messages and re-deriving the cause from the
  * inputs at the call site gets it wrong: `'db|'` contains a `|` but its real
  * defect is the empty segment, not the separator.
  */
+/** One `(database, table)` pair an import probes, and which reading of the id produced it. */
+interface TableReading {
+  readonly databaseName: string;
+  readonly tableName: string;
+  /** Named in the error when this reading's probe cannot answer. */
+  readonly reading: 'template' | 'anchored' | 'composite' | 'bare';
+}
+
+/** Glue's `NameString` limit: a longer table name cannot exist, so is never probed. */
+const GLUE_NAME_MAX_LENGTH = 255;
+
 type TableIdentityResult =
-  | { ok: true; databaseName: string; tableName: string }
+  | { ok: true; candidates: readonly TableReading[] }
   /**
-   * A name contains `|`, cdkd's own separator. The decode sites could anchor
-   * such an id, but the `Ref` resolver takes its last segment, and an imported
-   * bag with an unresolved `DatabaseName` leaves no anchor at all.
+   * The id cannot be placed: a database name contains `|`, or a `|`-bearing id
+   * that the template's `DatabaseName` neither anchors nor pairs with has more
+   * than two segments.
    */
   | { ok: false; reason: 'pipe-in-name' }
   /** An id was supplied but no usable `(database, table)` pair came out of it. */
@@ -410,24 +453,78 @@ function resolveTableIdentity(input: {
 }): TableIdentityResult {
   const { knownPhysicalId, templateDatabaseName, templateTableName } = input;
 
-  let databaseName: string | undefined;
-  let tableName: string | undefined;
+  const candidates: TableReading[] = [];
+  let sawPipeInName = false;
+  // Every pair goes through here. A database name carrying `|` puts a
+  // separator where every reader expects the boundary, so it is refused
+  // whichever branch produced it, as `createTable` refuses it.
+  //
+  // The other condition — a `|` table name must be paired with the TEMPLATE's
+  // `DatabaseName`, the value later readers anchor on — holds by construction
+  // rather than by a check here: the only branches that can yield such a name
+  // (template, anchored, bare) all pair it with `templateDatabaseName`, and the
+  // two-segment composite yields pipe-free halves. A new branch must keep it
+  // so. (The anchor then depends on `cdkd import` recording that value
+  // resolved; see `importTable` for what happens when it cannot.)
+  const consider = (
+    databaseName: string | undefined,
+    tableName: string | undefined,
+    reading: TableReading['reading']
+  ): void => {
+    if (databaseName === undefined || tableName === undefined) return;
+    if (databaseName.includes('|')) {
+      sawPipeInName = true;
+      return;
+    }
+    candidates.push({ databaseName, tableName, reading });
+  };
 
   if (knownPhysicalId === undefined) {
-    databaseName = templateDatabaseName;
-    tableName = templateTableName;
+    consider(templateDatabaseName, templateTableName, 'template');
+  } else if (knownPhysicalId.includes('|') && knownPhysicalId === templateTableName) {
+    // The id IS the template's own table name: CloudFormation's bare id for a
+    // table named `a|b`, which auto-mode import passes verbatim. Read it only
+    // as that name, in the template's database. Splitting it too would adopt
+    // an unrelated table `b` in a database `a` whenever one exists, and the
+    // template would then describe a table the record does not name.
+    //
+    // Without a usable template `DatabaseName` there is nothing to pair it
+    // with, and the composite `--resource '<db>|a|b'` the `unpairable` message
+    // would suggest is itself unanchored (refused below as `pipe-in-name`).
+    // So this reports `pipe-in-name`, whose message names the one remedy that
+    // works: set the template's DatabaseName.
+    if (templateDatabaseName === undefined) sawPipeInName = true;
+    else consider(templateDatabaseName, knownPhysicalId, 'bare');
   } else if (knownPhysicalId.includes('|')) {
-    // EXACTLY two segments. Destructuring the first two out of three would
-    // silently drop the rest: `mydb|a|b` would read as database `mydb`, table
-    // `a` — a DIFFERENT table, adopted under an id that round-trips cleanly and
-    // therefore never looks wrong again. That shape is on the INVITED path, not
-    // a hypothetical: the refusal warning below tells the user to pass
-    // `<databaseName>|<tableName>`, so someone whose table is named `a|b`
-    // types exactly this.
     const parts = knownPhysicalId.split('|');
-    if (parts.length !== 2) return { ok: false, reason: 'pipe-in-name' };
-    databaseName = parts[0] || undefined;
-    tableName = parts[1] || undefined;
+    const anchored = segmentAfterAnchor(knownPhysicalId, templateDatabaseName);
+    if (anchored !== undefined) {
+      consider(templateDatabaseName, anchored, 'anchored');
+    } else if (parts.length === 2) {
+      consider(parts[0] || undefined, parts[1] || undefined, 'composite');
+    } else {
+      // Never destructure the first two of three segments: `mydb|a|b` read as
+      // database `mydb`, table `a` is a DIFFERENT table, adopted under an id
+      // that round-trips cleanly and therefore never looks wrong again. The
+      // anchored arm above is what reads that id.
+      sawPipeInName = true;
+    }
+    // The bare reading, beside whichever reading the id also has: the whole id
+    // is a table name in the template's database. CloudFormation's id for a
+    // table named `mydb|a` is `mydb|a`, and with a template `DatabaseName` of
+    // `mydb` the anchored reading alone would adopt an unrelated table `a` —
+    // which `cdkd destroy` would then delete. Probing both lets `importTable`
+    // refuse when both exist. Skipped for an id with an EMPTY segment (`db|`,
+    // `|t`: the missing half of a composite, whose `unpairable` guidance a
+    // silent not-found would replace) and for one longer than Glue's name
+    // limit, which no table can be named.
+    if (
+      templateDatabaseName !== undefined &&
+      parts.every((part) => part !== '') &&
+      knownPhysicalId.length <= GLUE_NAME_MAX_LENGTH
+    ) {
+      consider(templateDatabaseName, knownPhysicalId, 'bare');
+    }
   } else {
     // Bare CloudFormation id: the table name. The database comes from the
     // template, where CDK renders `DatabaseName` as a `Ref` to the sibling
@@ -441,29 +538,12 @@ function resolveTableIdentity(input: {
     // unlike the `--resource` flag) still returns not-found rather than sending
     // `GetTable({Name: ''})`, whose `InvalidInputException` is not
     // `EntityNotFoundException` and would abort the whole import.
-    databaseName = templateDatabaseName;
-    tableName = importableString(knownPhysicalId);
+    consider(templateDatabaseName, importableString(knownPhysicalId), 'template');
   }
 
-  if (databaseName === undefined || tableName === undefined) {
-    return { ok: false, reason: knownPhysicalId === undefined ? 'unidentified' : 'unpairable' };
-  }
-
-  // Neither segment may itself contain `|`, or the composite this becomes is
-  // ambiguous: an imported record's `DatabaseName` can be an unresolved
-  // intrinsic, which leaves `decodeTableId` no anchor and only the exact
-  // two-segment form decodable, and the `Ref` resolver takes the last segment
-  // regardless. The composite and bare branches above are `|`-free by
-  // construction (one is the product of a 2-part split, the other only runs for
-  // a pipe-free id), so in practice this catches the TEMPLATE branch — a
-  // `TableInput.Name` of `a|b` would otherwise be recorded as `<db>|a|b`. It is
-  // written as an unconditional post-check
-  // rather than a per-branch one so a future branch cannot forget it.
-  if (databaseName.includes('|') || tableName.includes('|')) {
-    return { ok: false, reason: 'pipe-in-name' };
-  }
-
-  return { ok: true, databaseName, tableName };
+  if (candidates.length > 0) return { ok: true, candidates };
+  if (sawPipeInName) return { ok: false, reason: 'pipe-in-name' };
+  return { ok: false, reason: knownPhysicalId === undefined ? 'unidentified' : 'unpairable' };
 }
 
 /**
@@ -1149,26 +1229,26 @@ export class GlueProvider implements ResourceProvider {
       | Record<string, unknown>
       | undefined;
 
-    // Refuse a `|` in either segment BEFORE `CreateTable` runs (issue #1672).
-    // This is the ONE site in the composite-id family with LIVE evidence that
-    // the hazard is real: `glue:CreateTable` with `TableInput.Name: 'a|b'`
-    // SUCCEEDS (probe, us-east-1 2026-08-12). This provider's own decode sites
-    // read `<db>|a|b` back correctly, but the `Ref` resolver would hand `b` to
-    // every consumer. `DatabaseName` is guarded on the
-    // same footing but was NOT probed: both segments are user-chosen and the
-    // Athena / Data Catalog "lowercase alphanumerics and underscore" rule that
-    // would rule it out is a convention rather than an API constraint, so
-    // guarding it is the conservative reading, not a measured one. Computed
-    // here rather than after the call so the refusal cannot orphan a table AWS
-    // has already created. `import()` refuses the same shape via
-    // `resolveTableIdentity` (issue #1651), which is why the composite it
-    // builds needs no second guard.
+    // The id is `<databaseName>|<tableName>` (issue #1672). A `|` in the TABLE
+    // name is accepted, as CloudFormation accepts it: `glue:CreateTable` with
+    // `TableInput.Name: 'a|b'` SUCCEEDS (probe, us-east-1 2026-08-12), and every
+    // reader places the table name by the recorded `DatabaseName` — this
+    // provider's decode sites through `decodeTableId`, the `Ref` resolver
+    // through `glueTableRefFromPhysicalId` — so `<db>|a|b` reads back as table
+    // `a|b`. A `|` in the DATABASE name is still REFUSED, before `CreateTable`
+    // runs so the refusal cannot orphan a table: when the recorded
+    // `DatabaseName` is unusable (masked, or an unresolved intrinsic on an
+    // imported record) the `Ref` resolver falls back to the FIRST `|` as the
+    // boundary, which a database name carrying one would make a lie. (The decode
+    // sites fall back to the exact two-segment form, and skip anything longer.)
+    // `import()` applies the same rule via `resolveTableIdentity`, which is why
+    // the composite it builds needs no second guard.
     const physicalId = packCompositeId(
       resourceType,
       logicalId,
       [
         { name: 'databaseName', value: databaseName },
-        { name: 'tableName', value: tableName },
+        { name: 'tableName', value: tableName, mayContainSeparator: true },
       ],
       // A reverse-replacement rollback creates from a STATE record, so the
       // refusal downgrades to a warning: the user cannot edit a state record
@@ -2580,19 +2660,18 @@ export class GlueProvider implements ResourceProvider {
       // thing being rejected, so being vague here would reproduce it.
       switch (identity.reason) {
         case 'pipe-in-name':
-          // Not a user error to correct by re-running with a different id —
-          // there is no id shape that would work — so say what to change
-          // instead of suggesting one. `|` is cdkd's own separator (see
-          // `createTable`); AWS accepts it in a Glue name even though the
-          // Athena convention does not.
+          // Says what to change rather than suggesting another id: the only ids
+          // that would work are the ones this message names. `|` is cdkd's own
+          // separator (see `createTable`); AWS accepts it in a Glue name even
+          // though the Athena convention does not.
           this.logger.warn(
-            `AWS::Glue::Table ${input.logicalId}: cannot be imported because a name contains ` +
-              `'|', which cdkd currently uses as the separator in this type's physical id ` +
-              `(<databaseName>|<tableName>). Adopting it would record an id cdkd cannot decode ` +
-              `back to the same table. CloudFormation manages such a table fine; this is a ` +
-              `cdkd limitation tracked in ` +
-              `https://github.com/go-to-k/cdkd/issues/1672. Until it is lifted, rename the ` +
-              `table or database to omit '|', or manage this resource outside cdkd.`
+            `AWS::Glue::Table ${input.logicalId}: cannot be imported because the '|' in a name ` +
+              `cannot be placed. cdkd records this type's physical id as ` +
+              `<databaseName>|<tableName>, with '|' as the separator: a table name containing ` +
+              `'|' is adopted only with the template's own DatabaseName (which is how cdkd later ` +
+              `tells the two apart), and a database name containing '|' is not supported. ` +
+              `Set the template's DatabaseName to the table's database, rename the database to ` +
+              `omit '|', or manage this resource outside cdkd.`
           );
           break;
         case 'unpairable':
@@ -2616,30 +2695,76 @@ export class GlueProvider implements ResourceProvider {
       return null;
     }
 
-    const { databaseName: dbName, tableName: tName } = identity;
-    try {
-      await this.getClient().send(
-        new GetTableCommand({
-          DatabaseName: dbName,
-          Name: tName,
-          ...(catalogId && { CatalogId: catalogId }),
-        })
-      );
-      // Always normalize to cdkd's composite form: `updateTable` /
-      // `deleteTable` / `readTable` all decode the stored physicalId as
-      // `<db>|<table>` ({@link decodeTableId}), so
-      // recording CloudFormation's bare table name would adopt the resource
-      // into a state record the rest of the provider cannot use — trading a
-      // visible not-found for a silent one. That is the #1658 failure mode
-      // (`AWS::Route53::RecordSet` accepted CFn's id verbatim and the stack
-      // became undestroyable). The composite is built from the pair actually
-      // PROBED, and `resolveTableIdentity` has already refused any segment
-      // containing `|`, so the recorded id decodes back to the same pair.
-      return { physicalId: `${dbName}|${tName}`, attributes: {} };
-    } catch (err) {
-      if (err instanceof EntityNotFoundException) return null;
-      throw err;
+    // Probe EVERY reading, then adopt only an unambiguous one. Adopting the
+    // first that exists would take the two-segment composite `(a, b)` for
+    // CloudFormation's bare `a|b` whenever an unrelated table `b` happens to
+    // exist in a database `a`, and the recorded `a|b` would then round-trip to
+    // that other table — which `cdkd destroy` deletes. A non-not-found error is
+    // an unknown answer, never "absent", so it stops the walk.
+    const found: TableReading[] = [];
+    for (const candidate of identity.candidates) {
+      try {
+        await this.getClient().send(
+          new GetTableCommand({
+            DatabaseName: candidate.databaseName,
+            Name: candidate.tableName,
+            ...(catalogId && { CatalogId: catalogId }),
+          })
+        );
+        found.push(candidate);
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) continue;
+        // A lone reading keeps the AWS error as it was. With several, say WHICH
+        // reading could not be answered — a bare-name probe the user never asked
+        // for can hit a Lake Formation denial the reading they meant would not —
+        // and still FAIL CLOSED: adopting another reading while this one is
+        // unknown could take the wrong table. Named by error CLASS, not AWS's
+        // message, which can quote the account and role; the original rides as
+        // `cause`.
+        if (identity.candidates.length === 1 || !(err instanceof Error)) throw err;
+        throw new ProvisioningError(
+          safeMsg`AWS::Glue::Table ${input.logicalId}: could not check whether table ${candidate.tableName} exists in database ${candidate.databaseName} (the ${candidate.reading} reading of physical id ${input.knownPhysicalId ?? ''}): ${err.name}. cdkd does not adopt a table while another reading of the id is unanswered. Grant glue:GetTable on that table and database, then re-run.`,
+          'AWS::Glue::Table',
+          input.logicalId,
+          undefined,
+          err
+        );
+      }
     }
+    // More than one reading exists: the template's own `TableInput.Name`
+    // settles it when exactly one of them carries it. (With a single reading
+    // the id wins over the template name, as an explicit override always has.)
+    const chosen =
+      found.length > 1 && templateTableName !== undefined
+        ? found.filter((pair) => pair.tableName === templateTableName)
+        : found;
+    if (chosen.length > 1 || (found.length > 1 && chosen.length === 0)) {
+      // The remedies are the two inputs that settle it, NOT a re-spelled id:
+      // any id with a `|` is read the same several ways again (the #1651 shape,
+      // where the suggested remedy is the thing being refused).
+      const existing = found
+        .map((pair) => `'${pair.tableName}' in ${pair.databaseName}`)
+        .join(', ');
+      this.logger.warn(
+        safeMsg`AWS::Glue::Table ${input.logicalId}: cannot be imported because its physical id names more than one existing table (${existing}). Set the template's TableInput.Name to the table this resource is, which settles it. For a table whose own name starts with '<databaseName>|', you can instead pass --resource '${input.logicalId}=<databaseName>|<databaseName>|<rest of the name>'.`
+      );
+      return null;
+    }
+    const adopted = chosen[0];
+    if (adopted === undefined) return null;
+    // Always normalize to cdkd's composite form: `updateTable` /
+    // `deleteTable` / `readTable` all decode the stored physicalId as
+    // `<db>|<table>` ({@link decodeTableId}), so recording CloudFormation's
+    // bare table name would adopt the resource into a state record the rest of
+    // the provider cannot use — trading a visible not-found for a silent one.
+    // That is the #1658 failure mode (`AWS::Route53::RecordSet` accepted CFn's
+    // id verbatim and the stack became undestroyable). The composite is built
+    // from the pair actually PROBED. A `|` table name is only ever paired with
+    // the template's `DatabaseName`, which later readers anchor on — provided
+    // the recorded bag carries it resolved; when `cdkd import` cannot resolve
+    // it, a three-segment record has no anchor and destroy SKIPS it (loudly,
+    // keeping the record) rather than guessing.
+    return { physicalId: `${adopted.databaseName}|${adopted.tableName}`, attributes: {} };
   }
 }
 
