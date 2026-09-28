@@ -321,7 +321,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
           `("${physicalId}"), skipping deletion — no AWS call is issued, so the permission ` +
           `statement is LEFT IN PLACE on the function's resource policy, UNLESS the function ` +
           `itself is part of this stack (deleting it removes its whole resource policy, and ` +
-          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>'). ` +
           `Otherwise repair the physicalId in state.json and re-run, or remove the statement ` +
           `by hand ('aws lambda remove-permission'). ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -336,7 +336,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
           `AWS call is issued, so the permission statement is LEFT IN PLACE on the function's ` +
           `resource policy, UNLESS the function itself is part of this stack (deleting it ` +
           `removes its whole resource policy, and then only the cdkd record is stale — clear ` +
-          `it with 'cdkd state orphan <stack>'). Otherwise repair the record's FunctionName in ` +
+          `it with 'cdkd state orphan <stack> --stack-region <region>'). Otherwise repair the record's FunctionName in ` +
           `state.json and re-run, or remove the statement by hand ` +
           `('aws lambda remove-permission'). ${DEPLOY_SKIP_CAVEAT}`
       );

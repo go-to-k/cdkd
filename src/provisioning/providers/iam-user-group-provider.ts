@@ -1786,7 +1786,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           `Users are both required to call RemoveUserFromGroup, so no AWS call is issued and ` +
           `the group memberships are LEFT IN PLACE, UNLESS the group or the users are ` +
           `themselves part of this stack (their own deletes remove exactly these memberships, ` +
-          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>'). ` +
           `Otherwise restore the record's properties in state.json and re-run, or remove the ` +
           `users from the group by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -1802,7 +1802,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           `call RemoveUserFromGroup, so no AWS call is issued and the group memberships are ` +
           `LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack ` +
           `(their own deletes remove exactly these memberships, and then only the cdkd record ` +
-          `is stale — clear it with 'cdkd state orphan <stack>'). Otherwise restore them in ` +
+          `is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>'). Otherwise restore them in ` +
           `state.json and re-run, or remove the users from the group by hand. ` +
           `${DEPLOY_SKIP_CAVEAT}`
       );
@@ -1821,11 +1821,11 @@ export class IAMUserGroupProvider implements ResourceProvider {
             'in state), so do not write the name into state.json: cdkd will keep skipping this ' +
             'record. Remove the users from the group by hand; on cdkd destroy every other ' +
             "resource is still deleted, so once this is the stack's last record " +
-            "'cdkd state orphan <stack>' clears it."
+            "'cdkd state orphan <stack> --stack-region <region>' clears it."
           : 'Repair the recorded Users in state.json to a list of user names and re-run, or ' +
             'remove the users from the group by hand.';
       this.logger.warn(
-        safeMsg`The state record for UserToGroupAddition ${logicalId} holds a Users that is not a list of IAM user names — skipping deletion rather than guessing which users it names. No AWS call is issued, so the group memberships are LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack (their own deletes remove exactly these memberships, and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ${repair} ${DEPLOY_SKIP_CAVEAT}`
+        safeMsg`The state record for UserToGroupAddition ${logicalId} holds a Users that is not a list of IAM user names — skipping deletion rather than guessing which users it names. No AWS call is issued, so the group memberships are LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack (their own deletes remove exactly these memberships, and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>'). ${repair} ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: MEMBERSHIP_MALFORMED_USERS_SKIP_REASON };
     }

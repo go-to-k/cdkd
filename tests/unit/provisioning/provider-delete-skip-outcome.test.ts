@@ -352,7 +352,9 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       // so a qualifier lifted from a sibling cannot satisfy both.
       expect(text).toContain(head);
       expect(text).toContain(qualifier);
-      expect(text).toContain('cdkd state orphan');
+      // Region-scoped: without --stack-region the command drops that stack
+      // name's record in EVERY region (go-to-k/cdkd#3996).
+      expect(text).toContain('cdkd state orphan <stack> --stack-region <region>');
     }
   );
 

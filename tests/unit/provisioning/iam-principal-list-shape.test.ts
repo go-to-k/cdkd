@@ -800,7 +800,7 @@ describe('IAMUserGroupProvider AWS::IAM::UserToGroupAddition (go-to-k/cdkd#3888)
     // the destroy that leaves this as the last record.
     expect(warned).toContain(
       "on cdkd destroy every other resource is still deleted, so once this is the stack's last " +
-        "record 'cdkd state orphan <stack>' clears it"
+        "record 'cdkd state orphan <stack> --stack-region <region>' clears it"
     );
     expect(warned).not.toContain('Repair the recorded Users');
   });

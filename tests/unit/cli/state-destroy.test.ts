@@ -442,6 +442,10 @@ describe('cdkd state destroy', () => {
     expect(exitSpy).toHaveBeenCalledWith(2);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toMatch(/2 resource error\(s\).*State preserved/);
+    // Region-scoped (go-to-k/cdkd#3996).
+    expect(message).toContain(
+      "'cdkd state orphan <stack> --stack-region <region>' removes the state record"
+    );
   });
 
   it('exits 2 when the runner SKIPPED a resource, even with zero errors (issue #1752)', async () => {
@@ -474,6 +478,9 @@ describe('cdkd state destroy', () => {
     // nested case (issue #1752 review).
     expect(message).not.toContain('resource(s) cdkd could not address');
     expect(message).toContain('counts as ONE entry');
+    expect(message).toContain(
+      "drop the records with 'cdkd state orphan <stack> --stack-region <region>'."
+    );
   });
 
   it('iterates over multiple positional stack names in order', async () => {

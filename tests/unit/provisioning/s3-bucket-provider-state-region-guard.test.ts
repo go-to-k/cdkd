@@ -222,7 +222,9 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
 
       expect(error?.message).toContain('the bucket lives in us-west-2');
       expect(error?.message).toContain("this stack's state is for us-east-1");
-      expect(error?.message).toContain('cdkd state orphan');
+      expect(error?.message).toContain(
+        "'cdkd state orphan <stack> --stack-region <region>' (this stack's region, not the"
+      );
     });
 
     it('marks the refusal NON-RETRYABLE, and is not re-labelled as an AWS failure', async () => {
@@ -507,7 +509,9 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
         );
 
       expect(error?.message).not.toContain('rerun this stack against');
-      expect(error?.message).toContain('cdkd state orphan');
+      expect(error?.message).toContain(
+        "'cdkd state orphan <stack> --stack-region <region>' (this stack's region, not the"
+      );
       expect(error?.message).toContain('delete it deliberately in us-west-2');
     });
   });

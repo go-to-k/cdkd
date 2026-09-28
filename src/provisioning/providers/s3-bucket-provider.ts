@@ -6221,11 +6221,13 @@ export class S3BucketProvider implements ResourceProvider {
       operation === 'update'
         ? `Confirm which bucket you mean, then either rerun this stack against ` +
           `${probe.region}, or — if the recorded id is stale — drop cdkd's record with ` +
-          `'cdkd state orphan <stack>', which removes the record without touching any AWS ` +
+          `'cdkd state orphan <stack> --stack-region <region>' (this stack's region, not the bucket's), which ` +
+          `removes the record without touching any AWS ` +
           `resource, and deploy again.`
         : `Confirm which bucket you mean. If ${displaySafe(physicalId)} is genuinely yours to delete, ` +
           `delete it deliberately in ${probe.region}; if this record is simply stale, drop it ` +
-          `with 'cdkd state orphan <stack>', which removes cdkd's record without touching any ` +
+          `with 'cdkd state orphan <stack> --stack-region <region>' (this stack's region, not the ` +
+          `bucket's), which removes cdkd's record without touching any ` +
           `AWS resource, and the destroy will then have nothing to do for this resource.`;
 
     throw markNonRetryable(

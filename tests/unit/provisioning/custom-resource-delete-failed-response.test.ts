@@ -268,7 +268,7 @@ describe('CustomResourceProvider delete: a handler that answers FAILED (issue #2
 
     expect(warnings()).not.toContain('a re-run can retry it');
     expect(warnings()).toContain('POINTER, not a retry');
-    expect(warnings()).toContain('cdkd state orphan <stack>');
+    expect(warnings()).toContain('cdkd state orphan <stack> --stack-region <region>');
     // ...and it says what that command actually does, which is not a
     // single-record drop.
     expect(warnings()).toContain('EVERY record for the stack');

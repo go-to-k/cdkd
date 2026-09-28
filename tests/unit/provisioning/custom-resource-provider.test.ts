@@ -1030,7 +1030,11 @@ describe('CustomResourceProvider', () => {
         provider.delete('MyCustomResource', 'physical-id', 'Custom::MyType', {
           ServiceToken: rawIntrinsic,
         })
-      ).rejects.toThrow(/re-run.*cdkd import.*cdkd state orphan/s);
+      ).rejects.toThrow(
+        // Region-scoped (go-to-k/cdkd#3996), and quoted rather than
+        // backticked, which would run the command when pasted.
+        "re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover."
+      );
     });
   });
 });
