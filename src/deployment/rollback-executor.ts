@@ -3245,6 +3245,11 @@ async function replaySingle(
               typeof op.logicalId === 'string'
                 ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
                 : undefined,
+            // A provider that REWRITES even an explicit name derives it in this
+            // async scope (stack name, prefix flag), so the helper derives it
+            // here too, from the logical id for a nameless bag (#4018's shape).
+            logicalId: op.logicalId,
+            createdVia: createProvisionedBy,
             mask: (value) => maskSecretsInText(value, secrets),
             recorded: current.properties,
             observed: current.observedProperties,
@@ -3267,9 +3272,10 @@ async function replaySingle(
                           `if another resource holds it`) +
                       ` (an orphan of an earlier attempt, or one made outside this stack), ` +
                       `deleting the new resource would destroy it and collide again. Nothing was ` +
-                      `deleted. Remove or rename whatever holds that name if it is yours, then re-run ` +
-                      `${rerunRollbackPhrase(ctx, 'cdkd rollback')} — the journal is kept, so ` +
-                      `the revert resumes from here.` +
+                      `deleted. Remove or rename whatever holds that name if it is yours — if that is ` +
+                      `the new resource itself, delete it by hand — then re-run ` +
+                      `${rerunRollbackPhrase(ctx, 'cdkd rollback')}, which proceeds: the journal is ` +
+                      `kept, so the revert resumes from here.` +
                       (remedy.offered
                         ? ` To leave THIS resource alone and let the rest of the rollback ` +
                           `proceed, re-run with the command below.`

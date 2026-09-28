@@ -3,16 +3,20 @@
  * resource first only on `holds: true`, so every shape the two records cannot
  * decide must answer `holds: false`, and only a PROVEN holder may answer true.
  */
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import {
   reverseReplacementCaseInsensitiveTypes,
   reverseReplacementNameKeyKind,
   reverseReplacementNewHoldsName,
+  reverseReplacementRewrittenNameTypes,
   reverseReplacementTrustsGeneratedName,
   reverseReplacementVerbatimGeneratedTypes,
 } from '../../../src/deployment/replacement-name-holder.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
+import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
 
 type Input = Parameters<typeof reverseReplacementNewHoldsName>[0];
 
@@ -198,7 +202,13 @@ describe('reverseReplacementNewHoldsName — the generic name property', () => {
   ])('a requested name that is %s is unproven, never compared', (_label, value) => {
     const r = refusal(ask({ requested: { QueueName: value } }));
     expect(r.known).toBe(false);
-    expect(r.diagnosis).toContain('redacted or unresolved');
+    expect(r.diagnosis).toContain('redacted, unresolved or not a string');
+  });
+
+  it('an EMPTY requested name says so', () => {
+    const r = refusal(ask({ requested: { QueueName: '' } }));
+    expect(r.known).toBe(false);
+    expect(r.diagnosis).toContain('asked for is empty');
   });
 });
 
@@ -387,10 +397,28 @@ describe('reverseReplacementNewHoldsName — types', () => {
         physicalId: 't',
       })
     ).toEqual({ holds: true });
-    const r = refusal(
-      ask({ oldResourceType: 'AWS::SSM::Parameter', newResourceType: 'AWS::SNS::Topic', requested: { Name: 'q' } })
-    );
-    expect(r.known).toBe(true);
+    // The RDS API family is one identifier space per account and region.
+    for (const [from, to, property] of [
+      ['AWS::RDS::DBCluster', 'AWS::DocDB::DBCluster', 'DBClusterIdentifier'],
+      ['AWS::Neptune::DBInstance', 'AWS::RDS::DBInstance', 'DBInstanceIdentifier'],
+      ['AWS::DocDB::DBSubnetGroup', 'AWS::Neptune::DBSubnetGroup', 'DBSubnetGroupName'],
+    ] as const) {
+      const bag = { [property]: 'db1' };
+      expect(
+        ask({ oldResourceType: from, newResourceType: to, requested: bag, recorded: bag, physicalId: 'db1' })
+      ).toEqual({ holds: true });
+    }
+    // Any other pair is UNKNOWN, never "another resource holds it": a cluster
+    // and an instance of one engine, or two unrelated services.
+    for (const [from, to] of [
+      ['AWS::RDS::DBCluster', 'AWS::RDS::DBInstance'],
+      ['AWS::SSM::Parameter', 'AWS::SNS::Topic'],
+    ] as const) {
+      const r = refusal(ask({ oldResourceType: from, newResourceType: to, requested: { Name: 'q' } }));
+      expect(r.known).toBe(false);
+      expect(r.diagnosis).toContain('does not know to share a name space');
+      expect(r.diagnosis).toContain(`is of type ${to}`);
+    }
   });
 
   it('a type no name proves, or one cdkd has no key for, is unproven', () => {
@@ -473,19 +501,17 @@ describe('the generated-name mirror is trusted only where the provider mints it 
   // deliberate edit of this literal, after reading the provider's generation.
   it('is exactly the audited set, and excludes the known wrapping providers', () => {
     expect(reverseReplacementVerbatimGeneratedTypes()).toEqual([
+      'AWS::CloudWatch::Alarm',
       'AWS::DocDB::DBCluster',
       'AWS::DocDB::DBInstance',
       'AWS::DocDB::DBSubnetGroup',
+      'AWS::DynamoDB::Table',
       'AWS::ECR::Repository',
       'AWS::ECS::Cluster',
       'AWS::ECS::Service',
       'AWS::ElastiCache::CacheCluster',
       'AWS::ElastiCache::SubnetGroup',
-      'AWS::ElasticLoadBalancingV2::LoadBalancer',
-      'AWS::ElasticLoadBalancingV2::TargetGroup',
       'AWS::Events::Rule',
-      'AWS::IAM::Group',
-      'AWS::IAM::User',
       'AWS::Kinesis::Stream',
       'AWS::Lambda::Function',
       'AWS::Neptune::DBCluster',
@@ -502,6 +528,10 @@ describe('the generated-name mirror is trusted only where the provider mints it 
     ]);
     for (const wrapping of ['AWS::Logs::LogGroup', 'AWS::SSM::Parameter', 'AWS::S3Express::DirectoryBucket', 'AWS::S3::Bucket']) {
       expect(reverseReplacementTrustsGeneratedName(wrapping)).toBe(false);
+    }
+    // A rewriting type is owned by its own table, never by this list.
+    for (const type of Object.keys(reverseReplacementRewrittenNameTypes())) {
+      expect(reverseReplacementTrustsGeneratedName(type)).toBe(false);
     }
   });
 });
@@ -529,5 +559,181 @@ describe('the case-insensitive name spaces are a reviewed list', () => {
       'AWS::RDS::DBInstance',
       'AWS::RDS::DBSubnetGroup',
     ]);
+  });
+});
+
+describe('a provider that rewrites the name it sends (review M1, #4018)', () => {
+  const ROLE = 'AWS::IAM::Role';
+  const role = (over: Partial<Input>) =>
+    ask({
+      oldResourceType: ROLE,
+      newResourceType: ROLE,
+      requested: { RoleName: 'my-role' },
+      recorded: { RoleName: 'my-role' },
+      logicalId: 'MyRole',
+      ...over,
+    });
+
+  it('outside withSkipPrefix the SENT name is prefixed, so a new role holding the recorded one is not proven', () => {
+    // `cdkd rollback` enters withStackName but not withSkipPrefix.
+    const r = withStackName('Stk', () => refusal(role({ physicalId: 'my-role' })));
+    expect(r.known).toBe(false);
+    expect(r.diagnosis).toContain('RoleName "my-role", which its provider sends as "Stk-my-role"');
+    expect(withStackName('Stk', () => role({ physicalId: 'Stk-my-role' }))).toEqual({ holds: true });
+  });
+
+  it('under withSkipPrefix the sent name is the declared one', () => {
+    expect(
+      withSkipPrefix(true, () => withStackName('Stk', () => role({ physicalId: 'my-role' })))
+    ).toEqual({ holds: true });
+  });
+
+  it("the provider's charset rewrite is applied too: `my_role` is sent as `my-role`", () => {
+    const requested = { RoleName: 'my_role' };
+    expect(role({ requested, recorded: requested, physicalId: 'my-role' })).toEqual({ holds: true });
+    expect(refusal(role({ requested, recorded: requested, physicalId: 'my_role' })).known).toBe(false);
+  });
+
+  it('G3: a recorded name matching (case-folded) is no proof behind a non-name id', () => {
+    // Before M1 this held through the case-insensitive recorded-name branch.
+    const r = refusal(
+      role({ requested: { RoleName: 'MyRole' }, recorded: { RoleName: 'myrole' }, physicalId: 'AROAEXAMPLE123' })
+    );
+    expect(r.known).toBe(false);
+    expect(r.diagnosis).toContain('a recorded name is no proof');
+    // The id still folds case for a case-insensitive IAM name.
+    expect(role({ requested: { RoleName: 'MyRole' }, recorded: {}, physicalId: 'myrole' })).toEqual({ holds: true });
+    // ...and the recorded-name branch still folds for a NON-rewriting member.
+    const DB = 'AWS::RDS::DBInstance';
+    expect(
+      ask({
+        oldResourceType: DB,
+        newResourceType: DB,
+        requested: { DBInstanceIdentifier: 'MyDb' },
+        recorded: { DBInstanceIdentifier: 'mydb' },
+        physicalId: 'db-OPAQUE',
+      })
+    ).toEqual({ holds: true });
+  });
+
+  it('an UNNAMED create derives the name from the logical id, and needs one', () => {
+    for (const [type, property, id] of [
+      ['AWS::IAM::Role', 'RoleName', 'Stk-MyRole'],
+      ['AWS::IAM::ManagedPolicy', 'ManagedPolicyName', 'arn:aws:iam::123456789012:policy/Stk-MyRole'],
+      ['AWS::IAM::InstanceProfile', 'InstanceProfileName', 'Stk-MyRole'],
+    ] as const) {
+      const base = { oldResourceType: type, newResourceType: type, requested: {}, recorded: {} };
+      expect(withStackName('Stk', () => ask({ ...base, logicalId: 'MyRole', physicalId: id }))).toEqual({
+        holds: true,
+      });
+      const other = refusal(withStackName('Stk', () => ask({ ...base, logicalId: 'MyRole', physicalId: 'x' })));
+      expect(other.diagnosis).toContain(`its provider generates ${property} "Stk-MyRole" here`);
+      const noId = refusal(withStackName('Stk', () => ask({ ...base, logicalId: 7, physicalId: id })));
+      expect(noId.diagnosis).toContain('cannot derive the name its provider generates');
+    }
+  });
+
+  it('on the Cloud Control route the bag IS what was sent, so the recorded rule applies', () => {
+    expect(withStackName('Stk', () => role({ createdVia: 'cc-api', physicalId: 'my-role' }))).toEqual({
+      holds: true,
+    });
+  });
+
+  it('a secret-derived declared name is never followed by its rewritten spelling', () => {
+    const secret = 'tok_SECRET';
+    const r = refusal(
+      withStackName('Stk', () =>
+        role({
+          requested: { RoleName: secret },
+          physicalId: 'x',
+          mask: (v) => v.split(secret).join('***'),
+        })
+      )
+    );
+    expect(r.diagnosis).not.toContain('SECRET');
+    expect(r.diagnosis).toContain('which its provider rewrites before sending it');
+  });
+});
+
+describe('the rewriting-types table matches every caller of generateResourceNameWithFallback', () => {
+  // Population by ENUMERATION of the tree: every provider call site, its
+  // property and its maxLength must be one table entry, and every entry must
+  // be seen at a call site. A new caller file is a failure until mapped here.
+  const DIR = join(process.cwd(), 'src', 'provisioning', 'providers');
+  const FILE_TYPES: Record<string, readonly string[]> = {
+    'elbv2-provider.ts': [
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+    ],
+    'iam-instance-profile-provider.ts': ['AWS::IAM::InstanceProfile'],
+    'iam-managed-policy-provider.ts': ['AWS::IAM::ManagedPolicy'],
+    'iam-role-provider.ts': ['AWS::IAM::Role'],
+    'iam-user-group-provider.ts': ['AWS::IAM::User', 'AWS::IAM::Group'],
+  };
+
+  it('each call site is a table entry, and each entry is a call site', () => {
+    const table = reverseReplacementRewrittenNameTypes();
+    const seen = new Set<string>();
+    const callers: string[] = [];
+    let calls = 0;
+    let specCalls = 0;
+    for (const file of readdirSync(DIR).filter((f) => f.endsWith('.ts'))) {
+      const text = readFileSync(join(DIR, file), 'utf8');
+      const constant = (expr: string): number => {
+        if (/^\d+$/.test(expr)) return Number(expr);
+        const m = new RegExp(`const ${expr} = (\\d+);`).exec(text);
+        if (!m) throw new Error(`${file}: unresolved maxLength ${expr}`);
+        return Number(m[1]);
+      };
+      const sites = [...text.matchAll(/generateResourceNameWithFallback\(([\s\S]*?)\{ maxLength: ([\w.]+) \}\s*\)/g)];
+      const bare = text.split('generateResourceNameWithFallback(').length - 1;
+      if (bare === 0) continue;
+      callers.push(file);
+      // Every call is parsed: none escapes the regex's shape.
+      expect(sites.length, file).toBe(bare);
+      const types = FILE_TYPES[file];
+      expect(types, `${file} calls the generator but is not mapped`).toBeDefined();
+      for (const [, args, max] of sites) {
+        calls += 1;
+        const prop = /properties\['(\w+)'\]/.exec(args!)?.[1];
+        const pairs: Array<[string, number]> =
+          prop !== undefined
+            ? [[prop, constant(max!)]]
+            : // The shared-spec shape: `{ key: '<prop>', maxLength: <CONST> }` rows.
+              [...text.matchAll(/\{ key: '(\w+)', maxLength: (\w+) \}/g)].map(
+                (m) => [m[1]!, constant(m[2]!)] as [string, number]
+              );
+        if (prop === undefined) specCalls += 1;
+        expect(pairs.length, `${file}: a call whose property cannot be read`).toBeGreaterThan(0);
+        for (const [property, maxLength] of pairs) {
+          const match = types!.filter(
+            (t) => table[t]?.property === property && table[t]?.maxLength === maxLength
+          );
+          expect(match, `${file}: ${property} / ${maxLength} has no table entry`).not.toEqual([]);
+          for (const t of match) seen.add(t);
+        }
+      }
+    }
+    // Floors are LITERALS, measured 2026-09-29: 10 call sites in 5 files, one
+    // of them the shared-spec shape.
+    expect(calls).toBeGreaterThanOrEqual(10);
+    expect(specCalls).toBeGreaterThanOrEqual(1);
+    expect(callers.sort()).toEqual(Object.keys(FILE_TYPES).sort());
+    // No caller outside the providers directory, except the generator's own
+    // module and this helper, which derives the sent name with it.
+    const src = join(process.cwd(), 'src');
+    const everywhere = (readdirSync(src, { recursive: true }) as string[])
+      .filter((f) => f.endsWith('.ts'))
+      .filter((f) => readFileSync(join(src, f), 'utf8').includes('generateResourceNameWithFallback('))
+      .map((f) => f.split('\\').join('/'))
+      .sort();
+    expect(everywhere).toEqual(
+      [
+        'deployment/replacement-name-holder.ts',
+        'provisioning/resource-name.ts',
+        ...Object.keys(FILE_TYPES).map((f) => `provisioning/providers/${f}`),
+      ].sort()
+    );
+    expect([...seen].sort()).toEqual(Object.keys(table).sort());
   });
 });

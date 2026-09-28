@@ -1130,7 +1130,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     const { ctx: ctx2, lines: lines2 } = makeCtx({ create: collide, delete: del });
     const collided = await replayRollback([typeChangeOp()], newState(), 'S', ctx2);
     expect(collided.failures).toBe(1);
-    assertNoForgery(lines2, /does not share a name space/);
+    assertNoForgery(lines2, /does not know to share a name space/);
 
     // The unroutable refusal's "two different types" reason renders BOTH
     // journal sources.

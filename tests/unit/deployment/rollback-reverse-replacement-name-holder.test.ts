@@ -26,8 +26,9 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => logger };
 });
 
+const iamSend = vi.fn();
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({}),
+  getAwsClients: () => ({ iam: { send: iamSend } }),
   setAwsClients: vi.fn(),
   AwsClients: vi.fn(),
 }));
@@ -51,6 +52,7 @@ import {
   type CompletedOperation,
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
+import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
@@ -67,13 +69,18 @@ const silentLogger = {
   child: () => silentLogger,
 } as unknown as RollbackExecutorContext['logger'];
 
-function ctxFor(provider: ResourceProvider): RollbackExecutorContext {
+function ctxFor(
+  provider: ResourceProvider,
+  over: Partial<RollbackExecutorContext> & { provisionedBy?: 'sdk' | 'cc-api' } = {}
+): RollbackExecutorContext {
+  const { provisionedBy = 'sdk', ...rest } = over;
   return {
     region: 'us-east-1',
     logger: silentLogger,
     providerRegistry: {
-      getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
+      getProviderFor: () => ({ provider, provisionedBy }),
     } as unknown as RollbackExecutorContext['providerRegistry'],
+    ...rest,
   };
 }
 
@@ -98,6 +105,7 @@ function failureLines(): string[] {
 beforeEach(() => {
   vi.clearAllMocks();
   route53Send.mockReset();
+  iamSend.mockReset();
   vi.stubEnv('AWS_REGION', 'us-east-1');
 });
 
@@ -464,5 +472,183 @@ describe('the unproven-holder refusal (#3979)', () => {
     expect(failed).toHaveLength(1);
     expect(failed[0]).toContain('Cannot reverse the replacement of');
     expect(failed[0]).toContain("--orphan '<id>'");
+  });
+});
+
+// ─── A provider that REWRITES even an explicit name (review M1) ───────────
+
+const ROLE = 'AWS::IAM::Role';
+const TRUST = { Version: '2012-10-17', Statement: [] };
+/** IAM's own wording for a role name that is taken. */
+const ROLE_COLLISION = 'Role with name CdkdX-my-role already exists.';
+
+/** The first `CreateRole` collides; later ones succeed. Returns the names sent. */
+function stubIam(): string[] {
+  const sent: string[] = [];
+  iamSend.mockImplementation(async (command: unknown) => {
+    const c = command as { constructor: { name: string }; input?: { RoleName?: string } };
+    if (c.constructor.name === 'CreateRoleCommand') {
+      sent.push(String(c.input?.RoleName));
+      if (sent.length === 1) throw awsSdkError(ROLE_COLLISION, 'EntityAlreadyExistsException');
+      return { Role: { Arn: `arn:aws:iam::123456789012:role/${c.input?.RoleName}`, RoleId: 'AROAX' } };
+    }
+    return {};
+  });
+  return sent;
+}
+
+function roleOp(oldId: string, newId: string): CompletedOperation {
+  return {
+    logicalId: 'MyRole',
+    changeType: 'UPDATE',
+    resourceType: ROLE,
+    physicalId: newId,
+    previousState: res(ROLE, {
+      physicalId: oldId,
+      properties: { RoleName: 'my-role', AssumeRolePolicyDocument: TRUST, Path: '/a/' },
+    }),
+  };
+}
+
+describe('a provider that rewrites the name it sends proves a holder only by that name (#3979, #4018)', () => {
+  // The old role was made by a plain deploy (`CdkdX-my-role`); the replacing
+  // deploy ran under `--no-prefix-user-supplied-names` (withSkipPrefix), so
+  // the live new role is `my-role`. `cdkd rollback` enters withStackName but
+  // not withSkipPrefix, so the real IAMRoleProvider sends `CdkdX-my-role`,
+  // which something else still holds. The records both say `my-role`.
+  it('an orphan holding the SENT name does not cost the live new role', async () => {
+    const sent = stubIam();
+    const provider = new IAMRoleProvider();
+    const del = vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
+    const state: Record<string, ResourceState> = {
+      MyRole: res(ROLE, {
+        physicalId: 'my-role',
+        properties: { RoleName: 'my-role', AssumeRolePolicyDocument: TRUST, Path: '/b/' },
+      }),
+    };
+
+    const result = await withStackName('CdkdX', () =>
+      replayRollback([roleOp('CdkdX-my-role', 'my-role')], state, 'CdkdX', ctxFor(provider))
+    );
+
+    // THE DISCRIMINATOR: the recorded names agree, so the pre-fix helper
+    // proved a holder and deleted the live role.
+    expect(del).not.toHaveBeenCalled();
+    // The scope is the one described above: the provider really sent this.
+    expect(sent).toEqual(['CdkdX-my-role']);
+    expect(result.failures).toBe(1);
+    expect(state['MyRole']?.physicalId).toBe('my-role');
+    const failed = failureLines();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain('sends as "CdkdX-my-role"');
+    expect(failed[0]).toContain('a recorded name is no proof');
+    expect(failed[0]).toContain('if that is the new resource itself, delete it by hand');
+  });
+
+  it('NEGATIVE CONTROL: a new role named by the sent name is deleted first', async () => {
+    const sent = stubIam();
+    const provider = new IAMRoleProvider();
+    const calls: string[] = [];
+    const del = vi.spyOn(provider, 'delete').mockImplementation(async () => {
+      calls.push('delete');
+      return undefined;
+    });
+    const state: Record<string, ResourceState> = {
+      MyRole: res(ROLE, {
+        physicalId: 'CdkdX-my-role',
+        properties: { RoleName: 'my-role', AssumeRolePolicyDocument: TRUST, Path: '/b/' },
+      }),
+    };
+
+    const result = await withStackName('CdkdX', () =>
+      replayRollback([roleOp('my-role', 'CdkdX-my-role')], state, 'CdkdX', ctxFor(provider))
+    );
+
+    expect(result.failures).toBe(0);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del.mock.calls[0]?.[1]).toBe('CdkdX-my-role');
+    expect(sent).toEqual(['CdkdX-my-role', 'CdkdX-my-role']);
+    expect(calls).toEqual(['delete']);
+  });
+});
+
+// ─── The Cloud Control route: the SENT bag carries the generated name ─────
+
+describe('a Cloud Control re-create proves a generated name through what it sent (#3979)', () => {
+  it('a nameless log group on the cc-api route: create, delete the holder, create', async () => {
+    // Not in the verbatim allow-list (its SDK provider mints `/cdkd/<name>`),
+    // so only the SENT bag — `applyDefaultNameForFallback` applied on this
+    // route — can name `CdkdX-Lg`. The new log group's id is that name.
+    const LG = 'AWS::Logs::LogGroup';
+    const calls: string[] = [];
+    let seen = 0;
+    const provider = {
+      create: vi.fn(async () => {
+        calls.push('create');
+        if (seen++ === 0) throw awsSdkError('Resource of type AWS::Logs::LogGroup already exists', 'AlreadyExistsException');
+        return { physicalId: 'CdkdX-Lg', attributes: {} };
+      }),
+      delete: vi.fn(async () => {
+        calls.push('delete');
+        return undefined;
+      }),
+    } as unknown as ResourceProvider;
+    const op: CompletedOperation = {
+      logicalId: 'Lg',
+      changeType: 'UPDATE',
+      resourceType: LG,
+      physicalId: 'CdkdX-Lg',
+      previousState: res(LG, { physicalId: 'lg-old', properties: { RetentionInDays: 1 }, provisionedBy: 'cc-api' }),
+    };
+    const state = {
+      Lg: res(LG, { physicalId: 'CdkdX-Lg', properties: { RetentionInDays: 3 }, provisionedBy: 'cc-api' }),
+    };
+
+    const result = await withStackName('CdkdX', () =>
+      replayRollback([op], state, 'CdkdX', ctxFor(provider, { provisionedBy: 'cc-api' }))
+    );
+
+    expect(calls).toEqual(['create', 'delete', 'create']);
+    expect(result.failures).toBe(0);
+  });
+});
+
+// ─── The refusal inside a nested stack (review G2) ────────────────────────
+
+describe('the holder refusal in a nested stack names the right command (#3979, #3845, #3859)', () => {
+  function orphanCollision(): { provider: ResourceProvider; del: ReturnType<typeof vi.fn> } {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
+    return { provider: { create, delete: del } as unknown as ResourceProvider, del };
+  }
+  const QUEUE = 'AWS::SQS::Queue';
+  const op = (): CompletedOperation => ({
+    logicalId: 'Q',
+    changeType: 'UPDATE',
+    resourceType: QUEUE,
+    physicalId: 'q-new',
+    previousState: res(QUEUE, { physicalId: 'q-old', properties: { QueueName: 'q' } }),
+  });
+  const state = () => ({ Q: res(QUEUE, { physicalId: 'q-new', properties: { QueueName: 'q-new' } }) });
+
+  it("inside a nested child's revert there is no --orphan line", async () => {
+    const { provider, del } = orphanCollision();
+    await replayRollback([op()], state(), 'CdkdX', ctxFor(provider, { nestedChildRevert: true }));
+    expect(del).not.toHaveBeenCalled();
+    const failed = failureLines();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain('another resource holds the colliding name');
+    expect(failed[0]).not.toContain('To orphan it:');
+    expect(failed[0]).toContain('re-run the top-level');
+  });
+
+  it("in a nested child's own rollback the command names the child stack", async () => {
+    const { provider, del } = orphanCollision();
+    await replayRollback([op()], state(), 'Child', ctxFor(provider, { nestedChildStack: 'Child' }));
+    expect(del).not.toHaveBeenCalled();
+    const failed = failureLines();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatch(/\nTo orphan it: cdkd rollback Child --stack-region us-east-1 --orphan Q$/);
+    expect(failed[0]).toContain('the rollback of the nested stack');
   });
 });

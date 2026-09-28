@@ -475,8 +475,8 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
   });
 
   it('across types that do NOT share a name space, a collision deletes nothing (#3979)', async () => {
-    // An SSM parameter's name cannot be held by an SNS topic: the collision is
-    // with something else, and deleting the topic would free nothing.
+    // cdkd knows no name space an SSM parameter shares with an SNS topic, so
+    // it cannot prove the topic holds the name: deleting it is refused.
     const { ctx, providerFor } = makeCtx();
     providerFor(OLD_TYPE).create.mockRejectedValueOnce(
       ccAlreadyExistsError(`CREATE failed for Thing: Resource of type '${OLD_TYPE}' already exists.`)
@@ -488,7 +488,7 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
     expect(providerFor(NEW_TYPE).delete).not.toHaveBeenCalled();
     expect(state['Thing']?.physicalId).toBe(NEW_ID);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('which does not share a name space with AWS::SSM::Parameter')
+      expect.stringContaining('which cdkd does not know to share a name space with AWS::SSM::Parameter')
     );
   });
 

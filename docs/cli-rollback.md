@@ -160,19 +160,37 @@ journaled pre-deploy state, and the new resource is deleted unless its own
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
-cdkd deletes the new resource first only when its state record shows it holds
-the name the re-create collided on — the same name property, spelled exactly
-alike (case is ignored only where the service ignores it, such as IAM and RDS
-names), under the same parent (such as the event bus of a rule or the database
-of a Glue table), or, for a Route 53 record, the same DNS name in the same
-hosted zone. A collision
-with anything else (a resource an earlier failed attempt left behind, or one
-created outside the stack) fails the operation instead: nothing is deleted,
-the message names the colliding name, and the journal is kept. The same
-refusal applies when cdkd cannot tell — the re-create asked for no name, the
-name is redacted, or the type has no name property cdkd knows. Remove or
-rename whatever holds the name, then re-run `cdkd rollback`, or pass
-`--orphan <logicalId>` to leave that resource alone.
+cdkd deletes the new resource first only when it can show that the new
+resource holds the name the re-create collided on:
+
+- **An explicit name** matches when the new resource's state record has the
+  same name property, spelled exactly alike (case is ignored only where the
+  service ignores it, such as IAM and RDS names), under the same parent (such
+  as the event bus of a rule or the database of a Glue table), or when its
+  physical id names it. For a Route 53 record, the DNS name and hosted zone
+  must match.
+- **A name cdkd generates** (the template names none) matches only through the
+  new resource's physical id, and only for a type whose generated name cdkd
+  knows exactly. That is the name a Cloud Control re-create sent, or one of the
+  SDK providers checked to send cdkd's rule unchanged.
+- **IAM roles, users, groups, instance profiles and managed policies, and ELBv2
+  load balancers and target groups** turn even an explicit name into a
+  different name before sending it: a stack-name prefix that
+  `--no-prefix-user-supplied-names` controls, and a character rewrite. For
+  these, cdkd works out the name this re-create actually sent and matches it
+  only against the new resource's physical id. A matching recorded name is not
+  enough.
+
+A collision with anything else (a resource an earlier failed attempt left
+behind, or one created outside the stack) fails the operation instead: nothing
+is deleted, the message names the colliding name, and the journal is kept. The
+same refusal applies when cdkd cannot tell. That happens when the re-create
+asked for no name cdkd can derive, the name is redacted or empty, the type has
+no name property cdkd knows, or a `Type` change pairs types cdkd does not know
+to share names. Remove or rename whatever holds the name, then re-run
+`cdkd rollback`. If the holder is the new resource itself, delete it by hand
+and re-run: the rollback then proceeds. Or pass `--orphan <logicalId>` to leave
+that resource alone.
 
 When the replacing deploy left the old resource alive — it declared
 `UpdateReplacePolicy: Retain` at the time — the old resource is simply

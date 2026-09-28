@@ -39,7 +39,11 @@
  *   (`{{resolve:…}}`, which state keeps as written) is not a name: skipped.
  */
 
-import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
+import type { ProvisionedBy } from '../provisioning/provider-registry.js';
+import {
+  explicitNamePropertyFor,
+  generateResourceNameWithFallback,
+} from '../provisioning/resource-name.js';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { SECRET_MASK } from './secret-redaction.js';
 
@@ -249,21 +253,21 @@ const CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set([
  * `/<name>`, a directory bucket's `--<az>--x-s3`, an S3 bucket's pattern
  * keeping `.`) can only refuse, never
  * prove a holder. Adding a type is a deliberate edit of the pinned literal.
+ * A type in {@link SENT_NAME_REWRITTEN} is never here: its provider derives
+ * even an EXPLICIT name, so that table owns its whole name.
  */
 const GENERATED_NAME_VERBATIM: ReadonlySet<string> = new Set([
+  'AWS::CloudWatch::Alarm',
   'AWS::DocDB::DBCluster',
   'AWS::DocDB::DBInstance',
   'AWS::DocDB::DBSubnetGroup',
+  'AWS::DynamoDB::Table',
   'AWS::ECR::Repository',
   'AWS::ECS::Cluster',
   'AWS::ECS::Service',
   'AWS::ElastiCache::CacheCluster',
   'AWS::ElastiCache::SubnetGroup',
-  'AWS::ElasticLoadBalancingV2::LoadBalancer',
-  'AWS::ElasticLoadBalancingV2::TargetGroup',
   'AWS::Events::Rule',
-  'AWS::IAM::Group',
-  'AWS::IAM::User',
   'AWS::Kinesis::Stream',
   'AWS::Lambda::Function',
   'AWS::Neptune::DBCluster',
@@ -278,6 +282,37 @@ const GENERATED_NAME_VERBATIM: ReadonlySet<string> = new Set([
   'AWS::StepFunctions::StateMachine',
   'AWS::WAFv2::WebACL',
 ]);
+
+/**
+ * Types whose SDK provider sends `generateResourceNameWithFallback(<property>,
+ * logicalId, { maxLength })` — for an explicit name too — so the name AWS is
+ * asked for is NOT the recorded one: it depends on the stack-name scope
+ * (`withStackName`) and the prefix flag (`withSkipPrefix`), which a
+ * `cdkd rollback` sets differently from the deploy that created the new
+ * resource (go-to-k/cdkd#4018), and the default pattern rewrites `_` and `.`
+ * to `-`. So a recorded name proves nothing here: the name the re-create
+ * sends is derived IN THE CURRENT SCOPE by the provider's own generator, and
+ * only the new resource's physical id naming THAT name proves a holder.
+ * Fenced against the generator's callers in `src/provisioning/providers/`.
+ */
+const SENT_NAME_REWRITTEN: Readonly<
+  Record<string, { readonly property: string; readonly maxLength: number }>
+> = {
+  'AWS::ElasticLoadBalancingV2::LoadBalancer': { property: 'Name', maxLength: 32 },
+  'AWS::ElasticLoadBalancingV2::TargetGroup': { property: 'Name', maxLength: 32 },
+  'AWS::IAM::Group': { property: 'GroupName', maxLength: 128 },
+  'AWS::IAM::InstanceProfile': { property: 'InstanceProfileName', maxLength: 128 },
+  'AWS::IAM::ManagedPolicy': { property: 'ManagedPolicyName', maxLength: 128 },
+  'AWS::IAM::Role': { property: 'RoleName', maxLength: 64 },
+  'AWS::IAM::User': { property: 'UserName', maxLength: 64 },
+};
+
+/** The rewriting types and their generator options, for the fence. */
+export function reverseReplacementRewrittenNameTypes(): Readonly<
+  Record<string, { readonly property: string; readonly maxLength: number }>
+> {
+  return SENT_NAME_REWRITTEN;
+}
 
 /** The case-insensitive name spaces, for the test that pins the list. */
 export function reverseReplacementCaseInsensitiveTypes(): readonly string[] {
@@ -295,11 +330,19 @@ export function reverseReplacementTrustsGeneratedName(resourceType: string): boo
 }
 
 /**
- * Pairs of DIFFERENT types that share one name space, so across a `Type`
- * change the new resource can hold the old one's name.
+ * Groups of DIFFERENT types that share one name space, so across a `Type`
+ * change the new resource can hold the old one's name. The RDS, DocumentDB
+ * and Neptune management APIs are one API over one set of identifiers per
+ * account and region: Neptune's `DescribeDBClusters` "can also return
+ * information for Amazon RDS clusters and Amazon DocDB clusters", so a
+ * cluster, an instance or a subnet group of one engine collides with the
+ * same identifier of another. Any other pair is UNKNOWN, never "different".
  */
 const SHARED_NAME_SPACES: ReadonlyArray<ReadonlySet<string>> = [
   new Set(['AWS::DynamoDB::Table', 'AWS::DynamoDB::GlobalTable']),
+  new Set(['AWS::RDS::DBCluster', 'AWS::DocDB::DBCluster', 'AWS::Neptune::DBCluster']),
+  new Set(['AWS::RDS::DBInstance', 'AWS::DocDB::DBInstance', 'AWS::Neptune::DBInstance']),
+  new Set(['AWS::RDS::DBSubnetGroup', 'AWS::DocDB::DBSubnetGroup', 'AWS::Neptune::DBSubnetGroup']),
 ];
 
 const RECORD_SET = 'AWS::Route53::RecordSet';
@@ -504,6 +547,68 @@ function recordSetHolds(
     : elsewhere(`${wanted}, while ${newRecord} is a different record set of that name`);
 }
 
+/** The raw value at `path`, whatever it is. */
+function pathValue(bag: Record<string, unknown> | undefined, path: readonly string[]): unknown {
+  let node: unknown = bag;
+  for (const segment of path) {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[segment];
+  }
+  return node;
+}
+
+/**
+ * The `SENT_NAME_REWRITTEN` rule: see {@link reverseReplacementNewHoldsName}.
+ * Called in the re-create's own async scope, so the generator reads the same
+ * stack name and prefix flag the provider's create just read.
+ */
+function rewrittenNameHolds(
+  input: {
+    requested: Record<string, unknown>;
+    physicalId: string;
+    logicalId?: unknown;
+    oldResourceType: string;
+    mask?: ((value: string) => string) | undefined;
+  },
+  rewrite: { readonly property: string; readonly maxLength: number },
+  labels: string,
+  newResource: string,
+  r: Renderer
+): ReverseReplacementHolderVerdict {
+  const declared = valueAt(input.requested, [rewrite.property]);
+  const logicalId = typeof input.logicalId === 'string' ? input.logicalId : undefined;
+  if (declared === undefined && logicalId === undefined) {
+    return unproven(
+      `the re-create named no ${labels}, and cdkd cannot derive the name its provider generates, ` +
+        `so it cannot show that ${newResource} holds it`
+    );
+  }
+  const sent = generateResourceNameWithFallback(declared, logicalId ?? '', {
+    maxLength: rewrite.maxLength,
+  });
+  // The provider rewrites the name (prefix, charset, truncation), so a masker
+  // matching the declared value may not match what it became: a declared
+  // value the mask touches is never followed by its derived spelling.
+  const secretDerived = declared !== undefined && (input.mask ?? ((v) => v))(declared) !== declared;
+  const prop = r.shown(rewrite.property);
+  const wanted =
+    declared === undefined
+      ? `the re-create named no ${labels}, and its provider generates ${prop} ${r.quoted(sent)} here`
+      : secretDerived
+        ? `the re-create asked for ${prop} ${r.quoted(declared)}, which its provider rewrites before ` +
+          `sending it`
+        : `the re-create asked for ${prop} ${r.quoted(declared)}, which its provider sends as ` +
+          `${r.quoted(sent)} here`;
+  const fold = CASE_INSENSITIVE_NAME_TYPES.has(input.oldResourceType)
+    ? (v: string): string => v.toLowerCase()
+    : (v: string): string => v;
+  if (input.physicalId !== '' && holderIdNames(fold(input.physicalId), fold(sent))) return HOLDS;
+  return unproven(
+    `${wanted}, and cdkd cannot show that ${newResource} holds that name (this provider ` +
+      `rewrites the name it sends, so a recorded name is no proof)`
+  );
+}
+
 /**
  * Does the NEW resource of a replacement hold the name the rollback's re-create
  * of the OLD resource collided on? (issue
@@ -541,9 +646,14 @@ function recordSetHolds(
  * - `AWS::Route53::RecordSet` compares the zone and the DNS name; then a CNAME
  *   beside a non-CNAME holds, and two records of one kind need the same type
  *   and SetIdentifier.
+ * - A type in `SENT_NAME_REWRITTEN` on an SDK route: its provider derives
+ *   the name it sends (stack prefix, charset folding, truncation), so the
+ *   records' names are not compared at all. The name is derived here, in the
+ *   caller's scope, with the provider's own generator, and only the new
+ *   resource's physical id naming it proves a holder.
  * - A `Type` change holds only between types that share one name space
- *   (`SHARED_NAME_SPACES`). A type in `NOT_NAME_KEYED_TYPES`, or one with no
- *   name key at all, never holds.
+ *   (`SHARED_NAME_SPACES`); any other pair is undecided. A type in
+ *   `NOT_NAME_KEYED_TYPES`, or one with no name key at all, never holds.
  * - A redacted value or an unresolved dynamic reference is not a name.
  */
 export function reverseReplacementNewHoldsName(input: {
@@ -559,6 +669,13 @@ export function reverseReplacementNewHoldsName(input: {
   observed: Record<string, unknown> | undefined;
   /** The NEW resource's physical id. */
   physicalId: string;
+  /** The op's logical id: a `SENT_NAME_REWRITTEN` provider derives a nameless create's name from it. */
+  logicalId?: unknown;
+  /**
+   * The route the re-create took. Absent reads as an SDK route, the one
+   * that REWRITES names — the side that refuses more.
+   */
+  createdVia?: ProvisionedBy | undefined;
   /**
    * Masks a value before it is rendered (the replay bag is plaintext). The
    * caller still masks the whole message; this runs first, on the raw value.
@@ -572,9 +689,9 @@ export function reverseReplacementNewHoldsName(input: {
     oldResourceType !== newResourceType &&
     !SHARED_NAME_SPACES.some((s) => s.has(oldResourceType) && s.has(newResourceType))
   ) {
-    return elsewhere(
-      `${newResource} is a ${r.shown(newResourceType)}, which does not share a name space ` +
-        `with ${r.shown(oldResourceType)}`
+    return unproven(
+      `${newResource} is of type ${r.shown(newResourceType)}, which cdkd does not know to share ` +
+        `a name space with ${r.shown(oldResourceType)}`
     );
   }
   if (oldResourceType === RECORD_SET) {
@@ -589,11 +706,19 @@ export function reverseReplacementNewHoldsName(input: {
     );
   }
   const labels = oldKey.name.map((p) => r.shown(p.join('.'))).join(' / ');
-  if (oldKey.name.some((path) => unreadableAt(requested, path))) {
+  const unreadable = oldKey.name.find((path) => unreadableAt(requested, path));
+  if (unreadable !== undefined) {
     return unproven(
-      `the name the re-create asked for is redacted or unresolved, so cdkd cannot compare it ` +
-        `with ${newResource}`
+      `the name the re-create asked for is ` +
+        (pathValue(requested, unreadable) === ''
+          ? `empty`
+          : `redacted, unresolved or not a string`) +
+        `, so cdkd cannot compare it with ${newResource}`
     );
+  }
+  const rewrite = input.createdVia === 'cc-api' ? undefined : SENT_NAME_REWRITTEN[oldResourceType];
+  if (rewrite !== undefined) {
+    return rewrittenNameHolds(input, rewrite, labels, newResource, r);
   }
   let generatedName = false;
   let namePath = oldKey.name.find((path) => valueAt(requested, path) !== undefined);
