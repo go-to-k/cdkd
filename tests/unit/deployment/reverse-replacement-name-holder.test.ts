@@ -249,6 +249,19 @@ describe('reverseReplacementNewHoldsName — types', () => {
       const r = refusal(ask({ oldResourceType: type, newResourceType: type }));
       expect(r.known).toBe(false);
     }
+    // Not name-keyed although the generic table names a property: a user pool
+    // name is not unique, and an inline policy's put is an upsert, so equal
+    // names prove nothing.
+    for (const [type, property] of [
+      ['AWS::Cognito::UserPool', 'UserPoolName'],
+      ['AWS::IAM::Policy', 'PolicyName'],
+    ] as const) {
+      const bag = { [property]: 'n' };
+      const r = refusal(
+        ask({ oldResourceType: type, newResourceType: type, requested: bag, recorded: bag, physicalId: 'n' })
+      );
+      expect(r.known).toBe(false);
+    }
   });
 
   it('a nested stack is named from its logical id, so the new one holds it', () => {
