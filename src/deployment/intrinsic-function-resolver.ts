@@ -32,6 +32,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
   UNRENDERABLE,
   displayStackName,
+  safeMsg,
 } from '../utils/display-safe.js';
 import {
   s3BucketArn,
@@ -4609,6 +4610,42 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Is `logicalId` a name CloudFormation never resolves to a resource (issue
+   * #3916)? A template cannot declare one logical id as both a Parameter and a
+   * Resource, and `Ref` to a declared Parameter always yields its value. So a
+   * state record keyed by such a name is planted or stale, and answering from
+   * it let state pick a parameter's value: the value deploy sends to AWS, and
+   * the one nested `cdkd export` both submits and checks IAM principals with.
+   *
+   * - A parameter is one the TEMPLATE declares, or one the caller BOUND that
+   *   the template does not declare as a Resource. Value-applying callers
+   *   (deploy, import, scrub, export) bind declared names only; `cdkd diff
+   *   --recursive` also keeps a parent's raw nested inputs for names the child
+   *   does not declare, and such an input must not hide a child resource.
+   * - A pseudo-parameter name (`AWS::` prefix, which no logical id can carry)
+   *   is kept away from state for the same reason.
+   * - Deliberately NOT "only names `template.Resources` declares": several
+   *   callers pass state records for a template that does not list them (an
+   *   empty `Resources` beside a populated bag), and that is covered behaviour.
+   */
+  private nameIsNeverAResource(logicalId: string, context: ResolverContext): boolean {
+    if (logicalId.startsWith('AWS::')) return true;
+    // `!= null` and `typeof`: a YAML `Parameters:` with an empty body parses
+    // to `null`, and `Object.hasOwn(null, k)` throws.
+    const declared: unknown = context.template?.Parameters;
+    if (declared != null && typeof declared === 'object' && Object.hasOwn(declared, logicalId)) {
+      return true;
+    }
+    if (context.parameters == null || !Object.hasOwn(context.parameters, logicalId)) return false;
+    const resources: unknown = context.template?.Resources;
+    return !(
+      resources != null &&
+      typeof resources === 'object' &&
+      Object.hasOwn(resources, logicalId)
+    );
+  }
+
+  /**
    * The ONE read of a state record by logical id, shared by `Ref` and
    * `Fn::GetAtt` (the only two arms that take a record out of
    * `context.resources`; every other method receives it from them).
@@ -4623,12 +4660,22 @@ export class IntrinsicFunctionResolver {
    *   a record, so no answer derived from it is honest. `markNonRetryable`:
    *   the verdict is a function of the persisted record, and the message
    *   carries a template-controlled id. A NULL record keeps missing as before.
+   * - A PARAMETER or pseudo-parameter name is never answered from state
+   *   (issue #3916): see {@link nameIsNeverAResource}.
    */
   private lookupResourceRecord(
     logicalId: string,
     via: 'Ref' | 'Fn::GetAtt',
     context: ResolverContext
   ): ResourceState | undefined {
+    if (this.nameIsNeverAResource(logicalId, context)) {
+      if (Object.hasOwn(context.resources, logicalId)) {
+        this.logger.debug(
+          safeMsg`Ignoring the state record named ${this.displayMasked(logicalId, context)}: that name is a parameter, not a resource`
+        );
+      }
+      return undefined;
+    }
     const resource = Object.hasOwn(context.resources, logicalId)
       ? context.resources[logicalId]
       : undefined;
@@ -4665,6 +4712,9 @@ export class IntrinsicFunctionResolver {
    * 1. Resources (returns physical ID)
    * 2. Parameters (returns parameter value)
    * 3. Pseudo parameters (AWS::Region, AWS::AccountId, etc.)
+   *
+   * A parameter or pseudo-parameter name never reaches arm 1, whatever state
+   * holds under that name (issue #3916, `nameIsNeverAResource`).
    */
   private async resolveRef(logicalId: string, context: ResolverContext): Promise<unknown> {
     // `Object.hasOwn`, not a bare property read (issue #2767). `logicalId` is
@@ -7768,7 +7818,11 @@ export class IntrinsicFunctionResolver {
     const firstDot = varName.indexOf('.');
     const head = firstDot >= 0 ? varName.slice(0, firstDot) : varName;
     if (head === '') return false;
-    if (Object.hasOwn(context.resources, head)) return true;
+    // Not for a parameter or pseudo-parameter name (issue #3916): a record
+    // planted under it must not decide refuse-vs-warn either.
+    if (!this.nameIsNeverAResource(head, context) && Object.hasOwn(context.resources, head)) {
+      return true;
+    }
     const declared = context.template?.Resources;
     if (declared !== undefined && declared !== null && typeof declared === 'object') {
       if (Object.hasOwn(declared, head)) return true;

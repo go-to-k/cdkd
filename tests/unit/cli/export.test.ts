@@ -5237,6 +5237,27 @@ describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first p
     expect(intrinsicSkippedByCdkdName.size).toBe(0);
   });
 
+  it("reads a parent parameter named '__proto__' as an own key (go-to-k/cdkd#3916)", async () => {
+    // On a `{}` bag, assigning `__proto__` sets the PROTOTYPE, so the child's
+    // Ref would miss and the parameter would be skipped.
+    const rootTemplate = JSON.parse(
+      '{"Parameters":{"__proto__":{"Type":"String"}},"Resources":{"Child":{"Type":"AWS::CloudFormation::Stack","Properties":{"Parameters":{"Stage":{"Ref":"__proto__"}}}}}}'
+    ) as Record<string, unknown>;
+    const tree = treeNode('Root', new Map([['Child', treeNode('Root~Child', new Map())]]));
+    const { paramsByCdkdName, intrinsicSkippedByCdkdName } = await buildResolvedParametersPerStack({
+      rootStackName: 'Root',
+      rootParameters: [{ ParameterKey: '__proto__', ParameterValue: 'prod' }],
+      perStackNodes: [
+        node('Root', rootTemplate),
+        node('Root~Child', { Resources: {} }, { stack: 'Root', logicalId: 'Child' }),
+      ],
+      tree,
+      resolver,
+    });
+    expect(paramsByCdkdName.get('Root~Child')).toEqual([{ ParameterKey: 'Stage', ParameterValue: 'prod' }]);
+    expect(intrinsicSkippedByCdkdName.get('Root~Child')).toBeUndefined();
+  });
+
   it('records unresolvable Parameters in intrinsicSkippedByCdkdName', async () => {
     const rootTemplate = {
       Resources: {

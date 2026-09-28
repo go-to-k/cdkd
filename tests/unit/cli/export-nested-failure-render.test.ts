@@ -1264,25 +1264,36 @@ describe('nested parameter values: the check reads what the changeset submits (g
     expect(marked()).toBe(false);
   });
 
-  it('checks the value the resolver submits, which reads parent STATE before parent parameters', async () => {
-    // A planted parent record whose key is the parent PARAMETER's name: the
-    // resolver answers `Ref: AppRoleName` from state, so the changeset passes
-    // AttackerRole and phase 2 attaches the policy there. The check reads the
-    // same value, so the recorded AppRole is a mismatch — blocked, not confirmed.
-    const t = childTree(tmp, childTemplate(), childRecord(['AppRole']), {
+  // A planted parent record whose key is the parent PARAMETER's name (go-to-k/cdkd#3916).
+  // `Ref: AppRoleName` is the parameter, as in CloudFormation, so the changeset
+  // passes AppRole and the planted AttackerRole reaches neither the submission
+  // nor the check.
+  const plantedParentRecord = (childRoles: string[]) =>
+    childTree(tmp, childTemplate(), childRecord(childRoles), {
       rootParameters: { AppRoleName: { Type: 'String' } },
       rowParameters: { RoleParam: { Ref: 'AppRoleName' } },
       resources: {
         AppRoleName: recorded('AttackerRole', 'AWS::IAM::Role'),
       } as unknown as StackState['resources'],
     });
-    const err = (await run(t, {
-      rootParameters: [{ ParameterKey: 'AppRoleName', ParameterValue: 'AppRole' }],
+  const appRoleParameter = [{ ParameterKey: 'AppRoleName', ParameterValue: 'AppRole' }];
+
+  it('checks the parent PARAMETER value, never a parent state record of the same name', async () => {
+    // The child record names the planted role: were the record answering the
+    // Ref, submission and check would agree on AttackerRole and nothing would
+    // stop phase 2 granting the policy to it.
+    const err = (await run(plantedParentRecord(['AttackerRole']), {
+      rootParameters: appRoleParameter,
     })) as Error;
     expect(err.message).toMatch(NOT_NAMED);
-    expect(err.message.match(NOT_NAMED)![1]).toBe('AppRole');
+    expect(err.message.match(NOT_NAMED)![1]).toBe('AttackerRole');
     // A child's value is not a --parameter value, so that hint is not given.
     expect(err.message).not.toContain('--parameter values');
+  });
+
+  it('confirms the child record naming the parent PARAMETER value beside a planted record', async () => {
+    expect(await run(plantedParentRecord(['AppRole']), { rootParameters: appRoleParameter })).toEqual(DRY);
+    expect(marked()).toBe(false);
   });
 
   it('marks an SSM-typed child parameter (its value is an SSM name), and proceeds under --yes', async () => {
