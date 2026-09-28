@@ -927,11 +927,19 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
   });
 
   it('refuses --all or a wildcard over an app that synthesized no stacks instead of taking every stack in state', async () => {
-    for (const [args, selector] of [
-      [['--all'], '--all'],
-      [['*'], '*'],
-      [['Cdkd*'], 'Cdkd*'],
-      [['MyStage-?yStack'], 'MyStage-?yStack'],
+    // [argv, selector named in the refusal, hedge before the note]. A pattern
+    // without `/` cannot be attributed to a Stage, so its note is hedged.
+    for (const [args, selector, hedge] of [
+      [['--all'], '--all', ''],
+      [['*'], '*', 'Possibly unrelated: '],
+      [['Cdkd*'], 'Cdkd*', 'Possibly unrelated: '],
+      [['--stack', 'Cdkd*'], 'Cdkd*', 'Possibly unrelated: '],
+      [['MyStage/*'], 'MyStage/*', ''],
+      // An exact name beside a wildcard does not rescue the command.
+      [['MyStage-MyStack', 'Cdkd*', 'MyStage/*'], 'Cdkd*, MyStage/*', ''],
+      // `?` is literal to matchStacks and no CFn name contains one; it is
+      // refused anyway, fail-closed, like the nested-child check's wildcard test.
+      [['MyStage-?yStack'], 'MyStage-?yStack', 'Possibly unrelated: '],
     ] as const) {
       for (const stages of [failedStages, []]) {
         errorSpy.mockClear();
@@ -958,8 +966,11 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
         expect(messages, selector).toContain(
           `${selector} selects among the stacks this app synthesizes, and it synthesized none; refusing to fall back to every stack in state`
         );
-        if (stages.length > 0) expect(messages, selector).toContain(note);
-        else expect(messages, selector).toMatch(/every stack in state\.$/m);
+        if (stages.length > 0) {
+          expect(messages, selector).toContain(`every stack in state. ${hedge}${note}`);
+        } else {
+          expect(messages, selector).toMatch(/every stack in state\.$/m);
+        }
       }
     }
   });
