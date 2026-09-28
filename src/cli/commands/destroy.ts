@@ -49,6 +49,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
+import { failedStageNote, type FailedStage } from '../../synthesis/failed-stages.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import {
   inferCrossStackStackDeps,
@@ -328,6 +329,11 @@ async function destroyCommand(
     // reverse-edge sort below). Only populated when synth succeeds; on the
     // state-only fallback path we have no templates and skip the inference.
     let synthScanStacks: CrossStackScanStack[] = [];
+    // Stays empty when synth fails: a Stage that failed to load says nothing
+    // about a stack found in STATE, so only a synthesized app can have lost a
+    // stack to one (#3507).
+    let failedStages: readonly FailedStage[] = [];
+    let synthesized = false;
 
     if (appCmd) {
       try {
@@ -362,6 +368,8 @@ async function destroyCommand(
           stackName: s.stackName,
           template: s.template,
         }));
+        failedStages = result.failedStages;
+        synthesized = true;
       } catch {
         logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
@@ -376,11 +384,25 @@ async function destroyCommand(
     // stack has multiple region keys). Synth-driven destroy is single-region:
     // if synth.region matches one of the records we use it; otherwise we
     // surface a clear error.
+    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
+    const wildcardPatterns = stackPatterns.filter((p) => p.includes('*') || p.includes('?'));
     let candidateStacks: StackLike[];
     if (appStacks.length > 0) {
       // App synth succeeded: only consider stacks from this app
       const stateNames = new Set(allStateRefs.map((r) => r.stackName));
       candidateStacks = appStacks.filter((s) => stateNames.has(s.stackName));
+    } else if (synthesized && (options.all || wildcardPatterns.length > 0)) {
+      // The state fallback below is for an app that could not be synthesized.
+      // One that synthesized NO stacks -- every stack under a Stage that failed
+      // to load, say -- would otherwise turn --all or a wildcard into every
+      // stack in the bucket, other apps' included (#3507). An exact physical
+      // name still resolves through the fallback: it names one stack.
+      const selector = options.all ? '--all' : wildcardPatterns.join(', ');
+      throw new Error(
+        `${selector} selects among the stacks this app synthesizes, and it synthesized none; ` +
+          'refusing to fall back to every stack in state' +
+          (failedStageNote(options.all ? [] : wildcardPatterns, failedStages) || '.')
+      );
     } else if (stackArgs.length > 0 || options.stack || options.all) {
       // No synth but explicit stack names or --all given: use state stacks
       // (deduplicate by name so a stack with two region records appears once
@@ -394,13 +416,16 @@ async function destroyCommand(
       }
     } else {
       // No synth and no explicit stacks: refuse to guess
+      // `--all` is refused above once synth succeeded, so it is only advice
+      // when synth failed.
       throw new Error(
         'Could not determine which stacks belong to this app. ' +
-          'Specify stack names explicitly, use --all, or ensure --app / cdk.json is configured.'
+          (synthesized
+            ? 'Specify stack names explicitly, or ensure --app / cdk.json is configured'
+            : 'Specify stack names explicitly, use --all, or ensure --app / cdk.json is configured') +
+          (failedStageNote([], failedStages) || '.')
       );
     }
-
-    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
 
     // Aggregate error counts across stacks so a single partial failure
     // anywhere in the run propagates to a non-zero exit (PartialFailureError
@@ -461,7 +486,7 @@ async function destroyCommand(
       // Single stack: auto-select (CDK CLI compatible)
       stackNames = candidateStacks.map((s) => s.stackName);
     } else if (candidateStacks.length === 0) {
-      logger.info('No stacks found in state');
+      logger.info('No stacks found in state' + failedStageNote([], failedStages));
       return;
     } else {
       throw new Error(
@@ -512,7 +537,9 @@ async function destroyCommand(
           );
         }
       }
-      logger.info('No matching stacks found in state');
+      logger.info(
+        'No matching stacks found in state' + failedStageNote(stackPatterns, failedStages)
+      );
       return;
     }
 
@@ -1024,7 +1051,6 @@ export function createDestroyCommand(): Command {
     )
     .action(withErrorHandling(destroyCommand));
 
-  // Add options (appOptions accepted for CDK CLI compatibility, but not used)
   [
     ...commonOptions,
     ...appOptions,

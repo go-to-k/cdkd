@@ -1149,7 +1149,10 @@ than missing from the app: ENOENT reading assembly-MyStage/manifest.json
 
 The same sentence is appended when the app has no other stacks to list, and
 when you run with no stack argument at all — the case where every stack in the
-app lives under the Stage that failed.
+app lives under the Stage that failed. `cdkd destroy` appends it to its own
+empty-selection messages, to its `Could not determine which stacks belong to
+this app` refusal, and to the refusal of `--all` or a wildcard pattern over an
+app that synthesized no stacks.
 
 A pattern without a `/` matches the physical stack name, which carries no stage
 path, so the sentence is then prefixed `Possibly unrelated:` rather than
