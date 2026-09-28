@@ -1745,18 +1745,19 @@ describe('the nested resume tail notes each withheld orphan command above it (go
   it('pastes nothing runnable from the tail for payload NAMES, named or withheld', async () => {
     const messages: string[] = [];
     for (const { value } of PASTE_PAYLOADS) {
-      // A child id carrying the payload (named, shell-quoted), and the same
-      // payload behind a leading `-` on the root (withheld).
+      // A child id carrying the payload, and the same payload behind a leading
+      // `-` on the root: both withheld (the first as not a plain identifier,
+      // go-to-k/cdkd#3997).
       for (const names of [{ A: `A${value}` }, { root: `-${value}` }]) {
         waitChangeSetCreate.mockReset();
         const message = (await runTree({ A: 'us-east-1', B: 'us-east-1' }, 3, names)).message;
         // The premise of each case, pinned, so the paste result is not
         // satisfied by a gate that stopped naming or stopped withholding.
         if ('A' in names) {
-          expect(message).toContain(
-            `  cdkd state orphan ${shellQuote(`Root~A${value}`)} --stack-region us-east-1\n`
+          expect(message).toMatch(
+            /\n {2}For the record targeting CloudFormation stack ChildACfn: [^\n]*\n {2}cdkd state orphan '<stack>' --stack-region '<region>'\n/
           );
-          expect(message).not.toContain('For the record targeting');
+          expect(message).not.toContain(value);
         } else {
           expect(message).toMatch(
             /\n {2}For the record targeting CloudFormation stack RootCfn: [^\n]*do not fill a hole with it\.\n {2}cdkd state orphan '<stack>' --stack-region '<region>'\n/
@@ -1853,8 +1854,10 @@ describe('the nested resume tail notes each withheld orphan command above it (go
             /\n {2}For the record targeting CloudFormation stack Root-A: [^\n]*cdkd refuses to print as an argument[^\n]*\n {2}cdkd state orphan '<stack>' --stack-region '<region>'\n/
           );
         } else {
-          expect(message).toContain(
-            `  cdkd state orphan 'Root~A' --stack-region ${shellQuote(region)}\n`
+          // Withheld as not a plain identifier (go-to-k/cdkd#3997), or as
+          // altered for a payload the sanitizer changes.
+          expect(message).toMatch(
+            /\n {2}For the record targeting CloudFormation stack Root-A: [^\n]*its record's region (?:is not a plain identifier|does NOT render exactly)[^\n]*\n {2}cdkd state orphan '<stack>' --stack-region '<region>'\n/
           );
         }
         messages.push(message);

