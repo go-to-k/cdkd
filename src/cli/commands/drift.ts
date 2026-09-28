@@ -62,6 +62,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
   IDENT_MAX_CODE_POINTS,
   ROLE_ARN_MAX_CODE_POINTS,
+  SAFE_MSG_ALTERED_CHAR,
   STACK_REF_MAX_CODE_POINTS,
   displayAwsMessage,
   displayIdent,
@@ -6526,7 +6527,7 @@ async function runRevert(
  * `stream` by asserting the IDENTITY handed to `createInterface`, not by
  * capturing bytes.
  */
-interface HumanTextSink {
+export interface HumanTextSink {
   /** Write raw text. The caller supplies its own newlines. */
   write(chunk: string): void;
   /** The stream an interactive prompt should be attached to. */
@@ -6554,8 +6555,12 @@ function humanTextSink(json: boolean | undefined): HumanTextSink {
  * line per resource per property path, mirroring the human report's
  * +/- diff format but flipped: the value on disk after this command
  * runs is the `+` side.
+ *
+ * Every record- or readback-derived value goes through the report's row
+ * helpers (issue go-to-k/cdkd#3949), as in `writeHumanReport`. Exported for
+ * unit testing.
  */
-function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void {
+export function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void {
   for (const report of reports) {
     // Issue #2135: the plan asks the same exhaustive question `runAccept` does —
     // a plan that silently omits a variant the real run acts on (or vice versa)
@@ -6589,27 +6594,25 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       // rather than folded into `acceptRefusalReason`, which answers per path.
       if (report.state.resources[o.logicalId]?.observedBaselineRefused === true) {
         lines.push(
-          `  ~ ${o.logicalId} (${o.resourceType})\n` +
+          `  ~ ${reportResource(o)}\n` +
             `    SKIPPED — a 'cdkd import' run refused this resource's observed-properties ` +
             `baseline; accepting would write the AWS readback into properties it already ` +
             `found untrustworthy. Deploy a change to this resource first.\n`
         );
         continue;
       }
-      lines.push(`  ~ ${o.logicalId} (${o.resourceType})\n`);
+      lines.push(`  ~ ${reportResource(o)}\n`);
       for (const change of o.changes) {
         // Issue #1914: a `--dry-run` that promises a write the real run will
         // refuse is worse than either behaviour alone, so the plan asks the
         // same predicate `runAccept` does.
         const refusal = acceptRefusalReason(change, o.maskedPaths);
         if (refusal !== undefined) {
-          lines.push(`    ${change.path}: SKIPPED — ${refusal}\n`);
+          lines.push(`    ${reportPath(change.path)}: SKIPPED — ${refusal}\n`);
           continue;
         }
         plannedWrites++;
-        lines.push(
-          `    ${change.path}: ${formatScalar(change.stateValue)} -> ${formatScalar(change.awsValue)}\n`
-        );
+        lines.push(reportPlanChangeLine(change.path, change.stateValue, change.awsValue));
       }
     }
     // The resources are still LISTED in both cases: the refusal reason on each
@@ -6627,9 +6630,9 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
     out.write(
       plannedWrites === 0
         ? `\nPlan (--accept): no accepted values will be written to cdkd state for ` +
-            `${report.stackName} (${report.region}) — every drifted change below is refused ` +
+            `${reportHeading(report)} — every drifted change below is refused ` +
             `(the run still writes the positioned re-redaction):\n`
-        : `\nPlan (--accept): update cdkd state for ${report.stackName} (${report.region}):\n`
+        : `\nPlan (--accept): update cdkd state for ${reportHeading(report)}:\n`
     );
     for (const line of lines) out.write(line);
   }
@@ -6686,8 +6689,13 @@ function revertCommandLine(stackName: string, region: string): string | undefine
  * Print the planned `provider.update` calls for `--revert` (no AWS calls).
  * One line per resource summarising how many property paths will be
  * overwritten on the AWS side.
+ *
+ * Printed directly above the confirmation prompt, so every record- or
+ * readback-derived value goes through the report's row helpers (issue
+ * go-to-k/cdkd#3949): a forged row here misstates what the operator confirms.
+ * Exported for unit testing.
  */
-function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
+export function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
   for (const report of reports) {
     // Issue #2135: same exhaustive question `runRevert` asks, for the same
     // reason the accept plan asks it.
@@ -6704,7 +6712,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
     );
     if (drifted.length === 0) continue;
     out.write(
-      `\nPlan (--revert): push cdkd state values back into AWS for ${report.stackName} (${report.region}):\n`
+      `\nPlan (--revert): push cdkd state values back into AWS for ${reportHeading(report)}:\n`
     );
     for (const o of drifted) {
       // Issue #2944. `runRevert` declines a marked resource before it reaches
@@ -6713,7 +6721,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       // the user decides on what the plan says.
       if (report.state.resources[o.logicalId]?.observedBaselineRefused === true) {
         out.write(
-          `  ! ${o.logicalId} (${o.resourceType}): NOT reverted — a 'cdkd import' run refused ` +
+          `  ! ${reportResource(o)}: NOT reverted — a 'cdkd import' run refused ` +
             `this resource's observed-properties baseline, so the only baseline available is ` +
             `the one that refusal already found untrustworthy. Deploy a change to this ` +
             `resource first.\n`
@@ -6722,12 +6730,10 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       }
       const word = o.changes.length === 1 ? 'property path' : 'property paths';
       out.write(
-        `  → provider.update on ${o.logicalId} (${o.resourceType}): revert ${o.changes.length} ${word}\n`
+        `  → provider.update on ${reportResource(o)}: revert ${o.changes.length} ${word}\n`
       );
       for (const change of o.changes) {
-        out.write(
-          `    ${change.path}: ${formatScalar(change.awsValue)} -> ${formatScalar(change.stateValue)}\n`
-        );
+        out.write(reportPlanChangeLine(change.path, change.awsValue, change.stateValue));
       }
       // Issue #1478. Printed as part of the PLAN, not at update time, so it
       // is visible before the confirmation prompt AND under `--dry-run` —
@@ -6786,7 +6792,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
             // diff lines. Masked at the point of printing rather than at the
             // point of building, so the callers that use these lists as
             // KEY SETS keep the real keys.
-            out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
+            out.write(`        ${reportPath(maskSecretsInText(path, o.secrets))}\n`);
           }
           // "Every other tag reverts normally" is only true on the
           // observed-capture baseline. Under #1626's raw-TEMPLATE baseline
@@ -6828,7 +6834,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           );
           for (const path of unbaselined) {
             // Masked for the same reason as the preserved-tag list above.
-            out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
+            out.write(`        ${reportPath(maskSecretsInText(path, o.secrets))}\n`);
           }
           // The SENTENCE is gated with its command, not separately. A first
           // cut printed "with the command below" unconditionally, so a
@@ -7131,13 +7137,14 @@ function reportResource(outcome: { logicalId: string; resourceType: string }): s
 }
 
 /**
- * The control characters `safeMsg` acts on in a value: C0 (newline, tab and
- * ESC among them), DEL and C1 (the 8-bit CSI among them), U+2028 / U+2029 and
- * the bidi overrides. It replaces or removes each, except the ESC that opens
- * one of cdkd's own colour codes, which it keeps.
+ * The characters `safeMsg` acts on in a value (`SAFE_MSG_ALTERED_CHAR`: C0 —
+ * newline, tab and ESC among them — DEL, C1, U+2028 / U+2029 and the bidi
+ * overrides), plus an UNPAIRED surrogate, which `safeMsg` passes through but
+ * stdout's UTF-8 encoding turns into U+FFFD, so `"a\uD800"` and `"a\uFFFD"`
+ * would print alike. The `u` flag makes `[\uD800-\uDFFF]` match only a lone
+ * surrogate; a paired one is a single code point outside the class.
  */
-// eslint-disable-next-line no-control-regex
-const ALTERED_BY_SAFE_MSG = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+const ALTERED_BY_SAFE_MSG = new RegExp(`${SAFE_MSG_ALTERED_CHAR.source}|[\\uD800-\\uDFFF]`, 'u');
 
 /**
  * JSON text with every character `ALTERED_BY_SAFE_MSG` names written as its
@@ -7148,7 +7155,7 @@ const ALTERED_BY_SAFE_MSG = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202
  */
 function escapeJsonLiterals(json: string): string {
   return json.replace(
-    new RegExp(ALTERED_BY_SAFE_MSG.source, 'g'),
+    new RegExp(SAFE_MSG_ALTERED_CHAR.source, 'g'),
     (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
   );
 }
@@ -7191,6 +7198,29 @@ function reportValue(value: unknown): string {
  */
 function reportChangeLine(sign: '-' | '+', path: string, value: unknown): string {
   return safeMsg`    ${sign} ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportValue(value)}\n`;
+}
+
+/**
+ * A property path on a `--accept` / `--revert` plan line that prints no value
+ * beside it (a `SKIPPED` row, a preserved-tag or unbaselined-value list entry),
+ * capped and sanitized as `reportChangeLine` does its path (issue
+ * go-to-k/cdkd#3949). A caller that masks the path does so FIRST, on the raw
+ * text, so neither the cap nor the sanitizing can split a secret past the
+ * masker.
+ */
+function reportPath(path: string): string {
+  return safeMsg`${reportIdent(path, IDENT_MAX_CODE_POINTS)}`;
+}
+
+/**
+ * One `<path>: <from> -> <to>` line of a `--accept` / `--revert` plan, each
+ * value through `reportValue` and the whole row a `safeMsg` template, exactly
+ * as a `-` / `+` line of the report (issue go-to-k/cdkd#3949). The revert plan
+ * is printed directly above the confirmation prompt, so a forged row here
+ * misstates what the operator is about to confirm.
+ */
+function reportPlanChangeLine(path: string, from: unknown, to: unknown): string {
+  return safeMsg`    ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportValue(from)} -> ${reportValue(to)}\n`;
 }
 
 /**

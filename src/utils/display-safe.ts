@@ -171,6 +171,15 @@ const CSI = String.raw`\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]`;
 const OSC = String.raw`\x1b\][^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)`;
 const CONTROL_EXCEPT_NEWLINE_AND_TAB = String.raw`[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]`;
 const TERMINAL_UNSAFE = new RegExp(`${CSI}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}`, 'g');
+/**
+ * Every CHARACTER {@link safeMsg} acts on in an interpolated value (a CSI or
+ * an OSC starts with one of them, ESC or C1 CSI): the sink's denylist plus
+ * newline and tab. Exported so a caller that must show such a value some
+ * other way — `cdkd drift`'s `reportValue` quotes it — decides from this set
+ * rather than a copy of it that a widened denylist here would leave behind.
+ * Not global, so `.test` carries no `lastIndex` between calls.
+ */
+export const SAFE_MSG_ALTERED_CHAR = new RegExp(`${CONTROL_EXCEPT_NEWLINE_AND_TAB}|[\\t\\n]`);
 const TERMINAL_UNSAFE_OR_LINE_BREAK = new RegExp(
   `${CSI}|${OSC}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}|[\\t\\n]`,
   'g'
