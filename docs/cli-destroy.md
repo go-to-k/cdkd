@@ -818,7 +818,7 @@ non-TTY rule as the destroy prompts above:
 
 | Command | Prompt | Flag that avoids it |
 | --- | --- | --- |
-| `cdkd rollback` | `Roll back '<stack>' (<region>)?` | `--force` (or `-y` / `--yes`) |
+| `cdkd rollback` | `Roll back <stack> (<region>)?` | `--force` (or `-y` / `--yes`) |
 | `cdkd state orphan` | `Remove state for <refs> from s3://...?` | `-y` / `--yes`, or `-f` / `--force` |
 | `cdkd state refresh-observed` | `Refresh observedProperties for N stack(s)...?` | `-y` / `--yes` |
 | `cdkd orphan` | `Orphan N resource(s) from cdkd state...?` | `-y` / `--yes`, or `-f` / `--force` |

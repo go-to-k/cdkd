@@ -25,7 +25,12 @@ import {
 } from '../../state/deployment-events-store.js';
 import type { DeploymentEvent, DeploymentRunSummary } from '../../types/deployment-events.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  displayStackName,
+  isPasteableIdent,
+} from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 
 /**
@@ -46,7 +51,12 @@ import { UNRENDERABLE } from '../../state/lock-contention-message.js';
  * - {@link safeId} is for values with a KNOWN ASCII charset (a run id, a
  *   logical id, a CFn resource type, a region, an event type, a version
  *   string). `asciiOnly` is a positive allowlist and therefore has no residual
- *   at all — the right fence when nothing legitimate is lost.
+ *   at all — the right fence when nothing legitimate is lost. It keeps `'`,
+ *   `;`, `$( )` and a space, so a stack name, region or run id named in a
+ *   SENTENCE (an error, the prune prompt) takes `displayIdent` /
+ *   `displayStackName` instead, with no hand-written quotes around it: a plain
+ *   value prints bare and any other JSON-quoted, where cdkd's own `'...'` was
+ *   closed by a `'` in the value (go-to-k/cdkd#3950).
  * - {@link safeText} is for free PROSE (`reason`, `error.name`,
  *   `error.message`). A legitimate AWS error message may carry non-ASCII, and
  *   `asciiOnly` would mangle it — so prose gets the control-character denylist,
@@ -204,9 +214,9 @@ export async function eventsCommand(
       const events = await reader.readRunEvents(stackName, targetRegion, options.run);
       if (events === null) {
         throw new CdkdError(
-          `No deployment-event stream found for run '${safeId(options.run) || UNRENDERABLE}' ` +
-            `of stack '${safeId(stackName) || UNRENDERABLE}' ` +
-            `in region '${safeId(targetRegion) || UNRENDERABLE}'.`,
+          `No deployment-event stream found for run ${displayIdent(options.run)} ` +
+            `of stack ${displayStackName(stackName)} ` +
+            `in region ${displayIdent(targetRegion)}.`,
           'EVENTS_RUN_NOT_FOUND'
         );
       }
@@ -277,7 +287,7 @@ async function resolveEventsRegion(
   const regions = await reader.listRegions(stackName);
   if (regions.length === 0) {
     throw new CdkdError(
-      `No deployment-event history found for stack '${safeId(stackName) || UNRENDERABLE}'. ` +
+      `No deployment-event history found for stack ${displayStackName(stackName)}. ` +
         `Events are recorded by 'cdkd deploy' / 'cdkd destroy' (issue #808); ` +
         `a stack deployed by an older cdkd version has none.`,
       'EVENTS_NOT_FOUND'
@@ -286,10 +296,41 @@ async function resolveEventsRegion(
   if (regions.length > 1) {
     // Issue #2438: `regions` is derived from a raw S3 key listing, so each
     // entry is stored text rather than a value cdkd chose at this call.
+    // This message ends in a `--stack-region` remedy, so the stack and each
+    // region are NAMED only when `isPasteableIdent` admits them and described
+    // otherwise (go-to-k/cdkd#3760's rule): a JSON-quoted `x$(...)` still runs
+    // inside a pasted line, and that line would also carry the remedy
+    // (go-to-k/cdkd#3950's paste case). The described ones are COUNTED rather
+    // than listed, since N copies of one description would read as N entries
+    // with nothing to tell them apart.
+    const named = regions.filter((r) => isPasteableIdent(r));
+    const unnamed = regions.length - named.length;
+    const listed = [
+      ...named,
+      ...(unnamed === 0
+        ? []
+        : [
+            unnamed === 1
+              ? 'a region that is not a plain identifier'
+              : `${unnamed} regions that are not plain identifiers`,
+          ]),
+    ];
+    const stackNamed = isPasteableIdent(stackName);
+    // A described value leaves the operator nothing to pass, so point at a
+    // read-only listing of the keys as stored. The S3 listing rather than
+    // `cdkd state list`: event history outlives a destroy, so the state record
+    // it would list may be gone. Its bucket and prefix stay placeholders inside
+    // the quotes, which keep them literal.
+    const listingHint =
+      stackNamed && unnamed === 0
+        ? ''
+        : ` 'aws s3 ls s3://<state-bucket>/<prefix>/ --recursive' lists the deployment-event ` +
+          `keys as stored, region included.`;
     throw new CdkdError(
-      `Stack '${safeId(stackName) || UNRENDERABLE}' has deployment-event history in ` +
-        `multiple regions: ${regions.map((r) => safeId(r) || UNRENDERABLE).join(', ')}. ` +
-        `Re-run with '--stack-region <region>' to disambiguate.`,
+      `${stackNamed ? `Stack ${stackName}` : 'A stack whose name is not a plain identifier'} ` +
+        `has deployment-event history in multiple regions: ${listed.join(', ')}. ` +
+        `Re-run with '--stack-region <region>' to disambiguate.` +
+        listingHint,
       'EVENTS_REGION_AMBIGUOUS'
     );
   }
@@ -389,8 +430,8 @@ export async function eventsPruneCommand(
     // here, alongside the stack name, and used by all four lines below —
     // leaving one of the two functions in this file unsanitised is exactly the
     // per-site drift `display-safe.ts`'s header was written against.
-    const safeStack = safeId(stackName) || UNRENDERABLE;
-    const safeRegion = safeId(targetRegion) || UNRENDERABLE;
+    const safeStack = displayStackName(stackName);
+    const safeRegion = displayIdent(targetRegion);
 
     // Preview what would be deleted before touching anything.
     const runs = await reader.listRuns(stackName, targetRegion);
@@ -759,7 +800,11 @@ export function createEventsPruneCommand(): Command {
       new Option('--keep <N>', 'Retain only the newest N runs').argParser((v) => {
         const n = parseInt(v, 10);
         if (!Number.isInteger(n) || n < 0) {
-          throw new Error(`Invalid --keep value "${safeId(v)}": expected a non-negative integer.`);
+          // An empty value is spelled `""`, not `<unrenderable>`: nothing was
+          // lost in rendering it, there was simply nothing in it.
+          throw new Error(
+            `Invalid --keep value ${v === '' ? '""' : displayIdent(v)}: expected a non-negative integer.`
+          );
         }
         return n;
       })

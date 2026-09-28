@@ -82,6 +82,13 @@ import {
   rollbackCommand,
 } from '../../../../src/cli/commands/rollback.js';
 import { CdkdError, PartialFailureError } from '../../../../src/utils/error-handler.js';
+import {
+  PASTE_PAYLOADS,
+  expectOnlyDisplayResidual,
+  spansThatRun,
+  withPasteDir,
+} from '../../utils/paste-harness.js';
+import { readAtKeyRegion } from '../../_state-read-double.js';
 
 interface FakeBackend {
   listStacks: ReturnType<typeof vi.fn>;
@@ -333,7 +340,7 @@ describe('rollbackCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
-    expect(readlineQuestion).toHaveBeenCalledWith("Roll back 'S' (us-east-1)? (y/N): ");
+    expect(readlineQuestion).toHaveBeenCalledWith("Roll back S (us-east-1)? (y/N): ");
     // A decline is a different outcome from a refusal, reached through the
     // same code: the command returns cleanly and replays nothing.
     expect(replayProvider.delete).not.toHaveBeenCalled();
@@ -1692,7 +1699,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
       expect(line).not.toMatch(INVISIBLE);
     }
-    expect(lines.some((l) => l.includes("Rollback plan for '\"Gho st"))).toBe(true);
+    expect(lines.some((l) => l.includes('Rollback plan for "Gho st'))).toBe(true);
   });
 
   it('the CONFIRMATION PROMPT itself is sanitized', async () => {
@@ -1735,7 +1742,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const prompt = String(readlineQuestion.mock.calls[0]![0]);
     expect(prompt).not.toMatch(CTRL);
     expect(prompt).not.toMatch(INVISIBLE);
-    expect(prompt).toContain("Roll back '\"Gho st");
+    expect(prompt).toContain('Roll back "Gho st');
   });
 
   it('the previewState LOOKUPS stay keyed on the RAW logicalId', async () => {
@@ -1859,7 +1866,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const prompt = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
 
     expect(forgedRowCount(lines)).toBe(0);
-    expect(lines.some((l) => l.includes("Rollback plan for 'S' (\"us- east-1"))).toBe(true);
+    expect(lines.some((l) => l.includes('Rollback plan for S ("us- east-1'))).toBe(true);
     expect(prompt).not.toMatch(CTRL);
     expect(prompt).not.toMatch(INVISIBLE);
     expect(prompt).toContain('("us- east-1');
@@ -3319,5 +3326,137 @@ describe('rollbackCommand — a nested child engine own-rollback segment (go-to-
     });
     await expect(rollbackCommand(child, { ...baseOpts })).resolves.toBeUndefined();
     expect(replayProvider.delete).toHaveBeenCalled();
+  });
+});
+
+/**
+ * A record stack name in this file's PROSE sits behind `safeStack`'s own
+ * boundary, never inside a hand-written `'...'` (go-to-k/cdkd#3950). The
+ * embedded-quote payload closed that quote and ran what followed it when the
+ * sentence was pasted; each message below is rendered with every
+ * `PASTE_PAYLOADS` family as the stack name and fed WHOLE to the paste harness.
+ */
+describe('rollbackCommand — a stack name in prose is never inside cdkd quotes (go-to-k/cdkd#3950)', () => {
+  let originalIsTTY: boolean | undefined;
+  beforeEach(() => {
+    originalIsTTY = process.stdin.isTTY;
+    vi.clearAllMocks();
+  });
+  afterEach(() => setStdinIsTty(originalIsTTY));
+
+  const journalWith = (stackName: string, initialDeploy: boolean) => ({
+    journalVersion: 1,
+    stackName,
+    region: 'us-east-1',
+    segments: [
+      {
+        timestamp: 1,
+        reason: 'no-rollback-failure',
+        initialDeploy,
+        operations: [
+          { logicalId: 'Bucket', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-Bucket' },
+        ],
+      },
+    ],
+  });
+  const stateWith = (stackName: string, region = 'us-east-1') => ({
+    version: 8,
+    stackName,
+    region,
+    resources: {
+      Bucket: {
+        physicalId: 'phys-Bucket',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+    },
+    outputs: {},
+    lastModified: 1,
+  });
+
+  /** Every message one payload name reaches, by site. */
+  async function messagesFor(name: string): Promise<Record<string, string>> {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const listStacks = vi.fn().mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
+    const out: Record<string, string> = {};
+    const thrownBy = async (): Promise<string> => {
+      const e = await rollbackCommand(name, { ...baseOpts }).catch((err: unknown) => err);
+      return e instanceof Error ? e.message : String(e);
+    };
+
+    installSetup({ listStacks });
+    out['nothing to roll back'] = await thrownBy();
+
+    installSetup({ listStacks, loadRollbackJournal: vi.fn().mockResolvedValue(journalWith(name, false)) });
+    out['journal without state'] = await thrownBy();
+
+    installSetup({
+      listStacks,
+      getState: vi.fn().mockResolvedValue(readAtKeyRegion(stateWith(name, 'eu-west-1') as never, 'us-east-1')),
+      loadRollbackJournal: vi.fn().mockResolvedValue(journalWith(name, false)),
+    });
+    out['divergent record region'] = await thrownBy();
+
+    // The plan header, the prompt, and both completion lines, from one run of
+    // an initial deploy's segment that empties the record.
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('y');
+    info.mockClear();
+    installSetup({
+      listStacks,
+      getState: vi.fn().mockResolvedValue({ state: stateWith(name), etag: 'e0' }),
+      loadRollbackJournal: vi.fn().mockResolvedValue(journalWith(name, true)),
+      popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+    });
+    await rollbackCommand(name, { ...baseOpts, force: false, yes: false });
+    const lines = info.mock.calls.map((c) => String(c[0]).replace(/^\n/, ''));
+    out['plan header'] = lines.find((l) => l.startsWith('Rollback plan for ')) ?? '';
+    out['prompt'] = String(readlineQuestion.mock.calls.at(-1)?.[0] ?? '');
+    out['state removed'] = lines.find((l) => l.startsWith('State for ')) ?? '';
+    out['complete'] = lines.find((l) => l.startsWith('Rollback of ')) ?? '';
+    return out;
+  }
+
+  it('a PLAIN name prints bare, with no quotes of its own', async () => {
+    const messages = await messagesFor('S');
+    for (const [site, message] of Object.entries(messages)) {
+      expect(message, site).toMatch(/(^|\s)S \(us-east-1\)/);
+      expect(message, site).not.toContain("'S'");
+    }
+  });
+
+  it('every payload name is JSON-bounded, and no pasted span of any message runs a command', async () => {
+    const rendered: Array<{ value: string; site: string; message: string }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const [site, message] of Object.entries(await messagesFor(value))) {
+        rendered.push({ value, site, message });
+      }
+    }
+    // Every site is reached for every payload -- an empty message would pass
+    // the paste assertions vacuously.
+    expect(rendered).toHaveLength(PASTE_PAYLOADS.length * 7);
+    withPasteDir((dir) => {
+      for (const { value, site, message } of rendered) {
+        const label = `${site}: ${value}`;
+        // The boundary, pinned DIRECTLY: the paste alone cannot see it where a
+        // parenthesis after the name aborts the span anyway.
+        expect(message, label).toContain(`${displayStackName(value)} (us-east-1)`);
+        expect(message, label).not.toContain(`'${displayStackName(value)}'`);
+        expect(message, label).not.toContain(`'${value}'`);
+        expectOnlyDisplayResidual(message, dir, value);
+      }
+    });
+  }, 120_000);
+
+  it('CONTROL: the pre-fix hand-quoted spelling runs the embedded-quote payload', () => {
+    // Proves the harness sees the class this block fences: the same prompt
+    // with cdkd's own quotes around the name runs when pasted.
+    const value = "x'$(touch OWNED) #";
+    withPasteDir((dir) => {
+      expect(spansThatRun(`Roll back '${displayStackName(value)}' (us-east-1)?`, dir)).not.toEqual([]);
+    });
   });
 });

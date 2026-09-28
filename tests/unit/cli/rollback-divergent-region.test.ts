@@ -296,7 +296,7 @@ describe('cdkd rollback refuses a record whose body region diverged from its key
     install({ ...ARMS[0]!, bodyRegion: BODY_REGION });
     const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
     const message = (thrown as CdkdError).message;
-    expect(message).toContain("cdkd will not roll back 'S' (us-east-1)");
+    expect(message).toContain("cdkd will not roll back S (us-east-1)");
     expect(message).toContain('(a string)');
     expect(message).toContain('it still lists 1 resource ');
     expect(message).toContain('ALREADY DELETED');
