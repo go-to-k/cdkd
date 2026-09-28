@@ -55,10 +55,13 @@ verify, clean up.
      --query 'NetworkInterfaces[].[NetworkInterfaceId,Status]' --output text
    ```
 
-   **Anything found → abort** with the orphan list and cleanup commands; do NOT
-   deploy on top of orphans. **Except a `lock.json` whose `expiresAt` is in the
-   future: a LIVE peer on the same fixture** — wait, then re-scan. Expired: a
-   killed run's orphan.
+   **Any orphan found → abort** with the orphan list and cleanup commands; do NOT
+   deploy on top of orphans. Under the S3 prefix only `state.json`, `lock.json`
+   and any key outside `deployments/` count: `deployments/**` is event-log
+   history a clean destroy RETAINS unless `--purge-events` (counting it aborted
+   three clean fixtures in the 2026-09-28 work-issues run). **Except a `lock.json` whose
+   `expiresAt` is in the future: a LIVE peer on the same fixture** — wait, then
+   re-scan. Expired: a killed run's orphan.
 
 5. **Run the test(s)**
 
