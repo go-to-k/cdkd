@@ -405,6 +405,8 @@ function countOperands(root: Command, tokens: Token[]): Resolved | string {
 interface ArgFunction {
   readonly name: string;
   readonly params: string[];
+  /** Each parameter's default expression, as written. */
+  readonly defaults: (string | undefined)[];
   readonly headerAt: number;
   /** Offsets of the body's braces; an expression-bodied arrow has none. */
   readonly body?: readonly [number, number];
@@ -440,10 +442,17 @@ function functionHeaders(source: string): ArgFunction[] {
     if (m[2] !== undefined && !/^\s*(?::[^=]*?)?=>/.test(source.slice(close + 1, close + 200))) {
       continue;
     }
-    const params = splitTopLevel(source.slice(open + 1, close)).map(
-      (p) => /^(?:\.\.\.)?(\w+)/.exec(p)?.[1] ?? ''
+    const parsed = splitTopLevel(source.slice(open + 1, close)).map((p) =>
+      /^(\.\.\.)?(\w+)\??\s*(?::[^=]*)?(?:=\s*([\s\S]*))?$/.exec(p)
     );
-    out.push({ name: (m[1] ?? m[2])!, params, headerAt: m.index, body: bodyRange(source, close) });
+    out.push({
+      name: (m[1] ?? m[2])!,
+      params: parsed.map((p) => p?.[2] ?? ''),
+      // A rest parameter left empty is `[]`.
+      defaults: parsed.map((p) => (p?.[1] ? '[]' : p?.[3]?.trim())),
+      headerAt: m.index,
+      body: bodyRange(source, close),
+    });
   }
   return out;
 }
@@ -560,40 +569,63 @@ function expandSite(
 ): { tokens: Token[]; callLine?: number }[] {
   const constants = stringConstants(source);
   const arrays = arrayConstants(source);
-  const inline = (elements: string[]): string[] =>
+  // `live`: text taken from the previous hop's argument, so it is written in
+  // the scope now being searched and may be the caller's parameter. `frozen`:
+  // a parameter the scan stopped tracing, which stays opaque.
+  interface Element {
+    readonly text: string;
+    readonly live: boolean;
+    readonly frozen?: boolean;
+  }
+  const inline = (elements: Element[]): Element[] =>
     elements.flatMap((e) => {
-      const spread = e.startsWith('...') ? arrays.get(e.slice(3).trim()) : undefined;
-      return spread ? inline(spread) : [e];
+      const name = e.text.startsWith('...') ? e.text.slice(3).trim() : undefined;
+      const spread = e.frozen || name === undefined ? undefined : arrays.get(name);
+      return spread ? inline(spread.map((text) => ({ text, live: false }))) : [e];
     });
-  const start = arg.startsWith('[') ? splitTopLevel(arg.slice(1, -1)) : [`...${arg}`];
+  const token = (e: Element): Token => {
+    if (!e.frozen) return toToken(e.text, constants);
+    const spread = e.text.startsWith('...');
+    return { kind: spread ? 'spread' : 'val', text: spread ? e.text.slice(3).trim() : e.text };
+  };
+  const start = (arg.startsWith('[') ? splitTopLevel(arg.slice(1, -1)) : [`...${arg}`]).map(
+    (text) => ({ text, live: true })
+  );
 
   const expand = (
-    elements: string[],
+    elements: Element[],
     pos: number,
     hops: number,
     callLine: number | undefined
-  ): { elements: string[]; callLine?: number }[] => {
+  ): { elements: Element[]; callLine?: number }[] => {
     const fn = headers.filter((h) => h.body && h.body[0] < pos && pos < h.body[1]).at(-1);
-    const param = (e: string) => fn?.params.indexOf(e.replace(/^\.\.\./, '')) ?? -1;
-    if (!fn || hops === MAX_HOPS || !elements.some((e) => param(e) >= 0)) {
-      return [{ elements, callLine }];
+    const param = (e: Element) =>
+      e.live && !e.frozen ? (fn?.params.indexOf(e.text.replace(/^\.\.\./, '')) ?? -1) : -1;
+    if (!fn || !elements.some((e) => param(e) >= 0)) return [{ elements, callLine }];
+    if (hops === MAX_HOPS) {
+      const capped = elements.map((e) => (param(e) >= 0 ? { ...e, frozen: true } : e));
+      return [{ elements: capped, callLine }];
     }
-    const out: { elements: string[]; callLine?: number }[] = [];
+    const out: { elements: Element[]; callLine?: number }[] = [];
     for (const call of source.matchAll(new RegExp(`(?<![.\\w])${fn.name}\\s*\\(`, 'g'))) {
       if (source.slice(fn.headerAt, call.index).trim() === 'function') continue;
       const open = call.index + call[0].length - 1;
       const close = closingIndex(source, open);
       if (close < 0) continue;
       const callArgs = splitTopLevel(source.slice(open + 1, close));
-      const next = elements.flatMap((e) => {
+      const next = elements.flatMap((e): Element[] => {
         const index = param(e);
-        const given = index >= 0 ? callArgs[index] : undefined;
-        if (index < 0) return [e];
-        // An omitted argument takes the parameter's default, `[]` in every
-        // wrapper this scan reaches.
-        if (given === undefined) return [];
-        if (!e.startsWith('...')) return [given];
-        return given.startsWith('[') ? splitTopLevel(given.slice(1, -1)) : [`...${given}`];
+        if (index < 0) return [{ ...e, live: false }];
+        const given = callArgs[index];
+        // An omitted argument takes the parameter's default, which is written
+        // in the callee's scope, not the caller's; with no default it is opaque.
+        const value = given ?? fn.defaults[index];
+        if (value === undefined) return [{ ...e, frozen: true }];
+        const live = given !== undefined;
+        if (!e.text.startsWith('...')) return [{ text: value, live }];
+        return value.startsWith('[')
+          ? splitTopLevel(value.slice(1, -1)).map((text) => ({ text, live }))
+          : [{ text: `...${value}`, live }];
       });
       const line = source.slice(0, call.index).split('\n').length;
       out.push(...expand(next, call.index, hops + 1, line));
@@ -602,7 +634,7 @@ function expandSite(
   };
 
   return expand(start, at, 0, undefined).map(({ elements, callLine }) => ({
-    tokens: inline(elements).map((e) => toToken(e, constants)),
+    tokens: inline(elements).map(token),
     ...(callLine === undefined ? {} : { callLine }),
   }));
 }
@@ -637,7 +669,9 @@ function collectAritySites(files: string[]): { sites: AritySite[]; unresolved: s
 /**
  * Sites the arity check cannot see, per file. Any dark site not listed here
  * fails, and so does an entry that no longer matches: fix the shape or
- * record it with its reason.
+ * record it with its reason. Counted per file, not per line, so an edit does
+ * not churn it; one change that resolves a dark site and adds another in the
+ * same file keeps the count and passes.
  */
 const KNOWN_DARK: Record<string, number> = {
   // `...baseArgs()` and `...nestedTree(...)`: spreads of a call's result.
@@ -843,6 +877,43 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     ]);
     const gc = () => FACTORIES.get('createGcCommand')!();
     expect(countOperands(gc(), variants[0]!.tokens)).toMatchObject({ max: 0, operands: ['Stray'] });
+  });
+
+  it('substitutes only what the previous hop passed in, and an omitted argument by its default', () => {
+    const texts = (source: string, arg: string) =>
+      expandSite(source, source.indexOf('.parse('), arg, functionHeaders(source)).map((v) =>
+        v.tokens.map((t) => `${t.kind}:${t.text}`)
+      );
+    // `extra` is inner's own local; the caller's same-named parameter must not replace it.
+    const scoped = [
+      'function inner(stack: string) {',
+      "  const extra = ['--yes'];",
+      "  cmd.parse([stack, ...extra], { from: 'user' });",
+      '}',
+      'function outer(extra: string[]) {',
+      "  inner('S');",
+      '}',
+      "outer(['A', 'B']);",
+    ].join('\n');
+    expect(texts(scoped, '[stack, ...extra]')).toEqual([['lit:S', 'lit:--yes']]);
+    // A non-empty default is used; no default at all is opaque.
+    const defaults = [
+      "function run(stack = 'MyStack', more?: string[]) {",
+      "  cmd.parse([stack, ...more], { from: 'user' });",
+      '}',
+      'run();',
+    ].join('\n');
+    expect(texts(defaults, '[stack, ...more]')).toEqual([['lit:MyStack', 'spread:more']]);
+    // A parameter still untraced at the hop cap stays opaque even when a
+    // file-level array shares its name.
+    const capped = [
+      "const ARGS = ['X'];",
+      "function f0(ARGS: string[]) { cmd.parse([...ARGS], { from: 'user' }); }",
+      'function f1(ARGS: string[]) { f0(ARGS); }',
+      'function f2(ARGS: string[]) { f1(ARGS); }',
+      'function f3(ARGS: string[]) { f2(ARGS); }',
+    ].join('\n');
+    expect(texts(capped, '[...ARGS]')).toEqual([['spread:ARGS']]);
   });
 
   it('reports an opaque token instead of a clean count when it could hide operands', () => {
