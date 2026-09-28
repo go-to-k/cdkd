@@ -91,7 +91,7 @@ dynamodb-gsi-update	2026-09-27T20:52:47Z	PASS	1358	verify.sh	PR #3901 merge-gate
 dynamodb-ondemand	2026-09-27T21:02:28Z	PASS	291	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-sse	2026-09-27T21:03:18Z	PASS	50	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-stream-filter	2026-09-27T21:07:59Z	PASS	71	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-dynamodb-streams	2026-09-27T20:57:37Z	PASS	290	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+dynamodb-streams	2026-09-28T11:57:10Z	PASS	286	verify.sh	PR #3963 (#3877 aux-collision residual) @c1235ac; rc ok, 10+1 deleted 0 errors, orph clean (KMS key PendingDeletion)
 dynamodb-tableclass-switch	2026-09-27T21:05:43Z	PASS	70	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-ttl-attr-change	2026-09-27T21:06:48Z	PASS	65	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 ec2-instance	2026-09-25T19:22:55Z	PASS	110	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
@@ -254,7 +254,7 @@ redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b1
 remove-protection	2026-09-28T09:48:54Z	PASS	1333	verify.sh	rc ok, orph clean (#3808/#3899)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
-replacement-immutable-name	2026-09-28T05:34:18Z	PASS	155	verify.sh	rc ok, 6 types replaced, orph clean (#3879 aux-collision-credit @5b42c39)
+replacement-immutable-name	2026-09-28T11:45:49Z	PASS	136	verify.sh	PR #3963 (#3877 aux-collision residual) @c1235ac; rc ok, 6 types replaced, 7 deleted 0 errors, orph clean
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
 rollback-command	2026-09-26T00:11:41Z	PASS	155	verify.sh	rc 0, state + versions clean, PR 3800
@@ -265,7 +265,7 @@ rollback-replacement-retain	2026-09-27T23:59:32Z	PASS	66	verify.sh	PR #3884 head
 rollback-replay-cc-generated-name	2026-09-26T02:40:00Z	PASS	160	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
 rollback-replay-effective-props	2026-09-27T19:24:50Z	PASS	255	verify.sh	rc ok, orph clean (#1706)
 rollback-sqs-cooldown	2026-09-26T02:40:00Z	PASS	175	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
-route53	2026-09-27T16:24:11Z	PASS	421	verify.sh	rc ok, orph clean; Phase 2.5a auto-resolves intrinsic Name (PR #3880)
+route53	2026-09-28T11:51:36Z	PASS	290	verify.sh	PR #3963 (#3877 aux-collision residual) @c1235ac; rc ok, 9 deleted 0 errors, orph clean (hz/hc/cidr/logs/sqs)
 s3-analytics-inventory	2026-09-28T08:58:07Z	PASS	171	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
