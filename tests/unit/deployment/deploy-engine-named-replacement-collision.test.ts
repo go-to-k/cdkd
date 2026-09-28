@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
+import { markAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -249,6 +251,44 @@ describe('DeployEngine — custom-named replacement collision', () => {
       { Name: 'my-pipe', Source: 'arn:a' },
       { expectedRegion: 'us-east-1', forceDataDelete: false }
     );
+  });
+
+  it('does NOT delete the old resource when the collision is a replay of its own first attempt (#3972)', async () => {
+    // Through the REAL engine, not bare `withRetry`: a `DeployEngine.withRetry`
+    // that re-wrapped or rebuilt the error would drop the carried mark and
+    // reopen the delete. Attempt 1's main create succeeded and a later
+    // auxiliary call was throttled (marked by the provider, retryable: 1s of
+    // real backoff); the replay's main create meets what attempt 1 made.
+    createFailures = [
+      markAuxiliaryFailure(
+        new ProvisioningError(
+          'Failed to create Pipe: Rate exceeded',
+          TYPE,
+          'Pipe',
+          'my-pipe',
+          awsSdkError('Rate exceeded', 'ThrottlingException')
+        ),
+        'Pipe'
+      ),
+      new ProvisioningError(
+        'Failed to create Pipe: Pipe my-pipe already exists.',
+        TYPE,
+        'Pipe',
+        'my-pipe',
+        awsSdkError('Pipe my-pipe already exists.', 'ConflictException')
+      ),
+    ];
+
+    const err = await invokeProvision(makeEngine({ replace: true })).then(
+      () => null,
+      (e: unknown) => e
+    );
+
+    // THE DISCRIMINATOR: before #3972 the --replace arm deleted the live old
+    // resource here, and then re-created.
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(['create', 'create']);
+    expect(err).not.toBeNull();
   });
 
   it('neither the create-first attempt nor the --replace delete-first re-create sets replayingState; both pass a masker-ONLY context (#1463 inverse fence)', async () => {
