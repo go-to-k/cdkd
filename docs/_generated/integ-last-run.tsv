@@ -267,7 +267,7 @@ rollback-replacement-retain	2026-09-27T23:59:32Z	PASS	66	verify.sh	PR #3884 head
 rollback-replay-cc-generated-name	2026-09-26T02:40:00Z	PASS	160	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
 rollback-replay-effective-props	2026-09-27T19:24:50Z	PASS	255	verify.sh	rc ok, orph clean (#1706)
 rollback-sqs-cooldown	2026-09-26T02:40:00Z	PASS	175	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
-route53	2026-09-28T13:05:17Z	PASS	416	verify.sh	PR #3977 (#3972) @5101df4b; rc ok, 2.7c rollback re-create collided -> delete-new-first then restore, 9 deleted 0 errors, orph clean
+route53	2026-09-28T13:27:37Z	PASS	506	verify.sh	rc ok, orph clean (PR #3981 comment-only gate run)
 s3-analytics-inventory	2026-09-28T08:58:07Z	PASS	171	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
