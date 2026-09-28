@@ -55,6 +55,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * The DELETE path threads NO masker (issue #2178).
@@ -1349,6 +1350,10 @@ export class CustomResourceProvider implements ResourceProvider {
         ...(cfnResponse.NoEcho === true && { noEchoAttributes: true }),
       };
     } catch (error) {
+      // Every AWS call here acts on something other than the custom resource
+      // (the handler function, the response object, the SNS topic): none can
+      // be this resource's name collision (#3826).
+      markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create custom resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,

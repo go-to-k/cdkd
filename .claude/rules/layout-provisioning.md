@@ -24,6 +24,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **attribute-map.ts** - `definedAttributes(entries)` DROPS every `undefined` / `null`, because **an attribute cdkd could not read back must be ABSENT**: the resolver serves any stored value, so a recorded `''` shadows the live-read arms forever. An empty string AWS ITSELF reported is KEPT. A LEAF (issue [#3077](https://github.com/go-to-k/cdkd/issues/3077)).
 
+- **auxiliary-failure.ts** - `markAuxiliaryFailure`: a failing AUXILIARY write inside a provider's `create()` is anchored to a logical id no template can spell, so the name-collision classifier never credits it to the resource ([name-collision-classification.md](name-collision-classification.md), [#3826](https://github.com/go-to-k/cdkd/issues/3826)). A LEAF.
+
 - **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: `pending` and NO state are unsettled, everything else is settled. Shared by the provider and the resolver's live arm, which must not disagree. A LEAF.
 
 - **iam-policy-targets.ts** - `readRecordedPrincipals`, the ONE reader of an `AWS::IAM::Policy` bag's `Roles` / `Groups` / `Users`, for every `IAMPolicyProvider` method and `cdkd export`'s pre-delete ([#3878](https://github.com/go-to-k/cdkd/issues/3878)). A present value that is not a list of IAM names is `malformed` and refused before ANY call: a cast iterated a string by character. A LEAF.

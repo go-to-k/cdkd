@@ -123,6 +123,7 @@ import type {
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { displayIdent } from '../../utils/display-safe.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
 const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
@@ -1022,7 +1023,9 @@ export class EC2Provider implements ResourceProvider {
             `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created VPC ${logicalId}: ${vpcId}`);
@@ -1324,7 +1327,9 @@ export class EC2Provider implements ResourceProvider {
             `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created Subnet ${logicalId}: ${subnetId}`);
@@ -1748,6 +1753,9 @@ export class EC2Provider implements ResourceProvider {
 
     let allocationId: string;
     let publicIp: string;
+    // Set once the create call returns: a later failure is an auxiliary
+    // call's (the association), not this address's (#3826).
+    let created = false;
     try {
       const response = await this.ec2Client.send(
         new AllocateAddressCommand({
@@ -1762,6 +1770,7 @@ export class EC2Provider implements ResourceProvider {
         })
       );
 
+      created = true;
       allocationId = response.AllocationId!;
       publicIp = response.PublicIp!;
 
@@ -1804,6 +1813,7 @@ export class EC2Provider implements ResourceProvider {
 
       this.logger.debug(`Successfully created EIP ${logicalId}: ${allocationId} (${publicIp})`);
     } catch (error) {
+      if (created) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create EIP ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2995,7 +3005,9 @@ export class EC2Provider implements ResourceProvider {
             `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created SecurityGroup ${logicalId}: ${groupId}`);
@@ -4016,7 +4028,9 @@ export class EC2Provider implements ResourceProvider {
             `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${describeAwsFailure(cleanupError).detail}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;

@@ -108,7 +108,7 @@ efs-immutable-replacement	2026-09-26T01:04:14Z	PASS	85	verify.sh	rc ok, orph cle
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 efs-standalone	2026-09-24T23:20:39Z	PASS	165	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
 elasticache-replicationgroup-getatt	2026-09-24T22:46:12Z	PASS	592	verify.sh	rc ok, 0 orphans (#3663)
-elbv2-same-name-replacement	2026-09-26T02:40:00Z	PASS	75	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
+elbv2-same-name-replacement	2026-09-27T16:03:04Z	PASS	76	verify.sh	rc ok, create-first collision -> delete-first replace exercised, orph clean (#3879 aux-collision-credit @07158b0)
 emr-cluster	2026-09-24T22:46:12Z	PASS	765	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
@@ -254,7 +254,7 @@ redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b1
 remove-protection	2026-09-27T19:00:18Z	PASS	1293	verify.sh	rc ok, orph clean (#3887)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
-replacement-immutable-name	2026-09-27T15:53:36Z	PASS	135	verify.sh	rc ok, orph clean
+replacement-immutable-name	2026-09-27T16:03:04Z	PASS	120	verify.sh	rc ok, orph clean (#3879 aux-collision-credit @07158b0)
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
 rollback-command	2026-09-26T00:11:41Z	PASS	155	verify.sh	rc 0, state + versions clean, PR 3800

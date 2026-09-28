@@ -62,6 +62,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * The standard (OIDC) Cognito User Pool attribute names. A Schema entry whose
@@ -1769,6 +1770,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // can't roll it back, so best-effort delete it here to avoid an orphan
       // pool + a name-collision on the next deploy attempt.
       if (createdUserPoolId) {
+        // The pool itself was created: an "already exists" from here is an
+        // auxiliary call's, not this pool's name collision (#3826).
+        markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: createdUserPoolId }));
           this.logger.debug(`Rolled back partially-created Cognito User Pool ${createdUserPoolId}`);

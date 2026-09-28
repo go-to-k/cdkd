@@ -27,6 +27,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * Target definition from CloudFormation AWS::Events::Rule
@@ -325,7 +326,9 @@ export class EventBridgeRuleProvider implements ResourceProvider {
             `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${command.render()}`
           );
         }
-        throw innerError;
+        // The rule itself was created: an "already exists" from its wiring is an
+        // auxiliary object's, not this rule's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       return {

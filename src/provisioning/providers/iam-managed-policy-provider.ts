@@ -43,6 +43,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
@@ -212,7 +213,9 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             `Failed to clean up partially-created managed policy ${logicalId} (${v(policyArn)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       return {

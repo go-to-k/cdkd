@@ -29,6 +29,7 @@ import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -398,7 +399,9 @@ export class SSMParameterProvider implements ResourceProvider {
             `Failed to clean up partially-created SSM parameter ${displaySafe(logicalId)} (${displaySafe(mask(name))}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
           );
         }
-        throw innerError;
+        // The parameter itself was created: an "already exists" from its wiring is an
+        // auxiliary object's, not this parameter's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       debug(

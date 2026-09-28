@@ -46,7 +46,11 @@ the bounded `cause` chain for the error name and the Cloud Control
    conflict); `isNameCollisionErrorFrom` does not read an appended phrase.
 2. **Anchored on `logicalId`, checked FIRST at every depth**, ahead of every
    read; a link naming another resource returns `false` at once. It compares
-   logical IDs, so a child sharing the parent stack's id still passes.
+   logical IDs, so a child sharing the parent stack's id still passes. A
+   provider's `create()` puts a failing AUXILIARY write (anything but the
+   main create and its cleanup) behind that anchor with `markAuxiliaryFailure`
+   (`src/provisioning/auxiliary-failure.ts`, #3826; Route 53, DynamoDB and
+   Kinesis are residual #3877).
 
 It reaches the SDK error only if providers thread the caught value as `cause` —
 enforced by `scripts/check-provider-error-cause.ts`.

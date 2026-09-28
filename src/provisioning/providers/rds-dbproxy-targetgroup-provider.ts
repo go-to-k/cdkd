@@ -23,6 +23,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * AWS RDS DBProxyTargetGroup Provider
@@ -130,7 +131,12 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapError(error, 'CREATE (pool config)', resourceType, logicalId, undefined);
+        // An adjustment of the proxy's own target group, not the registration
+        // this resource creates: never this resource's collision (#3826).
+        throw markAuxiliaryFailure(
+          this.wrapError(error, 'CREATE (pool config)', resourceType, logicalId, undefined),
+          logicalId
+        );
       }
     }
 
