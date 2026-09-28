@@ -39,8 +39,10 @@ every lane dispatch, and state them all in the opening report.
   upstream https://github.com/go-to-k/cdkd.git; git fetch upstream main`, and
   tell every dispatch: `gh` takes `-R go-to-k/cdkd`, a stage file's
   `origin/main` reads `upstream/main`, lanes push to `origin` and open with
-  `--head <fork-owner>:<branch>`, and without upstream `push` the merge and its
-  integ are the maintainer's.
+  `--head <fork-owner>:<branch>`. Read `gh api repos/go-to-k/cdkd --jq
+  .permissions` NOW: without `push`, the merge, its integ and any issue-body
+  edit are the maintainer's, so lanes stop at PR open + CI green and correct a
+  classification by comment.
 
 **The guard on the first line is not decoration.** Outside a work tree every
 substitution collapses to `""`, so an unguarded compare prints MAIN-CHECKOUT
