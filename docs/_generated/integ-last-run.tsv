@@ -43,7 +43,7 @@ ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
 cloudtrail-trail	2026-09-28T07:22:06Z	PASS	196	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
-cloudwatch-anomaly-detector	2026-08-25T16:16:55Z	PASS	56	verify.sh	third and final run of this lane, against the REBASED shipped code: the fix-delta review round changed drift.ts again (the debug line now passes .stack rather than the Error object, after JSON.stringify on a circular cause was found able to throw out of the per-resource catch at --verbose). Gates go-to-k/cdkd#2151/go-to-k/cdkd#1945/go-to-k/cdkd#2154: create + in-place Configuration update + Phase 2b drift arm + clean destroy, 2 deleted 0 errors 0 orphans, swept independently. The first run of this lane was mutation-probed against real AWS (guard reverted -> arm RED in 48s on UnsupportedActionException ... does not support READ action).
+cloudwatch-anomaly-detector	2026-09-28T14:47:10Z	PASS	65	verify.sh	PR #3983 (#3978) @72a0a271; rc ok, create + in-place Configuration update + drift arm, 2 deleted 0 errors, orph clean
 codebuild-project	2026-09-27T19:00:18Z	PASS	116	verify.sh	rc ok, orph clean (#3887)
 codecommit	2026-09-24T22:46:12Z	PASS	125	verify.sh	rc ok, 0 orphans (#3663)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
@@ -105,9 +105,9 @@ ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24
 ecs-fargate	2026-09-25T19:22:55Z	PASS	386	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 ecs-schedule-targets	2026-09-14T21:27:55Z	PASS	83	verify.sh	#3125 gating: GetAtt Vpc.DefaultSecurityGroup consumer; 21 deleted 0 err 0 orph
 ecs-service-update-props	2026-08-26T08:19:23Z	PASS	107	verify.sh	issue 1861 lane, final run on the merge-ready tree (3rd: rounds 2 and 3 each edited ecs-provider.ts, which is in integ-destroy's hash:diff scope); both #1861 arms green - removal resets to true/{BOUNDED_PERCENT,50}, never-declared out-of-band false/{COUNT,9} survives a Rollback flip inside the block; destroy 15 deleted 0 errors, 0 orphans
-efs-immutable-replacement	2026-09-26T01:04:14Z	PASS	85	verify.sh	rc ok, orph clean (#3750 PR #3807)
-efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-efs-standalone	2026-09-24T23:20:39Z	PASS	165	verify.sh	rc ok, 0 orphans (#3663, post-rebase re-run)
+efs-immutable-replacement	2026-09-28T08:03:34Z	PASS	70	verify.sh	rc ok, orph clean (#3894)
+efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
+efs-standalone	2026-09-28T07:21:28Z	PASS	170	verify.sh	rc ok, orph clean (#3894)
 elasticache-replicationgroup-getatt	2026-09-24T22:46:12Z	PASS	592	verify.sh	rc ok, 0 orphans (#3663)
 elbv2-same-name-replacement	2026-09-28T05:34:18Z	PASS	70	verify.sh	rc ok, create-first collision -> delete-first replace exercised, orph clean (#3879 aux-collision-credit @5b42c39)
 emr-cluster	2026-09-24T22:46:12Z	PASS	765	verify.sh	rc ok, 0 orphans (#3663)
@@ -139,7 +139,7 @@ healthimaging-stateful-update-fallback	2026-09-27T20:36:35Z	PASS	296	verify.sh	r
 iam-access-key	2026-09-27T14:13:26Z	PASS	85	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 iam-managed-policy	2026-09-28T09:54:14Z	PASS	100	verify.sh	PR #3944 merge-gate run; rc ok, orph clean
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
-iam-propagation-stress	2026-09-27T16:48:35Z	PASS	75	verify.sh	PR #3886 merge-gate run; rc ok, orph clean
+iam-propagation-stress	2026-09-28T14:47:10Z	PASS	81	verify.sh	PR #3983 (#3978) @72a0a271; rc ok, 4 race edges clean, 13 deleted 0 errors, orph clean
 iam-role-policies-drift-clean	2026-09-27T21:19:43Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 iam-role-prefixed-name-update	2026-09-27T14:13:26Z	PASS	70	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 iam-secret-derived-principals	2026-09-28T09:52:34Z	PASS	135	verify.sh	PR #3944 merge-gate run; rc ok, orph clean
@@ -257,7 +257,7 @@ redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b1
 remove-protection	2026-09-28T14:21:53Z	PASS	1323	verify.sh	PR #3974 merge-gate run; rc ok, orph clean
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
-replacement-immutable-name	2026-09-28T13:05:17Z	PASS	131	verify.sh	PR #3977 (#3972 replayed-create collision) @5101df4b; rc ok, 6 types replaced, 7 deleted 0 errors, orph clean
+replacement-immutable-name	2026-09-28T16:33:26Z	PASS	131	verify.sh	PR #3983 (#3978 ambiguous-create latch) @0307f604 on c3826dbd; rc ok, 6 types replaced, 7 deleted 0 errors, orph clean
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
 rollback-command	2026-09-26T00:11:41Z	PASS	155	verify.sh	rc 0, state + versions clean, PR 3800
@@ -267,8 +267,8 @@ rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph c
 rollback-replacement-retain	2026-09-27T23:59:32Z	PASS	66	verify.sh	PR #3884 head 79249f310: rc 0, 2 deleted / 1 retained by policy (fixture-cleaned), 0 errors, orph clean
 rollback-replay-cc-generated-name	2026-09-26T02:40:00Z	PASS	160	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
 rollback-replay-effective-props	2026-09-27T19:24:50Z	PASS	255	verify.sh	rc ok, orph clean (#1706)
-rollback-sqs-cooldown	2026-09-26T02:40:00Z	PASS	175	verify.sh	maintainer merge-gate run of PR #3822; rc ok, orph clean
-route53	2026-09-28T13:27:37Z	PASS	506	verify.sh	rc ok, orph clean (PR #3981 comment-only gate run)
+rollback-sqs-cooldown	2026-09-28T16:33:26Z	PASS	171	verify.sh	PR #3983 (#3978) @0307f604 on c3826dbd; rc ok, rollback reverse-replacement retried through SQS 60s cooldown, orph clean
+route53	2026-09-28T16:33:26Z	PASS	436	verify.sh	PR #3983 (#3978) @0307f604 on c3826dbd; rc ok, 2.7c rollback delete-new-first line + CNAME restored, 9 deleted 0 errors, orph clean
 s3-analytics-inventory	2026-09-28T08:58:07Z	PASS	171	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-09-25T19:22:55Z	PASS	250	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
