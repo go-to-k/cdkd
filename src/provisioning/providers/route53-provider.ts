@@ -3005,9 +3005,8 @@ export class Route53Provider implements ResourceProvider {
    * else degrades.
    *
    * **The degraded answer is the EMPTY map, and that is load-bearing rather
-   * than tidy.** `import.ts`'s attribute carry-over is gated on the returned
-   * map being NON-empty (`row.attributes && Object.keys(...).length > 0 ?
-   * row.attributes : undefined`, then `?? priorAttributes ?? {}`) — a gate
+   * than tidy.** `import.ts`'s attribute carry-over (`reimportedAttributes`)
+   * keeps the stored map only when the returned map is EMPTY — a gate
    * that exists precisely because almost every provider spells
    * `attributes: {}` explicitly. So a partial `{ Id }` is NON-empty, takes
    * the row branch, and OVERWRITES a previously-recorded good map: a zone

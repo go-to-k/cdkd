@@ -1237,6 +1237,11 @@
       ]
     },
     {
+      "name": "import-reimport-masked-attrs",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-retain-destroy",
       "annotated": true,
       "scenarios": [
@@ -3072,6 +3077,7 @@
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
     "iam-secret-derived-principals",
+    "import-reimport-masked-attrs",
     "import-secret-observed",
     "inplace-attr-propagation",
     "kinesis-esm-filter",

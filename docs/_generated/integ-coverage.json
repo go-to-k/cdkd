@@ -6108,6 +6108,7 @@
         "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-nested-stack",
+        "import-reimport-masked-attrs",
         "import-retain-destroy",
         "import-secret-observed",
         "import-value-strong-ref",
@@ -6264,6 +6265,10 @@
         ],
         "import-nested-stack": [
           "l2",
+          "literal"
+        ],
+        "import-reimport-masked-attrs": [
+          "l1",
           "literal"
         ],
         "import-retain-destroy": [
@@ -6732,6 +6737,7 @@
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
     "AWS::Signer::SigningProfile",
+    "AWS::StepFunctions::Activity",
     "AWS::VerifiedPermissions::PolicyStore",
     "AWS::WAFv2::IPSet",
     "AWS::WAFv2::WebACLAssociation"

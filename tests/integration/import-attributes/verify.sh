@@ -262,8 +262,7 @@ echo "==> Phase 6: KEY ASSERTION — imported attributes are persisted"
 # returns `attributes: { PolicyArn: <arn> }`. Pre-fix, `buildStackState`
 # hardcoded `attributes: {}` and dropped it, so BOTH checks below fail against
 # a pre-fix binary: the map is empty, and `PolicyArn` is absent. Post-fix,
-# `rowAttributes ?? priorAttributes ?? {}` threads the provider's map into the
-# state row.
+# `reimportedAttributes` threads the provider's map into the state row.
 # ---------------------------------------------------------------------------
 ATTR_COUNT="$(printf '%s' "${STATE_JSON}" | python3 -c \
   'import sys, json; print(len(json.load(sys.stdin)["state"]["resources"]["Policy"].get("attributes") or {}))')"

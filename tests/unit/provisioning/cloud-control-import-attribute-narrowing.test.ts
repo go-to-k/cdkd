@@ -317,6 +317,9 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     // was told about.
     const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain(`parsed to ${shape}, not an object`);
+    // Issue #2927: the physical-id fallback is CONDITIONAL — `cdkd import`
+    // keeps a same-physical-id record's attributes when an import yields none.
+    expect(warned).toContain('already records for this physical id are kept');
     expect(mockDebug.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
       'not an object'
     );
@@ -367,6 +370,7 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     expect(warned).toContain('Failed to parse CC API ResourceModel');
     expect(warned).toContain('SyntaxError');
     expect(warned).toContain(TYPE);
+    expect(warned).toContain('already records for this physical id are kept');
     // The two halves of the message a `.message` mutation would restore.
     expect(warned).not.toContain(SNIPPET);
     expect(warned).not.toContain('is not valid JSON');
