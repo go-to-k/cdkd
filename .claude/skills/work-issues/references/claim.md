@@ -44,10 +44,11 @@ gh issue comment <n> --body-file "$SCRATCH/standdown-<n>.md"
 ```
 
 For EACH issue you start — PROMOTING a QUEUED one included — first re-check
-`gh issue view <n> --json state` and re-run §3's premise check on CURRENT
-`origin/main`: triage's findings date from TRIAGE time, and a peer can fix and
-close a queued issue before its turn (#3700/#3704/#3627: claimed after closing,
-one lane spent). Then:
+`gh issue view <n> --json state`, §2's open-PR `files` query and §3's premise
+check on CURRENT `origin/main`, in a call BEFORE the claim, never chained with
+it: triage's findings date from TRIAGE time (#3700: claimed after closing;
+#3979: a chained claim posted before the query showed #3975 holding its files).
+Then:
 
 ```bash
 gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <files>. \

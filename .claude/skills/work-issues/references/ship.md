@@ -94,7 +94,7 @@ on updated `main` is all the linked binary needs. MAIN-CHECKOUT (SKILL.md
 
 ```bash
 git checkout main && git pull origin main    # bring the merges local
-vp run build
+pnpm install --frozen-lockfile && vp run build   # a merged dependency bump (#3951)
 ```
 
 IN-PLACE — run THIS block INSTEAD, never both: `main` is checked out in the main
@@ -106,7 +106,7 @@ is its own shell:
 # The main checkout is always the FIRST row of `git worktree list`.
 MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
 git -C "$MAIN" pull origin main
-( cd "$MAIN" && vp run build )
+( cd "$MAIN" && pnpm install --frozen-lockfile && vp run build )
 ```
 
 That pull fails outright if the shared main tree is dirty (§7); do not restore
