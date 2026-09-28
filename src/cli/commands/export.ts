@@ -8563,7 +8563,8 @@ export async function runPerStackImportLoop(args: {
                   `resource is in IMPORT_UNSUPPORTED_RECREATABLE_TYPES but lacks a ` +
                   `PRE_DELETE_HANDLERS entry.\n` +
                   // Its CloudFormation stack exists by now, so even a cdkd bug
-                  // gives the recovery (go-to-k/cdkd#3988); nothing is deleted yet.
+                  // gives the recovery (go-to-k/cdkd#3988). An earlier entry may
+                  // already be deleted; the by-hand deletes allow for that.
                   nestedResumeTail(i, 'adopted')
               );
             }
