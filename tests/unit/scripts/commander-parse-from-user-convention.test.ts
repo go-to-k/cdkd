@@ -132,7 +132,8 @@ function walkTestFiles(dir: string, out: string[]): void {
     } else if (
       entry.endsWith('.test.ts') &&
       // Skip this lint itself — its doc comment spells the banned shape out
-      // as prose, which would self-match.
+      // as prose, and its synthetic sources hold `.parse(` inside string
+      // literals, which the arity scan would read as real sites.
       entry !== 'commander-parse-from-user-convention.test.ts'
     ) {
       out.push(full);
@@ -481,17 +482,35 @@ function resolveReceiver(
   const chained = /\b(\w+)\s*\(\s*\)\s*(?:\.\s*\w+\s*\([^()]*\)\s*)*$/.exec(before);
   if (chained && FACTORIES.has(chained[1]!)) return { factory: chained[1]!, via: 'chained' };
   const recv = /(\w+)\s*$/.exec(before)?.[1];
-  if (recv === undefined) return undefined;
-  const decl = new RegExp(`\\b(?:const|let|var)\\s+${recv}\\b[^=;]*=\\s*([^;]*)`, 'g');
-  const init = [...before.matchAll(decl)].at(-1)?.[1];
-  const called = init === undefined ? undefined : /^(?:await\s+)?(\w+)\s*\(/.exec(init)?.[1];
+  const called = recv === undefined ? undefined : factoryCalled(initializerOf(before, recv));
   if (called === undefined) return undefined;
   if (FACTORIES.has(called)) return { factory: called, via: 'direct' };
   const body = headers.find((h) => h.name === called)?.body;
   if (!body) return undefined;
-  const inner = source.slice(body[0], body[1]).matchAll(/\b(\w+)\s*\(\s*\)/g);
-  const factory = [...inner].map((m) => m[1]!).find((n) => FACTORIES.has(n));
-  return factory === undefined ? undefined : { factory, via: 'helper' };
+  // What the helper RETURNS, not the first factory it calls: a helper can
+  // build a root and `addCommand` a factory's command under it.
+  const inner = source.slice(body[0] + 1, body[1]);
+  const returned = [...inner.matchAll(/\breturn\s+([^;]*);/g)].map((m) => m[1]!.trim());
+  if (returned.length !== 1) return undefined;
+  const expr = returned[0]!;
+  const factory = factoryCalled(/^\w+$/.test(expr) ? initializerOf(inner, expr) : expr);
+  return factory !== undefined && FACTORIES.has(factory) ? { factory, via: 'helper' } : undefined;
+}
+
+/**
+ * The initializer of `name`'s nearest preceding binding, or undefined when
+ * that binding is an initializer-less declaration or a reassignment.
+ */
+function initializerOf(text: string, name: string): string | undefined {
+  const binding = new RegExp(
+    `\\b(?:const|let|var)\\s+${name}\\b[^=;]*(?:=\\s*([^;]*))?;|(?<![.\\w])${name}\\s*=(?![=>])`,
+    'g'
+  );
+  return [...text.matchAll(binding)].at(-1)?.[1];
+}
+
+function factoryCalled(init: string | undefined): string | undefined {
+  return init === undefined ? undefined : /^(?:await\s+)?(\w+)\s*\(\s*\)/.exec(init)?.[1];
 }
 
 interface AritySite {
@@ -738,6 +757,31 @@ describe("commander parse(argv, { from: 'user' }) passes no more operands than i
     expect(countOperands(FACTORIES.get('createLocalCommand')!(), ['--', 'run-task', 'TD'].map(lit))).toMatchObject({
       path: 'local run-task',
       operands: ['TD'],
+    });
+  });
+
+  it('leaves a receiver unresolved when its binding or helper does not name one factory', () => {
+    const resolve = (source: string) =>
+      resolveReceiver(source, source.slice(0, source.lastIndexOf('\ncmd') + 4), functionHeaders(source));
+    // A helper that builds a root and nests a factory's command under it.
+    expect(
+      resolve(
+        [
+          'function tree(): Command {',
+          "  const root = new Command('cdkd');",
+          '  root.addCommand(createLocalCommand());',
+          '  return root;',
+          '}',
+          'const cmd = tree();',
+          'cmd',
+        ].join('\n')
+      )
+    ).toBeUndefined();
+    // An initializer-less redeclaration shadows an earlier factory binding.
+    expect(resolve('const cmd = createDeployCommand();\nlet cmd: Command;\ncmd')).toBeUndefined();
+    expect(resolve('const cmd = createDeployCommand();\ncmd')).toEqual({
+      factory: 'createDeployCommand',
+      via: 'direct',
     });
   });
 
