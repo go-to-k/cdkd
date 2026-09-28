@@ -415,7 +415,8 @@ export function compositeIdFormatMessage(
     `1762, on the plain DELETE of a resource removed from the template during ` +
     `cdkd deploy (which re-attempts it on the next deploy). So repair the id in ` +
     `state.json and re-run, or delete the resource by hand and drop the record ` +
-    `with 'cdkd state orphan'. NOTE a deploy-side REPLACEMENT or rollback delete ` +
+    `with 'cdkd state orphan <stack> --stack-region <region>' (which drops every record ` +
+    `the stack has in that region). NOTE a deploy-side REPLACEMENT or rollback delete ` +
     `instead FAILS the resource ` +
     `(https://github.com/go-to-k/cdkd/issues/1762) — the old resource is left ` +
     `untracked there, so delete it by hand.`

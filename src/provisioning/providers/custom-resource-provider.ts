@@ -194,7 +194,8 @@ export const CR_DELETE_INVOKE_FAILED_SKIP_REASON =
  * exit-code question). `cdkd destroy` has no such flag — a skip raises
  * `PartialFailureError` unconditionally (`src/cli/commands/destroy.ts`) — so
  * there the remedy is the one that command's own summary names: confirm the
- * resource is gone, then drop the record with `cdkd state orphan <stack>`.
+ * resource is gone, then drop the record with
+ * `cdkd state orphan <stack> --stack-region <region>`.
  * Messages must not offer the flag on the destroy path, which is the path this
  * arm is mostly reached from.
  *
@@ -244,8 +245,8 @@ export const CR_DELETE_HANDLER_FAILED_SKIP_REASON =
 const CR_SKIP_NOT_A_RETRY_CAVEAT =
   `NOTE this record is a POINTER, not a retry: the same destroy run deletes the backing Lambda, ` +
   `so the next 'cdkd destroy' finds the handler gone and DROPS this record (issue 804 pre-check). ` +
-  `Tear the resource down by hand, then clear the stack's records with 'cdkd state orphan <stack>' ` +
-  `— that command drops EVERY record for the stack, not just this one.`;
+  `Tear the resource down by hand, then clear the stack's records with 'cdkd state orphan <stack> --stack-region <region>' ` +
+  `— that command drops EVERY record for the stack in that region, not just this one.`;
 
 const DEPLOY_SKIP_CAVEAT =
   `NOTE this arm is ALSO reached from cdkd deploy. Since issue 1762 the DELETE of a resource ` +
@@ -1338,7 +1339,7 @@ export class CustomResourceProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
           `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
+          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
         resourceType,
         logicalId
       );
@@ -1431,7 +1432,7 @@ export class CustomResourceProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
           `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
+          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
         resourceType,
         logicalId,
         physicalId
@@ -1553,7 +1554,7 @@ export class CustomResourceProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
           `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
+          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
         resourceType,
         logicalId,
         physicalId
@@ -1575,8 +1576,8 @@ export class CustomResourceProvider implements ResourceProvider {
           `in, its ServiceToken), so cdkd cannot address the handler; skipping deletion — ` +
           `anything this custom resource manages is LEFT IN PLACE. Re-deploying does not repair ` +
           `the record while that attribute still carries the value. Tear the resource down by ` +
-          `hand, then clear the stack's records with 'cdkd state orphan <stack>' — that command ` +
-          `drops EVERY record for the stack, not just this one. Restoring ServiceToken (the ` +
+          `hand, then clear the stack's records with 'cdkd state orphan <stack> --stack-region <region>' — that command ` +
+          `drops EVERY record for the stack in that region, not just this one. Restoring ServiceToken (the ` +
           `provider's Lambda function or SNS topic ARN) in state.json and re-running helps only ` +
           `while that handler still exists: a destroy goes on to delete its backing Lambda. ` +
           safeMsg`${DEPLOY_SKIP_CAVEAT}`

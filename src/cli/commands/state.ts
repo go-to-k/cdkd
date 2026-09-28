@@ -2658,7 +2658,7 @@ async function stateDestroyCommand(
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
           `inspect 'cdkd state show <stack>' and re-run 'cdkd state destroy' to retry. ` +
-          `If the same resource keeps failing, 'cdkd state orphan <stack>' removes the state record without deleting AWS resources.`
+          `If the same resource keeps failing, 'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record) without deleting AWS resources.`
       );
     }
     if (interrupted || (interruptWatch.interrupted() && stoppedEarly)) {
@@ -2684,7 +2684,7 @@ async function stateDestroyCommand(
           `counts as ONE entry and may cover several of its own resources — the per-stack ` +
           `summaries above give the exact breakdown. State preserved (the records are kept). ` +
           `Repair the physicalId in state.json and re-run 'cdkd state destroy', or delete the ` +
-          `resources by hand and drop the records with 'cdkd state orphan <stack>'.`
+          `resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
       );
     }
   } finally {

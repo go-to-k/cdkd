@@ -202,7 +202,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Cannot delete AnomalyDetector ${logicalId}: the state record carries no properties, ` +
           `and DeleteAnomalyDetector addresses the model by its metric descriptor. ` +
-          `Use 'cdkd state orphan <stack>' to drop the record and delete the detector manually.`,
+          `Use 'cdkd state orphan <stack> --stack-region <region>' to drop the record (that command drops every record the stack has in that region) and delete the detector manually.`,
         resourceType,
         logicalId,
         physicalId

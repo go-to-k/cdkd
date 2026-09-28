@@ -403,6 +403,34 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
+  it('names a region-scoped state orphan when resources failed (go-to-k/cdkd#3996)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Failer', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Failer', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Failer'), etag: '"x"' });
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: 'Failer',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 1,
+      retainedCount: 0,
+      skippedCount: 0,
+      errorCount: 1,
+      interrupted: false,
+    });
+
+    await expect(runDestroy(['Failer', '--yes'])).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('Destroy completed with 1 resource error(s)');
+    expect(message).toContain(
+      "'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record)"
+    );
+  });
+
   it('exits 2 when the runner SKIPPED a resource, even with zero errors (issue #1752)', async () => {
     // A skip means cdkd left a resource it could not address and preserved
     // state — the stack is NOT destroyed. Exiting 0 there is exactly the
@@ -436,6 +464,11 @@ describe('cdkd destroy: terminationProtection guard', () => {
     // nested case (issue #1752 review).
     expect(message).not.toContain('resource(s) cdkd could not address');
     expect(message).toContain('counts as ONE entry');
+    // Region-scoped: a bare `cdkd state orphan <stack>` drops that name's
+    // record in EVERY region (go-to-k/cdkd#3996).
+    expect(message).toContain(
+      "drop the records with 'cdkd state orphan <stack> --stack-region <region>'."
+    );
 
     // The run-level record must agree with the exit code — a skip-only run is
     // FAILED, which is also what suppresses `--purge-events` (the post-mortem

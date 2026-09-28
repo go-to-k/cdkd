@@ -327,7 +327,9 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
     // a case no change to the thing under test can move.
     expect(text, 'the resource id is still named').toContain('Res');
     expect(text, 'the resource type is still named').toContain('AWS::SQS::Queue');
-    expect(text, 'the remedy sentence survives').toContain('cdkd state orphan');
+    expect(text, 'the remedy sentence survives').toContain(
+      "remove this resource from state with 'cdkd orphan <StackPath>/<Path/To/Resource>'"
+    );
   });
 
   it('the resource keeps its raw intrinsic, so masking did not change the walk', async () => {
