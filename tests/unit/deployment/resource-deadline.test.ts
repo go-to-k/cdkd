@@ -31,6 +31,9 @@ describe('withResourceDeadline', () => {
     await expect(promise).resolves.toBe('done');
     expect(onWarn).not.toHaveBeenCalled();
     expect(onTimeout).not.toHaveBeenCalled();
+    // Both timers are REF'd (issue #3939), so settling must clear them, or a
+    // finished operation would hold the process open for up to timeoutMs.
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('fires onWarn at warnAfterMs but does not abort while still under timeoutMs', async () => {
@@ -123,6 +126,7 @@ describe('withResourceDeadline', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toBe('provider failed');
     expect(onTimeout).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('rejects when warnAfterMs >= timeoutMs', async () => {

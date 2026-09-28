@@ -7776,8 +7776,9 @@ export function errorCauseChain(root: Error): Error[] {
  * the sink reads the error OBJECT.
  *
  * `formatError` is not the only such sink, and the second one is what makes the
- * CHAIN argument below concrete rather than hypothetical: `src/cli/index.ts`'s
- * top-level `main().catch(...)` does `console.error('Fatal error:', error)`,
+ * CHAIN argument below concrete rather than hypothetical: the CLI's top-level
+ * rejection handler (`runCli` in `src/cli/run-cli.ts`, around `main()` in
+ * `src/cli/index.ts`) does `console.error('Fatal error:', error)`,
  * which renders the whole object through `util.inspect` — every `[cause]` link
  * AND every link's `stack`. Measured: an outer `Error('top')` wrapping
  * `Error("Value 'hunter2' failed")` prints as

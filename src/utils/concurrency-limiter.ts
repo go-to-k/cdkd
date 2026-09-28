@@ -16,7 +16,34 @@
  *
  * A task never acquires a second slot from inside its body, so the limiter
  * cannot deadlock on itself.
+ *
+ * A task body receives its {@link TaskUrgency} alongside the signal, so work
+ * that behaves differently in the background (a backoff sleep on an unref'd
+ * timer) can follow a caller starting to wait on it while it runs (issue
+ * #3939).
  */
+
+/** A running task's view of whether anyone is waiting on it. */
+export interface TaskUrgency {
+  /** Whether the task is urgent NOW: scheduled urgent, or promoted since. */
+  readonly urgent: boolean;
+  /**
+   * Whether a caller is waiting on this task NOW: it is urgent, or an urgent
+   * task is QUEUED for a slot. A queued urgent task starts only when a running
+   * task releases its slot, so while one waits every running task — background
+   * ones included — is on its caller's path, and must not let the process
+   * exit under it. False again once no urgent task is queued.
+   */
+  readonly awaited: boolean;
+  /**
+   * Call `listener` once when {@link awaited} turns true: on this task's
+   * promotion, or when an urgent task is queued behind the running ones — at
+   * once if it already is true. Returns a function that removes the listener.
+   * A listener must not throw: it runs synchronously, inside the `schedule()`
+   * or `promote()` of the caller that is waiting.
+   */
+  onAwaited(listener: () => void): () => void;
+}
 
 export interface ScheduledTask<T> {
   readonly promise: Promise<T>;
@@ -34,7 +61,7 @@ export interface ScheduledTask<T> {
 
 export interface ConcurrencyLimiter {
   schedule<T>(
-    task: (signal: AbortSignal) => Promise<T>,
+    task: (signal: AbortSignal, urgency: TaskUrgency) => Promise<T>,
     options?: { background?: boolean }
   ): ScheduledTask<T>;
   /** Tasks currently running. */
@@ -64,6 +91,13 @@ export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
   // Urgent entries always precede background ones: `insert` keeps the array
   // partitioned, so the head is the next task to run.
   const queue: QueueEntry[] = [];
+  // Every running task's `onAwaited` listeners, fired when an urgent task
+  // has to queue: it waits on whichever running task releases a slot first.
+  const urgentWaiterListeners = new Set<() => void>();
+  const urgentQueued = (): boolean => queue.length > 0 && queue[0]!.urgent;
+  const notifyUrgentWaiter = (): void => {
+    for (const listener of [...urgentWaiterListeners]) listener();
+  };
 
   const insert = (entry: QueueEntry): void => {
     if (!entry.urgent) {
@@ -83,7 +117,7 @@ export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
 
   return {
     schedule<T>(
-      task: (signal: AbortSignal) => Promise<T>,
+      task: (signal: AbortSignal, urgency: TaskUrgency) => Promise<T>,
       options?: { background?: boolean }
     ): ScheduledTask<T> {
       let resolveTask!: (value: T) => void;
@@ -104,6 +138,32 @@ export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
         active--;
         drain();
       };
+      const promoteListeners = new Set<() => void>();
+      const urgency: TaskUrgency = {
+        get urgent() {
+          return entry.urgent;
+        },
+        get awaited() {
+          return entry.urgent || urgentQueued();
+        },
+        onAwaited: (listener) => {
+          if (urgency.awaited) {
+            listener();
+            return () => {};
+          }
+          const remove = (): void => {
+            promoteListeners.delete(once);
+            urgentWaiterListeners.delete(once);
+          };
+          const once = (): void => {
+            remove();
+            listener();
+          };
+          promoteListeners.add(once);
+          urgentWaiterListeners.add(once);
+          return remove;
+        },
+      };
       const entry: QueueEntry = {
         urgent: options?.background !== true,
         start: () => {
@@ -111,7 +171,7 @@ export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
           // `Promise.resolve().then(...)` turns a synchronous throw into a
           // rejection, so the slot is released on that path too.
           Promise.resolve()
-            .then(() => task(controller.signal))
+            .then(() => task(controller.signal, urgency))
             .then(
               (value) => {
                 if (settled) return;
@@ -129,15 +189,19 @@ export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
       };
       insert(entry);
       drain();
+      if (entry.urgent && queue.includes(entry)) notifyUrgentWaiter();
       return {
         promise,
         promote: () => {
           if (entry.urgent) return;
           entry.urgent = true;
+          for (const listener of [...promoteListeners]) listener();
           const index = queue.indexOf(entry);
           if (index === -1) return; // already running: now uncancellable
           queue.splice(index, 1);
           insert(entry);
+          // Still queued, so no slot is free: it waits on the running tasks.
+          notifyUrgentWaiter();
         },
         cancel: () => {
           if (entry.urgent || settled) return false;

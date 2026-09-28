@@ -83,7 +83,9 @@ export interface ConfirmOrRefuseOptions {
  * budget. Measured on Node 24.15.0, the version `.node-version` pins, against
  * real `node:readline/promises`: `echo y |` resolves `"y"`, while both
  * `printf 'y' |` (a real answer with no trailing newline) and `< /dev/null`
- * stay pending indefinitely.
+ * stay pending indefinitely. (Pending, not running: with nothing else holding
+ * the event loop the process drains, which `runCli` now reports as a failed
+ * command rather than Node's silent exit 0 — still a failure, not an answer.)
  *
  * REFUSE rather than auto-confirm, at every one of the TEN sites that route
  * through this helper. Every one of them guards a MUTATION — a rollback

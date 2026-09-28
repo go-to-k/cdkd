@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   BackgroundTaskCancelledError,
   createConcurrencyLimiter,
+  type TaskUrgency,
 } from '../../../src/utils/concurrency-limiter.js';
 
 const flush = async (): Promise<void> => {
@@ -182,6 +183,149 @@ describe('createConcurrencyLimiter', () => {
     t.finish('pq');
     await expect(promotedRunning.promise).resolves.toBe('pr');
     await expect(promotedQueued.promise).resolves.toBe('pq');
+  });
+
+  it('a task sees its CURRENT urgency: promoted while running, the listener fires once', async () => {
+    const limiter = createConcurrencyLimiter(1);
+    let seen: TaskUrgency | undefined;
+    let finish!: () => void;
+    const task = limiter.schedule(
+      (_signal, urgency) => {
+        seen = urgency;
+        return new Promise<void>((resolve) => (finish = resolve));
+      },
+      { background: true }
+    );
+    await flush();
+    expect(seen!.urgent).toBe(false);
+    let fired = 0;
+    let removedFired = 0;
+    seen!.onAwaited(() => fired++);
+    const remove = seen!.onAwaited(() => removedFired++);
+    remove();
+
+    task.promote();
+    task.promote();
+    expect(seen!.urgent).toBe(true);
+    expect(fired).toBe(1);
+    expect(removedFired).toBe(0);
+    // Already urgent: a new listener runs at once.
+    let late = 0;
+    seen!.onAwaited(() => late++);
+    expect(late).toBe(1);
+    finish();
+    await task.promise;
+  });
+
+  it('a task promoted while QUEUED starts already urgent; an urgent one starts urgent', async () => {
+    const limiter = createConcurrencyLimiter(1);
+    const t = manualTasks();
+    const blocker = limiter.schedule(t.task('blocker'));
+    const urgencies: boolean[] = [];
+    const queued = limiter.schedule(
+      async (_signal, urgency) => {
+        urgencies.push(urgency.urgent);
+      },
+      { background: true }
+    );
+    queued.promote();
+    const urgent = limiter.schedule(async (_signal, urgency) => {
+      urgencies.push(urgency.urgent);
+    });
+    await flush();
+    t.finish('blocker');
+    await Promise.all([blocker.promise, queued.promise, urgent.promise]);
+    expect(urgencies).toEqual([true, true]);
+  });
+
+  it("promoting one task fires only ITS listeners, never another task's", async () => {
+    const limiter = createConcurrencyLimiter(2);
+    const urgencies: TaskUrgency[] = [];
+    const finishes: Array<() => void> = [];
+    const start = (): ReturnType<typeof limiter.schedule<void>> =>
+      limiter.schedule(
+        (_signal, urgency) => {
+          urgencies.push(urgency);
+          return new Promise<void>((resolve) => finishes.push(resolve));
+        },
+        { background: true }
+      );
+    const a = start();
+    const b = start();
+    await flush();
+    const fired = [0, 0];
+    urgencies[0]!.onAwaited(() => fired[0]!++);
+    urgencies[1]!.onAwaited(() => fired[1]!++);
+    a.promote();
+    expect(fired).toEqual([1, 0]);
+    expect(urgencies.map((u) => u.urgent)).toEqual([true, false]);
+    for (const finish of finishes) finish();
+    await Promise.all([a.promise, b.promise]);
+  });
+
+  it('an urgent task QUEUED behind running background tasks makes each of them awaited, until it starts', async () => {
+    const limiter = createConcurrencyLimiter(2);
+    const urgencies: TaskUrgency[] = [];
+    const finishes: Array<() => void> = [];
+    const background = (): ReturnType<typeof limiter.schedule<void>> =>
+      limiter.schedule(
+        (_signal, urgency) => {
+          urgencies.push(urgency);
+          return new Promise<void>((resolve) => finishes.push(resolve));
+        },
+        { background: true }
+      );
+    const a = background();
+    const b = background();
+    await flush();
+    const fired = [0, 0];
+    urgencies[0]!.onAwaited(() => fired[0]!++);
+    urgencies[1]!.onAwaited(() => fired[1]!++);
+    expect(urgencies.map((u) => u.awaited)).toEqual([false, false]);
+
+    // No slot is free, so the urgent task queues and waits on A and B.
+    const urgent = limiter.schedule(() => Promise.resolve('u'));
+    expect(fired).toEqual([1, 1]);
+    expect(urgencies.map((u) => [u.urgent, u.awaited])).toEqual([
+      [false, true],
+      [false, true],
+    ]);
+
+    finishes[0]!();
+    await expect(urgent.promise).resolves.toBe('u');
+    // It has started: B, still background, is no longer waited on.
+    expect(urgencies[1]!.awaited).toBe(false);
+    finishes[1]!();
+    await Promise.all([a.promise, b.promise]);
+  });
+
+  it('promoting a QUEUED task makes the running background ones awaited; an urgent task that starts at once does not', async () => {
+    const limiter = createConcurrencyLimiter(2);
+    let running!: TaskUrgency;
+    const finishes: Array<() => void> = [];
+    const a = limiter.schedule(
+      (_signal, urgency) => {
+        running = urgency;
+        return new Promise<void>((resolve) => finishes.push(resolve));
+      },
+      { background: true }
+    );
+    await flush();
+    let fired = 0;
+    running.onAwaited(() => fired++);
+    // A free slot: this urgent task starts at once, nobody waits on A.
+    const direct = limiter.schedule(() => new Promise<void>((resolve) => finishes.push(resolve)));
+    await flush();
+    expect(fired).toBe(0);
+    expect(running.awaited).toBe(false);
+
+    const queued = limiter.schedule(() => Promise.resolve('q'), { background: true });
+    expect(fired).toBe(0);
+    queued.promote();
+    expect(fired).toBe(1);
+    expect(running.awaited).toBe(true);
+    for (const finish of finishes) finish();
+    await Promise.all([a.promise, direct.promise, queued.promise]);
   });
 
   it('refuses a non-positive limit', () => {

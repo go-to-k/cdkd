@@ -84,6 +84,11 @@ Index of every area: [code-layout.md](code-layout.md).
 - **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on
   EPIPE when a downstream consumer closes the pipe early; non-EPIPE stream
   errors re-throw. Its own module so it stays unit-testable.
+- **src/cli/run-cli.ts** - `runCli(main)`, the ONE top-level runner: a `main()`
+  rejection prints `Fatal error:` and exits 1, and a `beforeExit` with `main()`
+  still PENDING (the event loop drained under an await) exits 70, replacing
+  any code the command set, with a message instead of Node's silent 0
+  ([#3939](https://github.com/go-to-k/cdkd/issues/3939)).
 - **src/cli/commands/events.ts** (+ `src/state/deployment-events-store.ts`,
   `src/types/deployment-events.ts`) - structured deployment events, cdkd's
   `DescribeStackEvents` equivalent. The store is a buffering JSONL recorder with

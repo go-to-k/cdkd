@@ -138,8 +138,9 @@ export function createLocalStartCloudFrontCommand(): Command {
  * `commander`'s `Command.error` is used rather than a thrown `CdkdError`
  * because the check runs in a `preAction` hook, OUTSIDE the `withErrorHandling`
  * wrapper cdk-local puts around its action — a throw there escapes to
- * `main().catch`, which prints `Fatal error:` plus a stack. `error()` prints the
- * message the way every other option error on this CLI is printed and exits 1.
+ * the CLI's top-level rejection handler (`runCli`), which prints `Fatal error:`
+ * plus a stack. `error()` prints the message the way every other option error
+ * on this CLI is printed and exits 1.
  *
  * `--state-prefix` carries a commander default, so its presence is decided by
  * `getOptionValueSource` (`'cli'` only when the user typed it) rather than by

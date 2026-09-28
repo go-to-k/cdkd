@@ -27,7 +27,11 @@ import {
 import { withRetry } from '../deployment/retry.js';
 import { isThrottlingError } from '../deployment/retryable-errors.js';
 import { getAwsClients, type AwsClients } from '../utils/aws-clients.js';
-import { createConcurrencyLimiter, type ScheduledTask } from '../utils/concurrency-limiter.js';
+import {
+  createConcurrencyLimiter,
+  type ScheduledTask,
+  type TaskUrgency,
+} from '../utils/concurrency-limiter.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -115,6 +119,17 @@ export function describeTypeWithThrottleRetry(
  * an uncancelled one keeps a finished command alive no longer than one
  * in-flight round trip. An urgent call is sent exactly as before, its backoff
  * on a REF'd timer: the command is waiting on it.
+ *
+ * Which of the two a call is follows its CURRENT urgency, per attempt and per
+ * sleep, never the `background` it was scheduled with: once `promote()` makes
+ * a command wait on the call, a backoff already sleeping has its timer ref'd
+ * and every later one sleeps ref'd. The same holds while an awaited lookup is
+ * QUEUED behind background calls that hold every slot: it cannot start until
+ * one of their backoffs ends. Otherwise nothing ref'd would remain while
+ * the command awaits the retry, the event loop would drain, and Node would
+ * exit 0 mid-command (issue #3939). Dropping the signal from a promoted call's
+ * request is for parity with an urgent one only: an urgent task can no longer
+ * be cancelled, so its signal never aborts.
  */
 export function scheduleDescribeType(
   resourceType: string,
@@ -135,23 +150,20 @@ export function scheduleDescribeType(
     clientError = error;
   }
   return describeTypeLimiter.schedule(
-    (signal) =>
+    (signal, urgency) =>
       withRetry(
         () => {
           if (cfn === undefined) throw clientError;
           const command = new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType });
-          return background ? cfn.send(command, { abortSignal: signal }) : cfn.send(command);
+          return urgency.urgent ? cfn.send(command) : cfn.send(command, { abortSignal: signal });
         },
         resourceType,
         {
           maxRetries: MAX_THROTTLE_RETRIES,
           isRetryable: (_message, error) => !signal.aborted && isThrottlingError(error),
           logger: getLogger().child('DescribeType'),
-          ...(describeTypeRetryDelays.sleep
-            ? { sleep: describeTypeRetryDelays.sleep }
-            : background
-              ? { sleep: (ms: number) => backgroundSleep(ms, signal) }
-              : {}),
+          sleep:
+            describeTypeRetryDelays.sleep ?? ((ms: number) => backoffSleep(ms, signal, urgency)),
         }
       ),
     { background: background === true }
@@ -159,10 +171,19 @@ export function scheduleDescribeType(
 }
 
 /**
- * The backoff sleep of a BACKGROUND call: an unref'd timer, so a pending
- * retry never keeps the event loop alive, rejected at once by `signal`.
+ * The throttle backoff sleep. An urgent call sleeps on a plain REF'd timer.
+ * A background call sleeps on a timer `signal` cuts short, UNREF'd while
+ * nobody waits on it, so a pending retry never keeps a finished command's
+ * process alive. The timer is ref'd the moment a command starts waiting on it
+ * (`urgency.onAwaited`): the call is promoted, or an awaited lookup is QUEUED
+ * behind the calls holding every slot, and so waits for one of their sleeps
+ * to end (issue #3939). Once ref'd it stays ref'd for the rest of this step,
+ * at most 1 s (`withRetry` sleeps in steps of at most 1 s); the next step
+ * reads `awaited` afresh, so a queued waiter that has since started stops
+ * holding the process.
  */
-function backgroundSleep(ms: number, signal: AbortSignal): Promise<void> {
+function backoffSleep(ms: number, signal: AbortSignal, urgency: TaskUrgency): Promise<void> {
+  if (urgency.urgent) return new Promise((resolve) => setTimeout(resolve, ms));
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
       reject(new Error('DescribeType prefetch cancelled'));
@@ -170,11 +191,14 @@ function backgroundSleep(ms: number, signal: AbortSignal): Promise<void> {
     }
     const timer = setTimeout(() => {
       signal.removeEventListener('abort', onAbort);
+      stopFollowingPromotion();
       resolve();
     }, ms);
     timer.unref?.();
+    const stopFollowingPromotion = urgency.onAwaited(() => timer.ref?.());
     const onAbort = (): void => {
       clearTimeout(timer);
+      stopFollowingPromotion();
       reject(new Error('DescribeType prefetch cancelled'));
     };
     signal.addEventListener('abort', onAbort, { once: true });
