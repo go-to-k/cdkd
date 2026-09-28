@@ -256,6 +256,9 @@ describe('writeHumanReport treats record- and readback-derived values as untrust
       ['TwoLiterals', 'a\u2028b\u2028', 'a\u2028b ', `"a${BS}u2028b${BS}u2028"`, `"a${BS}u2028b "`],
       ['BidiVsBidi', 'a\u202a', 'a\u2066', `"a${BS}u202a"`, `"a${BS}u2066"`],
       ['NoBreakSpace', 'abc', 'abc\u00a0', 'abc', '"abc\u00a0"'],
+      // An unpaired surrogate reaches the terminal as U+FFFD, so unquoted the
+      // two sides would be the same bytes (go-to-k/cdkd#3949).
+      ['LoneSurrogate', 'a\ud800', 'a\ufffd', `"a${BS}ud800"`, 'a\ufffd'],
     ];
     const { lines } = render(
       report({

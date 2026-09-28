@@ -219,8 +219,10 @@ views](cli-state.md#what-the-human-views-do-to-a-malformed-record) do:
 - **A property value that carries a control character, has whitespace at
   either end, or starts with `"` is shown as its JSON string.** A control
   character here is any of C0 (newline, tab and ESC among them), DEL, C1,
-  LINE SEPARATOR, PARAGRAPH SEPARATOR and the bidi overrides — so a value
-  carrying even one of cdkd's own colour codes is quoted. It prints as
+  LINE SEPARATOR, PARAGRAPH SEPARATOR and the bidi overrides, so a value
+  carrying even one of cdkd's own colour codes is quoted. So is a value
+  carrying an unpaired surrogate, which the output's UTF-8 encoding would
+  otherwise turn into the replacement character `�`. It prints as
   `"abc\n"`, `"a\tb"`, `" value "`, `"x\u001b[2Jy"`: JSON escapes the C0
   range, and the characters it leaves literal are written as `\uXXXX` escapes
   too, so none of them is left between the quotes and a colour code prints as
@@ -242,6 +244,17 @@ views](cli-state.md#what-the-human-views-do-to-a-malformed-record) do:
   a bound, not a guarantee that the rows after it stay in view, since a name
   can still wrap within it. A property value is never cut, and neither an
   identifier nor a value is trimmed.
+
+The plans `--accept` and `--revert` print before they ask for confirmation
+(and under `--dry-run`) follow the same three rules for the same fields: each
+heading's stack name and region, each resource's logical id and type, each
+change's path and both of its values, and the readback tag keys and paths the
+revert plan lists as preserved or left untouched. A readback key is masked for
+secrets first and only then cut and sanitized, so the cut can never leave part
+of a secret unmasked. A plan line prints `<path>: <from> -> <to>`, so a string
+value that itself contains `->` is quoted there too: no unquoted value carries
+an arrow, so the only one outside quotes after the path is the separator. (The
+path itself is not quoted, as in the report.)
 
 `--json` is untouched — a consumer of that mode wants the stored value.
 
