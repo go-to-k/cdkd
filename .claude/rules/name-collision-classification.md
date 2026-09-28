@@ -51,9 +51,21 @@ the bounded `cause` chain for the error name and the Cloud Control
    main create and its cleanup) behind that anchor with `markAuxiliaryFailure`
    (`src/provisioning/auxiliary-failure.ts`, #3826; the DynamoDB GlobalTable
    is residual #3877). `withRetry` carries the mark FORWARD: once an attempt
-   failed auxiliary, every error that call throws is marked, since a replayed
-   create can collide with what that attempt left behind (#3972). The #2902
-   orphan advice reads the same verdict, so it goes silent there by design.
+   failed auxiliary (#3972) or AMBIGUOUS (`isAmbiguousOutcomeError`: a
+   non-throttle 5xx, a Cloud Control handler failing mid-create — its
+   `Throttling` / `GeneralServiceException` included — a socket
+   reset / timeout after the send; #3978), every error that call throws is
+   marked, since a replayed create can collide with what that attempt made. A
+   API-level throttle or other 4xx does not arm it. The SDK's own in-`send` retry is not
+   covered (#3978 layer (b)).
+3. **`markReplayMayCollide` is read FIRST, ahead of the anchor.** The auxiliary
+   mark lands on the first link WITHOUT its own `logicalId`, so it misses a
+   Cloud Control `CloudControlOperationFailedError` (owner id, no `cause`) and
+   a `markNameCollision`-stamped owner wrapper; `withRetry` stamps this symbol
+   beside it. `isUpdateUnsupportedError` does not read it. The #2902 orphan
+   advice reads the same verdict, so it goes silent after either mark — wrong
+   after an ambiguous attempt, where the resource is likely this run's own
+   orphan (#3984).
 
 It reaches the SDK error only if providers thread the caught value as `cause` —
 enforced by `scripts/check-provider-error-cause.ts`.

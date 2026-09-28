@@ -10,7 +10,10 @@
 
 import {
   formatRetryClassificationSignals,
+  hasReplayMayCollide,
+  isAmbiguousOutcomeError,
   isIamPropagationError,
+  markReplayMayCollide,
   isNameCooldownError,
   isTransientServerError,
   isMarkedNonRetryable,
@@ -351,7 +354,8 @@ export async function withRetry<T>(
   // which the name-collision classifier would credit to the resource and a
   // caller would answer by DELETING a live one (`--replace`'s old resource, the
   // rollback reverse-replacement's new one). So every error this call throws
-  // after the latch carries the auxiliary mark forward. The latch changes only
+  // once the latch is armed -- the arming attempt's own error too, when it is
+  // the one thrown -- carries the auxiliary mark forward. The latch changes only
   // what the thrown error is anchored to, never whether an attempt is retried.
   // That includes the outer loops below, which retry "already exists" and so
   // still spend their ~64s budget on a replayed collision: kept, because a
@@ -363,17 +367,58 @@ export async function withRetry<T>(
   // inner loop's throw carries the mark, so the outer loop latches on it, and
   // its later attempts -- each a fresh inner loop that never saw the auxiliary
   // failure -- are marked by the outer one.
-  let sawAuxiliary = false;
+  //
+  // Issue #3978: an attempt that ended AMBIGUOUS (`isAmbiguousOutcomeError`: a
+  // non-throttle 5xx, a Cloud Control handler failing mid-create, or a socket
+  // reset / timeout after the send -- that last arm reaches no replay today,
+  // since no classifier here retries a socket error) arms the
+  // same latch. Its main create may have SUCCEEDED server-side, so the replay
+  // can collide with the resource that very request made -- the #3972 outcome
+  // with no auxiliary call involved. An SDK-level throttle does not arm it:
+  // the service declared it did nothing, so a later collision is with a
+  // resource that already held the name, and stays credited. Nor does a 4xx,
+  // including an IAM-propagation rejection. (A Cloud Control HANDLER's
+  // `Throttling` / `GeneralServiceException` does arm it: the handler may have
+  // made the resource first.)
+  //
+  // Armed for EVERY caller, not only create, because this loop cannot tell
+  // which it wraps. The auxiliary mark is read by the two logical-id-anchored
+  // classifiers: `isNameCollisionErrorFrom` (the intended one, read only on
+  // CREATE errors) and `isUpdateUnsupportedError` (read on the UPDATE path's
+  // error). On the latter the latch can withhold the Cloud Control
+  // `UnsupportedActionException` auto-replacement when an earlier attempt of
+  // the same update ended ambiguous: the update fails instead of replacing,
+  // and a re-run replaces. Accepted, since it trades a re-run for a deletion.
+  //
+  // The AWS SDK's OWN retry of a 5xx inside one `send` is not visible here --
+  // its collision surfaces from this loop's first attempt (#3978 layer (b)).
+  //
+  // Two stamps, because the auxiliary one cannot land on every chain: it
+  // writes the first link without its own `logicalId`, and a Cloud Control
+  // `CloudControlOperationFailedError` carries the owner's id and no `cause`.
+  // `markReplayMayCollide` is read by the collision classifier alone, so it
+  // closes that gap without widening the update-path cost above. The mark's
+  // id is `shownId`, the sanitized label: the anchor needs only the
+  // `/auxiliary` suffix, never the id before it.
+  //
+  // Both also silence the #2902 orphan advice on an ordinary CREATE, since it
+  // reads the same verdict -- including after an ambiguous attempt, where the
+  // collided resource is most likely this run's own orphan. Tracked as #3984.
+  let replayMayCollide = false;
   const settle = (error: unknown): unknown =>
-    sawAuxiliary ? markAuxiliaryFailure(error, shownId) : error;
+    replayMayCollide ? markReplayMayCollide(markAuxiliaryFailure(error, shownId)) : error;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {
       return await operation();
     } catch (error) {
       lastError = error;
-      if (isAuxiliaryFailure(error)) {
-        sawAuxiliary = true;
+      if (
+        isAuxiliaryFailure(error) ||
+        hasReplayMayCollide(error) ||
+        isAmbiguousOutcomeError(error)
+      ) {
+        replayMayCollide = true;
       }
       // `.detail` IS that ternary minus the throw. `withRetry` wraps
       // `provider.delete`, so this catch is on the destroy path one hop in --
