@@ -716,8 +716,9 @@ type WalkedContainers = Set<object>;
  * `Data` — the shape the CDK `Provider` framework's samples encourage — makes
  * `Data.X` equal to the resource's own `ServiceToken`, and recording THAT as a
  * needle rewrites `properties.ServiceToken` to `***` in the very record
- * `CustomResourceProvider.delete` reads it back from, where `'***'` is a
- * truthy string that passes both of that method's guards. Such a value is not
+ * `CustomResourceProvider.delete` reads it back from, which can then no
+ * longer address the handler and SKIPS the delete, keeping the record
+ * (go-to-k/cdkd#3938). Such a value is not
  * handler-GENERATED at all — it is in the synthesized template already — so
  * excluding it costs no secrecy.
  */
@@ -2339,8 +2340,9 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * (f) A child record persisted BEFORE this carry
  * keeps `port:q7` until the child is next redeployed: the parent's own row
  * already held the frame (the literal or frame arm), so a parent deploy whose child
- * row is unchanged never re-runs the child, and `cdkd scrub` cannot repair
- * it either -- it walks the child's stored bag with no inherited bag.
+ * row is unchanged never re-runs the child. `cdkd scrub` of the parent
+ * repairs it: since go-to-k/cdkd#2252 scrub walks each nested child with the
+ * parent row's bag as its inherited bag, re-running this carry for the row.
  */
 export function recordNestedStackParameterExpressions(
   secrets: RecordedSecretValues,

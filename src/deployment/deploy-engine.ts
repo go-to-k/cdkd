@@ -2020,7 +2020,8 @@ export class DeployEngine {
    * `Provider` samples encourage — makes `Data.X` equal the resource's own
    * `ServiceToken`, and registering that rewrites `properties.ServiceToken` to
    * `***` in the record `CustomResourceProvider.delete` reads it back from,
-   * where the mask is a truthy string that passes both of that method's guards.
+   * which can then no longer address the handler and skips the delete
+   * (go-to-k/cdkd#3938).
    * A value already present in the template is not handler-GENERATED, so
    * excluding it gives up no secrecy — and where the template value IS a
    * resolved secret it already carries a real EXPRESSION needle, which
