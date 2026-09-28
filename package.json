@@ -115,7 +115,7 @@
   },
   "devDependencies": {
     "@ox-content/theme-swiss": "^3.2.8",
-    "@ox-content/vite-plugin": "3.2.8",
+    "@ox-content/vite-plugin": "3.2.9",
     "@types/adm-zip": "^0.5.8",
     "@types/archiver": "^8.0.0",
     "@types/graphlib": "^2.1.12",
@@ -124,7 +124,7 @@
     "@types/ws": "^8.18.1",
     "aws-cdk-lib": "^2.260.0",
     "constructs": "^10.5.0",
-    "marked": "18.0.13",
+    "marked": "18.0.14",
     "playwright": "1.63.0",
     "typescript": "^7.0.2",
     "typescript-v6": "npm:typescript@^6.0.3",
