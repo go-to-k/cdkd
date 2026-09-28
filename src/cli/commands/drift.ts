@@ -7215,8 +7215,8 @@ function reportPath(path: string): string {
 
 /**
  * One `<path>: <from> -> <to>` line of a `--accept` / `--revert` plan, each
- * value through `reportValue` and the whole row a `safeMsg` template, exactly
- * as a `-` / `+` line of the report (issue go-to-k/cdkd#3949). The revert plan
+ * value through `reportPlanValue` and the whole row a `safeMsg` template, as a
+ * `-` / `+` line of the report is (issue go-to-k/cdkd#3949). The revert plan
  * is printed directly above the confirmation prompt, so a forged row here
  * misstates what the operator is about to confirm.
  */
@@ -7225,14 +7225,20 @@ function reportPlanChangeLine(path: string, from: unknown, to: unknown): string 
 }
 
 /**
- * `reportValue`, plus one more reason to quote a string: it contains the
- * plan's own ` -> ` separator. Unquoted, a readback value `prod -> prod` would
- * print `Env: prod -> prod -> staging`, and the reader could not tell which
- * value the revert pushes. Quoted, it cannot be misread, since an unquoted
- * value never starts with `"`.
+ * `reportValue`, plus one more reason to quote a string: it contains `->`,
+ * the arrow of the plan's own ` -> ` separator. Unquoted, a readback value
+ * `prod -> prod` would print `Env: prod -> prod -> staging`, and the reader
+ * could not tell which value the revert pushes. Matching the ARROW rather
+ * than ` -> ` is what makes that hold: `a ->` / `b` and `a` / `-> b` would
+ * otherwise both print `a -> -> b` (the line supplies the missing space), and
+ * a look-alike space around the arrow would pass. With no unquoted value
+ * containing `->`, the first `->` after the path is the separator. A
+ * structured value needs no rule: JSON has no `->` of its own, so one inside
+ * it sits between JSON's quotes. The quoted form is `reportValue`'s own, so a
+ * string it would quote anyway prints the same either way.
  */
 function reportPlanValue(value: unknown): string {
-  if (typeof value === 'string' && value.includes(' -> ') && reportValue(value) === value) {
+  if (typeof value === 'string' && value.includes('->')) {
     return escapeJsonLiterals(JSON.stringify(value));
   }
   return reportValue(value);

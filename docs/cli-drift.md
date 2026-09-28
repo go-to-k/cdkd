@@ -252,8 +252,8 @@ change's path and both of its values, and the readback tag keys and paths the
 revert plan lists as preserved or left untouched. A readback key is masked for
 secrets first and only then cut and sanitized, so the cut can never leave part
 of a secret unmasked. A plan line prints `<path>: <from> -> <to>`, so a string
-value that itself contains ` -> ` is quoted there too, and the line still says
-which value is which.
+value that itself contains `->` is quoted there too, and the first `->` outside
+quotes is always the separator.
 
 `--json` is untouched — a consumer of that mode wants the stored value.
 

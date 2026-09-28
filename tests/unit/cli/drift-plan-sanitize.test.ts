@@ -362,22 +362,34 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     expect(revert.lines).toContain('    Padded: " value " -> value');
   });
 
-  it("quotes a plan value containing the plan's own ' -> ' separator, on either side", () => {
+  it("quotes a plan value containing the separator's arrow, on either side, so each line splits one way", () => {
     // Unquoted, `Env: prod -> prod -> staging` would not say which value the
-    // revert pushes. Only on a plan line: the report's `-` / `+` rows carry no
-    // separator, so it stays unquoted there.
+    // revert pushes. The ARROW is matched, not ` -> `: `a ->` / `b` and `a` /
+    // `-> b` would otherwise both print `a -> -> b`, and a no-break space
+    // around the arrow would pass. Only on a plan line: the report's `-` / `+`
+    // rows carry no separator, so it stays unquoted there.
     const changes: Change[] = [
       { path: 'Env', stateValue: 'staging', awsValue: 'prod -> prod' },
       { path: 'Rev', stateValue: 'a -> b', awsValue: 'c' },
-      { path: 'Plain', stateValue: 'a->b', awsValue: 'c' },
+      { path: 'Tight', stateValue: 'a->b', awsValue: 'c' },
+      { path: 'TrailingArrow', stateValue: 'b', awsValue: 'a ->' },
+      { path: 'LeadingArrow', stateValue: '-> b', awsValue: 'a' },
+      { path: 'Nbsp', stateValue: 'staging', awsValue: 'prod\u00a0->\u00a0prod' },
+      { path: 'Plain', stateValue: 'a-b', awsValue: 'c>d' },
     ];
     const revert = render(printRevertPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
     expect(revert.lines).toContain('    Env: "prod -> prod" -> staging');
     expect(revert.lines).toContain('    Rev: c -> "a -> b"');
-    expect(revert.lines).toContain('    Plain: c -> a->b');
+    expect(revert.lines).toContain('    Tight: c -> "a->b"');
+    expect(revert.lines).toContain('    TrailingArrow: "a ->" -> b');
+    expect(revert.lines).toContain('    LeadingArrow: a -> "-> b"');
+    expect(revert.lines).toContain('    Nbsp: "prod\u00a0->\u00a0prod" -> staging');
+    expect(revert.lines).toContain('    Plain: c>d -> a-b');
     const accept = render(printAcceptPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
     expect(accept.lines).toContain('    Env: staging -> "prod -> prod"');
     expect(accept.lines).toContain('    Rev: "a -> b" -> c');
+    expect(accept.lines).toContain('    TrailingArrow: b -> "a ->"');
+    expect(accept.lines).toContain('    LeadingArrow: "-> b" -> a');
   });
 
   it('caps a plan path, never a plan value', () => {
@@ -437,11 +449,13 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     ['accept: region on the nothing-accepted heading', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ region: v, resources: REFUSED, outcomes: [drifted('R', 'T', [CHANGE])] })],
     ['accept: logical id on a ~ row', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ outcomes: [drifted(v, 'T', [CHANGE])] })],
     ['accept: resource type on a ~ row', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ outcomes: [drifted('R', v, [CHANGE])] })],
+    ['accept: logical id on a baseline-refused ~ row', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ resources: { [v]: { observedBaselineRefused: true } }, outcomes: [drifted(v, 'T', [CHANGE])] })],
     ['accept: resource type on a baseline-refused ~ row', printAcceptPlan, IDENT_MAX_CODE_POINTS, (v) => report({ resources: REFUSED, outcomes: [drifted('R', v, [CHANGE])] })],
     ['revert: stack name on the heading', printRevertPlan, STACK_REF_MAX_CODE_POINTS, (v) => report({ stackName: v, outcomes: [drifted('R', 'T', [CHANGE])] })],
     ['revert: region on the heading', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ region: v, outcomes: [drifted('R', 'T', [CHANGE])] })],
     ['revert: logical id on a provider.update row', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ outcomes: [drifted(v, 'T', [CHANGE])] })],
     ['revert: resource type on a provider.update row', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ outcomes: [drifted('R', v, [CHANGE])] })],
+    ['revert: logical id on a NOT-reverted ! row', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ resources: { [v]: { observedBaselineRefused: true } }, outcomes: [drifted(v, 'T', [CHANGE])] })],
     ['revert: resource type on a NOT-reverted ! row', printRevertPlan, IDENT_MAX_CODE_POINTS, (v) => report({ resources: REFUSED, outcomes: [drifted('R', v, [CHANGE])] })],
   ];
   for (const [name, print, cap, build] of CAP_SITES) {
@@ -452,7 +466,7 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     });
   }
 
-  it('renders the ordinary SKIPPED, ! and readback-list rows byte-for-byte as before', () => {
+  it('renders the ordinary nothing-accepted plan byte-for-byte, and the ordinary SKIPPED, ! and readback-list rows unchanged', () => {
     const accept = render(
       printAcceptPlan,
       report({
