@@ -18,6 +18,7 @@ import {
   retryClassificationText,
 } from './retryable-errors.js';
 import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
+import { isAuxiliaryFailure, markAuxiliaryFailure } from '../provisioning/auxiliary-failure.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 export interface RetryLogger {
@@ -342,12 +343,34 @@ export async function withRetry<T>(
   // the raw AWS error with nothing printed, which is exactly the silence issue
   // #2018 existed to remove for the propagation class. Reporting only.
   let serverErrorRetries = 0;
+  // Issue #3972: latches once an attempt failed with an AUXILIARY-marked error
+  // (`markAuxiliaryFailure`) and never clears. That attempt's main create had
+  // SUCCEEDED, and a provider that does not retire what it materialized leaves
+  // the resource in place, so the REPLAY's main create can collide with it --
+  // an "already exists" raised before the replay's own flag is set, unmarked,
+  // which the name-collision classifier would credit to the resource and a
+  // caller would answer by DELETING a live one (`--replace`'s old resource, the
+  // rollback reverse-replacement's new one). So every error this call throws
+  // after the latch carries the auxiliary mark forward. Retry behaviour is
+  // unchanged: the latch changes only what the thrown error is anchored to.
+  //
+  // It also covers the NESTED loops (the delete-then-re-create sites wrap a
+  // default-schedule `withRetry` inside one retrying "already exists"): the
+  // inner loop's throw carries the mark, so the outer loop latches on it, and
+  // its later attempts -- each a fresh inner loop that never saw the auxiliary
+  // failure -- are marked by the outer one.
+  let sawAuxiliary = false;
+  const settle = (error: unknown): unknown =>
+    sawAuxiliary ? markAuxiliaryFailure(error, logicalId) : error;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {
       return await operation();
     } catch (error) {
       lastError = error;
+      if (isAuxiliaryFailure(error)) {
+        sawAuxiliary = true;
+      }
       // `.detail` IS that ternary minus the throw. `withRetry` wraps
       // `provider.delete`, so this catch is on the destroy path one hop in --
       // the FOURTH out-throw found there, after three passes each called the
@@ -378,7 +401,7 @@ export async function withRetry<T>(
       // Hoisting the check above the branch fences every caller at once,
       // without widening a single classifier signature.
       if (isMarkedNonRetryable(error)) {
-        throw error;
+        throw settle(error);
       }
 
       const retryable = opts.isRetryable
@@ -524,7 +547,7 @@ export async function withRetry<T>(
             // ignore -- the original error below is what matters
           }
         }
-        throw error;
+        throw settle(error);
       }
 
       const delay = propagation

@@ -50,7 +50,9 @@ the bounded `cause` chain for the error name and the Cloud Control
    provider's `create()` puts a failing AUXILIARY write (anything but the
    main create and its cleanup) behind that anchor with `markAuxiliaryFailure`
    (`src/provisioning/auxiliary-failure.ts`, #3826; the DynamoDB GlobalTable
-   is residual #3877).
+   is residual #3877). `withRetry` carries the mark FORWARD: once an attempt
+   failed auxiliary, every error that call throws is marked, since a replayed
+   create can collide with what that attempt left behind (#3972).
 
 It reaches the SDK error only if providers thread the caught value as `cause` —
 enforced by `scripts/check-provider-error-cause.ts`.

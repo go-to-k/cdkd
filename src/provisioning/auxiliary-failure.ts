@@ -52,6 +52,33 @@ export function auxiliaryLogicalId(ownerLogicalId: string): string {
 }
 
 /**
+ * True when `error`'s chain carries an auxiliary mark: a link, within the
+ * bounded walk {@link markAuxiliaryFailure} makes, whose own `logicalId` is an
+ * {@link auxiliaryLogicalId}. Reads own properties only, as the marker writes
+ * them, and never throws.
+ *
+ * The retry wrapper's reader (issue
+ * [#3972](https://github.com/go-to-k/cdkd/issues/3972)): an attempt that failed
+ * auxiliary may have left the resource behind, so a REPLAYED create can
+ * collide with it before the replay's own flag is set.
+ */
+export function isAuxiliaryFailure(error: unknown): boolean {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < MAX_DEPTH && typeof current === 'object' && current !== null;
+    depth++
+  ) {
+    const own = Object.getOwnPropertyDescriptor(current, 'logicalId');
+    if (typeof own?.value === 'string' && own.value.endsWith(AUXILIARY_LOGICAL_ID_SUFFIX)) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
  * Mark `error` (or the first link under it that carries no logical id of its
  * own) as the failure of an auxiliary call made while creating
  * `ownerLogicalId`. Returns `error` so a `catch` can write
