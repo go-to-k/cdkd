@@ -7232,7 +7232,8 @@ function reportPlanChangeLine(path: string, from: unknown, to: unknown): string 
  * than ` -> ` is what makes that hold: `a ->` / `b` and `a` / `-> b` would
  * otherwise both print `a -> -> b` (the line supplies the missing space), and
  * a look-alike space around the arrow would pass. With no unquoted value
- * containing `->`, the first `->` after the path is the separator. A
+ * containing `->`, the only `->` outside quotes after the path is the
+ * separator (the path itself is unquoted, as on the report's rows). A
  * structured value needs no rule: JSON has no `->` of its own, so one inside
  * it sits between JSON's quotes. The quoted form is `reportValue`'s own, so a
  * string it would quote anyway prints the same either way.
