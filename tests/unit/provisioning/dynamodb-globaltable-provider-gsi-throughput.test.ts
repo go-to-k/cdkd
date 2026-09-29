@@ -1676,3 +1676,95 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
     });
   });
 });
+
+describe('GSI modify check ignores object key order (issue #3775)', () => {
+  let provider: DynamoDBGlobalTableProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockAutoScalingSend.mockReset();
+    warnSpy.mockReset();
+    mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: 'od-table',
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+      },
+    });
+    provider = new DynamoDBGlobalTableProvider();
+  });
+
+  /** ON_DEMAND_TABLE_PROPS with gsi2 projected as INCLUDE in the given member order. */
+  const withProjection = (projection: Record<string, unknown>): Record<string, unknown> => {
+    const props = structuredClone(ON_DEMAND_TABLE_PROPS);
+    (props['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]!['Projection'] = projection;
+    return props;
+  };
+  // `aws-cdk-lib` renders `{NonKeyAttributes, ProjectionType}`; an SDK readback
+  // is `{ProjectionType, NonKeyAttributes}`.
+  const TEMPLATE_ORDER = { NonKeyAttributes: ['a', 'b'], ProjectionType: 'INCLUDE' };
+  const READBACK_ORDER = { ProjectionType: 'INCLUDE', NonKeyAttributes: ['a', 'b'] };
+
+  const gsiUpdates = (): unknown[] =>
+    mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c): c is UpdateTableCommand => c instanceof UpdateTableCommand)
+      .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? []);
+
+  it('sends no GSI Update for an unchanged INCLUDE index whose Projection differs only in key order', async () => {
+    await provider.update(
+      'OnDemand',
+      'od-table',
+      RESOURCE_TYPE,
+      withProjection(READBACK_ORDER),
+      withProjection(TEMPLATE_ORDER),
+      { desiredFromAwsReadback: true }
+    );
+
+    expect(gsiUpdates()).toEqual([]);
+  });
+
+  it('does not advise recreating an unchanged INCLUDE index with no on-demand ceiling', async () => {
+    // With no ceiling a misclassified index has nothing to send, so it reaches
+    // the "Recreate the index" warning instead of an `Update` action.
+    const withoutCeilings = (projection: Record<string, unknown>): Record<string, unknown> => {
+      const props = withProjection(projection);
+      delete (props['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ];
+      delete (props['Replicas'] as Record<string, unknown>[])[0]!['GlobalSecondaryIndexes'];
+      return props;
+    };
+
+    await provider.update(
+      'OnDemand',
+      'od-table',
+      RESOURCE_TYPE,
+      withoutCeilings(READBACK_ORDER),
+      withoutCeilings(TEMPLATE_ORDER),
+      { desiredFromAwsReadback: true }
+    );
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(warned.some((m) => m.includes('Recreate the index under a new name'))).toBe(false);
+    expect(gsiUpdates()).toEqual([]);
+  });
+
+  it('still classifies a real Projection change as modified (NonKeyAttributes differ)', async () => {
+    await provider.update(
+      'OnDemand',
+      'od-table',
+      RESOURCE_TYPE,
+      withProjection({ ProjectionType: 'INCLUDE', NonKeyAttributes: ['a', 'c'] }),
+      withProjection(TEMPLATE_ORDER),
+      { desiredFromAwsReadback: true }
+    );
+
+    // A modified on-demand index re-sends its ceilings in an `Update` action.
+    expect(gsiUpdates()).toEqual([
+      expect.objectContaining({ Update: expect.objectContaining({ IndexName: 'gsi2' }) }),
+    ]);
+  });
+});

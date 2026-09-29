@@ -236,6 +236,20 @@ describe('DynamoDBGlobalTableProvider template-path refusals (issue #3740)', () 
     });
   });
 
+  it('does NOT refuse an unchanged malformed value whose members differ only in key order (issue #3775)', async () => {
+    await expect(
+      edit(
+        'StreamSpecification',
+        { StreamViewType: null, StreamEnabled: true },
+        { StreamEnabled: true, StreamViewType: null }
+      )
+    ).resolves.toBeDefined();
+    expect(commandNames()).toContain('TagResourceCommand');
+    await expect(
+      edit('GlobalSecondaryIndexes', { IndexName: 'g', Projection: {} }, { Projection: {}, IndexName: 'g' })
+    ).resolves.toBeDefined();
+  });
+
   it('refuses the FIRST failing arm only, in read order (BillingMode before StreamSpecification)', async () => {
     const error = await provider
       .update(
