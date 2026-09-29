@@ -307,6 +307,19 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('update refuses a malformed desired Tags before reading a secret-derived target list', async () => {
+      await expect(
+        provider.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: ['c1'], Tags: 'team=db' },
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: '{{resolve:ssm:targets}}' }
+        )
+      ).rejects.toThrow(/desired Tags of AWS::RDS::DBProxyTargetGroup TG is not a list of tags/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('update refuses a wrong-region client before any call', async () => {
       await expect(
         provider.update(

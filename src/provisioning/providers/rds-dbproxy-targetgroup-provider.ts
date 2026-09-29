@@ -477,6 +477,18 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       }
     }
 
+    // Refused on every path, before any call: a malformed desired list read as
+    // empty would untag every live key (tag-list.ts).
+    refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      physicalId,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
+
     // Every AWS call below -- the live target read, the pool, deregister and
     // register calls -- addresses the proxy by NAME, which another region can
     // also hold, and the deregister arm reads NotFound as success: refuse a
@@ -564,17 +576,6 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       );
     }
 
-    // Refused on every path, before any call: a malformed desired list read as
-    // empty would untag every live key (tag-list.ts).
-    refuseMalformedDesiredTags(
-      properties['Tags'],
-      resourceType,
-      logicalId,
-      physicalId,
-      'Tags',
-      DBPROXY_TAGS_WHAT,
-      DBPROXY_TAG_OPTIONS
-    );
     const tagPlan = planTagDiff(
       previousProperties['Tags'],
       properties['Tags'],
