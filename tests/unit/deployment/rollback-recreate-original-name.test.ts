@@ -749,9 +749,8 @@ describe('a secret-derived name never reaches the log in a derived spelling (#40
       state: { R: row(newId, '/new/') },
     };
   }
-  // The two lines this change adds. The executor's older lines render a
-  // physical id with the literal mask alone (a filed follow-up), so they are
-  // not what these cases pin.
+  // The two lines this change adds. The executor's other lines are pinned by
+  // `rollback-executor-derived-name-mask.test.ts` (#4037).
   const logged = (): string[] => [...chose(), ...unreproduced()];
 
   it('an unreproduced id: the warning names neither derivation', async () => {
@@ -831,6 +830,57 @@ describe('a secret-derived name never reaches the log in a derived spelling (#40
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain('its physical id is withheld, as its name is secret-derived or unreadable');
     expect(warned[0]).not.toContain('hidden-name');
+    // Only the NAME is unreadable, so only the name is named (#4035 review).
+    expect(warned[0]).toContain('cdkd cannot read its RoleName to compare;');
+  });
+
+  it('an old physical id cdkd cannot read is the only thing named as unreadable', async () => {
+    fakeIam(['b']);
+    const { op, state } = replaceRole('', 'b');
+
+    await replayIn(true, () => replayRollback([op], state, STACK, ctxFor(new IAMRoleProvider())));
+
+    const warned = unreproduced();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain('cdkd cannot read its physical id to compare;');
+    expect(warned[0]).not.toContain('its RoleName or');
+  });
+
+  it('a logical id that is not a string: nothing is unreadable, but no name can be derived', async () => {
+    fakeIam(['b']);
+    const { op, state } = replaceRole('MyStack-a', 'b');
+    const numeric = { ...op, logicalId: 7 as unknown as string };
+
+    await replayIn(true, () =>
+      replayRollback([numeric], { 7: state['R']! }, STACK, ctxFor(new IAMRoleProvider()))
+    );
+
+    const warned = unreproduced();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain('cdkd cannot derive the names its RoleName takes to compare;');
+  });
+
+  it('both unreadable: the warning names both', async () => {
+    fakeIam(['b']);
+    const row = (id: string, path: string): ResourceState => ({
+      ...roleRow(id, { Path: path }),
+      properties: { RoleName: 7, AssumeRolePolicyDocument: TRUST, Path: path },
+    });
+    const op: CompletedOperation = {
+      logicalId: 'R',
+      changeType: 'UPDATE',
+      resourceType: ROLE,
+      physicalId: 'b',
+      previousState: row('', '/old/'),
+    };
+
+    await replayIn(true, () =>
+      replayRollback([op], { R: row('b', '/new/') }, STACK, ctxFor(new IAMRoleProvider()))
+    );
+
+    const warned = unreproduced();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain('cdkd cannot read its RoleName or its physical id to compare;');
   });
 
   it('a plaintext the display escapes is masked BEFORE it is rendered', async () => {

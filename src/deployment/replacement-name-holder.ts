@@ -406,16 +406,16 @@ export function replayPrefixChoice(input: {
   ) {
     return { kind: 'unreproduced', skipPrefix: recorded, property, declared, names: undefined };
   }
-  const logicalId = input.logicalId;
-  const nameUnder = (skip: boolean): string =>
-    withSkipPrefix(skip, () =>
-      generateResourceNameWithFallback(declared, logicalId, { maxLength: rewrite.maxLength })
-    );
+  const [skipped = '', kept = ''] = rewrittenNameSpellings(
+    input.resourceType,
+    declared,
+    input.logicalId
+  );
   const fold = CASE_INSENSITIVE_NAME_TYPES.has(input.resourceType)
     ? (value: string): string => value.toLowerCase()
     : (value: string): string => value;
   const id = fold(input.physicalId);
-  const names = { skipped: nameUnder(true), kept: nameUnder(false) };
+  const names = { skipped, kept };
   const reproduces = (skip: boolean): boolean => {
     const name = skip ? names.skipped : names.kept;
     return name !== '' && holderIdNames(id, fold(name));
@@ -424,6 +424,26 @@ export function replayPrefixChoice(input: {
   if (reproduces(recorded)) return { kind: 'reproduced', skipPrefix: recorded, ...decided };
   if (reproduces(!recorded)) return { kind: 'reproduced', skipPrefix: !recorded, ...decided };
   return { kind: 'unreproduced', skipPrefix: recorded, property, declared, names };
+}
+
+/**
+ * The names a `SENT_NAME_REWRITTEN` type's provider derives from `declared`
+ * under EACH prefix setting, in the caller's async scope (stack name), for the
+ * rollback executor's derived-name masks (go-to-k/cdkd#4037). Empty for any
+ * other type, a nameless bag, or an id cdkd cannot derive from.
+ */
+export function rewrittenNameSpellings(
+  resourceType: string,
+  declared: string,
+  logicalId: unknown
+): string[] {
+  const rewrite = ownEntry(SENT_NAME_REWRITTEN, resourceType);
+  if (rewrite === undefined || declared === '' || typeof logicalId !== 'string') return [];
+  return [true, false].map((skip) =>
+    withSkipPrefix(skip, () =>
+      generateResourceNameWithFallback(declared, logicalId, { maxLength: rewrite.maxLength })
+    )
+  );
 }
 
 /** The rewriting types and their generator options, for the fence. */

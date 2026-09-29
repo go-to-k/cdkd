@@ -66,13 +66,32 @@ import type {
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { equalIdNamesDifferentResources, equalIdNamesSameResource } from './type-change-guard.js';
-import { replayPrefixChoice, reverseReplacementNewHoldsName } from './replacement-name-holder.js';
+import {
+  replayPrefixChoice,
+  reverseReplacementNewHoldsName,
+  reverseReplacementRewrittenNameTypes,
+  rewrittenNameSpellings,
+} from './replacement-name-holder.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
-import { applyDefaultNameForFallback, withSkipPrefix } from '../provisioning/resource-name.js';
+import {
+  applyDefaultNameForFallback,
+  explicitNamePropertyFor,
+  withSkipPrefix,
+} from '../provisioning/resource-name.js';
+// Issues #2038 / #4037: every `withRetry` site's `RetryLogger`, and the
+// derived-name masks, run over one op's masker (`createOpMasker`) — the
+// providers' shared module, not a second copy of that security contract.
+import {
+  createMaskedLogSinks,
+  createMaskedRetryLogger,
+  withDerivedNameMasks,
+  type MaskerFn,
+} from '../provisioning/masked-retry-logger.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
+  finalSnapshotNamePrefix,
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
   effectiveDeletionPolicy,
@@ -91,7 +110,6 @@ import {
   redactSecretsForState,
   createSecretMasker,
   carryLogOnlyValues,
-  hasMaskableValues,
   dynamicReferenceTokens,
   maskSecretsInError,
   maskSecretsInText,
@@ -102,11 +120,6 @@ import {
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { withRetry } from './retry.js';
-// Issue #2038: the masking `RetryLogger` this file threads at all three of its
-// `withRetry` sites. Shared with `drift.ts` and the deploy engine's two
-// `--replace` sites rather than hand-copied — see that module's header for why
-// it is not in the no-import leaf `secret-redaction.ts`.
-import { maskingRetryLogger } from './masking-retry-logger.js';
 import {
   isNameCollisionErrorFrom,
   isNameCooldownError,
@@ -233,15 +246,18 @@ function replayingStateCreateContext(secrets: RecordedSecretValues): CreateConte
  * AWS-authored identifiers, not message text, and #2038 traced all three as
  * non-sensitive.
  */
-function maskedRollbackEventError(
-  error: unknown,
-  secrets: RecordedSecretValues
-): DeploymentEventError {
+function maskedRollbackEventError(error: unknown, mask: MaskerFn): DeploymentEventError {
   const extracted = extractDeploymentEventError(error);
-  // `hasMaskableValues` (go-to-k/cdkd#1998): a bag seeded with log-only
-  // needles alone still masks the event.
-  if (!hasMaskableValues(secrets)) return extracted;
-  return { ...extracted, message: maskSecretsInText(extracted.message, secrets) };
+  // One of this module's own refusals (#4099 review): the two collision
+  // refusals are masked at CONSTRUCTION bar their re-run and `--orphan`
+  // commands, which must reach the reader intact; the unroutable refusal
+  // carries no physical id or name at all (logical id, types, fixed prose).
+  if (isOwnRemedyError(error)) return extracted;
+  // The op's masker (issue #4037), not the bag alone: an arm that resolved no
+  // secret still masks a secret-derived physical id. Identity when nothing
+  // changed, so an event with nothing to mask keeps its extracted object.
+  const message = mask(extracted.message);
+  return message === extracted.message ? extracted : { ...extracted, message };
 }
 
 /**
@@ -306,6 +322,21 @@ function safe(value: unknown): string {
  * module did not register.
  */
 const OWN_REMEDY_ERRORS = new WeakSet<Error>();
+
+/** Is this one of the refusals {@link ownRemedyError} registered? */
+function isOwnRemedyError(error: unknown): boolean {
+  return error instanceof Error && OWN_REMEDY_ERRORS.has(error);
+}
+
+/**
+ * The per-op failure text through the op's masker, except for one of this
+ * module's own refusals, which {@link maskedRollbackEventError} explains: a
+ * short id needle would otherwise cut into their pasteable commands.
+ */
+function maskedFailureText(prefix: string, error: unknown, mask: MaskerFn): string {
+  const text = rollbackFailureText(error);
+  return prefix + (isOwnRemedyError(error) ? text : mask(text));
+}
 
 /** Register an error {@link rollbackFailureText} may render per line. */
 function ownRemedyError<E extends Error>(error: E): E {
@@ -584,8 +615,16 @@ export function retainedSurvivorMessages(
   logicalId: string,
   resourceType: string,
   survivorPhysicalId: string,
-  stateClause: string
+  stateClause: string,
+  /**
+   * The op's masker (issue #4037), applied to the RAW id and clause before
+   * either half renders them: `displaySafe` could change the spelling a
+   * needle matches. Identity by default.
+   */
+  mask: MaskerFn = (text) => text
 ): { warn: string; reason: string } {
+  const survivorId = mask(survivorPhysicalId);
+  const clause = mask(stateClause);
   // The two halves have different READERS, so the same inputs take different
   // treatment (issue #3092). `warn` is a terminal line: its journal-sourced
   // `logicalId` / `resourceType` take `safe()`, and `survivorPhysicalId` /
@@ -599,14 +638,14 @@ export function retainedSurvivorMessages(
   return {
     warn:
       `  ⚠ ${safe(logicalId)} (${safe(resourceType)}) has UpdateReplacePolicy: Retain — the ` +
-      `replacement's new physical resource (${displaySafe(survivorPhysicalId)}) is RETAINED by this ` +
+      `replacement's new physical resource (${displaySafe(survivorId)}) is RETAINED by this ` +
       `rollback and is no longer tracked by cdkd: it keeps running and incurring cost, ` +
       `and \`cdkd destroy\` will not remove it. Delete it yourself once you no longer ` +
-      `need it. ${displaySafe(stateClause)}`,
+      `need it. ${displaySafe(clause)}`,
     reason:
       `UpdateReplacePolicy: Retain kept the replacement's new ${resourceType} ` +
-      `(${survivorPhysicalId}); it is live, still billing, and no longer tracked by ` +
-      `cdkd. ${stateClause}`,
+      `(${survivorId}); it is live, still billing, and no longer tracked by ` +
+      `cdkd. ${clause}`,
   };
 }
 
@@ -715,13 +754,13 @@ interface RestorableBaselineRefusal {
  * at all, and nothing is re-created. Advisory either way — not counted in
  * `result.warnings`, which maps to exit 2 while the op itself succeeds.
  *
- * Every value is masked with the op's bag: the names derive from the
- * PLAINTEXT replay properties.
+ * Every value is masked with the op's masker ({@link createOpMasker}): the
+ * names derive from the PLAINTEXT replay properties.
  */
 function replayPrefixScope(
   input: Parameters<typeof replayPrefixChoice>[0] & { logicalId: string },
   logger: Logger,
-  secrets: RecordedSecretValues,
+  mask: MaskerFn,
   restoring: boolean
 ): <T>(fn: () => T) => T {
   const choice = replayPrefixChoice(input);
@@ -738,7 +777,7 @@ function replayPrefixScope(
   // another case under IAM's fold), so for such a name neither the
   // derivations NOR the physical id is shown.
   const declared = choice.declared;
-  const secretDerived = declared !== undefined && maskSecretsInText(declared, secrets) !== declared;
+  const secretDerived = declared !== undefined && mask(declared) !== declared;
   // A name the op declared but cdkd cannot read (a leftover mask or
   // `{{resolve:...}}`, a non-string) may be a secret this op never resolved:
   // its physical id is withheld the same way.
@@ -746,28 +785,40 @@ function replayPrefixScope(
   // Masked BEFORE `displayIdent` escapes / cuts it, while the value still has
   // the spelling the masker matches (the holder diagnosis's own order), and
   // quoted only when `displayIdent` did not already quote it.
-  const shown = (value: unknown): string => displayIdent(maskSecretsInText(String(value), secrets));
+  const shown = (value: unknown): string => displayIdent(mask(String(value)));
   const quoted = (value: string): string => {
-    const masked = maskSecretsInText(value, secrets);
+    const masked = mask(value);
     const rendered = displayIdent(masked);
     return rendered === masked ? `"${masked}"` : rendered;
   };
   if (choice.kind === 'reproduced' && choice.skipPrefix !== choice.recorded) {
     logger.info(
-      maskSecretsInText(
+      mask(
         `  Rollback: ${restoring ? 're-creating' : 'reverting'} ${subject} under the ` +
           `user-supplied-name prefix setting that created ` +
           (withheld
             ? `it (its physical id is withheld, as its name is secret-derived): `
             : `${shown(input.physicalId)} (`) +
           `stack-name prefix ${setting(choice.skipPrefix)}; the failed deploy ran with it ` +
-          `${setting(choice.recorded)}${withheld ? '' : ')'}`,
-        secrets
+          `${setting(choice.recorded)}${withheld ? '' : ')'}`
       )
     );
   } else if (choice.kind === 'unreproduced' && restoring) {
+    // Name only the half cdkd could not read (the #4035 review): the two
+    // derivations are missing when the declared name, the old physical id, or
+    // (for a journal that is not a string) the logical id they derive from is.
+    const idUnreadable = typeof input.physicalId !== 'string' || input.physicalId === '';
+    const prop = safe(choice.property);
+    const unreadable =
+      declared === undefined
+        ? idUnreadable
+          ? `its ${prop} or its physical id`
+          : `its ${prop}`
+        : idUnreadable
+          ? `its physical id`
+          : undefined;
     logger.warn(
-      maskSecretsInText(
+      mask(
         `  ⚠ ${subject}: cdkd cannot tell which user-supplied-name prefix setting created the ` +
           `old resource (` +
           (withheld
@@ -775,20 +826,243 @@ function replayPrefixScope(
             : shown(input.physicalId)) +
           `) — ` +
           (choice.names === undefined
-            ? `cdkd cannot read its ${safe(choice.property)} or its physical id to compare`
+            ? unreadable !== undefined
+              ? `cdkd cannot read ${unreadable} to compare`
+              : `cdkd cannot derive the names its ${prop} takes to compare`
             : secretDerived
-              ? `its ${safe(choice.property)} is secret-derived, and neither name it derives ` +
-                `matches`
-              : `its ${safe(choice.property)} derives to ${quoted(choice.names.skipped)} (prefix ` +
+              ? `its ${prop} is secret-derived, and neither name it derives matches`
+              : `its ${prop} derives to ${quoted(choice.names.skipped)} (prefix ` +
                 `skipped) or ${quoted(choice.names.kept)} (prefix kept), and it is neither`) +
           `; re-creating it with the stack-name prefix ${setting(choice.skipPrefix)}, as the ` +
-          `failed deploy ran, so it may come back under a different physical name.`,
-        secrets
+          `failed deploy ran, so it may come back under a different physical name.`
       )
     );
   }
   const skip = choice.skipPrefix;
   return (fn) => withSkipPrefix(skip, fn);
+}
+
+/**
+ * One op's text masker (issue go-to-k/cdkd#4037), and the ONE masker every
+ * line, error and event reason a replay arm renders goes through.
+ *
+ * `maskSecretsInText` over the op's `secrets` matches a plaintext LITERALLY,
+ * so a physical id that spells a secret-derived name another way passes it:
+ * a `SENT_NAME_REWRITTEN` provider sends `alice@example.com` as
+ * `MyStack-alice-example-com`, and a record whose name is still a
+ * `{{resolve:...}}` reference (the NEW resource's, or any record on an arm
+ * that resolves nothing) has no plaintext in the bag at all. Each
+ * {@link OpMasker.addNamed} call adds, through the providers' own
+ * `withDerivedNameMasks` predicate, the record's physical ids and — for a
+ * rewriting type — the name its provider derives under BOTH prefix settings,
+ * whenever the record's name is secret-derived.
+ *
+ * `addNamed` evaluates that predicate when it is CALLED, against the bag as it
+ * stands then, so an arm calls it again after `resolveReplayProps` has filled
+ * `secrets` with the plaintext its resolved bag carries. `mask` reads the
+ * latest needles and the bag by reference.
+ */
+interface OpMasker {
+  readonly mask: MaskerFn;
+  readonly addNamed: (record: {
+    resourceType: unknown;
+    properties: unknown;
+    logicalId: unknown;
+    physicalIds: readonly unknown[];
+  }) => void;
+}
+
+/** See {@link OpMasker}. */
+function createOpMasker(logger: Logger, secrets: RecordedSecretValues): OpMasker {
+  const base = createMaskedLogSinks(logger, (text) => maskSecretsInText(text, secrets));
+  const pairs: Array<readonly [unknown, string | undefined]> = [];
+  let sinks = base;
+  return {
+    // TOTAL (review of #4099): a state or journal record can carry a
+    // non-string physical id, which the sites below pass straight in, and the
+    // derived-name arm calls `.split` on its input. A non-string is returned
+    // as it came, for the render around it to stringify as before.
+    mask: (text) => (typeof text === 'string' ? sinks.mask(text) : text),
+    addNamed: (record) => {
+      // Rebuilt over EVERY pair so far, never layered: the helper replaces its
+      // needles longest first, and a later layer's shorter needle
+      // (`alice-example-com`) applied ahead of an earlier layer's longer one
+      // (`MyStack-alice-example-com-0a1b2c3d`) would leave the longer one's
+      // other parts on the line. Re-evaluating the earlier pairs against the
+      // grown bag is safe too: `secrets` only ever gains entries.
+      pairs.push(...secretDerivedNamePairs(record));
+      sinks = withDerivedNameMasks(logger, base, pairs);
+    },
+  };
+}
+
+/**
+ * Top-level name keys spelled neither `...Name` nor `...Identifier`, which that
+ * rule misses (the #4099 reviews measured `ReplicationGroupId`,
+ * `EmailIdentity`, `Domain`, `Family` and `Username` printing; `Username`'s
+ * lowercase `n` is outside the case-sensitive rule). An allow-list, never a blanket
+ * `Id$` or "every key": `ApiId`, `RestApiId`, `UserPoolId`, `VpcId` and the
+ * like are AWS-generated SCOPE ids, and a secret-valued non-name property
+ * (`MasterUserPassword`) would mask an id that is not derived from it. Nested
+ * names (`Budget.BudgetName`, `TableInput.Name`) and a top-level name key this
+ * table does not list are not read: a known bound, recorded on #4099.
+ */
+const OTHER_SPELLED_NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::Cognito::UserPoolDomain': ['Domain'],
+  'AWS::Cognito::UserPoolUser': ['Username'],
+  'AWS::ECS::TaskDefinition': ['Family'],
+  'AWS::ElastiCache::ReplicationGroup': ['ReplicationGroupId'],
+  'AWS::ElastiCache::User': ['UserId'],
+  'AWS::ElastiCache::UserGroup': ['UserGroupId'],
+  'AWS::SES::EmailIdentity': ['EmailIdentity'],
+};
+
+/**
+ * The NAME part of an id an AWS message may quote on its own (#4099 review):
+ *
+ * - an ARN's last `/` segment, and that segment without a `:<revision>`
+ *   suffix (`task-definition/<Family>:<rev>`);
+ * - for any `arn:` id, the last NON-NUMERIC segment of its resource part,
+ *   split on both `/` and `:` (SNS `...:<topic>`, Step Functions
+ *   `...:stateMachine:<name>`, Lambda `...:function:<name>:<version>`), and
+ *   for Secrets Manager that segment without its random `-XXXXXX` suffix;
+ * - a `|` composite's last segment (`<poolId>|<Username>`).
+ *
+ * The last segment is the name for most types, otherwise an AWS-generated id,
+ * which is harmless to mask. Derived spellings, so each clears the literal
+ * masker's substring floor (4) and differs from the id itself.
+ */
+function idNameSegments(id: string): string[] {
+  const segments = new Set<string>();
+  const afterSlash = id.includes('/') ? id.slice(id.lastIndexOf('/') + 1) : undefined;
+  if (afterSlash !== undefined) {
+    segments.add(afterSlash);
+    segments.add(afterSlash.replace(/:\d+$/, ''));
+  }
+  const arn = /^arn:[^:]*:([^:]*):[^:]*:[^:]*:(.+)$/.exec(id);
+  if (arn !== null) {
+    const last = arn[2]!
+      .split(/[/:]/)
+      .reverse()
+      .find((part) => part !== '' && !/^\d+$/.test(part));
+    if (last !== undefined) {
+      segments.add(last);
+      if (arn[1] === 'secretsmanager') segments.add(last.replace(/-[A-Za-z0-9]{6}$/, ''));
+    }
+  }
+  if (id.includes('|')) segments.add(id.slice(id.lastIndexOf('|') + 1));
+  return [...segments].filter((segment) => segment.length >= 4 && segment !== id);
+}
+
+/** A per-type table's OWN entry: an inherited key (`constructor`) is absent. */
+function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
+/**
+ * The `[declared name, spelling derived from it]` pairs one record implies
+ * (see {@link OpMasker}).
+ *
+ * The NAME keys: the rewriting provider's property, the type's explicit name
+ * property, and every other top-level key spelled `...Name` / `...Identifier`
+ * (the security review of #4099 measured an `AWS::Redshift::Cluster`, whose
+ * `ClusterIdentifier` neither table names, printing its id). A key that is not
+ * the resource's name only costs over-masking, and only when its value is
+ * secret-derived. With no such key declared (a logical-id name is no secret),
+ * there is nothing to add.
+ *
+ * The SPELLINGS of each id: itself, lowercased, and the final-snapshot name
+ * prefix built from it (`finalSnapshotNamePrefix`, which a `DeletionPolicy:
+ * Snapshot` rollback logs and quotes), then, for a rewriting type, the names
+ * its provider sends under either flag in the replay's own scope, which an AWS
+ * message quotes back. A reference's "derivations" would spell the
+ * reference, not the secret.
+ */
+function secretDerivedNamePairs(record: {
+  resourceType: unknown;
+  properties: unknown;
+  logicalId: unknown;
+  physicalIds: readonly unknown[];
+}): Array<readonly [unknown, string | undefined]> {
+  const { resourceType, properties, logicalId } = record;
+  if (typeof resourceType !== 'string' || !isRestorableBag(properties)) return [];
+  const rewritten = reverseReplacementRewrittenNameTypes();
+  const named = new Set<string>();
+  const primary = Object.hasOwn(rewritten, resourceType)
+    ? rewritten[resourceType]!.property
+    : explicitNamePropertyFor(resourceType);
+  if (typeof primary === 'string') named.add(primary);
+  for (const key of Object.keys(properties)) {
+    if (/(?:Name|Identifier)$/.test(key)) named.add(key);
+  }
+  for (const key of ownEntry(OTHER_SPELLED_NAME_KEYS, resourceType) ?? []) named.add(key);
+  const ids = record.physicalIds.filter((id): id is string => typeof id === 'string' && id !== '');
+  // The lowercased spelling only where it differs and clears the literal
+  // masker's substring floor (4): it is a DERIVED spelling, and a short one
+  // (`r` from `R`) masks nearly every word of the op's text (#4099 review).
+  const idSpellings = ids.flatMap((id) => [
+    id,
+    ...(id.toLowerCase() === id || id.length < 4 ? [] : [id.toLowerCase()]),
+    finalSnapshotNamePrefix(id, resourceType),
+    ...idNameSegments(id),
+  ]);
+  const pairs: Array<readonly [unknown, string | undefined]> = [];
+  for (const key of named) {
+    if (!Object.hasOwn(properties, key)) continue;
+    // A NON-STRING name is not treated as secret-derived here, unlike
+    // `replayPrefixScope`'s withholding: that one drops one value from one
+    // line, while a needle is replaced everywhere, and a short id (`b`) would
+    // then mask every `b` in the op's text. A name that is the whole mask
+    // (`***`) IS, per the shared predicate (`isSecretDerivedValue`, #4069).
+    const value = properties[key];
+    if (typeof value !== 'string' || value === '') continue;
+    const derived =
+      // Nor a value that IS the mask (`***`, a NoEcho-recorded name): its
+      // "derivation" is `MyStack-***` -> `MyStack`, a needle that would mask
+      // every `MyStack` in the op's text. Its ids stay needles above.
+      key === primary && !value.includes('{{resolve:') && value !== SECRET_MASK
+        ? rewrittenNameSpellings(resourceType, value, logicalId)
+        : [];
+    for (const spelling of [...idSpellings, ...derived]) pairs.push([value, spelling]);
+  }
+  return pairs;
+}
+
+/**
+ * {@link OpMasker.addNamed} for the three records an op can render an id of:
+ * the op's own bag and id, its previous state, and the live record. Each
+ * record's name derives its OWN ids only.
+ */
+function addRecordNames(
+  opMasker: OpMasker,
+  op: {
+    logicalId: unknown;
+    resourceType: unknown;
+    physicalId?: unknown;
+    properties?: unknown;
+    attemptedProperties?: unknown;
+    previousState?: ResourceState | undefined;
+  },
+  current: ResourceState | undefined
+): void {
+  const { logicalId } = op;
+  for (const properties of [op.properties, op.attemptedProperties]) {
+    opMasker.addNamed({
+      resourceType: op.resourceType,
+      properties,
+      logicalId,
+      physicalIds: [op.physicalId],
+    });
+  }
+  for (const record of [op.previousState, current]) {
+    if (record === null || typeof record !== 'object') continue;
+    opMasker.addNamed({
+      resourceType: record.resourceType ?? op.resourceType,
+      properties: record.properties,
+      logicalId,
+      physicalIds: [record.physicalId],
+    });
+  }
 }
 
 function requireRestorableBaseline(
@@ -878,7 +1152,12 @@ function isRestorableBag(bag: unknown): bag is Record<string, unknown> {
 async function prepareCreateRollbackFinalSnapshot(
   op: Pick<CompletedOperation, 'logicalId' | 'resourceType' | 'physicalId'>,
   provisionedBy: 'sdk' | 'cc-api' | undefined,
-  ctx: RollbackExecutorContext
+  ctx: RollbackExecutorContext,
+  /**
+   * The op's masker (issue #4037): the snapshot lines name the physical id and
+   * a snapshot id built from it, at INFO.
+   */
+  mask: MaskerFn
 ): Promise<string | undefined> {
   const { logicalId, resourceType } = op;
   // Callers reach this only past the SAME falsy physical-id guard:
@@ -902,7 +1181,10 @@ async function prepareCreateRollbackFinalSnapshot(
         physicalId,
         logicalId,
         ctx.finalSnapshotClients ?? getAwsClients(),
-        ctx.logger
+        {
+          info: (message) => ctx.logger.info(mask(message)),
+          debug: (message) => ctx.logger.debug(mask(message)),
+        }
       );
       return undefined;
     case 'refuse-cc-routed':
@@ -2319,7 +2601,9 @@ async function updateWithRollbackRetry(
   logicalId: string,
   logger: RollbackExecutorContext['logger'],
   isInterrupted: (() => boolean) | undefined,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  /** The op's masker ({@link createOpMasker}) for the retry lines. */
+  mask: MaskerFn
 ): Promise<ResourceUpdateResult> {
   if (provider.disableOuterRetry) {
     // Single-shot — the provider handles transient errors internally, and an
@@ -2338,7 +2622,7 @@ async function updateWithRollbackRetry(
     // `createWithRollbackRetry` does the same for its two loops.
     safe(logicalId),
     {
-      logger: maskingRetryLogger(logger, secrets),
+      logger: createMaskedRetryLogger(logger, mask),
       ...(isInterrupted && {
         isInterrupted,
         onInterrupted: () => new Error('Rollback interrupted while retrying a resource update'),
@@ -2436,7 +2720,8 @@ async function createWithRollbackRetry(
   logicalId: string,
   logger: RollbackExecutorContext['logger'],
   isInterrupted: (() => boolean) | undefined,
-  secrets: RecordedSecretValues,
+  /** The op's masker ({@link createOpMasker}) for the retry lines. */
+  mask: MaskerFn,
   outer: {
     /**
      * See `RetryOptions.isRetryable` in `./retry.ts`: the argument is the
@@ -2457,7 +2742,7 @@ async function createWithRollbackRetry(
   // Issue #2038: the bag handed to `create()` is PLAINTEXT, and every retry
   // sink below — the per-attempt debug line AND the give-up summary the inner
   // loop can now emit at `warn` — interpolates the AWS message verbatim.
-  const maskedLogger = maskingRetryLogger(logger, secrets);
+  const maskedLogger = createMaskedRetryLogger(logger, mask);
   // The `withRetry` LABEL, display-only in `retry.ts`, rendered ONCE here for
   // both loops -- as `updateWithRollbackRetry` does -- so a caller passes the
   // raw id and the provider call it wraps keeps it (issue #3092).
@@ -2590,6 +2875,13 @@ async function replaySingle(
   const deployBag = ctx.logOnlyNeedlesFor?.(op.logicalId);
   if (deployBag) carryLogOnlyValues(deployBag, secrets);
   /**
+   * This op's masker (issue #4037): `secrets` plus the physical ids and derived
+   * names a secret-derived name implies. Every rendered line, error and event
+   * reason below goes through `mask`, the shared catch's included.
+   */
+  const opMasker = createOpMasker(logger, secrets);
+  const mask = opMasker.mask;
+  /**
    * The route a CREATE-rollback arm resolved for this op (issue #1366) —
    * hoisted so the shared catch's ROLLBACK_RESOURCE_FAILED reports the route
    * the delete was going to take, which is the one a refusal is about. Stays
@@ -2599,6 +2891,10 @@ async function replaySingle(
   let createRollbackRoute: 'sdk' | 'cc-api' | undefined;
 
   try {
+    // The three records this op can render an id of, as they stand: the op's
+    // own, its previous state, and the live one. Inside the `try`, since they
+    // are journal- or state-sourced and the shared catch counts a bad one.
+    addRecordNames(opMasker, op, stateResources[op.logicalId]);
     switch (action) {
       case 'unrecoverable-delete': {
         logger.warn(
@@ -2701,10 +2997,14 @@ async function replaySingle(
             // survivor at all.
             ...(record?.physicalId && {
               physicalId: record.physicalId,
-              reason:
+              // The PROSE is masked (issue #4037); the `physicalId` FIELD is the
+              // cleanup datum and stays exact, like the record `state.json`
+              // itself holds in the same bucket.
+              reason: mask(
                 `--orphan left ${op.logicalId} (${op.resourceType}) in AWS as ` +
-                `${record.physicalId} and dropped it from state; it is live, still billing, ` +
-                `and no longer tracked by cdkd.`,
+                  `${record.physicalId} and dropped it from state; it is live, still billing, ` +
+                  `and no longer tracked by cdkd.`
+              ),
             }),
           });
         } else {
@@ -2780,10 +3080,12 @@ async function replaySingle(
           // holding all along.
           ...(record?.physicalId && {
             physicalId: record.physicalId,
-            reason:
+            // Prose masked, field exact: the `--orphan` twin's note.
+            reason: mask(
               `DeletionPolicy: Retain left ${op.logicalId} (${op.resourceType}) in AWS as ` +
-              `${record.physicalId} and dropped it from state; it is live, still billing, and ` +
-              `no longer tracked by cdkd.`,
+                `${record.physicalId} and dropped it from state; it is live, still billing, and ` +
+                `no longer tracked by cdkd.`
+            ),
           }),
         });
         return;
@@ -2820,7 +3122,8 @@ async function replaySingle(
           finalSnapshotIdentifier = await prepareCreateRollbackFinalSnapshot(
             op,
             deleteProvisionedBy,
-            ctx
+            ctx,
+            mask
           );
         }
         logger.info(
@@ -2885,7 +3188,8 @@ async function replaySingle(
         const prev = op.previousState!;
         logger.info(
           `  Rollback: Reversing replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}) — ` +
-            `deleting the new resource and re-adopting the retained old one (${displaySafe(prev.physicalId)})`
+            `deleting the new resource and re-adopting the retained old one ` +
+            `(${displaySafe(mask(prev.physicalId))})`
         );
         /**
          * Set when this arm ORPHANS the replacement's new copy. Read at the
@@ -2934,7 +3238,8 @@ async function replaySingle(
             op.logicalId,
             op.resourceType,
             current.physicalId,
-            `State is restored to the old resource (${prev.physicalId}).`
+            `State is restored to the old resource (${prev.physicalId}).`,
+            mask
           );
           logger.warn(survivorMessages.warn);
           survivorReason = survivorMessages.reason;
@@ -3007,16 +3312,12 @@ async function replaySingle(
           logicalId: op.logicalId,
           resourceType: op.resourceType,
           ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
-          // The mask on `reason` below is INERT ON THIS ARM, by construction
-          // rather than by accident, and that is worth stating because a
-          // reviewer asked for a test of it. `resolveReplayProps` is what
-          // fills `secrets`, and this arm never calls it -- it performs no
-          // create and resolves no provider properties -- so the bag is
-          // always empty here and `maskSecretsInText` is a guaranteed no-op.
-          // No test can discriminate it, and nothing can leak through it
-          // either. Kept for the day this arm grows a resolve step, and so the
-          // two twin event sites stay literally identical; the create-first
-          // twin's mask IS live and IS fenced.
+          // The mask on `reason` below is a BELT here, and no case can tell it
+          // apart: `retainedSurvivorMessages` already masked the survivor's id
+          // and clause with the op's masker (issue #4037), which on this arm
+          // carries no plaintext but does carry the ids of a record whose name
+          // is still a `{{resolve:...}}` reference. Kept so the two twin event
+          // sites stay literally identical.
           //
           // BOTH fields, and both gated on there actually BEING a survivor:
           // with no retention this event describes a completed revert, and a
@@ -3027,7 +3328,7 @@ async function replaySingle(
           // durable, the same reason the survivor record below masks.
           ...(survivorReason !== undefined && {
             physicalId: current.physicalId,
-            reason: maskSecretsInText(survivorReason, secrets),
+            reason: mask(survivorReason),
             // Overrides the op's layer spread above -- a later spread wins.
             // Gated with the other two, deliberately: on a non-retain revert
             // this event describes the OP, and the op's layer is correct there.
@@ -3082,6 +3383,14 @@ async function replaySingle(
         // Issue #2274: this bag is about to be CREATED with. Refuse before the
         // AWS call rather than after, so nothing is half-applied.
         refuseMaskedReplayBaseline(resolvedPrevProps, op.logicalId);
+        // Issue #4037: the old name is PLAINTEXT now, so its derived spellings
+        // (the old id, the names its provider sends) join the op's masker.
+        opMasker.addNamed({
+          resourceType: oldType,
+          properties: resolvedPrevProps,
+          logicalId: op.logicalId,
+          physicalIds: [prev.physicalId],
+        });
         // Issue #2291: a nested-stack row replayed here hands the CHILD engine
         // this same `secrets` bag (`withCurrentResourceSecrets` binds it around
         // the provider call below, and `NestedStackProvider` seeds the child
@@ -3269,7 +3578,7 @@ async function replaySingle(
             via: createProvisionedBy,
           },
           logger,
-          secrets,
+          mask,
           true
         );
         // LAZY, for the same reason the readopt arm resolves inside its `else`
@@ -3348,7 +3657,7 @@ async function replaySingle(
             op.logicalId,
             logger,
             isInterrupted,
-            secrets,
+            mask,
             {
               isRetryable: isNameCooldownError,
               interruptedMessage: 'Rollback interrupted while waiting out the name cooldown',
@@ -3395,7 +3704,7 @@ async function replaySingle(
               // here too, from the logical id for a nameless bag (#4018's shape).
               logicalId: op.logicalId,
               createdVia: createProvisionedBy,
-              mask: (value) => maskSecretsInText(value, secrets),
+              mask,
               recorded: current.properties,
               observed: current.observedProperties,
               physicalId: current.physicalId,
@@ -3408,9 +3717,9 @@ async function replaySingle(
                 new CdkdError(
                   // Masked at construction, like the Retain refusal below:
                   // the diagnosis quotes names from the PLAINTEXT replay bag.
-                  maskSecretsInText(
+                  mask(
                     `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
-                      `the re-create of the old resource (${safe(prev.physicalId)}) collided: ` +
+                      `the re-create of the old resource (${safe(mask(prev.physicalId))}) collided: ` +
                       `${holder.diagnosis} — so ` +
                       // Undecided: the diagnosis already says what cdkd cannot
                       // show, so the clause only states the consequence (the
@@ -3421,16 +3730,24 @@ async function replaySingle(
                       ` (an orphan of an earlier attempt, or one made outside this stack), ` +
                       `deleting the new resource would destroy it and collide again. Nothing was ` +
                       `deleted. Remove or rename whatever holds that name if it is yours — if that is ` +
-                      `the new resource itself, delete it by hand — then re-run ` +
-                      `${rerunRollbackPhrase(ctx, 'cdkd rollback')}, which proceeds: the journal is ` +
-                      `kept, so the revert resumes from here.` +
-                      (remedy.offered
-                        ? ` To leave THIS resource alone and let the rest of the rollback ` +
-                          `proceed, re-run with the command below.`
-                        : '') +
-                      `${remedy.clause} Underlying collision: ${collisionText(maskSecretsInText(msg, secrets))}${remedy.line}`,
-                    secrets
-                  ),
+                      `the new resource itself, delete it by hand — then re-run `
+                  ) +
+                    // The re-run COMMAND stays outside the mask too, like the
+                    // `--orphan` line below (review of #4099): a short id
+                    // needle would otherwise cut into it.
+                    rerunRollbackPhrase(ctx, 'cdkd rollback') +
+                    mask(
+                      `, which proceeds: the journal is kept, so the revert resumes from here.` +
+                        (remedy.offered
+                          ? ` To leave THIS resource alone and let the rest of the rollback ` +
+                            `proceed, re-run with the command below.`
+                          : '') +
+                        `${remedy.clause} Underlying collision: ${collisionText(mask(msg))}`
+                    ) +
+                    // OUTSIDE the mask (review of #4099): it carries only the
+                    // vetted logical id, and a short secret-derived id needle
+                    // would otherwise cut into the pasteable `--orphan` command.
+                    remedy.line,
                   'NAMED_REPLACEMENT_COLLISION',
                   maskSecretsInError(
                     createError instanceof Error ? createError : undefined,
@@ -3482,7 +3799,7 @@ async function replaySingle(
                   // top level only, so the cause's text reaches no observable
                   // surface. Defense-in-depth, not a tested behavior -- do not
                   // record it in a PR body as one.
-                  maskSecretsInText(
+                  mask(
                     `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
                       // Both physical ids take the identifier rendering, not the
                       // denylist the outer catch applies: this is the one message
@@ -3492,26 +3809,33 @@ async function replaySingle(
                       // sanitizing also turns its newline into a space, so the
                       // forged label can never start a line), or it stands as a
                       // forged remedy AHEAD of the guarded one.
-                      `the re-create of the old resource (${safe(prev.physicalId)}) collided with the ` +
-                      `name still held by the new one (${safe(current.physicalId)}), and ` +
+                      `the re-create of the old resource (${safe(mask(prev.physicalId))}) collided with the ` +
+                      `name still held by the new one (${safe(mask(current.physicalId))}), and ` +
                       `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
                       `not delete it to free the name. Delete the new resource yourself, or ` +
-                      `remove UpdateReplacePolicy: Retain, then re-run ${rerunRollbackPhrase(ctx, 'cdkd rollback')} ` +
-                      `— the journal is kept, so the revert resumes from here.` +
-                      (remedy.offered
-                        ? ` To leave THIS resource alone and let the rest of the rollback ` +
-                          `proceed, re-run with the command below: one op failure stops the ` +
-                          `segment loop, so a single pinned resource otherwise halts every ` +
-                          `OLDER segment too.`
-                        : '') +
-                      // The remedy is the message's labelled LAST line, built by
-                      // `orphanRemedy`, which owns the gate on the id and the
-                      // sentence for a withheld one; the AWS text stays in the
-                      // prose ABOVE it, so the line an operator selects is the
-                      // command alone.
-                      `${remedy.clause} Underlying collision: ${collisionText(maskSecretsInText(msg, secrets))}${remedy.line}`,
-                    secrets
-                  ),
+                      `remove UpdateReplacePolicy: Retain, then re-run `
+                  ) +
+                    // Outside the mask, like the `--orphan` line (#4099 review).
+                    rerunRollbackPhrase(ctx, 'cdkd rollback') +
+                    mask(
+                      ` — the journal is kept, so the revert resumes from here.` +
+                        (remedy.offered
+                          ? ` To leave THIS resource alone and let the rest of the rollback ` +
+                            `proceed, re-run with the command below: one op failure stops the ` +
+                            `segment loop, so a single pinned resource otherwise halts every ` +
+                            `OLDER segment too.`
+                          : '') +
+                        // The remedy is the message's labelled LAST line, built by
+                        // `orphanRemedy`, which owns the gate on the id and the
+                        // sentence for a withheld one; the AWS text stays in the
+                        // prose ABOVE it, so the line an operator selects is the
+                        // command alone.
+                        `${remedy.clause} Underlying collision: ${collisionText(mask(msg))}`
+                    ) +
+                    // OUTSIDE the mask (review of #4099): it carries only the
+                    // vetted logical id, and a short secret-derived id needle
+                    // would otherwise cut into the pasteable `--orphan` command.
+                    remedy.line,
                   'NAMED_REPLACEMENT_COLLISION',
                   // The CHAIN is masked too: downstream masking only reaches a
                   // top-level message, and the cause is what carries the AWS
@@ -3526,7 +3850,7 @@ async function replaySingle(
           }
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
-              `resource (${displaySafe(current.physicalId)}) first...` +
+              `resource (${displaySafe(mask(current.physicalId))}) first...` +
               // Issue #2668: a Type change reaches here only between two types
               // `reverseReplacementNewHoldsName` knows share a name space.
               (typeChanged
@@ -3589,7 +3913,7 @@ async function replaySingle(
               op.logicalId,
               logger,
               isInterrupted,
-              secrets,
+              mask,
               {
                 isRetryable: isRecreateRetryableError,
                 interruptedMessage:
@@ -3604,8 +3928,8 @@ async function replaySingle(
             // the deploy engine's two `--replace` wraps. The create this catch
             // wraps was handed `resolvedPrevProps`, which `resolveReplayProps`
             // re-resolved to PLAINTEXT, so the AWS message can quote the secret
-            // back. Every downstream reader already masks (the `~1694` catch
-            // through `maskSecretsInText`, and `maskedRollbackEventError` for
+            // back. Every downstream reader already masks (the per-op catch
+            // through the op's `mask`, and `maskedRollbackEventError` for
             // the durable event), so this is defense-in-depth, not a live leak
             // — but leaving the rollback twin bare while arguing the deploy
             // engine's copies deserve the same treatment is the inconsistency,
@@ -3617,12 +3941,11 @@ async function replaySingle(
             // twins do, because every reader masks independently. Do not record
             // it in a PR body as a tested behavior.
             throw new Error(
-              maskSecretsInText(
+              mask(
                 `Failed to re-create the old ${safe(op.logicalId)} after the new resource ` +
-                  `(${current.physicalId}) was already deleted: ` +
+                  `(${mask(current.physicalId)}) was already deleted: ` +
                   `${displaySafe(recreateError instanceof Error ? recreateError.message : String(recreateError))}. ` +
-                  `The resource is now absent — fix forward with 'cdkd deploy'.`,
-                secrets
+                  `The resource is now absent — fix forward with 'cdkd deploy'.`
               ),
               // Issue #2616's sweep reached this third site: without a `cause`
               // the wrap is the LAST link, so `extractDeploymentEventError`
@@ -3680,6 +4003,15 @@ async function replaySingle(
         // The predicate is symmetric in its two types; `createLayer` is the
         // layer of THIS operation's create half, which on a replay is the
         // re-create of the old resource.
+        // Issue #4037: the id the re-create returned spells the old name too
+        // (for a rewriting type, under the setting it ran with; for an ARN,
+        // inside it), so it joins the masker before any line below names it.
+        opMasker.addNamed({
+          resourceType: oldType,
+          properties: resolvedPrevProps,
+          logicalId: op.logicalId,
+          physicalIds: [createResult.physicalId],
+        });
         const equalIdIsSameResource = equalIdNamesSameResource({
           oldType,
           newType: op.resourceType,
@@ -3697,7 +4029,8 @@ async function replaySingle(
         if (adoptedLiveNewResource) {
           logger.warn(
             `  ⚠ ${safe(op.logicalId)} (${safe(op.resourceType)}): the re-create returned the LIVE new ` +
-              `resource (${displaySafe(current.physicalId)}) instead of re-creating the old one — its ` +
+              `resource (${displaySafe(mask(current.physicalId))}) instead of re-creating the old ` +
+              `one — its ` +
               `Create API is name-idempotent and the new resource still holds the same ` +
               `user-supplied name. Skipping the delete-new step (it would delete that very ` +
               `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
@@ -3759,7 +4092,8 @@ async function replaySingle(
             op.resourceType,
             current.physicalId,
             `State records the re-created old resource ` +
-              `(${stateResources[op.logicalId]?.physicalId ?? prev.physicalId}).`
+              `(${stateResources[op.logicalId]?.physicalId ?? prev.physicalId}).`,
+            mask
           );
           logger.warn(survivorMessages.warn);
           survivorReason = survivorMessages.reason;
@@ -3796,17 +4130,17 @@ async function replaySingle(
           } catch (deleteError) {
             // Issue #2038: this arm runs AFTER `resolveReplayProps` resolved
             // this op's secrets to plaintext, so the AWS message is masked with
-            // the same bag as every other site on the path. The delete's own bag
-            // is the state record (redacted), but a provider is free to echo the
-            // properties it was re-created with, so masking here is not
-            // speculative — and it is a no-op when the op resolved no secret.
+            // the op's masker like every other site on the path. The delete's
+            // own bag is the state record (redacted), but a provider is free to
+            // echo the properties it was re-created with, so masking here is
+            // not speculative; and the new resource's id is masked even when
+            // nothing was resolved, if its name is a secret reference (#4037).
             logger.warn(
-              maskSecretsInText(
+              mask(
                 `  Rollback: old ${safe(op.logicalId)} re-created, but deleting the new resource ` +
-                  `(${displaySafe(current.physicalId)}) failed: ` +
+                  `(${displaySafe(mask(current.physicalId))}) failed: ` +
                   `${displaySafe(deleteError instanceof Error ? deleteError.message : String(deleteError))}. ` +
-                  `Delete it manually — it is no longer tracked in state.`,
-                secrets
+                  `Delete it manually — it is no longer tracked in state.`
               )
             );
             // Same class as the `Retain` arm above, and the reason this
@@ -3817,7 +4151,7 @@ async function replaySingle(
             // the binding still `undefined`, so `cdkd events` showed a clean
             // SUCCEEDED naming nothing and the id died with the terminal.
             //
-            // NOT masked here: the event site below runs `maskSecretsInText`
+            // NOT masked here: the event site below runs the op's `mask`
             // over this binding, exactly as it does for the `Retain` arms.
             // Masking twice is a no-op but reads as though one of the two were
             // load-bearing.
@@ -3829,12 +4163,17 @@ async function replaySingle(
             result.warnings++;
           }
         }
+        // Issue #4037: the re-created id is the OLD name's spelling, which the
+        // literal mask misses when a rewriting provider derived it.
+        const recreatedId = displaySafe(mask(String(createResult.physicalId)));
         logger.info(
-          adoptedLiveNewResource
-            ? `  Rollback: ${safe(op.logicalId)} adopted the live resource (${createResult.physicalId}) ` +
-                `— replacement NOT fully reversed (name-idempotent Create API)`
-            : `  Rollback: ${safe(op.logicalId)} replacement reversed (old resource re-created as ` +
-                `${createResult.physicalId})`
+          mask(
+            adoptedLiveNewResource
+              ? `  Rollback: ${safe(op.logicalId)} adopted the live resource (${recreatedId}) ` +
+                  `— replacement NOT fully reversed (name-idempotent Create API)`
+              : `  Rollback: ${safe(op.logicalId)} replacement reversed (old resource re-created as ` +
+                  `${recreatedId})`
+          )
         );
         // The SURVIVOR's layer, same reasoning as the readopt twin above --
         // including why there is no `?? op.provisionedBy`: the unconditional
@@ -3854,7 +4193,7 @@ async function replaySingle(
           // whose own layer is the right one to report.
           ...(survivorReason !== undefined && {
             physicalId: current.physicalId,
-            reason: maskSecretsInText(survivorReason, secrets),
+            reason: mask(survivorReason),
             ...(survivorProvisionedBy && { provisionedBy: survivorProvisionedBy }),
           }),
         });
@@ -3994,6 +4333,20 @@ async function replaySingle(
           previousState.properties,
           STATE_DERIVED_RULES
         );
+        // Issue #4037: both sides are PLAINTEXT now; each name derives its own
+        // record's id.
+        opMasker.addNamed({
+          resourceType: op.resourceType,
+          properties: desiredProps,
+          logicalId: op.logicalId,
+          physicalIds: [previousState.physicalId],
+        });
+        opMasker.addNamed({
+          resourceType: op.resourceType,
+          properties: currentProps,
+          logicalId: op.logicalId,
+          physicalIds: [current.physicalId],
+        });
         // Issue #4024: an IAM Role / ManagedPolicy `update()` re-derives the
         // name and REPLACES the resource when it differs from the physical id,
         // so the revert runs under the prefix setting that derives THIS id.
@@ -4006,7 +4359,7 @@ async function replaySingle(
             via: revertVia,
           },
           logger,
-          secrets,
+          mask,
           false
         );
         // See {@link updateWithRollbackRetry} for why this is not a bare
@@ -4064,7 +4417,8 @@ async function replaySingle(
             op.logicalId,
             logger,
             isInterrupted,
-            secrets
+            secrets,
+            mask
           )
         );
         stateResources[op.logicalId] = redactRollbackRecord(
@@ -4083,9 +4437,8 @@ async function replaySingle(
           // about a bag this replay resolved to plaintext — the same site
           // `drift.ts` masks on its own revert path.
           logger.warn(
-            maskSecretsInText(
-              `  Rollback: ${safe(op.logicalId)} restored, ${updatePartialMessage(rollbackPartial)}`,
-              secrets
+            mask(
+              `  Rollback: ${safe(op.logicalId)} restored, ${updatePartialMessage(rollbackPartial)}`
             )
           );
           // Deliberately NOT `result.warnings++`, matching this file's own
@@ -4115,7 +4468,7 @@ async function replaySingle(
           // Masked for the same reason as the warn line above, and doubly so:
           // this one is DURABLE (issue #2031 acceptance item 2).
           ...(rollbackPartial !== undefined && {
-            reason: maskSecretsInText(rollbackPartial, secrets),
+            reason: mask(rollbackPartial),
           }),
         });
         return;
@@ -4129,9 +4482,10 @@ async function replaySingle(
     // the offending property value back, so this line — at DEFAULT verbosity —
     // was the GHSA-p5qg-v9gv-hc7w fence missing on the rollback path.
     logger.warn(
-      maskSecretsInText(
-        `  Rollback failed for ${safe(op.logicalId)} (${safe(op.changeType)}): ${rollbackFailureText(rollbackError)}`,
-        secrets
+      maskedFailureText(
+        `  Rollback failed for ${safe(op.logicalId)} (${safe(op.changeType)}): `,
+        rollbackError,
+        mask
       )
     );
     logger.warn('  Continuing with remaining rollback operations...');
@@ -4144,7 +4498,7 @@ async function replaySingle(
       logicalId: op.logicalId,
       resourceType: op.resourceType,
       ...(failedRoute && { provisionedBy: failedRoute }),
-      error: maskedRollbackEventError(rollbackError, secrets),
+      error: maskedRollbackEventError(rollbackError, mask),
     });
   }
 }
@@ -4226,11 +4580,15 @@ export async function replayFailedOperations(
      * another's text.
      */
     const secrets: RecordedSecretValues = new Map();
+    // This iteration's masker (issue #4037), `replaySingle`'s twin.
+    const opMasker = createOpMasker(logger, secrets);
+    const mask = opMasker.mask;
     // The route a CREATE arm resolved (issue #1366), so the shared catch's
     // ROLLBACK_RESOURCE_FAILED names the route the delete was going to take —
     // the one a Snapshot refusal is about. Undefined on the UPDATE arm.
     let createRollbackRoute: 'sdk' | 'cc-api' | undefined;
     try {
+      addRecordNames(opMasker, op, stateResources[op.logicalId]);
       switch (action) {
         case 'skip-failed-noop': {
           logger.info(
@@ -4346,7 +4704,8 @@ export async function replayFailedOperations(
             finalSnapshotIdentifier = await prepareCreateRollbackFinalSnapshot(
               op,
               deleteProvisionedBy,
-              ctx
+              ctx,
+              mask
             );
           }
           logger.info(
@@ -4494,6 +4853,19 @@ export async function replayFailedOperations(
             prev.properties,
             STATE_DERIVED_RULES
           );
+          // Issue #4037, the `revert` arm's twin.
+          opMasker.addNamed({
+            resourceType: op.resourceType,
+            properties: desiredProps,
+            logicalId: op.logicalId,
+            physicalIds: [prev.physicalId],
+          });
+          opMasker.addNamed({
+            resourceType: op.resourceType,
+            properties: attemptedProps,
+            logicalId: op.logicalId,
+            physicalIds: [current.physicalId, op.physicalId],
+          });
           // Issue #4024, the `revert` arm's twin: the in-place update runs
           // under the prefix setting that derives this resource's own id.
           const inOriginalPrefix = replayPrefixScope(
@@ -4505,7 +4877,7 @@ export async function replayFailedOperations(
               via: revertVia,
             },
             logger,
-            secrets,
+            mask,
             false
           );
           const revertFailedResult = await inOriginalPrefix(() =>
@@ -4542,7 +4914,8 @@ export async function replayFailedOperations(
               op.logicalId,
               logger,
               options.isInterrupted,
-              secrets
+              secrets,
+              mask
             )
           );
           stateResources[op.logicalId] = redactRollbackRecord(
@@ -4560,9 +4933,8 @@ export async function replayFailedOperations(
             // Issue #2038: provider-authored prose about a plaintext bag —
             // the `revert` arm's twin.
             logger.warn(
-              maskSecretsInText(
-                `  Rollback: ${safe(op.logicalId)} reverted, ${updatePartialMessage(revertFailedPartial)}`,
-                secrets
+              mask(
+                `  Rollback: ${safe(op.logicalId)} reverted, ${updatePartialMessage(revertFailedPartial)}`
               )
             );
             // Not counted, for the same reason as the revert arm above.
@@ -4579,7 +4951,7 @@ export async function replayFailedOperations(
             ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
             // Masked because this one is DURABLE (issue #2031 item 2).
             ...(revertFailedPartial !== undefined && {
-              reason: maskSecretsInText(revertFailedPartial, secrets),
+              reason: mask(revertFailedPartial),
             }),
           });
           break;
@@ -4591,10 +4963,10 @@ export async function replayFailedOperations(
       // refusal is thrown on this path, so `rollbackFailureText` always takes
       // its flat arm here; it is called for the one spelling, not for a line.
       logger.warn(
-        maskSecretsInText(
-          `  Rollback failed for failed-op ${safe(op.logicalId)} (${safe(op.changeType)}): ` +
-            `${rollbackFailureText(revertError)}`,
-          secrets
+        maskedFailureText(
+          `  Rollback failed for failed-op ${safe(op.logicalId)} (${safe(op.changeType)}): `,
+          revertError,
+          mask
         )
       );
       result.failures++;
@@ -4607,7 +4979,7 @@ export async function replayFailedOperations(
         logicalId: op.logicalId,
         resourceType: op.resourceType,
         ...(failedRoute && { provisionedBy: failedRoute }),
-        error: maskedRollbackEventError(revertError, secrets),
+        error: maskedRollbackEventError(revertError, mask),
       });
     }
   }
