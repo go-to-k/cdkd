@@ -524,7 +524,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             before?.repositoryId !== undefined &&
             before.repositoryId !== recordedId
           ) {
-            throw this.notThisRepository(
+            throw this.wrapNotThisRepositoryError(
               logicalId,
               resourceType,
               physicalId,
@@ -867,7 +867,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       `CodeCommit Repository ${logicalId} no longer exists under the name cdkd recorded, and ` +
       `the repository holding the desired RepositoryName is not this resource's`;
     if (known.length > 0) {
-      throw this.notThisRepository(
+      throw this.wrapNotThisRepositoryError(
         logicalId,
         resourceType,
         oldName,
@@ -906,7 +906,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * re-adoption is offered. `which` names the repository by role, never by
    * name.
    */
-  private notThisRepository(
+  private wrapNotThisRepositoryError(
     logicalId: string,
     resourceType: string,
     physicalId: string,
