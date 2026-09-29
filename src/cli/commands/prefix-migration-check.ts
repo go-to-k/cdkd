@@ -119,11 +119,17 @@ export function findPendingPrefixRenames(
     // maxLength), so a name that needed sanitization (`my_role` -> `my-role`)
     // or truncation is compared EXACTLY — not via a naive prefix concat/strip.
     //
-    //   - legacyName: pre-v0.94 form (stack-name prefix applied).
+    //   - legacyName: pre-v0.94 form (stack-name prefix applied). Pinned with
+    //                 `withSkipPrefix(false)`: the gate runs INSIDE deploy's
+    //                 `withSkipPrefix(skipPrefix, …)` scope, and inheriting a
+    //                 `true` there made this the bare name, so the warning
+    //                 never fired.
     //   - newName:    post-v0.94 form (`withSkipPrefix(true)` drops the prefix
     //                 on a user-supplied name) — what the next deploy targets.
     const legacyName = withStackName(stackName, () =>
-      generateResourceName(userSuppliedName, { ...nameOptions, userSupplied: true })
+      withSkipPrefix(false, () =>
+        generateResourceName(userSuppliedName, { ...nameOptions, userSupplied: true })
+      )
     );
     const newName = withStackName(stackName, () =>
       withSkipPrefix(true, () =>
