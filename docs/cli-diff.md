@@ -656,7 +656,10 @@ The walk previews the full next deploy:
 
 - A nested child with **no state file yet** diffs as all-CREATE.
 - A nested stack **removed from the CDK code** — present in state, absent from
-  the template — diffs as all-DELETE, recursively.
+  the template — diffs as all-DELETE, recursively. So does one whose row's
+  `Condition` evaluates false: the deploy deletes it and never reads its
+  template. This holds only when the diff can evaluate the condition; see
+  [Condition pruning is skipped](#condition-pruning-is-skipped).
 - A child whose record is **malformed** is reported on rather than aborted on,
   at every depth. A `resources` bag that is not a JSON object, and an `orphans`
   field that is present but not a list, are treated as
@@ -699,6 +702,11 @@ It fires at the first repeated template, with one exception: a cycle that
 returns to the stack's own top-level template is caught one level further down,
 because that template is reached by name rather than by a nested asset path.
 The refusal is the same; only the row it names differs.
+
+A cycle that closes through a row whose `Condition` evaluates false is refused
+too, because `cdkd deploy` checks the tree without evaluating conditions. That
+refusal uses the deploy's wording (`The nested template tree under stack ...
+contains a cycle`) and ends `Refusing to diff.`
 
 It is a refusal rather than a truncation because a cyclic assembly has no
 correct diff to render, and a partial one would under-report changes the next
