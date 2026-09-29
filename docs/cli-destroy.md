@@ -380,7 +380,7 @@ effectively a no-op there.
 | `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then a wait until the table is `ACTIVE`. If the delete then fails, protection is turned back on, but only when it was on before the flip. |
 | `AWS::EC2::Instance` | `DisableApiTermination` | `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
-| `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` |
+| `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` with the pool's own settings from `DescribeUserPool` sent back alongside. See [the Cognito notes](#cognito-user-pools) below. |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)`, so AWS terminates running instances as part of the delete |
 | `AWS::EMR::Cluster` | `Instances.TerminationProtected` | `SetTerminationProtection(TerminationProtected=false)`, then `TerminateJobFlows` |
 | `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` |
@@ -404,10 +404,10 @@ AWS exposes a synchronous "flip protection off" API call.
 - The flip-off call is **idempotent** — providers issue it when the flag is
   set, whether or not the resource currently has protection on, and AWS accepts
   the already-disabled case without error. The Cognito user pool is the
-  exception: a pool that already reads `INACTIVE` gets no `UpdateUserPool`,
-  because that call resets some settings it omits.
+  exception: see [Cognito user pools](#cognito-user-pools).
 - A failure of the flip-off itself (NotFound or similar) is logged at debug;
   the actual delete API call still runs and surfaces its own error message.
+  (Cognito: see [Cognito user pools](#cognito-user-pools).)
 - **RDS and Cognito are gated on the flag like every other type.** Destroying
   an RDS or Cognito UserPool resource whose deletion protection was set
   externally (console, AWS CLI) without `--remove-protection` surfaces AWS's
@@ -417,6 +417,26 @@ AWS exposes a synchronous "flip protection off" API call.
   protected resource — a replacement is a delete plus a create — fails at the
   delete whatever replace flags were passed. Clear the protection flag first:
   [Deploy: safety & compatibility flags](cli-deploy-safety.md#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it).
+
+### Cognito user pools
+
+`UpdateUserPool` resets the settings a call leaves out, among them the pool's
+self sign-up setting (`AllowAdminCreateUserOnly`), its Lambda triggers and
+advanced security. So cdkd does not turn the guard off with that flag alone:
+
+| Case | What cdkd does |
+| --- | --- |
+| The pool reads `INACTIVE` already | Sends no `UpdateUserPool`. |
+| The pool reads `ACTIVE` | Sends `DeletionProtection='INACTIVE'` with the pool's own reset-prone settings sent back, so nothing else changes. |
+| AWS refuses the write while it carries a `DEVELOPER` (SES) email configuration | Sends the settings again without that email configuration (the refusal may have been about it), and warns that the email configuration may have been reset. |
+| AWS refuses those settings on validation | Warns and turns the guard off alone, so the delete can still run. If that delete then fails, cdkd reports at ERROR which settings the pool held, since the pool stays live without them. |
+| AWS refuses for any other reason, or the pool cannot be read first | Leaves the guard on and warns. The delete is then refused. |
+| The read or the `UpdateUserPool` is throttled or hits a server error | Retries the whole delete, without deleting anything first. A server error on the `UpdateUserPool` may still have landed, so it is remembered for the retry. |
+| The `UpdateUserPool` gets no answer from AWS (a timeout), so it may have landed | Warns that the outcome is unknown. |
+| The delete then fails after a write that may have landed | Reads the pool again and writes the guard back on, with the pool's own settings. Reports at ERROR any settings a lone `DeletionProtection` write reset. If the pool reads the guard on but the write-back is refused, it warns and names the check command. |
+
+Reading the pool first needs `cognito-idp:DescribeUserPool` alongside
+`cognito-idp:UpdateUserPool` and `cognito-idp:DeleteUserPool`.
 
 ### Restoring a guard after a failed destroy
 
@@ -464,10 +484,10 @@ aws cognito-idp update-user-pool --user-pool-id <id> --deletion-protection ACTIV
 ```
 
 DocDB and Neptune take the same `modify-db-cluster` / `modify-db-instance`
-form under `aws docdb` / `aws neptune`. `update-user-pool` resets some pool
-settings it omits (`AutoVerifiedAttributes` among them), so send the pool's
-complete configuration alongside `--deletion-protection` rather than the flag
-alone.
+form under `aws docdb` / `aws neptune`. `update-user-pool` resets the pool
+settings it omits (self sign-up, Lambda triggers and advanced security among
+them), so send the pool's complete configuration alongside
+`--deletion-protection` rather than the flag alone.
 
 ## `--purge-events`: also delete deployment-event history on destroy
 

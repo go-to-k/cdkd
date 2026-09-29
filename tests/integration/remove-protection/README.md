@@ -18,7 +18,10 @@ Before step 3, one more `--remove-protection` destroy runs against a user
 pool carrying an out-of-band hosted-UI domain, so `DeleteUserPool` refuses
 terminally. That destroy must fail, and the pool's `DeletionProtection`
 must be back to `ACTIVE` afterwards: cdkd turned it off, the delete
-failed, so cdkd puts it back (issue #2204). The log group has no such arm,
+failed, so cdkd puts it back (issue #2204). The pool's
+`AllowAdminCreateUserOnly` must still be `true` too: `UpdateUserPool`
+resets members a call omits, so the flip and the re-enable echo the pool's
+own configuration back (issue #4066). The log group has no such arm,
 because no terminal `DeleteLogGroup` refusal can be constructed from
 outside; its compensation is unit-tested only.
 

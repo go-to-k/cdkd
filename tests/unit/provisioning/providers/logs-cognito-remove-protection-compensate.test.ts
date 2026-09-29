@@ -94,6 +94,8 @@ interface Site {
   readonly checkCommand: string;
   /** The service's own not-found class, which the delete's idempotent arm keys on. */
   readonly sdkNotFound: () => Error;
+  /** Whether the re-enable reads the pool afresh first (Cognito's read-modify-write, #4066). */
+  readonly reEnableReadsFirst: boolean;
 }
 
 const LG = '/aws/lambda/lg-1';
@@ -125,6 +127,7 @@ const SITES: readonly Site[] = [
     restoreCommand: `aws logs put-log-group-deletion-protection --log-group-identifier ${LG} --region us-east-1 --deletion-protection-enabled`,
     checkCommand: `aws logs describe-log-groups --log-group-identifiers ${LG} --region us-east-1`,
     sdkNotFound: () => new LogsNotFound({ $metadata: {}, message: 'not found' }),
+    reEnableReadsFirst: false,
   },
   {
     name: 'Cognito UserPool',
@@ -143,6 +146,7 @@ const SITES: readonly Site[] = [
     restoreCommand: `aws cognito-idp update-user-pool --user-pool-id ${POOL} --region us-east-1 --deletion-protection ACTIVE`,
     checkCommand: `aws cognito-idp describe-user-pool --user-pool-id ${POOL} --region us-east-1`,
     sdkNotFound: () => new CognitoNotFound({ $metadata: {}, message: 'not found' }),
+    reEnableReadsFirst: true,
   },
 ];
 
@@ -180,15 +184,19 @@ interface Script {
 
 /** Route every command by name, so a case states only what it changes. */
 function script(site: Site, s: Script): void {
+  // The live guard as the fake service holds it: a landed flip-off turns it
+  // off for every LATER read (the Cognito re-enable reads the pool afresh).
+  let flippedOff = false;
   site.send.mockImplementation(async (cmd: Cmd) => {
     const name = cmd.constructor.name;
     if (name === site.describe) {
       if (s.observe instanceof Error) throw s.observe;
-      return site.describeReply(s.observe ?? false);
+      return site.describeReply(flippedOff ? false : (s.observe ?? false));
     }
     if (name === site.modify) {
       if (site.isDisable(cmd)) {
         if (s.disable) throw s.disable;
+        flippedOff = true;
         return {};
       }
       if (s.reEnable) throw s.reEnable;
@@ -240,7 +248,11 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     expect((thrown as Error).message).not.toMatch(/re-enable/i);
     // The flip went out BEFORE the delete, and the re-enable AFTER it.
     const names = calls(site).map((c) => c.constructor.name);
-    expect(names).toEqual([site.describe, site.modify, site.del, site.modify]);
+    expect(names).toEqual(
+      site.reEnableReadsFirst
+        ? [site.describe, site.modify, site.del, site.describe, site.modify]
+        : [site.describe, site.modify, site.del, site.modify]
+    );
     const reEnables = reEnableCalls(site);
     expect(reEnables).toHaveLength(1);
     // The TARGET, not only the shape: a re-enable addressing the wrong
@@ -260,16 +272,24 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     expect(reEnableCalls(site)).toHaveLength(0);
   });
 
-  it('flips but does not compensate when the pre-flip readback failed ("do not know")', async () => {
+  it('never compensates when the pre-flip readback failed ("do not know")', async () => {
     script(site, { observe: new Error('boom'), del: terminalRefusal() });
     await expect(del()).rejects.toThrow('domain configured');
-    // The flip itself still went out: the readback is best-effort.
-    expect(disableCalls(site)).toHaveLength(1);
+    // The log group still flips blind (its flip resets nothing else); the user
+    // pool does not, since its only unread write resets self sign-up and the
+    // Lambda triggers (#4066).
+    expect(disableCalls(site)).toHaveLength(site.reEnableReadsFirst ? 0 : 1);
     expect(reEnableCalls(site)).toHaveLength(0);
   });
 
   it('does not compensate a flip AWS rejected', async () => {
-    script(site, { observe: true, disable: new Error('flip refused'), del: terminalRefusal() });
+    // An AWS-authored refusal (`$metadata` set): only that PROVES the flip did
+    // not land. A client-side failure may have, and is compensated (#4066).
+    const refused = Object.assign(new Error('flip refused'), {
+      name: 'InvalidParameterException',
+      $metadata: { httpStatusCode: 400 },
+    });
+    script(site, { observe: true, disable: refused, del: terminalRefusal() });
     await expect(del()).rejects.toThrow('domain configured');
     expect(reEnableCalls(site)).toHaveLength(0);
   });
@@ -500,7 +520,7 @@ describe('logGroupProtectionSite / userPoolProtectionSite', () => {
     ).rejects.toThrow('domain configured');
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(
-        `${pool.restoreCommand}. Note UpdateUserPool resets some members a call omits (AutoVerifiedAttributes among them)`
+        `${pool.restoreCommand}. Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them)`
       )
     );
 
