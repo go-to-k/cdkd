@@ -528,7 +528,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
               logicalId,
               resourceType,
               physicalId,
-              'the repository now holding the recorded name'
+              'recorded-name'
             );
           }
           if (before?.repositoryId) {
@@ -867,12 +867,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       `CodeCommit Repository ${logicalId} no longer exists under the name cdkd recorded, and ` +
       `the repository holding the desired RepositoryName is not this resource's`;
     if (known.length > 0) {
-      throw this.wrapNotThisRepositoryError(
-        logicalId,
-        resourceType,
-        oldName,
-        'the repository holding the desired RepositoryName'
-      );
+      throw this.wrapNotThisRepositoryError(logicalId, resourceType, oldName, 'desired-name');
     }
     throw markNonRetryable(
       new ProvisioningError(
@@ -910,13 +905,26 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    which: string
+    which: 'recorded-name' | 'desired-name'
   ): ProvisioningError {
+    // The remedy depends on WHICH name a foreign repository holds: a new
+    // RepositoryName clears a collision on the desired name, but not one on the
+    // recorded name, which every later update is addressed to.
+    const remedy =
+      which === 'desired-name'
+        ? `The repository holding the desired RepositoryName is not this resource's (its ` +
+          `repository id is not the one cdkd holds for this resource) — nothing was sent to ` +
+          `that repository. Choose a RepositoryName no other repository holds.`
+        : `The repository cdkd recorded for this resource no longer holds its recorded name ` +
+          `(it was deleted or renamed outside cdkd), and the repository now holding that name ` +
+          `is not this resource's (its repository id is not the one cdkd holds) — nothing was ` +
+          `sent to that repository. Changing RepositoryName does not clear this. Leave that ` +
+          `repository alone, and drop this resource's record so the next deploy creates a new ` +
+          `repository (fill in the resource's construct path):\n` +
+          pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command;
     return markNonRetryable(
       new ProvisioningError(
-        `CodeCommit Repository ${logicalId}: ${which} is not this resource's (its repository ` +
-          `id is not the one cdkd holds for this resource) — nothing was sent to that ` +
-          `repository. Choose a RepositoryName no other repository holds.`,
+        `CodeCommit Repository ${logicalId}: ${remedy}`,
         resourceType,
         logicalId,
         physicalId

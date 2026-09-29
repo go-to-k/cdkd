@@ -412,7 +412,21 @@ describe('CodeCommit rename-retry probe verifies against the RECORDED Repository
     );
 
     expect(err.message).toContain('eu-west-1');
+    // The CLIENT's region was read and compared: an unknown-region refusal
+    // would name only the recorded one.
+    expect(err.message).toContain('us-east-1');
     expect(sentNames()).toEqual([]);
+  });
+
+  it('a recorded region matching the client proceeds with the update', async () => {
+    primeAccount({ oursUnder: OLD });
+
+    const result = await provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, {
+      expectedRegion: 'us-east-1',
+      ...recorded('id-ours'),
+    });
+
+    expect(result.physicalId).toBe(NEW);
   });
 
   it('a repository under the RECORDED name whose id is not the recorded one is refused before the rename', async () => {
@@ -428,7 +442,12 @@ describe('CodeCommit rename-retry probe verifies against the RECORDED Repository
       provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, recorded('id-ours'))
     );
 
-    expect(err.message).toContain('the repository now holding the recorded name is not this resource');
+    expect(err.message).toContain('no longer holds its recorded name');
+    // The desired-name remedy would loop here: the recorded name is the one
+    // every later update is addressed to.
+    expect(err.message).toContain('Changing RepositoryName does not clear this');
+    expect(err.message).not.toContain('Choose a RepositoryName');
+    expect(err.message.endsWith(`\ncdkd orphan '<constructPath>'`)).toBe(true);
     expect(err.message).not.toContain('cdkd import');
     expect(err.message).not.toContain(OLD);
     expect(isMarkedNonRetryable(err)).toBe(true);
