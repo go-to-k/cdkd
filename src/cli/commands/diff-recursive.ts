@@ -485,11 +485,12 @@ async function loadStateOrEmpty(
     const unreadable: string[] = [];
     const unreadableContainers: UnreadableContainer[] = [];
     // REPAIRED containers whose damage `cdkd deploy` REFUSES (go-to-k/cdkd#3335).
-    // Separate from `unreadable`, which means "dropped from the diff": the
-    // reader's question is different — not "did the diff read everything" but
-    // "will the deploy this previews start at all" — so a DROPPED container
-    // lands in both lists (go-to-k/cdkd#3512), and a repaired one previewed in
-    // place in this one alone. They reach the node's `blocking`, so
+    // Separate from `unreadable` / `unreadableContainers`, which mean "dropped
+    // from the diff": the reader's question is different — not "did the diff
+    // read everything" but "will the deploy this previews start at all" — so a
+    // DROPPED entry or container lands in its own list AND in this one
+    // (go-to-k/cdkd#3512), and a repaired one previewed in place in this one
+    // alone. They reach the node's `blocking`, so
     // `countBlocking` raises the exit-3 `DeployRefusalPreviewError` that
     // `cdkd diff` already spends on a refused adoption, ahead of `--fail`.
     //
@@ -1113,7 +1114,7 @@ export async function computeStackDiff(
     // the per-row predicate cannot make. Dropped rather than kept-and-warned so
     // the preview never hands `planOrphanAdoption` two rows it would key onto one
     // adoption, and so `--fail` still predicts the deploy: a dropped row joins the
-    // node's `unreadable`, which `--fail` counts, and the deploy refuses the
+    // node's `unreadableOrphans`, which `--fail` counts, and the deploy refuses the
     // record over the same rows. Keeping them would preview one adoption for two
     // resources, which is the collapse the writers refuse.
     for (const id of unpreviewableOrphanRecords(currentState)) unreadableOrphans.push(id);
@@ -1133,7 +1134,7 @@ export async function computeStackDiff(
       );
       // Every row dropped here is one `refuseMalformedOrphanRecords` refuses
       // the deploy over — the previewable predicate is the NARROWER half of
-      // that one — so it is a reason as well as an `unreadable` row
+      // that one — so it is a reason as well as an `unreadableOrphans` entry
       // (go-to-k/cdkd#3512). Disjoint from the kept-row reason below: that arm
       // walks `readableOrphans`, which excludes every row named here.
       deployRefusals.push(deployRefusesDroppedOrphanRowsReason(unreadableOrphans));

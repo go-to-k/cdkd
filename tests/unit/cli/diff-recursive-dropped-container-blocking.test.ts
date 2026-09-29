@@ -176,6 +176,7 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
       delete (state as { resources?: unknown }).resources;
       const node = await diff(state);
       expect(node.unreadableContainers).toEqual(['resources']);
+      expect(node.unreadable).toEqual([]);
       expect(node.blocking).toHaveLength(1);
       expect(node.blocking[0]).toContain(BAG_REASON);
     });
@@ -255,6 +256,7 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
       it(`blocks when the container is ${label}, keeping its row`, async () => {
         const node = await diff(record({ orphans }));
         expect(node.unreadableContainers).toEqual(['orphans']);
+        expect(node.unreadable).toEqual([]);
         expect(node.blocking).toHaveLength(1);
         expect(node.blocking[0]).toContain(ORPHANS_CONTAINER_REASON);
         expect(countBlocking(node)).toBe(1);
