@@ -1625,6 +1625,7 @@
         "retain-orphan-secret",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
+        "rollback-explicit-name-rewrite",
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",

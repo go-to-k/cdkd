@@ -320,8 +320,13 @@ describe('the unproven-holder refusal (#3979)', () => {
     const failed = failureLines();
     expect(failed).toHaveLength(1);
     expect(failed[0]).toContain('named no ProviderName');
-    // Undecided, so it says so rather than claiming another holder.
-    expect(failed[0]).toContain('cannot show that the new resource holds the colliding name');
+    // Undecided, so it says so rather than claiming another holder -- once,
+    // in the diagnosis, followed by the consequence (PR #4028 review nit).
+    expect(failed[0]).toContain(
+      'so cdkd cannot show that the new resource (idp-new) holds it — so if another resource holds it'
+    );
+    expect(failed[0]).not.toContain('another resource holds the colliding name');
+    expect(failed[0].split('cannot show that').length - 1).toBe(1);
     expect(failed[0]).toMatch(/\nTo orphan it: cdkd rollback --orphan Q$/);
   });
 
@@ -545,6 +550,11 @@ describe('a provider that rewrites the name it sends proves a holder only by tha
     expect(failed[0]).toContain('if that is the new resource itself, delete it by hand');
   });
 
+  // The old id is one NEITHER prefix setting derives from `my-role`, so the
+  // re-create keeps the scope's setting (prefix kept, #4024) and sends
+  // `CdkdX-my-role` -- which the live new role holds. An old id that one
+  // setting DOES derive is re-created under that name instead, which the new
+  // role of a replacement (a different physical id) cannot hold.
   it('NEGATIVE CONTROL: a new role named by the sent name is deleted first', async () => {
     const sent = stubIam();
     const provider = new IAMRoleProvider();
@@ -561,7 +571,7 @@ describe('a provider that rewrites the name it sends proves a holder only by tha
     };
 
     const result = await withStackName('CdkdX', () =>
-      replayRollback([roleOp('my-role', 'CdkdX-my-role')], state, 'CdkdX', ctxFor(provider))
+      replayRollback([roleOp('imported-role', 'CdkdX-my-role')], state, 'CdkdX', ctxFor(provider))
     );
 
     expect(result.failures).toBe(0);

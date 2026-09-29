@@ -536,6 +536,32 @@ describe('cdkd rollback re-creates under the name the deploy used (#4018)', () =
     expect(sent).not.toContain('DeletePolicyCommand');
   });
 
+  // Issue #4024: an old physical id one setting derives is re-created under
+  // THAT setting, so the cases above no longer tell the recorded flag apart
+  // from the id. An id NEITHER derives is where the segment's flag still
+  // decides the name -- with the environment set the other way, so a
+  // rollback reading the env instead reds too.
+  it.each([
+    [false, '', 'S-my-role'],
+    [true, 'true', 'my-role'],
+  ] as const)(
+    'an old id neither setting derives: segment skipPrefix=%s (env CDKD_PREFIX_USER_SUPPLIED_NAMES="%s") sends %s',
+    async (skipPrefix, envPrefix, sent) => {
+      vi.stubEnv('CDKD_PREFIX_USER_SUPPLIED_NAMES', envPrefix);
+      const aws = fakeIam(['my-role-v2']);
+      installRollback({
+        oldPhysicalId: 'imported-role',
+        newPhysicalId: 'my-role-v2',
+        segment: { skipPrefix },
+      });
+
+      await rollbackCommand(STACK, { ...opts });
+
+      expect(aws.created).toEqual([sent]);
+      expect(legacyWarnings()).toEqual([]);
+    }
+  );
+
   it('the recorded flag wins over the environment', async () => {
     vi.stubEnv('CDKD_PREFIX_USER_SUPPLIED_NAMES', 'true');
     const aws = fakeIam(['my-role-v2']);

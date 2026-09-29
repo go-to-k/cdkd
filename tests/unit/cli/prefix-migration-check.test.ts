@@ -6,6 +6,7 @@ import {
   type PendingRename,
 } from '../../../src/cli/commands/prefix-migration-check.js';
 import { DeployCancelledError } from '../../../src/utils/error-handler.js';
+import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
 import type { StackState, ResourceState } from '../../../src/types/state.js';
 
 // Mock readline so promptMigrationConfirm doesn't actually open stdin.
@@ -131,6 +132,28 @@ describe('findPendingPrefixRenames', () => {
         newPhysicalId: 'role-a',
       },
     ]);
+  });
+
+  it('still flags a prefixed role when called INSIDE deploy\'s withSkipPrefix(true) scope', () => {
+    // `cdkd deploy` runs the gate from DeployEngine inside
+    // `withSkipPrefix(skipPrefix, …)`; the legacy name must not inherit
+    // that `true`, or it equals the bare name and nothing is ever flagged.
+    const state = makeState({
+      Role: makeResource('MyStack-my-role', 'AWS::IAM::Role', { userSuppliedName: 'my-role' }),
+    });
+    const pending = withSkipPrefix(true, () => findPendingPrefixRenames('MyStack', state));
+    expect(pending).toEqual([
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        oldPhysicalId: 'MyStack-my-role',
+        newPhysicalId: 'my-role',
+      },
+    ]);
+    // ...and under the other scope value too.
+    expect(withSkipPrefix(false, () => findPendingPrefixRenames('MyStack', state))).toEqual(
+      pending
+    );
   });
 
   it('covers every Pattern B type', () => {

@@ -39,3 +39,7 @@ paths:
   Each segment records the deploy's `skipPrefix`; every replay of a segment
   runs inside `withSkipPrefix(<it>)`, or a re-create derives a different name
   than the deploy sent ([#4018](https://github.com/go-to-k/cdkd/issues/4018)).
+  Per op, a `SENT_NAME_REWRITTEN` type's re-create, holder proof and in-place
+  revert then run under the flag that reproduces its OWN physical id
+  (`replayPrefixChoice`, [#4024](https://github.com/go-to-k/cdkd/issues/4024)):
+  an earlier deploy may have created it under the other one.

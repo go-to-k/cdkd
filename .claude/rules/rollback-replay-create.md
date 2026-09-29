@@ -37,3 +37,6 @@ Decisions:
 
 Both entry points bind `withStackName`, making the replayed name EQUAL the
 forward create's: `generateResourceName` reads it from `AsyncLocalStorage`.
+The prefix flag is the segment's (#4018) unless the old physical id shows the
+OTHER flag created it: then both arms and the holder proof run under that one
+(`replayPrefixScope`, [#4024](https://github.com/go-to-k/cdkd/issues/4024)).

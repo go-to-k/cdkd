@@ -659,7 +659,11 @@ asserts the role comes back under exactly its old name. An in-place change of
 the role's description is then failed and rolled back, and the role must keep
 its name and `RoleId`. A second cycle deploys
 with `--prefix-user-supplied-names` and rolls back without it: the recorded
-setting must win, so the role comes back prefixed.
+setting must win, so the role comes back prefixed. A third cycle flips the
+setting between deploys (issue #4024): the prefixed role is replaced by a
+failing deploy WITHOUT the flag, and both `cdkd rollback` and the automatic
+rollback must bring it back under its original prefixed name, never the bare
+one the failed deploy's setting derives.
 
 For the rollback arm that must NOT delete the resource a replacement created,
 see `tests/integration/rollback-replacement-retain/` (scenario tag

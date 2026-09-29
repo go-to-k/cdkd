@@ -55,6 +55,17 @@ saying which setting it chose. If the failed
 deploy ran with `--prefix-user-supplied-names`, re-run with
 `CDKD_PREFIX_USER_SUPPLIED_NAMES=true`.
 
+The setting can change between deploys. A resource created by an earlier deploy
+under the other setting keeps its name, so a rollback that re-creates or
+reverts it follows its physical ID instead. This covers IAM roles, users,
+groups, instance profiles and managed policies, and ELBv2 load balancers and
+target groups — the types whose declared name the setting rewrites. For these,
+cdkd uses whichever setting turns the declared name into the name the resource
+had (for an ARN, its name segment), and prints a line when that is not the
+failed deploy's setting. When neither setting produces it, cdkd keeps the
+failed deploy's setting and prints a warning naming the resource, since the
+re-created resource may get a different physical name.
+
 ## Synth-free
 
 Everything `cdkd rollback` needs lives in cdkd state plus a **rollback
@@ -188,7 +199,8 @@ resource holds the name the re-create collided on:
   load balancers and target groups** turn even an explicit name into a
   different name before sending it: a stack-name prefix that
   `--prefix-user-supplied-names` controls, and a character rewrite. For
-  these, cdkd works out the name this re-create actually sent and matches it
+  these, cdkd works out the name this re-create actually sent (under the
+  setting it chose, above) and matches it
   only against the new resource's physical id. A matching recorded name is not
   enough.
 

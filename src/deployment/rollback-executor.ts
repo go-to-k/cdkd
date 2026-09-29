@@ -66,10 +66,10 @@ import type {
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { equalIdNamesDifferentResources, equalIdNamesSameResource } from './type-change-guard.js';
-import { reverseReplacementNewHoldsName } from './replacement-name-holder.js';
+import { replayPrefixChoice, reverseReplacementNewHoldsName } from './replacement-name-holder.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
-import { applyDefaultNameForFallback } from '../provisioning/resource-name.js';
+import { applyDefaultNameForFallback, withSkipPrefix } from '../provisioning/resource-name.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
@@ -694,6 +694,95 @@ interface RestorableBaselineRefusal {
   remedy: string;
   /** Which command retries the op after a THROW -- arm-specific. */
   retry: string;
+}
+
+/**
+ * Runs `fn` under the user-supplied-name prefix flag that CREATED the resource
+ * an op replays (issue go-to-k/cdkd#4024; the choice is
+ * {@link replayPrefixChoice}'s), and says so when that is not the failed
+ * deploy's flag the replay's scope carries (#4018).
+ *
+ * `restoring` is the reverse-replacement re-create: there an old physical id
+ * neither flag reproduces is WARNED about, once, since the resource may come
+ * back under another name. An in-place revert (`restoring: false`) stays
+ * silent on it: only some of these providers' `update()` re-derives the name
+ * at all, and nothing is re-created. Advisory either way — not counted in
+ * `result.warnings`, which maps to exit 2 while the op itself succeeds.
+ *
+ * Every value is masked with the op's bag: the names derive from the
+ * PLAINTEXT replay properties.
+ */
+function replayPrefixScope(
+  input: Parameters<typeof replayPrefixChoice>[0] & { logicalId: string },
+  logger: Logger,
+  secrets: RecordedSecretValues,
+  restoring: boolean
+): <T>(fn: () => T) => T {
+  const choice = replayPrefixChoice(input);
+  if (choice.kind === 'not-applicable') return (fn) => fn();
+  const setting = (skip: boolean): string => (skip ? 'SKIPPED' : 'KEPT');
+  const subject = `${safe(input.logicalId)} (${safe(input.resourceType)})`;
+  // A declared name the op's secrets touch (a `{{resolve:...}}` the replay
+  // resolved to plaintext) is REWRITTEN before it is sent (stack prefix,
+  // charset folding, truncation), so the masker, which matches literally,
+  // does not recognise its derived spellings — the gap `withDerivedNameMasks`
+  // closes in the providers and `rewrittenNameHolds` in the holder diagnosis.
+  // The physical id spells that name too, and not only as one of the two
+  // derivations this op computes (another stack's prefix, another truncation,
+  // another case under IAM's fold), so for such a name neither the
+  // derivations NOR the physical id is shown.
+  const declared = choice.declared;
+  const secretDerived = declared !== undefined && maskSecretsInText(declared, secrets) !== declared;
+  // A name the op declared but cdkd cannot read (a leftover mask or
+  // `{{resolve:...}}`, a non-string) may be a secret this op never resolved:
+  // its physical id is withheld the same way.
+  const withheld = secretDerived || (choice.kind === 'unreproduced' && declared === undefined);
+  // Masked BEFORE `displayIdent` escapes / cuts it, while the value still has
+  // the spelling the masker matches (the holder diagnosis's own order), and
+  // quoted only when `displayIdent` did not already quote it.
+  const shown = (value: unknown): string => displayIdent(maskSecretsInText(String(value), secrets));
+  const quoted = (value: string): string => {
+    const masked = maskSecretsInText(value, secrets);
+    const rendered = displayIdent(masked);
+    return rendered === masked ? `"${masked}"` : rendered;
+  };
+  if (choice.kind === 'reproduced' && choice.skipPrefix !== choice.recorded) {
+    logger.info(
+      maskSecretsInText(
+        `  Rollback: ${restoring ? 're-creating' : 'reverting'} ${subject} under the ` +
+          `user-supplied-name prefix setting that created ` +
+          (withheld
+            ? `it (its physical id is withheld, as its name is secret-derived): `
+            : `${shown(input.physicalId)} (`) +
+          `stack-name prefix ${setting(choice.skipPrefix)}; the failed deploy ran with it ` +
+          `${setting(choice.recorded)}${withheld ? '' : ')'}`,
+        secrets
+      )
+    );
+  } else if (choice.kind === 'unreproduced' && restoring) {
+    logger.warn(
+      maskSecretsInText(
+        `  ⚠ ${subject}: cdkd cannot tell which user-supplied-name prefix setting created the ` +
+          `old resource (` +
+          (withheld
+            ? `its physical id is withheld, as its name is secret-derived or unreadable`
+            : shown(input.physicalId)) +
+          `) — ` +
+          (choice.names === undefined
+            ? `cdkd cannot read its ${safe(choice.property)} or its physical id to compare`
+            : secretDerived
+              ? `its ${safe(choice.property)} is secret-derived, and neither name it derives ` +
+                `matches`
+              : `its ${safe(choice.property)} derives to ${quoted(choice.names.skipped)} (prefix ` +
+                `skipped) or ${quoted(choice.names.kept)} (prefix kept), and it is neither`) +
+          `; re-creating it with the stack-name prefix ${setting(choice.skipPrefix)}, as the ` +
+          `failed deploy ran, so it may come back under a different physical name.`,
+        secrets
+      )
+    );
+  }
+  const skip = choice.skipPrefix;
+  return (fn) => withSkipPrefix(skip, fn);
 }
 
 function requireRestorableBaseline(
@@ -3130,6 +3219,24 @@ async function replaySingle(
             ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
             : resolvedPrevProps),
         });
+        // Issue #4024: the prefix flag the OLD resource was created under,
+        // which may not be the failed deploy's. BOTH creates below and the
+        // name-holder proof run in it: the proof derives the name the create
+        // SENT, so a proof in the failed deploy's scope would name a different
+        // one — and could prove the live new resource the holder of a name it
+        // never had, then delete it.
+        const inOriginalPrefix = replayPrefixScope(
+          {
+            resourceType: oldType,
+            properties: resolvedPrevProps,
+            logicalId: op.logicalId,
+            physicalId: prev.physicalId,
+            via: createProvisionedBy,
+          },
+          logger,
+          secrets,
+          true
+        );
         // LAZY, for the same reason the readopt arm resolves inside its `else`
         // (review of issue #2598): `getProviderFor` THROWS for a type this
         // registry cannot route, and THREE paths below never delete anything --
@@ -3193,12 +3300,14 @@ async function replaySingle(
           createResult = await createWithRollbackRetry(
             createProvider,
             () =>
-              withCurrentResourceSecrets(secrets, () =>
-                createProvider.create(
-                  op.logicalId,
-                  oldType,
-                  replayCreateProps(),
-                  replayingStateCreateContext(secrets)
+              inOriginalPrefix(() =>
+                withCurrentResourceSecrets(secrets, () =>
+                  createProvider.create(
+                    op.logicalId,
+                    oldType,
+                    replayCreateProps(),
+                    replayingStateCreateContext(secrets)
+                  )
                 )
               ),
             op.logicalId,
@@ -3229,32 +3338,34 @@ async function replaySingle(
           // again. So prove the holder from the two records, and refuse when
           // it is not proven. It subsumes the #3892 Glue guard (a table in
           // another database is a different scope).
-          const holder = reverseReplacementNewHoldsName({
-            oldResourceType: oldType,
-            newResourceType: op.resourceType,
-            // What the create SENT: on a Cloud Control route that already
-            // carries the generated name (`replayCreateProps`). An SDK provider
-            // mints its own for a nameless bag; `generated` is cdkd's rule for
-            // it, which the helper uses only for a type whose provider was
-            // audited to mint it verbatim, and treats as undecided on a
-            // mismatch. The `typeof` gate: a
-            // non-string id (an in-process op the journal parser never saw)
-            // must reach the refusal, not throw in the name generator.
-            requested: replayCreateProps(),
-            generated:
-              typeof op.logicalId === 'string'
-                ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
-                : undefined,
-            // A provider that REWRITES even an explicit name derives it in this
-            // async scope (stack name, prefix flag), so the helper derives it
-            // here too, from the logical id for a nameless bag (#4018's shape).
-            logicalId: op.logicalId,
-            createdVia: createProvisionedBy,
-            mask: (value) => maskSecretsInText(value, secrets),
-            recorded: current.properties,
-            observed: current.observedProperties,
-            physicalId: current.physicalId,
-          });
+          const holder = inOriginalPrefix(() =>
+            reverseReplacementNewHoldsName({
+              oldResourceType: oldType,
+              newResourceType: op.resourceType,
+              // What the create SENT: on a Cloud Control route that already
+              // carries the generated name (`replayCreateProps`). An SDK provider
+              // mints its own for a nameless bag; `generated` is cdkd's rule for
+              // it, which the helper uses only for a type whose provider was
+              // audited to mint it verbatim, and treats as undecided on a
+              // mismatch. The `typeof` gate: a
+              // non-string id (an in-process op the journal parser never saw)
+              // must reach the refusal, not throw in the name generator.
+              requested: replayCreateProps(),
+              generated:
+                typeof op.logicalId === 'string'
+                  ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
+                  : undefined,
+              // A provider that REWRITES even an explicit name derives it in this
+              // async scope (stack name, prefix flag), so the helper derives it
+              // here too, from the logical id for a nameless bag (#4018's shape).
+              logicalId: op.logicalId,
+              createdVia: createProvisionedBy,
+              mask: (value) => maskSecretsInText(value, secrets),
+              recorded: current.properties,
+              observed: current.observedProperties,
+              physicalId: current.physicalId,
+            })
+          );
           if (!holder.holds) {
             const remedy = orphanRemedy(op.logicalId, ctx);
             throw ownRemedyError(
@@ -3266,10 +3377,12 @@ async function replaySingle(
                     `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
                       `the re-create of the old resource (${safe(prev.physicalId)}) collided: ` +
                       `${holder.diagnosis} — so ` +
+                      // Undecided: the diagnosis already says what cdkd cannot
+                      // show, so the clause only states the consequence (the
+                      // deploy engine's `--replace` twin words it the same way).
                       (holder.known
                         ? `another resource holds the colliding name`
-                        : `cdkd cannot show that the new resource holds the colliding name, and ` +
-                          `if another resource holds it`) +
+                        : `if another resource holds it`) +
                       ` (an orphan of an earlier attempt, or one made outside this stack), ` +
                       `deleting the new resource would destroy it and collide again. Nothing was ` +
                       `deleted. Remove or rename whatever holds that name if it is yours — if that is ` +
@@ -3427,12 +3540,14 @@ async function replaySingle(
             createResult = await createWithRollbackRetry(
               createProvider,
               () =>
-                withCurrentResourceSecrets(secrets, () =>
-                  createProvider.create(
-                    op.logicalId,
-                    oldType,
-                    replayCreateProps(),
-                    replayingStateCreateContext(secrets)
+                inOriginalPrefix(() =>
+                  withCurrentResourceSecrets(secrets, () =>
+                    createProvider.create(
+                      op.logicalId,
+                      oldType,
+                      replayCreateProps(),
+                      replayingStateCreateContext(secrets)
+                    )
                   )
                 ),
               op.logicalId,
@@ -3753,7 +3868,7 @@ async function replaySingle(
           `  Rollback: Restoring ${safe(op.logicalId)} (${safe(op.resourceType)}) to previous state`
         );
         // Route via the provider that owns the resource right now per state.
-        const { provider } = ctx.providerRegistry.getProviderFor({
+        const { provider, provisionedBy: revertVia } = ctx.providerRegistry.getProviderFor({
           resourceType: op.resourceType,
           provisionedBy: op.provisionedBy,
         });
@@ -3842,61 +3957,78 @@ async function replaySingle(
           previousState.properties,
           STATE_DERIVED_RULES
         );
+        // Issue #4024: an IAM Role / ManagedPolicy `update()` re-derives the
+        // name and REPLACES the resource when it differs from the physical id,
+        // so the revert runs under the prefix setting that derives THIS id.
+        const inOriginalPrefix = replayPrefixScope(
+          {
+            resourceType: op.resourceType,
+            properties: desiredProps,
+            logicalId: op.logicalId,
+            physicalId: current.physicalId,
+            via: revertVia,
+          },
+          logger,
+          secrets,
+          false
+        );
         // See {@link updateWithRollbackRetry} for why this is not a bare
         // `provider.update()` and not a bare `withRetry` either.
-        const revertResult = await updateWithRollbackRetry(
-          provider,
-          [
+        const revertResult = await inOriginalPrefix(() =>
+          updateWithRollbackRetry(
+            provider,
+            [
+              op.logicalId,
+              current.physicalId,
+              op.resourceType,
+              desiredProps ?? {},
+              // The PREVIOUS side is deliberately NOT guarded by issue #3203's
+              // check, and that is a recorded decision rather than an oversight
+              // the review had to infer. A malformed `current.properties` reaches
+              // the provider here verbatim, but it cannot strip a real property,
+              // and the reason is the OPPOSITE of what an earlier spelling of
+              // this comment said (it claimed no `remove` is derived from the
+              // previous side -- false: `JsonPatchGenerator.generatePatch` walks
+              // `Object.keys(previousProperties)` and every `remove` comes from
+              // exactly there). A malformed previous side can only UNDER-supply
+              // keys: `{}` yields no removes at all and turns the whole desired
+              // bag into `add`s, while a string or an array yields only junk
+              // numeric keys that name no live property. So the failure mode is a
+              // wrong patch, never a stripped resource -- and guarding it would
+              // refuse rollbacks that can still succeed. go-to-k/cdkd#3211 owns
+              // the malformed-state-record class this belongs to.
+              currentProps ?? {},
+              // Issue #1932 item 3: the UPDATE twin of the re-create arms above.
+              // No `desiredFromAwsReadback` — this bag is `previousState.properties`,
+              // a TEMPLATE recorded earlier, and setting that flag here would delete
+              // a live configuration on rollback (see `UpdateContext`'s own doc).
+              //
+              // `replayingState` (issue #3141) says the OTHER thing, and the two
+              // are not interchangeable: this bag IS a cdkd state record, so a
+              // provider refusal written for a bad TEMPLATE has no template-side
+              // remedy here and must downgrade to whatever the binary that WROTE
+              // the record did. It is the UPDATE twin of
+              // `REPLAYING_STATE_CREATE_CONTEXT` above — same arm of the same
+              // rollback, one taking `create()` and one `update()` — and until it
+              // existed the `update()` half simply could not be told apart from a
+              // template deploy (`logs-loggroup-provider.ts` carried the accepted
+              // residual that named this issue).
+              //
+              // `expectedRegion` (issue #2301 item 1): the same `ctx.region` this
+              // executor already puts on every `DeleteContext` it builds. This arm
+              // is addressed BY `current.physicalId`, read out of the state record
+              // being reverted, so it carries the same wrong-region hazard.
+              {
+                maskSecrets: createSecretMasker(secrets),
+                expectedRegion: ctx.region,
+                replayingState: true,
+              },
+            ],
             op.logicalId,
-            current.physicalId,
-            op.resourceType,
-            desiredProps ?? {},
-            // The PREVIOUS side is deliberately NOT guarded by issue #3203's
-            // check, and that is a recorded decision rather than an oversight
-            // the review had to infer. A malformed `current.properties` reaches
-            // the provider here verbatim, but it cannot strip a real property,
-            // and the reason is the OPPOSITE of what an earlier spelling of
-            // this comment said (it claimed no `remove` is derived from the
-            // previous side -- false: `JsonPatchGenerator.generatePatch` walks
-            // `Object.keys(previousProperties)` and every `remove` comes from
-            // exactly there). A malformed previous side can only UNDER-supply
-            // keys: `{}` yields no removes at all and turns the whole desired
-            // bag into `add`s, while a string or an array yields only junk
-            // numeric keys that name no live property. So the failure mode is a
-            // wrong patch, never a stripped resource -- and guarding it would
-            // refuse rollbacks that can still succeed. go-to-k/cdkd#3211 owns
-            // the malformed-state-record class this belongs to.
-            currentProps ?? {},
-            // Issue #1932 item 3: the UPDATE twin of the re-create arms above.
-            // No `desiredFromAwsReadback` — this bag is `previousState.properties`,
-            // a TEMPLATE recorded earlier, and setting that flag here would delete
-            // a live configuration on rollback (see `UpdateContext`'s own doc).
-            //
-            // `replayingState` (issue #3141) says the OTHER thing, and the two
-            // are not interchangeable: this bag IS a cdkd state record, so a
-            // provider refusal written for a bad TEMPLATE has no template-side
-            // remedy here and must downgrade to whatever the binary that WROTE
-            // the record did. It is the UPDATE twin of
-            // `REPLAYING_STATE_CREATE_CONTEXT` above — same arm of the same
-            // rollback, one taking `create()` and one `update()` — and until it
-            // existed the `update()` half simply could not be told apart from a
-            // template deploy (`logs-loggroup-provider.ts` carried the accepted
-            // residual that named this issue).
-            //
-            // `expectedRegion` (issue #2301 item 1): the same `ctx.region` this
-            // executor already puts on every `DeleteContext` it builds. This arm
-            // is addressed BY `current.physicalId`, read out of the state record
-            // being reverted, so it carries the same wrong-region hazard.
-            {
-              maskSecrets: createSecretMasker(secrets),
-              expectedRegion: ctx.region,
-              replayingState: true,
-            },
-          ],
-          op.logicalId,
-          logger,
-          isInterrupted,
-          secrets
+            logger,
+            isInterrupted,
+            secrets
+          )
         );
         stateResources[op.logicalId] = redactRollbackRecord(
           recordAfterRollbackUpdate(previousState, revertResult),
@@ -4280,7 +4412,7 @@ export async function replayFailedOperations(
             `  Rollback: force-reverting failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
               `to its pre-deploy properties (--revert-failed; remote state is unknown)`
           );
-          const { provider } = ctx.providerRegistry.getProviderFor({
+          const { provider, provisionedBy: revertVia } = ctx.providerRegistry.getProviderFor({
             resourceType: op.resourceType,
             provisionedBy: op.provisionedBy ?? current.provisionedBy,
           });
@@ -4323,40 +4455,56 @@ export async function replayFailedOperations(
             prev.properties,
             STATE_DERIVED_RULES
           );
-          const revertFailedResult = await updateWithRollbackRetry(
-            provider,
-            [
-              op.logicalId,
-              current.physicalId,
-              op.resourceType,
-              // Desired-side `?? {}` DEAD AT RUNTIME since issue #3203's guard
-              // above (same reason as the other two sites). The previous-side
-              // one below is LIVE, but not for the reason an earlier spelling
-              // of this comment gave: `op.attemptedProperties` being optional
-              // does NOT reach it, because `?? current.properties` already
-              // covers that and `ResourceState.properties` is required. It is
-              // live because a malformed STATE record can lack `properties`
-              // altogether -- the same premise this whole guard rests on.
-              desiredProps ?? {},
-              attemptedProps ?? {},
-              // Same as the `revert` arm: masker, no readback flag,
-              // `ctx.region` as `expectedRegion` (issue #2301 item 1), and
-              // `replayingState` (issue #3141). The DESIRED bag here is
-              // `prev.properties` — a cdkd state record, exactly as on the
-              // `revert` arm — so the replay licence is the same one. (The
-              // PREVIOUS side is `op.attemptedProperties`, the failed attempt's
-              // desired bag; `replayingState` describes the desired side, which
-              // is the side a provider's refusals read.)
-              {
-                maskSecrets: createSecretMasker(secrets),
-                expectedRegion: ctx.region,
-                replayingState: true,
-              },
-            ],
-            op.logicalId,
+          // Issue #4024, the `revert` arm's twin: the in-place update runs
+          // under the prefix setting that derives this resource's own id.
+          const inOriginalPrefix = replayPrefixScope(
+            {
+              resourceType: op.resourceType,
+              properties: desiredProps,
+              logicalId: op.logicalId,
+              physicalId: current.physicalId,
+              via: revertVia,
+            },
             logger,
-            options.isInterrupted,
-            secrets
+            secrets,
+            false
+          );
+          const revertFailedResult = await inOriginalPrefix(() =>
+            updateWithRollbackRetry(
+              provider,
+              [
+                op.logicalId,
+                current.physicalId,
+                op.resourceType,
+                // Desired-side `?? {}` DEAD AT RUNTIME since issue #3203's guard
+                // above (same reason as the other two sites). The previous-side
+                // one below is LIVE, but not for the reason an earlier spelling
+                // of this comment gave: `op.attemptedProperties` being optional
+                // does NOT reach it, because `?? current.properties` already
+                // covers that and `ResourceState.properties` is required. It is
+                // live because a malformed STATE record can lack `properties`
+                // altogether -- the same premise this whole guard rests on.
+                desiredProps ?? {},
+                attemptedProps ?? {},
+                // Same as the `revert` arm: masker, no readback flag,
+                // `ctx.region` as `expectedRegion` (issue #2301 item 1), and
+                // `replayingState` (issue #3141). The DESIRED bag here is
+                // `prev.properties` — a cdkd state record, exactly as on the
+                // `revert` arm — so the replay licence is the same one. (The
+                // PREVIOUS side is `op.attemptedProperties`, the failed attempt's
+                // desired bag; `replayingState` describes the desired side, which
+                // is the side a provider's refusals read.)
+                {
+                  maskSecrets: createSecretMasker(secrets),
+                  expectedRegion: ctx.region,
+                  replayingState: true,
+                },
+              ],
+              op.logicalId,
+              logger,
+              options.isInterrupted,
+              secrets
+            )
           );
           stateResources[op.logicalId] = redactRollbackRecord(
             recordAfterRollbackUpdate(prev, revertFailedResult),
