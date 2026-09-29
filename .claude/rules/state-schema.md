@@ -64,7 +64,7 @@ Every reader goes through ONE predicate, `importableOutputKeys(state)` in `src/t
 
 ## `outputs`
 
-Values are `unknown`, NOT `string`: `resolveOutputs` persists whatever the intrinsic resolver produced, so an `Fn::GetAtt` CloudFormation defines as a LIST persists a JSON **array**. Narrow before use; a type or doc spelling this `Record<string, string>` is wrong. An unresolvable output is stored as `undefined` and drops out of the JSON, so absence means "not resolved" and a no-change save keeps its old value.
+Values are `unknown`, NOT `string`: `resolveOutputs` persists whatever the intrinsic resolver produced, so an `Fn::GetAtt` CloudFormation defines as a LIST persists a JSON **array**. Narrow before use; a type or doc spelling this `Record<string, string>` is wrong. Without `--strict-getatt` (which fails the deploy instead), an unresolvable output is stored as `undefined` and drops out of the JSON, so absence means "not resolved" and a no-change save keeps its old value.
 
 ## `deletionPolicy` / `updateReplacePolicy` (v5+)
 

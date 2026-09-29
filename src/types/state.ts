@@ -315,9 +315,9 @@ export interface StackState {
 
   /**
    * The template `Outputs` keys the last deploy could NOT resolve and SKIPPED
-   * — the resolver threw under the default (non-`--strict-getatt`) arm, or
-   * returned nothing at all — each mapped to a digest of
-   * every template input that fed its resolution (issue
+   * — without `--strict-getatt`, the resolver threw or returned nothing at
+   * all (under the flag either fails the deploy instead) — each mapped to a
+   * digest of every template input that fed its resolution (issue
    * [#2740](https://github.com/go-to-k/cdkd/issues/2740)). Such a key is
    * absent from `outputs` when the save re-resolved the bag; the no-change
    * path keeps a failed key's STORED value (issue

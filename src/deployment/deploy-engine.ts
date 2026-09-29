@@ -10270,10 +10270,15 @@ export class DeployEngine {
           // A resolution that RETURNS `undefined` (a `Fn::GetAtt` arm with
           // nothing to construct, e.g. `RoleId`) is as unresolved as one that
           // throws, so under `--strict-getatt` it takes the same failure arm
-          // (issue #3168). Not marked non-retryable: one producer is a live
-          // Cloud Map lookup that failed, which a retry can change.
+          // (issue #3168). Marked non-retryable: the error carries no AWS text
+          // (the Cloud Map `HostedZoneId` arm swallows its lookup error), only
+          // the template-controlled output key, which a substring classifier
+          // can misread as transient — a key containing `AlreadyExists` in a
+          // nested child being replaced would re-run the whole child deploy
+          // (the #1874 hazard). `handleOutputResolutionFailure` threads this
+          // as the `cause`, so the marker survives its re-wrap.
           if (resolved === undefined && this.options.strictGetAtt) {
-            throw new Error('the value resolved to nothing');
+            throw markNonRetryable(new Error('the value resolved to nothing'));
           }
           outputs[outputKey] = resolved;
         } catch (error) {

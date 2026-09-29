@@ -836,6 +836,41 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
       );
     });
 
+    // The behaviour flip on the no-change path: before issue #3168 the
+    // no-change merge kept a failed key's STORED value, so a stack that had
+    // published the output once kept publishing the old value under the flag.
+    describe('with a stored value from an earlier deploy', () => {
+      beforeEach(() => {
+        const loaded = stateOf({
+          Role: {
+            physicalId: 'app-role',
+            resourceType: 'AWS::IAM::Role',
+            properties: { RoleName: 'app-role' },
+            observedProperties: { RoleName: 'app-role' },
+            attributes: {},
+            dependencies: [],
+          },
+        });
+        loaded.state.outputs = { RoleIdOut: 'AROASTOREDVALUE' };
+        mockStateBackend.getState!.mockResolvedValue(loaded);
+      });
+
+      it('--strict-getatt: the no-change deploy fails instead of keeping the stored value', async () => {
+        await expect(
+          makeEngine({ strictGetAtt: true }).deploy(STACK, roleTemplate)
+        ).rejects.toThrow(/Failed to resolve output RoleIdOut: the value resolved to nothing/);
+      });
+
+      it('CONTROL, without the flag: the no-change merge keeps the stored value, with no failure warning', async () => {
+        const result = await makeEngine().deploy(STACK, roleTemplate);
+        expect(result.outputs?.['RoleIdOut']).toBe('AROASTOREDVALUE');
+        // The flag is what turns this into a failure: without it the value
+        // RETURNED nothing, so no failure arm ran at all.
+        const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).not.toContain('Failed to resolve output');
+      });
+    });
+
     it('without the flag: the deploy succeeds and the output is absent, with no failure warning', async () => {
       const result = await makeEngine().deploy(STACK, roleTemplate);
       expect(result.outputs).not.toHaveProperty('RoleIdOut');
