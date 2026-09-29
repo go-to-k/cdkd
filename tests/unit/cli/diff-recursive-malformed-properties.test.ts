@@ -400,19 +400,20 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
     expect(entriesWarning[0]).not.toContain('4242');
     expect(entriesWarning[0]).not.toContain(healthyId);
     // And they are CARRIED, not only warned about: the same list `--json`
-    // prints and `--fail` counts, in record order, the id-less ones as `''`.
-    // A warn-only drop would let `--fail` exit 0 over the record that used to
-    // crash this command — the M7 shape one container over.
-    expect(node.unreadable).toEqual([
+    // prints and `--fail` counts, in record order, the id-less ones as `null`
+    // (go-to-k/cdkd#3339). A warn-only drop would let `--fail` exit 0 over the
+    // record that used to crash this command — the M7 shape one container over.
+    expect(node.unreadableOrphans).toEqual([
       'TornNull',
       'TornString',
-      '',
+      null,
       'TornNumber',
       'TornTypeless',
       'TornAbsent',
-      '',
-      '',
+      null,
+      null,
     ]);
+    expect(node.unreadable).toEqual([]);
   });
 
   it('counts a dropped ORPHAN record as a change for --fail, with nothing else changed', async () => {
@@ -426,15 +427,14 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
     });
     expect(node.changes.get(TORN_ID)?.changeType).toBe('NO_CHANGE');
     expect(node.adoptedOrphans).toEqual([]);
-    expect(node.unreadable).toEqual(['Torn']);
+    expect(node.unreadableOrphans).toEqual(['Torn']);
     expect(nodeHasChanges(node)).toBe(true);
   });
 
   it('carries a dropped ORPHAN id out to the renderer and to --json', async () => {
-    // n16 of the round-5 review: the other cases stop at the in-memory
-    // `node.unreadable`. Both readers take that single joined field with no
-    // per-source branch, so there is no divergent path today — this is the
-    // fence that keeps it that way.
+    // n16 of the round-5 review: the other cases stop at the in-memory node.
+    // Both readers take the orphan records from `unreadableOrphans`, and this
+    // is the fence that keeps each of them doing so.
     //
     // NOT extended to a nested child, and the reason is a property of the walk
     // rather than of this file: `buildDeletedSubtree` threads no
@@ -449,8 +449,9 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
       previewOrphanAdoption: async () => ({ adopted: {}, refusals: [] }),
     });
 
-    expect(node.unreadable).toEqual(['TornOrphan']);
-    expect(diffTreeToJson(node).unreadable).toEqual(['TornOrphan']);
+    expect(node.unreadableOrphans).toEqual(['TornOrphan']);
+    expect(diffTreeToJson(node).unreadableOrphans).toEqual(['TornOrphan']);
+    expect(diffTreeToJson(node).unreadable).toEqual([]);
 
     const lines: string[] = [];
     renderDiffTree(node, true, (m) => lines.push(m));
@@ -459,9 +460,10 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
   });
 
   it('keeps the LOAD\'s dropped rows ahead of the dropped orphan records, both surviving', async () => {
-    // The two sources APPEND. Both cases above start from a healthy `resources`
-    // map, so a node built from whichever list is non-empty passed them while
-    // losing the load's rows the moment both sources carry one.
+    // Both sources survive, each in its own field, and the preview names the
+    // load's first. Both cases above start from a healthy `resources` map, so a
+    // node built from whichever source is non-empty passed them while losing
+    // the load's rows the moment both sources carry one.
     const state = record(
       { Value: 'x' },
       {
@@ -475,7 +477,13 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
     const node = await diff(state, {
       previewOrphanAdoption: async () => ({ adopted: {}, refusals: [] }),
     });
-    expect(node.unreadable).toEqual(['AlphaNull', 'TornOrphan']);
+    expect(node.unreadable).toEqual(['AlphaNull']);
+    expect(node.unreadableOrphans).toEqual(['TornOrphan']);
+    const rendered: string[] = [];
+    renderDiffTree(node, true, (m) => rendered.push(m));
+    expect(rendered.join('\n')).toContain(
+      '2 state record row(s) could not be read: AlphaNull, TornOrphan.'
+    );
 
     // And the two TEXTS, which this case is the only one that can falsify.
     // Both containers are damaged here, so a warning claiming the OTHER one is

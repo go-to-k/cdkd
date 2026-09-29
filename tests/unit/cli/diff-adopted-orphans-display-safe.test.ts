@@ -26,6 +26,8 @@ function node(adoptedOrphans: string[]): DiffTreeNode {
     outputChanges: [],
     adoptedOrphans,
     unreadable: [],
+    unreadableContainers: [],
+    unreadableOrphans: [],
     blocking: [],
     children: [],
   };

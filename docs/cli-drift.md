@@ -120,7 +120,8 @@ A **clean** verdict never means anything except compared-and-matched.
 | `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported. | Yes — usually a missing permission or a throttle; grant it or re-run. |
 | `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource, which rebuilds its record from your template and captures a real baseline. |
 | `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — a `cdkd deploy` that changes nothing replaces each such mask the resource's own secret references can certify, and one that changes the resource re-captures the whole baseline. |
-| `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or a row whose `properties` map is not a JSON object, or its whole `resources` map is not a JSON object. cdkd drops the row (or reads the map as empty) so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. A row with an unreadable `properties` map keeps its real resource type and is not read back from AWS. An unreadable map is reported as one entry whose `logicalId` is `(resources map)`. | Yes — repair or re-import the record. |
+| `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or a row whose `properties` map is not a JSON object. cdkd drops the row so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. A row with an unreadable `properties` map keeps its real resource type and is not read back from AWS. | Yes — repair or re-import the record. |
+| `unreadableMap` | The record's whole `resources` map is not a JSON object, so no resource in it was read. cdkd reads the map as empty and reports one entry whose `logicalId` is `(resources map)`. Key on this cause, not on that name: a hand-edited record can hold an entry keyed `(resources map)`, which is reported as `unreadableRecord`. | Yes — repair or re-import the record. |
 
 The `baselineRefused` cause is recorded on the state record, which means it only
 covers a refusal made by a cdkd that knew how to record one (state schema v10 and
@@ -152,7 +153,7 @@ Everything not fully compared is listed under the human report's
 `N resource(s) only PARTIALLY compared` block — headed
 `N resource(s) NOT fully compared — K not compared AT ALL (<causes>)` when a
 resource none of whose properties were compared is present — `readFailed`,
-`baselineRefused` or `unreadableRecord` — with each cause present named in the
+`baselineRefused`, `unreadableRecord` or `unreadableMap` — with each cause present named in the
 parentheses, since calling such a resource "partially compared" understates
 it. Each entry names its own
 reason, and the per-resource detail also goes to the log, which a caller
@@ -280,13 +281,14 @@ leaves something uncompared exits `1`, not `2`. Both the drift case and the
 crash case go through the same error handler; drift detection emits the full
 human report before throwing, so that report is the only output for it.
 
-**Exit `2` on detection is narrower than `notCompared`, deliberately.** Five of
+**Exit `2` on detection is narrower than `notCompared`, deliberately.** Six of
 the causes in the [table above](#why-a-resource-was-not-compared) produce it: a
 resource cdkd `refused` to compare, one whose read or comparison `readFailed`,
 one whose baseline an import refused (`baselineRefused`), one whose baseline
-holds a mask cdkd could not certify (`uncertifiedBaseline`), and a state row that
+holds a mask cdkd could not certify (`uncertifiedBaseline`), a state row that
 is not readable as a resource or whose `properties` map is not an object
-(`unreadableRecord`). The sixth does not: a
+(`unreadableRecord`), and a `resources` map that is not an object
+(`unreadableMap`). The seventh does not: a
 resource whose only uncompared properties hold an
 `unresolvedToken` is listed under `notCompared` and in the report's
 not-fully-compared block, but does not produce this exit code — cdkd resolves
@@ -762,7 +764,8 @@ resource whose `properties` map is not a JSON object is not compared either:
 that map is the drift baseline whenever no `observedProperties` is recorded, and
 read as empty it would compare nothing and report the resource clean. Each is
 also reported as not compared with the cause `unreadableRecord` — one entry per
-dropped or uncompared row, and one named `(resources map)` for an unreadable map — so the run
+dropped or uncompared row — and an unreadable map as one entry named
+`(resources map)` with the cause `unreadableMap`, so the run
 exits `2` rather than reading as a clean stack (or `1` when something drifted,
 since drift outranks a partial comparison). `--accept` and `--revert` write
 the record back, and both rebuild it by spreading the stored bag: spreading a

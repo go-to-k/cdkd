@@ -5,9 +5,9 @@
  * `cdkd diff` cannot WRITE state, so the answer here is the repair-and-report
  * half rather than a refusal, exactly as it is for the `resources` bag and the
  * `outputs` map: replace the container with an empty list on the in-memory
- * record, warn naming the container, and list a stand-in row in the node's
- * `unreadable` so `--json` and the rendered preview both say the view is
- * incomplete.
+ * record, warn naming the container, and list the container in the node's
+ * `unreadableContainers` so `--json` and the rendered preview both say the
+ * view is incomplete.
  *
  * AT THE LOAD, and the string shape is why. The adoption gate is
  * `currentState.orphans?.length && options.previewOrphanAdoption`, and
@@ -100,7 +100,7 @@ describe('cdkd diff over an unreadable orphans container (go-to-k/cdkd#3379)', (
       const node = await diff(record(orphans));
       // It REPORTED rather than threw: `cdkd diff` is the command a user runs
       // to inspect a record like this one.
-      expect(node.unreadable).toContain(UNREADABLE_ORPHANS_CONTAINER_ROW);
+      expect(node.unreadableContainers).toEqual(['orphans']);
       expect(warnings()).toContain("'orphans'");
       // And the rest of the record still diffed — the resources bag is intact.
       expect(node.stackName).toBe(STACK);
@@ -115,14 +115,16 @@ describe('cdkd diff over an unreadable orphans container (go-to-k/cdkd#3379)', (
     const node = await diff(record('abc'), () => {
       throw new Error('previewOrphanAdoption was reached with an unreadable container');
     });
-    expect(node.unreadable).toContain(UNREADABLE_ORPHANS_CONTAINER_ROW);
+    expect(node.unreadableContainers).toEqual(['orphans']);
   });
 
-  it('names the container in the row rather than rendering it as a logical id', async () => {
+  it('carries the container in its own field, never as a logical id', async () => {
+    // go-to-k/cdkd#3339: a container carried as a stand-in string among the ids
+    // read exactly like an entry keyed with that string.
     const node = await diff(record(5));
-    // The row is a container stand-in; `displayLogicalId` would quote it as if
-    // it were a resource name.
-    expect(node.unreadable).toEqual([UNREADABLE_ORPHANS_CONTAINER_ROW]);
+    expect(node.unreadableContainers).toEqual(['orphans']);
+    expect(node.unreadable).toEqual([]);
+    expect(node.unreadableOrphans).toEqual([]);
   });
 
   it('renders the stand-in row verbatim and withholds the logical-id sentence', async () => {
@@ -132,7 +134,8 @@ describe('cdkd diff over an unreadable orphans container (go-to-k/cdkd#3379)', (
     // which is about ids — is suppressed. Without the second, a node whose only
     // row is this container claims the template declares one of them.
     const node = await diff(record('abc'));
-    expect(diffTreeToJson(node).unreadable).toEqual([UNREADABLE_ORPHANS_CONTAINER_ROW]);
+    expect(diffTreeToJson(node).unreadableContainers).toEqual(['orphans']);
+    expect(diffTreeToJson(node).unreadable).toEqual([]);
     const lines: string[] = [];
     renderDiffTree(node, true, (m) => lines.push(m));
     const text = lines.join('\n');
@@ -141,15 +144,15 @@ describe('cdkd diff over an unreadable orphans container (go-to-k/cdkd#3379)', (
   });
 
   it('keeps the logical-id sentence when a REAL id joins the container row', async () => {
-    // The suppression is `.every`, not "exactly one container row": a node
-    // holding both an unreadable container and a torn resource entry still owes
-    // the sentence, because one of its rows IS a logical id. A `.some` here
-    // would swallow it.
+    // The suppression asks whether ANY id row exists, not "exactly one
+    // container row": a node holding both an unreadable container and a torn
+    // resource entry still owes the sentence, because one of its rows IS a
+    // logical id.
     const state = record('abc');
     (state.resources as Record<string, unknown>)['Torn'] = null;
     const node = await diff(state);
-    expect(node.unreadable).toContain(UNREADABLE_ORPHANS_CONTAINER_ROW);
-    expect(node.unreadable).toContain('Torn');
+    expect(node.unreadableContainers).toEqual(['orphans']);
+    expect(node.unreadable).toEqual(['Torn']);
     const lines: string[] = [];
     renderDiffTree(node, true, (m) => lines.push(m));
     expect(lines.join('\n')).toContain('shown above as a create');
@@ -159,7 +162,7 @@ describe('cdkd diff over an unreadable orphans container (go-to-k/cdkd#3379)', (
     for (const orphans of [[], undefined]) {
       vi.clearAllMocks();
       const node = await diff(record(orphans));
-      expect(node.unreadable).not.toContain(UNREADABLE_ORPHANS_CONTAINER_ROW);
+      expect(node.unreadableContainers).toEqual([]);
       expect(warnings()).not.toContain("'orphans'");
     }
   });
@@ -223,7 +226,7 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
       seen
     );
     expect(seen, 'the row reached the adoption preview').toEqual([healthy]);
-    expect(node.unreadable, 'the row was not named').toHaveLength(1);
+    expect(node.unreadableOrphans, 'the row was not named').toHaveLength(1);
     expect(warnings()).toContain('rollback-orphan record');
     // The diagnosis matches THIS caller's predicate: `cdkd diff` keeps a row
     // whose maps are torn, so naming those as a cause would tell the operator to
@@ -238,9 +241,12 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
     expect(warnings(), "diff's warning states scrub's consequence").not.toContain(
       'excluded from the secret scan'
     );
-    // Named as the UNRENDERABLE stand-in, not as the number: a non-string id has
-    // no honest rendering, and `displayLogicalId` owns that spelling.
-    expect(node.unreadable[0]).toBe('');
+    // Carried as `null`, not as the number and not as `''` (go-to-k/cdkd#3339):
+    // a non-string id has no honest rendering, and `''` is a string `logicalId`
+    // a record can also hold.
+    expect(node.unreadableOrphans[0]).toBeNull();
+    // ...and never among the `resources` entries' ids.
+    expect(node.unreadable).toEqual([]);
     expect(node.stackName).toBe(STACK);
   });
 
@@ -282,7 +288,7 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
       healthy,
       torn,
     ]);
-    expect(node.unreadable, 'it was named as unpreviewable, which it is not').toEqual([]);
+    expect(node.unreadableOrphans, 'it was named as unpreviewable, which it is not').toEqual([]);
     // ...and the repair DID reach it: the second `properties` pass names the
     // adopted record it emptied, which is the report dropping the row would have
     // retired.
@@ -312,7 +318,7 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
     const node = await diffWithPreview(record(many as unknown));
     // Every row named, not merely "it did not throw": a `slice` added to dodge the
     // limit would also stop throwing while silently under-reporting.
-    expect(node.unreadable).toHaveLength(200_000);
+    expect(node.unreadableOrphans).toHaveLength(200_000);
     // ...and the WARNING still caps what it prints, which is the other half.
     // Neither the count nor the overflow fragment pins that on its own — a text
     // naming all 200,000 rows carries both (measured: dropping
@@ -353,7 +359,7 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
       const node = await diffWithPreview(record([healthy, torn] as unknown), seen);
       // Kept, not dropped — the narrow predicate is unchanged.
       expect(seen, 'the row was dropped instead of previewed').toHaveLength(2);
-      expect(node.unreadable, 'the kept row was named as unpreviewable').toEqual([]);
+      expect(node.unreadableOrphans, 'the kept row was named as unpreviewable').toEqual([]);
       // ...and the node SAYS the deploy will refuse, which is what `--fail` counts.
       const reason = node.blocking.find((r) => r.includes('carry a')) ?? '';
       expect(reason, `no deploy-refusal reason for ${label}: ${JSON.stringify(node.blocking)}`).toContain(
@@ -428,8 +434,8 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
     const node = await diffWithPreview(record([{ logicalId: 'Gone', orphanedAt: 1 }] as unknown));
     // No container row — the field IS a list, and conflating the two would send
     // an operator to rewrite a field that is already the right shape.
-    expect(node.unreadable).not.toContain(UNREADABLE_ORPHANS_CONTAINER_ROW);
-    expect(node.unreadable).toEqual(['Gone']);
+    expect(node.unreadableContainers).toEqual([]);
+    expect(node.unreadableOrphans).toEqual(['Gone']);
   });
 
   it('the usable rows still reach the adoption preview', async () => {
@@ -458,14 +464,14 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
       }) as unknown as Parameters<typeof buildDiffTree>[0]['previewOrphanAdoption'],
     });
     expect(seen, 'the preview saw a row the filter should have dropped').toEqual([healthy]);
-    expect(node.unreadable.sort()).toEqual(['', 'Gone']);
+    expect(node.unreadableOrphans).toEqual([null, 'Gone']);
   });
 
   // go-to-k/cdkd#3643: rows sharing a string `logicalId`. Each passes the narrow
   // per-row predicate, and `planOrphanAdoption` keys its adoptions by that id, so
   // handing both to the preview shows ONE adoption for two resources — the
   // collapse every writer refuses. DROPPED, every one of them, so the rows join
-  // `unreadable` (which `--fail` counts) exactly as any other row the deploy
+  // `unreadableOrphans` (which `--fail` counts) exactly as any other row the deploy
   // refuses and the preview cannot use.
   const twin = (physicalId: string, properties: unknown = {}) => ({
     logicalId: 'Twin',
@@ -480,7 +486,10 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
       seen
     );
     expect(seen, 'a row sharing its id reached the adoption preview').toEqual([healthy]);
-    expect(node.unreadable, 'the rows sharing an id were not both named').toEqual(['Twin', 'Twin']);
+    expect(node.unreadableOrphans, 'the rows sharing an id were not both named').toEqual([
+      'Twin',
+      'Twin',
+    ]);
     expect(warnings()).toContain('2 rollback-orphan record(s)');
     expect(warnings()).toContain('share it with another row');
     // Dropped, so no KEPT-row reason: the drop is what `--fail` counts.
@@ -497,7 +506,7 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
       seen
     );
     expect(seen).toEqual([healthy]);
-    expect(node.unreadable).toEqual(['Twin', 'Twin']);
+    expect(node.unreadableOrphans).toEqual(['Twin', 'Twin']);
   });
 
   it('CONTROL: the same two rows under DISTINCT ids both reach the preview', async () => {
@@ -505,7 +514,7 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
     const other = { ...twin('live-2'), logicalId: 'Other' };
     const node = await diffWithPreview(record([twin('live-1'), other] as unknown), seen);
     expect(seen).toEqual([twin('live-1'), other]);
-    expect(node.unreadable).toEqual([]);
+    expect(node.unreadableOrphans).toEqual([]);
     expect(warnings()).not.toContain('rollback-orphan record');
   });
 
@@ -530,7 +539,7 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
       }) as unknown as Parameters<typeof buildDiffTree>[0]['previewOrphanAdoption'],
     });
     expect(seen).toEqual([healthy]);
-    expect(node.unreadable).toEqual([]);
+    expect(node.unreadableOrphans).toEqual([]);
     expect(warnings()).not.toContain('rollback-orphan record');
   });
 });

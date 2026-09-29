@@ -627,10 +627,15 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       }
     });
 
-    it('name the rows they reject, with the UNRENDERABLE stand-in for an unusable id', () => {
-      const rows = [usable, { logicalId: 'Named', orphanedAt: 1 }, 5];
-      expect(unpreviewableOrphanRecords(withOrphans(rows))).toEqual(['Named', '']);
-      expect(unreadableOrphanRecords(withOrphans(rows))).toEqual(['Named', '']);
+    it('name the rows they reject: `null` (diff) or the `\'\'` stand-in (warnings) for an unusable id', () => {
+      // `cdkd diff --json` carries `unpreviewableOrphanRecords`' names raw, so a
+      // row with no id is `null` there, which no string `logicalId` can equal
+      // (go-to-k/cdkd#3339). A row whose id IS `''` keeps `''`, so the two stay
+      // apart. The writers' helper names rows only for warnings, where `''`
+      // renders as the `<unrenderable>` stand-in.
+      const rows = [usable, { logicalId: 'Named', orphanedAt: 1 }, 5, { logicalId: '', orphanedAt: 1 }];
+      expect(unpreviewableOrphanRecords(withOrphans(rows))).toEqual(['Named', null, '']);
+      expect(unreadableOrphanRecords(withOrphans(rows))).toEqual(['Named', '', '']);
     });
   });
 

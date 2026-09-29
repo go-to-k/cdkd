@@ -194,6 +194,8 @@ describe('nodeHasChanges / treeHasChanges', () => {
     outputChanges: [],
     adoptedOrphans: [],
     unreadable: [],
+    unreadableContainers: [],
+    unreadableOrphans: [],
     blocking: [],
     children: [],
   });
@@ -248,6 +250,8 @@ describe('diffTreeToJson', () => {
       outputChanges: [],
       adoptedOrphans: [],
       unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
       blocking: [],
       children: [
         {
@@ -259,6 +263,8 @@ describe('diffTreeToJson', () => {
           outputChanges: [],
           adoptedOrphans: [],
           unreadable: [],
+          unreadableContainers: [],
+          unreadableOrphans: [],
           blocking: [],
           children: [],
         },
@@ -293,6 +299,8 @@ describe('diffTreeToJson', () => {
       outputChanges: [],
       adoptedOrphans: [],
       unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
       blocking: [],
       children: [],
     };
@@ -319,13 +327,15 @@ describe('renderDiffTree', () => {
     outputChanges: [],
     adoptedOrphans: [],
     unreadable: [],
+    unreadableContainers: [],
+    unreadableOrphans: [],
     blocking: [],
     children: [],
   });
 
   it('says NOTHING about unreadable rows on a clean record', () => {
-    // The negative the guard never had: with `unreadable` empty, deleting
-    // `if (node.unreadable.length > 0)` prints `0 state record row(s) could not
+    // The negative the guard never had: with nothing unreadable, deleting
+    // `if (unreadableTotal > 0)` prints `0 state record row(s) could not
     // be read: .` on EVERY ordinary diff, and no case reddened. A positive-only
     // fence cannot see that — the same unfalsifiable-negative class this PR's
     // earlier rounds were asked to close.
@@ -2898,6 +2908,8 @@ describe('Outputs-only change (issue #1921)', () => {
       ],
       adoptedOrphans: [],
       unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
       blocking: [],
       children: [],
     };
@@ -4252,6 +4264,8 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       outputChanges: [],
       adoptedOrphans: [],
       unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
       blocking: ['KeptRole: S-KeptRole is already recorded by another cdkd stack.'],
       children: [
         {
@@ -4263,6 +4277,8 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
           outputChanges: [],
           adoptedOrphans: [],
           unreadable: [],
+          unreadableContainers: [],
+          unreadableOrphans: [],
           blocking: ['ChildRole: S~C-ChildRole is already recorded by another cdkd stack.'],
           children: [],
         },
@@ -4294,6 +4310,8 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       outputChanges: [],
       adoptedOrphans: [],
       unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
       blocking: ['KeptRole: conflict'],
       children: [],
     };
@@ -4323,6 +4341,8 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       outputChanges: [],
       adoptedOrphans: ['KeptRole'],
       unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
       blocking: [],
       children: [],
     };
@@ -4351,6 +4371,8 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       outputChanges: [],
       adoptedOrphans: ['KeptRole'],
       unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
       blocking: ['KeptRole: conflict'],
       children: [],
     };
@@ -4582,12 +4604,16 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
       canonicalizeProperties: canonicalizeIdentity,
     });
 
-    // The spelling itself, independently of the shared constant.
-    expect(node.unreadable).toEqual(['(resources map)']);
+    // The container in its own field, never among the entry ids
+    // (go-to-k/cdkd#3339).
+    expect(node.unreadableContainers).toEqual(['resources']);
+    expect(node.unreadable).toEqual([]);
     expect(treeHasChanges(node)).toBe(true);
-    expect(diffTreeToJson(node).unreadable).toEqual(['(resources map)']);
+    expect(diffTreeToJson(node).unreadableContainers).toEqual(['resources']);
+    expect(diffTreeToJson(node).unreadable).toEqual([]);
     // The map row is not a logical id, so it gets no sentence about ids the
-    // template declares.
+    // template declares. The spelling itself, independently of the shared
+    // constant.
     const lines: string[] = [];
     renderDiffTree(node, true, (m) => lines.push(m));
     const preview = lines.join('\n');

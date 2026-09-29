@@ -30,6 +30,13 @@ import type { StackState } from '../types/state.js';
  * map is unreadable — `cdkd drift` as a `notCompared` outcome and `cdkd diff`
  * as an unreadable row. Parenthesised so it cannot be mistaken for a logical
  * id, which CloudFormation keeps alphanumeric.
+ *
+ * A DISPLAY name only (go-to-k/cdkd#3339). A hand-edited record can still key
+ * an entry with exactly this text, so no reader decides "the map is gone" from
+ * it: `cdkd diff` carries the container in its own field and prints this name
+ * from that field; `cdkd drift` keeps it as the outcome's `logicalId` and
+ * marks the container with its own `notComparedCause`, which picks the reason
+ * text.
  */
 export const UNREADABLE_RESOURCES_MAP_ROW = '(resources map)';
 
@@ -1508,9 +1515,10 @@ export function refuseMalformedOutputs(
 }
 
 /**
- * The stand-in row a read-only view lists in its `unreadable` set for an
- * `orphans` container it could not read, beside
- * {@link UNREADABLE_RESOURCES_MAP_ROW}'s row for the resource map.
+ * The name `cdkd diff`'s preview prints for an `orphans` container it could not
+ * read, beside {@link UNREADABLE_RESOURCES_MAP_ROW}'s for the resource map — a
+ * display name rendered from the node's container field, for the reason that
+ * constant gives.
  */
 export const UNREADABLE_ORPHANS_CONTAINER_ROW = '(orphans container)';
 
@@ -1549,8 +1557,8 @@ export function hasReadableOrphans(state: Pick<StackState, 'orphans'>): boolean 
  * For a READ-ONLY command: replace an unreadable `orphans` container with an
  * empty list so the command can report the rest of the record, and return
  * whether it did, so the caller can warn with
- * {@link malformedOrphansWarning} and list
- * {@link UNREADABLE_ORPHANS_CONTAINER_ROW} among what it could not read.
+ * {@link malformedOrphansWarning} and report the container among what it could
+ * not read.
  *
  * AT THE LOAD, the placement rule
  * {@link repairMalformedResourcesForReadOnly}'s note records: `cdkd diff`
@@ -4220,15 +4228,23 @@ function hasStringPhysicalId(entry: unknown): boolean {
 /**
  * The `orphans[]` records {@link isPreviewableOrphanRecord} rejects, PLUS every
  * row sharing its string `logicalId` with another row (go-to-k/cdkd#3643),
- * named the way {@link unreadableOrphanRecords} names its own.
+ * each by its `logicalId`, or `null` when it has no string one.
+ *
+ * `null` rather than {@link unreadableOrphanRecords}' `''` (go-to-k/cdkd#3339):
+ * `cdkd diff --json` carries these ids raw, and `''` is also a legal string
+ * `logicalId`, so a stand-in a record can spell could not tell a row with no id
+ * from a row whose id is empty. A caller wanting the warning's names maps
+ * `null` to `''` itself.
  */
-export function unpreviewableOrphanRecords(state: Pick<StackState, 'orphans'>): readonly string[] {
+export function unpreviewableOrphanRecords(
+  state: Pick<StackState, 'orphans'>
+): ReadonlyArray<string | null> {
   if (!Array.isArray(state.orphans)) return [];
   const rows = state.orphans as unknown[];
   const shared = sharedOrphanLogicalIds(rows);
   return rows
     .filter((record) => !isPreviewableOrphanRecord(record) || sharesLogicalId(record, shared))
-    .map(orphanRowName);
+    .map(orphanRowId);
 }
 
 /**
@@ -4298,8 +4314,13 @@ function sharesLogicalId(record: unknown, shared: ReadonlySet<string>): boolean 
  * (rendered as the `UNRENDERABLE` stand-in) when it has no string one.
  */
 function orphanRowName(record: unknown): string {
+  return orphanRowId(record) ?? '';
+}
+
+/** A row's string `logicalId`, or `null` when it has none. */
+function orphanRowId(record: unknown): string | null {
   const id = isReadableBag(record) ? (record as { logicalId?: unknown }).logicalId : undefined;
-  return typeof id === 'string' ? id : '';
+  return typeof id === 'string' ? id : null;
 }
 
 /**

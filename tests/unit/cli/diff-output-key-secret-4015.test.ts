@@ -122,6 +122,8 @@ function jsonNames(outputChanges: OutputChange[]): unknown[] {
     adoptedOrphans: [],
     blocking: [],
     unreadable: [],
+    unreadableContainers: [],
+    unreadableOrphans: [],
     children: [],
   } as unknown as DiffTreeNode;
   return diffTreeToJson(node).outputChanges.map((c) => ({

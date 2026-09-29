@@ -82,6 +82,7 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
           | 'readFailed'
           | 'baselineRefused'
           | 'unreadableRecord'
+          | 'unreadableMap'
           | 'uncertifiedBaseline'
         >(),
       unsupported: () => {},

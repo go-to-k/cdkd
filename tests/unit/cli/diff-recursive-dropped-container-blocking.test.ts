@@ -5,8 +5,8 @@
  * refuses the record over, and before this none of them reached exit 3.
  *
  * The rule is go-to-k/cdkd#3335's, applied to the dropped half: a container the
- * deploy refuses carries a BLOCKING reason, and the `unreadable` row it already
- * had STAYS. So `--fail` still counts the row, `--json`'s `unreadable` keeps
+ * deploy refuses carries a BLOCKING reason, and the unreadable entry it already
+ * had STAYS. So `--fail` still counts it, `--json`'s three unreadable fields keep
  * meaning "dropped from the diff", and exit 3 — which `diff.ts` raises ahead of
  * `--fail` — says the deploy will not start.
  *
@@ -41,8 +41,6 @@ import {
 } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import {
-  UNREADABLE_ORPHANS_CONTAINER_ROW,
-  UNREADABLE_RESOURCES_MAP_ROW,
   refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
   refuseMalformedOutputs,
@@ -156,8 +154,9 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
       ] as const) {
         it(`blocks when the bag is ${label}, under ${tplLabel}`, async () => {
           const node = await diff(record({ resources: bag }), { tpl });
-          // The row stays: `--fail` and `--json`'s `unreadable` are unchanged.
-          expect(node.unreadable).toEqual([UNREADABLE_RESOURCES_MAP_ROW]);
+          // The container entry stays: `--fail` and `--json` still see it.
+          expect(node.unreadableContainers).toEqual(['resources']);
+          expect(node.unreadable).toEqual([]);
           expect(treeHasChanges(node), '`--fail` still counts the dropped bag').toBe(true);
           // ...and the reason is new, exactly one, naming the container.
           expect(node.blocking).toHaveLength(1);
@@ -176,16 +175,17 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
       const state = record();
       delete (state as { resources?: unknown }).resources;
       const node = await diff(state);
-      expect(node.unreadable).toEqual([UNREADABLE_RESOURCES_MAP_ROW]);
+      expect(node.unreadableContainers).toEqual(['resources']);
       expect(node.blocking).toHaveLength(1);
       expect(node.blocking[0]).toContain(BAG_REASON);
     });
 
-    it('--json keeps the bag row in `unreadable` and adds the reason to `blocking`', async () => {
-      // The contract go-to-k/cdkd#3018 shipped: `unreadable` is unchanged for a
-      // consumer that already reads it.
+    it('--json keeps the bag in `unreadableContainers` and adds the reason to `blocking`', async () => {
+      // The container in its own field (go-to-k/cdkd#3339), not a stand-in
+      // string among the entry ids.
       const json = diffTreeToJson(await diff(record({ resources: 'abcdef' })));
-      expect(json.unreadable).toEqual([UNREADABLE_RESOURCES_MAP_ROW]);
+      expect(json.unreadableContainers).toEqual(['resources']);
+      expect(json.unreadable).toEqual([]);
       expect(json.blocking).toHaveLength(1);
       expect(json.blocking[0]).toContain(BAG_REASON);
     });
@@ -254,7 +254,7 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
     ] as const) {
       it(`blocks when the container is ${label}, keeping its row`, async () => {
         const node = await diff(record({ orphans }));
-        expect(node.unreadable).toEqual([UNREADABLE_ORPHANS_CONTAINER_ROW]);
+        expect(node.unreadableContainers).toEqual(['orphans']);
         expect(node.blocking).toHaveLength(1);
         expect(node.blocking[0]).toContain(ORPHANS_CONTAINER_REASON);
         expect(countBlocking(node)).toBe(1);
@@ -267,7 +267,7 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
           orphans: [healthyOrphan, 5, { logicalId: 'Gone', orphanedAt: 1 }],
         })
       );
-      expect(node.unreadable.slice().sort()).toEqual(['', 'Gone']);
+      expect(node.unreadableOrphans).toEqual([null, 'Gone']);
       expect(node.blocking).toHaveLength(1);
       expect(node.blocking[0]).toContain(`2 rollback-orphan record(s) ${ORPHAN_ROWS_REASON}`);
       expect(countBlocking(node)).toBe(1);
@@ -289,7 +289,7 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
           ],
         })
       );
-      expect(node.unreadable).toEqual(['Gone']);
+      expect(node.unreadableOrphans).toEqual(['Gone']);
       expect(node.blocking).toHaveLength(2);
       expect(node.blocking.filter((r) => r.includes(ORPHAN_ROWS_REASON))).toHaveLength(1);
       expect(node.blocking.filter((r) => r.includes('carry a'))).toHaveLength(1);
@@ -300,7 +300,8 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
     const node = await diff(
       record({ resources: 'abcdef', outputs: 'abcdef', orphans: 'abc' })
     );
-    expect(node.unreadable).toEqual([UNREADABLE_RESOURCES_MAP_ROW, UNREADABLE_ORPHANS_CONTAINER_ROW]);
+    expect(node.unreadableContainers).toEqual(['resources', 'orphans']);
+    expect(node.unreadable).toEqual([]);
     expect(node.blocking).toHaveLength(3);
     expect(countBlocking(node)).toBe(3);
   });
@@ -314,6 +315,8 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
     ] as const) {
       const node = await diff(state);
       expect(node.unreadable, label).toEqual([]);
+      expect(node.unreadableContainers, label).toEqual([]);
+      expect(node.unreadableOrphans, label).toEqual([]);
       expect(node.blocking, label).toEqual([]);
       expect(countBlocking(node), label).toBe(0);
     }
@@ -408,10 +411,14 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
       ],
     ] as const) {
       for (const [childLabel, childExtra, row] of [
-        ['a torn bag', { resources: 'abcdef' }, UNREADABLE_RESOURCES_MAP_ROW],
-        ['a null entry', { resources: { Q: queue(), R: null } }, 'R'],
-        ['a torn orphans container', { orphans: 'abc' }, UNREADABLE_ORPHANS_CONTAINER_ROW],
-        ['a dropped orphan row', { orphans: [{ logicalId: 'Gone', orphanedAt: 1 }] }, 'Gone'],
+        ['a torn bag', { resources: 'abcdef' }, { unreadableContainers: ['resources'] }],
+        ['a null entry', { resources: { Q: queue(), R: null } }, { unreadable: ['R'] }],
+        ['a torn orphans container', { orphans: 'abc' }, { unreadableContainers: ['orphans'] }],
+        [
+          'a dropped orphan row',
+          { orphans: [{ logicalId: 'Gone', orphanedAt: 1 }] },
+          { unreadableOrphans: ['Gone'] },
+        ],
       ] as const) {
         it(`for ${childLabel} under ${parentLabel}`, async () => {
           const node = await diff(record({ resources: { Child: parentRow } }), {
@@ -425,7 +432,7 @@ describe("cdkd diff blocks over a DROPPED container the deploy refuses (go-to-k/
           if (expectRow === 'UPDATE') expect(parentChange!.propertyChanges).toEqual([]);
           const kid = node.children.find((c) => c.stackName === `${STACK}~Child`);
           expect(kid, 'the nested child node is missing').toBeDefined();
-          expect(kid!.unreadable, 'the child still reports what it dropped').toContain(row);
+          expect(kid!, 'the child still reports what it dropped').toMatchObject(row);
           expect(kid!.blocking).toEqual([]);
           expect(countBlocking(node)).toBe(0);
         });

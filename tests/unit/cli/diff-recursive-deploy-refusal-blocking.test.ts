@@ -226,19 +226,20 @@ describe('cdkd diff reports a deploy refusal it repaired (issue go-to-k/cdkd#333
     expect(countBlocking(node)).toBe(1);
   });
 
-  it("blocks over an unreadable 'resources' BAG too, and KEEPS its unreadable row", async () => {
+  it("blocks over an unreadable 'resources' BAG too, and KEEPS its unreadable entry", async () => {
     // The third container, and the rule go-to-k/cdkd#3512 settled for all three
     // at once: a container `cdkd deploy` refuses is a blocking reason, and
-    // whatever `unreadable` row it already had stays. The two containers above
-    // are previewed in place, so they have no row; the bag is DROPPED, so it has
-    // both — `--fail` still counts the row and exit 3, which outranks it, says
+    // whatever unreadable entry it already had stays. The two containers above
+    // are previewed in place, so they have none; the bag is DROPPED, so it has
+    // both — `--fail` still counts the entry and exit 3, which outranks it, says
     // the deploy refuses. The dropped-container cases live in
     // `diff-recursive-dropped-container-blocking.test.ts`.
     const node = await diff({
       ...record(),
       resources: 'abcdef' as unknown as StackState['resources'],
     });
-    expect(node.unreadable).toEqual(['(resources map)']);
+    expect(node.unreadableContainers).toEqual(['resources']);
+    expect(node.unreadable).toEqual([]);
     expect(node.blocking).toHaveLength(1);
     expect(node.blocking[0]).toContain("The 'resources' map cannot be read");
     expect(countBlocking(node)).toBe(1);
