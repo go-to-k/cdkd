@@ -28,6 +28,13 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  tagMapAsList,
+  type CfnTagEntry,
+} from '../tag-list.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
@@ -73,36 +80,34 @@ export class SSMParameterProvider implements ResourceProvider {
     this.ssmClient = awsClients.ssm;
   }
 
+  /** `aws:`-prefixed keys are reserved: AWS rejects a user's attempt to set or remove them. */
+  private static userTags(tags: CfnTagEntry[]): CfnTagEntry[] {
+    return tags.filter((t) => !t.Key.startsWith('aws:'));
+  }
+
   /**
-   * Normalize a CFn `AWS::SSM::Parameter.Tags` value into the SDK `Tag[]`
-   * shape. Unlike most CFn resources (whose `Tags` is a `{Key,Value}[]` list),
-   * `AWS::SSM::Parameter.Tags` is a key->value **map** (`{ "Env": "prod" }`) —
-   * CDK synthesizes the map form, so `properties['Tags'].map(...)` throws
-   * `Tags.map is not a function`. Accept the map (canonical) AND the list
-   * (defensive, in case a hand-authored / escape-hatched template supplies it),
-   * coerce each value to a string (SSM tag values must be strings), and drop
-   * `aws:`-prefixed reserved keys (AWS rejects user attempts to set them).
+   * Refuse a malformed desired `Tags` before any call (go-to-k/cdkd#3994) and
+   * return it as the SDK `Tag[]`. `AWS::SSM::Parameter.Tags` is a key -> value
+   * MAP (`{ "Env": "prod" }`), which CDK synthesizes, so it is converted with
+   * `tagMapAsList`; a `{Key,Value}[]` list (a hand-authored template) is read
+   * as it is.
    */
-  private cfnTagsToSdkTags(raw: unknown): Array<{ Key: string; Value: string }> {
-    if (raw === undefined || raw === null) return [];
-    // SSM tag values must be strings; coerce primitives and drop objects
-    // (which would otherwise stringify to "[object Object]").
-    const coerce = (v: unknown): string =>
-      typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '';
-    let entries: Array<[unknown, unknown]>;
-    if (Array.isArray(raw)) {
-      entries = (raw as Array<Record<string, unknown>>).map((t) => [t?.['Key'], t?.['Value']]);
-    } else if (typeof raw === 'object') {
-      entries = Object.entries(raw as Record<string, unknown>);
-    } else {
-      entries = [];
-    }
-    const out: Array<{ Key: string; Value: string }> = [];
-    for (const [key, value] of entries) {
-      if (typeof key !== 'string' || key.length === 0 || key.startsWith('aws:')) continue;
-      out.push({ Key: key, Value: coerce(value) });
-    }
-    return out;
+  private static desiredSsmTags(
+    raw: unknown,
+    resourceType: string,
+    logicalId: string,
+    physicalId?: string
+  ): CfnTagEntry[] {
+    return SSMParameterProvider.userTags(
+      refuseMalformedDesiredTags(
+        tagMapAsList(raw),
+        resourceType,
+        logicalId,
+        physicalId,
+        'Tags',
+        'a map of tag keys to scalar values or a list of tags with a non-empty string Key and a scalar Value'
+      )
+    );
   }
 
   /**
@@ -298,6 +303,12 @@ export class SSMParameterProvider implements ResourceProvider {
     // from `cdkd drift --revert`, and from tests.
     const mask = maskerOrIdentity(context?.maskSecrets);
     const warn = (message: string): void => this.logger.warn(mask(message));
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const ssmTags = SSMParameterProvider.desiredSsmTags(
+      properties['Tags'],
+      resourceType,
+      logicalId
+    );
     const debug = (message: string): void => this.logger.debug(mask(message));
     debug(`Creating SSM parameter ${displaySafe(logicalId)}`);
 
@@ -346,10 +357,8 @@ export class SSMParameterProvider implements ResourceProvider {
       // See Issue #376 for the cross-provider sweep.
       try {
         // Apply tags if specified. AWS::SSM::Parameter.Tags is a key->value
-        // MAP (not the {Key,Value}[] list most CFn resources use), so the raw
-        // template value cannot be `.map()`-ed directly — normalize via
-        // cfnTagsToSdkTags first (which accepts both the map and the list).
-        const ssmTags = this.cfnTagsToSdkTags(properties['Tags']);
+        // MAP (not the {Key,Value}[] list most CFn resources use); `ssmTags`
+        // was normalized from either form, and checked, before any call.
         if (ssmTags.length > 0) {
           await this.ssmClient.send(
             new AddTagsToResourceCommand({
@@ -467,6 +476,8 @@ export class SSMParameterProvider implements ResourceProvider {
     const mask = maskerOrIdentity(context?.maskSecrets);
     const debug = (message: string): void => this.logger.debug(mask(message));
     debug(`Updating SSM parameter ${displaySafe(logicalId)}: ${displaySafe(mask(physicalId))}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    SSMParameterProvider.desiredSsmTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     const type = (properties['Type'] as string | undefined) || 'String';
     const value = properties['Value'] as string | undefined;
@@ -511,38 +522,41 @@ export class SSMParameterProvider implements ResourceProvider {
       await this.ssmClient.send(new PutParameterCommand(putParams));
 
       // Update Tags if changed. AWS::SSM::Parameter.Tags is a key->value MAP;
-      // normalize both sides to the SDK Tag[] shape before diffing/applying
-      // (the raw map cannot be `.map()`-ed, and a map-vs-list mismatch would
-      // otherwise wrongly look "changed").
-      const newTags = this.cfnTagsToSdkTags(properties['Tags']);
-      const oldTags = this.cfnTagsToSdkTags(previousProperties['Tags']);
-      // Compare key-sorted so a pure key-reorder in the template map (no value
-      // change) is not seen as a change — Tags are an unordered set, matching
-      // the order-insensitive compare the drift-calculator already does.
-      const tagKey = (t: { Key: string; Value: string }): string => t.Key;
-      const sortedJson = (tags: Array<{ Key: string; Value: string }>): string =>
-        JSON.stringify([...tags].sort((a, b) => tagKey(a).localeCompare(tagKey(b))));
-      if (sortedJson(newTags) !== sortedJson(oldTags)) {
-        // Remove old tags
-        if (oldTags.length > 0) {
-          await this.ssmClient.send(
-            new RemoveTagsFromResourceCommand({
-              ResourceType: 'Parameter',
-              ResourceId: physicalId,
-              TagKeys: oldTags.map((t) => t.Key),
-            })
-          );
-        }
-        // Apply new tags
-        if (newTags.length > 0) {
-          await this.ssmClient.send(
-            new AddTagsToResourceCommand({
-              ResourceType: 'Parameter',
-              ResourceId: physicalId,
-              Tags: newTags,
-            })
-          );
-        }
+      // both sides are normalized to the CFn list and diffed through
+      // `planTagDiff` (go-to-k/cdkd#3994): only removed keys are untagged and
+      // only new or changed tags are added, and a recorded Tags cdkd cannot
+      // read untags nothing. `aws:` keys are reserved and never sent.
+      const plan = planTagDiff(
+        tagMapAsList(previousProperties['Tags']),
+        tagMapAsList(properties['Tags'])
+      );
+      const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+      if (tagWarning !== undefined) {
+        this.logger.warn(mask(tagWarning));
+      }
+      const tagsToRemove = plan.remove.filter((k) => !k.startsWith('aws:'));
+      const tagsToAdd = SSMParameterProvider.userTags(
+        [...plan.set].map(([Key, Value]) => ({ Key, Value }))
+      );
+      if (tagsToRemove.length > 0) {
+        await this.ssmClient.send(
+          new RemoveTagsFromResourceCommand({
+            ResourceType: 'Parameter',
+            ResourceId: physicalId,
+            TagKeys: tagsToRemove,
+          })
+        );
+      }
+      if (tagsToAdd.length > 0) {
+        await this.ssmClient.send(
+          new AddTagsToResourceCommand({
+            ResourceType: 'Parameter',
+            ResourceId: physicalId,
+            Tags: tagsToAdd,
+          })
+        );
+      }
+      if (tagsToRemove.length > 0 || tagsToAdd.length > 0) {
         debug(`Updated tags for SSM parameter ${displaySafe(mask(physicalId))}`);
       }
 

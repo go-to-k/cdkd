@@ -28,6 +28,12 @@ import {
   type CompositeIdFormat,
 } from '../composite-id.js';
 import { findSilentDropProperties } from '../property-coverage.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  type CfnTagEntry,
+} from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -206,6 +212,12 @@ export class S3TablesProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags on a taggable type is
+    // refused before any call (read as empty, it would untag every recorded
+    // key). Namespaces are not taggable.
+    if (resourceType === 'AWS::S3Tables::Table' || resourceType === 'AWS::S3Tables::TableBucket') {
+      refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    }
     try {
       return await this.applyUpdate(
         logicalId,
@@ -306,6 +318,8 @@ export class S3TablesProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 Table Bucket ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const tableBucketName = properties['TableBucketName'] as string | undefined;
     if (!tableBucketName) {
@@ -320,7 +334,7 @@ export class S3TablesProvider implements ResourceProvider {
     // CreateTableBucketCommand accepts tags atomically (no separate
     // TagResource call needed); the SDK rejects an empty map with
     // InvalidRequestException, so omit the field entirely when no tags.
-    const tags = this.cfnTagsToSdkMap(properties['Tags']);
+    const tags = this.tagListToSdkMap(desiredTags);
 
     try {
       const result = await this.getClient().send(
@@ -626,6 +640,8 @@ export class S3TablesProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 Tables Table ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const tableBucketARN = properties['TableBucketARN'] as string | undefined;
     if (!tableBucketARN) {
@@ -676,7 +692,7 @@ export class S3TablesProvider implements ResourceProvider {
     // CreateTableCommand accepts tags atomically (no separate TagResource
     // call needed); the SDK errors with InvalidRequestException on an empty
     // map, so omit the field entirely when no tags are set.
-    const tags = this.cfnTagsToSdkMap(properties['Tags']);
+    const tags = this.tagListToSdkMap(desiredTags);
 
     // Same guard, placement and replay downgrade as `createNamespace` above
     // (issue #1672): computed before the AWS call so a refusal cannot orphan a
@@ -1366,34 +1382,16 @@ export class S3TablesProvider implements ResourceProvider {
   // ─── Tag helpers (#609 backfill for AWS::S3Tables::Table) ─────────
 
   /**
-   * Convert CFn `Tags: [{ Key, Value }]` to the S3Tables SDK's
-   * `Record<string, string>` shape. Returns `undefined` when the input
-   * is absent, empty, or invalid (so the caller can omit the field
-   * from CreateTableCommand — the SDK rejects an empty `tags: {}` map
-   * with InvalidRequestException). Entries missing a `Key` are skipped;
-   * a missing `Value` is normalized to `''` (matches the on-AWS
-   * representation — empty-string tag values are legal).
+   * Convert a well-formed CFn tag list (already read through `tag-list.ts`)
+   * to the S3Tables SDK's `Record<string, string>` shape. Returns `undefined`
+   * for an empty list so the caller can omit the field from the create call
+   * — the SDK rejects an empty `tags: {}` map with InvalidRequestException.
    */
-  private cfnTagsToSdkMap(value: unknown): Record<string, string> | undefined {
-    if (!Array.isArray(value) || value.length === 0) return undefined;
+  private tagListToSdkMap(tags: CfnTagEntry[]): Record<string, string> | undefined {
+    if (tags.length === 0) return undefined;
     const map: Record<string, string> = {};
-    for (const entry of value) {
-      if (!entry || typeof entry !== 'object') continue;
-      const key = (entry as { Key?: unknown }).Key;
-      if (typeof key !== 'string' || key.length === 0) continue;
-      const raw = (entry as { Value?: unknown }).Value;
-      if (typeof raw === 'string') {
-        map[key] = raw;
-      } else if (raw === undefined || raw === null) {
-        map[key] = '';
-      } else if (typeof raw === 'number' || typeof raw === 'boolean') {
-        map[key] = String(raw);
-      } else {
-        // Skip non-stringifiable values rather than emit '[object Object]'.
-        continue;
-      }
-    }
-    return Object.keys(map).length > 0 ? map : undefined;
+    for (const t of tags) map[t.Key] = t.Value;
+    return map;
   }
 
   /**
@@ -1484,14 +1482,15 @@ export class S3TablesProvider implements ResourceProvider {
     previousTags: unknown,
     newTags: unknown
   ): Promise<void> {
-    const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
-    const next = this.cfnTagsToSdkMap(newTags) ?? {};
-
-    const removedKeys = Object.keys(prev).filter((k) => !Object.hasOwn(next, k));
-    const upserts: Record<string, string> = {};
-    for (const [k, v] of Object.entries(next)) {
-      if (prev[k] !== v) upserts[k] = v;
+    // Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
+    // unreadable record untags nothing.
+    const plan = planTagDiff(previousTags, newTags);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
+    const removedKeys = plan.remove;
+    const upserts: Record<string, string> = Object.fromEntries(plan.set);
 
     // No tag delta → no work, no error.
     if (removedKeys.length === 0 && Object.keys(upserts).length === 0) return;
@@ -1614,14 +1613,15 @@ export class S3TablesProvider implements ResourceProvider {
     previousTags: unknown,
     newTags: unknown
   ): Promise<void> {
-    const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
-    const next = this.cfnTagsToSdkMap(newTags) ?? {};
-
-    const removedKeys = Object.keys(prev).filter((k) => !Object.hasOwn(next, k));
-    const upserts: Record<string, string> = {};
-    for (const [k, v] of Object.entries(next)) {
-      if (prev[k] !== v) upserts[k] = v;
+    // Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
+    // unreadable record untags nothing.
+    const plan = planTagDiff(previousTags, newTags);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
+    const removedKeys = plan.remove;
+    const upserts: Record<string, string> = Object.fromEntries(plan.set);
 
     // No tag delta → no work, no error.
     if (removedKeys.length === 0 && Object.keys(upserts).length === 0) return;

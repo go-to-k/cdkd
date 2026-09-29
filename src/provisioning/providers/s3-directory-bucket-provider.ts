@@ -29,6 +29,7 @@ import { renderDisableCommand } from '../replacement-protection-advice.js';
 import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -257,6 +258,8 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 Express Directory Bucket ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     // `replayWarn`: the rollback executor's reverse-replacement arm revives
     // the OLD bucket from `previousState.properties`, which the user cannot
@@ -289,10 +292,9 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     // Tags ride the create call itself (`CreateBucketConfiguration.Tags`,
     // needing `s3express:TagResource`) — the ONLY tag write the plain
     // s3express data/control split supports at create time. A malformed
-    // non-array value is forwarded verbatim so AWS rejects it loudly
-    // instead of cdkd silently dropping it.
-    const tags = properties['Tags'] as Tag[] | undefined;
-    const includeTags = tags != null && !(Array.isArray(tags) && tags.length === 0);
+    // value was refused above; an absent or empty list omits the member.
+    const tags: Tag[] = desiredTags;
+    const includeTags = tags.length > 0;
 
     try {
       await this.s3Client.send(
@@ -351,28 +353,18 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
+    // (read as empty, it would untag every recorded key).
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     try {
-      const newTags = properties['Tags'] as Tag[] | undefined;
-      const oldTags = previousProperties['Tags'] as Tag[] | undefined;
-      // A malformed non-array desired value is forwarded verbatim to
-      // TagResource so AWS rejects it loudly — the same policy as the create
-      // path — and never drives UntagResource (computing "removed keys"
-      // against garbage would silently strip every live tag).
-      const malformedNewTags = newTags != null && !Array.isArray(newTags);
-      const newKeys = new Set(
-        (Array.isArray(newTags) ? newTags : []).map((t) => t.Key).filter((k): k is string => !!k)
-      );
-      const removedKeys = malformedNewTags
-        ? []
-        : (Array.isArray(oldTags) ? oldTags : [])
-            .map((t) => t.Key)
-            .filter((k): k is string => !!k && !newKeys.has(k));
-      const tagsToApply =
-        malformedNewTags || (Array.isArray(newTags) && newTags.length > 0) ? newTags : undefined;
-      if (
-        JSON.stringify(newTags) !== JSON.stringify(oldTags) &&
-        (removedKeys.length > 0 || tagsToApply !== undefined)
-      ) {
+      const plan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+      const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+      if (tagWarning !== undefined) {
+        this.logger.warn(tagWarning);
+      }
+      const removedKeys = plan.remove;
+      const tagsToApply: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+      if (removedKeys.length > 0 || tagsToApply.length > 0) {
         const accountId = await this.getAccountId();
         const resourceArn = await this.buildBucketArn(physicalId, accountId);
 
@@ -385,9 +377,9 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
             })
           );
         }
-        // Apply added / changed tags. Skip the call when the new set is
-        // empty (a pure removal has nothing left to add).
-        if (tagsToApply) {
+        // Apply added / changed tags. Skip the call when there are none
+        // (a pure removal has nothing left to add).
+        if (tagsToApply.length > 0) {
           await this.getS3ControlClient().send(
             new TagResourceCommand({
               AccountId: accountId,

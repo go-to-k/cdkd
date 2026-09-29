@@ -32,6 +32,7 @@ import {
   isTruthyCfnBoolean,
 } from '../data-delete-intent.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -180,6 +181,8 @@ export class ECRProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating ECR Repository ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const repositoryName =
       (properties['RepositoryName'] as string | undefined) ||
@@ -189,8 +192,9 @@ export class ECRProvider implements ResourceProvider {
     // call's, not this repository's name collision (#3826).
     let repositoryCreated = false;
     try {
-      // Convert CFn Tags format to SDK tags format
-      const tags = properties['Tags'] as Tag[] | undefined;
+      // CFn Tags and the SDK share the `[{ Key, Value }]` shape.
+      const tags: Tag[] | undefined =
+        properties['Tags'] !== undefined && properties['Tags'] !== null ? desiredTags : undefined;
 
       const scanningConfig = this.toSdkScanningConfig(
         properties['ImageScanningConfiguration'] as Record<string, unknown> | undefined
@@ -286,11 +290,13 @@ export class ECRProvider implements ResourceProvider {
   async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating ECR Repository ${logicalId} (${physicalId})`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Update ImageScanningConfiguration if changed. CFn properties are
@@ -427,9 +433,14 @@ export class ECRProvider implements ResourceProvider {
       // dropped from the template (partial removal) — or the entire `Tags`
       // property removed (full removal, `newTags === undefined`) — would
       // survive on AWS unless we explicitly `UntagResource` the removed keys.
-      const newTags = properties['Tags'] as Tag[] | undefined;
-      const oldTags = previousProperties['Tags'] as Tag[] | undefined;
-      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+      // Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
+      // unreadable record untags nothing.
+      const plan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+      const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+      if (tagWarning !== undefined) {
+        this.logger.warn(tagWarning);
+      }
+      if (plan.set.size > 0 || plan.remove.length > 0) {
         // Get repository ARN for tagging
         const describeResponse = await this.getClient().send(
           new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
@@ -437,13 +448,8 @@ export class ECRProvider implements ResourceProvider {
         const repoArn = describeResponse.repositories?.[0]?.repositoryArn;
         if (repoArn) {
           // Untag keys present in the old set but absent from the new set.
-          // `newTags === undefined` is treated as "remove all old tags".
-          const newKeys = new Set(
-            (newTags ?? []).map((t) => t.Key).filter((k): k is string => !!k)
-          );
-          const removedKeys = (oldTags ?? [])
-            .map((t) => t.Key)
-            .filter((k): k is string => !!k && !newKeys.has(k));
+          // An absent desired `Tags` removes every recorded key.
+          const removedKeys = plan.remove;
           if (removedKeys.length > 0) {
             await this.getClient().send(
               new UntagResourceCommand({
@@ -452,13 +458,13 @@ export class ECRProvider implements ResourceProvider {
               })
             );
           }
-          // Apply added / changed tags. Skip the call when the new set is
-          // empty (a pure removal has nothing left to add).
-          if (newTags && newTags.length > 0) {
+          // Apply added / changed tags. Skip the call when there are none
+          // (a pure removal has nothing left to add).
+          if (plan.set.size > 0) {
             await this.getClient().send(
               new TagResourceCommand({
                 resourceArn: repoArn,
-                tags: newTags,
+                tags: [...plan.set].map(([Key, Value]) => ({ Key, Value })),
               })
             );
           }
@@ -484,7 +490,7 @@ export class ECRProvider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update ECR Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        _resourceType,
+        resourceType,
         logicalId,
         physicalId,
         cause

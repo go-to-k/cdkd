@@ -140,7 +140,10 @@ hand-editing the state file.
 group attachment and entry lists (tags, metrics, lifecycle hooks, traffic
 sources, notifications), Firehose tags, an ELBv2 target group's `Targets`,
 Budgets `NotificationsWithSubscribers` / `ResourceTags`, and CodeCommit
-`Triggers` / `Tags` (issue [#3989](https://github.com/go-to-k/cdkd/issues/3989)).
+`Triggers` / `Tags` (issue [#3989](https://github.com/go-to-k/cdkd/issues/3989)),
+and most providers' CloudFormation `Tags` diffs, read through
+`src/provisioning/tag-list.ts` (issue [#3994](https://github.com/go-to-k/cdkd/issues/3994);
+Glue and log groups: [#4073](https://github.com/go-to-k/cdkd/issues/4073)).
 There, reading a malformed
 DESIRED side as empty detaches or deletes everything the record holds, so it
 is refused before any call on every path, a state replay included. A malformed

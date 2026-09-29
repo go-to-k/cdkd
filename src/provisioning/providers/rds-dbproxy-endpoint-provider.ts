@@ -18,6 +18,13 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  DBPROXY_TAG_OPTIONS,
+  DBPROXY_TAGS_WHAT,
+} from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -104,6 +111,16 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      undefined,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
     const dbProxyName = properties['DBProxyName'] as string | undefined;
     if (!dbProxyName) {
       throw new ProvisioningError(
@@ -135,7 +152,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
           VpcSubnetIds: vpcSubnetIds,
           VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
           TargetRole: properties['TargetRole'] as DBProxyEndpointTargetRole | undefined,
-          Tags: this.toAwsTags(properties['Tags']),
+          Tags: tags.length > 0 ? tags : undefined,
         })
       );
     } catch (error) {
@@ -227,6 +244,16 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      physicalId,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
     const client = this.getClient();
 
     // Defensive: reject diffs in immutable fields. Replacement-rules.ts
@@ -455,14 +482,19 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string
   ): Promise<void> {
-    const oldMap = this.toTagMap(oldTags);
-    const newMap = this.toTagMap(newTags);
+    // Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
+    // unreadable record untags nothing.
+    const plan = planTagDiff(oldTags, newTags, DBPROXY_TAG_OPTIONS);
 
     // Reviewer minor fix: skip the ARN-resolution Describe entirely when
     // there is no tag diff to apply.
-    const sameKeys = oldMap.size === newMap.size && [...oldMap.keys()].every((k) => newMap.has(k));
-    const sameValues = sameKeys && [...oldMap.entries()].every(([k, v]) => newMap.get(k) === v);
-    if (sameValues) return;
+    // Warned before the short-circuit, so a hidden recorded key is reported
+    // without the ARN Describe, and a missing ARN cannot swallow the warning.
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
+    }
+    if (plan.set.size === 0 && plan.remove.length === 0) return;
 
     const client = this.getClient();
     // The SAME key `getAttribute` builds for this attribute, so the two share
@@ -487,14 +519,8 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     }
     if (!arn) return;
 
-    const toRemove: string[] = [];
-    const toAdd: Tag[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) toRemove.push(k);
-    }
-    for (const [k, v] of newMap.entries()) {
-      if (oldMap.get(k) !== v) toAdd.push({ Key: k, Value: v });
-    }
+    const toRemove = plan.remove;
+    const toAdd: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
 
     if (toRemove.length > 0) {
       try {
@@ -512,23 +538,6 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         throw this.wrapError(error, 'UPDATE (add tags)', resourceType, logicalId, physicalId);
       }
     }
-  }
-
-  private toTagMap(tags: unknown): Map<string, string> {
-    const map = new Map<string, string>();
-    if (Array.isArray(tags)) {
-      for (const entry of tags as Array<{ Key?: string; Value?: string }>) {
-        if (entry?.Key !== undefined) map.set(entry.Key, entry.Value ?? '');
-      }
-    }
-    return map;
-  }
-
-  private toAwsTags(tags: unknown): Tag[] | undefined {
-    if (!Array.isArray(tags) || tags.length === 0) return undefined;
-    return (tags as Array<{ Key?: string; Value?: string }>)
-      .filter((t) => t.Key !== undefined)
-      .map((t) => ({ Key: t.Key, Value: t.Value ?? '' }));
   }
 
   private async buildImportResult(physicalId: string): Promise<ResourceImportResult> {

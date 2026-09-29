@@ -31,6 +31,7 @@ import type { CacheClusterSize, CanarySettings } from '@aws-sdk/client-api-gatew
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -1122,6 +1123,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating API Gateway Stage ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const restApiId = properties['RestApiId'] as string;
     const stageName = properties['StageName'] as string;
@@ -1165,7 +1168,10 @@ export class ApiGatewayProvider implements ResourceProvider {
           description: properties['Description'] as string | undefined,
           tracingEnabled: properties['TracingEnabled'] as boolean | undefined,
           variables: properties['Variables'] as Record<string, string> | undefined,
-          tags: this.cfnTagsToRecord(properties['Tags']),
+          tags:
+            properties['Tags'] != null
+              ? Object.fromEntries(desiredTags.map((t) => [t.Key, t.Value]))
+              : undefined,
           cacheClusterEnabled: properties['CacheClusterEnabled'] as boolean | undefined,
           cacheClusterSize:
             rawCacheClusterSize != null
@@ -1272,6 +1278,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating API Gateway Stage ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     const restApiId = properties['RestApiId'] as string;
 
@@ -1565,8 +1573,10 @@ export class ApiGatewayProvider implements ResourceProvider {
       if (stageArn) {
         await this.applyTagDiff(
           stageArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -2204,34 +2214,24 @@ export class ApiGatewayProvider implements ResourceProvider {
    * Apply a diff between old and new CFn-shape Tags arrays via API Gateway's
    * `TagResource` / `UntagResource` APIs. API Gateway's `TagResource` takes
    * lowercase camelCase fields plus a tag-map (`{ resourceArn, tags: {key: value} }`);
-   * `UntagResource` takes `{ resourceArn, tagKeys: [...] }`.
+   * `UntagResource` takes `{ resourceArn, tagKeys: [...] }`. Both sides are
+   * read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record
+   * untags nothing.
    */
   private async applyTagDiff(
     resourceArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Record<string, string> = {};
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd: Record<string, string> = Object.fromEntries(plan.set);
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.apiGatewayClient.send(
@@ -2254,18 +2254,6 @@ export class ApiGatewayProvider implements ResourceProvider {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Convert CloudFormation Tags (Array<{Key, Value}>) to SDK tags (Record<string, string>).
-   */
-  private cfnTagsToRecord(tags: unknown): Record<string, string> | undefined {
-    if (!tags || !Array.isArray(tags)) return undefined;
-    const result: Record<string, string> = {};
-    for (const tag of tags as Array<{ Key: string; Value: string }>) {
-      result[tag.Key] = tag.Value;
-    }
-    return result;
   }
 
   /**

@@ -17,6 +17,12 @@ import {
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  type CfnTagEntry,
+} from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -83,6 +89,8 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tagList = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const consumerName = properties['ConsumerName'] as string | undefined;
     const streamArn = properties['StreamARN'] as string | undefined;
 
@@ -103,9 +111,6 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
 
     this.logger.debug(`Registering Kinesis stream consumer ${logicalId}: ${consumerName}`);
 
-    const tagList = Array.isArray(properties['Tags'])
-      ? (properties['Tags'] as Array<{ Key?: string; Value?: string }>)
-      : undefined;
     const tagMap = tagListToMap(tagList);
 
     try {
@@ -175,6 +180,8 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     try {
       return await this.applyUpdate(
         logicalId,
@@ -224,8 +231,10 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     // Apply Tags diff via TagResource / UntagResource.
     await this.applyTagDiff(
       physicalId,
-      previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-      properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      resourceType,
+      logicalId,
+      previousProperties['Tags'],
+      properties['Tags']
     );
 
     // Re-fetch attributes for the result.
@@ -400,24 +409,23 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
    * APIs. Mirrors `KinesisStreamProvider.applyTagDiff`, except the
    * Kinesis service splits the per-resource-type tag APIs vs the generic
    * tag APIs — StreamConsumer uses the generic ones (which accept any
-   * Kinesis resource ARN).
+   * Kinesis resource ARN). Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     consumerArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const oldMap = tagListToMap(oldTagsRaw) ?? {};
-    const newMap = tagListToMap(newTagsRaw) ?? {};
-
-    const tagsToAdd: Record<string, string> = {};
-    for (const [k, v] of Object.entries(newMap)) {
-      if (oldMap[k] !== v) tagsToAdd[k] = v;
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of Object.keys(oldMap)) {
-      if (!Object.hasOwn(newMap, k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd: Record<string, string> = Object.fromEntries(plan.set);
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
@@ -473,13 +481,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
  * (rather than passing an empty map that some AWS APIs treat as
  * "remove all").
  */
-function tagListToMap(
-  tags: Array<{ Key?: string; Value?: string }> | undefined
-): Record<string, string> | undefined {
-  if (!tags || tags.length === 0) return undefined;
-  const out: Record<string, string> = {};
-  for (const t of tags) {
-    if (t.Key !== undefined && t.Value !== undefined) out[t.Key] = t.Value;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
+function tagListToMap(tags: CfnTagEntry[]): Record<string, string> | undefined {
+  if (tags.length === 0) return undefined;
+  return Object.fromEntries(tags.map((t) => [t.Key, t.Value]));
 }

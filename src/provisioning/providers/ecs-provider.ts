@@ -87,6 +87,12 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  type CfnTagEntry,
+} from '../tag-list.js';
 import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-convert.js';
 import type {
   ResourceProvider,
@@ -107,8 +113,8 @@ import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
  */
-function convertTags(tags?: Array<{ Key: string; Value: string }>): Tag[] | undefined {
-  if (!tags || tags.length === 0) return undefined;
+function convertTags(tags: CfnTagEntry[]): Tag[] | undefined {
+  if (tags.length === 0) return undefined;
   return tags.map((t) => ({ key: t.Key, value: t.Value }));
 }
 
@@ -471,6 +477,8 @@ export class ECSProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating ECS cluster ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
     const clusterName =
@@ -503,9 +511,7 @@ export class ECSProvider implements ResourceProvider {
                 ] as string,
               }
             : undefined,
-          tags: convertTags(
-            properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
-          ),
+          tags: convertTags(desiredTags),
         })
       );
 
@@ -542,6 +548,8 @@ export class ECSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating ECS cluster ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
     try {
@@ -629,8 +637,10 @@ export class ECSProvider implements ResourceProvider {
       if (cluster?.clusterArn) {
         await this.applyTagDiff(
           cluster.clusterArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -712,6 +722,8 @@ export class ECSProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating ECS task definition ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
     try {
@@ -737,9 +749,7 @@ export class ECSProvider implements ResourceProvider {
           placementConstraints: this.convertTaskDefinitionPlacementConstraints(
             properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
           ),
-          tags: convertTags(
-            properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
-          ),
+          tags: convertTags(desiredTags),
           runtimePlatform: this.convertRuntimePlatform(
             properties['RuntimePlatform'] as Record<string, unknown> | undefined
           ),
@@ -869,6 +879,8 @@ export class ECSProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating ECS service ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
     const serviceName =
@@ -914,9 +926,7 @@ export class ECSProvider implements ResourceProvider {
           serviceRegistries: this.convertServiceRegistries(
             properties['ServiceRegistries'] as Array<Record<string, unknown>> | undefined
           ),
-          tags: convertTags(
-            properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
-          ),
+          tags: convertTags(desiredTags),
           // issue #609 backfill — previously silent-dropped Service members.
           // `ForceNewDeployment` is deliberately NOT mapped here: it is a
           // CFn-only rollout trigger with no CreateService counterpart (the
@@ -1158,6 +1168,8 @@ export class ECSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating ECS service ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
     // ServiceName is immutable - if changed, requires replacement
@@ -1698,8 +1710,10 @@ export class ECSProvider implements ResourceProvider {
       if (service?.serviceArn) {
         await this.applyTagDiff(
           service.serviceArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -1852,34 +1866,23 @@ export class ECSProvider implements ResourceProvider {
    * Apply a diff between old and new CFn-shape Tags arrays via ECS's
    * `TagResource` / `UntagResource` APIs. ECS uses lowercase camelCase
    * (`{ key, value }`) for tags. Resource ARN identifies the cluster /
-   * service / task definition.
+   * service / task definition. Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     resourceArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Tag[] = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ key: k, value: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd: Tag[] = [...plan.set].map(([key, value]) => ({ key, value }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(new UntagResourceCommand({ resourceArn, tagKeys: tagsToRemove }));

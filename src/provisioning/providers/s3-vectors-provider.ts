@@ -15,6 +15,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -126,6 +127,10 @@ export class S3VectorsProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
+    // (read as empty, it would untag every recorded key).
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+
     // Guard: a create-only property reaching update() means the engine did not
     // replace — fail loudly rather than silently leaving AWS unchanged.
     for (const createOnly of ['VectorBucketName', 'EncryptionConfiguration']) {
@@ -140,14 +145,15 @@ export class S3VectorsProvider implements ResourceProvider {
       }
     }
 
-    const oldTags = this.cfnTagsToRecord(previousProperties['Tags']);
-    const newTags = this.cfnTagsToRecord(properties['Tags']);
-
-    const toSet: Record<string, string> = {};
-    for (const [k, v] of Object.entries(newTags)) {
-      if (oldTags[k] !== v) toSet[k] = v;
+    // Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
+    // unreadable record untags nothing.
+    const plan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const toRemove = Object.keys(oldTags).filter((k) => !Object.hasOwn(newTags, k));
+    const toSet: Record<string, string> = Object.fromEntries(plan.set);
+    const toRemove = plan.remove;
 
     if (Object.keys(toSet).length === 0 && toRemove.length === 0) {
       // No tag delta — nothing to do on AWS (e.g. a metadata-only diff).
@@ -207,22 +213,6 @@ export class S3VectorsProvider implements ResourceProvider {
     return { physicalId, wasReplaced: false };
   }
 
-  /**
-   * Convert a CFn `Tags: [{ Key, Value }]` list to the SDK
-   * `Record<string, string>` shape. Tolerates undefined / non-array input
-   * (returns an empty record) and skips entries missing Key or Value.
-   */
-  private cfnTagsToRecord(tags: unknown): Record<string, string> {
-    if (!Array.isArray(tags)) return {};
-    return (tags as Array<{ Key?: string; Value?: string }>).reduce<Record<string, string>>(
-      (acc, t) => {
-        if (t.Key !== undefined && t.Value !== undefined) acc[t.Key] = t.Value;
-        return acc;
-      },
-      {}
-    );
-  }
-
   async delete(
     logicalId: string,
     physicalId: string,
@@ -251,6 +241,8 @@ export class S3VectorsProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 VectorBucket ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const vectorBucketName = properties['VectorBucketName'] as string | undefined;
     if (!vectorBucketName) {
@@ -272,10 +264,12 @@ export class S3VectorsProvider implements ResourceProvider {
       | undefined;
 
     // CFn shape: `Tags: [{ Key, Value }]`. SDK shape:
-    // `tags?: Record<string, string>`. Convert (shared with the update path)
+    // `tags?: Record<string, string>`. Convert the list read above
     // + omit-when-absent (an empty array would force a no-op CloudTrail event
     // per Tag).
-    const tagRecord = this.cfnTagsToRecord(properties['Tags']);
+    const tagRecord: Record<string, string> = Object.fromEntries(
+      desiredTags.map((t) => [t.Key, t.Value])
+    );
     const tags = Object.keys(tagRecord).length > 0 ? tagRecord : undefined;
 
     try {

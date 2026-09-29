@@ -18,6 +18,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { acquireIdempotencyToken, type IdempotencyToken } from './idempotency-token.js';
 import type {
   ResourceProvider,
@@ -145,6 +146,8 @@ export class ACMCertificateProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Requesting ACM certificate ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const domainName = properties['DomainName'] as string | undefined;
     if (!domainName) {
@@ -195,8 +198,7 @@ export class ACMCertificateProvider implements ResourceProvider {
     if (Object.keys(options).length > 0) {
       input['Options'] = options;
     }
-    const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-    if (tags && Array.isArray(tags) && tags.length > 0) {
+    if (tags.length > 0) {
       input['Tags'] = tags;
     }
 
@@ -452,6 +454,8 @@ export class ACMCertificateProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating ACM certificate ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     // ACM certs are largely immutable. The fields that ARE mutable are
     // Tags and Options.CertificateTransparencyLoggingPreference. Anything
@@ -563,8 +567,10 @@ export class ACMCertificateProvider implements ResourceProvider {
       // Tags: diff and Add/Remove.
       await this.updateTags(
         physicalId,
-        properties['Tags'] as Array<{ Key: string; Value: string }> | undefined,
-        previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       return {
@@ -917,22 +923,27 @@ export class ACMCertificateProvider implements ResourceProvider {
     return lines.length === 1 ? undefined : lines.join('\n');
   }
 
+  /**
+   * Diff the recorded and desired Tags into Remove / Add calls. Both sides are
+   * read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record
+   * untags nothing.
+   */
   private async updateTags(
     certificateArn: string,
-    newTags: Array<{ Key: string; Value: string }> | undefined,
-    oldTags: Array<{ Key: string; Value: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const newTagMap = new Map((newTags || []).map((t) => [t.Key, t.Value]));
-    const oldTagMap = new Map((oldTags || []).map((t) => [t.Key, t.Value]));
-
-    const tagsToRemove: Array<{ Key: string; Value?: string }> = [];
-    for (const key of oldTagMap.keys()) {
-      if (!newTagMap.has(key)) tagsToRemove.push({ Key: key });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [key, value] of newTagMap) {
-      if (oldTagMap.get(key) !== value) tagsToAdd.push({ Key: key, Value: value });
-    }
+    const tagsToRemove: Array<{ Key: string; Value?: string }> = plan.remove.map((Key) => ({
+      Key,
+    }));
+    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
 
     if (tagsToRemove.length > 0) {
       await this.acmClient.send(

@@ -25,6 +25,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 
 /**
  * Classify an event source mapping by its `EventSourceArn` so that
@@ -405,6 +406,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating event source mapping ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const functionName = properties['FunctionName'] as string;
     if (!functionName) {
@@ -489,8 +492,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
           'ScalingConfig'
         ] as import('@aws-sdk/client-lambda').ScalingConfig;
       if (properties['Tags']) {
-        const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
-        params.Tags = Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]));
+        params.Tags = Object.fromEntries(desiredTags.map((t) => [t.Key, t.Value]));
       }
       // #609 backfill — 7 props closed in one slice. The CFn field name
       // is `KmsKeyArn` (lower-case `ms`); the SDK field is `KMSKeyArn`
@@ -590,6 +592,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     // update() never names ConsumptionMode (kafkaConfigForUpdate), so only a
     // CHANGED value is lost; an unchanged one (a record an older cdkd wrote)
     // sends nothing either way. Refused before the first AWS call on the
@@ -608,7 +612,14 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       );
     }
     try {
-      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties, context);
+      return await this.applyUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context
+      );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
       // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
@@ -628,6 +639,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   private async applyUpdate(
     logicalId: string,
     physicalId: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
@@ -814,8 +826,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     if (eventSourceMappingArn) {
       await this.applyTagDiff(
         eventSourceMappingArn,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
     }
 
@@ -838,34 +852,24 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
    * Apply a diff between old and new CFn-shape Tags arrays via Lambda's
    * `TagResource` / `UntagResource` APIs against the EventSourceMapping
    * ARN. Lambda's `TagResource` takes `{ Resource, Tags: { key: value } }`;
-   * `UntagResource` takes `{ Resource, TagKeys: [...] }`.
+   * `UntagResource` takes `{ Resource, TagKeys: [...] }`. Both sides are
+   * read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record
+   * untags nothing.
    */
   private async applyTagDiff(
     arn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Record<string, string> = {};
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = Object.fromEntries(plan.set);
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.lambdaClient.send(

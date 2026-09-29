@@ -19,6 +19,7 @@ import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -226,6 +227,8 @@ export class SQSQueueProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SQS queue ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const queueName =
       (properties['QueueName'] as string | undefined) ||
@@ -248,11 +251,8 @@ export class SQSQueueProvider implements ResourceProvider {
       }
 
       const tags: Record<string, string> = {};
-      if (properties['Tags']) {
-        const tagList = properties['Tags'] as Array<{ Key: string; Value: string }>;
-        for (const tag of tagList) {
-          tags[tag.Key] = tag.Value;
-        }
+      for (const tag of desiredTags) {
+        tags[tag.Key] = tag.Value;
       }
 
       const response = await this.sqsClient.send(
@@ -304,6 +304,8 @@ export class SQSQueueProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SQS queue ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Convert CDK properties to SQS attributes
@@ -360,8 +362,10 @@ export class SQSQueueProvider implements ResourceProvider {
       // and UntagQueueCommand({ QueueUrl, TagKeys: [...] }).
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       // Get queue attributes for Arn
@@ -440,34 +444,23 @@ export class SQSQueueProvider implements ResourceProvider {
    * Apply a diff between old and new CFn-shape Tags arrays via SQS's
    * `TagQueue` / `UntagQueue` APIs. SQS's `TagQueue` takes a `Tags` map
    * (`{ key: value }`); `UntagQueue` takes a `TagKeys` array. cdkd state
-   * holds Tags in CFn shape (`[{ Key, Value }]`).
+   * holds Tags in CFn shape (`[{ Key, Value }]`). Both sides are read through
+   * `planTagDiff` (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     queueUrl: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Record<string, string> = {};
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = Object.fromEntries(plan.set);
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.sqsClient.send(

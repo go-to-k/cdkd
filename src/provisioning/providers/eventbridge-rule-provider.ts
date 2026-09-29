@@ -19,6 +19,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -217,6 +218,8 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating EventBridge rule ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const ruleName =
       (properties['Name'] as string | undefined) ||
@@ -254,7 +257,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
 
       // Add tags to PutRule if specified
       if (properties['Tags']) {
-        putRuleParams['Tags'] = properties['Tags'];
+        putRuleParams['Tags'] = desiredTags;
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
@@ -360,6 +363,8 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating EventBridge rule ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     const ruleName =
       (properties['Name'] as string | undefined) ||
@@ -432,28 +437,30 @@ export class EventBridgeRuleProvider implements ResourceProvider {
         this.logger.debug(`Updated ${newTargets.length} targets on rule ${ruleName}`);
       }
 
-      // Update Tags if changed
-      const newTags = properties['Tags'] as Tag[] | undefined;
-      const oldTags = previousProperties['Tags'] as Tag[] | undefined;
-      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
-        // Remove old tags
-        if (oldTags && oldTags.length > 0) {
-          const oldTagKeys = oldTags.map((t) => t.Key).filter((k): k is string => !!k);
-          if (oldTagKeys.length > 0) {
-            await this.eventBridgeClient.send(
-              new UntagResourceCommand({
-                ResourceARN: ruleArn,
-                TagKeys: oldTagKeys,
-              })
-            );
-          }
+      // Update Tags if changed. Both sides are read through `planTagDiff`
+      // (go-to-k/cdkd#3994): an unreadable record untags nothing.
+      const plan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+      const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+      if (tagWarning !== undefined) {
+        this.logger.warn(tagWarning);
+      }
+      if (plan.set.size > 0 || plan.remove.length > 0) {
+        // Remove tags the template no longer names
+        if (plan.remove.length > 0) {
+          await this.eventBridgeClient.send(
+            new UntagResourceCommand({
+              ResourceARN: ruleArn,
+              TagKeys: plan.remove,
+            })
+          );
         }
-        // Apply new tags
-        if (newTags && newTags.length > 0) {
+        // Apply added / changed tags
+        if (plan.set.size > 0) {
+          const tagsToAdd: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
           await this.eventBridgeClient.send(
             new TagResourceCommand({
               ResourceARN: ruleArn,
-              Tags: newTags,
+              Tags: tagsToAdd,
             })
           );
         }

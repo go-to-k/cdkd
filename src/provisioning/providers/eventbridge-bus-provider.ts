@@ -20,6 +20,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -90,6 +91,8 @@ export class EventBridgeBusProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const name = properties['Name'] as string;
     if (!name) {
       throw new ProvisioningError(
@@ -114,8 +117,8 @@ export class EventBridgeBusProvider implements ResourceProvider {
       if (properties['KmsKeyIdentifier']) {
         createParams.KmsKeyIdentifier = properties['KmsKeyIdentifier'] as string;
       }
-      if (properties['Tags']) {
-        createParams.Tags = properties['Tags'] as Tag[];
+      if (properties['Tags'] !== undefined && properties['Tags'] !== null) {
+        createParams.Tags = tags;
       }
       const dlcCreate = sanitizeDeadLetterConfig(properties['DeadLetterConfig']);
       if (dlcCreate) {
@@ -174,8 +177,16 @@ export class EventBridgeBusProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     try {
-      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
+      return await this.applyUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
       // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
@@ -195,6 +206,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
   private async applyUpdate(
     logicalId: string,
     physicalId: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
@@ -233,30 +245,34 @@ export class EventBridgeBusProvider implements ResourceProvider {
       await this.eventBridgeClient.send(new UpdateEventBusCommand(updateParams));
     }
 
-    // Update Tags if changed
-    const newTags = properties['Tags'] as Tag[] | undefined;
-    const oldTags = previousProperties['Tags'] as Tag[] | undefined;
-    if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+    // Update Tags if changed. Both sides are read through `planTagDiff`
+    // (go-to-k/cdkd#3994): an unreadable record untags nothing.
+    const plan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+    // Warn before the write gate: an unreadable or secret-derived record can
+    // leave nothing to set or remove, and the ARN lookup below is only for writes.
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
+    }
+    if (plan.set.size > 0 || plan.remove.length > 0) {
       // Get ARN for tagging
       const describeResponse = await this.eventBridgeClient.send(
         new DescribeEventBusCommand({ Name: physicalId })
       );
       const busArn = describeResponse.Arn;
       if (busArn) {
-        // Remove old tags
-        if (oldTags && oldTags.length > 0) {
-          const oldTagKeys = oldTags.map((t) => t.Key).filter((k): k is string => !!k);
-          if (oldTagKeys.length > 0) {
-            await this.eventBridgeClient.send(
-              new UntagResourceCommand({
-                ResourceARN: busArn,
-                TagKeys: oldTagKeys,
-              })
-            );
-          }
+        // Remove tags the desired side no longer names
+        if (plan.remove.length > 0) {
+          await this.eventBridgeClient.send(
+            new UntagResourceCommand({
+              ResourceARN: busArn,
+              TagKeys: plan.remove,
+            })
+          );
         }
-        // Apply new tags
-        if (newTags && newTags.length > 0) {
+        // Apply new or changed tags
+        if (plan.set.size > 0) {
+          const newTags: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
           await this.eventBridgeClient.send(
             new TagResourceCommand({
               ResourceARN: busArn,

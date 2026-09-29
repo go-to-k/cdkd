@@ -42,6 +42,7 @@ import {
   type UpdateRuntimeOn,
 } from '@aws-sdk/client-lambda';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   EC2Client,
   DescribeNetworkInterfacesCommand,
@@ -277,6 +278,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Lambda function ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const functionName =
       (properties['FunctionName'] as string | undefined) ||
@@ -307,14 +310,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
     let functionCreated = false;
     try {
       // Build tags map from CDK tag format [{Key, Value}]
-      let tags: Record<string, string> | undefined;
-      if (properties['Tags']) {
-        const tagList = properties['Tags'] as Array<{ Key: string; Value: string }>;
-        tags = {};
-        for (const tag of tagList) {
-          tags[tag.Key] = tag.Value;
-        }
-      }
+      const tags: Record<string, string> | undefined = properties['Tags']
+        ? Object.fromEntries(desiredTags.map((tag) => [tag.Key, tag.Value]))
+        : undefined;
 
       const createParams: CreateFunctionCommandInput = {
         FunctionName: functionName,
@@ -657,6 +655,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
     const debug = (message: string): void => this.logger.debug(mask(message));
 
     this.logger.debug(`Updating Lambda function ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     refuseImageFunctionUnsupported(logicalId, resourceType, properties, physicalId);
 
@@ -1029,8 +1029,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // state holds Tags in CFn shape ([{ Key, Value }]).
       await this.applyTagDiff(
         functionArn,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       return {
@@ -1291,36 +1293,26 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * `TagResource` / `UntagResource` APIs. Without this, `cdkd deploy`
    * and `cdkd drift --revert` silently no-op tag changes — the
    * `UpdateFunctionConfiguration` command does NOT accept a Tags
-   * parameter (Lambda treats tags as a separate API surface).
+   * parameter (Lambda treats tags as a separate API surface). Both sides
+   * are read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable
+   * record untags nothing.
    */
   private async applyTagDiff(
     functionArn: string | undefined,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
     if (!functionArn) return;
 
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Record<string, string> = {};
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = Object.fromEntries(plan.set);
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.lambdaClient.send(

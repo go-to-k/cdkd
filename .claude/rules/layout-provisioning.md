@@ -18,7 +18,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **data-delete-intent.ts** - The CDK auto-delete tag keys. S3 auto-empties, and ECR sends `force: true`, ONLY with the tag, `EmptyOnDelete: true`, or `DeleteContext.forceDataDelete` — set only by the engine's replacement / recreate deletes under `--force-stateful-recreation`.
 
-- **region-check.ts** - `DeleteContext` + `assertRegionMatch()`: THREE outcomes (region unset or empty -> no-op; match -> silent; mismatch or unresolvable client region -> non-retryable refusal). Pre-flight phases exist because physical ids are usually NAMES shared across regions: a wrong-region call hits the WRONG resource.
+- **region-check.ts** - `DeleteContext` + `assertRegionMatch()`: THREE outcomes (region unset or empty -> no-op; match -> silent; mismatch or unresolvable client region -> non-retryable refusal). Physical ids are usually NAMES shared across regions, so a wrong-region call hits the WRONG resource.
 
 - **config-shape.ts** - Shape guards for reading CFn config blocks, which otherwise substitute a default — often the OPPOSITE of the declared intent — for a malformed container (issue [#1471](https://github.com/go-to-k/cdkd/issues/1471)). **A guard behind a TRUTHINESS gate is skipped by a FALSY malformed container: the gate must be `!= null`.** `onUnusable` (warn + default) is for UPDATE-path sites ONLY, since a rollback replays `update()` with a STATE record as the desired bag.
 
@@ -29,6 +29,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 - **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: `pending` and NO state are unsettled, everything else is settled. Shared by the provider and the resolver's live arm, which must not disagree. A LEAF.
 
 - **iam-policy-targets.ts** - every IAM principal list is read here ([#3878](https://github.com/go-to-k/cdkd/issues/3878), [#3906](https://github.com/go-to-k/cdkd/issues/3906)). Malformed is refused before ANY call; only a secret-derived RECORDED list on a ManagedPolicy / InstanceProfile / User `Groups` UPDATE is read from IAM. `IAM::Policy` and every create refuse it. A LEAF.
+
+- **tag-list.ts** - provider CFn `Tags` diffs read both sides here ([#3994](https://github.com/go-to-k/cdkd/issues/3994)): malformed desired is refused before ANY call, malformed recorded is ADD-only.
 
 - **redacted-delete-address.ts** - A delete ADDRESSING a resource through a recorded property must not send cdkd's own redaction (`***` or a `{{resolve:...}}` expression) to AWS ([#3952](https://github.com/go-to-k/cdkd/issues/3952)): an unknown name often answers not-found, which the idempotent arm reads as DELETED. Fall back to an unredacted source first; else `redactedDeleteAddressSkip`. A delete-then-create caller must ABORT on that skip. `CustomResourceProvider` keeps its own ServiceToken arms.
 

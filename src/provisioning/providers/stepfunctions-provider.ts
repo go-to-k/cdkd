@@ -23,6 +23,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -105,6 +106,8 @@ export class StepFunctionsProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Step Functions state machine ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const stateMachineName =
       (properties['StateMachineName'] as string | undefined) ||
@@ -126,11 +129,10 @@ export class StepFunctionsProvider implements ResourceProvider {
       const definitionString = await this.buildDefinitionString(properties);
 
       // Build tags: CDK uses [{Key, Value}], SFN SDK uses [{key, value}]
-      let tags: Tag[] | undefined;
-      if (properties['Tags']) {
-        const tagList = properties['Tags'] as Array<{ Key: string; Value: string }>;
-        tags = tagList.map((tag) => ({ key: tag.Key, value: tag.Value }));
-      }
+      const tags: Tag[] | undefined =
+        properties['Tags'] !== undefined && properties['Tags'] !== null
+          ? desiredTags.map((tag) => ({ key: tag.Key, value: tag.Value }))
+          : undefined;
 
       // Translate every CFn-PascalCase nested object to the SDK's
       // camelCase shape (see helpers at file scope). All three mappers
@@ -217,6 +219,8 @@ export class StepFunctionsProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Step Functions state machine ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       const definitionString = await this.buildDefinitionString(properties);
@@ -282,8 +286,10 @@ export class StepFunctionsProvider implements ResourceProvider {
       // UntagResource({ resourceArn, tagKeys: [...] }).
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       // Describe to get updated attributes
@@ -506,34 +512,23 @@ export class StepFunctionsProvider implements ResourceProvider {
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via SFN's
    * `TagResource` / `UntagResource` APIs. SFN uses lowercase camelCase
-   * (`{ key, value }`) for tags.
+   * (`{ key, value }`) for tags. Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     stateMachineArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Tag[] = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ key: k, value: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd: Tag[] = [...plan.set].map(([k, v]) => ({ key: k, value: v }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(

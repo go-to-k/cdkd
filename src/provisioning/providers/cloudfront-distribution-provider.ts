@@ -33,6 +33,12 @@ import type {
 } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  type CfnTagEntry,
+} from '../tag-list.js';
 
 /**
  * Top-level `DistributionConfig` fields that are a BARE ARRAY in the CFn
@@ -154,6 +160,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudFront Distribution ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     // The orphan message below interpolates RESOLVED template values (an origin
     // domain, the comment), and a `{{resolve:secretsmanager:...}}` scalar is
@@ -211,7 +219,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       // is `{ DistributionConfigWithTags: { DistributionConfig, Tags: { Items: Tag[] } } }`.
       // Switch command class when tags are present so the create is atomic
       // (a post-create `TagResource` race would leave a tag-less window).
-      const sdkTags = this.toSdkTags(properties['Tags']);
+      const sdkTags = this.toSdkTags(desiredTags);
 
       const response = sdkTags
         ? await this.cloudFrontClient.send(
@@ -401,6 +409,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CloudFront Distribution ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Get current config and ETag
@@ -1520,41 +1530,41 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   }
 
   /**
-   * Convert CFn `Tags: [{ Key, Value }]` to the CloudFront SDK's `Tag[]`
-   * shape (which happens to be the same `{ Key, Value }` per-entry shape),
-   * dropping entries missing a Key and normalizing missing-Value to `''`
-   * (matching `tagsArrayToMap`'s shape so the create-path and update-diff-
-   * path agree on what counts as "the same tag"). Returns `undefined`
-   * when the input is absent or empty so the caller can route to
-   * `CreateDistributionCommand` instead of `CreateDistributionWithTagsCommand`
-   * — passing an empty `Tags.Items: []` to the latter is a silent no-op
-   * but uses the tags-enabled control-plane path for nothing.
+   * Convert the well-formed CFn tag list `refuseMalformedDesiredTags`
+   * returned to the CloudFront SDK's `Tag[]` shape (the same `{ Key, Value }`
+   * per-entry shape; a repeated Key keeps its last Value, as the update diff
+   * does). Returns `undefined` when the list is empty so the caller can route
+   * to `CreateDistributionCommand` instead of
+   * `CreateDistributionWithTagsCommand` — passing an empty `Tags.Items: []`
+   * to the latter is a silent no-op but uses the tags-enabled control-plane
+   * path for nothing.
    */
-  private toSdkTags(value: unknown): Tag[] | undefined {
-    const map = this.tagsArrayToMap(value);
+  private toSdkTags(tags: CfnTagEntry[]): Tag[] | undefined {
+    const map = new Map(tags.map((t) => [t.Key, t.Value] as const));
     if (map.size === 0) return undefined;
     return [...map.entries()].map(([Key, Value]) => ({ Key, Value }));
   }
 
   /**
    * Compute the (removed-keys, upserted-tags) diff between two CFn `Tags`
-   * snapshots. Pure function — does NOT touch AWS, so the caller can
-   * decide on the basis of the result whether the ARN is actually needed
-   * (no diff = no ARN required).
+   * snapshots through `planTagDiff` (go-to-k/cdkd#3994): an unreadable
+   * record removes nothing and upserts every desired tag, with a warning.
+   * Does NOT touch AWS, so the caller can decide on the basis of the result
+   * whether the ARN is actually needed (no diff = no ARN required).
    */
   private computeTagDiff(
     previousTags: unknown,
-    newTags: unknown
+    newTags: unknown,
+    resourceType: string,
+    logicalId: string
   ): { removed: string[]; upserts: Tag[] } {
-    const prev = this.tagsArrayToMap(previousTags);
-    const next = this.tagsArrayToMap(newTags);
-
-    const removed = [...prev.keys()].filter((k) => !next.has(k));
-    const upserts: Tag[] = [];
-    for (const [k, v] of next.entries()) {
-      if (prev.get(k) !== v) upserts.push({ Key: k, Value: v });
+    const plan = planTagDiff(previousTags, newTags);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    return { removed, upserts };
+    const upserts: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    return { removed: plan.remove, upserts };
   }
 
   /**
@@ -1600,7 +1610,12 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string
   ): Promise<void> {
-    const { removed, upserts } = this.computeTagDiff(previousTags, newTags);
+    const { removed, upserts } = this.computeTagDiff(
+      previousTags,
+      newTags,
+      resourceType,
+      logicalId
+    );
     if (removed.length === 0 && upserts.length === 0) return;
 
     if (!arn) {
@@ -1647,23 +1662,6 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         cause
       );
     }
-  }
-
-  /**
-   * Convert a CFn `Tags: [{ Key, Value }]` array to a plain map. Entries
-   * missing a `Key` are dropped; a missing `Value` becomes `''` so the
-   * diff treats `{ Key: 'k' }` and `{ Key: 'k', Value: '' }` the same.
-   */
-  private tagsArrayToMap(value: unknown): Map<string, string> {
-    const map = new Map<string, string>();
-    if (!Array.isArray(value)) return map;
-    for (const entry of value as Array<Record<string, unknown>>) {
-      const key = entry['Key'];
-      if (typeof key !== 'string') continue;
-      const val = entry['Value'];
-      map.set(key, typeof val === 'string' ? val : '');
-    }
-    return map;
   }
 
   /**

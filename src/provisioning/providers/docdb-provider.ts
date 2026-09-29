@@ -26,6 +26,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { refuseMalformedDesiredTags } from '../tag-list.js';
 import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
 import {
   ProtectionFlipRegistry,
@@ -273,14 +274,14 @@ export class DocDBProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBCluster ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
     try {
-      const tags = this.buildTags(properties);
-
       const response = await this.getClient().send(
         new CreateDBClusterCommand({
           DBClusterIdentifier: dbClusterIdentifier,
@@ -352,6 +353,8 @@ export class DocDBProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DocDB DBCluster ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
@@ -427,8 +430,10 @@ export class DocDBProvider implements ResourceProvider {
           this.getClient(),
           this.logger,
           described.DBClusterArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -594,14 +599,14 @@ export class DocDBProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBInstance ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
     try {
-      const tags = this.buildTags(properties);
-
       const response = await this.getClient().send(
         new CreateDBInstanceCommand({
           DBInstanceIdentifier: dbInstanceIdentifier,
@@ -659,6 +664,8 @@ export class DocDBProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DocDB DBInstance ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics, but
@@ -691,8 +698,10 @@ export class DocDBProvider implements ResourceProvider {
           this.getClient(),
           this.logger,
           described.DBInstanceArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -763,11 +772,6 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
-
-  private buildTags(properties: Record<string, unknown>): Array<{ Key: string; Value: string }> {
-    if (!properties['Tags']) return [];
-    return properties['Tags'] as Array<{ Key: string; Value: string }>;
-  }
 
   private async describeDBCluster(dbClusterIdentifier: string) {
     const response = await this.getClient().send(

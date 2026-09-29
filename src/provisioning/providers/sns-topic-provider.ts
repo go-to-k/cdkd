@@ -24,6 +24,7 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
@@ -122,6 +123,8 @@ export class SNSTopicProvider implements ResourceProvider {
     const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     this.logger.debug(`Creating SNS topic ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const topicName =
       (properties['TopicName'] as string | undefined) ||
@@ -162,10 +165,10 @@ export class SNSTopicProvider implements ResourceProvider {
         topicAttributes['MaximumMessageSize'] = stringifyValue(properties['MaximumMessageSize']);
       }
 
-      // Build tags
+      // Build tags (the list read above; `Tags: []` is sent as declared)
       let tags: Tag[] | undefined;
-      if (properties['Tags']) {
-        tags = properties['Tags'] as Tag[];
+      if (properties['Tags'] != null) {
+        tags = desiredTags;
       }
 
       const createParams: CreateTopicCommandInput = {
@@ -348,10 +351,14 @@ export class SNSTopicProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
+    // (read as empty, it would untag every recorded key).
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     try {
       return await this.applyUpdate(
         logicalId,
         physicalId,
+        resourceType,
         properties,
         previousProperties,
         // Issue #1997: only `maskSecrets` is read off the context here, and it
@@ -378,6 +385,7 @@ export class SNSTopicProvider implements ResourceProvider {
   private async applyUpdate(
     logicalId: string,
     physicalId: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     maskSecrets?: SecretMasker
@@ -519,31 +527,31 @@ export class SNSTopicProvider implements ResourceProvider {
       );
     }
 
-    // Update Tags if changed
-    const newTags = properties['Tags'] as Tag[] | undefined;
-    const oldTags = previousProperties['Tags'] as Tag[] | undefined;
-    if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
-      // Remove old tags
-      if (oldTags && oldTags.length > 0) {
-        const oldTagKeys = oldTags.map((t) => t.Key).filter((k): k is string => !!k);
-        if (oldTagKeys.length > 0) {
-          await this.snsClient.send(
-            new UntagResourceCommand({
-              ResourceArn: physicalId,
-              TagKeys: oldTagKeys,
-            })
-          );
-        }
-      }
-      // Apply new tags
-      if (newTags && newTags.length > 0) {
-        await this.snsClient.send(
-          new TagResourceCommand({
-            ResourceArn: physicalId,
-            Tags: newTags,
-          })
-        );
-      }
+    // Update Tags: untag the recorded keys the desired side no longer names,
+    // then tag the new / changed ones. Both sides are read through
+    // `planTagDiff` (go-to-k/cdkd#3994): an unreadable record untags nothing.
+    const tagPlan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+    const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
+    }
+    if (tagPlan.remove.length > 0) {
+      await this.snsClient.send(
+        new UntagResourceCommand({
+          ResourceArn: physicalId,
+          TagKeys: tagPlan.remove,
+        })
+      );
+    }
+    if (tagPlan.set.size > 0) {
+      await this.snsClient.send(
+        new TagResourceCommand({
+          ResourceArn: physicalId,
+          Tags: [...tagPlan.set].map(([Key, Value]) => ({ Key, Value })),
+        })
+      );
+    }
+    if (tagPlan.remove.length > 0 || tagPlan.set.size > 0) {
       this.logger.debug(`Updated tags for topic ${physicalId}`);
     }
 

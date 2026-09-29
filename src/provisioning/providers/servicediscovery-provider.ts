@@ -39,10 +39,12 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { withRetry, type RetryLogger } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { createMaskedRetryLogger, maskerOrIdentity } from '../masked-retry-logger.js';
 import type {
@@ -325,12 +327,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating private DNS namespace ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
     const name = properties['Name'] as string;
     const vpc = properties['Vpc'] as string;
     const description = properties['Description'] as string | undefined;
-    const tags = properties['Tags'] as Tag[] | undefined;
 
     if (!name) {
       throw new ProvisioningError(
@@ -362,7 +365,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           Name: name,
           Vpc: vpc,
           ...(description && { Description: description }),
-          ...(tags && tags.length > 0 && { Tags: tags }),
+          ...(tags.length > 0 && { Tags: tags }),
           ...(inputProperties && { Properties: inputProperties }),
         })
       );
@@ -442,6 +445,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating private DNS namespace ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
+    // (read as empty, it would untag every recorded key).
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
     const namespaceChange: PrivateDnsNamespaceChange = {};
@@ -481,7 +487,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         this.logger.debug(`No mutable namespace-body diff for PrivateDnsNamespace ${logicalId}`);
       }
 
-      await this.syncNamespaceTags(logicalId, physicalId, properties, previousProperties);
+      await this.syncNamespaceTags(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
 
       this.logger.debug(`Successfully updated private DNS namespace ${logicalId}`);
 
@@ -588,11 +600,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating HTTP namespace ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
     const name = properties['Name'] as string;
     const description = properties['Description'] as string | undefined;
-    const tags = properties['Tags'] as Tag[] | undefined;
 
     if (!name) {
       throw new ProvisioningError(
@@ -607,7 +620,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         new CreateHttpNamespaceCommand({
           Name: name,
           ...(description && { Description: description }),
-          ...(tags && tags.length > 0 && { Tags: tags }),
+          ...(tags.length > 0 && { Tags: tags }),
         })
       );
 
@@ -673,6 +686,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating HTTP namespace ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
+    // (read as empty, it would untag every recorded key).
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
     const description = clearOnUpdateRemoval(
@@ -699,7 +715,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         }
       }
 
-      await this.syncNamespaceTags(logicalId, physicalId, properties, previousProperties);
+      await this.syncNamespaceTags(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
 
       this.logger.debug(`Successfully updated HTTP namespace ${logicalId}`);
 
@@ -726,11 +748,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating public DNS namespace ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
     const name = properties['Name'] as string;
     const description = properties['Description'] as string | undefined;
-    const tags = properties['Tags'] as Tag[] | undefined;
 
     if (!name) {
       throw new ProvisioningError(
@@ -750,7 +773,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         new CreatePublicDnsNamespaceCommand({
           Name: name,
           ...(description && { Description: description }),
-          ...(tags && tags.length > 0 && { Tags: tags }),
+          ...(tags.length > 0 && { Tags: tags }),
           ...(inputProperties && { Properties: inputProperties }),
         })
       );
@@ -839,6 +862,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating public DNS namespace ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
+    // (read as empty, it would untag every recorded key).
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
     const namespaceChange: PublicDnsNamespaceChange = {};
@@ -876,7 +902,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         }
       }
 
-      await this.syncNamespaceTags(logicalId, physicalId, properties, previousProperties);
+      await this.syncNamespaceTags(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
 
       this.logger.debug(`Successfully updated public DNS namespace ${logicalId}`);
 
@@ -903,6 +935,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating service discovery service ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
     const name = properties['Name'] as string;
@@ -913,7 +947,6 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       | HealthCheckCustomConfig
       | undefined;
     const healthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig | undefined;
-    const tags = properties['Tags'] as Tag[] | undefined;
     const type = properties['Type'] as ServiceTypeOption | undefined;
 
     if (!name) {
@@ -935,7 +968,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
             HealthCheckCustomConfig: healthCheckCustomConfig,
           }),
           ...(healthCheckConfig && { HealthCheckConfig: healthCheckConfig }),
-          ...(tags && tags.length > 0 && { Tags: tags }),
+          ...(tags.length > 0 && { Tags: tags }),
           ...(type && { Type: type }),
         })
       );
@@ -1091,6 +1124,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: `Tags` used to be ignored on update; a malformed
+    // desired one is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
     const serviceChange: ServiceChange = {};
@@ -1128,7 +1164,16 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const hasAttrUpsert = Object.keys(upsertAttrs).length > 0;
     const hasAttrRemove = removedAttrKeys.length > 0;
 
-    if (!hasServiceChange && !hasAttrUpsert && !hasAttrRemove) {
+    // Tags ride their own TagResource / UntagResource calls, keyed by the
+    // service ARN (go-to-k/cdkd#3994).
+    const tagPlan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+    const hasTagChange = tagPlan.set.size > 0 || tagPlan.remove.length > 0;
+    // Warned whatever else the update does: a record cdkd cannot read, or keys
+    // it cannot name, matter even when the plan has nothing to send.
+    const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
+    if (tagWarning !== undefined) this.logger.warn(tagWarning);
+
+    if (!hasServiceChange && !hasAttrUpsert && !hasAttrRemove && !hasTagChange) {
       this.logger.debug(
         `No mutable diff for ServiceDiscovery Service ${logicalId}, skipping update`
       );
@@ -1213,6 +1258,32 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           }
         } finally {
           attrWatch.dispose();
+        }
+      }
+
+      if (hasTagChange) {
+        const described = await client.send(new GetServiceCommand({ Id: physicalId }));
+        const arn = described.Service?.Arn;
+        if (!arn) {
+          throw new ProvisioningError(
+            safeMsg`Could not resolve the ARN of service discovery service ${logicalId}; its Tags were not updated`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        if (tagPlan.remove.length > 0) {
+          await client.send(
+            new UntagResourceCommand({ ResourceARN: arn, TagKeys: tagPlan.remove })
+          );
+        }
+        if (tagPlan.set.size > 0) {
+          await client.send(
+            new TagResourceCommand({
+              ResourceARN: arn,
+              Tags: [...tagPlan.set].map(([Key, Value]) => ({ Key, Value })),
+            })
+          );
         }
       }
 
@@ -1352,20 +1423,22 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private async syncNamespaceTags(
     logicalId: string,
     physicalId: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<void> {
-    const newTags = properties['Tags'] as Tag[] | undefined;
-    const oldTags = previousProperties['Tags'] as Tag[] | undefined;
-    if (JSON.stringify(newTags) === JSON.stringify(oldTags)) return;
-
-    // Untag keys present in the old set but absent from the new set.
-    // `newTags === undefined` is treated as "remove all old tags".
-    const newKeys = new Set((newTags ?? []).map((t) => t.Key).filter((k): k is string => !!k));
-    const removedKeys = (oldTags ?? [])
-      .map((t) => t.Key)
-      .filter((k): k is string => !!k && !newKeys.has(k));
-    const hasAdds = !!newTags && newTags.length > 0;
+    // Untag keys present in the old set but absent from the new set; an
+    // absent desired `Tags` removes every recorded key. Both sides are read
+    // through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record untags
+    // nothing, and the desired side was refused above when malformed.
+    const plan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
+    }
+    const removedKeys = plan.remove;
+    const tagsToAdd: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const hasAdds = tagsToAdd.length > 0;
 
     // A shape-only diff with no actual work (e.g. `Tags: []` vs absent)
     // must not spend a GetNamespace/STS round-trip resolving the ARN.
@@ -1381,7 +1454,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     // Apply added / changed tags. Skip the call when the new set is empty
     // (a pure removal has nothing left to add).
     if (hasAdds) {
-      await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: newTags }));
+      await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: tagsToAdd }));
     }
     this.logger.debug(`Updated tags for namespace ${logicalId} (${physicalId})`);
   }
