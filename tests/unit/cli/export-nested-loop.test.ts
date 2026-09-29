@@ -2579,7 +2579,7 @@ describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', ()
     };
   }
 
-  it('sanitizes the ROOT-not-found refusal', async () => {
+  it('keeps a forged row out of the ROOT-not-found refusal', async () => {
     // Two lines above the walker's own refusals, and left raw by the first cut
     // of issue #3003 -- the "guarded N of N+1 sites in one function" shape the
     // issue itself is about.
@@ -2595,10 +2595,14 @@ describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', ()
     expect(message).not.toMatch(CONTROL);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     expect(message).toContain('No cdkd state found');
-    expect(message).toContain('PhysicalID: arn:forged');
+    // Described rather than quoted by hand since go-to-k/cdkd#3950: a name
+    // that is not a plain identifier is not shown at all.
+    expect(message).toContain(
+      'No cdkd state found for stack (not shown: it is not a plain identifier) (us-east-1).'
+    );
   });
 
-  it('sanitizes the missing-child refusal', async () => {
+  it('keeps a forged row out of the missing-child refusal', async () => {
     const { backend } = buildStateBackend({
       'Parent|us-east-1': stateWith({ resources: { [HOSTILE_ID]: nestedRow() } }),
       // No child record, so the walker refuses.
@@ -2614,12 +2618,14 @@ describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', ()
     expect(message.split('\nDrop it with: ')).toHaveLength(2);
     expect(message.replace('\nDrop it with: ', ' Drop it with: ')).not.toMatch(CONTROL);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
-    // Not vacuous: it is the missing-child refusal, still naming the child.
-    expect(message).toContain('missing nested-child');
-    expect(message).toContain('PhysicalID: arn:forged');
+    // Not vacuous: it is the missing-child refusal. Since go-to-k/cdkd#3950 a
+    // child name that is not a plain identifier is described, in the head and
+    // in the state-key path, rather than quoted by hand.
+    expect(message).toContain('missing nested-child (not shown: it is not a plain identifier)');
+    expect(message).toContain('no child state file exists at (not shown: it is not a plain identifier).');
   });
 
-  it('sanitizes the region-mismatch refusal', async () => {
+  it('keeps a forged row out of the region-mismatch refusal', async () => {
     const childName = `Parent~${HOSTILE_ID}`;
     const { backend } = buildStateBackend({
       'Parent|us-east-1': stateWith({ resources: { [HOSTILE_ID]: nestedRow() } }),
@@ -2639,9 +2645,9 @@ describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', ()
     expect(message).not.toMatch(CONTROL);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     expect(message).toContain('region mismatch');
-    // Not vacuous: a message that DROPPED the offending region rather than
-    // flattening it would satisfy the two assertions above, since both are
-    // template words.
-    expect(message).toContain('PhysicalID: arn:forged');
+    // Not vacuous: the refusal still says the record's region is the problem.
+    // Since go-to-k/cdkd#3950 a region that is not a plain identifier is
+    // described there rather than quoted by hand, so it is not shown.
+    expect(message).toContain('has state.region=(not shown: it is not a plain identifier) but');
   });
 });

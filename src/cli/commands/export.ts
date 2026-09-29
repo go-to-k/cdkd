@@ -1665,7 +1665,7 @@ function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
         `cdkd's physical id for AWS::EC2::SecurityGroupIngress is the composite ` +
           `'<groupId>|<ipProtocol>|<fromPort>|<toPort>', but CloudFormation IMPORT identifies ` +
           `the rule by the 'sgr-...' security-group rule id AWS assigns, which cdkd state does ` +
-          `not record usably for '${logicalId}' (${recordedNote}). Two causes, with different ` +
+          `not record usably for ${quotedOrNotShown(logicalId)} (${recordedNote}). Two causes, with different ` +
           `remedies. (1) The rule declares MORE THAN ONE source — e.g. both CidrIp and CidrIpv6 ` +
           `on the same resource — so AWS minted one rule per source and cdkd deliberately ` +
           `recorded neither id, because neither is 'the' identifier for this resource. ` +
@@ -1677,7 +1677,7 @@ function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
           `NOT heal the record either: change any property of the rule (cdkd revokes and ` +
           `re-authorizes, minting a fresh id, with a momentary traffic interruption) or destroy ` +
           `and re-deploy it, then re-run cdkd export. In both cases you can instead remove ` +
-          `'${logicalId}' from the stack before exporting — the rule stays in AWS and can be ` +
+          `${quotedOrNotShown(logicalId)} from the stack before exporting — the rule stays in AWS and can be ` +
           `re-declared in CloudFormation afterwards.`
       );
     },
@@ -1960,7 +1960,7 @@ const SG_INGRESS_AMBIGUITY_REMEDY =
 /** The remedy every refusal below ends with — one place, so they cannot drift. */
 function sgIngressExportEscapeHatch(logicalId: string): string {
   return (
-    `You can instead remove '${logicalId}' from the stack before exporting — the rule stays in ` +
+    `You can instead remove ${quotedOrNotShown(logicalId)} from the stack before exporting — the rule stays in ` +
     `AWS and can be re-declared in CloudFormation afterwards.`
   );
 }
@@ -2014,7 +2014,7 @@ async function backfillSecurityGroupIngressRuleId(
   const tuple = parseSecurityGroupIngressComposite(physicalId);
   if (!tuple) {
     throw new Error(
-      `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and its ` +
+      `cdkd state records no 'sgr-...' security-group rule id for ${quotedOrNotShown(logicalId)}, and its ` +
         `physical id ${showRecordValue(physicalId)} is not cdkd's ` +
         `'<groupId>|<ipProtocol>|<fromPort>|<toPort>' composite either, so cdkd cannot look the ` +
         `rule up in AWS to recover the id CloudFormation IMPORT needs. Repair the record's ` +
@@ -2031,7 +2031,7 @@ async function backfillSecurityGroupIngressRuleId(
   if (!lookup.ok) {
     if (lookup.kind === 'truncated') {
       throw new Error(
-        `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and the ` +
+        `cdkd state records no 'sgr-...' security-group rule id for ${quotedOrNotShown(logicalId)}, and the ` +
           `DescribeSecurityGroupRules lookup on ${showRecordValue(tuple.groupId)} was still paginating after ` +
           `${MAX_SG_RULE_PAGES} pages — cdkd cannot prove a match is unique without seeing the ` +
           `whole group, and adopting an unproven id would name the wrong rule. ` +
@@ -2050,7 +2050,7 @@ async function backfillSecurityGroupIngressRuleId(
             `EC2 describe rate has recovered.`
           : `Re-run cdkd export once that cause is resolved.`;
     throw new Error(
-      `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}' (the rule was ` +
+      `cdkd state records no 'sgr-...' security-group rule id for ${quotedOrNotShown(logicalId)} (the rule was ` +
         `deployed by a cdkd older than https://github.com/go-to-k/cdkd/issues/1761), and the ` +
         `DescribeSecurityGroupRules lookup that would have recovered it failed: ` +
         `${lookup.detail}. ${remedy} ${sgIngressExportEscapeHatch(logicalId)}`
@@ -2085,7 +2085,9 @@ async function backfillSecurityGroupIngressRuleId(
           )
       )
       .map((rule) =>
-        typeof rule.SecurityGroupRuleId === 'string' ? `'${rule.SecurityGroupRuleId}'` : '<absent>'
+        typeof rule.SecurityGroupRuleId === 'string'
+          ? `${quotedOrNotShown(rule.SecurityGroupRuleId)}`
+          : '<absent>'
       );
     // A matched count above one means this row is ALSO the genuine ambiguity
     // case, and the unreadable id is then the lesser of its two problems: even
@@ -2098,7 +2100,7 @@ async function backfillSecurityGroupIngressRuleId(
     // pick a value it saw and withheld.
     const readableNote =
       ids.length > 0
-        ? ` The readable candidates cdkd did see: ${ids.map((id) => `'${id}'`).join(', ')}.`
+        ? ` The readable candidates cdkd did see: ${ids.map((id) => `${quotedOrNotShown(id)}`).join(', ')}.`
         : '';
     const ambiguityNote =
       matched.length > 1
@@ -2107,7 +2109,7 @@ async function backfillSecurityGroupIngressRuleId(
           `${SG_INGRESS_AMBIGUITY_REMEDY}${readableNote}`
         : '';
     throw new Error(
-      `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and a live ` +
+      `cdkd state records no 'sgr-...' security-group rule id for ${quotedOrNotShown(logicalId)}, and a live ` +
         `DescribeSecurityGroupRules lookup found ${matched.length} ingress rule(s) matching ` +
         `${tupleNote}, but ${unusable.length} of them carry no usable 'sgr-...' rule id (AWS ` +
         `reported ${unusable.join(', ')}). cdkd adopts an id only on an EXACTLY ONE match, and ` +
@@ -2123,7 +2125,7 @@ async function backfillSecurityGroupIngressRuleId(
 
   if (ids.length === 0) {
     throw new Error(
-      `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}' (the rule was ` +
+      `cdkd state records no 'sgr-...' security-group rule id for ${quotedOrNotShown(logicalId)} (the rule was ` +
         `deployed by a cdkd older than https://github.com/go-to-k/cdkd/issues/1761), and a live ` +
         `DescribeSecurityGroupRules lookup found NO ingress rule matching ${tupleNote} — so ` +
         `cdkd has no id to hand CloudFormation IMPORT. Either the rule was revoked outside cdkd, ` +
@@ -2134,10 +2136,10 @@ async function backfillSecurityGroupIngressRuleId(
   }
 
   throw new Error(
-    `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and a live ` +
+    `cdkd state records no 'sgr-...' security-group rule id for ${quotedOrNotShown(logicalId)}, and a live ` +
       `DescribeSecurityGroupRules lookup found ${ids.length} ingress rules matching ${tupleNote} ` +
       `(${ids.join(', ')}). cdkd's physical id identifies a rule only by group, protocol and ` +
-      `port range, so it cannot say which of them '${logicalId}' is, and CloudFormation IMPORT ` +
+      `port range, so it cannot say which of them ${quotedOrNotShown(logicalId)} is, and CloudFormation IMPORT ` +
       `needs exactly one — adopting either would record the wrong rule. ` +
       `${SG_INGRESS_AMBIGUITY_REMEDY} ${sgIngressExportEscapeHatch(logicalId)}`
   );
@@ -2402,7 +2404,7 @@ function recordedArnIdentifier(options: {
       throw new Error(
         `cdkd's physical id for ${resourceType} is ${shapeWord} '${physicalIdShape}', but ` +
           `CloudFormation IMPORT identifies the resource by its ${field}, which cdkd state does ` +
-          `not record usably for '${logicalId}' (${recordedNote}). Re-deploy the stack once so ` +
+          `not record usably for ${quotedOrNotShown(logicalId)} (${recordedNote}). Re-deploy the stack once so ` +
           `cdkd records ${field}, then re-run cdkd export.`
       );
     },
@@ -2832,7 +2834,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     );
 
     logger.info(
-      `Migrating cdkd stack '${resolvedStackName}' (${safeSegment(targetRegion)}) → CloudFormation stack '${cfnStackName}'`
+      `Migrating cdkd stack ${quotedOrNotShown(resolvedStackName)} (${safeSegment(targetRegion)}) → CloudFormation stack ${quotedOrNotShown(cfnStackName)}`
     );
 
     // Refuse if a CFn stack with that name already exists. CFn IMPORT's
@@ -2845,7 +2847,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     const stateData = await stateBackend.getState(resolvedStackName, targetRegion);
     if (!stateData) {
       throw new Error(
-        `No cdkd state found for stack '${resolvedStackName}' (${safeSegment(targetRegion)}). ` +
+        `No cdkd state found for stack ${quotedOrNotShown(resolvedStackName)} (${safeSegment(targetRegion)}). ` +
           `Nothing to migrate.`
       );
     }
@@ -2858,7 +2860,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     const exportJournal = await stateBackend.loadRollbackJournal(resolvedStackName, targetRegion);
     if (exportJournal && exportJournal.segments.length > 0) {
       logger.warn(
-        `Stack '${resolvedStackName}' has a rollback journal — a previous deploy failed or was ` +
+        `Stack ${quotedOrNotShown(resolvedStackName)} has a rollback journal — a previous deploy failed or was ` +
           `interrupted and has not been reverted. Exporting this half-deployed state to ` +
           `CloudFormation is likely unintended; revert it first (or 'cdkd deploy' to fix ` +
           `forward).` +
@@ -2998,7 +3000,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
               );
             }
             logger.warn(
-              `${crossRefs.length} cross-stack reference(s) to '${resolvedStackName}' from ` +
+              `${crossRefs.length} cross-stack reference(s) to ${quotedOrNotShown(resolvedStackName)} from ` +
                 `sibling stacks. After the migration those consumers resolve this stack's ` +
                 `outputs via the CloudFormation fallback (weak reference; the outputs now ` +
                 `live in CFn) — they break only when deployed with --no-cfn-fallback. ` +
@@ -3184,12 +3186,12 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             ? ` All other AWS resources are unchanged on import.`
             : ` AWS resources are unchanged on import.`;
         const ok = await confirmPrompt(
-          `Create CloudFormation stack '${cfnStackName}' by importing ${phase1Imports.length} ` +
-            `resource(s) from cdkd state '${resolvedStackName}' (${safeSegment(targetRegion)})?` +
+          `Create CloudFormation stack ${quotedOrNotShown(cfnStackName)} by importing ${phase1Imports.length} ` +
+            `resource(s) from cdkd state ${quotedOrNotShown(resolvedStackName)} (${safeSegment(targetRegion)})?` +
             phase2Note +
             recreateNote +
             unchangedClaim +
-            ` cdkd state for '${resolvedStackName}' will be deleted on success.`
+            ` cdkd state for ${quotedOrNotShown(resolvedStackName)} will be deleted on success.`
         );
         if (!ok) {
           logger.info('Migration cancelled. cdkd state and CloudFormation are unchanged.');
@@ -3243,7 +3245,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             );
           }
           logger.warn(
-            `${crossRefs.length} cross-stack reference(s) to '${resolvedStackName}' from ` +
+            `${crossRefs.length} cross-stack reference(s) to ${quotedOrNotShown(resolvedStackName)} from ` +
               `sibling stacks. After the migration those consumers resolve this stack's ` +
               `outputs via the CloudFormation fallback (weak reference; the outputs now ` +
               `live in CFn) — they break only when deployed with --no-cfn-fallback. ` +
@@ -3299,7 +3301,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       );
 
       logger.info(
-        `✓ Phase 1: CloudFormation stack '${cfnStackName}' created via IMPORT. ` +
+        `✓ Phase 1: CloudFormation stack ${quotedOrNotShown(cfnStackName)} created via IMPORT. ` +
           `${phase1Imports.length} resource(s) imported.`
       );
 
@@ -3340,7 +3342,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
               `Phase 1 (IMPORT) succeeded; pre-delete of ${entry.logicalId} ` +
                 `(${entry.resourceType}, physicalId: ${showRecordValue(entry.physicalId)}) failed: ` +
                 `${displayAwsMessage(msg)}\n\n` +
-                `The CloudFormation stack '${cfnStackName}' contains the phase-1 imports ` +
+                `The CloudFormation stack ${quotedOrNotShown(cfnStackName)} contains the phase-1 imports ` +
                 `but the IMPORT-unsupported resources (${recreateBeforePhase2.length} total) ` +
                 `still exist in AWS unmanaged. cdkd state is UNCHANGED. Re-running ` +
                 `\`cdkd export\` does NOT work — the existing-stack check rejects it. ` +
@@ -3409,7 +3411,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           const orphan = orphanCommandFor(resolvedStackName, targetRegion);
           throw new Error(
             `Phase 1 (IMPORT) succeeded; phase 2 (UPDATE) failed: ${displayAwsMessage(msg)}\n\n` +
-              `The CloudFormation stack '${cfnStackName}' now contains the imported ` +
+              `The CloudFormation stack ${quotedOrNotShown(cfnStackName)} now contains the imported ` +
               `resources but is missing ${phase2Count} resource(s) (${phase2Creates.length} ` +
               `Custom Resource(s) + ${recreateBeforePhase2.length} IMPORT-unsupported). ` +
               `cdkd state is UNCHANGED so you can inspect what's in it, but DO NOT run ` +
@@ -3432,7 +3434,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // The lock is still held; we release it inside the outer `finally`.
       await stateBackend.deleteState(resolvedStackName, targetRegion);
       logger.info(
-        `cdkd state for '${resolvedStackName}' (${safeSegment(targetRegion)}) removed. ` +
+        `cdkd state for ${quotedOrNotShown(resolvedStackName)} (${safeSegment(targetRegion)}) removed. ` +
           `Manage the stack with 'cdk deploy' or 'aws cloudformation' from here on.`
       );
 
@@ -3480,7 +3482,7 @@ async function pickStackRegion(
     if (flag) return flag;
     if (synthRegion) return synthRegion;
     throw new Error(
-      `No state found for stack '${stackName}'. Run 'cdkd state list' to see available stacks.`
+      `No state found for stack ${quotedOrNotShown(stackName)}. Run 'cdkd state list' to see available stacks.`
     );
   }
   if (flag) {
@@ -3490,7 +3492,7 @@ async function pickStackRegion(
       // bucket-plantable in its own right (go-to-k/cdkd#3328 round 7).
       const seen = refs.map((r) => safeSegment(r.region ?? '(legacy)')).join(', ');
       throw new Error(
-        `No state found for stack '${stackName}' in region '${flag}'. Available regions: ${seen}.`
+        `No state found for stack ${quotedOrNotShown(stackName)} in region '${flag}'. Available regions: ${seen}.`
       );
     }
     return flag;
@@ -3504,7 +3506,7 @@ async function pickStackRegion(
   }
   const regions = refs.map((r) => safeSegment(r.region ?? '(legacy)')).join(', ');
   throw new Error(
-    `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+    `Stack ${quotedOrNotShown(stackName)} has state in multiple regions: ${regions}. ` +
       `Re-run with --stack-region <region> to disambiguate.`
   );
 }
@@ -3546,7 +3548,7 @@ async function assertCfnStackAbsent(
     // REVIEW_IN_PROGRESS comes from a failed CreateChangeSet IMPORT that
     // was never deleted; surfacing it lets the user clean up before retry.
     throw new Error(
-      `CloudFormation stack '${stackName}' already exists ` +
+      `CloudFormation stack ${quotedOrNotShown(stackName)} already exists ` +
         `(status: ${stack.StackStatus ?? 'unknown'}). cdkd export ` +
         `only creates new stacks via IMPORT — delete or rename the existing stack first, ` +
         `or pass --cfn-stack-name to choose a different name.`
@@ -3715,6 +3717,35 @@ function safeSegment(value: unknown): string {
   // in `[cut]` would otherwise render identically to a truncated one. `safe` is
   // ASCII here, so `.length` counts characters.
   return truncated ? `${text} [cut: ${safe.length - text.length} more characters withheld]` : text;
+}
+
+/**
+ * A state-record or template value for a sentence that quotes it: `'value'`
+ * when it is empty, or has no whitespace and `displayIdent` renders it
+ * unchanged, and `(not shown: it is not a plain identifier)` otherwise
+ * (go-to-k/cdkd#3950). The whitespace test comes first because the round-trip
+ * alone admits a value that ends in `displayIdent`'s own cut marker
+ * (`<1152 plain characters> [cut: N more characters withheld]` renders as
+ * itself). A non-string is never plain.
+ *
+ * These messages wrapped a stack name, a logical id or a record value in a
+ * hand-written `'...'`, raw or through {@link safeSegment}, which keeps `'`,
+ * `$`, `(` and a space. A `'` in the value closed cdkd's quote, and the rest
+ * of a pasted sentence ran as shell; several of these sentences also name a
+ * `cdkd` command. `displayIdent`'s plain set is literal inside single quotes
+ * and holds no whitespace, so a plain value cannot close the quote or put a
+ * clause break inside it, and it prints exactly as it did. The cap is the
+ * stack-ref one, so a legitimate multi-level nested-child name is not cut.
+ */
+function quotedOrNotShown(value: unknown): string {
+  // An empty string prints as `''`: it closes nothing, and an empty id is
+  // worth seeing (`AWS reported '', <absent>`).
+  return value === '' ||
+    (typeof value === 'string' &&
+      !/\s/.test(value) &&
+      displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value)
+    ? `'${String(value)}'`
+    : '(not shown: it is not a plain identifier)';
 }
 
 /**
@@ -4393,7 +4424,7 @@ export async function buildCdkdStateStackTree(
       // so nothing today takes this arm. A caller that stops prefetching
       // inherits the guard instead of having to remember it (issue #3003).
       throw new Error(
-        `No cdkd state found for stack '${safeSegment(rootStackName)}' ` +
+        `No cdkd state found for stack ${quotedOrNotShown(rootStackName)} ` +
           `(${safeSegment(region)}). ` +
           `Cannot build nested-stack tree.`
       );
@@ -4466,10 +4497,10 @@ async function walkCdkdStateStackTree(
     if (!childResult) {
       const orphan = orphanCommandFor(stackName, region);
       throw new Error(
-        `cdkd state is missing nested-child '${safeSegment(childStackName)}' (${safeSegment(region)}). ` +
-          `Parent stack '${safeSegment(stackName)}' lists '${safeSegment(logicalId)}' as an ` +
+        `cdkd state is missing nested-child ${quotedOrNotShown(childStackName)} (${safeSegment(region)}). ` +
+          `Parent stack ${quotedOrNotShown(stackName)} lists ${quotedOrNotShown(logicalId)} as an ` +
           `${NESTED_STACK_RESOURCE_TYPE} row but no child state file exists at ` +
-          `'cdkd/${safeSegment(childStackName)}/${safeSegment(region)}/state.json'. The cdkd state tree is ` +
+          `${quotedOrNotShown(`cdkd/${childStackName}/${region}/state.json`)}. The cdkd state tree is ` +
           `inconsistent — re-deploy the parent stack to refresh, or drop the parent's record ` +
           `and re-import.${orphan.note}\nDrop it with: ${orphan.command}`
       );
@@ -4489,8 +4520,8 @@ async function walkCdkdStateStackTree(
     // disagree and this check tested against it would be vacuous. The
     // divergence is handed over separately, on the SAME predicate this check
     // always applied — a body region that is present and is not the walk's.
-    // The value is body content, which is why it was already rendered through
-    // `safeSegment` and still is.
+    // The value is body content, so it goes through `quotedOrNotShown`
+    // (go-to-k/cdkd#3950), which describes anything that is not plain.
     //
     // One shape stops being refused here and it is recorded rather than
     // implied: a child read from the LEGACY key (no region in the key) whose
@@ -4502,9 +4533,9 @@ async function walkCdkdStateStackTree(
     // key.
     if (childResult.divergentBodyRegion !== undefined) {
       throw new Error(
-        `cdkd state region mismatch: nested-child '${safeSegment(childStackName)}' has ` +
-          `state.region='${safeSegment(childResult.divergentBodyRegion)}' but its parent '${safeSegment(stackName)}' ` +
-          `is being walked against region='${safeSegment(region)}'. AWS does not support ` +
+        `cdkd state region mismatch: nested-child ${quotedOrNotShown(childStackName)} has ` +
+          `state.region=${quotedOrNotShown(childResult.divergentBodyRegion)} but its parent ${quotedOrNotShown(stackName)} ` +
+          `is being walked against region=${quotedOrNotShown(region)}. AWS does not support ` +
           `cross-region nested stacks; the state tree appears corrupt — ` +
           `re-deploy the parent stack to refresh.`
       );
@@ -4596,13 +4627,14 @@ export function cdkd2cfnStackName(cdkdStackName: string): string {
   const cfnName = cdkdStackName.replace(/~/g, '-');
   if (!/^[a-zA-Z][-a-zA-Z0-9]*$/.test(cfnName)) {
     throw new Error(
-      // SANITIZED, like every other rendering of a record-derived name in this
-      // file (go-to-k/cdkd#3328 round 5): `walkCdkdStateStackTree` mints a
-      // child's name from the record's own `resources` keys, and this refusal
-      // is the FIRST thing a hostile one reaches — a newline in it forges lines
-      // around whatever follows.
-      `cdkd stack name '${safeSegment(cdkdStackName)}' maps to CFn stack name ` +
-        `'${safeSegment(cfnName)}', which violates ` +
+      // Through `quotedOrNotShown`, like every other quoted record-derived
+      // name in this file (go-to-k/cdkd#3328 round 5, go-to-k/cdkd#3950):
+      // `walkCdkdStateStackTree` mints a child's name from the record's own
+      // `resources` keys, and this refusal is the FIRST thing a hostile one
+      // reaches — a newline in it would forge lines around whatever follows,
+      // and a quote in it would close cdkd's.
+      `cdkd stack name ${quotedOrNotShown(cdkdStackName)} maps to CFn stack name ` +
+        `${quotedOrNotShown(cfnName)}, which violates ` +
         `the CloudFormation stack-name constraint [a-zA-Z][-a-zA-Z0-9]* (must start with a ` +
         `letter; no '_', '.', '/', or other special characters). Supply an explicit name via ` +
         `--cfn-stack-name (root) or --cfn-child-stack-name '<cdkdName>=<cfnName>' (nested child).`
@@ -4650,13 +4682,25 @@ export function parseCfnChildStackNameOverrides(values: string[] | undefined): M
     }
     if (out.has(cdkdName)) {
       throw new Error(
-        `--cfn-child-stack-name: duplicate override for cdkd stack '${safeSegment(cdkdName)}'. ` +
+        `--cfn-child-stack-name: duplicate override for cdkd stack ${quotedOrNotShown(cdkdName)}. ` +
           `Pass it once with the final CFn name.`
       );
     }
     out.set(cdkdName, cfnName);
   }
   return out;
+}
+
+/**
+ * A read failure's cause for a sentence: the fs error code when it is one
+ * (`ENOENT`, `EACCES`), else a fixed phrase. Never the error's message, which
+ * quotes the path back (go-to-k/cdkd#3950). Exported for unit testing.
+ */
+export function fsReadErrorCause(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code)
+    ? code
+    : 'the file could not be read';
 }
 
 /**
@@ -4679,21 +4723,27 @@ function readNestedChildTemplateFile(
   templatePath: string,
   childLogicalId: string
 ): { template: Record<string, unknown>; format: TemplateFormat } {
+  // Neither cause prints its error TEXT (go-to-k/cdkd#3950): Node's read error
+  // echoes the path inside its own `'...'`, and a parse error echoes a snippet
+  // of the file in `"..."`. The path is template text (`aws:asset:path`) and
+  // the file is the template author's, so either would put their value back
+  // inside a quote in a sentence that is pasted.
   let raw: string;
   try {
     raw = readFileSync(templatePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `cdkd export: failed to read nested-stack template for '${childLogicalId}' at ` +
-        `'${templatePath}': ${err instanceof Error ? err.message : String(err)}`
+      `cdkd export: failed to read nested-stack template for ${quotedOrNotShown(childLogicalId)} at ` +
+        `${quotedOrNotShown(templatePath)}: ${fsReadErrorCause(err)}`
     );
   }
   try {
     return parseCfnTemplateWithFormat(raw);
-  } catch (err) {
+  } catch {
     throw new Error(
-      `cdkd export: failed to parse nested-stack template for '${childLogicalId}' at ` +
-        `'${templatePath}': ${err instanceof Error ? err.message : String(err)}`
+      `cdkd export: failed to parse nested-stack template for ${quotedOrNotShown(childLogicalId)} at ` +
+        `${quotedOrNotShown(templatePath)}: it is not a template cdkd can parse (the parser's ` +
+        `message is not shown, because it quotes the file's own text)`
     );
   }
 }
@@ -4807,8 +4857,8 @@ export function buildPerStackImportNodes(
       // (go-to-k/cdkd#3328 round 5): `walkCdkdStateStackTree` mints every
       // non-root node's name from the record's own `resources` keys, so an
       // internal-consistency message is no exception to the rule.
-      `buildPerStackImportNodes: tree root '${safeSegment(tree.stackName)}' does not match ` +
-        `expected root stack name '${safeSegment(rootStackName)}'.`
+      `buildPerStackImportNodes: tree root ${quotedOrNotShown(tree.stackName)} does not match ` +
+        `expected root stack name ${quotedOrNotShown(rootStackName)}.`
     );
   }
   const out = new Map<string, PerStackImportNode>();
@@ -4833,9 +4883,9 @@ export function buildPerStackImportNodes(
       if (!childTemplatePath) {
         const orphan = orphanCommandFor(childNode.stackName, childNode.region);
         throw new Error(
-          `cdkd export: nested-stack child '${safeSegment(childLogicalId)}' under parent ` +
-            `'${safeSegment(node.stackName)}' has cdkd state but no Metadata['aws:asset:path'] ` +
-            `in the parent template's '${safeSegment(childLogicalId)}' row. The synth output ` +
+          `cdkd export: nested-stack child ${quotedOrNotShown(childLogicalId)} under parent ` +
+            `${quotedOrNotShown(node.stackName)} has cdkd state but no Metadata['aws:asset:path'] ` +
+            `in the parent template's ${quotedOrNotShown(childLogicalId)} row. The synth output ` +
             `and the cdkd state tree are out of sync — re-deploy the parent stack ` +
             `to refresh, or remove the cdkd state for the orphaned child.${orphan.note}\n` +
             `Remove it with: ${orphan.command}`
@@ -4995,8 +5045,8 @@ export async function buildImportPlan(
           logicalId,
           resourceType,
           reason:
-            `template has AWS::CloudFormation::Stack row '${logicalId}' but cdkd state has no ` +
-            `matching nested-stack entry on parent '${safeSegment(parentStackName)}'. ` +
+            `template has AWS::CloudFormation::Stack row ${quotedOrNotShown(logicalId)} but cdkd state has no ` +
+            `matching nested-stack entry on parent ${quotedOrNotShown(parentStackName)}. ` +
             `Re-deploy or re-import the parent stack to refresh state.`,
         });
         continue;
@@ -6927,7 +6977,7 @@ function walkForGetStackOutput(
 function printPlan(plan: ImportPlanEntry[], cfnStackName: string): void {
   const logger = getLogger();
   logger.info('');
-  logger.info(`Import plan for CloudFormation stack '${cfnStackName}':`);
+  logger.info(`Import plan for CloudFormation stack ${quotedOrNotShown(cfnStackName)}:`);
   for (const entry of plan) {
     // Every value on this row is rendered with its own boundary: the plan is
     // printed directly above the destructive confirmation, and each identifier
@@ -7136,7 +7186,7 @@ export async function submitImportChangeSet(
   const templateBody = stringifyCfnTemplate(template, templateFormat);
 
   logger.info(
-    `Creating IMPORT changeset '${changeSetName}' for stack '${stackName}' ` +
+    `Creating IMPORT changeset '${changeSetName}' for stack ${quotedOrNotShown(stackName)} ` +
       `(${resourcesToImport.length} resource(s), ${templateBody.length} bytes)...`
   );
 
@@ -7392,7 +7442,7 @@ export async function fetchCfnStackTemplate(
   );
   if (!resp.TemplateBody) {
     throw new Error(
-      `CFn GetTemplate returned no body for stack '${cfnStackName}'. ` +
+      `CFn GetTemplate returned no body for stack ${quotedOrNotShown(cfnStackName)}. ` +
         `The just-IMPORTed child stack may be in an unexpected state; ` +
         `check the CloudFormation console.`
     );
@@ -7652,9 +7702,9 @@ async function resolveSsmParameterForChild(args: {
 }): Promise<string> {
   const { parentStackName, childStackName, parameterKey, ssmName } = args;
   const context =
-    `Stack '${safeSegment(parentStackName)}' passes its SSM-typed Parameter ` +
+    `Stack ${quotedOrNotShown(parentStackName)} passes its SSM-typed Parameter ` +
     `${displayIdent(parameterKey)} (SSM parameter ${showRecordValue(ssmName)}) to nested stack ` +
-    `'${safeSegment(childStackName)}'. CloudFormation hands a nested stack the parameter's VALUE, ` +
+    `${quotedOrNotShown(childStackName)}. CloudFormation hands a nested stack the parameter's VALUE, ` +
     `and after the export that stack is a standalone CloudFormation stack, so cdkd export reads ` +
     `the value with ssm:GetParameter before migrating anything.`;
   if (args.read === undefined) {
@@ -7752,7 +7802,7 @@ export async function buildResolvedParametersPerStack(args: {
     const node = nodeByName.get(ref.stackName);
     if (!node) {
       throw new Error(
-        `buildResolvedParametersPerStack: tree node '${safeSegment(ref.stackName)}' has no per-stack ` +
+        `buildResolvedParametersPerStack: tree node ${quotedOrNotShown(ref.stackName)} has no per-stack ` +
           `template/state entry. This is a cdkd bug.`
       );
     }
@@ -7760,15 +7810,15 @@ export async function buildResolvedParametersPerStack(args: {
     const parentStackName = node.state.parentStack;
     if (!parentLogicalId || !parentStackName) {
       throw new Error(
-        `buildResolvedParametersPerStack: child '${safeSegment(node.cdkdName)}' state is missing ` +
+        `buildResolvedParametersPerStack: child ${quotedOrNotShown(node.cdkdName)} state is missing ` +
           `parentLogicalId / parentStack (v6 fields). Re-deploy or re-import the parent stack.`
       );
     }
     const parentNode = nodeByName.get(parentStackName);
     if (!parentNode) {
       throw new Error(
-        `buildResolvedParametersPerStack: child '${safeSegment(node.cdkdName)}' references parent ` +
-          `'${safeSegment(parentStackName)}' which is not in the per-stack node list — tree shape is inconsistent.`
+        `buildResolvedParametersPerStack: child ${quotedOrNotShown(node.cdkdName)} references parent ` +
+          `${quotedOrNotShown(parentStackName)} which is not in the per-stack node list — tree shape is inconsistent.`
       );
     }
     // The parent's resolved Parameter VALUES are the lookup table for any
@@ -8029,7 +8079,7 @@ export async function runPerStackImportLoop(args: {
   for (const n of leafFirst) {
     if (!nodesByCdkdName.has(n.stackName)) {
       throw new Error(
-        `runPerStackImportLoop: missing per-stack template for '${safeSegment(n.stackName)}' — ` +
+        `runPerStackImportLoop: missing per-stack template for ${quotedOrNotShown(n.stackName)} — ` +
           `tree node has cdkd state but no synth template was loaded. This is a cdkd bug.`
       );
     }
@@ -8110,7 +8160,7 @@ export async function runPerStackImportLoop(args: {
   const { paramsByCdkdName, intrinsicSkippedByCdkdName: sessionIntrinsicSkipped } = resolved;
   for (const [cdkdName, skipped] of sessionIntrinsicSkipped) {
     logger.warn(
-      `  Child '${safeSegment(cdkdName)}': could not resolve intrinsic-valued Parameter(s) ` +
+      `  Child ${quotedOrNotShown(cdkdName)}: could not resolve intrinsic-valued Parameter(s) ` +
         `${skipped.join(', ')} at IMPORT time. The child template's Parameter Default ` +
         `values must cover these — otherwise CFn will reject the IMPORT.`
     );
@@ -8141,13 +8191,14 @@ export async function runPerStackImportLoop(args: {
     if (plan.blocked.length > 0) {
       const lines = groupBlockedReasons(plan.blocked);
       throw new Error(
-        // SANITIZED: `meta.cdkdStackName` is `walkCdkdStateStackTree`'s minted
+        // Not shown unless plain (`quotedOrNotShown`, go-to-k/cdkd#3950):
+        // `meta.cdkdStackName` is `walkCdkdStateStackTree`'s minted
         // name carried one alias over, and this throw fires BEFORE
         // `cfnStackNameOf`, so that refusal does not backstop it. The message
         // is MULTI-LINE (`groupBlockedReasons` emits `  - <id> (<type>): ...`
         // rows), so a planted newline forges a blocked-resource row
         // (go-to-k/cdkd#3328 round 6).
-        `Stack '${safeSegment(meta.cdkdStackName)}' has ` +
+        `Stack ${quotedOrNotShown(meta.cdkdStackName)} has ` +
           `${new Set(plan.blocked.map((b) => b.logicalId)).size} resource(s) that block ` +
           `migration:\n${lines.join('\n')}\n${blockedMigrationTail(plan.blocked)}`
       );
@@ -8173,12 +8224,12 @@ export async function runPerStackImportLoop(args: {
   // ---- Print the per-stack plan summary ----
   logger.info('');
   logger.info(
-    `Migrating cdkd nested-stack tree rooted at '${rootStackName}' → CloudFormation ` +
+    `Migrating cdkd nested-stack tree rooted at ${quotedOrNotShown(rootStackName)} → CloudFormation ` +
       `(${perStackPlans.length} stack(s), leaf-first):`
   );
   for (const plan of perStackPlans) {
     logger.info(
-      `  [${safeSegment(plan.cdkdName)}] → CFn stack '${safeSegment(plan.cfnName)}': ` +
+      `  [${safeSegment(plan.cdkdName)}] → CFn stack ${quotedOrNotShown(plan.cfnName)}: ` +
         `${plan.phase1Imports.length} leaf import(s)` +
         (plan.nestedStackRows.length > 0
           ? `, ${plan.nestedStackRows.length} nested-child adoption(s)`
@@ -8244,7 +8295,7 @@ export async function runPerStackImportLoop(args: {
         : '';
     const ok = await confirmPrompt(
       `Create ${perStackPlans.length} CloudFormation stack(s) by importing the cdkd ` +
-        `nested-stack tree rooted at '${rootStackName}' (${safeSegment(rootRegion)}) — ` +
+        `nested-stack tree rooted at ${quotedOrNotShown(rootStackName)} (${safeSegment(rootRegion)}) — ` +
         `leaf-first, per-stack IMPORT loop (#464 design §4.3).` +
         phase2Note +
         recreateNote +
@@ -8360,7 +8411,7 @@ export async function runPerStackImportLoop(args: {
               // IMPORT template carries `DeletionPolicy: Delete`: deleting it
               // would delete them, so the check is printed, not just named.
               `No stack was imported. A failed IMPORT can leave CloudFormation stack ` +
-              `'${safeSegment(plan.cfnName)}' behind, and a re-run is refused while ` +
+              `${quotedOrNotShown(plan.cfnName)} behind, and a re-run is refused while ` +
               `it exists. Check that it holds no resources:\n  ${
                 pasteableCommand('aws cloudformation list-stack-resources', [
                   { flag: '--stack-name', value: plan.cfnName, hole: 'stack-name' },
@@ -8438,8 +8489,8 @@ export async function runPerStackImportLoop(args: {
       for (let i = 0; i < perStackPlans.length; i++) {
         const plan = perStackPlans[i]!;
         logger.info(
-          `[${i + 1}/${perStackPlans.length}] Importing cdkd stack '${safeSegment(plan.cdkdName)}' → ` +
-            `CFn stack '${plan.cfnName}' (${plan.phase1Imports.length} leaf, ` +
+          `[${i + 1}/${perStackPlans.length}] Importing cdkd stack ${quotedOrNotShown(plan.cdkdName)} → ` +
+            `CFn stack ${quotedOrNotShown(plan.cfnName)} (${plan.phase1Imports.length} leaf, ` +
             `${plan.nestedStackRows.length} nested-child adoption)`
         );
 
@@ -8462,8 +8513,8 @@ export async function runPerStackImportLoop(args: {
             return await step();
           } catch (err) {
             throw new Error(
-              `${what} failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
-                `'${safeSegment(plan.cfnName)}'), after its Phase 1A IMPORT succeeded. ` +
+              `${what} failed for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn name ` +
+                `${quotedOrNotShown(plan.cfnName)}), after its Phase 1A IMPORT succeeded. ` +
                 `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
                 nestedResumeTail(i, stage),
               { cause: err instanceof Error ? err : undefined }
@@ -8498,7 +8549,7 @@ export async function runPerStackImportLoop(args: {
         if (injectedDeletion > 0) {
           logger.info(
             `  Injected DeletionPolicy: Delete on ${injectedDeletion} resource(s) in ` +
-              `'${safeSegment(plan.cdkdName)}' (required by CFn IMPORT; matches CDK/CFn default).`
+              `${quotedOrNotShown(plan.cdkdName)} (required by CFn IMPORT; matches CDK/CFn default).`
           );
         }
 
@@ -8514,8 +8565,8 @@ export async function runPerStackImportLoop(args: {
           );
         } catch (err) {
           throw new Error(
-            `Phase 1A IMPORT changeset failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
-              `'${safeSegment(plan.cfnName)}'). ` +
+            `Phase 1A IMPORT changeset failed for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn name ` +
+              `${quotedOrNotShown(plan.cfnName)}). ` +
               // Bounded and folded: the waiter's bare rethrow and a
               // DescribeChangeSet failure carry AWS's text, which can quote a
               // recorded value back (go-to-k/cdkd#3910).
@@ -8552,7 +8603,7 @@ export async function runPerStackImportLoop(args: {
           cfnStackArn: cfnArn,
         });
         logger.info(
-          `  ✓ Phase 1A: CFn stack '${plan.cfnName}' created via IMPORT ` +
+          `  ✓ Phase 1A: CFn stack ${quotedOrNotShown(plan.cfnName)} created via IMPORT ` +
             `(${plan.phase1Imports.length} leaf resource(s)).`
         );
 
@@ -8564,7 +8615,7 @@ export async function runPerStackImportLoop(args: {
         // adopting a stack as a nested member of a parent).
         if (plan.cdkdName !== rootStackName) {
           logger.info(
-            `  Flipping '${plan.cfnName}' to UPDATE_COMPLETE so it can be adopted as a ` +
+            `  Flipping ${quotedOrNotShown(plan.cfnName)} to UPDATE_COMPLETE so it can be adopted as a ` +
               `nested member by its parent's Phase 1B...`
           );
           await afterImport(
@@ -8623,8 +8674,8 @@ export async function runPerStackImportLoop(args: {
               // the guard is defence in depth against that backstop moving, not
               // against a hypothetical future edit.
               throw new Error(
-                `runPerStackImportLoop: nested-stack child '${safeSegment(row.childStackName)}' has no ` +
-                  `recorded CFn ARN when processing parent '${safeSegment(plan.cdkdName)}'. Leaf-first ` +
+                `runPerStackImportLoop: nested-stack child ${quotedOrNotShown(row.childStackName)} has no ` +
+                  `recorded CFn ARN when processing parent ${quotedOrNotShown(plan.cdkdName)}. Leaf-first ` +
                   `iteration order should have IMPORTed the child first — this is a cdkd bug.`
               );
             }
@@ -8676,8 +8727,8 @@ export async function runPerStackImportLoop(args: {
               // A miss can only arise if `plan.template` is mutated between
               // plan-build and this read, which the orchestrator never does.
               throw new Error(
-                `runPerStackImportLoop: parent template for '${safeSegment(plan.cdkdName)}' has no ` +
-                  `resource '${row.logicalId}'. State and template are out of sync.`
+                `runPerStackImportLoop: parent template for ${quotedOrNotShown(plan.cdkdName)} has no ` +
+                  `resource ${quotedOrNotShown(row.logicalId)}. State and template are out of sync.`
               );
             }
             const rewrittenRow = injectRetainAndRewriteTemplateUrl(
@@ -8726,7 +8777,7 @@ export async function runPerStackImportLoop(args: {
                 : '(none)';
             throw new Error(
               `Phase 1B (nested-child adoption) IMPORT changeset failed for parent ` +
-                `'${safeSegment(plan.cdkdName)}' (CFn name '${safeSegment(plan.cfnName)}'). The parent CFn stack ` +
+                `${quotedOrNotShown(plan.cdkdName)} (CFn name ${quotedOrNotShown(plan.cfnName)}). The parent CFn stack ` +
                 `exists with its ${plan.phase1Imports.length} leaf resource(s); ` +
                 `${plan.nestedStackRows.length} nested-child adoption(s) did NOT complete. ` +
                 `Stacks IMPORTed so far (each a CFn stack): ${importedSummary}. ` +
@@ -8747,7 +8798,7 @@ export async function runPerStackImportLoop(args: {
             );
           }
           logger.info(
-            `  ✓ Phase 1B: parent '${plan.cfnName}' adopted ${plan.nestedStackRows.length} ` +
+            `  ✓ Phase 1B: parent ${quotedOrNotShown(plan.cfnName)} adopted ${plan.nestedStackRows.length} ` +
               `nested child(ren) via UPDATE-IMPORT.`
           );
 
@@ -8758,7 +8809,7 @@ export async function runPerStackImportLoop(args: {
           // Phase 1B — no further flip needed.
           if (plan.cdkdName !== rootStackName) {
             logger.info(
-              `  Flipping '${plan.cfnName}' back to UPDATE_COMPLETE so its own parent's ` +
+              `  Flipping ${quotedOrNotShown(plan.cfnName)} back to UPDATE_COMPLETE so its own parent's ` +
                 `Phase 1B can adopt it...`
             );
             await afterImport(
@@ -8777,7 +8828,7 @@ export async function runPerStackImportLoop(args: {
             if (!handler) {
               throw new Error(
                 `No pre-delete handler registered for ${displayIdent(entry.resourceType)} ` +
-                  `(${displayIdent(entry.logicalId)}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
+                  `(${displayIdent(entry.logicalId)}) in stack ${quotedOrNotShown(plan.cdkdName)}. This is a cdkd bug — the ` +
                   `resource is in IMPORT_UNSUPPORTED_RECREATABLE_TYPES but lacks a ` +
                   `PRE_DELETE_HANDLERS entry.\n` +
                   // Its CloudFormation stack exists by now, so even a cdkd bug
@@ -8801,8 +8852,8 @@ export async function runPerStackImportLoop(args: {
                 .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
                 .join(', ');
               throw new Error(
-                `Phase 1 (IMPORT) succeeded for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn ` +
-                  `name '${safeSegment(plan.cfnName)}'); pre-delete of ${displayIdent(entry.logicalId)} ` +
+                `Phase 1 (IMPORT) succeeded for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn ` +
+                  `name ${quotedOrNotShown(plan.cfnName)}); pre-delete of ${displayIdent(entry.logicalId)} ` +
                   `(${displayIdent(entry.resourceType)}, physicalId: ` +
                   `${showRecordValue(entry.physicalId)}) failed: ${displayAwsMessage(msg)}\n\n` +
                   `Stacks IMPORTed so far (each CFn-managed): ${importedSummary}. cdkd state ` +
@@ -8812,7 +8863,7 @@ export async function runPerStackImportLoop(args: {
                   preDeleteManualCommands(plan.recreateBeforePhase2)
                     .map((line) => `  ${line}\n`)
                     .join('') +
-                  `then run the phase-2 UPDATE for '${safeSegment(plan.cfnName)}' by hand with ` +
+                  `then run the phase-2 UPDATE for ${quotedOrNotShown(plan.cfnName)} by hand with ` +
                   `its full synth template. ` +
                   nestedResumeTail(i, 'phase2'),
                 { cause: err instanceof Error ? err : undefined }
@@ -8855,8 +8906,8 @@ export async function runPerStackImportLoop(args: {
             // ExecuteChangeSet's errors bare, so this is the one place that
             // renders them on the nested path (go-to-k/cdkd#3910).
             throw new Error(
-              `Phase 2 (UPDATE) failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
-                `'${safeSegment(plan.cfnName)}'): ` +
+              `Phase 2 (UPDATE) failed for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn name ` +
+                `${quotedOrNotShown(plan.cfnName)}): ` +
                 `${displayAwsMessage(err instanceof Error ? err.message : String(err))}. Its ` +
                 `phase-1 IMPORT succeeded and cdkd state is preserved; fix the cause and run the ` +
                 `phase-2 UPDATE by hand with its full synth template. ` +
@@ -8865,7 +8916,7 @@ export async function runPerStackImportLoop(args: {
             );
           }
           logger.info(
-            `  ✓ Phase 2: stack '${plan.cfnName}' updated ` +
+            `  ✓ Phase 2: stack ${quotedOrNotShown(plan.cfnName)} updated ` +
               `(${plan.phase2Creates.length} non-importable CREATE, ` +
               `${plan.recreateBeforePhase2.length} re-CREATE).`
           );
@@ -8891,7 +8942,7 @@ export async function runPerStackImportLoop(args: {
           // Same record-derived pair as the warn below, and the same rule: a
           // planted newline in a logical id forges a line here too.
           logger.info(
-            `cdkd state for '${safeSegment(node.stackName)}' (${safeSegment(node.region)}) removed.`
+            `cdkd state for ${quotedOrNotShown(node.stackName)} (${safeSegment(node.region)}) removed.`
           );
         } catch (err) {
           stateDeletionFailures.push({
@@ -8901,7 +8952,7 @@ export async function runPerStackImportLoop(args: {
           });
           const orphan = orphanCommandFor(node.stackName, node.region);
           logger.warn(
-            `Failed to delete cdkd state for '${safeSegment(node.stackName)}' ` +
+            `Failed to delete cdkd state for ${quotedOrNotShown(node.stackName)} ` +
               `(${safeSegment(node.region)}): ` +
               // `safeDetail`, not `safeSegment`: an SDK message is FREE-FORM
               // text, which `display-safe.ts` says takes `displaySafe` directly
@@ -8978,7 +9029,7 @@ export async function runPerStackImportLoop(args: {
       const lock = acquiredChildLocks[i]!;
       await deps.lockManager.releaseLock(lock.stackName, lock.region).catch((err) => {
         logger.warn(
-          `Failed to release lock for '${safeSegment(lock.stackName)}' ` +
+          `Failed to release lock for ${quotedOrNotShown(lock.stackName)} ` +
             `(${safeSegment(lock.region)}): ${safeDetail(err)}`
         );
       });

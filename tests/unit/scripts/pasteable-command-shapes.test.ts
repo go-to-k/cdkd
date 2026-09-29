@@ -119,17 +119,21 @@ describe('pasteable-command shape fence — the classifier sees its input', () =
     // The floors are constants the fence itself exports, so asserting the run
     // against them is circular: zeroing all three leaves this file green. These
     // are independent literals — if the scope silently stops matching, this
-    // fails with `FLOORS` untouched. Measured 2026-09-25 at 361 / 1423 / 868,
-    // after a rebase onto a `main` that removed cdkd's own quotes from around
-    // displayed identifiers (go-to-k/cdkd#3658): the SPAN count fell while the
-    // other two rose, which is the shape of that change and not of a narrowing.
+    // fails with `FLOORS` untouched. Measured 2026-09-29 at 380 / 1273 / 1011
+    // on go-to-k/cdkd#4104's head, which removed `export.ts`'s hand-written
+    // quotes (go-to-k/cdkd#3950): the SPAN count fell, as it did when
+    // go-to-k/cdkd#3658 removed cdkd's own quotes from around displayed
+    // identifiers, which is the shape of that change and not of a narrowing.
+    // The span literal sits at 1225, above `FLOORS.spansExamined` (1200) so it
+    // stays independent of it, and below the ~1243 the sibling go-to-k/cdkd#3950 lanes
+    // leave together (the resolver lane, go-to-k/cdkd#4100, removes ~31 more).
     // Both non-file magnitudes moved DOWN during review without the scan
     // narrowing: a duplicate visit of nested literals was removed, and folding
     // `+` runs merges several literals into the one command literal they
     // spell — which is the command counter's whole subject.
     const report = realTree();
     expect(report.filesScanned).toBeGreaterThan(340);
-    expect(report.spansExamined).toBeGreaterThan(1300);
+    expect(report.spansExamined).toBeGreaterThan(1225);
     expect(report.commandLiteralsExamined).toBeGreaterThan(800);
   }, 60_000);
 

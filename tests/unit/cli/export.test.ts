@@ -3972,9 +3972,8 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     );
   });
 
-  it('CAPS the divergent region it renders in that refusal (go-to-k/cdkd#3328)', async () => {
-    // `safeSegment` renders a value straight off a state record, and a
-    // `region` field is unvalidated body content of any length — so an
+  it('keeps an over-long divergent region out of that refusal (go-to-k/cdkd#3328, go-to-k/cdkd#3950)', async () => {
+    // A `region` field is unvalidated body content of any length, so an
     // uncapped render pushes the refusal's own explanation off the screen.
     // This was the last uncapped rendering of that value; the read side's warn
     // and the destroy refusal both bound it.
@@ -4000,16 +3999,12 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     );
     const message = (thrown as Error).message;
 
-    // Still the refusal, and it still shows enough to recognise the value.
+    // Still the refusal. Since go-to-k/cdkd#3950 a region `displayIdent`
+    // would cut is not a plain identifier, so it is described rather than
+    // quoted by hand, and none of it reaches the message.
     expect(message).toContain('region mismatch');
-    // `displayIdent`'s marker shape: it states the COUNT and is space-separated,
-    // so it cannot be mistaken for content the way a bare `[cut]` can — a
-    // planted name ENDING in `[cut]` renders identically to a truncated one.
-    expect(message).toContain(`[cut: ${5000 - STACK_REF_MAX_CODE_POINTS} more characters withheld]`);
-    // Against the CONSTANT: an arbitrary length bound would pass a cap widened
-    // to any round number.
-    expect(message).toContain('z'.repeat(STACK_REF_MAX_CODE_POINTS));
-    expect(message).not.toContain('z'.repeat(STACK_REF_MAX_CODE_POINTS + 1));
+    expect(message).toContain('has state.region=(not shown: it is not a plain identifier) but');
+    expect(message).not.toContain('zzzz');
   });
 
   it.each([
@@ -4037,8 +4032,8 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       'medial padding spelling a second command line',
       `A${' '.repeat(80)}Drop it with: cdkd state orphan X`,
       (m: string) => {
-        // The command line carries holes, not the padded name. (The prose head
-        // above still names it: the value-in-prose shape, tracked apart.)
+        // The command line carries holes, not the padded name, and since
+        // go-to-k/cdkd#3950 the prose head describes it rather than naming it.
         expect(m.split('\n').at(-1)).toBe(
           "Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
         );
@@ -4352,7 +4347,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     );
   });
 
-  it("pastes nothing runnable from the nested-child refusal's remedy sentence and command, named or withheld (go-to-k/cdkd#3436)", async () => {
+  it("pastes nothing runnable from the nested-child refusal, head included, named or withheld (go-to-k/cdkd#3436, go-to-k/cdkd#3950)", async () => {
     const messages: string[] = [];
     for (const { value } of PASTE_PAYLOADS) {
       for (const rootName of [value, `-${value}`]) {
@@ -4384,14 +4379,15 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     withPasteDir((dir) => {
       for (const message of messages) {
         expect(message).toContain('missing nested-child');
-        // From the remedy sentence on: the note and the command this change
-        // builds. The head before it still renders record values inside
-        // hand-written `'...'` (`safeSegment`), which is a PROSE shape outside
-        // this builder, and pasting it does run — so it is excluded here by
-        // name rather than allowed to pass a whole-message assertion.
-        const tail = message.slice(message.indexOf('The cdkd state tree is inconsistent'));
-        expect(tail).toContain('cdkd state orphan');
-        expect(spansThatRun(tail, dir), message).toEqual([]);
+        expect(message).toContain('cdkd state orphan');
+        // The WHOLE message. The head used to render record values inside
+        // hand-written `'...'` and was excluded here by name; since
+        // go-to-k/cdkd#3950 it describes a name that is not a plain
+        // identifier, so nothing in it runs either.
+        expect(message).toContain(
+          'cdkd state is missing nested-child (not shown: it is not a plain identifier)'
+        );
+        expect(spansThatRun(message, dir), message).toEqual([]);
       }
     });
   }, 120_000);
@@ -4493,6 +4489,10 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         // Anchored on the property assignment, so it exempts only a literal
         // that IS the value of a `*[Ss]tackName` key.
         .filter(({ at }) => !/\b\w*[Ss]tackName: `[^`]*$/.test(source.slice(Math.max(0, at - 80), at)))
+        // The literal handed WHOLE to `quotedOrNotShown` (go-to-k/cdkd#3950),
+        // which prints it only when `displayIdent` leaves the assembled text
+        // unchanged: the missing-child refusal's state-key path.
+        .filter(({ at }) => !/quotedOrNotShown\(`[^`]*$/.test(source.slice(Math.max(0, at - 80), at)))
         .map(({ id, at }) => `${id} at offset ${at}`)
     );
 
@@ -4521,7 +4521,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     // set would be asserting nothing.
     expect(carrierJoins.length).toBeGreaterThanOrEqual(2);
     expect(
-      carrierJoins.filter((w) => !/safeSegment\(|safeDetail\(/.test(w)),
+      carrierJoins.filter((w) => !/safeSegment\(|safeDetail\(|quotedOrNotShown\(/.test(w)),
       'a list of record-derived names is joined into a message without a sanitizer'
     ).toEqual([]);
   });
@@ -5451,6 +5451,42 @@ describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first p
         /SSM parameter \/app\/role-name.*read failed \(ParameterNotFound\).*ssm:GetParameter.*--parameter RootRole=<name>/s
       );
     });
+
+    it('names the two stacks only when plain, and no pasted span of the refusal runs (go-to-k/cdkd#3950)', async () => {
+      const refusalFor = async (rootName: string): Promise<string> => {
+        const err = await buildResolvedParametersPerStack({
+          rootStackName: rootName,
+          rootParameters: [{ ParameterKey: 'RootRole', ParameterValue: '/app/role-name' }],
+          perStackNodes: [
+            node(rootName, rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } })),
+            node(`${rootName}~Child`, { Resources: {} }, { stack: rootName, logicalId: 'Child' }),
+          ],
+          tree: treeNode(rootName, new Map([['Child', treeNode(`${rootName}~Child`, new Map())]])),
+          resolver,
+        }).then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+        expect(err, `no refusal for ${rootName}`).toBeDefined();
+        return err!.message;
+      };
+      expect(await refusalFor('Plain1')).toContain(
+        "Stack 'Plain1' passes its SSM-typed Parameter RootRole (SSM parameter /app/role-name) to " +
+          "nested stack 'Plain1~Child'."
+      );
+      const messages: Array<{ value: string; message: string }> = [];
+      for (const { value } of PASTE_PAYLOADS) messages.push({ value, message: await refusalFor(value) });
+      withPasteDir((dir) => {
+        for (const { value, message } of messages) {
+          expect(message, value).toContain(
+            'Stack (not shown: it is not a plain identifier) passes its SSM-typed Parameter'
+          );
+          expect(message, value).toContain('to nested stack (not shown: it is not a plain identifier).');
+          expect(message, value).not.toContain(value);
+          expect(spansThatRun(message, dir), value).toEqual([]);
+        }
+      });
+    }, 120_000);
 
     it('refuses without a reader rather than handing the child the SSM name', async () => {
       await expect(

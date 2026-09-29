@@ -392,7 +392,9 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
 
     const text = expectRefused(error);
     expect(text).toContain('cdkd state region mismatch');
-    expect(text).toContain("state.region='[object Object]'");
+    // Described rather than quoted by hand since go-to-k/cdkd#3950: a region
+    // that does not render exactly is not shown.
+    expect(text).toContain('state.region=(not shown: it is not a plain identifier)');
     expect(text).not.toMatch(/Cannot convert object to primitive value/);
   });
 
