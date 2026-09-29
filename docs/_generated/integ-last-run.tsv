@@ -85,6 +85,9 @@ docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifi
 drift-revert	2026-09-29T10:06:36Z	PASS	186	verify.sh	rc ok, orph clean (#2122)
 drift-revert-arrays	2026-09-29T04:38:44Z	PASS	221	verify.sh	rc ok, orph clean, rebased head (#4014)
 drift-revert-vpc	2026-09-29T10:13:23Z	PASS	395	verify.sh	rc ok, orph clean (#2122)
+drift-revert	2026-09-29T11:38:31Z	PASS	241	verify.sh	rc ok, orph clean; #4081 step 6f (pre-fix run red at 6f)
+drift-revert-arrays	2026-09-29T04:38:44Z	PASS	221	verify.sh	rc ok, orph clean, rebased head (#4014)
+drift-revert-vpc	2026-09-29T11:45:09Z	PASS	371	verify.sh	rc ok, orph clean (#4081)
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
