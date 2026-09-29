@@ -491,8 +491,10 @@ describe('CognitoUserPoolProvider', () => {
     });
 
     it('with removeProtection=true and templated DeletionProtection=ACTIVE, flips before delete', async () => {
-      // Templated ACTIVE short-circuits the Describe call: UpdateUserPool + DeleteUserPool only.
+      // The live flag is read first even when the template says ACTIVE (issue
+      // #2204): DescribeUserPool + UpdateUserPool + DeleteUserPool.
       mockSend
+        .mockResolvedValueOnce({ UserPool: { DeletionProtection: 'ACTIVE' } }) // DescribeUserPool
         .mockResolvedValueOnce({}) // UpdateUserPool
         .mockResolvedValueOnce({}); // DeleteUserPool
 
@@ -504,11 +506,12 @@ describe('CognitoUserPoolProvider', () => {
         { removeProtection: true }
       );
 
-      expect(mockSend).toHaveBeenCalledTimes(2);
-      const updateCall = mockSend.mock.calls[0][0];
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('DescribeUserPoolCommand');
+      const updateCall = mockSend.mock.calls[1][0];
       expect(updateCall.constructor.name).toBe('UpdateUserPoolCommand');
       expect(updateCall.input.DeletionProtection).toBe('INACTIVE');
-      const deleteCall = mockSend.mock.calls[1][0];
+      const deleteCall = mockSend.mock.calls[2][0];
       expect(deleteCall.constructor.name).toBe('DeleteUserPoolCommand');
     });
 

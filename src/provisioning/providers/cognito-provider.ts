@@ -63,6 +63,14 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  ProtectionFlipRegistry,
+  deleteWithProtectionCompensation,
+  observeThenDisableProtection,
+  protectionFlipKey,
+  userPoolProtectionSite,
+  type ProtectionFlipRecord,
+} from './deletion-protection-compensation.js';
 
 /**
  * The standard (OIDC) Cognito User Pool attribute names. A Schema entry whose
@@ -1305,6 +1313,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   private cognitoClient?: CognitoIdentityProviderClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CognitoUserPoolProvider');
+  /** `--remove-protection` flips, keyed so a re-entered delete keeps them (#2204). */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -2806,9 +2816,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * Delete a Cognito User Pool.
    *
    * When `context.removeProtection === true`, `DeletionProtection` is flipped
-   * from `ACTIVE` to `INACTIVE` via `UpdateUserPool` before deletion. The
-   * call is idempotent — AWS accepts the no-op already-disabled case
-   * without error. Without `removeProtection`, AWS rejects the delete on a
+   * from `ACTIVE` to `INACTIVE` via `UpdateUserPool` before deletion, unless
+   * the live pool reads `INACTIVE` already, in which case no `UpdateUserPool`
+   * is sent. Without `removeProtection`, AWS rejects the delete on a
    * protected pool with `InvalidParameterException` and the destroy fails;
    * the user is expected to set `--remove-protection` explicitly.
    *
@@ -2816,77 +2826,93 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * been gated on `--remove-protection` to match the rest of the
    * deletion-protection-bearing types and CDK CLI's refuse-on-protected
    * semantics. See PR body for migration notes.
+   *
+   * The compensation boundary (issue #2204): a flip whose delete then fails
+   * terminally is undone here, so a destroy that did not happen does not leave
+   * a live pool with its guard stripped.
    */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>,
+    _properties?: Record<string, unknown>,
     context?: DeleteContext
+  ): Promise<void> {
+    await deleteWithProtectionCompensation({
+      registry: this.protectionFlips,
+      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
+      run: (flip) => this.deleteOnce(logicalId, physicalId, resourceType, context, flip),
+      compensation: {
+        logicalId,
+        physicalId,
+        logger: this.logger,
+        site: userPoolProtectionSite(physicalId, context?.expectedRegion),
+        reEnable: async () => {
+          await this.getClient().send(
+            new UpdateUserPoolCommand({ UserPoolId: physicalId, DeletionProtection: 'ACTIVE' })
+          );
+        },
+      },
+    });
+  }
+
+  private async deleteOnce(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    flip: ProtectionFlipRecord
   ): Promise<void> {
     this.logger.debug(`Deleting Cognito User Pool ${logicalId}: ${physicalId}`);
 
     try {
       if (context?.removeProtection === true) {
-        // Templated state may not reflect the current AWS-side flag (the
-        // user could have flipped it via console); describe to check
-        // before issuing the flip-off, and skip the call when already
-        // INACTIVE so we don't waste an API request.
-        const templatedActive =
-          (properties?.['DeletionProtection'] as string | undefined) === 'ACTIVE';
-        let needsFlip = templatedActive;
-        if (!templatedActive) {
-          try {
-            const describeResponse = await this.getClient().send(
-              new DescribeUserPoolCommand({ UserPoolId: physicalId })
-            );
-            needsFlip = describeResponse.UserPool?.DeletionProtection === 'ACTIVE';
-          } catch (descError) {
-            if (descError instanceof ResourceNotFoundException) {
-              const clientRegion = await this.getClient().config.region();
-              assertRegionMatch(
-                clientRegion,
-                context?.expectedRegion,
-                resourceType,
-                logicalId,
-                physicalId
+        // ALWAYS read the live flag, never the recorded one: state can be
+        // stale (the user could have flipped it via console), and the
+        // compensation may only restore a guard this run OBSERVED on and
+        // turned off (issue #2204). A pool observed INACTIVE skips the
+        // `UpdateUserPool`, which resets some members it omits; an
+        // unreadable one ("do not know") is flipped anyway, as before.
+        let observed: string | undefined;
+        try {
+          await observeThenDisableProtection({
+            flip,
+            logger: this.logger,
+            physicalId,
+            guardName: 'DeletionProtection',
+            observe: async () => {
+              const describeResponse = await this.getClient().send(
+                new DescribeUserPoolCommand({ UserPoolId: physicalId })
               );
+              observed = describeResponse.UserPool?.DeletionProtection;
+              return observed === 'ACTIVE';
+            },
+            disable: async () => {
+              if (observed !== undefined && observed !== 'ACTIVE') return;
               this.logger.debug(
-                `Cognito User Pool ${physicalId} does not exist, skipping deletion`
+                `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion (--remove-protection)`
               );
-              return;
-            }
-            // If describe fails for another reason, attempt the flip
-            // anyway — UpdateUserPool against an already-INACTIVE pool
-            // is a harmless no-op.
-            this.logger.debug(
-              `Failed to describe Cognito User Pool ${physicalId}, attempting flip-off anyway`
-            );
-            needsFlip = true;
-          }
-        }
-        if (needsFlip) {
+              await this.getClient().send(
+                new UpdateUserPoolCommand({
+                  UserPoolId: physicalId,
+                  DeletionProtection: 'INACTIVE',
+                })
+              );
+            },
+          });
+        } catch (flipError) {
+          // Non-fatal — log and proceed. The actual delete below will
+          // surface any real authorization / state error, a missing pool
+          // included (its NotFound arm below runs the region check).
           this.logger.debug(
-            `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion (--remove-protection)`
+            `Could not disable DeletionProtection for ${physicalId}: ${describeAwsFailure(flipError).detail}`
           );
-          try {
-            await this.getClient().send(
-              new UpdateUserPoolCommand({
-                UserPoolId: physicalId,
-                DeletionProtection: 'INACTIVE',
-              })
-            );
-          } catch (flipError) {
-            // Idempotent — log and proceed. The actual delete below will
-            // surface any real authorization / state error.
-            this.logger.debug(
-              `Could not disable DeletionProtection for ${physicalId}: ${describeAwsFailure(flipError).detail}`
-            );
-          }
         }
       }
 
       await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: physicalId }));
+      // AWS took the delete: nothing after it may put the guard back.
+      flip.deleteAccepted = true;
       this.logger.debug(`Successfully deleted Cognito User Pool ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {

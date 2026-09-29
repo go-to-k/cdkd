@@ -4778,7 +4778,6 @@
           ],
           "seededBy": [
             "create",
-            "delete",
             "update"
           ]
         },

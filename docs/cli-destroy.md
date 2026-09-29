@@ -399,9 +399,11 @@ AWS exposes a synchronous "flip protection off" API call.
   covers every protection-bearing type listed above, and there is no per-type
   variant. If you need finer control, run a stack-only destroy and clean up the
   rest manually.
-- The flip-off call is **idempotent** — providers always issue it when the flag
-  is set, whether or not the resource currently has protection on. AWS accepts
-  the already-disabled case without error.
+- The flip-off call is **idempotent** — providers issue it when the flag is
+  set, whether or not the resource currently has protection on, and AWS accepts
+  the already-disabled case without error. The Cognito user pool is the
+  exception: a pool that already reads `INACTIVE` gets no `UpdateUserPool`,
+  because that call resets some settings it omits.
 - A failure of the flip-off itself (NotFound or similar) is logged at debug;
   the actual delete API call still runs and surfaces its own error message.
 - **RDS and Cognito are gated on the flag like every other type.** Destroying
@@ -427,6 +429,8 @@ stripped.
 | `AWS::RDS::DBCluster`, `AWS::RDS::DBInstance` | `DeletionProtection` |
 | `AWS::DocDB::DBCluster` | `DeletionProtection` |
 | `AWS::Neptune::DBCluster`, `AWS::Neptune::DBInstance` | `DeletionProtection` |
+| `AWS::Logs::LogGroup` | `DeletionProtectionEnabled` |
+| `AWS::Cognito::UserPool` | `DeletionProtection` |
 
 On the DynamoDB pair a Ctrl-C landing in a wait after the flip is compensated
 too. Four limits are deliberate:
@@ -453,10 +457,15 @@ To restore the guard by hand:
 aws dynamodb update-table --table-name <table> --deletion-protection-enabled
 aws rds modify-db-cluster --db-cluster-identifier <id> --deletion-protection --apply-immediately
 aws rds modify-db-instance --db-instance-identifier <id> --deletion-protection --apply-immediately
+aws logs put-log-group-deletion-protection --log-group-identifier <name> --deletion-protection-enabled
+aws cognito-idp update-user-pool --user-pool-id <id> --deletion-protection ACTIVE
 ```
 
 DocDB and Neptune take the same `modify-db-cluster` / `modify-db-instance`
-form under `aws docdb` / `aws neptune`.
+form under `aws docdb` / `aws neptune`. `update-user-pool` resets some pool
+settings it omits (`AutoVerifiedAttributes` among them), so send the pool's
+complete configuration alongside `--deletion-protection` rather than the flag
+alone.
 
 ## `--purge-events`: also delete deployment-event history on destroy
 

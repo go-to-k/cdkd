@@ -9,6 +9,12 @@
 #   3. NEGATIVE: cdkd destroy --force (no --remove-protection)
 #      -> expect non-zero exit; stack state must remain
 #   4. cdkd state list  -> stack still listed (not stripped from state)
+#   4b. COMPENSATION (issue #2204): add an out-of-band hosted-UI domain to
+#      the user pool (DeleteUserPool then refuses TERMINALLY), run
+#      cdkd destroy --remove-protection --force -> expect non-zero, and
+#      assert the pool's DeletionProtection is back to ACTIVE: cdkd turned
+#      it off, the delete failed, so cdkd must put it back. The rest of the
+#      stack is deleted here. Then delete the domain.
 #   5. POSITIVE: cdkd destroy --remove-protection --force
 #      -> expect exit 0
 #   6. cdkd state list -> stack must be GONE
@@ -74,13 +80,46 @@ if [ ! -d node_modules ]; then
   vp install
 fi
 
+# Step 4b's out-of-band user pool domain (issue #2204). Not in cdkd state, so
+# cdkd's destroy cannot remove it: cleanup deletes it FIRST. Set just before
+# the create; the pool id is read from state right after the step-2 deploy.
+USER_POOL_ID=""
+OOB_POOL_DOMAIN=""
+# Step 4b's captured destroy output; removed by cleanup too, since a signal
+# landing mid-destroy never reaches the step's own `rm`.
+DESTROY_4B_LOG=""
+
+# Poll until the pool no longer reports a domain: DeleteUserPool keeps
+# refusing until it does. Returns non-zero when it is still there after 2 min.
+wait_pool_domain_gone() { # usage: wait_pool_domain_gone <pool id>
+  local left=""
+  for _ in $(seq 1 24); do
+    left="$(aws cognito-idp describe-user-pool --region "${REGION}" --user-pool-id "$1" \
+      --query 'UserPool.Domain' --output text)" || return 1
+    if [ "${left}" = "None" ] || [ -z "${left}" ]; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "[verify] ${1} still reports domain '${left}' 2 min after delete-user-pool-domain" >&2
+  return 1
+}
+
 # On failure, retry destroy with --remove-protection so we never leak
 # expensive AWS resources. The trap is intentionally aggressive — the
 # whole point of this integ is verifying the bypass path, so using it
 # in cleanup is correct.
 cleanup() {
   rc=$?
+  [ -n "${DESTROY_4B_LOG}" ] && rm -f "${DESTROY_4B_LOG}"
   if [ "${rc}" -ne 0 ]; then
+    # Step 4b's out-of-band domain first: while it stands, DeleteUserPool
+    # refuses and the destroy below leaks the pool.
+    if [ -n "${OOB_POOL_DOMAIN}" ] && [ -n "${USER_POOL_ID}" ]; then
+      aws cognito-idp delete-user-pool-domain --region "${REGION}" \
+        --domain "${OOB_POOL_DOMAIN}" --user-pool-id "${USER_POOL_ID}" >/dev/null 2>&1 || true
+      wait_pool_domain_gone "${USER_POOL_ID}" || true
+    fi
     echo "[verify] FAIL (exit ${rc}) — attempting destroy --remove-protection to clean up"
     ${CLI} destroy "${STACK}" --remove-protection \
       --state-bucket "${STATE_BUCKET}" --force || true
@@ -93,6 +132,18 @@ trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy"
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+# Step 4b's user pool id, read NOW: step 3's failing destroy writes back a
+# state snapshot with `outputs: {}`, so the output is gone by step 4b.
+USER_POOL_ID="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s).state?.outputs??{};if(!o.UserPoolId)throw new Error("no UserPoolId output");process.stdout.write(String(o.UserPoolId))})')"
+case "${USER_POOL_ID}" in
+  "${REGION}"_?*) ;;
+  *)
+    echo "[verify] FAIL: UserPoolId output '${USER_POOL_ID}' is not a ${REGION} pool id"
+    exit 1
+    ;;
+esac
 
 # ── Capture the ASG-launched, termination-protected instance (issue #796) ──
 # The ProtectedAsg launches one t3.nano whose launch template sets
@@ -169,6 +220,77 @@ if ! ${CLI} state list --state-bucket "${STATE_BUCKET}" | grep -q "${STACK}"; th
   exit 1
 fi
 echo "[verify] step 4 ok: state preserved"
+
+# ── COMPENSATION ARM (issue #2204) ────────────────────────────────
+# `--remove-protection` turns the user pool's DeletionProtection OFF, then
+# deletes it. When that delete fails TERMINALLY, cdkd must turn the guard back
+# ON before reporting the failure: a destroy that did not happen must not leave
+# a live pool with its guard stripped. An out-of-band hosted-UI domain makes
+# DeleteUserPool refuse ("has a domain configured that should be deleted
+# first"), which matches no retryable pattern. The rest of the stack is
+# deleted by this destroy; step 5 then deletes the pool.
+#
+# The log group has no counterpart arm: no DeleteLogGroup refusal that is both
+# TERMINAL and constructible from outside exists (an IAM deny reads "not
+# authorized to perform", which is retryable, and exhausting the retry cap is
+# a documented non-compensated case), so its compensation is unit-tested only.
+echo "[verify] step 4b: --remove-protection compensation on a terminally failing user pool delete (#2204)"
+# Precondition: the guard is ON going in, or the assertion below is vacuous
+# (step 3's bare destroy must not have touched it).
+PRE_DP="$(aws cognito-idp describe-user-pool --region "${REGION}" --user-pool-id "${USER_POOL_ID}" \
+  --query 'UserPool.DeletionProtection' --output text)"
+if [ "${PRE_DP}" != "ACTIVE" ]; then
+  echo "[verify] FAIL: precondition — ${USER_POOL_ID} DeletionProtection is '${PRE_DP}', not ACTIVE"
+  exit 1
+fi
+# A hosted-UI prefix: lowercase letters, digits and hyphens, no "aws" /
+# "amazon" / "cognito", globally unique. Random rather than account-derived:
+# the prefix is a publicly resolvable name while it exists.
+OOB_POOL_DOMAIN="cdkd-rp-$(date +%s)-$(openssl rand -hex 4)"
+aws cognito-idp create-user-pool-domain --region "${REGION}" \
+  --domain "${OOB_POOL_DOMAIN}" --user-pool-id "${USER_POOL_ID}" >/dev/null
+DESTROY_4B_LOG="$(mktemp)"
+# `--resource-timeout 6m`: as in step 3, caps the waits of the resources this
+# destroy cannot finish (the IGW public-IP lag) so the step does not sit out
+# the 30 min default before its expected failure.
+set +e
+${CLI} destroy "${STACK}" --remove-protection --state-bucket "${STATE_BUCKET}" --force \
+  --resource-timeout 6m > "${DESTROY_4B_LOG}" 2>&1
+rc=$?
+set -e
+cat "${DESTROY_4B_LOG}"
+if [ "${rc}" -eq 0 ]; then
+  echo "[verify] FAIL: destroy succeeded although the user pool carries an out-of-band domain"
+  exit 1
+fi
+# The pool must still be there (the delete really failed) ...
+if ! POST_DP="$(aws cognito-idp describe-user-pool --region "${REGION}" --user-pool-id "${USER_POOL_ID}" \
+    --query 'UserPool.DeletionProtection' --output text 2>&1)"; then
+  echo "[verify] FAIL: could not read ${USER_POOL_ID} after the failed destroy: ${POST_DP}"
+  exit 1
+fi
+# ... and its guard back ON. This is the assertion the fix exists for: before
+# it, the flip-off was never undone and this read INACTIVE.
+if [ "${POST_DP}" != "ACTIVE" ]; then
+  echo "[verify] FAIL: ${USER_POOL_ID} was left with DeletionProtection '${POST_DP}' after the failed destroy (#2204)"
+  exit 1
+fi
+# The flip really happened in THIS run and was undone by cdkd, not merely never
+# issued: only the compensation's line says so. A reword fails here loudly.
+if ! grep -qF "re-enabled on ${USER_POOL_ID}" "${DESTROY_4B_LOG}"; then
+  echo "[verify] FAIL: DeletionProtection is ACTIVE but the destroy output carries no re-enable line for ${USER_POOL_ID}"
+  exit 1
+fi
+rm -f "${DESTROY_4B_LOG}"
+DESTROY_4B_LOG=""
+aws cognito-idp delete-user-pool-domain --region "${REGION}" \
+  --domain "${OOB_POOL_DOMAIN}" --user-pool-id "${USER_POOL_ID}" >/dev/null
+if ! wait_pool_domain_gone "${USER_POOL_ID}"; then
+  echo "[verify] FAIL: the out-of-band domain did not clear from ${USER_POOL_ID}"
+  exit 1
+fi
+OOB_POOL_DOMAIN=""
+echo "[verify] step 4b ok: the failed delete put DeletionProtection back to ACTIVE on ${USER_POOL_ID}"
 
 # ── POSITIVE TEST ─────────────────────────────────────────────────
 # `cdkd destroy --remove-protection` should succeed end-to-end on a

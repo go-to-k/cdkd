@@ -28,7 +28,9 @@
  * The first adopter was the DynamoDB pair, so the narrative below uses a table
  * (`DescribeTable` / `UpdateTable` / `DeleteTable`) as its running example. For
  * the RDS family read `Describe*` / `Modify*` / `Delete*` on a cluster or an
- * instance; the argument is the same.
+ * instance, for a log group `DescribeLogGroups` / `PutLogGroupDeletionProtection`
+ * / `DeleteLogGroup`, and for a Cognito user pool `DescribeUserPool` /
+ * `UpdateUserPool` / `DeleteUserPool`; the argument is the same.
  */
 
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -224,7 +226,8 @@ export function protectionFlipKey(
 }
 
 /**
- * How long an RDS-family flip record may sit idle between two `delete()`
+ * How long a flip record of any {@link deleteWithProtectionCompensation}
+ * caller (the RDS family, the log group, the user pool) may sit idle between two `delete()`
  * attempts of one retry sequence before a later delete no longer inherits it.
  *
  * The 30-minute default per-resource deadline, which is what bounds a retry
@@ -295,7 +298,8 @@ export function isTerminalDeleteFailure(error: unknown): boolean {
   // pattern: those two classify errors from ANY provider, so a provider that
   // redacts its thrown message (only `S3BucketProvider` does today) empties
   // what they match on. This one classifies only the delete throws of its
-  // adopters (the DynamoDB pair, RDS, DocDB, Neptune), which carry their
+  // adopters (the DynamoDB pair, RDS, DocDB, Neptune, the Logs log group and
+  // the Cognito user pool), which carry their
   // cause's text verbatim -- so the chain read would be a no-op here, and
   // `retryClassificationText` is opt-in anyway (nothing on these paths stamps
   // itself with `markRedactedCause`). Move it onto the chain text the moment an
@@ -376,6 +380,15 @@ export interface ProtectionGuardSite {
     readonly restoreAfterNotFound: string;
     readonly restoreLive: string;
   };
+  /**
+   * A sentence rendered right after either restore command, for a site whose
+   * restore command is not safe to paste on its own. Cognito's is the case:
+   * `update-user-pool` resets some members a call omits, so the bare flag
+   * would re-enable the guard and reset `AutoVerifiedAttributes` with it.
+   * Kept OUTSIDE the command, since prose inside a pasteable span is itself a
+   * defect (#3136).
+   */
+  readonly restoreCaveat?: string;
 }
 
 /**
@@ -433,6 +446,90 @@ export function rdsFamilyProtectionSite(opts: {
         restoreLive: restore.render(),
       };
     },
+  };
+}
+
+/**
+ * Whether `error` is an SDK `ResourceNotFoundException`, keyed on `name` so this
+ * module stays free of a per-service SDK import and a second client instance
+ * of the class still matches. CloudWatch Logs and Cognito both spell their
+ * not-found answer this way.
+ */
+function isResourceNotFoundException(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'ResourceNotFoundException'
+  );
+}
+
+/**
+ * The {@link ProtectionGuardSite} for an `AWS::Logs::LogGroup`.
+ *
+ * Built here rather than in `logs-loggroup-provider.ts`, whose LogGroupClass
+ * refusal pins its own `put-log-group-deletion-protection` spelling as UNIQUE
+ * in that file (`logs-loggroup-provider-class-guard.test.ts`).
+ */
+export function logGroupProtectionSite(
+  physicalId: string,
+  region: string | undefined
+): ProtectionGuardSite {
+  return {
+    subject: 'Log group',
+    guardName: 'DeletionProtectionEnabled',
+    noun: 'log group',
+    isNotFound: isResourceNotFoundException,
+    notFoundMeaning:
+      'CloudWatch Logs answered ResourceNotFoundException. That most commonly means the ' +
+      'log group is gone, and it can also mean it is not in this region or account.',
+    commands: () => {
+      const aws = pasteableAwsCommand();
+      const regionArg = region ? aws` --region ${region}` : aws``;
+      const restore = aws`aws logs put-log-group-deletion-protection --log-group-identifier ${physicalId}${regionArg} --deletion-protection-enabled`;
+      return {
+        check:
+          aws`aws logs describe-log-groups --log-group-identifiers ${physicalId}${regionArg}`.render(),
+        restoreAfterNotFound: restore.render(),
+        restoreLive: restore.render(),
+      };
+    },
+  };
+}
+
+/**
+ * The {@link ProtectionGuardSite} for an `AWS::Cognito::UserPool`.
+ *
+ * The restore command carries a caveat rather than standing alone: it omits
+ * every other `UpdateUserPool` member, and `AutoVerifiedAttributes` is measured
+ * to RESET on omission (the ledger at `readLiveMfaConfiguration` in
+ * `cognito-provider.ts`).
+ */
+export function userPoolProtectionSite(
+  physicalId: string,
+  region: string | undefined
+): ProtectionGuardSite {
+  return {
+    subject: 'Cognito User Pool',
+    guardName: 'DeletionProtection',
+    noun: 'user pool',
+    isNotFound: isResourceNotFoundException,
+    notFoundMeaning:
+      'Cognito answered ResourceNotFoundException. That most commonly means the user pool ' +
+      'is gone, and it can also mean it is not in this region or account.',
+    commands: () => {
+      const aws = pasteableAwsCommand();
+      const regionArg = region ? aws` --region ${region}` : aws``;
+      const restore = aws`aws cognito-idp update-user-pool --user-pool-id ${physicalId}${regionArg} --deletion-protection ACTIVE`;
+      return {
+        check:
+          aws`aws cognito-idp describe-user-pool --user-pool-id ${physicalId}${regionArg}`.render(),
+        restoreAfterNotFound: restore.render(),
+        restoreLive: restore.render(),
+      };
+    },
+    restoreCaveat:
+      'Note UpdateUserPool resets some members a call omits (AutoVerifiedAttributes among them), ' +
+      'so send your complete pool configuration alongside that flag rather than the flag alone.',
   };
 }
 
@@ -503,14 +600,14 @@ export async function compensateProtectionFlip(
   } catch (reEnableError) {
     const detail = describeAwsFailure(reEnableError).detail;
     const commands = site.commands();
+    const caveat = site.restoreCaveat ? ` ${site.restoreCaveat}` : '';
     if (site.isNotFound(reEnableError)) {
       opts.logger.warn(
         safeMsg`${site.subject} ${opts.logicalId}: could not re-enable ` +
           safeMsg`${site.guardName} on ${opts.physicalId} after the delete failed — ` +
           safeMsg`${site.notFoundMeaning} If it still exists, its deletion protection is OFF. ` +
           safeMsg`Check with: ${commands.check} and if it is there, restore it with: ` +
-          safeMsg`${commands.restoreAfterNotFound}. ` +
-          safeMsg`(${detail})`
+          safeMsg`${commands.restoreAfterNotFound}.${caveat} (${detail})`
       );
       // `failed`, not `not-applicable`: the re-enable was ATTEMPTED and did not
       // land. Whether the resource is gone or merely not modifiable is exactly
@@ -523,8 +620,7 @@ export async function compensateProtectionFlip(
       safeMsg`${site.subject} ${opts.logicalId}: could NOT re-enable ` +
         safeMsg`${site.guardName} on ${opts.physicalId} after the delete failed — ` +
         safeMsg`that ${site.noun} is LIVE with its deletion protection still off. Restore it with: ` +
-        safeMsg`${commands.restoreLive}. ` +
-        safeMsg`(${detail})`
+        safeMsg`${commands.restoreLive}.${caveat} (${detail})`
     );
     return 'failed';
   }
