@@ -36,8 +36,10 @@ import {
   CDKD_TOP_LEVEL_COMMANDS,
   PASTE_CHILD_TIMEOUT_MS,
   PASTE_PAYLOADS,
+  PASTE_SHELLS,
   expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
+  expectZshRunsTheDisplay,
   filesTouchedBy,
   spansThatRun,
   withPasteDir,
@@ -272,7 +274,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
     );
   });
 
-  it('the per-block helper refuses a span that runs a stubbed verb and a boundary-less display', () => {
+  it('the per-block helper refuses a span that runs a stubbed verb and a boundary-less display, and the S1 zsh reason holds both ways', () => {
     // `expectOnlyDisplayResidual` is what the site fences lean on for a
     // displayed value whose span genuinely runs (gc's withheld value, and
     // since go-to-k/cdkd#3950 every site zsh runs past a ` (` on), so each
@@ -293,6 +295,27 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         `aws s3 ls "${hostile}"`,
       ]) {
         expect(() => expectOnlyDisplayResidual(ran, dir, hostile), ran).toThrow(
+          /also ran a stubbed cdkd \/ aws/
+        );
+      }
+      // A verb only ZSH runs (go-to-k/cdkd#4127 review M4): the trailing
+      // `x(N)` is a bash syntax error, so bash runs nothing, while zsh reads a
+      // glob qualifier and runs both the substitution and the verb. The
+      // marker must be the UNION over the shells, not bash's alone.
+      if (PASTE_SHELLS.includes('zsh')) {
+        // `expectZshRunsTheDisplay`, the S1 rows' zsh reason, in both
+        // directions: it accepts the ` (` shape zsh runs past, refuses a
+        // substitution family zsh did NOT run (the reason gone), and refuses
+        // an inert family that DID run (another reason).
+        expectZshRunsTheDisplay(`Nothing for "${hostile}" (us-east-1).`, dir, hostile);
+        expect(() =>
+          expectZshRunsTheDisplay(`Nothing for '${hostile}' (us-east-1).`, dir, hostile)
+        ).toThrow(/zsh ran nothing/);
+        const separator = 'x; touch OWNED; #';
+        expect(() => expectZshRunsTheDisplay(`Nothing for ${separator}`, dir, separator)).toThrow();
+        const zshOnlyVerb = `cdkd deploy "${hostile}" x(N)`;
+        expect(filesTouchedBy(zshOnlyVerb, dir, { shells: ['bash'] })).toEqual([]);
+        expect(() => expectOnlyDisplayResidual(zshOnlyVerb, dir, hostile)).toThrow(
           /also ran a stubbed cdkd \/ aws/
         );
       }
@@ -408,7 +431,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // its own: a span that died that way ran something.
       expect(() => filesTouchedBy('kill -KILL $$', dir)).toThrow(/killed/);
     });
-  });
+  }, 120_000);
 
   it('a nested withPasteDir leaves the outer call isolated, even when the inner one throws', () => {
     withPasteDir((outer) => {
@@ -427,7 +450,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         filesTouchedBy('[ "$(type -P cdkd)" -ef "$HOME/../bin/cdkd" ] && touch OWNED', outer)
       ).toEqual(['OWNED']);
     });
-  });
+  }, 120_000);
 
   it('records what displayIdent costs in a pasted span — it is a DISPLAY boundary, not a shell one', () => {
     // `displayIdent` JSON-quotes, and JSON quotes stop neither COMMAND

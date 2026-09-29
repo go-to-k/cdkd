@@ -51,8 +51,12 @@
  * a ` (` after a JSON-quoted name is a bash SYNTAX error, which stops the line
  * before anything runs, while zsh reads `(us-east-1)` as a glob qualifier and
  * expands `"x$(touch OWNED)"` BEFORE it reports the bad pattern. A span counts
- * as having run when it ran under EITHER shell. zsh is started with `-f`, so
- * no rc file is read. Where zsh is not installed the harness drives bash alone,
+ * as having run when it ran under EITHER shell. zsh is driven the way a paste
+ * reaches it: INTERACTIVE (`-i`), the span fed on stdin, because an interactive
+ * zsh leaves `INTERACTIVE_COMMENTS` off and so does not read a ` #` as a
+ * comment, while `zsh -c` does (`echo see #1 "x$(touch OWNED)"` runs under the
+ * first only). It is started with `-f`, so no user startup file is read
+ * (`/etc/zshenv` still is). Where zsh is not installed the harness drives bash alone,
  * except under `CI`, where a missing zsh FAILS: the CI jobs install it, so a
  * skip there would be a harness quietly measuring less than it claims.
  */
@@ -140,17 +144,13 @@ const ZSH_AVAILABLE = spawnSync('zsh', ['-f', '-c', 'exit 0'], { encoding: 'utf8
 export const PASTE_SHELLS: readonly ('bash' | 'zsh')[] = ZSH_AVAILABLE ? ['bash', 'zsh'] : ['bash'];
 
 /**
- * `it.fails` where zsh is driven, `it` where it is not: for an S1 row's PASTE
- * case (go-to-k/cdkd#3950), which bash's stop at a ` (` keeps inert and zsh
- * runs past. Under bash the case pins that inertness; under zsh it is an
- * expected failure until the row's source fix lands.
+ * `it` where zsh is driven, skipped where it is not (a local run without zsh;
+ * under `CI` a missing zsh fails {@link withPasteDir} instead). For an S1 row's
+ * ZSH paste case (go-to-k/cdkd#3950), which pins the row's current violation
+ * with {@link expectZshRunsTheDisplay} and flips when its source fix lands.
  */
-export function itFailsUnderZsh(
-  name: string,
-  fn: () => Promise<void> | void,
-  timeout?: number
-): void {
-  (ZSH_AVAILABLE ? it.fails : it)(name, fn, timeout);
+export function itUnderZsh(name: string, fn: () => Promise<void> | void, timeout?: number): void {
+  (ZSH_AVAILABLE ? it : it.skip)(name, fn, timeout);
 }
 
 /** How long a span may run before the child is killed (SIGKILL). */
@@ -237,10 +237,16 @@ function runUnder(
   // rather than hanging the file, and `HOME` is the scratch directory so a
   // `~`-expanding span writes where the sweep below can see it. The stub
   // directory is FIRST on PATH (see the header).
-  const functions = STUBBED_VERBS.map((verb) => `${verb}() { : > ${VERB_RAN}; };`).join(' ');
-  const r = spawnSync(shell, [...(shell === 'zsh' ? ['-f'] : []), '-c', `${functions} ${span}`], {
+  // The marker's path is ABSOLUTE, so a span that `cd`s before calling the
+  // verb still writes it where the sweep below looks.
+  const functions = STUBBED_VERBS.map((verb) => `${verb}() { : > '${join(dir, VERB_RAN)}'; };`).join(' ');
+  const script = `${functions} ${span}`;
+  // zsh reads the span on stdin as an INTERACTIVE shell (see the header);
+  // bash's interactive default already reads ` #` as a comment, as `-c` does.
+  const r = spawnSync(shell, shell === 'zsh' ? ['-f', '-i'] : ['-c', script], {
     cwd: dir,
     encoding: 'utf8',
+    ...(shell === 'zsh' ? { input: `${script}\n` } : {}),
     timeout: PASTE_CHILD_TIMEOUT_MS,
     // SIGKILL, not the default SIGTERM: `spawnSync` waits for the child to
     // EXIT after the signal, so a span ignoring TERM (`trap '' TERM`) would
@@ -270,6 +276,24 @@ function runUnder(
     }
   }
   return { touched: touched.filter((f) => f !== VERB_RAN), verbRan: touched.includes(VERB_RAN) };
+}
+
+/**
+ * An S1 row's zsh paste reason, pinned (go-to-k/cdkd#4127 review M0 / M2): a
+ * `$( )` or backtick family displayed in the row's block RUNS when the message
+ * is pasted into zsh, which a ` (` after it no longer stops, while every other
+ * family stays inert. Asserted per value, so a case cannot pass on some other
+ * failure. The bash side of the same row is asserted inert by the site's own
+ * case (`{ shells: ['bash'] }`). When the row's source fix lands, the site
+ * asserts `spansThatRun(...)` empty under both shells instead.
+ */
+export function expectZshRunsTheDisplay(message: string, dir: string, value: string): void {
+  const ran = spansThatRun(message, dir, { shells: ['zsh'] });
+  if (/\$\(|`/.test(value)) {
+    expect(ran.length, `zsh ran nothing for ${value}`).toBeGreaterThan(0);
+  } else {
+    expect(ran, value).toEqual([]);
+  }
 }
 
 /** Every span of `message`, at all three granularities, that touched a file. */
@@ -432,7 +456,7 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
   mkdirSync(dir);
   mkdirSync(bin);
   for (const verb of STUBBED_VERBS) {
-    writeFileSync(join(bin, verb), `#!/bin/sh\n: > ${VERB_RAN}\nexit 0\n`, 'utf8');
+    writeFileSync(join(bin, verb), `#!/bin/sh\n: > '${join(dir, VERB_RAN)}'\nexit 0\n`, 'utf8');
     chmodSync(join(bin, verb), 0o755);
   }
   // Saved and restored rather than cleared, so a nested call leaves the
@@ -446,9 +470,6 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
       ZSH_AVAILABLE || !process.env['CI'],
       'zsh is not installed, and under CI the paste harness must drive it'
     ).toBe(true);
-    // The shell population itself, so dropping zsh from the list cannot pass
-    // on the strength of the availability probe alone.
-    expect(PASTE_SHELLS).toEqual(ZSH_AVAILABLE ? ['bash', 'zsh'] : ['bash']);
     if (PASTE_SHELLS.includes('zsh')) {
       // `zsh -f` reads no startup file: one planted in the child's HOME (the
       // scratch directory) would otherwise run before every span.
@@ -461,6 +482,14 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
       const disagreement = 'echo "x$(touch OWNED)" (us-east-1)';
       expect(runUnder('bash', disagreement, dir).touched, 'bash ran past the `(`').toEqual([]);
       expect(runUnder('zsh', disagreement, dir).touched, 'zsh stopped at the `(`').toEqual([
+        'OWNED',
+      ]);
+      // The ` #` shape: bash (interactive or `-c`) reads it as a comment, and
+      // an interactive zsh, which a macOS paste reaches, does not. A zsh run
+      // through `-c` would report this line inert.
+      const comment = 'echo see #1 "x$(touch OWNED)" here';
+      expect(runUnder('bash', comment, dir).touched, 'bash ran past the ` #`').toEqual([]);
+      expect(runUnder('zsh', comment, dir).touched, 'zsh read the ` #` as a comment').toEqual([
         'OWNED',
       ]);
     }
@@ -494,9 +523,15 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
           `${verb} does not resolve to the stub first on PATH under ${shell}`
         ).toEqual(['OWNED']);
         // The verb marker: an invocation through the function AND through the
-        // PATH stub (`command` skips the function) reports `verbRan`, and a
-        // span naming the verb as an argument does not.
-        for (const invocation of [`${verb} state show x`, `command ${verb} state show x`]) {
+        // PATH stub (`command` skips the function) reports `verbRan`, so does
+        // one after a `cd` (the marker's path is absolute), and a span naming
+        // the verb as an argument does not.
+        for (const invocation of [
+          `${verb} state show x`,
+          `command ${verb} state show x`,
+          `cd .. && ${verb} state show x`,
+          `cd .. && command ${verb} state show x`,
+        ]) {
           expect(
             runUnder(shell, invocation, dir),
             `${invocation} did not report its verb under ${shell}`
