@@ -20,15 +20,19 @@
 #            the re-bootstrap fix (never a silent legacy fallback).
 #   Cleanup: destroy the stack, delete marker + asset bucket + repo.
 #
-# SAFETY NOTE (issue #1052): this fixture exercises the region's CANONICAL
-# default-named cdkd asset storage (cdkd-assets-{account}-{region} + repo +
-# marker), so it must only run in a region whose marker does not exist yet.
-# A pre-run guard fails fast when the region already carries a bootstrap
-# marker (it belongs to live storage this fixture must not delete — pick a
-# marker-free region via AWS_REGION). The guard makes the EXIT-trap cleanup
-# safe: any marker/bucket/repo present at exit was created by THIS run.
-# The pre-run cleanup pass deletes only stack-scoped leftovers and never
-# touches asset storage.
+# SAFETY NOTE (issue #4063): this fixture creates AND deletes the region's
+# CANONICAL default-named cdkd asset storage (marker cdkd-bootstrap/{region}.json,
+# bucket cdkd-assets-{account}-{region}, repo cdkd-container-assets-{account}-{region}),
+# so it must only run in a region that has none of the three (pick one via
+# AWS_REGION). `cleanup` deletes that storage only while STORAGE_OWNED=1, and
+# the only line setting it sits directly after the ownership guard has PASSED: all
+# three probed absent through the tri-state gone_probe, so a throttled or
+# denied probe refuses the run instead of reading as "absent". Every exit
+# before that point — the guard's own refusal, a missing STATE_BUCKET or
+# dist/cli.js, a failed install — cleans only stack-scoped leftovers.
+# The guard cannot see storage another actor creates in the region after it
+# passes, so never run a second copy of this fixture, or a deploy that may
+# auto-create asset storage, in the same region concurrently.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -88,12 +92,13 @@ CONTAINER_REPO="cdkd-container-assets-${ACCOUNT_ID}-${REGION}"
 XREGION_REGION=$([ "${REGION}" = "us-west-2" ] && echo "us-east-1" || echo "us-west-2")
 XREGION_BUCKET=""
 
+# 1 only once the ownership guard below has passed (see the SAFETY NOTE).
+STORAGE_OWNED=0
+
 cleanup() {
-  # $1 = "prerun" skips the asset-storage deletion: a marker/bucket/repo
-  # that exists BEFORE this run is live storage we must not delete (the
-  # guard below fails fast on it instead). Without the arg (EXIT trap),
-  # asset storage is cleaned too — the guard guarantees anything present
-  # at exit was created by this run.
+  # The asset-storage deletion runs only when the ownership guard has passed
+  # (STORAGE_OWNED=1) AND this is not the "prerun" pass; every other call
+  # cleans stack-scoped leftovers only.
   echo "==> Cleanup: dropping stack state/resources${1:+ (stack-scoped only)}"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
@@ -107,7 +112,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
   fi
-  if [ "${1:-}" != "prerun" ]; then
+  if [ "${1:-}" != "prerun" ] && [ "${STORAGE_OWNED}" = "1" ]; then
     if [ -n "${STATE_BUCKET:-}" ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
     fi
@@ -156,12 +161,12 @@ fi
 echo "==> Pre-run cleanup (stack-scoped only)"
 cleanup prerun
 
-# Own-marker guard (issue #1052): this fixture bootstraps and then DELETES
-# the region's default-named asset storage, so a pre-existing marker means
-# the region's storage is genuinely in use (real assets may live there since
-# #1002 PR 2) — never delete it. Fail fast and let the caller pick a
-# marker-free region.
-if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+# Ownership guard (issues #1052, #4063): this fixture bootstraps and then
+# DELETES the region's default-named asset storage, so any of the three
+# existing already means it belongs to someone else — never delete it. Each
+# probe is tri-state: "absent" is only a not-found answer, and any other
+# failure exits here, before STORAGE_OWNED is set.
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"; then
   echo "FAIL: region ${REGION} already has a cdkd bootstrap marker (live asset storage)." >&2
   echo "      This fixture creates AND deletes the region's default-named storage;" >&2
   echo "      run it in a region without cdkd asset storage (e.g. AWS_REGION=us-west-2)." >&2
@@ -169,6 +174,19 @@ if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
   echo "      up first: node dist/cli.js bootstrap --destroy --region ${REGION} --yes" >&2
   exit 1
 fi
+if ! gone_probe aws s3api head-bucket --bucket "${ASSET_BUCKET}" --region "${REGION}"; then
+  echo "FAIL: asset bucket ${ASSET_BUCKET} already exists (no marker) — not this run's to delete." >&2
+  echo "      Run in another region via AWS_REGION, or remove the bucket by hand once it is" >&2
+  echo "      confirmed to be a leftover of this fixture." >&2
+  exit 1
+fi
+if ! gone_probe aws ecr describe-repositories --repository-names "${CONTAINER_REPO}" --region "${REGION}"; then
+  echo "FAIL: container repo ${CONTAINER_REPO} already exists (no marker) — not this run's to delete." >&2
+  echo "      Run in another region via AWS_REGION, or remove the repo by hand once it is" >&2
+  echo "      confirmed to be a leftover of this fixture." >&2
+  exit 1
+fi
+STORAGE_OWNED=1
 
 GC_NOTICE="may garbage-collect"
 

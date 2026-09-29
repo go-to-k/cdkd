@@ -5,14 +5,8 @@
 # per-region cdkd asset storage — no `cdkd bootstrap --region <r>` needed:
 #
 #   Guard:   the target region must have neither the CDK bootstrap SSM
-#            parameter nor the CDK bootstrap asset bucket, and no cdkd
-#            bootstrap marker — a pre-existing marker means the region's
-#            default-named asset storage is genuinely in use (real assets
-#            may live there since #1002 PR 2), so the fixture fails fast
-#            instead of deleting it (issue #1052). The guard makes the
-#            EXIT-trap cleanup safe: any marker/bucket/repo present at
-#            exit was created by THIS run. The pre-run cleanup pass only
-#            deletes stack-scoped leftovers.
+#            parameter nor the CDK bootstrap asset bucket, and none of the
+#            cdkd asset storage (marker, bucket, repo) — see the SAFETY NOTE.
 #   Phase 1: deploy with --yes and NO prior bootstrap -> the auto-create
 #            info line + bucket/repo/marker creation appear in the deploy
 #            output; no legacy `cdk gc` notice; Lambda Code.S3Bucket points
@@ -28,6 +22,21 @@
 #            info line, no marker) — it would rewrite already-published
 #            legacy references to a freshly created empty bucket.
 #   Cleanup: stack state/resources + asset storage + marker + log groups.
+#
+# SAFETY NOTE (issue #4063): this fixture creates AND deletes the region's
+# default-named cdkd asset storage (marker cdkd-bootstrap/{region}.json,
+# bucket cdkd-assets-{account}-{region}, repo cdkd-container-assets-{account}-{region}),
+# so it must only run in a region that has none of the three (pick one via
+# CDKD_AUTO_CREATE_REGION). `cleanup` deletes that storage only while
+# STORAGE_OWNED=1, and the only line setting it sits directly after the ownership
+# guard has PASSED: all three probed absent through the tri-state gone_probe,
+# so a throttled or denied probe refuses the run instead of reading as
+# "absent". Every exit before that point — the guard's own refusal, a missing
+# STATE_BUCKET or dist/cli.js, the CDK-bootstrap guard — cleans only
+# stack-scoped leftovers.
+# The guard cannot see storage another actor creates in the region after it
+# passes, so never run a second copy of this fixture, or a deploy that may
+# auto-create asset storage, in the same region concurrently.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -82,12 +91,13 @@ ASSET_BUCKET="cdkd-assets-${ACCOUNT_ID}-${REGION}"
 CONTAINER_REPO="cdkd-container-assets-${ACCOUNT_ID}-${REGION}"
 CDK_SSM_PARAM="/cdk-bootstrap/hnb659fds/version"
 
+# 1 only once the ownership guard below has passed (see the SAFETY NOTE).
+STORAGE_OWNED=0
+
 cleanup() {
-  # $1 = "prerun" skips the asset-storage deletion: a marker/bucket/repo
-  # that exists BEFORE this run is live storage we must not delete (the
-  # marker guard below fails fast on it instead). Without the arg (EXIT
-  # trap), asset storage is cleaned too — the guard guarantees anything
-  # present at exit was created by this run (issue #1052).
+  # The asset-storage deletion runs only when the ownership guard has passed
+  # (STORAGE_OWNED=1) AND this is not the "prerun" pass; every other call
+  # cleans stack-scoped leftovers only.
   echo "==> Cleanup: dropping stack state/resources${1:+ (stack-scoped only)}"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
@@ -99,7 +109,7 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
   fi
-  if [ "${1:-}" != "prerun" ]; then
+  if [ "${1:-}" != "prerun" ] && [ "${STORAGE_OWNED}" = "1" ]; then
     if [ -n "${STATE_BUCKET:-}" ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
     fi
@@ -143,16 +153,31 @@ if aws s3api head-bucket --bucket "cdk-hnb659fds-assets-${ACCOUNT_ID}-${REGION}"
 fi
 echo "    OK: ${REGION} is cdk-bootstrap-free"
 
-# Own-marker guard (issue #1052): a pre-existing cdkd bootstrap marker means
-# the region's default-named asset storage is genuinely in use — this
-# fixture creates AND deletes that storage, so never proceed over it.
-if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+# Ownership guard (issues #1052, #4063): this fixture creates AND deletes the
+# region's default-named asset storage, so any of the three existing already
+# means it belongs to someone else — never proceed over it. Each probe is
+# tri-state: "absent" is only a not-found answer, and any other failure exits
+# here, before STORAGE_OWNED is set.
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"; then
   echo "FAIL: region ${REGION} already has a cdkd bootstrap marker (live asset storage)." >&2
   echo "      Pick a marker-free region via CDKD_AUTO_CREATE_REGION." >&2
   echo "      If this is a leftover from a previous crashed run of this fixture, clean it" >&2
   echo "      up first: node dist/cli.js bootstrap --destroy --region ${REGION} --yes" >&2
   exit 1
 fi
+if ! gone_probe aws s3api head-bucket --bucket "${ASSET_BUCKET}" --region "${REGION}"; then
+  echo "FAIL: asset bucket ${ASSET_BUCKET} already exists (no marker) — not this run's to delete." >&2
+  echo "      Pick another region via CDKD_AUTO_CREATE_REGION, or remove the bucket by hand" >&2
+  echo "      once it is confirmed to be a leftover of this fixture." >&2
+  exit 1
+fi
+if ! gone_probe aws ecr describe-repositories --repository-names "${CONTAINER_REPO}" --region "${REGION}"; then
+  echo "FAIL: container repo ${CONTAINER_REPO} already exists (no marker) — not this run's to delete." >&2
+  echo "      Pick another region via CDKD_AUTO_CREATE_REGION, or remove the repo by hand" >&2
+  echo "      once it is confirmed to be a leftover of this fixture." >&2
+  exit 1
+fi
+STORAGE_OWNED=1
 
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
@@ -240,7 +265,7 @@ if ! echo "${OPTOUT_OUT}" | grep -qF "${GC_NOTICE}"; then
   echo "FAIL: --no-auto-asset-storage deploy did not print the legacy gc notice" >&2
   exit 1
 fi
-if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"; then
   echo "FAIL: bootstrap marker was written despite --no-auto-asset-storage" >&2
   exit 1
 fi
@@ -271,7 +296,7 @@ if echo "${SKIP_OUT}" | grep -qF "${AUTO_CREATE_LINE}"; then
   echo "FAIL: --skip-assets deploy auto-created asset storage" >&2
   exit 1
 fi
-if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"; then
   echo "FAIL: bootstrap marker was written under --skip-assets" >&2
   exit 1
 fi
