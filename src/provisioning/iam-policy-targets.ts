@@ -95,8 +95,10 @@ export function readPrincipalLists<K extends string>(
 const SECRET_MASK = '***';
 
 /**
- * A value holding a dynamic reference or cdkd's mask at ANY depth: a bare
- * string, a list entry, or a nested object or list (keys included). Also read
+ * A value holding a dynamic reference or cdkd's mask, up to 64 levels deep (a
+ * deeper value reads as NOT secret-derived; no CloudFormation list property
+ * nests near that): a bare string, a list entry, or a nested object or list
+ * (keys included). Also read
  * by the Auto Scaling group, Firehose, ELBv2 `Targets`, Budgets and CodeCommit
  * list reads (go-to-k/cdkd#3948, go-to-k/cdkd#3989).
  *
