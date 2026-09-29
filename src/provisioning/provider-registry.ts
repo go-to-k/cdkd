@@ -294,8 +294,10 @@ export const CC_BROKEN_REASON = "Cloud Control's handler cannot manage this type
 /**
  * {@link CC_BROKEN_REASON} for a `'cc-broken'` sticky-exempt type, else
  * `undefined`. Deliberately NOT part of `ProviderRegistry.ccRouteUnavailableReason`:
- * that one also gates the schema-known silent-drop auto-route, which a
- * `'cc-broken'` type keeps (see `getProviderFor`).
+ * that one also gates the auto-route of SCHEMA-KNOWN silent drops, which a
+ * `'cc-broken'` type keeps (see `getProviderFor`); its UNRECOGNIZED keys are
+ * kept off Cloud Control separately, through the generated
+ * `ccRouteUnavailable`. The two predicates are not interchangeable.
  */
 export function ccBrokenReason(resourceType: string): string | undefined {
   return STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode === 'cc-broken'

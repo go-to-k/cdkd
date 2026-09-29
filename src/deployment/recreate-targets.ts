@@ -459,7 +459,13 @@ export function validateRecreateTargets(input: {
       // the resource is ALREADY sticky on 'cc-api' so forward migration
       // is a no-op. Refuse rather than silently destroy + recreate
       // (wasted downtime + AWS API churn, identical end state).
-      if (recordedResource.provisionedBy === 'cc-api') {
+      // A cc-broken type is not "already CC-managed" -- its next mutating
+      // deploy returns it to its SDK provider -- and `blockedCcBroken` above
+      // already refuses it with the true reason.
+      if (
+        recordedResource.provisionedBy === 'cc-api' &&
+        ccBrokenReason(templateResource.Type) === undefined
+      ) {
         blockedAlreadyCcApi.push(target);
       }
     } else {
