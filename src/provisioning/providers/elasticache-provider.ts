@@ -39,6 +39,18 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { slowCcOperationTimeoutMs } from '../slow-cc-operation-timeouts.js';
+
+/**
+ * How long a cache-cluster delete waits for the cluster to be gone: the Cloud
+ * Control route's own DELETE floor for the type. A Redis delete can pass ten
+ * minutes, and a timeout here left the cluster `deleting` with the delete
+ * reported failed (issue #4029, measured by `cc-final-snapshot-handlers`).
+ */
+const CACHE_DELETE_WAIT_MS = Math.max(
+  600_000,
+  slowCcOperationTimeoutMs('AWS::ElastiCache::CacheCluster', 'DELETE')
+);
 
 /**
  * AWS ElastiCache Provider
@@ -659,12 +671,30 @@ export class ElastiCacheProvider implements ResourceProvider {
       // rejection surfaced as-is — matching CloudFormation's DELETE_FAILED
       // for the same template.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
-      await this.getClient().send(
-        new DeleteCacheClusterCommand({
-          CacheClusterId: physicalId,
-          ...(finalSnapshotId ? { FinalSnapshotIdentifier: finalSnapshotId } : {}),
-        })
-      );
+      try {
+        await this.getClient().send(
+          new DeleteCacheClusterCommand({
+            CacheClusterId: physicalId,
+            ...(finalSnapshotId ? { FinalSnapshotIdentifier: finalSnapshotId } : {}),
+          })
+        );
+      } catch (deleteError) {
+        // A delete already under way (an earlier attempt whose wait ran out)
+        // is waited on, not failed: AWS refuses a second DeleteCacheCluster
+        // with InvalidCacheClusterState. Confirmed by the cluster's STATUS,
+        // never by the message. NOT when this delete asked for a final
+        // snapshot: the delete in flight never took THIS request, so waiting
+        // on it would report a snapshot that may not exist (#1352).
+        if (
+          finalSnapshotId !== undefined ||
+          (deleteError as { name?: string } | undefined)?.name !==
+            'InvalidCacheClusterStateFault' ||
+          (await this.describeCacheCluster(physicalId))?.CacheClusterStatus !== 'deleting'
+        ) {
+          throw deleteError;
+        }
+        this.logger.debug(safeMsg`CacheCluster ${logicalId} is already deleting; waiting for it`);
+      }
       if (finalSnapshotId) {
         this.logger.info(
           `Deleting CacheCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
@@ -674,7 +704,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       this.logger.debug(`Successfully initiated deletion of CacheCluster ${logicalId}`);
 
       // Wait for cluster to be fully deleted
-      await this.waitForClusterDeleted(physicalId);
+      await this.waitForClusterDeleted(physicalId, CACHE_DELETE_WAIT_MS);
     } catch (error) {
       if (this.isNotFoundError(error, 'CacheClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();

@@ -119,7 +119,7 @@ function instanceAttributes(
  */
 export class NeptuneProvider implements ResourceProvider {
   private neptuneClient?: NeptuneClient;
-  private readonly providerRegion = ambientRegion();
+  private readonly providerRegion: string | undefined;
   private logger = getLogger().child('NeptuneProvider');
   /**
    * What a `--remove-protection` flip did, per resource, across the outer
@@ -169,6 +169,15 @@ export class NeptuneProvider implements ResourceProvider {
       ]),
     ],
   ]);
+
+  /**
+   * `region` pins the client instead of the ambient region: the Cloud Control
+   * delete delegation (issue #4029) passes its OWN client's region, which is
+   * the one its recorded-region pre-flight vetted.
+   */
+  constructor(options?: { region?: string }) {
+    this.providerRegion = options?.region ?? ambientRegion();
+  }
 
   private getClient(): NeptuneClient {
     if (!this.neptuneClient) {

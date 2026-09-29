@@ -252,15 +252,17 @@ cannot honor the policy on that route. Snapshot manually, then re-run with
 
 ### No snapshot under `DeletionPolicy: Delete`
 
-The Cloud Control delete handler for `AWS::RDS::DBCluster` and
-`AWS::RDS::DBInstance` takes an untagged `rds-snapshot-<random>` final snapshot
-on every delete, because Cloud Control cannot tell it the policy. So a
-Cloud-Control-routed cluster or instance is deleted with RDS
-`DeleteDBCluster` / `DeleteDBInstance` (`SkipFinalSnapshot=true`) instead
-whenever the policy governing that delete is `Delete`, or `--skip-final-snapshot`
+The Cloud Control delete handlers for `AWS::RDS::DBCluster`,
+`AWS::RDS::DBInstance` and `AWS::Neptune::DBCluster` take an untagged final
+snapshot on every delete, because Cloud Control cannot tell them the policy. So
+a Cloud-Control-routed one is deleted with RDS or Neptune `DeleteDBCluster` /
+`DeleteDBInstance` (`SkipFinalSnapshot=true`) instead whenever the policy
+governing that delete is `Delete`, or `--skip-final-snapshot`
 opts out of a `Snapshot` one (except on a rollback's delete of a replacement's
 new copy, which the flag does not govern). A `DeleteAutomatedBackups` in the
-template is sent with the delete.
+template is sent with the delete. An RDS cluster in a global cluster is first
+detached from it, as CloudFormation does. The `AWS::ElastiCache::CacheCluster`
+handler takes no such snapshot and stays on Cloud Control.
 
 | Delete | Governing policy |
 | --- | --- |
@@ -272,8 +274,8 @@ These cases still go through Cloud Control:
 
 | Case | Delete |
 | --- | --- |
-| No `DeletionPolicy` | CloudFormation's default, `Snapshot`, applies: refused on the Cloud Control route unless `--skip-final-snapshot` (see [Which policy cdkd reads](#which-policy-cdkd-reads)). |
-| A cluster that sets `GlobalClusterIdentifier` | Through Cloud Control, whose handler removes it from the global cluster first; cdkd warns that the snapshot is left behind. |
+| An RDS cluster or standalone RDS instance with no `DeletionPolicy` | CloudFormation's default, `Snapshot`, applies: refused on the Cloud Control route unless `--skip-final-snapshot` (see [Which policy cdkd reads](#which-policy-cdkd-reads)). A Neptune cluster's absent default is `Delete`, so it goes through Neptune. |
+| A Neptune cluster that sets `GlobalClusterIdentifier`, or an RDS cluster whose recorded `GlobalClusterIdentifier` is not a plain name | Through Cloud Control, whose handler removes it from the global cluster first; cdkd warns that a snapshot can be left behind. |
 | A rollback's delete of a replacement's new copy under `UpdateReplacePolicy: Snapshot` | Through Cloud Control, whose handler takes the snapshot, with or without `--skip-final-snapshot`. |
 
 ### Which policy cdkd reads

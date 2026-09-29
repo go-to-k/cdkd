@@ -675,16 +675,24 @@ function isNoSuchBucketError(error: unknown): boolean {
   return (error as { name?: string } | undefined)?.name === 'NoSuchBucket';
 }
 
-/** The types {@link deletesThroughRdsSdk} can hand to `RDSProvider`. */
-const RDS_SDK_DELETE_TYPES: ReadonlySet<string> = new Set([
-  'AWS::RDS::DBCluster',
-  'AWS::RDS::DBInstance',
+/**
+ * The snapshot-capable types whose Cloud Control delete handler takes a final
+ * snapshot on every delete, and the SDK provider family
+ * {@link deletesThroughSdkProvider} hands them to instead. RDS is read from the
+ * handler source (#3993); Neptune was MEASURED by the
+ * `cc-final-snapshot-handlers` fixture (#4029), which also measured
+ * `AWS::ElastiCache::CacheCluster` leaving none.
+ */
+const SDK_DELETE_FAMILIES: ReadonlyMap<string, 'rds' | 'neptune'> = new Map([
+  ['AWS::RDS::DBCluster', 'rds'],
+  ['AWS::RDS::DBInstance', 'rds'],
+  ['AWS::Neptune::DBCluster', 'neptune'],
 ]);
 
 /**
- * Whether `CloudControlProvider.delete` hands this resource to the SDK
- * `RDSProvider` instead of issuing `DeleteResource` (issue #3993), once the
- * caller has passed an explicit `DeletionPolicy: Delete`.
+ * Whether `CloudControlProvider.delete` hands this resource to its SDK
+ * provider instead of issuing `DeleteResource` (issues #3993, #4029), once the
+ * delete's governing policy is `Delete` or `--skip-final-snapshot` opted out.
  *
  * The RDS registry handlers take a final snapshot whenever the handler
  * request's `snapshotRequested` is null (`BooleanUtils.isNotFalse`), and
@@ -692,24 +700,27 @@ const RDS_SDK_DELETE_TYPES: ReadonlySet<string> = new Set([
  * CloudFormation sends `false` for `DeletionPolicy: Delete`, so the snapshot
  * exists only on the Cloud Control route.
  *
- * A DBCluster whose recorded `GlobalClusterIdentifier` is set stays on Cloud
- * Control: its handler removes the member from the global cluster before the
- * delete, which the SDK provider does not do. ANY other value there (an
- * unresolved object, a number) keeps it too, since only a blank or absent one
- * is known not to name a global cluster.
+ * An RDS global-cluster member goes too: `RDSProvider` detaches it by the
+ * recorded `GlobalClusterIdentifier` first, as the handler does (issue #4029).
+ * A cluster stays on Cloud Control, with a warning, when that value is present
+ * but NOT a string (an unresolved intrinsic an import recorded): cdkd cannot
+ * name the global cluster to detach from. A Neptune cluster stays when it
+ * records ANY `GlobalClusterIdentifier`: `NeptuneProvider` has no detach, and
+ * the Neptune handler's source is not public.
  */
-export function deletesThroughRdsSdk(
+export function deletesThroughSdkProvider(
   resourceType: string,
   properties: Record<string, unknown> | undefined
 ): boolean {
+  const family = SDK_DELETE_FAMILIES.get(resourceType);
+  if (family === undefined) return false;
   if (resourceType === 'AWS::RDS::DBInstance') return true;
-  if (resourceType !== 'AWS::RDS::DBCluster') return false;
   const globalCluster = properties?.['GlobalClusterIdentifier'];
-  return (
-    globalCluster === undefined ||
-    globalCluster === null ||
-    (typeof globalCluster === 'string' && globalCluster.trim() === '')
-  );
+  if (globalCluster === undefined || globalCluster === null) return true;
+  if (family === 'neptune') {
+    return typeof globalCluster === 'string' && globalCluster.trim() === '';
+  }
+  return typeof globalCluster === 'string';
 }
 
 export class CloudControlProvider implements ResourceProvider {
@@ -759,14 +770,17 @@ export class CloudControlProvider implements ResourceProvider {
   private readonly PROTECTION_FLIP_TRANSIENT_GRACE_MS = 10_000;
 
   /**
-   * The SDK provider an `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` delete
-   * goes through (issue #3993; see {@link deletesThroughRdsSdk}), and the
-   * region its client is pinned to. Kept across calls, not built per call:
+   * The SDK provider per family a Cloud Control-routed RDS or Neptune delete
+   * goes through (issues #3993, #4029; see {@link deletesThroughSdkProvider}),
+   * and the region its client is pinned to. Kept across calls, not built per call:
    * its `--remove-protection` compensation registry latches across a
    * re-entered delete (`deletion-protection-compensation.ts`), which a fresh
    * provider per call would forget.
    */
-  private rdsDeleteDelegate: { region: string; provider: ResourceProvider } | undefined;
+  private readonly sdkDeleteDelegates = new Map<
+    'rds' | 'neptune',
+    { region: string; provider: ResourceProvider }
+  >();
 
   constructor() {
     const awsClients = getAwsClients();
@@ -1374,19 +1388,19 @@ export class CloudControlProvider implements ResourceProvider {
 
     // Issue #3993: under an explicit `DeletionPolicy: Delete`, or when the user
     // opted out with `--skip-final-snapshot` (#4029), an RDS cluster or
-    // instance is deleted through the SDK `RDSProvider`, never
-    // `DeleteResource`. The registry handler takes a final snapshot whenever
-    // the request's `snapshotRequested` is null, and Cloud Control always
-    // leaves it null, so every Cloud Control delete left an untagged
-    // `rds-snapshot-<random>` behind. A `Snapshot` policy, explicit or
+    // instance, or a Neptune cluster (#4029), is deleted through its SDK
+    // provider, never `DeleteResource`. The registry handler takes a final
+    // snapshot whenever the request's `snapshotRequested` is null, and Cloud
+    // Control always leaves it null, so every Cloud Control delete left an
+    // untagged snapshot behind. A `Snapshot` policy, explicit or
     // CloudFormation's absent default (#4030), is refused on this route by the
     // caller, or fails closed above.
     if (
       (context?.deletionPolicy === 'Delete' || context?.skipFinalSnapshot === true) &&
-      RDS_SDK_DELETE_TYPES.has(resourceType)
+      SDK_DELETE_FAMILIES.has(resourceType)
     ) {
-      if (deletesThroughRdsSdk(resourceType, _properties)) {
-        const delegate = await this.rdsDeleteDelegateInCcRegion(
+      if (deletesThroughSdkProvider(resourceType, _properties)) {
+        const delegate = await this.sdkDeleteDelegateInCcRegion(
           resourceType,
           logicalId,
           physicalId
@@ -1397,9 +1411,9 @@ export class CloudControlProvider implements ResourceProvider {
         );
       }
       this.logger.warn(
-        safeMsg`${logicalId} (${resourceType}) sets GlobalClusterIdentifier, so it is deleted through ` +
-          `Cloud Control, whose handler removes it from the global cluster first. That handler ` +
-          safeMsg`also takes a manual final snapshot of ${physicalId}, which cdkd does not record; ` +
+        safeMsg`${logicalId} (${resourceType}) records a GlobalClusterIdentifier cdkd cannot detach it from, so it is deleted through ` +
+          `Cloud Control, which handles the global-cluster membership. Its handler ` +
+          safeMsg`can take a manual final snapshot of ${physicalId}, which cdkd does not record; ` +
           `delete it yourself if you do not want it.`
       );
     }
@@ -1593,15 +1607,15 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
-   * The RDS delete delegate (issue #3993), its client pinned to THIS
-   * provider's Cloud Control client region: the region the recorded-region
+   * The SDK delete delegate for this type's family (issues #3993, #4029), its
+   * client pinned to THIS provider's Cloud Control client region: the region the recorded-region
    * pre-flight vetted. An ambient-region client can differ from it (a command
    * that swaps the AWS clients without the environment), and RDS identifiers
    * are names, so a delete there could remove a same-named resource in
    * another region and then read its absence as success. An unresolvable
    * region is refused, as `ec2ClientInCcRegion` does for a volume.
    */
-  private async rdsDeleteDelegateInCcRegion(
+  private async sdkDeleteDelegateInCcRegion(
     resourceType: string,
     logicalId: string,
     physicalId: string
@@ -1616,7 +1630,7 @@ export class CloudControlProvider implements ResourceProvider {
       throw markNonRetryable(
         new ProvisioningError(
           `Refusing to delete ${logicalId} (${resourceType}, ${physicalId}): cdkd could not ` +
-            `resolve the Cloud Control client's region, so it cannot show the RDS delete ` +
+            `resolve the Cloud Control client's region, so it cannot show the SDK delete ` +
             `would reach this resource. Re-run with --region set to the stack's region.`,
           resourceType,
           logicalId,
@@ -1624,14 +1638,17 @@ export class CloudControlProvider implements ResourceProvider {
         )
       );
     }
-    if (this.rdsDeleteDelegate === undefined || this.rdsDeleteDelegate.region !== ccRegion) {
-      const { RDSProvider } = await import('./providers/rds-provider.js');
-      this.rdsDeleteDelegate = {
-        region: ccRegion,
-        provider: new RDSProvider({ region: ccRegion }),
-      };
-    }
-    return this.rdsDeleteDelegate.provider;
+    const family = SDK_DELETE_FAMILIES.get(resourceType)!;
+    const cached = this.sdkDeleteDelegates.get(family);
+    if (cached !== undefined && cached.region === ccRegion) return cached.provider;
+    const provider: ResourceProvider =
+      family === 'rds'
+        ? new (await import('./providers/rds-provider.js')).RDSProvider({ region: ccRegion })
+        : new (await import('./providers/neptune-provider.js')).NeptuneProvider({
+            region: ccRegion,
+          });
+    this.sdkDeleteDelegates.set(family, { region: ccRegion, provider });
+    return provider;
   }
 
   /**

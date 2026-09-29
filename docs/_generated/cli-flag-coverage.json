@@ -126,6 +126,7 @@
         "cache-streaming",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
+        "cc-final-snapshot-handlers",
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
@@ -355,6 +356,7 @@
       "flag": "--force-stateful-recreation",
       "integs": [
         "backup",
+        "cc-final-snapshot-handlers",
         "deletion-policy-snapshot",
         "efs-immutable-replacement",
         "elbv2-same-name-replacement",
@@ -457,6 +459,7 @@
         "cache-streaming",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
+        "cc-final-snapshot-handlers",
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
@@ -732,6 +735,7 @@
     {
       "flag": "--recreate-via-cc-api",
       "integs": [
+        "cc-final-snapshot-handlers",
         "cc-to-sdk-reroute",
         "codebuild-project",
         "loggroup-never-expire-guard",
@@ -778,6 +782,7 @@
         "cache-streaming",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
+        "cc-final-snapshot-handlers",
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
@@ -1027,6 +1032,7 @@
     {
       "flag": "--remove-protection",
       "integs": [
+        "cc-final-snapshot-handlers",
         "cc-protection-flip",
         "cc-protection-flip-eks",
         "docdb-neptune",
@@ -1083,6 +1089,7 @@
     {
       "flag": "--skip-final-snapshot",
       "integs": [
+        "cc-final-snapshot-handlers",
         "deletion-policy-snapshot",
         "deletion-policy-snapshot-heavy",
         "rds-aurora",
@@ -1129,6 +1136,7 @@
         "cache-streaming",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
+        "cc-final-snapshot-handlers",
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
@@ -1473,6 +1481,7 @@
         "cache-streaming",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
+        "cc-final-snapshot-handlers",
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
@@ -1741,6 +1750,7 @@
     "--bucket",
     "--budget-name",
     "--build-arg",
+    "--cache-cluster-id",
     "--capacity-provider-name",
     "--certificate-arn",
     "--cfn-stack-name",

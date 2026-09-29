@@ -306,9 +306,14 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     expect(deleteContextArg()['skipFinalSnapshot']).toBe(true);
   });
 
-  it('issue #3993: no recorded or template policy leaves deletionPolicy absent', async () => {
+  it('issue #4029: no recorded or template policy passes the effective default', async () => {
     await invokeDelete(makeEngine(), 'AWS::RDS::DBCluster', {});
-    expect(deleteContextArg()).not.toHaveProperty('deletionPolicy');
+    expect(deleteContextArg()['deletionPolicy']).toBe('Snapshot');
+  });
+
+  it('issue #4029: no policy on a Neptune cluster passes CloudFormation\'s Delete', async () => {
+    await invokeDelete(makeEngine(), 'AWS::Neptune::DBCluster', {});
+    expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
   });
 
   it('falls back to the template DeletionPolicy for pre-v5 state with no recorded policy', async () => {

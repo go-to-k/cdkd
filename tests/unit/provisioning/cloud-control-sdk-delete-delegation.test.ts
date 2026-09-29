@@ -18,6 +18,15 @@ const warnSpy = vi.hoisted(() => vi.fn());
 
 const ccRegion = vi.hoisted(() => ({ value: 'us-east-1' as string | undefined }));
 
+const mockNeptuneDelete = vi.hoisted(() => vi.fn());
+const mockNeptuneCtor = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/provisioning/providers/neptune-provider.js', () => ({
+  NeptuneProvider: vi.fn().mockImplementation((options?: { region?: string }) => {
+    mockNeptuneCtor(options);
+    return { delete: mockNeptuneDelete };
+  }),
+}));
+
 vi.mock('../../../src/provisioning/providers/rds-provider.js', () => ({
   RDSProvider: vi.fn().mockImplementation((options?: { region?: string }) => {
     mockRdsCtor(options);
@@ -56,7 +65,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import {
   CloudControlProvider,
-  deletesThroughRdsSdk,
+  deletesThroughSdkProvider,
 } from '../../../src/provisioning/cloud-control-provider.js';
 
 const CLUSTER = 'AWS::RDS::DBCluster';
@@ -90,6 +99,8 @@ describe('CloudControlProvider.delete sends RDS clusters and instances to the SD
     mockCloudControlSend.mockReset();
     mockRdsDelete.mockReset();
     mockRdsDelete.mockResolvedValue(undefined);
+    mockNeptuneDelete.mockReset();
+    mockNeptuneDelete.mockResolvedValue(undefined);
     ccRegion.value = 'us-east-1';
     provider = new CloudControlProvider();
   });
@@ -201,14 +212,24 @@ describe('CloudControlProvider.delete sends RDS clusters and instances to the SD
     expect(mockCloudControlSend).not.toHaveBeenCalled();
   });
 
-  it('a global cluster member stays on Cloud Control, with a warning naming the snapshot it leaves', async () => {
+  it('issue #4029: a global cluster member is delegated too (RDSProvider detaches it)', async () => {
+    const properties = { GlobalClusterIdentifier: 'my-global' };
+
+    await provider.delete('Db', 'db-1', CLUSTER, properties, DELETE_POLICY);
+
+    expect(mockRdsDelete).toHaveBeenCalledWith('Db', 'db-1', CLUSTER, properties, DELETE_POLICY);
+    expect(ccCommandNames()).not.toContain('DeleteResourceCommand');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable GlobalClusterIdentifier stays on Cloud Control, with a warning naming the snapshot', async () => {
     ccDeleteSucceeds();
 
     const result = await provider.delete(
       'Db',
       'db-1',
       CLUSTER,
-      { GlobalClusterIdentifier: 'my-global' },
+      { GlobalClusterIdentifier: { Ref: 'Global' } },
       DELETE_POLICY
     );
 
@@ -226,17 +247,51 @@ describe('CloudControlProvider.delete sends RDS clusters and instances to the SD
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('a type outside the pair keeps Cloud Control (the Neptune cluster is not delegated)', async () => {
+  it('issue #4029: a Neptune cluster goes to NeptuneProvider, pinned to the Cloud Control region', async () => {
+    ccRegion.value = 'eu-west-1';
+
+    await provider.delete('Nep', 'nep-1', 'AWS::Neptune::DBCluster', {}, DELETE_POLICY);
+
+    expect(mockNeptuneCtor).toHaveBeenCalledWith({ region: 'eu-west-1' });
+    expect(mockNeptuneDelete).toHaveBeenCalledWith(
+      'Nep',
+      'nep-1',
+      'AWS::Neptune::DBCluster',
+      {},
+      DELETE_POLICY
+    );
+    expect(mockRdsDelete).not.toHaveBeenCalled();
+    expect(ccCommandNames()).not.toContain('DeleteResourceCommand');
+  });
+
+  it('issue #4029: a Neptune global-cluster member stays on Cloud Control, with the warning', async () => {
     ccDeleteSucceeds();
 
-    await provider.delete('Db', 'db-1', 'AWS::Neptune::DBCluster', {}, DELETE_POLICY);
+    await provider.delete(
+      'Nep',
+      'nep-1',
+      'AWS::Neptune::DBCluster',
+      { GlobalClusterIdentifier: 'g' },
+      DELETE_POLICY
+    );
+
+    expect(mockNeptuneDelete).not.toHaveBeenCalled();
+    expect(ccCommandNames()).toContain('DeleteResourceCommand');
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('nep-1');
+  });
+
+  it('a type measured NOT to snapshot keeps Cloud Control (ElastiCache cache cluster)', async () => {
+    ccDeleteSucceeds();
+
+    await provider.delete('C', 'c-1', 'AWS::ElastiCache::CacheCluster', {}, DELETE_POLICY);
 
     expect(mockRdsDelete).not.toHaveBeenCalled();
+    expect(mockNeptuneDelete).not.toHaveBeenCalled();
     expect(ccCommandNames()).toContain('DeleteResourceCommand');
   });
 });
 
-describe('deletesThroughRdsSdk', () => {
+describe('deletesThroughSdkProvider', () => {
   it.each([
     [INSTANCE, undefined, true],
     [INSTANCE, { GlobalClusterIdentifier: 'g' }, true],
@@ -245,15 +300,18 @@ describe('deletesThroughRdsSdk', () => {
     [CLUSTER, { GlobalClusterIdentifier: null }, true],
     [CLUSTER, { GlobalClusterIdentifier: '' }, true],
     [CLUSTER, { GlobalClusterIdentifier: '   ' }, true],
-    [CLUSTER, { GlobalClusterIdentifier: 'my-global' }, false],
+    [CLUSTER, { GlobalClusterIdentifier: 'my-global' }, true],
     [CLUSTER, { GlobalClusterIdentifier: { Ref: 'Global' } }, false],
     [CLUSTER, { GlobalClusterIdentifier: 7 }, false],
-    ['AWS::Neptune::DBCluster', undefined, false],
+    ['AWS::Neptune::DBCluster', undefined, true],
+    ['AWS::Neptune::DBCluster', { GlobalClusterIdentifier: '' }, true],
+    ['AWS::Neptune::DBCluster', { GlobalClusterIdentifier: 'g' }, false],
+    ['AWS::ElastiCache::CacheCluster', undefined, false],
     ['AWS::DocDB::DBCluster', undefined, false],
     ['AWS::RDS::DBSubnetGroup', undefined, false],
   ] as const)('%s with %j -> %s', (type, properties, expected) => {
     expect(
-      deletesThroughRdsSdk(type, properties as Record<string, unknown> | undefined)
+      deletesThroughSdkProvider(type, properties as Record<string, unknown> | undefined)
     ).toBe(expected);
   });
 });
