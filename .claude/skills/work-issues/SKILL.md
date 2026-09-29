@@ -72,9 +72,8 @@ file that holds that section.
   reports PR number, HEAD sha, review verdicts, integ fixtures still needed and
   anything deferred. It must NOT run a real-AWS integ or merge on its own.
 - **Finishing (stage 9): the parent, one lane at a time.** Grant each
-  merge-ready lane its turn — resume the lane agent (SendMessage) to run its
-  named integ fixtures and merge while it holds the turn, or run `/run-integ`
-  and `gh pr merge` yourself FROM THAT LANE'S WORKTREE (the `integ-destroy`
+  merge-ready lane its turn and run `/run-integ` and `gh pr merge` yourself
+  FROM THAT LANE'S WORKTREE, never the lane agent (the `integ-destroy`
   marker is read from the worktree the command runs from). Post-merge (pull →
   rebuild → worktree cleanup) follows §9.
 - **Retro (stage 10): a subagent**, dispatched after the last merge with

@@ -4,7 +4,8 @@
 #
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps
-#   2. cdkd deploy CdkdDriftRevertExample
+#   2. cdkd deploy CdkdDriftRevertExample (refused on a peer's lock -> fail
+#      WITHOUT the cleanup destroy: the stack is the peer's)
 #   3. inject drift via direct AWS SDK calls
 #   4. cdkd drift  -> assert exit 1 (drift detected)
 #   5. cdkd drift --revert -y  -> assert exit 0
@@ -44,9 +45,18 @@ fi
 # stack owns it, so destroy leaves it behind (#3885).
 . ../cr-log-groups.sh
 
+# Set to 1 only when step 2's deploy was refused on another process's lock: this
+# run then deployed nothing, the stack under ${STACK} is that PEER's, and a
+# destroy from `cleanup` would delete it once the peer releases its lock.
+PEER_HOLDS_STACK=0
+
 cleanup() {
   rc=$?
-  rm -f "${BOGUS_DRIFT_LOG:-}"
+  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}"
+  if [ "${PEER_HOLDS_STACK}" = 1 ]; then
+    echo "[verify] FAIL (exit ${rc}) — destroy and log-group sweep SKIPPED: ${STACK} belongs to the peer holding its lock"
+    exit "${rc}"
+  fi
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
@@ -59,7 +69,27 @@ trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy"
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+# The lock is the FIRST thing deploy takes (deploy-engine.ts), so a refusal on it
+# means this run created nothing; any other deploy failure may have created
+# resources, and `cleanup` still destroys them. The head is the parsed marker;
+# the recovery clause, built separately and printed on the same line, is the
+# sentinel: seen without the head, the wording drifted, and the destroy is
+# skipped too rather than risk a peer's stack.
+DEPLOY_LOG="$(mktemp)"
+set +e
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${DEPLOY_LOG}"
+deploy_rc=${PIPESTATUS[0]}
+set -e
+if [ "${deploy_rc}" -ne 0 ]; then
+  if grep -qF "Failed to acquire lock for stack ${STACK} " "${DEPLOY_LOG}"; then
+    PEER_HOLDS_STACK=1
+    echo "[verify] FAIL step 2: deploy was refused on another process's lock on ${STACK}; re-run once it is released" >&2
+  elif grep -qF "If you are certain no other process is active" "${DEPLOY_LOG}"; then
+    PEER_HOLDS_STACK=1
+    echo "[verify] FAIL step 2: the lock-recovery clause printed without the 'Failed to acquire lock for stack' head this fixture keys on; update verify.sh for the new wording" >&2
+  fi
+  exit "${deploy_rc}"
+fi
 
 echo "[verify] step 3: inject drift"
 node inject-drift.ts
