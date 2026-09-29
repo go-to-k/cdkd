@@ -914,8 +914,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       which === 'desired-name'
         ? `The repository holding the desired RepositoryName is not this resource's (its ` +
           `repository id is not the one cdkd holds for this resource) — nothing was sent to ` +
-          `that repository. If this resource's repository still exists, choose a ` +
-          `RepositoryName no other repository holds. If it was deleted outside cdkd, drop ` +
+          `that repository. If this resource's repository was renamed outside cdkd and you ` +
+          `can find it, set RepositoryName to its current name: cdkd adopts it by the ` +
+          `repository id it holds. If it was deleted outside cdkd, drop ` +
           `this resource's record so the next deploy creates a new repository (fill in the ` +
           `resource's construct path):\n` +
           pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command
