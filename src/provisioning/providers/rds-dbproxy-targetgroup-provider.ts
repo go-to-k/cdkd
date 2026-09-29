@@ -571,9 +571,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     if (tagWarning !== undefined) this.logger.warn(tagWarning);
 
     const client = this.getClient();
-    // Every call below addresses the proxy by NAME, which another region can
-    // also hold, and the deregister arm reads NotFound as success: refuse a
-    // wrong-region client before any of them goes out.
+    // The pool, deregister and register calls address the proxy by NAME, which
+    // another region can also hold, and the deregister arm reads NotFound as
+    // success: refuse a wrong-region client before any call goes out.
     assertRegionMatch(
       await client.config.region(),
       context?.expectedRegion,
