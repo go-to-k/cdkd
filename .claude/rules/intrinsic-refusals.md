@@ -47,5 +47,6 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
   the fabricated-account arm and `refuseUnservedAttribute` ARE time-dependent.
 - **Where the intrinsic SITS decides what the user sees.** In a resource
   property it fails the resource; in a stack Output `deploy` catches it
-  per-output and exits 0; in `Conditions`, the class-agnostic
-  `evaluateConditions` downgrades it to `false`.
+  per-output and exits 0 (`--strict-getatt` fails the deploy); in
+  `Conditions`, the class-agnostic `evaluateConditions` downgrades it to
+  `false`.

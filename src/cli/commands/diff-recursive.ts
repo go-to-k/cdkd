@@ -1303,8 +1303,8 @@ export async function computeStackDiff(
   // written, and a late needle matching a STORED value makes the save redact
   // that value in whichever bag it keeps, a rewrite no diff path previews,
   // merge or not. `--strict-getatt` also departs from the preview: an output
-  // whose resolution throws aborts the deploy instead of reaching the merge
-  // (one that resolves to `undefined` still reaches it).
+  // whose resolution throws, or resolves to `undefined`, aborts the deploy
+  // instead of reaching the merge.
   //
   // The suppression, everywhere else. With a resource change pending an output
   // usually fails because it references a resource this deploy has yet to

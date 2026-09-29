@@ -280,7 +280,8 @@ export function skippedOutputDigest(template: CloudFormationTemplate, outputKey:
  * the default arm of `handleOutputResolutionFailure` (the resolver THREW —
  * warned, and refused under `--strict-getatt`), and a resolver that returned
  * `undefined` outright without throwing (an attribute it could construct
- * nothing for, `constructAttribute`'s empty arm — no warn, no strict refusal).
+ * nothing for, `constructAttribute`'s empty arm — no warn, and reached only
+ * without `--strict-getatt`, which refuses it too).
  * Both leave the key out of a re-resolved bag (the no-change path may keep a
  * previous value under it, see the module doc), and that path's
  * `resolutionFailed` treats both the same, so this record does too: the
