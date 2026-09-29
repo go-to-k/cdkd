@@ -433,16 +433,29 @@ function literalPartsAroundTokens(text: string): string[] {
 }
 
 /**
- * May a STORED string carrying a plain `ssm` token be read as the key's
- * redacted expression (issue #4056)? A substring hit is not enough: `cdkd
- * scrub` can leave `{{resolve:ssm:/A}}-<plaintext>` when it could name one
- * secret in a value and not the other. So the stored string must be one
- * whole token, or carry exactly the LITERAL parts the resolved desired side
- * carries, so every stretch that differs sits where a token is.
+ * May a STORED string carrying a secret's token be read as the key's redacted
+ * expression (issues #4056, #4101)? A substring hit is not enough: a value
+ * holding one token beside a plaintext is exactly what a binary before #1901
+ * wrote for `Fn::Join ['-', ['{{resolve:secretsmanager:A}}',
+ * '{{resolve:ssm:/SecureB}}']]` (it redacted A and stored B's plaintext), and
+ * what `cdkd scrub` leaves when it can name one secret in a value and not the
+ * other. So the stored string must carry exactly the LITERAL parts the
+ * resolved desired side carries, so every stretch that differs sits where a
+ * token is; or be one whole token where the desired side is one too, or has
+ * no string to compare (a removed output). A whole token against a desired
+ * side with literal text fails closed, since a plaintext spelled like a token
+ * would pass as one.
+ *
+ * Residuals, both fail-closed or contrived: editing the literal around a
+ * token marks the record pre-GHSA until the next deploy; and a secret whose
+ * plaintext is itself a complete `{{resolve:...}}` token, stored in a token
+ * position with matching literals, still passes.
  */
-function storedSsmTokenIsExpression(stored: string, desired: unknown): boolean {
+function storedSecretTokenIsExpression(stored: string, desired: unknown): boolean {
   if (!keepsSecretReferenceToken(stored)) return false;
-  if (isWholeSecretReferenceToken(stored)) return true;
+  if (isWholeSecretReferenceToken(stored)) {
+    return typeof desired !== 'string' || isWholeSecretReferenceToken(desired);
+  }
   if (typeof desired !== 'string') return false;
   const storedParts = literalPartsAroundTokens(stored);
   const desiredParts = literalPartsAroundTokens(desired);
@@ -1148,20 +1161,18 @@ export function computeOutputsDiff(
     // plaintext leaf then prints in a rendered row. A veto must be harder to
     // earn than a suspicion.
     //
-    // Both TOKEN arms read the secret's token, not only its `secretsmanager` /
+    // Both arms read the secret's TOKEN, not only its `secretsmanager` /
     // `ssm-secure` spelling (issue #4056's sweep). `desired` is RESOLVED text,
     // where a plain `{{resolve:ssm:...}}` survives only for a `SecureString`,
     // so a record an older binary wrote with that parameter's plaintext printed
     // it as the `old:` side of a MODIFY row. The stored side reads that token
     // as an expression too, or a post-#1901 record storing it would be judged
     // pre-GHSA by its own desired side and lose every previous value -- but
-    // only in the shape `storedSsmTokenIsExpression` accepts, never on a
-    // substring hit beside text that may be plaintext. The spelling arm still
-    // vetoes on a substring hit (go-to-k/cdkd#4101).
-    if (
-      typeof oldValue === 'string' &&
-      (isSecretDynamicReference(oldValue) || storedSsmTokenIsExpression(oldValue, desired[name]))
-    ) {
+    // only in the shape `storedSecretTokenIsExpression` accepts, never on a
+    // substring hit beside text that may be plaintext, whatever the token's
+    // spelling (issue #4101: the spelling arm vetoed on one and printed the
+    // plaintext beside it).
+    if (typeof oldValue === 'string' && storedSecretTokenIsExpression(oldValue, desired[name])) {
       return false;
     }
     return containsSecretReferenceText(desired[name]) || secretSourceKeys.has(name);

@@ -72,13 +72,18 @@ in CI. THREE signals, each concluding something different:
    and EXONERATED when any stored value is itself a secret expression. This arm
    withholds PER KEY, because it claims only that one key is undecidable.
 
-On RAW template or STORED text, "secret-bearing" is only the spellings that are
-secret regardless of target: `{{resolve:secretsmanager:` and
-`{{resolve:ssm-secure:`. A plain `{{resolve:ssm:` is EXCLUDED there — a `String`
-parameter is public and legitimately persisted resolved, and the verdict is
-record-wide. On RESOLVED text (the desired side of signal 1, its stored-side
-veto, and an intrinsic `Export.Name`'s alias refusal) a surviving plain `ssm`
-token counts too: the skip pass keeps one only for a `SecureString` (#4056).
+On RAW template text and in the #1948 exoneration's stored-bag reading,
+"secret-bearing" is only the spellings that are secret regardless of target:
+`{{resolve:secretsmanager:` and `{{resolve:ssm-secure:`. A plain
+`{{resolve:ssm:` is EXCLUDED there — a `String` parameter is public and
+legitimately persisted resolved, and the verdict is record-wide. On RESOLVED
+text (signal 1's desired side, and an intrinsic `Export.Name`'s alias refusal)
+a surviving plain `ssm` token counts too: the skip pass keeps one only for a
+`SecureString` (#4056). The two STORED-text readers — signal 1's per-key veto
+(`storedSecretTokenIsExpression`) and the no-change merge's carried-value check
+in `diff-recursive.ts` — accept a secret token of any spelling only as one whole
+token, or (the veto only) under exactly the desired side's literal parts; never
+on a substring hit, which a pre-#1901 deploy wrote beside a plaintext (#4101).
 
 Outputs ROW names print only `secretSafeKeyDisplay`'s verdict (#4015): an
 older binary could store an `Export.Name` holding a secret. The diff fetches

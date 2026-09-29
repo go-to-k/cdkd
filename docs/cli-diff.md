@@ -373,7 +373,7 @@ These refusal gates decide this:
 
 | Gate | Trigger | Scope |
 | --- | --- | --- |
-| Redacted-expression mismatch | The template side is still a `{{resolve:...}}` expression while state is not — exactly what `cdkd scrub` repairs. | Record-wide |
+| Redacted-expression mismatch | The template side is still a `{{resolve:...}}` expression while state is not — exactly what `cdkd scrub` repairs. A stored value counts as the expression only when it is one whole reference or matches the template side's text around each reference, so a reference stored beside other text does not. | Record-wide |
 | Template-declared dynamic reference | The template declares the output's value as a dynamic reference. Also covers an output that was condition-skipped, which has no template side left to compare. | Record-wide |
 | Unaccountable stored key | A stored key today's template cannot account for — no declared output name, no literal `Export.Name`, not in the resolved bag — i.e. an output deleted from the template. | Per-key |
 | Carried value in the merge preview | The no-change merge preview carried a value from state for a failed output, an alias included, that is not a secret reference. | Record-wide |

@@ -394,7 +394,9 @@ break a consumer — was hidden the same way.
   `{{resolve:ssm:` token the diff's resolution kept — per issue #1901 it is
   classified by the parameter's type, and only a `SecureString` keeps its
   token while a public `String` resolves to its value, issue #4056) while the
-  stored side is not (the condition `cdkd scrub` repairs),
+  stored side is not (the condition `cdkd scrub` repairs; a stored value counts
+  as the expression only as one whole token or under exactly the desired
+  value's literal text, never as a token beside other text, issue #4101),
   and the template itself declaring the key's value as a dynamic reference —
   the latter collected for *every* declared output, including condition-skipped
   ones, because those have no desired side at all and would otherwise print in

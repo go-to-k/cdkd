@@ -100,12 +100,14 @@ describe('an intrinsic Export.Name carrying a plain ssm reference (issue #4056)'
     // back as `[["ADD","app-{{resolve:ssm:/sec/p}}",true]]`.
     ssmSend.mockResolvedValue({ Parameter: { Value: 'AQICencrypted', Type: 'SecureString' } });
 
+    // A changed sibling keeps the section RENDERED, so an empty alias result
+    // cannot come from suppressing the whole section.
     const rows = await outputRows(
-      { Exp: 'v' },
-      template({ Exp: { Value: 'v', Export: { Name: SSM_EXPORT_NAME } } })
+      { Exp: 'v', Sib: 'old' },
+      template({ Exp: { Value: 'v', Export: { Name: SSM_EXPORT_NAME } }, Sib: { Value: 'new' } })
     );
 
-    expect(rows).toEqual([]);
+    expect(rows).toEqual([['MODIFY', 'Sib', false]]);
   });
 
   it('still previews the alias for a String parameter, which resolves to its value', async () => {
@@ -217,6 +219,20 @@ describe('the stored-side ssm veto needs the whole shape, not a substring (revie
     ['a token beside a plaintext under a different literal', `x-${SSM_REF}-OLDSECRET`, `x-${SSM_REF}-{{resolve:secretsmanager:S}}`],
     // Fails closed: the literal changed, so the shapes no longer line up.
     ['a redacted expression whose literal part changed', `old-${SSM_REF}`, `new-${SSM_REF}`],
+    // Issue #4101: the SPELLING arm vetoed on a substring hit too. A pre-#1901
+    // deploy wrote this itself for `Fn::Join ['-', [secretsmanager, ssm]]`.
+    [
+      'a secretsmanager token beside a SecureString plaintext',
+      '{{resolve:secretsmanager:A}}-OLDSECRET',
+      `{{resolve:secretsmanager:A}}-${SSM_REF}`,
+    ],
+    ['an ssm-secure token beside a plaintext', '{{resolve:ssm-secure:/a}}-OLDSECRET', `{{resolve:ssm-secure:/a}}-${SSM_REF}`],
+    // #4101's n1: a plaintext spelled as a token is not trusted against a
+    // desired side with literal text.
+    ['a whole token where the desired side has literal text', '{{resolve:ssm:OLDSECRET}}', 'x-{{resolve:secretsmanager:S}}'],
+    // Every stored part matches the desired side's leading parts; only the
+    // part COUNT differs, so the length check alone decides (fail-closed).
+    ['fewer tokens under the same leading literals', `a${SSM_REF}b`, `a${SSM_REF}b{{resolve:secretsmanager:S}}`],
   ])('withholds the record for %s', (_label, stored, desired) => {
     const changes = computeOutputsDiff(
       { Out: stored, Other: 'o1' },
@@ -229,7 +245,9 @@ describe('the stored-side ssm veto needs the whole shape, not a substring (revie
   });
 
   it.each([
-    ['one whole token, whatever the desired side is', SSM_REF, `new-${SSM_REF}`],
+    ['one whole token where the desired side is one too', SSM_REF, '{{resolve:ssm:/sec/q}}'],
+    ['a whole secretsmanager token', '{{resolve:secretsmanager:A}}', '{{resolve:secretsmanager:A}}'],
+    ['a mixed secretsmanager expression with the desired literal parts', 'p-{{resolve:secretsmanager:A}}', 'p-{{resolve:secretsmanager:A}}'],
     ['a mixed expression with the desired side literal parts', `app-${SSM_REF}-x`, `app-${SSM_REF}-x`],
     ['a mixed expression whose token changed under the same literals', `app-${SSM_REF}-x`, 'app-{{resolve:ssm:/sec/q}}-x'],
   ])('keeps previous values for %s', (_label, stored, desired) => {
@@ -246,6 +264,35 @@ describe('the stored-side ssm veto needs the whole shape, not a substring (revie
       newValue: 'o2',
       isExport: false,
     });
+  });
+});
+
+describe('a stored secret expression whose output was removed (orchestrator test M1)', () => {
+  it('does not crash, rows the REMOVE, and trusts only a whole token', () => {
+    // `desired[name]` is absent, so the literal-parts arm has no string to
+    // compare against: a mixed stored value earns no veto there, and with the
+    // key declared secret the record is judged pre-GHSA.
+    const mixed = computeOutputsDiff(
+      { Out: `app-${SSM_REF}-x`, Other: 'o1' },
+      { Other: 'o2' },
+      new Set(),
+      new Set(['Out'])
+    );
+    expect(mixed).toEqual([
+      { name: 'Other', changeType: 'MODIFY', newValue: 'o2', isExport: false, oldValueRedacted: true },
+      { name: 'Out', changeType: 'REMOVE', isExport: false, oldValueRedacted: true },
+    ]);
+
+    const whole = computeOutputsDiff(
+      { Out: SSM_REF, Other: 'o1' },
+      { Other: 'o2' },
+      new Set(),
+      new Set(['Out'])
+    );
+    expect(whole).toEqual([
+      { name: 'Other', changeType: 'MODIFY', oldValue: 'o1', newValue: 'o2', isExport: false },
+      { name: 'Out', changeType: 'REMOVE', oldValue: SSM_REF, isExport: false },
+    ]);
   });
 });
 
