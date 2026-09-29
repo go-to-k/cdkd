@@ -621,6 +621,7 @@
       "resourceType": "AWS::CloudFormation::Stack",
       "integs": [
         "custom-resource-noecho-nested",
+        "custom-resource-resolved-secret",
         "export-nested-stack",
         "import-nested-stack",
         "list-parameters",
@@ -635,6 +636,9 @@
       ],
       "signals": {
         "custom-resource-noecho-nested": [
+          "literal"
+        ],
+        "custom-resource-resolved-secret": [
           "literal"
         ],
         "export-nested-stack": [
@@ -4446,6 +4450,7 @@
         "custom-resource-masked-service-token",
         "custom-resource-noecho-nested",
         "custom-resource-provider",
+        "custom-resource-resolved-secret",
         "data-pipeline",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -4604,6 +4609,10 @@
         ],
         "custom-resource-provider": [
           "l2"
+        ],
+        "custom-resource-resolved-secret": [
+          "l2",
+          "literal"
         ],
         "data-pipeline": [
           "l2"

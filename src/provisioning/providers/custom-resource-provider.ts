@@ -56,6 +56,11 @@ import type {
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
+import {
+  carriesResolvedSecret,
+  findResolvedSecretPaths,
+} from '../custom-resource-secure-references.js';
 import {
   carriesSecretMask,
   dynamicReferenceTokens,
@@ -1346,6 +1351,8 @@ export class CustomResourceProvider implements ResourceProvider {
       );
     }
 
+    this.refuseResolvedSecret(logicalId, resourceType, properties);
+
     try {
       const cfnResponse = await this.invokeCustomResourceWithRetry(
         serviceToken,
@@ -1439,6 +1446,8 @@ export class CustomResourceProvider implements ResourceProvider {
         physicalId
       );
     }
+
+    this.refuseResolvedSecret(logicalId, resourceType, properties, physicalId, previousProperties);
 
     try {
       const cfnResponse = await this.invokeCustomResourceWithRetry(
@@ -1715,6 +1724,64 @@ export class CustomResourceProvider implements ResourceProvider {
       );
       return { outcome: 'skipped', reason: CR_DELETE_INVOKE_FAILED_SKIP_REASON };
     }
+  }
+
+  /**
+   * Refuse to send a handler an event carrying a secret's PLAINTEXT
+   * (go-to-k/cdkd#4009). CloudFormation does not support secure dynamic
+   * references in custom resources; the template pre-flight
+   * (`custom-resource-secure-references.ts`, #3976) refuses the spellings it
+   * can see, and this catches the rest at the only point that sees the resolved
+   * value: a plain `ssm` reference to a SecureString, a nested child reading a
+   * parent parameter resolved from a secret, and a rollback replay re-resolving
+   * a recorded reference. The test is the bag the caller bound for THIS
+   * resource (`carriesResolvedSecret`), so a transformed secret -- base64, a
+   * fragment -- is refused too; the paths only NAME where it sits. On an update
+   * both sides count: `previousProperties` is sent as `OldResourceProperties`,
+   * and `cdkd rollback --revert-failed` re-resolves a failed op's attempted
+   * properties into exactly that side.
+   *
+   * Not downgraded on a replay (`replayingState`), deliberately: this is a
+   * disclosure guard, not a template pre-flight, and the downgrade would send
+   * the plaintext to the handler -- which `provider-replay-and-refusals.md`
+   * does not license ("no relaxing of data-safety guards"). A refused replay
+   * leaves that resource's rollback op failed and recoverable; a leaked secret
+   * is not. Marked non-retryable: nothing a retry does changes the bag.
+   *
+   * The message names property PATHS only, never a value.
+   */
+  private refuseResolvedSecret(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    physicalId?: string,
+    previousProperties?: Record<string, unknown>
+  ): void {
+    const secrets = getCurrentResourceSecrets();
+    if (!carriesResolvedSecret(secrets)) return;
+    const paths = [
+      ...findResolvedSecretPaths(properties, secrets),
+      ...findResolvedSecretPaths(previousProperties, secrets).map(
+        (path) => `OldResourceProperties.${path}`
+      ),
+    ];
+    const where =
+      paths.length > 0
+        ? paths.join(', ')
+        : 'a property (in a form cdkd cannot point to, e.g. base64-encoded or a fragment)';
+    throw markNonRetryable(
+      new ProvisioningError(
+        `Custom resource ${logicalId}: ${where} resolved to the value of a secret ` +
+          `(a Secrets Manager secret, or an SSM SecureString parameter -- including one read ` +
+          `through a plain {{resolve:ssm:...}} reference or a nested stack parameter). ` +
+          `CloudFormation does not support secure dynamic references in custom resources, so ` +
+          `cdkd does not send the secret's value to the handler. Pass the secret's name or ARN ` +
+          `instead and have the handler read it.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
   }
 
   /**
