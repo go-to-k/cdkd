@@ -109,7 +109,7 @@
   "src/provisioning/providers/eventbridge-rule-provider.ts": 15,
   "src/provisioning/providers/firehose-provider.ts": 10,
   "src/provisioning/providers/fsx-filesystem-provider.ts": 17,
-  "src/provisioning/providers/glue-provider.ts": 58,
+  "src/provisioning/providers/glue-provider.ts": 28,
   "src/provisioning/providers/iam-access-key-provider.ts": 3,
   "src/provisioning/providers/iam-instance-profile-provider.ts": 5,
   "src/provisioning/providers/iam-managed-policy-provider.ts": 3,
