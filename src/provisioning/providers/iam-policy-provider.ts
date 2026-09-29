@@ -368,17 +368,24 @@ export class IAMPolicyProvider implements ResourceProvider {
           ('malformed' in newTargets
             ? ` (the desired side is the template's value on a deploy, and the recorded value ` +
               `being restored on a rollback revert or 'cdkd drift --revert')` +
-              // A desired side cdkd could not resolve (a mask, or a reference
-              // the replay does not re-resolve) names no principal at all.
+              // Only a deploy reaches this with a dynamic reference or mask on
+              // the desired side: a rollback replay re-resolves every reference
+              // and refuses a masked bag first, and drift --revert never gets
+              // here. So the value is the template's own, and is fixed there.
               (newTargets.secretDerived.length > 0
-                ? `: the desired ${newTargets.secretDerived.join(' / ')} ${SECRET_DERIVED_NOTE}; ` +
-                  `this run could not resolve it to names, so re-run 'cdkd deploy', which ` +
-                  `resolves it from the template`
+                ? `: the desired ${newTargets.secretDerived.join(' / ')} holds a dynamic ` +
+                  `reference or cdkd's mask that resolved to no names; fix that value in the ` +
+                  `template`
                 : '')
             : '') +
           ('malformed' in oldTargets
             ? `${'malformed' in newTargets && newTargets.secretDerived.length > 0 ? '; ' : ': '}` +
-              recordedSideRepair(oldTargets, newPolicyName !== oldPolicyName)
+              recordedSideRepair(oldTargets, newPolicyName !== oldPolicyName) +
+              // The route re-attaches from the desired side, so it must be
+              // well-formed first.
+              ('malformed' in newTargets
+                ? `; fix the desired side first, or the next deploy is refused the same way`
+                : '')
             : ''),
         resourceType,
         logicalId,

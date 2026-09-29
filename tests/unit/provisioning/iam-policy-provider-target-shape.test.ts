@@ -179,17 +179,18 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('gives a secret-derived DESIRED side its own next step', async () => {
-    // A replayed recorded bag cdkd could not resolve names no principal.
+  it('sends a secret-derived DESIRED side back to the template', async () => {
+    // Only a deploy reaches this (a rollback replay re-resolves references and
+    // refuses a masked bag first), so the value is the template's own.
     const error = await new IAMPolicyProvider()
       .update('P', 'pol', TYPE, { ...valid, Groups: ['***'] }, valid)
       .catch((e: unknown) => e);
     expect((error as Error).message).toBe(
       'desired Groups of IAM policy P is not a list of IAM names — no inline policy was ' +
-        `attached or detached ${DESIRED_SIDE_NOTE}: the desired Groups ${SECRET_DERIVED_NOTE}; ` +
-        "this run could not resolve it to names, so re-run 'cdkd deploy', which resolves it " +
-        'from the template'
+        `attached or detached ${DESIRED_SIDE_NOTE}: the desired Groups holds a dynamic ` +
+        "reference or cdkd's mask that resolved to no names; fix that value in the template"
     );
+    expect((error as Error).message).not.toContain('re-run');
     expect(mockSend).not.toHaveBeenCalled();
   });
 
@@ -200,7 +201,8 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
     expect((error as Error).message).toBe(
       'desired Groups / recorded Roles of IAM policy P is not a list of IAM names — no inline ' +
         `policy was attached or detached ${DESIRED_SIDE_NOTE}: repair the recorded Roles in ` +
-        'state.json to a list of role / group / user names and re-run'
+        'state.json to a list of role / group / user names and re-run; fix the desired side ' +
+        'first, or the next deploy is refused the same way'
     );
     expect(mockSend).not.toHaveBeenCalled();
   });
