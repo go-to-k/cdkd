@@ -2269,4 +2269,30 @@ describe('a marker naming an invalid bucket or repository is malformed (go-to-k/
     expect(sentRepos.length).toBeGreaterThan(0);
     expect(new Set(sentRepos)).toEqual(new Set([getCdkdContainerRepoName(ACCOUNT, REGION)]));
   });
+
+  it('names no dropped storage when the rewrite writes the same names back', async () => {
+    // Malformed only by a missing assetSupportVersion, with the conventional
+    // names: the rewrite keeps both, so nothing is untracked.
+    const { assetSupportVersion: _dropped, ...rest } = validMarker();
+    const body = JSON.stringify(rest);
+    mockS3Send.mockResolvedValue({});
+    mockEcrSend.mockResolvedValue({ repositories: [{ repositoryName: getCdkdContainerRepoName(ACCOUNT, REGION) }] });
+    mockLoggerWarn.mockClear();
+
+    await ensureAssetStorage({
+      s3Client: new S3Client({ region: REGION }) as S3Client,
+      ecrClient: new ECRClient({}) as ECRClient,
+      stateBackend: {
+        putRawObject: vi.fn().mockResolvedValue(undefined),
+        getRawObject: vi.fn().mockResolvedValue(body),
+      } as unknown as S3StateBackend,
+      accountId: ACCOUNT,
+      region: REGION,
+      force: false,
+    });
+
+    expect(mockLoggerWarn.mock.calls.map((c) => String(c[0]))).toContain(
+      `Bootstrap marker '${getBootstrapMarkerKey(REGION)}' is malformed — rewriting it as part of this bootstrap.`
+    );
+  });
 });
