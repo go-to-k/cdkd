@@ -131,7 +131,9 @@ describe('DeployEngine — custom-named replacement collision', () => {
     };
     const mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(provider),
-      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' as const }),
+      // `AWS::Pipes::Pipe` has no SDK provider: Cloud Control is its real
+      // route, the one the #3979 holder proof accepts its identifier on.
+      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'cc-api' as const }),
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
@@ -169,7 +171,7 @@ describe('DeployEngine — custom-named replacement collision', () => {
         properties: { Name: 'my-pipe', Source: 'arn:a' },
         attributes: {},
         dependencies: [],
-        provisionedBy: 'sdk',
+        provisionedBy: 'cc-api',
       },
     };
     const template: CloudFormationTemplate = {

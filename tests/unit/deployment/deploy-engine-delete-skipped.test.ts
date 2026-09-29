@@ -283,12 +283,16 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
     engine: InstanceType<typeof DeployEngine>,
     opts: { requiresReplacement: boolean }
   ): Promise<Record<string, StateRecord>> {
+    // The resolver's identity (ApiId, TypeName, FieldName) in both bags and
+    // the record: the `--replace` delete-first runs only once the record
+    // proves the old resolver holds the name the create sent (#3979).
+    const identity = { ApiId: 'api1', TypeName: 'Query', FieldName: 'field' };
     const change: ResourceChange = {
       logicalId: 'MyResource',
       changeType: 'UPDATE',
       resourceType: TYPE,
-      currentProperties: { Mode: 'a' },
-      desiredProperties: { Mode: 'b' },
+      currentProperties: { ...identity, Mode: 'a' },
+      desiredProperties: { ...identity, Mode: 'b' },
       propertyChanges: [
         {
           path: 'Mode',
@@ -299,8 +303,9 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       ],
     };
     const stateResources = stateWith();
+    stateResources['MyResource']!.properties = { ...identity, Mode: 'a' };
     await provisionOf(engine)('MyResource', change, stateResources, 'MyStack', {
-      Resources: { MyResource: { Type: TYPE, Properties: { Mode: 'b' } } },
+      Resources: { MyResource: { Type: TYPE, Properties: { ...identity, Mode: 'b' } } },
     });
     return stateResources;
   }

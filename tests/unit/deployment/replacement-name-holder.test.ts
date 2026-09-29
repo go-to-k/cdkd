@@ -6,8 +6,15 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   renderNameHeldElsewhere,
+  replacementDerivedGeneratedNames,
+  replacementOldHoldsSentName,
   replacementRequestsDifferentName,
+  reverseReplacementNewHoldsName,
+  reverseReplacementTrustsGeneratedName,
 } from '../../../src/deployment/replacement-name-holder.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { withStackName } from '../../../src/provisioning/resource-name.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 
 const FN = 'AWS::Lambda::Function';
@@ -259,5 +266,328 @@ describe('renderNameHeldElsewhere', () => {
       physicalId: 'my-fn',
     });
     expect(text).not.toContain('\n');
+  });
+});
+
+/**
+ * `replacementOldHoldsSentName` (issue #3979): the deploy direction of the
+ * rollback's holder proof. `--replace` deletes the OLD resource first only on
+ * `holds: true`.
+ */
+describe('replacementOldHoldsSentName', () => {
+  const PIPE = 'AWS::Pipes::Pipe';
+  const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+  const TG_ARN = (name: string) =>
+    `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${name}/0123456789abcdef`;
+
+  function holds(over: Partial<Parameters<typeof replacementOldHoldsSentName>[0]>) {
+    return replacementOldHoldsSentName({
+      createType: FN,
+      holderType: FN,
+      requested: { FunctionName: 'my-fn' },
+      recorded: { FunctionName: 'my-fn' },
+      observed: undefined,
+      physicalId: 'my-fn',
+      ...over,
+    });
+  }
+
+  it('holds when the old resource holds the name the create sent', () => {
+    expect(holds({}).holds).toBe(true);
+  });
+
+  it('speaks of the create and the resource being replaced, not the rollback', () => {
+    const verdict = holds({ requested: { FunctionName: 'other' } });
+    expect(verdict).toEqual({
+      holds: false,
+      known: true,
+      diagnosis:
+        'the create asked for FunctionName "other", while the resource being replaced (my-fn) ' +
+        'holds "my-fn"',
+    });
+  });
+
+  it('a nameless create proves a holder only through the generated name its provider mints', () => {
+    const generated = { FunctionName: 'MyStack-Fn' };
+    expect(
+      holds({ requested: {}, generated, recorded: {}, physicalId: 'MyStack-Fn' }).holds
+    ).toBe(true);
+    // The template DROPPED an explicit name: the old function holds another one.
+    const dropped = holds({ requested: {}, generated, recorded: { FunctionName: 'app-fn' }, physicalId: 'app-fn' });
+    expect(dropped.holds).toBe(false);
+    expect(dropped.holds === false && dropped.known).toBe(false);
+  });
+
+  it('a type with no name key is proven only by the sent identifier EQUAL to the old physical id', () => {
+    const base = {
+      createType: PIPE,
+      holderType: PIPE,
+      createdVia: 'cc-api' as const,
+      holderVia: 'cc-api' as const,
+    };
+    const same = (requested: Record<string, unknown>, physicalId: string) =>
+      holds({ ...base, requested, recorded: { ...requested }, physicalId }).holds;
+    expect(same({ Name: 'my-pipe' }, 'my-pipe')).toBe(true);
+    expect(same({ DomainIdentifier: 'd-1' }, 'd-1')).toBe(true);
+    // The observed bag stands in for a record that lacks the key.
+    expect(
+      holds({ ...base, requested: { Name: 'my-pipe' }, recorded: {}, observed: { Name: 'my-pipe' }, physicalId: 'my-pipe' })
+        .holds
+    ).toBe(true);
+    // Exact: a case-only difference, a composite id ending in the name, or a
+    // non-name-shaped key never proves it.
+    expect(same({ Name: 'My-Pipe' }, 'my-pipe')).toBe(false);
+    expect(same({ Name: 'my-pipe' }, 'p|my-pipe')).toBe(false);
+    expect(same({ Source: 'my-pipe' }, 'my-pipe')).toBe(false);
+    expect(same({ Name: 'my-pipe' }, '')).toBe(false);
+  });
+
+  it('the identity rule needs EVERY name-shaped property the create sent unchanged on the old record', () => {
+    // A rename (Name my-app -> my-app-v2) whose OTHER name-shaped property
+    // still spells the old id: the collision on my-app-v2 is someone else's.
+    const renamed = holds({
+      createType: PIPE,
+      holderType: PIPE,
+      createdVia: 'cc-api',
+      holderVia: 'cc-api',
+      requested: { Name: 'my-app-v2', RoleName: 'my-app' },
+      recorded: { Name: 'my-app', RoleName: 'my-app' },
+      physicalId: 'my-app',
+    });
+    expect(renamed.holds).toBe(false);
+    // DROPPING the primary name while another name-shaped property still
+    // spells the old id is a change too.
+    expect(
+      holds({
+        createType: PIPE,
+        holderType: PIPE,
+        createdVia: 'cc-api',
+        holderVia: 'cc-api',
+        requested: { SourceName: 'old' },
+        recorded: { Name: 'old', SourceName: 'old' },
+        physicalId: 'old',
+      }).holds
+    ).toBe(false);
+    // A name AWS reports only in the read-back (never declared) is no change.
+    expect(
+      holds({
+        createType: PIPE,
+        holderType: PIPE,
+        createdVia: 'cc-api',
+        holderVia: 'cc-api',
+        requested: { Name: 'old' },
+        recorded: { Name: 'old' },
+        observed: { Name: 'old', DefaultedName: 'aws-chose-this' },
+        physicalId: 'old',
+      }).holds
+    ).toBe(true);
+    // A record that does not say what the key held proves nothing either.
+    expect(
+      holds({
+        createType: PIPE,
+        holderType: PIPE,
+        createdVia: 'cc-api',
+        holderVia: 'cc-api',
+        requested: { Name: 'my-pipe' },
+        recorded: {},
+        physicalId: 'my-pipe',
+      }).holds
+    ).toBe(false);
+  });
+
+  it('the identity rule holds only on the Cloud Control route, for the create and the holder', () => {
+    // An SDK provider's physical id need not be the primary identifier.
+    const ask = (createdVia?: 'sdk' | 'cc-api', holderVia?: 'sdk' | 'cc-api') =>
+      holds({
+        createType: PIPE,
+        holderType: PIPE,
+        requested: { Name: 'my-pipe' },
+        recorded: { Name: 'my-pipe' },
+        physicalId: 'my-pipe',
+        ...(createdVia && { createdVia }),
+        ...(holderVia && { holderVia }),
+      }).holds;
+    expect(ask('cc-api', 'cc-api')).toBe(true);
+    expect(ask('sdk', 'cc-api')).toBe(false);
+    expect(ask('cc-api', 'sdk')).toBe(false);
+    expect(ask('cc-api', undefined)).toBe(false);
+    expect(ask(undefined, 'cc-api')).toBe(false);
+  });
+
+  it('a nameless SDK create of a type whose provider wraps the generated name is proven through the derived name', () => {
+    const cases: Array<[string, string, string]> = [
+      ['AWS::Logs::LogGroup', 'LogGroupName', '/cdkd/MyStack-Lg'],
+      ['AWS::SSM::Parameter', 'Name', '/MyStack-Lg'],
+      ['AWS::S3::Bucket', 'BucketName', 'mystack-lg'],
+      ['AWS::CodeCommit::Repository', 'RepositoryName', 'MyStack-Lg'],
+    ];
+    for (const [type, property, sent] of cases) {
+      const ask = (physicalId: string, createdVia: 'sdk' | 'cc-api' = 'sdk') =>
+        withStackName('MyStack', () =>
+          holds({
+            createType: type,
+            holderType: type,
+            requested: {},
+            recorded: {},
+            physicalId,
+            logicalId: 'Lg',
+            createdVia,
+          })
+        );
+      expect(ask(sent).holds, type).toBe(true);
+      const other = ask(`${sent}x`);
+      expect(other.holds, type).toBe(false);
+      expect(other.holds === false && other.diagnosis, type).toContain(
+        `cdkd's rule generates ${property} "${sent}"`
+      );
+      // On the Cloud Control route the bag itself carries whatever was sent.
+      expect(ask(sent, 'cc-api').holds, type).toBe(false);
+    }
+    // A scoped type still needs its scope.
+    const schedule = withStackName('MyStack', () =>
+      holds({
+        createType: 'AWS::Scheduler::Schedule',
+        holderType: 'AWS::Scheduler::Schedule',
+        requested: { GroupName: 'g2' },
+        recorded: { GroupName: 'g1' },
+        physicalId: 'MyStack-Lg',
+        logicalId: 'Lg',
+      })
+    );
+    expect(schedule.holds).toBe(false);
+  });
+
+  it("each derived name keeps its provider's length cap once the logical id overflows it", () => {
+    // The cap is what a truncated name differs on, and a short id never
+    // reaches it: the lengths are the providers' own maxLength (plus the wrap).
+    const expected: Record<string, number> = {
+      'AWS::AutoScaling::AutoScalingGroup': 255,
+      'AWS::CodeCommit::Repository': 100,
+      'AWS::DynamoDB::GlobalTable': 255,
+      'AWS::Logs::LogGroup': 506 + '/cdkd/'.length,
+      'AWS::RDS::DBProxy': 64,
+      'AWS::RDS::DBProxyEndpoint': 64,
+      'AWS::S3::Bucket': 63,
+      'AWS::Scheduler::Schedule': 64,
+      'AWS::SSM::Parameter': 1023 + '/'.length,
+    };
+    const table = replacementDerivedGeneratedNames();
+    expect(Object.keys(table).sort()).toEqual(Object.keys(expected).sort());
+    const longId = 'L'.repeat(1100);
+    for (const [type, length] of Object.entries(expected)) {
+      const name = withStackName('MyStack', () => table[type]!.derive(longId));
+      expect(name.length, type).toBe(length);
+      // ...and that exact name is what proves the holder.
+      const verdict = withStackName('MyStack', () =>
+        holds({
+          createType: type,
+          holderType: type,
+          requested: {},
+          recorded: {},
+          physicalId: name,
+          logicalId: longId,
+        })
+      );
+      expect(verdict.holds, type).toBe(true);
+    }
+  });
+
+  it('each derived-name entry is the provider expression it claims, in the provider file', () => {
+    const table = replacementDerivedGeneratedNames();
+    expect(Object.keys(table).length).toBeGreaterThanOrEqual(9);
+    for (const [type, { file, source }] of Object.entries(table)) {
+      const text = readFileSync(join(process.cwd(), 'src/provisioning/providers', file), 'utf-8');
+      // Exactly once, and as the fallback of the create's name assignment
+      // (`|| ` / `?? ` after the name property), not a copy elsewhere.
+      expect(text.split(source).length - 1, `${type}: ${file} occurrences of ${source}`).toBe(1);
+      const at = text.indexOf(source);
+      expect(
+        /as string \| undefined\)\s*(\|\||\?\?)\s*$/.test(text.slice(Math.max(0, at - 120), at)),
+        `${type}: ${source} is not the create's name fallback in ${file}`
+      ).toBe(true);
+      // Never also trusted as verbatim: one table owns a type.
+      expect(reverseReplacementTrustsGeneratedName(type), type).toBe(false);
+    }
+  });
+
+  it('the derived generated names are the deploy side only: the rollback still refuses them', () => {
+    const verdict = withStackName('CdkdX', () =>
+      reverseReplacementNewHoldsName({
+        oldResourceType: 'AWS::Logs::LogGroup',
+        newResourceType: 'AWS::Logs::LogGroup',
+        requested: {},
+        recorded: {},
+        observed: undefined,
+        physicalId: '/cdkd/CdkdX-Lg',
+        logicalId: 'Lg',
+        createdVia: 'sdk',
+      })
+    );
+    expect(verdict.holds).toBe(false);
+  });
+
+  it('the identity rule is the deploy side only: the rollback still refuses an unkeyed type', () => {
+    const verdict = reverseReplacementNewHoldsName({
+      oldResourceType: PIPE,
+      newResourceType: PIPE,
+      requested: { Name: 'my-pipe' },
+      recorded: {},
+      observed: undefined,
+      physicalId: 'my-pipe',
+    });
+    expect(verdict.holds).toBe(false);
+  });
+
+  it('never proves across a Type change by identity, nor a not-name-keyed type', () => {
+    expect(
+      holds({ createType: PIPE, holderType: 'AWS::SQS::Queue', requested: { Name: 'q' }, physicalId: 'q' }).holds
+    ).toBe(false);
+    const NESTED = 'AWS::CloudFormation::Stack';
+    expect(
+      holds({ createType: NESTED, holderType: NESTED, requested: { StackName: 's' }, physicalId: 's' }).holds
+    ).toBe(false);
+  });
+
+  it('an ELBv2 target group keeping its name: the sent (prefixed) name is proven through the ARN', () => {
+    const verdict = withStackName('MyStack', () =>
+      holds({
+        createType: TG,
+        holderType: TG,
+        requested: { Name: 'tg', Port: 8081 },
+        recorded: { Name: 'tg', Port: 8080 },
+        physicalId: TG_ARN('MyStack-tg'),
+        logicalId: 'Tg',
+      })
+    );
+    expect(verdict.holds).toBe(true);
+    // The same records with the old group named WITHOUT the prefix: the create
+    // sent `MyStack-tg`, which that group never held.
+    const other = withStackName('MyStack', () =>
+      holds({
+        createType: TG,
+        holderType: TG,
+        requested: { Name: 'tg' },
+        recorded: { Name: 'tg' },
+        physicalId: TG_ARN('tg'),
+        logicalId: 'Tg',
+      })
+    );
+    expect(other.holds).toBe(false);
+    expect(other.holds === false && other.diagnosis).toContain('sends as "MyStack-tg"');
+  });
+
+  it('a Route 53 record speaks of the record being replaced', () => {
+    const REC = 'AWS::Route53::RecordSet';
+    const verdict = holds({
+      createType: REC,
+      holderType: REC,
+      requested: { HostedZoneId: 'Z1', Name: 'a.example.com', Type: 'A' },
+      recorded: { HostedZoneId: 'Z1', Name: 'b.example.com', Type: 'A' },
+      physicalId: 'Z1|b.example.com|A',
+    });
+    expect(verdict.holds === false && verdict.diagnosis).toBe(
+      'the create asked for Name "a.example.com", while the record being replaced ' +
+        '("Z1|b.example.com|A") holds Name "b.example.com"'
+    );
   });
 });

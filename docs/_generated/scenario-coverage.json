@@ -1886,6 +1886,11 @@
       "scenarios": []
     },
     {
+      "name": "replace-squatter-refusal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "replacement-fanout",
       "annotated": true,
       "scenarios": [
@@ -3150,6 +3155,7 @@
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "rename-refactor",
+    "replace-squatter-refusal",
     "replacement-immutable-name",
     "retain-orphan-redeploy",
     "retain-orphan-secret",

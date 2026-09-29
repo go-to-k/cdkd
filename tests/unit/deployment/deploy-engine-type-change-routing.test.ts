@@ -718,30 +718,62 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
   });
 
   it('the --replace delete-first fallback deletes through the OLD type, then creates the new one', async () => {
-    const newProvider = providerFor(NEW_TYPE);
+    // Two types sharing ONE name space (RDS and Neptune cluster identifiers),
+    // so the old cluster can hold the name the new one's create collided on:
+    // the delete-first runs only once that is proven (#3979).
+    const OLD_DB = 'AWS::RDS::DBCluster';
+    const NEW_DB = 'AWS::Neptune::DBCluster';
+    const newProvider = providerFor(NEW_DB);
     newProvider.create
       .mockRejectedValueOnce(
-        ccAlreadyExistsError(`CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`)
+        ccAlreadyExistsError(`CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_DB}' with identifier 'db1' already exists.`)
       )
       .mockResolvedValue({ physicalId: NEW_PHYSICAL_ID, attributes: {} });
-    const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
-    expect(await deployAndCatch(makeEngine({ replace: true }), template)).toBeUndefined();
-    const oldDelete = providerFor(OLD_TYPE).delete;
+    const template = arrange({
+      recordedType: OLD_DB,
+      templateType: NEW_DB,
+      recordedProps: { DBClusterIdentifier: 'db1' },
+      templateProps: { DBClusterIdentifier: 'db1' },
+    });
+    expect(
+      await deployAndCatch(makeEngine({ replace: true, forceStatefulRecreation: true }), template)
+    ).toBeUndefined();
+    const oldDelete = providerFor(OLD_DB).delete;
     expect(oldDelete).toHaveBeenCalledTimes(1);
-    expect(oldDelete.mock.calls[0]![2]).toBe(OLD_TYPE);
+    expect(oldDelete.mock.calls[0]![2]).toBe(OLD_DB);
     expect(newProvider.delete).not.toHaveBeenCalled();
     expect(newProvider.create).toHaveBeenCalledTimes(2);
-    expect(newProvider.create.mock.calls[1]![1]).toBe(NEW_TYPE);
+    expect(newProvider.create.mock.calls[1]![1]).toBe(NEW_DB);
   });
 
-  it('a create-first collision WITHOUT --replace says the holder may be an unrelated resource', async () => {
+  it('under --replace, a collision across two types sharing no name space deletes NOTHING (#3979)', async () => {
+    // A topic cannot hold a queue's name: deleting it first would free
+    // nothing and collide again.
+    providerFor(NEW_TYPE).create.mockRejectedValue(
+      ccAlreadyExistsError(`CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`)
+    );
+    const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+    const err = await deployAndCatch(makeEngine({ replace: true }), template);
+    expect(chainText(err)).toContain('NAMED_REPLACEMENT_COLLISION');
+    expect(chainText(err)).toContain(`which cdkd does not know to share a name space with ${NEW_TYPE}`);
+    expect(chainText(err)).toContain('--replace was NOT applied and nothing was deleted');
+    expect(providerFor(OLD_TYPE).delete).not.toHaveBeenCalled();
+    expect(providerFor(NEW_TYPE).create).toHaveBeenCalledTimes(1);
+  });
+
+  it('a create-first collision WITHOUT --replace says the holder may be an unrelated resource, and offers no --replace', async () => {
     providerFor(NEW_TYPE).create.mockRejectedValue(
       ccAlreadyExistsError(`CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`)
     );
     const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
     const err = await deployAndCatch(makeEngine({ noRollback: true }), template);
     expect(chainText(err)).toContain('NAMED_REPLACEMENT_COLLISION');
-    expect(chainText(err)).toContain(`changes the resource's Type (${OLD_TYPE} -> ${NEW_TYPE})`);
+    expect(chainText(err)).toContain(
+      `which cdkd does not know to share a name space with ${NEW_TYPE}`
+    );
+    // No `--replace` advice: the flag would refuse the same way.
+    expect(chainText(err)).toContain('`cdkd deploy --replace` would refuse the same way');
+    expect(chainText(err)).not.toContain('to delete the old resource FIRST');
     expect(providerFor(OLD_TYPE).delete).not.toHaveBeenCalled();
   });
 
