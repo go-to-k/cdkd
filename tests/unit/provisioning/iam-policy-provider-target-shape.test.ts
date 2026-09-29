@@ -41,6 +41,27 @@ import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-polic
 const TYPE = 'AWS::IAM::Policy';
 const DOC = { Version: '2012-10-17', Statement: [] };
 
+/** A secret-derived recorded list: cdkd keeps the reference or its mask in state (go-to-k/cdkd#3907). */
+const SECRET_DERIVED: Array<[string, Record<string, unknown>]> = [
+  ['a dynamic-reference entry', { Roles: ['{{resolve:secretsmanager:roles:SecretString:admin}}'] }],
+  ['a masked entry', { Groups: ['***'] }],
+  ['a dynamic reference in place of the list', { Users: '{{resolve:secretsmanager:users}}' }],
+];
+
+/** The update refusal's secret-derived repair, pinned verbatim once. */
+const SECRET_DERIVED_REPAIR =
+  'is secret-derived (cdkd keeps the dynamic reference or its mask in state), so do not write ' +
+  'the name into state.json; IAM does not list the principals that hold an inline policy, so ' +
+  'cdkd cannot diff it: detach the inline policy by hand from every principal it should no ' +
+  "longer be on, then drop this record with 'cdkd orphan <constructPath>' so the next deploy " +
+  're-attaches it from the template (an attachment left in place across the orphan is no ' +
+  'longer tracked by cdkd). The new record keeps the reference (or its mask) again, so a later change to ' +
+  'this policy is refused the same way';
+
+const DESIRED_SIDE_NOTE =
+  "(the desired side is the template's value on a deploy, and the recorded value being " +
+  "restored on a rollback revert or 'cdkd drift --revert')";
+
 const MALFORMED: Array<[string, Record<string, unknown>]> = [
   ['a string', { Roles: 'AdminRole' }],
   ['an object beside a valid list', { Roles: ['r1'], Groups: {} }],
@@ -51,6 +72,10 @@ const MALFORMED: Array<[string, Record<string, unknown>]> = [
 /** The command names sent, in order. */
 const sent = (): string[] =>
   mockSend.mock.calls.map((c) => (c[0] as { constructor: { name: string } }).constructor.name);
+
+/** The inputs sent, in order. */
+const inputs = (): Array<Record<string, unknown>> =>
+  mockSend.mock.calls.map((c) => (c[0] as { input: Record<string, unknown> }).input);
 
 beforeEach(() => {
   mockSend.mockReset();
@@ -74,6 +99,12 @@ describe('IAMPolicyProvider.create refuses a malformed principal list', () => {
       Users: ['u1'],
     });
     expect(sent()).toEqual(['PutRolePolicyCommand', 'PutUserPolicyCommand']);
+    // The full inputs, as `update` and `delete` assert them: a class name alone
+    // passes with the wrong principal or policy name.
+    expect(inputs()).toEqual([
+      { RoleName: 'r1', PolicyName: 'pol', PolicyDocument: JSON.stringify(DOC) },
+      { UserName: 'u1', PolicyName: 'pol', PolicyDocument: JSON.stringify(DOC) },
+    ]);
   });
 });
 
@@ -84,7 +115,48 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
     await expect(
       new IAMPolicyProvider().update('P', 'pol', TYPE, valid, { ...valid, ...lists })
     ).rejects.toThrow(
-      /recorded \w+ of IAM policy P is not a list of IAM names .*\. Repair the recorded \w+ in state\.json/
+      /recorded (\w+) of IAM policy P is not a list of IAM names — no inline policy was attached or detached: repair the recorded \1 in state\.json to a list of role \/ group \/ user names and re-run$/
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it.each(SECRET_DERIVED)(
+    '%s on the RECORDED side: throws with no call, and never asks for the name in state.json',
+    async (_what, lists) => {
+      const kind = Object.keys(lists)[0]!;
+      const error = await new IAMPolicyProvider()
+        .update('P', 'pol', TYPE, valid, { ...valid, ...lists })
+        .catch((e: unknown) => e);
+      const msg = (error as Error).message;
+      expect(msg).toBe(
+        `recorded ${kind} of IAM policy P is not a list of IAM names — no inline policy was ` +
+          `attached or detached: the recorded ${kind} ${SECRET_DERIVED_REPAIR}`
+      );
+      expect(msg).not.toContain('repair the recorded');
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it('names a plain and a secret-derived recorded kind apart, each with its own repair', async () => {
+    const error = await new IAMPolicyProvider()
+      .update('P', 'pol', TYPE, valid, { ...valid, Roles: 'AdminRole', Users: ['***'] })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe(
+      'recorded Roles / recorded Users of IAM policy P is not a list of IAM names — no inline ' +
+        'policy was attached or detached: repair the recorded Roles in state.json to a list of ' +
+        `role / group / user names and re-run; the recorded Users ${SECRET_DERIVED_REPAIR}`
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('names BOTH sides when both are malformed, the desired note beside the recorded repair', async () => {
+    const error = await new IAMPolicyProvider()
+      .update('P', 'pol', TYPE, { ...valid, Groups: {} }, { ...valid, Roles: 'AdminRole' })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe(
+      'desired Groups / recorded Roles of IAM policy P is not a list of IAM names — no inline ' +
+        `policy was attached or detached ${DESIRED_SIDE_NOTE}: repair the recorded Roles in ` +
+        'state.json to a list of role / group / user names and re-run'
     );
     expect(mockSend).not.toHaveBeenCalled();
   });
@@ -92,14 +164,37 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
   it.each(MALFORMED)('%s on the DESIRED side: throws with no AWS call', async (_what, lists) => {
     // The rollback revert arm replays update() with a RECORDED bag here, so a
     // string would otherwise drive `PutRolePolicy` to one-letter roles.
-    await expect(
-      new IAMPolicyProvider().update('P', 'pol', TYPE, { ...valid, ...lists }, valid)
-    ).rejects.toThrow(/desired \w+ of IAM policy P is not a list of IAM names/);
-    // The repair hint is for a RECORDED value only; a template fixes this one.
-    await expect(
-      new IAMPolicyProvider().update('P', 'pol', TYPE, { ...valid, ...lists }, valid)
-    ).rejects.not.toThrow(/Repair the recorded/);
+    const error = await new IAMPolicyProvider()
+      .update('P', 'pol', TYPE, { ...valid, ...lists }, valid)
+      .catch((e: unknown) => e);
+    // The desired side is the TEMPLATE only on a deploy: on a rollback revert
+    // or `drift --revert` it is a recorded bag, so the message names both sources rather than
+    // sending the user to a template that does not hold the value
+    // (go-to-k/cdkd#3907). No state.json repair: the recorded side is fine.
+    expect((error as Error).message).toMatch(
+      new RegExp(
+        `^desired \\w+( / desired \\w+)* of IAM policy P is not a list of IAM names — no ` +
+          `inline policy was attached or detached ${DESIRED_SIDE_NOTE.replace(/[()]/g, '\\$&')}$`
+      )
+    );
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('reads a null list as absent on either side', async () => {
+    // Recorded `Roles: null` (a hand-edited or pre-v7 record) detaches nothing
+    // from roles; a desired `Users: null` attaches to no user and still
+    // detaches the recorded user.
+    await new IAMPolicyProvider().update(
+      'P',
+      'pol',
+      TYPE,
+      { ...valid, Roles: ['r2'], Users: null },
+      { ...valid, Roles: null, Users: ['u1'] }
+    );
+    expect(inputs()).toEqual([
+      { RoleName: 'r2', PolicyName: 'pol', PolicyDocument: JSON.stringify(DOC) },
+      { UserName: 'u1', PolicyName: 'pol' },
+    ]);
   });
 
   it('still moves the policy between valid lists', async () => {

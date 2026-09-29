@@ -910,6 +910,84 @@ describe('the round-2 fallbacks do not create a false delete (issue #1770 delta 
     expect(text).not.toContain('Planted line');
   });
 
+  // go-to-k/cdkd#3907: cdkd keeps a secret-derived list as its reference or
+  // mask in state by design, so "Repair ... in state.json" would have the user
+  // write the secret-derived name there.
+  it.each([
+    ['a dynamic-reference entry', { Roles: ['{{resolve:secretsmanager:r:SecretString:n}}'] }],
+    ['a masked entry', { Users: ['***'] }],
+  ])('AWS::IAM::Policy: %s is skipped with the secret-derived way out', async (_what, properties) => {
+    const kind = Object.keys(properties)[0]!;
+    const result = await new IAMPolicyProvider().delete(
+      'MyPolicy',
+      'MyPolicy',
+      'AWS::IAM::Policy',
+      properties
+    );
+    expect(result).toEqual({ outcome: 'skipped', reason: POLICY_MALFORMED_TARGET_SKIP_REASON });
+    expect(send).not.toHaveBeenCalled();
+    const text = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toContain(
+      `The recorded ${kind} is secret-derived (cdkd keeps the dynamic reference or its mask in ` +
+        'state), so do not write the name into state.json: cdkd will keep skipping this record. ' +
+        'Remove the inline policy from its principals by hand (a principal this stack also ' +
+        'deletes takes its inline policies with it); on cdkd destroy every other resource is ' +
+        "still deleted, so once this is the stack's last record 'cdkd state orphan <stack> " +
+        "--stack-region <region>' clears it."
+    );
+    expect(text).not.toContain('in state.json to a list');
+    expect(text).not.toContain('{{resolve:');
+  });
+
+  it('AWS::IAM::Policy: a plain and a secret-derived kind each get their own repair', async () => {
+    await new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {
+      Roles: 'AdminRole',
+      Groups: ['***'],
+    });
+    const text = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toContain('holds Roles / Groups that is not a list of IAM names');
+    expect(text).toContain(
+      'Repair Roles in state.json to a list of role / group / user names and re-run'
+    );
+    expect(text).toContain('The recorded Groups is secret-derived');
+    expect(text).not.toContain('Repair Roles / Groups');
+  });
+
+  it('AWS::IAM::Policy: a plain malformed kind keeps the state.json repair', async () => {
+    await new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {
+      Roles: 'AdminRole',
+    });
+    const text = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toContain(
+      'Repair Roles in state.json to a list of role / group / user names and re-run, or delete ' +
+        'the inline policy by hand.'
+    );
+    expect(text).not.toContain('secret-derived');
+  });
+
+  it('AWS::IAM::Policy: a missing policy name is reported before a malformed list', async () => {
+    // Both are wrong; the name check comes first, so the reason names the
+    // half of the record with no address at all.
+    const result = await new IAMPolicyProvider().delete('MyPolicy', '', 'AWS::IAM::Policy', {
+      Roles: 'AdminRole',
+    });
+    expect(result).toEqual({ outcome: 'skipped', reason: POLICY_NAME_SKIP_REASON });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('AWS::IAM::Policy: a legacy id beside a NULL list deletes from the legacy role', async () => {
+    // `Roles: null` is absent, not malformed, so the legacy role still addresses it.
+    send.mockResolvedValue({});
+    await expect(
+      new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy:my-role', 'AWS::IAM::Policy', {
+        Roles: null,
+      })
+    ).resolves.toBeUndefined();
+    expect(send.mock.calls.map((c) => c[0].input)).toEqual([
+      { RoleName: 'my-role', PolicyName: 'MyPolicy' },
+    ]);
+  });
+
   it('AWS::IAM::Policy: valid lists still delete from exactly the listed principals', async () => {
     send.mockResolvedValue({});
     await expect(

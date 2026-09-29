@@ -26,6 +26,10 @@ describe('readRecordedPrincipals (go-to-k/cdkd#3878)', () => {
     ['a string', 'AdminRole', 'found string'],
     ['an object', {}, 'found object'],
     ['a number', 7, 'found number'],
+    // Falsy but not null: absent would hand a legacy id's role the delete.
+    ['an empty string', '', 'found string'],
+    ['zero', 0, 'found number'],
+    ['false', false, 'found boolean'],
     ['a non-string entry', ['r1', 7], 'a 2-element list holding a non-name entry'],
     ['an empty name', [''], 'a 1-element list holding a non-name entry'],
     ['a name with a space', ['r 1'], 'a 1-element list holding a non-name entry'],
