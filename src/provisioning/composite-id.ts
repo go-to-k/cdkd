@@ -215,6 +215,31 @@ export function segmentAfterAnchor(physicalId: string, anchor: unknown): string 
   return rest === '' ? undefined : rest;
 }
 
+/**
+ * A value that may sit inside cdkd's own quotes in these messages: the
+ * characters of `displayIdent`'s plain identifier, plus the separator itself
+ * (every refused value carries one) and `*` (what the masker writes). An empty
+ * or all-space value is admitted too, so a blank id stays visible as `""` or
+ * `"  "` instead of vanishing (issue #1657).
+ */
+const QUOTABLE_VALUE = /^(?:[A-Za-z0-9:_@./+=,~|*-]+| *)$/;
+
+/**
+ * `value` inside `quote` when {@link QUOTABLE_VALUE} admits it, otherwise
+ * `description` (go-to-k/cdkd#3950).
+ *
+ * Both messages quoted the value RAW, and it is template text or a
+ * `state.json` physical id: a `'` or a `"` in it closed cdkd's quote, `$( )`
+ * runs inside double quotes anyway, and the rest of a pasted sentence ran as
+ * shell. The admitted characters are literal inside either quote, and a
+ * space appears only in an all-space value, which holds no `. `, `: ` or ` — `,
+ * so no pasted line, sentence or clause can start or end inside the quoted
+ * value. A value outside the set is described rather than shown.
+ */
+function quotedOr(value: string, quote: "'" | '"', description: string): string {
+  return QUOTABLE_VALUE.test(value) ? `${quote}${value}${quote}` : description;
+}
+
 /** Render `<a>|<b>|<c>` from the segment names. */
 function idShape(segments: readonly CompositeIdSegment[]): string {
   return segments.map((segment) => `<${segment.name}>`).join(COMPOSITE_ID_SEPARATOR);
@@ -251,7 +276,10 @@ export function compositeIdSeparatorRefusal(
   // field label, never template data, so it is left alone.
   const mask = maskerOrIdentity(maskSecrets);
   const named = offending
-    .map((segment) => `${segment.name} '${mask(String(segment.value))}'`)
+    .map(
+      (segment) =>
+        `${segment.name} ${quotedOr(mask(String(segment.value)), "'", '(its value is not shown: it is not a plain identifier)')}`
+    )
     .join(' and ');
 
   return (
@@ -404,7 +432,7 @@ export function compositeIdFormatMessage(
 
   const head =
     `Invalid physicalId format for ${format.label} ${logicalId}: ` +
-    `expected ${accepted}, got "${physicalId}"`;
+    `expected ${accepted}, got ${quotedOr(physicalId, '"', 'an id that is not a plain identifier')}`;
 
   if (!options?.skipping) return head;
 
