@@ -946,6 +946,45 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     expect(new Set(paths).size).toBe(paths.length);
   });
 
+  it('replaces an EventInvokeConfig whose function is being renamed (issue #4118)', async () => {
+    const state = baseState();
+    state.resources['Fn'] = {
+      physicalId: 'my-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: { FunctionName: 'my-fn' },
+      attributes: { Arn: 'arn:aws:lambda:us-east-1:123456789012:function:my-fn' },
+    };
+    state.resources['Eic'] = {
+      physicalId: 'my-fn|$LATEST',
+      resourceType: 'AWS::Lambda::EventInvokeConfig',
+      properties: { FunctionName: 'my-fn', Qualifier: '$LATEST', MaximumRetryAttempts: 1 },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        // FunctionName is create-only: the function is replaced under a new name.
+        Fn: { Type: 'AWS::Lambda::Function', Properties: { FunctionName: 'my-fn-2' } },
+        Eic: {
+          Type: 'AWS::Lambda::EventInvokeConfig',
+          Properties: {
+            FunctionName: { Ref: 'Fn' },
+            Qualifier: '$LATEST',
+            MaximumRetryAttempts: 1,
+          },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Fn')?.changeType).toBe('UPDATE');
+    const eic = changes.get('Eic');
+    expect(eic?.changeType).toBe('UPDATE');
+    expect(eic?.propertyChanges?.some((pc) => pc.path === 'FunctionName' && pc.requiresReplacement)).toBe(true);
+  });
+
   it('does not promote dependents of an in-place (non-replacement) update', async () => {
     const state = baseState();
     state.resources['Fn'] = {

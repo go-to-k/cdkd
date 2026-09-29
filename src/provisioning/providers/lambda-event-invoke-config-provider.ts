@@ -3,12 +3,18 @@ import {
   PutFunctionEventInvokeConfigCommand,
   DeleteFunctionEventInvokeConfigCommand,
   GetFunctionEventInvokeConfigCommand,
+  GetFunctionCommand,
   ResourceNotFoundException,
   type DestinationConfig,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
+import {
+  canonicalLambdaFunctionName,
+  sameLambdaFunctionAddress,
+} from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { packCompositeId, type CompositeIdOptions } from '../composite-id.js';
@@ -83,6 +89,78 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
         { name: 'qualifier', value: qualifier },
       ],
       options
+    );
+  }
+
+  /**
+   * The id the config is addressed by AFTER an in-place Put (issue #4118). A
+   * re-spelling of the same function keeps `physicalId`. When the function
+   * NAME itself moved -- the config was classified in place against the
+   * PRE-deploy value of a `Ref` / `Fn::GetAtt` whose function is being
+   * replaced in the same deploy -- the Put landed on the new function, so the
+   * id must name it, or drift and a later delete address the old one.
+   */
+  private physicalIdAfterUpdate(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>
+  ): string {
+    const next = properties['FunctionName'];
+    if (typeof next !== 'string') return physicalId;
+    const { functionName: recorded, qualifier } = this.parsePhysicalId(physicalId);
+    if (sameLambdaFunctionAddress(recorded, next)) return physicalId;
+    const nextQualifier =
+      typeof properties['Qualifier'] === 'string' ? properties['Qualifier'] : qualifier;
+    // Verbatim, as `create()` records it: an ARN's account and region are part
+    // of what the id addresses.
+    return this.buildPhysicalId(logicalId, next, nextQualifier);
+  }
+
+  /**
+   * Before an in-place Put onto a RE-SPELLED FunctionName (issue #4118):
+   * confirm the new spelling resolves to the function the record addresses.
+   * A bare name against an ARN leaves the ARN's account and region open, and
+   * the diff classified the change in place on the name alone.
+   */
+  private async refuseRespellingToAnotherFunction(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    properties: Record<string, unknown>
+  ): Promise<void> {
+    const next = properties['FunctionName'];
+    if (typeof next !== 'string') return;
+    const { functionName: recorded } = this.parsePhysicalId(physicalId);
+    if (recorded === next || !sameLambdaFunctionAddress(recorded, next)) return;
+    const arnOf = async (functionName: string): Promise<string | undefined> => {
+      try {
+        const resp = await this.lambdaClient.send(
+          new GetFunctionCommand({ FunctionName: functionName })
+        );
+        return resp.Configuration?.FunctionArn?.replace(/:\$LATEST$/, '');
+      } catch (error) {
+        throw new ProvisioningError(
+          `Failed to update Lambda EventInvokeConfig ${logicalId}: could not resolve its ` +
+            `FunctionName to confirm the re-spelling names the same function: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
+    };
+    const [recordedArn, nextArn] = await Promise.all([arnOf(recorded), arnOf(next)]);
+    if (recordedArn !== undefined && recordedArn === nextArn) return;
+    throw markNonRetryable(
+      new ProvisioningError(
+        `Refusing to update Lambda EventInvokeConfig ${logicalId} in place: its FunctionName ` +
+          `now resolves to ${nextArn ?? 'an unreadable function'}, not the function the recorded ` +
+          `config is on (${recordedArn ?? 'unreadable'}). Nothing was changed.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
     );
   }
 
@@ -268,6 +346,8 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false, attributes: {} };
     }
 
+    await this.refuseRespellingToAnotherFunction(logicalId, resourceType, physicalId, properties);
+
     try {
       // Full-replace write (Put, not the CC patch) — this is the whole reason
       // this type has an SDK provider. See the class doc comment.
@@ -275,7 +355,11 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
         new PutFunctionEventInvokeConfigCommand(this.buildPutInput(properties))
       );
       this.logger.debug(`Successfully updated Lambda EventInvokeConfig ${logicalId}`);
-      return { physicalId, wasReplaced: false, attributes: {} };
+      return {
+        physicalId: this.physicalIdAfterUpdate(logicalId, physicalId, properties),
+        wasReplaced: false,
+        attributes: {},
+      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -409,8 +493,13 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     _resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
+    // A re-spelled FunctionName (name <-> unqualified ARN) names one function,
+    // and the readback emits the NAME from the physical id (issue #4118).
+    const fn = properties['FunctionName'];
+    const fnName = typeof fn === 'string' ? canonicalLambdaFunctionName(fn) : fn;
+    const base = fnName === fn ? properties : { ...properties, FunctionName: fnName };
     const dest = properties['DestinationConfig'];
-    if (dest === null || typeof dest !== 'object' || Array.isArray(dest)) return properties;
+    if (dest === null || typeof dest !== 'object' || Array.isArray(dest)) return base;
     const members = dest as Record<string, unknown>;
     const empty = (key: string): boolean => {
       const m = members[key];
@@ -422,11 +511,11 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       );
     };
     const stripped = ['OnSuccess', 'OnFailure'].filter((key) => key in members && empty(key));
-    if (stripped.length === 0) return properties;
+    if (stripped.length === 0) return base;
     const kept = Object.fromEntries(
       Object.entries(members).filter(([key]) => !stripped.includes(key))
     );
-    const out = { ...properties };
+    const out = { ...base };
     if (Object.keys(kept).length === 0) delete out['DestinationConfig'];
     else out['DestinationConfig'] = kept;
     return out;

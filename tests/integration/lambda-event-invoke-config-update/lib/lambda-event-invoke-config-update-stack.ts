@@ -49,6 +49,15 @@ export class LambdaEventInvokeConfigUpdateStack extends cdk.Stack {
       onFailure: new destinations.SqsDestination(dlq),
     });
 
+    // Issue #4118: CDKD_TEST_FN_ARN=true re-spells the SAME function as its
+    // ARN. That must stay an in-place update; a replacement would Put the
+    // config and then delete it from the same function.
+    if (process.env.CDKD_TEST_FN_ARN === 'true') {
+      const eic = fn.node.findChild('EventInvokeConfig').node
+        .defaultChild as lambda.CfnEventInvokeConfig;
+      eic.addPropertyOverride('FunctionName', fn.functionArn);
+    }
+
     new cdk.CfnOutput(this, 'FnName', { value: fn.functionName });
     new cdk.CfnOutput(this, 'DlqArn', { value: dlq.queueArn });
   }

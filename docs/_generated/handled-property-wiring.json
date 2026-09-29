@@ -13413,7 +13413,10 @@
           ],
           "seededBy": [
             "buildPutInput",
+            "canonicalizeDriftProperties",
             "create",
+            "physicalIdAfterUpdate",
+            "refuseRespellingToAnotherFunction",
             "update"
           ]
         },
@@ -13462,6 +13465,7 @@
           "seededBy": [
             "buildPutInput",
             "create",
+            "physicalIdAfterUpdate",
             "update"
           ]
         }

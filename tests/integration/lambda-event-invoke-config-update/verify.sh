@@ -18,6 +18,8 @@
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (maxEventAge 5 min / retryAttempts
 #      2). Assert the UPDATE succeeds (this exact change was undeployable
 #      pre-fix) and AWS now reports MaxAge 300 / Retries 2 / the same DLQ.
+#   2b. Re-spell FunctionName as the function ARN (CDKD_TEST_FN_ARN=true).
+#      It must update in place and the config must survive (issue #4118).
 #   3. Destroy + assert the function is gone and the cdkd state file is removed.
 #
 # Issue #4091 (EventInvokeConfig is a cc-broken sticky exemption): before
@@ -77,13 +79,15 @@ DLQ_NAME="cdkd-event-invoke-config-update-test-dlq"
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
-# Phase 2's captured deploy output (issue #4091), removed by cleanup too.
+# Phase 2's and 2b's captured deploy output (issues #4091, #4118), removed by cleanup too.
 DEPLOY_P2_LOG=""
+DEPLOY_2B_LOG=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   [ -n "${DEPLOY_P2_LOG}" ] && rm -f "${DEPLOY_P2_LOG}"
+  [ -n "${DEPLOY_2B_LOG}" ] && rm -f "${DEPLOY_2B_LOG}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -236,6 +240,43 @@ case "${ONFAIL_P2}" in
   *) echo "FAIL: expected OnFailure -> ${DLQ_NAME} preserved after update, got '${ONFAIL_P2}'" >&2; exit 1 ;;
 esac
 echo "    Phase 2 UPDATE reached AWS (the change that was undeployable pre-fix)"
+
+# --- Phase 2b: FunctionName re-spelled as the ARN (issue #4118) --------
+echo "==> Phase 2b: re-spell FunctionName as the function ARN (same function)"
+DEPLOY_2B_LOG="$(mktemp)"
+if ! CDKD_TEST_UPDATE=true CDKD_TEST_FN_ARN=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${DEPLOY_2B_LOG}" 2>&1; then
+  cat "${DEPLOY_2B_LOG}" >&2
+  rm -f "${DEPLOY_2B_LOG}"
+  echo "FAIL: #4118: the re-spelled FunctionName deploy failed" >&2
+  exit 1
+fi
+DEPLOY_2B_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_2B_LOG}")"
+rm -f "${DEPLOY_2B_LOG}"
+DEPLOY_2B_LOG=""
+printf '%s\n' "${DEPLOY_2B_PLAIN}"
+if grep -F "${EIC_LOGICAL}" <<<"${DEPLOY_2B_PLAIN}" | grep -qi 'replac'; then
+  echo "FAIL: #4118: re-spelling FunctionName REPLACED ${EIC_LOGICAL}:" >&2
+  grep -F "${EIC_LOGICAL}" <<<"${DEPLOY_2B_PLAIN}" | grep -i 'replac' >&2
+  exit 1
+fi
+RECORDED_FN=$(eic_record .properties.FunctionName)
+case "${RECORDED_FN}" in
+  arn:*":function:${FN_NAME}") ;;
+  *) echo "FAIL: #4118: the record's FunctionName is '${RECORDED_FN}', expected the function ARN (the deploy did not apply the re-spelling)" >&2; exit 1 ;;
+esac
+POST_ID=$(eic_record .physicalId)
+[ "${POST_ID}" = "${EIC_ID}" ] || { echo "FAIL: #4118: the physicalId changed (${EIC_ID} -> ${POST_ID})" >&2; exit 1; }
+# The discriminator: before #4118 the replacement's delete left NO config.
+MAXAGE_2B="$(eic_field 'MaximumEventAgeInSeconds')"
+RETRIES_2B="$(eic_field 'MaximumRetryAttempts')"
+ONFAIL_2B="$(eic_field 'DestinationConfig.OnFailure.Destination')"
+[ "${MAXAGE_2B}" = "300" ] && [ "${RETRIES_2B}" = "2" ] || { echo "FAIL: #4118: the async-invoke config is MaxAge=${MAXAGE_2B} Retries=${RETRIES_2B}, expected 300 / 2" >&2; exit 1; }
+case "${ONFAIL_2B}" in
+  *":${DLQ_NAME}") ;;
+  *) echo "FAIL: #4118: OnFailure is '${ONFAIL_2B}', expected ${DLQ_NAME}" >&2; exit 1 ;;
+esac
+echo "    OK: the re-spelled FunctionName updated in place and the config survived (#4118)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

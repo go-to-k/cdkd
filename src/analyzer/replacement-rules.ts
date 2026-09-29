@@ -9,6 +9,7 @@
  */
 
 import { getLogger } from '../utils/logger.js';
+import { sameLambdaFunctionAddress } from '../utils/lambda-function-name.js';
 
 /**
  * Resource replacement rule
@@ -58,6 +59,39 @@ interface ReplacementRule {
  */
 export function durableConfigPresenceToggled(oldValue: unknown, newValue: unknown): boolean {
   return (oldValue == null) !== (newValue == null);
+}
+
+/**
+ * Conditional-replacement predicate for `AWS::Lambda::EventInvokeConfig.FunctionName`
+ * (issue [#4118](https://github.com/go-to-k/cdkd/issues/4118)).
+ *
+ * Lambda accepts the function as a name, a full ARN or a partial ARN
+ * (`<account>:function:<name>`), so a template can re-spell the SAME function.
+ * Treating that as a replacement is destructive: the create-first half Puts the
+ * config onto the function, then the old half's delete removes it from the
+ * same function, leaving none. Only a change of the function NAME replaces.
+ *
+ * Two ARNs must also agree on partition, region and account. A bare name
+ * against an ARN cannot be confirmed here, so the provider's `update()`
+ * resolves both spellings with `GetFunction` before its Put and refuses when
+ * they are different functions.
+ *
+ * A QUALIFIED ARN (`...:function:<name>:<qualifier>`) is compared verbatim, as
+ * is anything that is not a string (an unresolved intrinsic), so it still
+ * replaces. For this type that is a known RESIDUAL, not a safe default: a
+ * replacement onto the same target Puts the config and then deletes it.
+ *
+ * A call with NO value on either side (`undefined`, `undefined`) is the diff's
+ * promoted-dependent probe -- the function this config points at is being
+ * replaced, so the value WILL move once it resolves -- and answers `true`; the
+ * engine's replacement ceiling lowers it when the value turns out unmoved.
+ */
+export function eventInvokeConfigFunctionChanged(oldValue: unknown, newValue: unknown): boolean {
+  if (oldValue === undefined && newValue === undefined) return true;
+  if (typeof oldValue === 'string' && typeof newValue === 'string') {
+    return !sameLambdaFunctionAddress(oldValue, newValue);
+  }
+  return JSON.stringify(oldValue) !== JSON.stringify(newValue);
 }
 
 export function attributeTypeChangedForSharedAttribute(
@@ -345,8 +379,12 @@ export class ReplacementRulesRegistry {
     // (a full-replace write). Without this rule the registry defaults the type
     // to fully-updateable, which is correct for the three mutable props but
     // would silently in-place-update an immutable FunctionName/Qualifier change.
+    // FunctionName replaces only when the function NAME changes: a re-spelling
+    // (name <-> ARN) is the same function, and a replacement there would Put
+    // the config and then delete it again (issue #4118).
     this.rules.set('AWS::Lambda::EventInvokeConfig', {
-      replacementProperties: new Set(['FunctionName', 'Qualifier']),
+      replacementProperties: new Set(['Qualifier']),
+      conditionalReplacements: new Map([['FunctionName', eventInvokeConfigFunctionChanged]]),
       updateableProperties: new Set([
         'MaximumEventAgeInSeconds',
         'MaximumRetryAttempts',
