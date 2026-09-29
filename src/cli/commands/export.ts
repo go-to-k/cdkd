@@ -4707,25 +4707,43 @@ export function parseCfnChildStackNameOverrides(values: string[] | undefined): M
  * `executeImportChangeSet` / `executeUpdateChangeSet` consume. Consolidate
  * into a shared `nested-template-fs.ts` module if a third caller appears.
  */
+/**
+ * A read failure's cause for a sentence: the fs error code when it is one
+ * (`ENOENT`, `EACCES`), else a fixed phrase. Never the error's message, which
+ * quotes the path back (go-to-k/cdkd#3950). Exported for unit testing.
+ */
+export function fsReadErrorCause(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code)
+    ? code
+    : 'the file could not be read';
+}
+
 function readNestedChildTemplateFile(
   templatePath: string,
   childLogicalId: string
 ): { template: Record<string, unknown>; format: TemplateFormat } {
+  // Neither cause prints its error TEXT (go-to-k/cdkd#3950): Node's read error
+  // echoes the path inside its own `'...'`, and a parse error echoes a snippet
+  // of the file in `"..."`. The path is template text (`aws:asset:path`) and
+  // the file is the template author's, so either would put their value back
+  // inside a quote in a sentence that is pasted.
   let raw: string;
   try {
     raw = readFileSync(templatePath, 'utf-8');
   } catch (err) {
     throw new Error(
       `cdkd export: failed to read nested-stack template for ${quotedOrNotShown(childLogicalId)} at ` +
-        `${quotedOrNotShown(templatePath)}: ${err instanceof Error ? err.message : String(err)}`
+        `${quotedOrNotShown(templatePath)}: ${fsReadErrorCause(err)}`
     );
   }
   try {
     return parseCfnTemplateWithFormat(raw);
-  } catch (err) {
+  } catch {
     throw new Error(
       `cdkd export: failed to parse nested-stack template for ${quotedOrNotShown(childLogicalId)} at ` +
-        `${quotedOrNotShown(templatePath)}: ${err instanceof Error ? err.message : String(err)}`
+        `${quotedOrNotShown(templatePath)}: it is not a template cdkd can parse (the parser's ` +
+        `message is not shown, because it quotes the file's own text)`
     );
   }
 }
