@@ -243,8 +243,8 @@ export interface DeploymentEvent {
    * One line of provider-authored prose. Metadata only: it is about the
    * IDENTIFIER or the probe, never resource properties.
    *
-   * `RESOURCE_SKIPPED`: why cdkd could not address the resource (issue
-   * [#1752](https://github.com/go-to-k/cdkd/issues/1752)) — the same short
+   * `RESOURCE_SKIPPED`: why cdkd did not confirm the delete (issue
+   * [#1752](https://github.com/go-to-k/cdkd/issues/1752); go-to-k/cdkd#2122) — the same short
    * text rendered inline on the per-resource status line of whichever command
    * skipped it (destroy, or a deploy template-DELETE). The events store IS the
    * durable post-mortem, so a bare `RESOURCE_SKIPPED` with no cause is close

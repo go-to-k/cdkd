@@ -76,10 +76,16 @@ export const UNSPECIFIED_SKIP_REASON = 'no reason reported by the provider';
  *
  * Wording rules, both load-bearing:
  *
- * 1. It says the resource was NOT deleted and MAY STILL EXIST. A skip issued
- *    no AWS call at every producer but `NestedStackProvider.delete`, so the
- *    old resource is presumed alive — which is the whole reason a replacement
- *    site cannot proceed to create its replacement beside it.
+ * 1. It says cdkd did NOT CONFIRM the delete and the resource MAY STILL
+ *    EXIST — and nothing about WHY. The producers differ in whether an AWS
+ *    call went out: most could not ADDRESS the resource and issued none
+ *    (issue #1752), but a custom-resource Delete handler that ran and
+ *    reported FAILED (issue #2054) or whose invoke did not complete, and
+ *    `NestedStackProvider.delete`, did issue one (go-to-k/cdkd#2122). The
+ *    cause is `reason`'s job; the sentence claims only what holds for every
+ *    producer. The old resource is presumed alive either way — which is the
+ *    whole reason a replacement site cannot proceed to create its
+ *    replacement beside it.
  * 2. It must NOT contain any phrase the callers' already-deleted classifiers
  *    substring-match (`does not exist` / `was not found` / `not found` /
  *    `No policy found` / `NoSuchEntity` / `NotFoundException` /
@@ -101,8 +107,8 @@ export function deleteSkippedMessage(
   // newline in one cannot start a line of the destroy or deploy output
   // (go-to-k/cdkd#3773). `duringClause` is a caller literal.
   return (
-    `cdkd could not address ${displaySafe(logicalId)} (${displaySafe(physicalId)}) ` +
-    `${duringClause}, so it was NOT deleted and may still exist: ${displaySafe(reason)}`
+    `cdkd did not confirm ${displaySafe(logicalId)} (${displaySafe(physicalId)}) was ` +
+    `deleted ${duringClause}, so it may still exist: ${displaySafe(reason)}`
   );
 }
 
@@ -116,7 +122,7 @@ export function deleteSkippedMessage(
  * existing shape changes on the hot path.
  *
  * A `'skipped'` result keeps its outcome and its `reason`: a guard that could
- * not answer and a delete that could not be addressed are independent facts,
+ * not answer and a delete cdkd could not confirm are independent facts,
  * and collapsing either into the other loses one of them.
  */
 export function withIndeterminateGuard(

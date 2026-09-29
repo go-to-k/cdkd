@@ -2596,7 +2596,8 @@ async function stateDestroyCommand(
 
     let totalErrors = 0;
     // Issue #1752: resources whose provider reported `{ outcome: 'skipped' }`
-    // — cdkd could not address them, so NO delete was issued and they may
+    // — cdkd did not confirm the delete (it could not address them, or a
+    // custom-resource Delete handler refused: issue #2054), so they may
     // still exist in AWS. Counted separately from `totalErrors` (nothing
     // FAILED) but treated the same way for the exit code: the runner
     // preserved state, so reporting success would tell CI the stack is gone
@@ -2828,15 +2829,17 @@ async function stateDestroyCommand(
     if (totalSkipped > 0) {
       // Issue #1752 — see the twin branch in destroy.ts, including why this
       // counts ENTRIES rather than resources. Nothing FAILED, but cdkd left
-      // resources it could not address and preserved their state records, so
+      // resources whose delete it did not confirm and preserved their state records, so
       // exiting 0 would report a destroy that did not happen.
       throw new PartialFailureError(
-        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} cdkd could not ` +
-          `address, so the underlying resources may still exist in AWS. A skipped nested stack ` +
+        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} whose delete cdkd ` +
+          `did not confirm, so the underlying resources may still exist in AWS. A skipped nested stack ` +
           `counts as ONE entry and may cover several of its own resources — the per-stack ` +
           `summaries above give the exact breakdown. State preserved (the records are kept). ` +
-          `Repair the physicalId in state.json and re-run 'cdkd state destroy', or delete the ` +
-          `resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
+          `The per-resource 'skipped (...)' lines and their warnings name each cause and whether ` +
+          `repairing the record in state.json helps: where it does, repair it and re-run 'cdkd state destroy'; ` +
+          `otherwise (for example a custom-resource Delete handler that reported FAILED), delete ` +
+          `the resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
       );
     }
   } finally {

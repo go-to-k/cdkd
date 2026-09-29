@@ -375,6 +375,26 @@ export interface DestroyRunnerResult {
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
 
 /**
+ * The remedy both skip arms of the per-stack summary name (go-to-k/cdkd#2122).
+ *
+ * A skip has two kinds of producer, and they need different remedies: one that
+ * could not ADDRESS the resource from its state record (issue #1752), where
+ * repairing the record and re-running is the fix, and a custom-resource Delete
+ * handler that RAN and refused (issue #2054) or whose invoke did not complete,
+ * where the record is fine and editing it changes nothing. Even a record-shaped
+ * cause is not always repairable (a masked or referenced ServiceToken whose
+ * handler this destroy deletes, a secret-derived principal list), so the
+ * summary defers to the per-resource warning, which says which applies.
+ * Worded for both callers: this runner serves `cdkd destroy` AND
+ * `cdkd state destroy`, so it says "re-run" without naming either.
+ */
+export const SKIPPED_REMEDY =
+  `Each 'skipped (...)' line above names its cause, and its warning says whether ` +
+  `repairing the record in state.json helps. Where it does, repair it and re-run. ` +
+  `Otherwise (for example a custom-resource Delete handler that reported FAILED), ` +
+  `delete the resources by hand, then drop the records.`;
+
+/**
  * Where a type's protection flag lives in a resource's property bag: a
  * top-level key, a PATH of keys for a flag nested in a container, or a reader
  * for a flag that is not at a fixed path (go-to-k/cdkd#3676). A reader gets the
@@ -1923,8 +1943,10 @@ export async function runDestroyForStack(
             });
           }
 
-          // Issue #1752: a provider that could not ADDRESS the resource issued
-          // no AWS call, so the resource may still be alive. Print a distinct
+          // Issue #1752: a provider reporting `'skipped'` did not confirm the
+          // delete — it could not ADDRESS the resource (no AWS call), or, since
+          // issue #2054, a custom-resource Delete handler ran and refused — so
+          // the resource may still be alive. Print a distinct
           // line, count it separately, and — critically — do NOT drop the
           // state record: without it the user has neither the AWS resource
           // deleted nor a cdkd record pointing at it, and no way to retry.
@@ -1957,8 +1979,8 @@ export async function runDestroyForStack(
               ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
               ...(resource.physicalId && { physicalId: resource.physicalId }),
               // The events store is the DURABLE post-mortem, and a bare
-              // `RESOURCE_SKIPPED` there cannot tell the user why cdkd could
-              // not address the resource. `reason` is required on the
+              // `RESOURCE_SKIPPED` there cannot tell the user why cdkd did not
+              // confirm the delete. `reason` is required on the
               // `'skipped'` arm, and the shared reader defaults it when a
               // producer omits it anyway, so this is always populated.
               reason: skipReason,
@@ -2152,9 +2174,9 @@ export async function runDestroyForStack(
         logger.warn(`${result.errorCount} resource(s) failed to delete. State preserved.`);
       } else {
         logger.warn(
-          `${result.skippedCount} resource(s) skipped — cdkd could not address them, so no ` +
-            `delete was issued and they may still exist in AWS. State preserved (the records ` +
-            `are kept so the resources stay traceable).`
+          `${result.skippedCount} resource(s) skipped — cdkd did not confirm they were deleted, ` +
+            `so they may still exist in AWS. State preserved (the records are kept so the ` +
+            `resources stay traceable).`
         );
       }
     }
@@ -2233,15 +2255,16 @@ export async function runDestroyForStack(
     } else if (result.errorCount === 0) {
       // Skips only. Nothing FAILED, so "partially destroyed" with an error
       // count would misdescribe the run — and the remedy is different too:
-      // there is nothing to retry until the state record is repaired.
+      // a skip is not a retry, and which remedy fits depends on its cause
+      // (go-to-k/cdkd#2122), so the text names both and points at the lines
+      // carrying the cause.
       const targets = [...skippedStateTargets];
       const showHint = hintFor('cdkd state show', targets, 'Inspect it with');
       const orphanHint = hintFor('cdkd state orphan', targets, 'Drop the record with');
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
-          `cdkd could not address the skipped resource(s), so they may still exist in AWS. ` +
-          `Fix the physicalId in state.json and re-run, or delete them by hand and drop ` +
-          `the records.` +
+          `cdkd did not confirm the skipped resource(s) were deleted, so they may still exist ` +
+          `in AWS. ${SKIPPED_REMEDY}` +
           hintHolesClause(targets) +
           // Labelled lines, one command each, with NO trailing punctuation: a
           // command inside a sentence is copied WITH the period after it, and
@@ -2267,13 +2290,13 @@ export async function runDestroyForStack(
       // counters already print `, N skipped`, so saying nothing about them here
       // would name a remedy for the failures and silently drop #1752's guidance
       // for the skips — whose remedy is DIFFERENT in kind: a skip is not
-      // retryable, it needs the state record repaired first.
+      // retryable as it stands (go-to-k/cdkd#2122: which remedy fits depends
+      // on its cause).
       const skippedTargets = [...skippedStateTargets];
       const skippedClause =
         skippedTargets.length > 0
-          ? ` Separately, ${result.skippedCount} resource(s) were SKIPPED — cdkd could not address them, so no delete was issued and they may still exist in AWS. ` +
-            `Fix the physicalId in state.json and re-run, or delete them by hand and drop ` +
-            `their records.`
+          ? ` Separately, ${result.skippedCount} resource(s) were SKIPPED — cdkd did not confirm ` +
+            `they were deleted, so they may still exist in AWS. ${SKIPPED_REMEDY}`
           : '';
       // Every command AFTER all the prose, one per line (go-to-k/cdkd#3436):
       // mid-sentence, a copy through the line end takes the words around it.

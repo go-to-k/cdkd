@@ -453,7 +453,7 @@ describe('cdkd state destroy', () => {
 
   it('exits 2 when the runner SKIPPED a resource, even with zero errors (issue #1752)', async () => {
     // Twin of the destroy.ts branch: nothing FAILED, but cdkd left resources
-    // it could not address and preserved their state records.
+    // whose delete it did not confirm and preserved their state records.
     mockListStacks.mockResolvedValue([{ stackName: 'Skipper', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({
       state: makeStackState('Skipper', 'us-east-1'),
@@ -479,8 +479,20 @@ describe('cdkd state destroy', () => {
     // entry however many of the child's resources it covers, so the old
     // "N resource(s)" wording stated a number that was wrong in exactly the
     // nested case (issue #1752 review).
-    expect(message).not.toContain('resource(s) cdkd could not address');
+    expect(message).not.toContain('resource(s) whose delete');
     expect(message).toContain('counts as ONE entry');
+    // go-to-k/cdkd#2122: a skip is not always a record cdkd could not ADDRESS
+    // — a custom-resource Delete handler that ran and reported FAILED skips
+    // too, and its record is fine. The text claims only the unconfirmed
+    // delete, and offers the state.json repair as ONE remedy, not THE remedy.
+    expect(message).toContain('whose delete cdkd did not confirm');
+    expect(message).not.toContain('could not address');
+    expect(message).not.toContain('Repair the physicalId');
+    expect(message).toContain(
+      "whether repairing the record in state.json helps: where it does, repair it and re-run " +
+        "'cdkd state destroy'; otherwise (for example a custom-resource Delete handler that reported " +
+        'FAILED), delete the resources by hand'
+    );
     expect(message).toContain(
       "drop the records with 'cdkd state orphan <stack> --stack-region <region>'."
     );

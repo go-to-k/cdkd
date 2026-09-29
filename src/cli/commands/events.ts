@@ -703,8 +703,8 @@ export function colorizeEventType(eventType: DeploymentEvent['eventType']): stri
   const token = safeId(eventType) || UNRENDERABLE;
   if (token.endsWith('FAILED')) return red(token);
   if (token.endsWith('SUCCEEDED') || token === 'RUN_FINISHED') return green(token);
-  // Issue #1752: a SKIPPED resource is one cdkd could not address, so it may
-  // still be alive — yellow, not the neutral cyan the default arm gives every
+  // Issue #1752: a SKIPPED resource is one whose delete cdkd did not confirm,
+  // so it may still be alive — yellow, not the neutral cyan the default arm gives every
   // informational token. Deliberately NOT extended to `RESOURCE_RETAINED`,
   // which is the opposite case: keeping that resource is what the user ASKED
   // for via `DeletionPolicy: Retain`, so it stays informational.

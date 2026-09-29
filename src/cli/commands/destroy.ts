@@ -469,7 +469,8 @@ async function destroyCommand(
     // refusal (after the empty-match gate below) can use the same accumulator.
     let totalErrors = 0;
     // Issue #1752: resources whose provider reported `{ outcome: 'skipped' }`
-    // — cdkd could not address them, so NO delete was issued and they may
+    // — cdkd did not confirm the delete (it could not address them, or a
+    // custom-resource Delete handler refused: issue #2054), so they may
     // still exist in AWS. Counted separately from `totalErrors` (nothing
     // FAILED) but treated the same way for the exit code: the runner
     // preserved state, so reporting success would tell CI the stack is gone
@@ -1003,12 +1004,14 @@ async function destroyCommand(
       // field for the sake of one message; the accurate per-stack breakdown is
       // already printed by each stack's own summary line just above.
       throw new PartialFailureError(
-        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} cdkd could not ` +
-          `address, so the underlying resources may still exist in AWS. A skipped nested stack ` +
+        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} whose delete cdkd ` +
+          `did not confirm, so the underlying resources may still exist in AWS. A skipped nested stack ` +
           `counts as ONE entry and may cover several of its own resources — the per-stack ` +
           `summaries above give the exact breakdown. State preserved (the records are kept). ` +
-          `Repair the physicalId in state.json and re-run 'cdkd destroy', or delete the ` +
-          `resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
+          `The per-resource 'skipped (...)' lines and their warnings name each cause and whether ` +
+          `repairing the record in state.json helps: where it does, repair it and re-run 'cdkd destroy'; ` +
+          `otherwise (for example a custom-resource Delete handler that reported FAILED), delete ` +
+          `the resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
       );
     }
   } finally {

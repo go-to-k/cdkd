@@ -16,11 +16,12 @@ executor both consume it.
 **Skip pair** ([#1762](https://github.com/go-to-k/cdkd/issues/1762)).
 `deleteSkipReason` returns the `'skipped'` arm's `reason`, or `undefined` for
 the `void` return, keeping that reading in ONE place. `deleteSkippedMessage` is
-the sentence every skip renders, in the log AND the `Error` failing sites throw. Two wording rules are load-bearing: it says the resource was NOT deleted
-and MAY STILL EXIST (no AWS call is issued at any producer but
-`NestedStackProvider.delete`), and it contains none of the phrases the
-already-deleted classifiers substring-match (`does not exist`, `not found`,
-`NoSuchEntity`). Skips are handled OUTSIDE the `catch`.
+the sentence every skip renders, in the log AND the `Error` failing sites throw.
+Two wording rules are load-bearing: it says cdkd did NOT CONFIRM the delete and
+the resource MAY STILL EXIST, never why (a refusing custom-resource handler DID
+get the call), and it lacks the phrases the already-deleted classifiers
+substring-match (`does not exist`, `not found`, `NoSuchEntity`). Skips are
+handled OUTSIDE the `catch`.
 
 **Guard pair** ([#2301](https://github.com/go-to-k/cdkd/issues/2301)).
 `withIndeterminateGuard` / `deleteIndeterminateGuards` are the WRITE and READ

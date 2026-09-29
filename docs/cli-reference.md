@@ -540,7 +540,7 @@ glyphs:
 ```text
 ✓ Stack X destroyed (N deleted, 0 errors)                       # exit 0
 ⚠ Stack X partially destroyed (N deleted, M errors). State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.   # exit 2
-⚠ Stack X partially destroyed (N deleted, S skipped, 0 errors). cdkd could not address the skipped resource(s) ...   # exit 2
+⚠ Stack X partially destroyed (N deleted, S skipped, 0 errors). cdkd did not confirm the skipped resource(s) were deleted ...   # exit 2
 ```
 
 `cdkd deploy` switches the same way — a run that left a resource unaddressed
@@ -566,9 +566,9 @@ page someone.
 
 ### Skipped resources on destroy
 
-A skipped resource is one cdkd could not address, so it may still exist and
-still be billing. What causes a skip, what each command does with one, and
-how to clear it are on
+A skipped resource is one whose delete cdkd did not confirm, so it may still
+exist and still be billing. What causes a skip, what each command does with
+one, and how to clear it are on
 [Skipped resources on destroy](cli-destroy.md#skipped-resources-on-destroy).
 
 ## `local *` (run AWS workloads locally)

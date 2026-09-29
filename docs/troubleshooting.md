@@ -2579,7 +2579,7 @@ of the confirmation flags.
 
 ```text
 ⚠ MyGlueTable (AWS::Glue::Table) skipped (malformed physicalId in state — no delete issued)
-⚠ Stack MyStack partially destroyed (4 deleted, 1 skipped, 0 errors). cdkd could not address the skipped resource(s) ...
+⚠ Stack MyStack partially destroyed (4 deleted, 1 skipped, 0 errors). cdkd did not confirm the skipped resource(s) were deleted ...
 ```
 
 **Cause**: the state record's `physicalId` does not decode. A handful of

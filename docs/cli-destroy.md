@@ -502,8 +502,11 @@ cdkd destroy MyStack --purge-events -y
 
 ## Skipped resources on destroy
 
-A **skipped** resource is one cdkd could not address, so it may still exist and
-still be billing. The causes:
+A **skipped** resource is one whose delete cdkd did not confirm, so it may
+still exist and still be billing. Most causes are a state record cdkd could not
+address, and issue no AWS call; the custom-resource handler cause below
+attempted the delete. The per-resource `skipped (...)` line names which applies.
+The causes:
 
 - **A composite `physicalId` that does not decode** (`AWS::Glue::Table`,
   `AWS::AppSync::{DataSource,Resolver,ApiKey}`, `AWS::EC2::NetworkAclEntry`).
@@ -560,6 +563,17 @@ still be billing. The causes:
   a Route 53 record's hosted zone in its `physicalId`) it is used instead; otherwise
   no AWS call is issued. A re-deploy records the same redaction again, so remove
   the resource by hand and drop the record with `cdkd state orphan '<stack>'`.
+
+- **A custom resource whose Delete handler reported `FAILED`, or whose handler
+  invoke did not complete**:
+  `skipped (Delete handler reported FAILED — resource unproven)` or
+  `skipped (Delete request to the handler did not complete — resource unproven)`.
+  cdkd addressed the resource and sent (or attempted to send) the `Delete`, so
+  the record is correct and there is nothing to repair in `state.json`. The
+  same destroy usually deletes the handler's Lambda too, so the next destroy
+  does not retry it (it finds the handler gone and drops the record). Tear down
+  what the handler manages by hand, then drop the record with
+  `cdkd state orphan '<stack>' --stack-region <region>`.
 
 - **A nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped a
   resource or was interrupted. Here the child's *other* resources were deleted
