@@ -1645,8 +1645,9 @@ export class ELBv2Provider implements ResourceProvider {
             return undefined;
           }
           // Already at the default — nothing to reset. Same safety property as
-          // the LB / Listener arms: see attributeRemovalResolver's docstring
-          // for why the previous side is not always a template.
+          // the LB / Listener arms, kept as a guard for any caller whose
+          // previous side is not a template (`drift --revert` no longer
+          // reaches this resolver; see attributeRemovalResolver's docstring).
           return currentValue === fallback ? undefined : fallback;
         },
         fromReadback,
@@ -2236,7 +2237,7 @@ export class ELBv2Provider implements ResourceProvider {
       const values = one ? 'its live value' : 'their live values';
       const them = one ? 'it' : 'them';
       this.logger.warn(
-        safeMsg`${logicalId}: AWS reports ${bag} ${noun} ${keys}, which the recorded baseline holds no value for. No Elastic Load Balancing call removes an attribute key, so the revert leaves ${values} in place, and 'cdkd drift' keeps reporting ${them}. Run 'cdkd drift --accept' to record ${them}.`
+        safeMsg`${logicalId}: AWS reports ${bag} ${noun} ${keys}, which the recorded baseline holds no value for. No Elastic Load Balancing call removes an attribute key, so the revert leaves ${values} in place, and 'cdkd drift' keeps reporting ${them}. If ${values} are what you intend, run 'cdkd drift --accept' to record ${them}; otherwise declare the value in the template and deploy.`
       );
     }
     return submitted;

@@ -100,7 +100,8 @@ A key only AWS returns is reported because cdkd cannot tell a key AWS started
 returning from a value someone set on it. The revert cannot remove the key and
 has no recorded value to restore, so it sends nothing for it. Every other
 drifted attribute is still reverted. If the live value is expected, run
-`cdkd drift --accept` to record it.
+`cdkd drift --accept` to record it; otherwise declare the value in the template
+and deploy.
 
 ### Tags
 

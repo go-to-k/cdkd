@@ -150,7 +150,8 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
         `MyRes: AWS reports ${bag} key ${APPEARING.Key}, which the recorded baseline holds no value for.`
       );
       expect(lines[0]).toContain('leaves its live value in place');
-      expect(lines[0]).toContain("Run 'cdkd drift --accept'");
+      expect(lines[0]).toContain("run 'cdkd drift --accept'");
+      expect(lines[0]).toContain('otherwise declare the value in the template and deploy');
     });
 
     it('beside a real attribute drift, only that attribute is sent', async () => {
