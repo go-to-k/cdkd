@@ -64,9 +64,8 @@ hint included.
   reads as "not supplied" and widens to every region holding the name. An empty
   `--state-prefix` is the exception and IS emitted as `--state-prefix ''`, since
   it keys a real key space. The flag rule lives in the exported
-  `recoveryCommandFlags`, shared with `cdkd orphan`'s properties refusal, which
-  prints an inexact fragment as a `<profile>` / `<bucket>` / `<prefix>` hole
-  where this function suppresses. Anything that can suppress must ALSO be named
+  `recoveryCommandFlags`; the malformed-record refusals qualify through their
+  own stricter `accountArgs` instead (go-to-k/cdkd#3909). Anything that can suppress must ALSO be named
   in `UNREPRODUCIBLE_LOCK_CLAUSE` and in the no-command sentence.
 - `formatLockExpiry(expiresAt)` is the ONE rendering of a lock deadline. It
   takes the RAW `expiresAt` and tests it with `Number.isFinite`, the same test

@@ -1088,7 +1088,14 @@ describe('cdkd orphan (per-resource)', () => {
         arrange(container, [{ stackName: 'MyStack', region: 'us-east-1' }]);
         await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
         const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-        expect(message.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(true);
+        // Qualified with the run's bucket (go-to-k/cdkd#3909): `recovery` used to
+        // reach the legacy arm only, so this read the DEFAULT bucket.
+        expect(
+          message.endsWith(
+            'cdkd state show MyStack --stack-region us-east-1 --json --state-bucket test-bucket'
+          ),
+          message
+        ).toBe(true);
       });
     }
   });

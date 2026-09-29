@@ -15,13 +15,9 @@ import {
   type WithheldValue,
   type WithholdReason,
 } from '../utils/pasteable-command.js';
-import {
-  commandHole,
-  recoveryCommandFlags,
-  sanitizeRecoveryValue,
-  shellQuote,
-} from './lock-contention-message.js';
+import { sanitizeRecoveryValue, shellQuote } from './lock-contention-message.js';
 import type { LockRecoveryContext } from './lock-contention-message.js';
+import { DEFAULT_STATE_PREFIX } from './state-prefix.js';
 import { describeRegionValueKind, isReadableBag } from '../types/state.js';
 import type { StackState } from '../types/state.js';
 
@@ -364,7 +360,10 @@ export function repairMalformedResourcesForReadOnly(state: StackState): boolean 
 export function malformedStateRefusalMessage(
   rawStackName: string,
   rawRegion: string | undefined,
-  /** See {@link inspectTail}; only the region-less legacy arm reads it. */
+  /**
+   * The caller's account flags: the inspect command carries them, and the
+   * region-less legacy arm names the bucket from them — see {@link inspectTail}.
+   */
   recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
@@ -383,7 +382,9 @@ export function malformedStateRefusalMessage(
 /**
  * How a READ-ONLY remedy ends a single-command message: on
  * `Inspect it with: <inspectCommand>` — unless the record is a region-less
- * LEGACY one, which that command cannot read (go-to-k/cdkd#3388).
+ * LEGACY one, which that command cannot read (go-to-k/cdkd#3388). `recovery`
+ * qualifies BOTH arms (go-to-k/cdkd#3909): the command through
+ * {@link accountArgs}, the legacy object path as before.
  *
  * A KNOWN stack with NO region is what `cdkd orphan` hands for a legacy
  * `<prefix>/<stack>/state.json` listed with no region, and `cdkd state show`
@@ -394,7 +395,7 @@ export function malformedStateRefusalMessage(
  * `recovery` carries them, one location per trailing line).
  *
  * Every other identity keeps the command, so a region-keyed record's text is
- * byte-identical to what it was.
+ * the one-line shape it always was.
  */
 function inspectTail(
   prose: string,
@@ -403,7 +404,7 @@ function inspectTail(
   recovery?: LockRecoveryContext
 ): string {
   if (stackName === undefined || region !== undefined) {
-    return `${prose} ${inspectClause(stackName, region)}Inspect it with: ${inspectCommand(stackName, region)}`;
+    return `${prose} ${inspectClause(stackName, region, recovery)}Inspect it with: ${inspectCommand(stackName, region, recovery)}`;
   }
   const legacy = orphanInspectClause(stackName, undefined, recovery);
   return [`${prose} ${legacy.sentence ?? ''}`.trimEnd(), ...(legacy.locations ?? [])].join('\n');
@@ -414,7 +415,7 @@ function inspectTail(
  *
  * ONE spelling, because copies are what drift, and they carry it byte-identically
  * on purpose — a reader who has met one must recognise the others. Two wrap it
- * in {@link DROP_RECORD_LINE}'s label; `divergentRecordRegionRefusalMessage`
+ * in {@link dropRecordLine}'s label; `divergentRecordRegionRefusalMessage`
  * ends on it bare. The two holes are LITERAL: nothing may substitute them, for
  * the reason {@link malformedDestroyResourcesRefusalMessage}'s note gives.
  *
@@ -429,8 +430,19 @@ function inspectTail(
  * review). The quoted form redirects nothing, whatever follows it. Measured on
  * go-to-k/cdkd#3436: the quoted form passes both holes through as literal
  * argv (`ARGV: state orphan <stack> --stack-region <region>`).
+ *
+ * The caller's account flags follow the holes ({@link accountArgs},
+ * go-to-k/cdkd#3909): the identity is the hole, not the account, and an
+ * operator who fills only the holes would otherwise delete from the DEFAULT
+ * profile's bucket — the reason {@link dropRecordCommand} carries them too.
  */
-const DROP_RECORD_TEMPLATE = `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')}`;
+function dropRecordTemplate(recovery: LockRecoveryContext | undefined): string {
+  return pasteableCommand('cdkd state orphan', [
+    { hole: 'stack' },
+    { flag: '--stack-region', hole: 'region' },
+    ...accountArgs(recovery),
+  ]).command;
+}
 
 /**
  * The same template as a LABELLED line, for the two messages that carry their
@@ -440,7 +452,9 @@ const DROP_RECORD_TEMPLATE = `cdkd state orphan ${commandHole('stack')} --stack-
  * {@link dropRecordCommand} still spells it separately for the `cdkd orphan`
  * messages, which substitute into it — that one is not covered here.
  */
-const DROP_RECORD_LINE = `Drop the record: ${DROP_RECORD_TEMPLATE}`;
+function dropRecordLine(recovery: LockRecoveryContext | undefined): string {
+  return `Drop the record: ${dropRecordTemplate(recovery)}`;
+}
 
 /**
  * May this message NAME its target and offer the destructive template beside
@@ -500,9 +514,23 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
  * {@link WITHHELD_LISTING_POINTER} and {@link inspectClause}, so the two
  * cannot drift (M3 of the go-to-k/cdkd#4011 review).
  */
-const LISTING_SOURCE =
-  `'cdkd state list --json', which writes each name raw rather than sanitized, and act on the ` +
-  `one whose key matches`;
+const LISTING_SOURCE_TAIL = `which writes each name raw rather than sanitized, and act on the one whose key matches`;
+const LISTING_SOURCE = `'cdkd state list --json', ${LISTING_SOURCE_TAIL}`;
+
+/**
+ * {@link LISTING_SOURCE} for a caller whose command carries account flags
+ * (go-to-k/cdkd#3909). The listing is still NAMED in prose, never printed with
+ * a value in it — a value inside English is only as safe as the apostrophes
+ * before it — so it says to run it with the flags the command beside it
+ * carries, which a pasted `cdkd state list --json` would otherwise drop,
+ * listing the DEFAULT profile's bucket instead of the one this run read.
+ */
+function listingSource(flagged: boolean): string {
+  return flagged
+    ? `'cdkd state list --json' run with the same account flags as the command at the end of ` +
+        `this line, ${LISTING_SOURCE_TAIL}`
+    : LISTING_SOURCE;
+}
 
 /**
  * Where the three DESTROY withhold arms send the reader for the exact name
@@ -522,13 +550,151 @@ const LISTING_SOURCE =
  * those quotes splits a padded name into two words aimed at a different record
  * (go-to-k/cdkd#3363).
  *
- * No `--profile` / `--state-bucket` flags ride on it: these builders take no
- * `LockRecoveryContext`, and the `Inspect` command beside them carries none
- * either, so the listing reads the same bucket that command does.
+ * With a `LockRecoveryContext` carrying any account flag the listing is no
+ * longer named in prose but printed as its own `Find the exact name:` line
+ * ({@link withheldListingPointer}), carrying the same flags as the `Inspect`
+ * command beside it, so both read the bucket the refusing run read
+ * (go-to-k/cdkd#3909). Without one, this text is unchanged and neither command
+ * carries a flag, so the two still agree.
  */
 const WITHHELD_LISTING_POINTER =
   `${LISTING_SOURCE}, filling the Inspect command's holes from it — replacing each quoted ` +
   `hole, quotes included, with the shell-quoted value`;
+
+/**
+ * {@link WITHHELD_LISTING_POINTER}, or — when `recovery` carries an account flag —
+ * the same sentence pointing at the `Find the exact name:` line below, plus
+ * that line. `line` is `undefined` exactly when the pointer is the prose form.
+ */
+function withheldListingPointer(recovery: LockRecoveryContext | undefined): {
+  readonly pointer: string;
+  readonly line: string | undefined;
+} {
+  const args = accountArgs(recovery);
+  if (args.length === 0) return { pointer: WITHHELD_LISTING_POINTER, line: undefined };
+  return {
+    pointer:
+      `the 'Find the exact name' command below, ${LISTING_SOURCE_TAIL}, filling the Inspect ` +
+      `command's holes from it — replacing each quoted hole, quotes included, with the ` +
+      `shell-quoted value`,
+    line: `Find the exact name: ${pasteableCommand('cdkd state list', [{ literal: '--json' }, ...args]).command}`,
+  };
+}
+
+/**
+ * The flags that pin a command this module prints to the caller's account and
+ * key space — `--profile`, the resolved `--state-bucket`, a NON-default
+ * `--state-prefix` — as arguments to the SHARED gate (go-to-k/cdkd#3909). The
+ * emit rules are `recoveryCommandFlags`': an empty profile or bucket is
+ * omitted, the default prefix is omitted, and an EMPTY prefix is printed as
+ * `--state-prefix ''`, since it selects a different key space.
+ *
+ * STRICTER than `recoveryCommandFlags`, on purpose: every value is held to
+ * `plainIdent`, because each command it serves sits beside a labelled line —
+ * the shape `.claude/rules/state-malformed-containers.md` governs — and
+ * exactness alone keeps a space and a `:`, so a profile spelling
+ * `Drop the record: ...` would print, quoted, where a terminal wrap starts a
+ * visual line with it. A refused value prints as a quoted hole and is
+ * DESCRIBED by {@link withheldAccountClause}, never echoed. Every command in
+ * this module qualifies through it, the `cdkd orphan` refusals' included;
+ * `recoveryCommandFlags` stays with `cdkd force-unlock`'s hint, which suppresses
+ * its whole command instead.
+ */
+function accountArgs(recovery: LockRecoveryContext | undefined): CommandArg[] {
+  if (recovery === undefined) return [];
+  const args: CommandArg[] = [];
+  if (recovery.profile) {
+    args.push({
+      flag: '--profile',
+      value: recovery.profile,
+      hole: 'profile',
+      opts: { plainIdent: true },
+    });
+  }
+  if (recovery.stateBucket) {
+    args.push({
+      flag: '--state-bucket',
+      value: recovery.stateBucket,
+      hole: 'bucket',
+      opts: { plainIdent: true },
+    });
+  }
+  const prefix = recovery.statePrefix;
+  if (prefix !== undefined && prefix !== DEFAULT_STATE_PREFIX) {
+    args.push(
+      prefix === ''
+        ? { literal: `--state-prefix ''` }
+        : { flag: '--state-prefix', value: prefix, hole: 'prefix', opts: { plainIdent: true } }
+    );
+  }
+  return args;
+}
+
+/** The flag each {@link accountArgs} hole stands in for. */
+const ACCOUNT_FLAG_BY_HOLE: Readonly<Record<string, string>> = {
+  profile: '--profile',
+  bucket: '--state-bucket',
+  prefix: '--state-prefix',
+};
+
+/**
+ * The sentence explaining an account hole {@link accountArgs} printed, or `''`
+ * when it withheld none. It names the FLAG and the gate's REASON and never the
+ * value, which the operator already holds — it is their own argv — so no
+ * listing would help and the value is not repeated here (go-to-k/cdkd#3909).
+ * `where` is the subject and verb of the command(s) the hole is printed in.
+ */
+function withheldAccountClause(withheld: readonly WithheldValue[], where: string): string {
+  const parts = withheld
+    .filter((w) => ACCOUNT_FLAG_BY_HOLE[w.hole] !== undefined)
+    .map(
+      (w) =>
+        `the '${ACCOUNT_FLAG_BY_HOLE[w.hole]}' value this run was given ${accountReason(w.reason)}`
+    );
+  if (parts.length === 0) return '';
+  const sentence = parts.join(', and ');
+  const holes = parts.length === 1 ? 'a quoted hole in its place' : 'quoted holes in their place';
+  return (
+    `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}, so ${where} ${holes}: replace ` +
+    `each such hole whole, quotes included, with the shell-quoted value you passed this run. `
+  );
+}
+
+/** Why {@link accountArgs} withheld a value, for {@link withheldAccountClause}. */
+function accountReason(reason: WithholdReason): string {
+  switch (reason) {
+    case 'altered':
+      return 'does not render exactly';
+    // Unreachable: `accountArgs` omits an empty profile and bucket and prints
+    // an empty prefix as a literal. A sentence rather than a throw, because this
+    // renders inside a refusal, where a throw would replace it.
+    case 'empty':
+      return 'is empty';
+    case 'too-long':
+      return 'is too long to print';
+    case 'option-shaped':
+      return `begins with a '-', which cdkd refuses to print as an argument`;
+    // Unreachable: `accountArgs` passes no `patternMatched`.
+    case 'pattern-shaped':
+      return 'would be read as a pattern';
+    case 'not-plain':
+      return (
+        `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or ` +
+        `'-'), the only shape printed in a command beside a labelled line`
+      );
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error(`accountReason: unhandled WithholdReason ${String(_exhaustive)}`);
+    }
+  }
+}
+
+/** The holes {@link accountArgs} would print for `recovery`, with the gate's reasons. */
+function withheldAccountValues(
+  recovery: LockRecoveryContext | undefined
+): readonly WithheldValue[] {
+  return pasteableCommand('cdkd', accountArgs(recovery)).withheld;
+}
 
 /**
  * The DESTROY refusal text for the `resources` bag (issue
@@ -654,8 +820,18 @@ const WITHHELD_LISTING_POINTER =
  * gated and shell-quoted ({@link inspectCommand}, behind
  * {@link mayNameTargetWithDestructiveRemedy}), for the reasons
  * {@link safeIdentifier}'s note gives.
+ *
+ * `recovery` is the caller's `--profile` / resolved bucket / `--state-prefix`
+ * (go-to-k/cdkd#3909): every command line carries them through
+ * {@link accountArgs}, and the withhold arm's listing becomes a
+ * `Find the exact name:` line carrying them too, so none of the three reads
+ * the default profile's bucket when pasted.
  */
-export function malformedDestroyResourcesRefusalMessage(stackName: string, region: string): string {
+export function malformedDestroyResourcesRefusalMessage(
+  stackName: string,
+  region: string,
+  recovery?: LockRecoveryContext
+): string {
   // EXACTNESS, not merely printability: `safeIdentifier` may trim, substitute
   // or truncate, and each of those can render a planted identifier as a
   // healthy one. Compared against the RAW value, so any divergence at all
@@ -671,19 +847,20 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
   // following it would READ the healthy sibling, return a clean record, and raise
   // the operator's confidence right before the destructive step.
   const detail = malformedStateDiagnosis(exact ? stackName : undefined, exact ? region : undefined);
+  const listing = withheldListingPointer(recovery);
   const remedy = exact
     ? `To drop the record deliberately and leave the live resources standing, run ` +
       `'cdkd state orphan' against the stack and the region THE RECORD'S S3 KEY holds. It is ` +
       `spelled as a template on its own line below rather than handed over ready to run, ` +
       `because that command DELETES a record and a key segment is chosen by anyone who can ` +
       `write this bucket: the key says WHICH record this is, which is not the same as ` +
-      `vouching for it as a delete target. Confirm the key with 'cdkd state list --long' — a ` +
-      `legacy record shows none, and for one of those the flag must be OMITTED or it selects ` +
-      `nothing.`
+      `vouching for it as a delete target. Confirm the key with ` +
+      `${confirmKeyListing(recovery)} — a legacy record shows none, and for one of those the ` +
+      `flag must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly — what is printed above is a ` +
       `sanitized form, and another record may render identically — so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
-      `${WITHHELD_LISTING_POINTER}.`;
+      `${listing.pointer}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses ` +
     `rather than continuing: the resource map IS the list of what to delete, so an unreadable ` +
@@ -691,7 +868,8 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
     `state.json and reports success while every resource the record named is still live in AWS ` +
     `and no longer referenced by anything. Reading the bag as EMPTY is that same outcome rather ` +
     `than an alternative to it, so there is no repair available here. Repair or remove the ` +
-    `record first. ${remedy}`;
+    `record first. ${remedy}` +
+    destroyAccountClause(recovery);
   // ONE COMMAND PER LINE, the shape
   // {@link malformedOrphanResourcePropertiesRefusalMessage} already takes
   // (go-to-k/cdkd#3516). A single line cannot hold both: the pasteable READ has
@@ -705,12 +883,40 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
   // built from a rendering it has just said may name a healthy sibling.
   return [
     prose,
-    `Inspect the record: ${inspectCommand(exact ? stackName : undefined, exact ? region : undefined)}`,
+    // The listing first: the Inspect command's holes are filled from it.
+    ...(!exact && listing.line !== undefined ? [listing.line] : []),
+    `Inspect the record: ${inspectCommand(exact ? stackName : undefined, exact ? region : undefined, recovery)}`,
     // Only the exact arm offers it. The withhold arm names no target, so a
     // destructive template there would be an instruction with nothing to fill
     // the holes from.
-    ...(exact ? [DROP_RECORD_LINE] : []),
+    ...(exact ? [dropRecordLine(recovery)] : []),
   ].join('\n');
+}
+
+/**
+ * How the two DESTROY refusals' EXACT arm names the key-confirming listing:
+ * the fixed `'cdkd state list --long'`, told to carry the account flags the
+ * command lines below carry when there are any (go-to-k/cdkd#3909). Named in
+ * prose rather than printed as a line — this arm's own lines are the read and
+ * the destructive template, and a third command would not be the one the
+ * sentence is about.
+ */
+function confirmKeyListing(recovery: LockRecoveryContext | undefined): string {
+  return accountArgs(recovery).length === 0
+    ? `'cdkd state list --long'`
+    : `'cdkd state list --long' run with the same account flags as the command lines below`;
+}
+
+/**
+ * {@link withheldAccountClause} for the two per-line DESTROY refusals, with the
+ * leading space that joins it to the prose; `''` when nothing was withheld.
+ */
+function destroyAccountClause(recovery: LockRecoveryContext | undefined): string {
+  const clause = withheldAccountClause(
+    withheldAccountValues(recovery),
+    'the command lines below print'
+  );
+  return clause === '' ? '' : ` ${clause.trimEnd()}`;
 }
 
 /**
@@ -732,7 +938,9 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
 export function refuseMalformedResourcesForDestroy(
   state: StackState,
   stackName: string,
-  region: string
+  region: string,
+  /** See {@link malformedDestroyResourcesRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   if (hasReadableResources(state)) return;
   // `markNonRetryable` for the reason `refuseMalformedOutputsForDestroy`
@@ -741,7 +949,7 @@ export function refuseMalformedResourcesForDestroy(
   // SUBSTRING-matching retry classifier can read as transient. Issue #1838.
   throw markNonRetryable(
     new CdkdError(
-      malformedDestroyResourcesRefusalMessage(stackName, region),
+      malformedDestroyResourcesRefusalMessage(stackName, region, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -807,7 +1015,12 @@ export function divergentRecordRegionRefusalMessage(
   keyRegion: string,
   divergentBodyRegion: unknown,
   /** `undefined` when the bag could not be READ — see the refusal's fail-closed arm. */
-  resourceCount: number | undefined
+  resourceCount: number | undefined,
+  /**
+   * The caller's account flags, carried by every command this prints — see
+   * {@link malformedDestroyResourcesRefusalMessage} (go-to-k/cdkd#3909).
+   */
+  recovery?: LockRecoveryContext
 ): string {
   // EXACTNESS, and it is the same gate {@link malformedDestroyResourcesRefusalMessage}
   // carries three functions up, for the reason its note gives: `safeIdentifier`
@@ -864,16 +1077,27 @@ export function divergentRecordRegionRefusalMessage(
   // "— so cdkd cannot tell which region…" still attaches to the divergence it
   // explains. Chained to the opening it produced two `— so` clauses with
   // different causes (review round 3).
+  // The account clause sits BEFORE the command it explains, and each arm names
+  // where that command is: the exact arm ends on its template, the withhold arm
+  // puts its commands on lines of their own once any account flag rides on them.
+  const listing = withheldListingPointer(recovery);
+  const withheldAccounts = withheldAccountValues(recovery);
   const remedy = exact
     ? `Re-run with --verbose to see what the record's region field holds, then either destroy ` +
       `against the region the resources are really in, or repair that field to match the key it ` +
-      `is stored under and re-run. To drop the record and leave the live resources standing, ` +
+      `is stored under and re-run. ` +
+      withheldAccountClause(withheldAccounts, 'the command at the end of this message prints') +
+      `To drop the record and leave the live resources standing, ` +
       `spelled out rather than pasteable because that command DELETES a record: ` +
-      DROP_RECORD_TEMPLATE
+      dropRecordTemplate(recovery)
     : `This record's stack name or region does NOT render exactly — what any surrounding output ` +
       `shows is a sanitized form, and another record may render identically — so this message ` +
       `names no target and offers no command against one. List the records as stored with ` +
-      `${WITHHELD_LISTING_POINTER}. Inspect it with: ${inspectCommand(undefined, undefined)}`;
+      (listing.line === undefined
+        ? `${WITHHELD_LISTING_POINTER}. Inspect it with: ${inspectCommand(undefined, undefined)}`
+        : `${listing.pointer}.` +
+          destroyAccountClause(recovery) +
+          `\n${listing.line}\nInspect it with: ${inspectCommand(undefined, undefined, recovery)}`);
   // The tail says "those resources" only when the opening counted some; on the
   // unreadable-bag arm it has no antecedent, so that arm gets its own wording.
   const cannotTell =
@@ -908,7 +1132,9 @@ export function refuseDivergentRecordRegionForDestroy(
   state: StackState,
   stackName: string,
   keyRegion: string,
-  divergentBodyRegion: unknown
+  divergentBodyRegion: unknown,
+  /** See {@link divergentRecordRegionRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   if (divergentBodyRegion === undefined) return;
   // FAIL CLOSED on a bag this cannot count. On the destroy path
@@ -927,7 +1153,13 @@ export function refuseDivergentRecordRegionForDestroy(
   // verdict comes from a PERSISTED record, so no retry can change it.
   throw markNonRetryable(
     new CdkdError(
-      divergentRecordRegionRefusalMessage(stackName, keyRegion, divergentBodyRegion, resourceCount),
+      divergentRecordRegionRefusalMessage(
+        stackName,
+        keyRegion,
+        divergentBodyRegion,
+        resourceCount,
+        recovery
+      ),
       STATE_REGION_DIVERGED
     )
   );
@@ -1360,7 +1592,10 @@ export function refuseMalformedState(
 export function malformedOutputsRefusalMessage(
   rawStackName: string,
   rawRegion: string | undefined,
-  /** See {@link inspectTail}; only the region-less legacy arm reads it. */
+  /**
+   * The caller's account flags: the inspect command carries them, and the
+   * region-less legacy arm names the bucket from them — see {@link inspectTail}.
+   */
   recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1626,7 +1861,12 @@ export function malformedOrphansWarning(rawStackName: string, rawRegion: string)
  * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
  * for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: string): string {
+export function malformedOrphansRefusalMessage(
+  rawStackName: string,
+  rawRegion: string,
+  /** The caller's account flags, carried by the inspect command (go-to-k/cdkd#3909). */
+  recovery?: LockRecoveryContext
+): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -1638,8 +1878,8 @@ export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: 
     `orphans at all — so a run would delete or adopt against a record whose evidence of ` +
     `resources left live in AWS by an earlier failed deploy it never read. Repair or remove the ` +
     `record first, and no cdkd command repairs this container: rewriting it to [] by hand ` +
-    `discards the very evidence this refusal is protecting. ${inspectClause(stackName, region)}Inspect the record with: ` +
-    inspectCommand(stackName, region)
+    `discards the very evidence this refusal is protecting. ${inspectClause(stackName, region, recovery)}Inspect the record with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -1665,8 +1905,14 @@ export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: 
  * since a name that does not render faithfully must not become a command
  * against a record that may not be the damaged one.
  */
-export function malformedDestroyOrphansRefusalMessage(stackName: string, region: string): string {
+export function malformedDestroyOrphansRefusalMessage(
+  stackName: string,
+  region: string,
+  /** See {@link malformedDestroyResourcesRefusalMessage} (go-to-k/cdkd#3909). */
+  recovery?: LockRecoveryContext
+): string {
   const exact = mayNameTargetWithDestructiveRemedy(stackName, region);
+  const listing = withheldListingPointer(recovery);
   // Both arms continue `stackClause`'s own sentence rather than starting a new
   // one after it: the no-identity clause ends open ("The state record this
   // command loaded"), so a second sentence bolted on renders without a verb —
@@ -1681,18 +1927,19 @@ export function malformedDestroyOrphansRefusalMessage(stackName: string, region:
       `rather than handed over ready to run, because that command DELETES a record and a key ` +
       `segment is chosen by anyone who can write this bucket: the key says WHICH record this ` +
       `is, which is not the same as vouching for it as a delete target. Confirm the key with ` +
-      `'cdkd state list --long' — a legacy record shows none, and for one of those the flag ` +
-      `must be OMITTED or it selects nothing.`
+      `${confirmKeyListing(recovery)} — a legacy record shows none, and for one of those the ` +
+      `flag must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly, so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
-      `${WITHHELD_LISTING_POINTER}.`;
+      `${listing.pointer}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses rather than continuing: an unreadable ` +
     `container counts as no orphans, so the run would proceed through resource deletion to ` +
     `removing state.json while the record's evidence that an earlier failed deploy left ` +
     `resources live in AWS was never read — and that evidence goes with the record. Reading it ` +
     `as EMPTY is that outcome rather than an alternative to it, so there is no repair available ` +
-    `here. Repair or remove the record first. ${remedy}`;
+    `here. Repair or remove the record first. ${remedy}` +
+    destroyAccountClause(recovery);
   // ONE COMMAND PER LINE, for the reason
   // {@link malformedDestroyResourcesRefusalMessage}'s note gives
   // (go-to-k/cdkd#3516). go-to-k/cdkd#3379 shipped both commands on one line
@@ -1700,8 +1947,9 @@ export function malformedDestroyOrphansRefusalMessage(stackName: string, region:
   // template an operator has to fill the holes of by hand.
   return [
     prose,
-    `Inspect the record: ${inspectCommand(exact ? stackName : undefined, exact ? region : undefined)}`,
-    ...(exact ? [DROP_RECORD_LINE] : []),
+    ...(!exact && listing.line !== undefined ? [listing.line] : []),
+    `Inspect the record: ${inspectCommand(exact ? stackName : undefined, exact ? region : undefined, recovery)}`,
+    ...(exact ? [dropRecordLine(recovery)] : []),
   ].join('\n');
 }
 
@@ -1713,12 +1961,14 @@ export function malformedDestroyOrphansRefusalMessage(stackName: string, region:
 export function refuseMalformedOrphansForDestroy(
   state: Pick<StackState, 'orphans'>,
   stackName: string,
-  region: string
+  region: string,
+  /** See {@link malformedDestroyOrphansRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   if (hasReadableOrphans(state)) return;
   throw markNonRetryable(
     new CdkdError(
-      malformedDestroyOrphansRefusalMessage(stackName, region),
+      malformedDestroyOrphansRefusalMessage(stackName, region, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -1740,7 +1990,9 @@ export function refuseMalformedOrphansForDestroy(
 export function refuseMalformedOrphans(
   state: Pick<StackState, 'orphans'>,
   stackName: string,
-  region: string
+  region: string,
+  /** See {@link malformedOrphansRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   if (hasReadableOrphans(state)) return;
   // `markNonRetryable` for the reason {@link refuseMalformedOutputs} carries
@@ -1748,7 +2000,10 @@ export function refuseMalformedOrphans(
   // parent's `withRetry(provider.create)`, and the verdict comes from a
   // PERSISTED record no retry can change.
   throw markNonRetryable(
-    new CdkdError(malformedOrphansRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED)
+    new CdkdError(
+      malformedOrphansRefusalMessage(stackName, region, recovery),
+      STATE_RESOURCES_MALFORMED
+    )
   );
 }
 
@@ -1781,7 +2036,9 @@ export function refuseMalformedOrphans(
  */
 export function malformedDestroyOutputsRefusalMessage(
   rawStackName: string,
-  rawRegion: string
+  rawRegion: string,
+  /** The caller's account flags, carried by the inspect command (go-to-k/cdkd#3909). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -1794,8 +2051,8 @@ export function malformedDestroyOutputsRefusalMessage(
     `imports from. A string or a list invents one export name per character or element; a null, ` +
     `a number or a boolean reads as 'exports nothing' and SKIPS the check entirely, deleting the ` +
     `record while consumers still resolve against it. Repair or remove the record first. ` +
-    `${inspectClause(stackName, region)}Inspect it with: ` +
-    inspectCommand(stackName, region)
+    `${inspectClause(stackName, region, recovery)}Inspect it with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -1817,7 +2074,9 @@ export function malformedDestroyOutputsRefusalMessage(
 export function refuseMalformedOutputsForDestroy(
   state: Pick<StackState, 'outputs'>,
   stackName: string,
-  region: string
+  region: string,
+  /** See {@link malformedDestroyOutputsRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   if (hasReadableOutputs(state)) return;
   // `markNonRetryable` because this decides from a PERSISTED record: a retry
@@ -1826,7 +2085,7 @@ export function refuseMalformedOutputsForDestroy(
   // (`does not exist` and `DependencyViolation` are live patterns). Issue #1838.
   throw markNonRetryable(
     new CdkdError(
-      malformedDestroyOutputsRefusalMessage(stackName, region),
+      malformedDestroyOutputsRefusalMessage(stackName, region, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -2044,7 +2303,7 @@ function stackClause(
  * since a key segment beginning with `-` is still that record's key).
  *
  * `recovery` qualifies EVERY arm, the no-identity template included, the way
- * {@link buildForceUnlockCommand} is qualified, through the same `recoveryCommandFlags`: `cdkd state orphan`
+ * {@link buildForceUnlockCommand} is qualified, through {@link accountArgs}: `cdkd state orphan`
  * re-resolves the bucket from the ambient profile, so a remedy pasted after
  * `cdkd orphan --profile prod ...` would otherwise address the default
  * profile's account. The template keeps them too: the identity is the hole,
@@ -2058,12 +2317,7 @@ function dropRecordCommand(
   region: string | undefined,
   recovery?: LockRecoveryContext
 ): string {
-  if (stackName === undefined || stackName === '') {
-    return [
-      `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')}`,
-      ...recoveryCommandFlags(recovery).flags,
-    ].join(' ');
-  }
+  if (stackName === undefined || stackName === '') return dropRecordTemplate(recovery);
   // The `=== ''` arms duplicate the caller's normalisation deliberately: this
   // helper is module-private but its two siblings are reached from builders
   // that do NOT normalise, so a fourth caller added later inherits the floor
@@ -2074,11 +2328,10 @@ function dropRecordCommand(
   // legacy record), a named one is kept (it narrows the delete), only a
   // withheld one becomes a hole — and a withheld region makes the name a hole
   // too, since the pair is one identity.
-  return pasteableCommand(
-    'cdkd state orphan',
-    orphanIdentityArgs(stackName, known),
-    recoveryCommandFlags(recovery).flags
-  ).command;
+  return pasteableCommand('cdkd state orphan', [
+    ...orphanIdentityArgs(stackName, known),
+    ...accountArgs(recovery),
+  ]).command;
 }
 
 /**
@@ -2201,12 +2454,16 @@ function rendersExactly(value: string, maxCodePoints: number = STACK_REF_MAX_COD
 /**
  * The remedy command a message ends ON — unless the message also offers the
  * destructive template, in which case it ends the READ's own LINE and
- * {@link DROP_RECORD_LINE} is last (go-to-k/cdkd#3516) — the two DESTROY
+ * {@link dropRecordLine} is last (go-to-k/cdkd#3516) — the two DESTROY
  * refusals; the rest close their string with it, directly or through
  * {@link inspectTail}.
  */
-function inspectCommand(stackName: string | undefined, region: string | undefined): string {
-  return inspectGate(stackName, region).command;
+function inspectCommand(
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): string {
+  return inspectGate(stackName, region, recovery).command;
 }
 
 /**
@@ -2226,17 +2483,31 @@ function inspectCommand(stackName: string | undefined, region: string | undefine
  * `too-long` first. The region is `--stack-region`'s VALUE, which Commander
  * takes as given, so its hole may be filled.
  */
-function inspectClause(stackName: string | undefined, region: string | undefined): string {
-  // Subsumed, and kept for the type: `inspectGate` withholds nothing for an
+function inspectClause(
+  stackName: string | undefined,
+  region: string | undefined,
+  /**
+   * The caller's account flags (go-to-k/cdkd#3909). A withheld one is explained
+   * after the identity sentence, and a named one makes the listing pointer say
+   * to carry the same flags.
+   */
+  recovery?: LockRecoveryContext
+): string {
+  const accounts = withheldAccountClause(
+    withheldAccountValues(recovery),
+    'the command at the end of this line prints'
+  );
+  // Subsumed, and kept for the type: `inspectGate` withholds no IDENTITY for an
   // absent name (its template arm), so the empty-`parts` return below would
-  // answer `''` too, but `stackName.startsWith` needs the narrowing.
-  if (stackName === undefined) return '';
-  const { withheld } = inspectGate(stackName, region);
+  // answer the account clause alone too, but `stackName.startsWith` needs the
+  // narrowing.
+  if (stackName === undefined) return accounts;
+  const { withheld } = inspectGate(stackName, region, recovery);
   const parts = [
     inspectWithheldPart('stack name above', withheld, 'stack', true),
     inspectWithheldPart('region above', withheld, 'region', false),
   ].filter((part) => part !== '');
-  if (parts.length === 0) return '';
+  if (parts.length === 0) return accounts;
   // The command follows its label on the SAME line (`... Inspect it with:
   // cdkd state show ...`), so the sentence says "at the end of this line", not
   // "below" (M1 of the go-to-k/cdkd#4011 review).
@@ -2253,8 +2524,10 @@ function inspectClause(stackName: string | undefined, region: string | undefined
     `The ${parts.join(', and the ')}, so the command at the end of this line prints ${holes}. ` +
     (stackName.startsWith('-')
       ? noFill.charAt(0).toUpperCase() + noFill.slice(1)
-      : `Take the values from ${LISTING_SOURCE}, replacing each quoted hole in the command at ` +
-        `the end of this line, quotes included, with the shell-quoted value. `)
+      : `Take the values from ${listingSource(accountArgs(recovery).length > 0)}, replacing ` +
+        `each quoted hole in the command at the end of this line, quotes included, with the ` +
+        `shell-quoted value. `) +
+    accounts
   );
 }
 
@@ -2302,15 +2575,21 @@ function inspectWithheldPart(
 /** {@link inspectCommand}'s gate, returned whole so {@link inspectClause} reads the same verdict. */
 function inspectGate(
   stackName: string | undefined,
-  region: string | undefined
+  region: string | undefined,
+  recovery?: LockRecoveryContext
 ): { readonly command: string; readonly withheld: readonly WithheldValue[] } {
+  // The caller's account flags ride LAST on both arms (go-to-k/cdkd#3909): the
+  // identity may be a hole, the account never is one the operator must guess.
+  const account = accountArgs(recovery);
   if (stackName === undefined) {
     // A TEMPLATE rather than a command, and it says so: substituting anything
     // here would be substituting the untrusted values the clause above drops.
-    return {
-      command: `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`,
-      withheld: [],
-    };
+    return pasteableCommand('cdkd state show', [
+      { hole: 'stack' },
+      { flag: '--stack-region', hole: 'region' },
+      { literal: '--json' },
+      ...account,
+    ]);
   }
   // The SHARED gate since go-to-k/cdkd#3436's fold-in. The local form printed
   // `shellQuote(safeStackName(...))` -- the SANITIZED spelling, ungated -- so a
@@ -2335,21 +2614,21 @@ function inspectGate(
   // exact "borrowing a gate UPWARD" the rule file forbids. `maxCodePoints` is
   // how the gate takes a caller's cap without the caller re-spelling the
   // comparison.
-  const built = pasteableCommand(
-    'cdkd state show',
-    region === undefined
-      ? [{ value: stackName, hole: 'stack', opts: { plainIdent: true } }]
+  return pasteableCommand('cdkd state show', [
+    { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+    ...(region === undefined
+      ? []
       : [
-          { value: stackName, hole: 'stack', opts: { plainIdent: true } },
           {
             flag: '--stack-region',
             value: region,
             hole: 'region',
             opts: { plainIdent: true, maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
           },
-        ]
-  );
-  return { command: `${built.command} --json`, withheld: built.withheld };
+        ]),
+    { literal: '--json' },
+    ...account,
+  ]);
 }
 
 /**
@@ -2921,7 +3200,8 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
 
 /**
  * The half-sentence for the OTHER thing that can print as a hole: one of the
- * account fragments `recoveryCommandFlags` appends.
+ * account fragments {@link accountArgs} appends, named by flag and by the
+ * gate's reason, never by value (go-to-k/cdkd#3909).
  *
  * Separate from {@link withheldIdentityClause} rather than folded into it,
  * because the two holes have different SOURCES and therefore different remedies.
@@ -2937,12 +3217,13 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
  * {@link withheldIdentityClause}'s own defect class, one fragment over.
  */
 function withheldRecoveryClause(recovery?: LockRecoveryContext): string {
-  if (recoveryCommandFlags(recovery).exact) return '';
-  return (
-    ` — an account fragment ('--profile', '--state-bucket' or '--state-prefix') did not render ` +
-    `exactly, so the command lines below print a quoted hole in its place, which you replace ` +
-    `whole — quotes included — with the SHELL-QUOTED value you passed this run`
-  );
+  const clause = withheldAccountClause(
+    withheldAccountValues(recovery),
+    'the command lines below print'
+  ).trimEnd();
+  if (clause === '') return '';
+  // Spliced mid-sentence as a dash clause, so lower-cased and without its stop.
+  return ` — ${clause.charAt(0).toLowerCase()}${clause.slice(1, -1)}`;
 }
 
 /**
@@ -2963,7 +3244,8 @@ function withheldIdentityListCommand(
   // operator to fix that record by hand, and a listing would only hand back
   // the name they must not paste.
   if (stackName.startsWith('-') && verdict.region === undefined) return undefined;
-  return ['cdkd state list --json', ...recoveryCommandFlags(recovery).flags].join(' ');
+  return pasteableCommand('cdkd state list', [{ literal: '--json' }, ...accountArgs(recovery)])
+    .command;
 }
 
 /**
@@ -3011,11 +3293,11 @@ function orphanInspectCommand(
   region: string,
   recovery?: LockRecoveryContext
 ): string {
-  return pasteableCommand(
-    'cdkd state show',
-    [...orphanIdentityArgs(stackName, region), { literal: '--json' }],
-    recoveryCommandFlags(recovery).flags
-  ).command;
+  return pasteableCommand('cdkd state show', [
+    ...orphanIdentityArgs(stackName, region),
+    { literal: '--json' },
+    ...accountArgs(recovery),
+  ]).command;
 }
 
 /**
@@ -3065,11 +3347,7 @@ function orphanInspectClause(
   if (stackName === undefined || stackName === '') {
     // The same template the shared `inspectCommand` gives for no identity, but
     // qualified: the identity is the hole, not the account.
-    const template = [
-      `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`,
-      ...recoveryCommandFlags(recovery).flags,
-    ].join(' ');
-    return { command: template };
+    return { command: inspectCommand(undefined, undefined, recovery) };
   }
   if (region !== undefined) {
     return { command: orphanInspectCommand(stackName, region, recovery) };
@@ -3078,20 +3356,25 @@ function orphanInspectClause(
     `The record is listed with no region — a legacy 'state.json' whose body names none, or ` +
     `one the listing could not read — which 'cdkd state show' cannot read and a 'cdkd deploy' ` +
     `will not migrate while it is torn, so inspect the object directly`;
-  // The bucket and prefix are printed only when they render EXACTLY, the test
-  // `recoveryCommandFlags` applies to the same two values on the commands
-  // above (go-to-k/cdkd#3377): an altered one would name a different bucket or
-  // key space. Otherwise the sentence falls back to the placeholder forms.
+  // The bucket and prefix are printed only when they render EXACTLY
+  // (go-to-k/cdkd#3377): an altered one would name a different bucket or key
+  // space. Otherwise the sentence falls back to the placeholder forms. The
+  // BUCKET is also held to `isPasteableIdent`, the gate {@link accountArgs}
+  // holds it to on the command lines above, so a bucket those lines print as a
+  // hole is not echoed on this one (go-to-k/cdkd#3909); the PREFIX is gated
+  // per `/`-separated segment below.
   const exactOrUndefined = (v: string | undefined): string | undefined =>
     v !== undefined && sanitizeRecoveryValue(v).exact ? v : undefined;
   // `|| undefined` floors `''` as well, and the asymmetry with the PREFIX two
   // lines down is the point: a bucket NAME cannot be empty, and
-  // `recoveryCommandFlags` emits no `--state-bucket` for `''` — so a
+  // {@link accountArgs} emits no `--state-bucket` for `''` — so a
   // `State bucket: ''` line would name nothing while this sentence promised it
   // named the bucket, and the same value would be described by two rules. An
   // empty PREFIX is a real key space (`/<stack>/state.json`), which is why it
   // keeps its own arm and why the flag emits `--state-prefix ''`.
-  const bucket = exactOrUndefined(recovery?.stateBucket) || undefined;
+  const exactBucket = exactOrUndefined(recovery?.stateBucket) || undefined;
+  const bucket =
+    exactBucket !== undefined && isPasteableIdent(exactBucket) ? exactBucket : undefined;
   // The object's LOCATION is printed on labelled trailing lines, one value per
   // line, never inside this sentence — B1 of go-to-k/cdkd#3363's fourth review.
   // A shell-quoted value is only safe while the quotes before it BALANCE, and
@@ -3118,7 +3401,16 @@ function orphanInspectClause(
       locations,
     };
   }
-  const prefix = exactOrUndefined(recovery?.statePrefix);
+  // Every `/`-separated SEGMENT held to `isPasteableIdent`: a slash prefix
+  // (`org/cdkd`) is an ordinary key, but a segment the command lines above
+  // print as a hole is not echoed on this line either (go-to-k/cdkd#3909
+  // review). An empty prefix keeps its own arm: it is a real key space.
+  const exactPrefix = exactOrUndefined(recovery?.statePrefix);
+  const prefix =
+    exactPrefix === undefined ||
+    (exactPrefix !== '' && !exactPrefix.split('/').every((seg) => isPasteableIdent(seg)))
+      ? undefined
+      : exactPrefix;
   const key = shellQuote(`${prefix ?? '<prefix>'}/${stackName}/state.json`);
   // The fill-in note only when no prefix was SUPPLIED: one that was supplied but
   // did not render exactly is not the default, so the note would mislead.
@@ -3143,7 +3435,8 @@ function orphanInspectClause(
           // read it and `>` then truncated a file named `where`. The rule
           // `commandHole` exists for does not stop at the command lines
           // (go-to-k/cdkd#3440 review, the third round of this class).
-          ` The prefix you passed did not render exactly, so the key shows the hole ` +
+          ` The prefix you passed is not shown here, because it did not render exactly or ` +
+          `one of its '/'-separated parts is not a plain identifier, so the key shows the hole ` +
           `'<prefix>' where it belongs; put your own value there, inside the outer quotes.`
         : '';
   return {
@@ -3442,12 +3735,14 @@ export function isReadableResourceEntry(entry: unknown): boolean {
 export function refuseMalformedResourceEntries(
   state: StackState,
   stackName: string,
-  region: string
+  region: string,
+  /** See {@link malformedResourceEntriesRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   const unreadable = unreadableResourceEntries(state);
   if (unreadable.length === 0) return;
   throw new CdkdError(
-    malformedResourceEntriesRefusalMessage(stackName, region, unreadable),
+    malformedResourceEntriesRefusalMessage(stackName, region, unreadable, recovery),
     STATE_RESOURCES_MALFORMED
   );
 }
@@ -3613,7 +3908,9 @@ function namedEntriesClause(
 export function malformedResourceEntriesRefusalMessage(
   rawStackName: string,
   rawRegion: string,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried by the inspect command (go-to-k/cdkd#3909). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -3622,8 +3919,8 @@ export function malformedResourceEntriesRefusalMessage(
     `${namedEntriesClause(stackName, region, logicalIds)} This command can WRITE state, so it ` +
     `refuses rather than skipping them: saving over the record would report a clean run for ` +
     `entries nothing could read, and would leave the next command to fail on them with no more ` +
-    `to go on. Nothing was locked, read from AWS or written FOR THIS STACK. ${inspectClause(stackName, region)}Inspect it with: ` +
-    inspectCommand(stackName, region)
+    `to go on. Nothing was locked, read from AWS or written FOR THIS STACK. ${inspectClause(stackName, region, recovery)}Inspect it with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -3737,13 +4034,15 @@ export function malformedDeployResourceEntriesRefusalMessage(
 export function refuseMalformedResourceEntriesForDestroy(
   state: StackState,
   stackName: string,
-  region: string
+  region: string,
+  /** See {@link malformedDestroyResourceEntriesRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   const unreadable = unreadableResourceEntries(state);
   if (unreadable.length === 0) return;
   throw markNonRetryable(
     new CdkdError(
-      malformedDestroyResourceEntriesRefusalMessage(stackName, region, unreadable),
+      malformedDestroyResourceEntriesRefusalMessage(stackName, region, unreadable, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -3763,7 +4062,9 @@ export function refuseMalformedResourceEntriesForDestroy(
 export function malformedDestroyResourceEntriesRefusalMessage(
   rawStackName: string,
   rawRegion: string,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried by the inspect command (go-to-k/cdkd#3909). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -3780,8 +4081,8 @@ export function malformedDestroyResourceEntriesRefusalMessage(
     `counted done, the record removed and success reported with its resource still live. ` +
     `Nothing was deleted or written FOR THIS STACK. Repair the row first; ` +
     `'cdkd state orphan' drops the whole record with every resource left standing, which is ` +
-    `more than this row asks for. ${inspectClause(stackName, region)}Inspect the record with: ` +
-    inspectCommand(stackName, region)
+    `more than this row asks for. ${inspectClause(stackName, region, recovery)}Inspect the record with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -3819,13 +4120,15 @@ export function refuseMalformedResourceEntriesForImport(
   state: StackState,
   reimportedLogicalIds: readonly string[],
   stackName: string,
-  region: string
+  region: string,
+  /** See {@link malformedResourceEntriesRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   const reimported = new Set(reimportedLogicalIds);
   const unreadable = unreadableResourceEntries(state).filter((id) => !reimported.has(id));
   if (unreadable.length === 0) return;
   throw new CdkdError(
-    malformedResourceEntriesRefusalMessage(stackName, region, unreadable),
+    malformedResourceEntriesRefusalMessage(stackName, region, unreadable, recovery),
     STATE_RESOURCES_MALFORMED
   );
 }
@@ -3852,12 +4155,14 @@ export function refuseMalformedResourceEntriesForImport(
 export function refuseMalformedResourceEntriesForImportSave(
   state: StackState,
   stackName: string,
-  region: string
+  region: string,
+  /** See {@link malformedImportUnrepairedEntriesRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   const unreadable = unreadableResourceEntries(state);
   if (unreadable.length === 0) return;
   throw new CdkdError(
-    malformedImportUnrepairedEntriesRefusalMessage(stackName, region, unreadable),
+    malformedImportUnrepairedEntriesRefusalMessage(stackName, region, unreadable, recovery),
     STATE_RESOURCES_MALFORMED
   );
 }
@@ -3869,7 +4174,9 @@ export function refuseMalformedResourceEntriesForImportSave(
 export function malformedImportUnrepairedEntriesRefusalMessage(
   rawStackName: string,
   rawRegion: string,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried by the inspect command (go-to-k/cdkd#3909). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -3880,8 +4187,8 @@ export function malformedImportUnrepairedEntriesRefusalMessage(
     `would save still holds them unreadable; it refuses rather than saving a row it could not ` +
     `replace. Nothing was written FOR THIS STACK, and the resources this run did import stay ` +
     `as they are in AWS. Fix what the import reported, or repair the rows by hand, and re-run. ` +
-    `${inspectClause(stackName, region)}Inspect the record with: ` +
-    inspectCommand(stackName, region)
+    `${inspectClause(stackName, region, recovery)}Inspect the record with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -4417,23 +4724,23 @@ function isUnusableOrphanRow(record: unknown, shared: ReadonlySet<string>): bool
  * cannot change a persisted record, and a nested child's deploy runs inside a
  * `withRetry`.
  *
- * It takes NO `LockRecoveryContext`, matching its container twin
- * {@link refuseMalformedOrphans}: no caller on these paths holds one, and a
- * parameter every call site omits renders nothing. The message builder keeps its
- * own `recovery` parameter, and its arms are pinned by calling it directly —
- * `refuseMalformedOrphansForOrphan` is NOT that route, since it raises a
- * different text ({@link malformedOrphansForOrphanRefusalMessage}).
+ * `recovery` is the caller's account (go-to-k/cdkd#3909): the drop, listing
+ * and inspect lines carry it through {@link accountArgs}. Its arms are pinned
+ * by calling the message builder directly — `refuseMalformedOrphansForOrphan`
+ * is NOT that route, since it raises a different text
+ * ({@link malformedOrphansForOrphanRefusalMessage}).
  */
 export function refuseMalformedOrphanRecords(
   state: Pick<StackState, 'orphans'>,
   stackName: string | undefined,
-  region: string | undefined
+  region: string | undefined,
+  recovery?: LockRecoveryContext
 ): void {
   const unreadable = unreadableOrphanRecords(state);
   if (unreadable.length === 0) return;
   throw markNonRetryable(
     new CdkdError(
-      malformedOrphanRecordsRefusalMessage(stackName, region, unreadable),
+      malformedOrphanRecordsRefusalMessage(stackName, region, unreadable, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -4450,13 +4757,15 @@ export function refuseMalformedOrphanRecords(
 export function refuseMalformedOrphanRecordsForDestroy(
   state: Pick<StackState, 'orphans'>,
   stackName: string | undefined,
-  region: string | undefined
+  region: string | undefined,
+  /** See {@link refuseMalformedOrphanRecords}. */
+  recovery?: LockRecoveryContext
 ): void {
   const unreadable = unreadableOrphanRecords(state);
   if (unreadable.length === 0) return;
   throw markNonRetryable(
     new CdkdError(
-      malformedOrphanRecordsForDestroyRefusalMessage(stackName, region, unreadable),
+      malformedOrphanRecordsForDestroyRefusalMessage(stackName, region, unreadable, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );

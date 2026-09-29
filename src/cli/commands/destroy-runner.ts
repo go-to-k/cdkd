@@ -32,6 +32,7 @@ import type { LockManager } from '../../state/lock-manager.js';
 import {
   buildLockContentionMessage,
   forceQuitRecoveryClause,
+  type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
@@ -605,6 +606,16 @@ export async function runDestroyForStack(
   // recorded one. Resolved HERE, above the two refusals, because both name the
   // record they refuse and neither may be reached with the count already taken.
   const regionForState = state.region ?? ctx.baseRegion;
+  // The account every pasteable command in the malformed-record refusals below
+  // must address (go-to-k/cdkd#3909): without it the `cdkd state show` /
+  // `cdkd state list --json` lines they print read the DEFAULT profile's
+  // bucket, so under `--state-bucket X` the record the operator needs is not
+  // listed. The refusal module gates each value; nothing is sanitized here.
+  const refusalRecovery: LockRecoveryContext = {
+    profile: ctx.profile,
+    stateBucket: ctx.stateBucket,
+    statePrefix: ctx.statePrefix,
+  };
   // AT THE TOP OF THE DESTROY, and ABOVE THE COUNT BELOW (issue #3161).
   //
   // `parseStateBody` validates the root object and the schema version and
@@ -629,7 +640,7 @@ export async function runDestroyForStack(
   // empty `{}` and an unreadable `[]` both count 0, so only `isReadableBag`
   // separates them — which is why this cannot be folded into the
   // `resourceCount === 0` test below.
-  refuseMalformedResourcesForDestroy(state, stackName, regionForState);
+  refuseMalformedResourcesForDestroy(state, stackName, regionForState, refusalRecovery);
   // The ROWS of a readable map (go-to-k/cdkd#3202), BELOW the bag guard: an
   // unreadable bag has no rows to name. Every walk below reads
   // `resource.resourceType` per row and validates nothing — the listing above
@@ -643,16 +654,16 @@ export async function runDestroyForStack(
   // unchecked physical id. REFUSE rather than skip, for the reason the bag
   // guard gives: the map IS the list of what to delete, and a skipped row's
   // resource stays live in AWS with the record that named it removed.
-  refuseMalformedResourceEntriesForDestroy(state, stackName, regionForState);
+  refuseMalformedResourceEntriesForDestroy(state, stackName, regionForState, refusalRecovery);
   // The `orphans` CONTAINER (go-to-k/cdkd#3379). The orphan warning below reads
   // it on `?? []`, so an unreadable one counts 0 and this run would delete every
   // resource and then the record with its orphan evidence never reported.
-  refuseMalformedOrphansForDestroy(state, stackName, regionForState);
+  refuseMalformedOrphansForDestroy(state, stackName, regionForState, refusalRecovery);
   // The ROWS of a readable list (go-to-k/cdkd#3500): the listing below prints
   // each row from fields it validates none of, and filters nothing — so what an
   // unusable row does there depends on which part is torn, which is why this is
   // a refusal rather than a drop.
-  refuseMalformedOrphanRecordsForDestroy(state, stackName, regionForState);
+  refuseMalformedOrphanRecordsForDestroy(state, stackName, regionForState, refusalRecovery);
   // BELOW the bag guard (which proves the bag can be counted) and ABOVE the
   // delete loop and every `deleteState` (issue #3328, review round 1). NOT
   // "above the fast path" as a discriminating claim — the guard returns early
@@ -666,7 +677,13 @@ export async function runDestroyForStack(
   // resource still live in the other region. Narrow by construction: divergent
   // AND resource-bearing, so the resource-less recovery destroy this issue's
   // own repro exercises still runs.
-  refuseDivergentRecordRegionForDestroy(state, stackName, regionForState, ctx.divergentBodyRegion);
+  refuseDivergentRecordRegionForDestroy(
+    state,
+    stackName,
+    regionForState,
+    ctx.divergentBodyRegion,
+    refusalRecovery
+  );
   const resourceCount = Object.keys(state.resources).length;
   // A stack that still has `DeletionPolicy: Retain` resources standing in AWS
   // is NOT empty (issue #2934), even with no rows in `resources`. The record of
@@ -698,7 +715,7 @@ export async function runDestroyForStack(
   // The `resources` bag is a separate container with a separate absence rule,
   // refused separately just above (go-to-k/cdkd#3161) so the message a user
   // sees names the container that is actually broken.
-  refuseMalformedOutputsForDestroy(state, stackName, regionForState);
+  refuseMalformedOutputsForDestroy(state, stackName, regionForState, refusalRecovery);
   if (resourceCount === 0 && orphanCount === 0) {
     // Issue #2171: this used to delete the state record with NO lock at all,
     // sitting well above the acquire further down. A record reads as empty for
@@ -818,14 +835,24 @@ export async function runDestroyForStack(
       // below would then be 0, `stillEmpty` would be true, and `deleteState`
       // would run on the very line the re-read exists to protect.
       if (recheck) {
-        refuseMalformedResourcesForDestroy(recheck.state, stackName, regionForState);
+        refuseMalformedResourcesForDestroy(
+          recheck.state,
+          stackName,
+          regionForState,
+          refusalRecovery
+        );
         // The ROWS of the re-read map (go-to-k/cdkd#3202), for the reason the
         // orphan-row guard below is owed here rather than the container's: any
         // row at all makes `recheckResources >= 1`, so this path does not delete
         // either way — what the guard buys is WHICH refusal the operator gets.
         // Without it the run stops at the "not empty" branch, which says the
         // record still holds resources and nothing about the row it could not read.
-        refuseMalformedResourceEntriesForDestroy(recheck.state, stackName, regionForState);
+        refuseMalformedResourceEntriesForDestroy(
+          recheck.state,
+          stackName,
+          regionForState,
+          refusalRecovery
+        );
         // The re-read is the record `stillEmpty` and `deleteState` act on, so
         // the container guard is owed here as well as at the entry read.
         // `stillEmpty` reads `(recheck.state.orphans ?? []).length`, and the
@@ -834,7 +861,7 @@ export async function runDestroyForStack(
         // non-zero; a number, an object or a boolean yields `undefined`, which
         // fails the `=== 0` test and stops the run with no cause named
         // (go-to-k/cdkd#3379).
-        refuseMalformedOrphansForDestroy(recheck.state, stackName, regionForState);
+        refuseMalformedOrphansForDestroy(recheck.state, stackName, regionForState, refusalRecovery);
         // Owed at the re-read, but NOT for the same reason as the container guard
         // above it, and the difference is worth stating (go-to-k/cdkd#3641,
         // maintainer item o4). The container guard is about `deleteState`: an
@@ -844,7 +871,12 @@ export async function runDestroyForStack(
         // What the row guard buys here is WHICH refusal the operator gets: without
         // it the run stops at the "not empty" branch, which says the record still
         // holds orphans and nothing about the row it could not read.
-        refuseMalformedOrphanRecordsForDestroy(recheck.state, stackName, regionForState);
+        refuseMalformedOrphanRecordsForDestroy(
+          recheck.state,
+          stackName,
+          regionForState,
+          refusalRecovery
+        );
       }
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
       const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;

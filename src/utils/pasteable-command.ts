@@ -436,10 +436,11 @@ function withholdReason(
  * Build a pasteable `cdkd` command: every user-controlled value shell-quoted
  * behind an exactness gate, every placeholder quoted, nothing wrapped.
  *
- * `extraFlags` is where a caller appends the flags that pin the command to its
- * own account and key space — in practice `recoveryCommandFlags(recovery)`,
- * whose `exact` the caller folds into its own decision. They are appended
- * verbatim, LAST, because they are built by the same rules one layer up.
+ * `extraFlags` is where a caller appends flags built by the same rules one
+ * layer up — `buildForceUnlockCommand`'s `recoveryCommandFlags(recovery)`,
+ * whose `exact` it folds into its own decision. They are appended verbatim,
+ * LAST. A caller wanting its account values GATED here passes them as
+ * `{ flag, value }` args instead (`malformed-resources-bag.ts`'s `accountArgs`).
  */
 export function pasteableCommand(
   verb: string,

@@ -270,9 +270,15 @@ describe('the state and outputs refusals for a region-less legacy record (go-to-
     expect(text).toContain('did not render exactly');
   });
 
-  it.each(BUILDERS)('%s: CONTROL — a region-keyed record is unchanged, ending on the command', (_l, build) => {
+  it.each(BUILDERS)('%s: CONTROL — a region-keyed record keeps its one-line shape, ending on the command', (_l, build) => {
+    // The command carries the caller's bucket since go-to-k/cdkd#3909 — before
+    // it, `recovery` reached only the legacy arm and this read the DEFAULT one.
     const text = build('MyStack', 'us-east-1', { stateBucket: 'b' });
-    expect(text.endsWith('Inspect it with: cdkd state show MyStack --stack-region us-east-1 --json')).toBe(true);
+    expect(
+      text.endsWith(
+        'Inspect it with: cdkd state show MyStack --stack-region us-east-1 --json --state-bucket b'
+      )
+    ).toBe(true);
     expect(text).not.toContain('\n');
   });
 });
