@@ -26,14 +26,27 @@
  *
  * Fails LOUDLY when the target resource or its `observedProperties` is absent —
  * a silent no-op would make verify.sh's assertion pass vacuously.
+ *
+ * Usage: `node strip-observed.ts [<logical-id prefix> <resource type> <required
+ * property>]`. With no arguments it targets the #1626 bucket (`DriftBucket`,
+ * `AWS::S3::Bucket`, `Tags`); step 6e passes the issue #4023 named IAM role and
+ * managed policy, whose required property is the template NAME the revert
+ * must not re-derive.
  */
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 
 const REGION = process.env['AWS_REGION'] ?? 'us-east-1';
 const STACK = process.env['STACK'] ?? 'CdkdDriftRevertExample';
 const BUCKET = process.env['STATE_BUCKET'];
-/** Logical id prefix of the fixture's S3 bucket (CDK appends a hash suffix). */
-const TARGET_PREFIX = 'DriftBucket';
+const [argPrefix, argType, argProperty] = process.argv.slice(2);
+if (argPrefix !== undefined && (argType === undefined || argProperty === undefined)) {
+  throw new Error('usage: strip-observed.ts [<logical-id prefix> <resource type> <required property>]');
+}
+/** Logical id prefix of the target (CDK appends a hash suffix). */
+const TARGET_PREFIX = argPrefix ?? 'DriftBucket';
+const TARGET_TYPE = argType ?? 'AWS::S3::Bucket';
+/** A template-recorded property the downstream assertion depends on. */
+const REQUIRED_PROPERTY = argProperty ?? 'Tags';
 
 if (!BUCKET) {
   throw new Error('STATE_BUCKET must be set');
@@ -56,18 +69,18 @@ if (!isRecord(state) || !isRecord(state['resources'])) {
 }
 const resources = state['resources'];
 
-// The bucket's logical id carries a CDK hash suffix, so match by prefix and
-// require EXACTLY one hit — two would make it ambiguous which one was stripped.
+// The logical id carries a CDK hash suffix, so match by prefix and require
+// EXACTLY one hit — two would make it ambiguous which one was stripped.
 const matches = Object.keys(resources).filter(
   (id) => id.startsWith(TARGET_PREFIX) && isRecord(resources[id])
 );
 const target = matches.filter((id) => {
   const r = resources[id];
-  return isRecord(r) && r['resourceType'] === 'AWS::S3::Bucket';
+  return isRecord(r) && r['resourceType'] === TARGET_TYPE;
 });
 if (target.length !== 1) {
   throw new Error(
-    `expected exactly one AWS::S3::Bucket logical id starting with '${TARGET_PREFIX}', ` +
+    `expected exactly one ${TARGET_TYPE} logical id starting with '${TARGET_PREFIX}', ` +
       `found ${target.length}: ${target.join(', ') || '(none)'} (candidates: ${matches.join(', ')})`
   );
 }
@@ -79,13 +92,13 @@ if (!isRecord(record)) {
 if (record['observedProperties'] === undefined) {
   throw new Error(
     `resource ${logicalId} already has no observedProperties — the strip would be a no-op, ` +
-      `so the #1626 assertion downstream would pass vacuously`
+      `so the assertion downstream would pass vacuously`
   );
 }
-if (!isRecord(record['properties']) || record['properties']['Tags'] === undefined) {
+if (!isRecord(record['properties']) || record['properties'][REQUIRED_PROPERTY] === undefined) {
   throw new Error(
-    `resource ${logicalId} has no template-recorded Tags — the downstream assertion ` +
-      `needs a DECLARED tag list so the drift is detected on that key`
+    `resource ${logicalId} has no template-recorded ${REQUIRED_PROPERTY} — the downstream ` +
+      `assertion needs it DECLARED in the baseline the revert falls back to`
   );
 }
 

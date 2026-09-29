@@ -810,6 +810,18 @@ is normally NOT modified — once `provider.update` succeeds, AWS matches state
 by definition, so a subsequent `cdkd drift` reports clean. The one exception
 is a provider-reported narrowing, below.
 
+#### A revert does not rename an IAM Role or ManagedPolicy
+
+Their names cannot change in place, so `--revert` keeps the name the live
+resource has. On a stack deployed with `--prefix-user-supplied-names`, a record
+with no `observedProperties` holds the template's name (`my-role`) while AWS
+holds `MyStack-my-role`, so `cdkd drift` reports the name as drifted.
+`--revert` reverts the other drifted properties on the live role or policy and
+warns that its name was left as it is. `cdkd drift` keeps reporting the name
+until `cdkd drift --accept` records the live one; only a deploy renames the
+resource. A drifted `Path` (or a managed policy's `Description`), which also
+cannot change in place, fails that resource's revert instead of replacing it.
+
 #### Tags a revert preserves
 
 A drifted **top-level tag list** keeps any AWS-SERVICE-authored entry instead

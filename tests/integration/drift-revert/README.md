@@ -53,3 +53,12 @@ Both providers (`S3BucketProvider`, `SNSTopicProvider`) implement
 first-class `readCurrentState` and have working `update()`, so the
 revert path exercises real AWS calls (`PutBucketTagging`,
 `SetTopicAttributes`), not the CC API fallback.
+
+The full resource list is in the stack's doc comment
+(`lib/drift-revert-stack.ts`). Step 6e (issue
+[#4023](https://github.com/go-to-k/cdkd/issues/4023)) covers a NAMED
+`AWS::IAM::Role` and `AWS::IAM::ManagedPolicy`: the stack is deployed with
+`CDKD_PREFIX_USER_SUPPLIED_NAMES=true` (the legacy prefixing), their observed baselines are stripped, and
+`--revert` must update the prefixed resources in place rather than replace
+them under the bare template names. On failure `cleanup` also deletes any
+copies left under those bare names.
