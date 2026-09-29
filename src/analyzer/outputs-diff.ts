@@ -8,15 +8,14 @@ import {
   type SecretSafeKeyDisplay,
 } from '../deployment/outputs-export-alias.js';
 import {
+  DYNAMIC_REFERENCE_TOKEN_SCAN,
   dynamicReferenceTokens,
+  WHOLE_DYNAMIC_REFERENCE_PATTERN,
   type RecordedSecretValues,
 } from '../deployment/secret-redaction.js';
 import { stripControlChars } from '../utils/regexp.js';
 import { isReadableBag } from '../state/malformed-resources-bag.js';
-import {
-  bagHoldsSecretExpression,
-  isSecretBearingReferenceString as isSecretDynamicReference,
-} from '../deployment/no-change-outputs-merge.js';
+import { isSecretBearingReferenceString as isSecretDynamicReference } from '../deployment/no-change-outputs-merge.js';
 
 /**
  * Kind of change for one key of the persisted Outputs bag.
@@ -372,6 +371,118 @@ export function templateUsesSub(templateValue: unknown): boolean {
  */
 
 /**
+ * The dynamic-reference services the resolver RESOLVES on the deploy path. A
+ * token of any other service is left as written on BOTH paths (the resolver
+ * warns and substitutes nothing), so it is never a sign of a secret.
+ */
+const DEPLOY_RESOLVED_REFERENCE_SERVICES: ReadonlySet<string> = new Set([
+  'secretsmanager',
+  'ssm',
+  'ssm-secure',
+]);
+
+/**
+ * True when a name RESOLVED by this module's `skipDynamicReferences` pass
+ * still carries a token of a service the deploy resolves (issue
+ * [#4056](https://github.com/go-to-k/cdkd/issues/4056)).
+ *
+ * Only a SECRET keeps its token through that pass: `secretsmanager` and
+ * `ssm-secure` by spelling, and a plain `ssm` one whose parameter the lookup
+ * finds to be a `SecureString`; a `String` / `StringList` parameter resolves
+ * to its value and leaves no token. So on RESOLVED text the token scan, not
+ * {@link isSecretDynamicReference}'s spelling test, is what says "the deploy
+ * substitutes a secret here". The spelling test stays right for its other
+ * readers, which read RAW template or STORED text, where a plain `ssm` token
+ * says nothing about the parameter's type.
+ */
+function keepsSecretReferenceToken(resolvedName: string): boolean {
+  // `inner.split(':')[0]`, the resolver's own reading of the service, with the
+  // closing braces sliced off so a colon-less `{{resolve:ssm-secure}}` reads
+  // `ssm-secure` there and here alike.
+  return dynamicReferenceTokens(resolvedName).some((token) =>
+    DEPLOY_RESOLVED_REFERENCE_SERVICES.has(
+      token.slice('{{resolve:'.length, -'}}'.length).split(':')[0] ?? ''
+    )
+  );
+}
+
+/**
+ * True when a STORED value is exactly one secret-bearing token and nothing
+ * else, so it holds no plaintext whatever produced it (issue #4056). Exported
+ * for the no-change merge preview in `diff-recursive.ts`, which asks the same
+ * question of a carried value with no resolved side to compare it against.
+ */
+export function isWholeSecretReferenceToken(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    WHOLE_DYNAMIC_REFERENCE_PATTERN.test(value) &&
+    keepsSecretReferenceToken(value)
+  );
+}
+
+/**
+ * The literal text around each `{{resolve:...}}` token. `split` builds its own
+ * splitter from the shared global pattern and leaves the constant's
+ * `lastIndex` untouched, which is what its doc forbids `.exec` / `.test` for.
+ */
+function literalPartsAroundTokens(text: string): string[] {
+  return text.split(DYNAMIC_REFERENCE_TOKEN_SCAN);
+}
+
+/**
+ * May a STORED string carrying a secret's token be read as the key's redacted
+ * expression (issues #4056, #4101)? A substring hit is not enough: a value
+ * holding one token beside a plaintext is exactly what a binary before #1901
+ * wrote for `Fn::Join ['-', ['{{resolve:secretsmanager:A}}',
+ * '{{resolve:ssm:/SecureB}}']]` (it redacted A and stored B's plaintext), and
+ * what `cdkd scrub` leaves when it can name one secret in a value and not the
+ * other. So the stored string must carry exactly the LITERAL parts the
+ * resolved desired side carries, so every stretch that differs sits where a
+ * token is; or be one whole token where the desired side is one too, or has
+ * no string to compare (a removed output). A whole token against a desired
+ * side with literal text fails closed, since a plaintext spelled like a token
+ * would pass as one.
+ *
+ * Residuals, both fail-closed or contrived: editing the literal around a
+ * token marks the record pre-GHSA until the next deploy; and a secret whose
+ * plaintext is itself a complete `{{resolve:...}}` token, stored in a token
+ * position with matching literals, still passes.
+ */
+function storedSecretTokenIsExpression(stored: string, desired: unknown): boolean {
+  if (!keepsSecretReferenceToken(stored)) return false;
+  if (isWholeSecretReferenceToken(stored)) {
+    return typeof desired !== 'string' || isWholeSecretReferenceToken(desired);
+  }
+  if (typeof desired !== 'string') return false;
+  const storedParts = literalPartsAroundTokens(stored);
+  const desiredParts = literalPartsAroundTokens(desired);
+  return (
+    storedParts.length === desiredParts.length &&
+    storedParts.every((part, index) => part === desiredParts[index])
+  );
+}
+
+/**
+ * A secret's expression in RESOLVED text (or in what a post-#1901 deploy
+ * stores for it): the spelling test, or a surviving token of a service the
+ * deploy resolves. See {@link keepsSecretReferenceToken} for why the token
+ * reading is sound only there, never on RAW template text.
+ */
+function isSecretReferenceText(value: string): boolean {
+  return isSecretDynamicReference(value) || keepsSecretReferenceToken(value);
+}
+
+/** {@link isSecretReferenceText} over every string leaf of a resolved value. */
+function containsSecretReferenceText(value: unknown): boolean {
+  if (typeof value === 'string') return isSecretReferenceText(value);
+  if (Array.isArray(value)) return value.some(containsSecretReferenceText);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(containsSecretReferenceText);
+  }
+  return false;
+}
+
+/**
  * The same question asked of a whole template VALUE, walking every string leaf.
  *
  * The leaf predicate answers `false` for a non-string, and an output's `Value`
@@ -632,8 +743,9 @@ export async function resolveTemplateOutputs(
    * `isSecretDynamicReference` knows: a plain `{{resolve:ssm:...}}` to a
    * `SecureString` parameter stays a token too (measured), while a public
    * `String` one resolves to its value and carries none. So the token scan,
-   * not the spelling, decides (issue #4015). Corpus only -- which alias this
-   * preview publishes is decided below as before.
+   * not the spelling, decides (issue #4015). Corpus only: which alias this
+   * preview publishes is decided below by `keepsSecretReferenceToken`, which
+   * reads the same scan narrowed to the services the deploy resolves (#4056).
    */
   const recordTokenBearingExportName = (name: string): void => {
     if (dynamicReferenceTokens(name).length > 0) secretBearingExportNames.push(name);
@@ -757,11 +869,14 @@ export async function resolveTemplateOutputs(
         // collision — so a name matching both is attributed the same way on
         // both sides. See `outputs-export-alias.ts`'s parity table for the full
         // row-by-row correspondence this block is written against.
-        if (declaredExportIsIntrinsic && isSecretDynamicReference(exportName)) {
-          // An INTRINSIC name that still carries a `{{resolve:...}}` spelling
+        if (declaredExportIsIntrinsic && keepsSecretReferenceToken(exportName)) {
+          // An INTRINSIC name that still carries a `{{resolve:...}}` token
           // after this resolver's `skipDynamicReferences` pass is one the deploy
           // WILL substitute plaintext into, and then refuse (the name would be a
-          // state KEY, which no redaction pass walks). Gated on INTRINSIC
+          // state KEY, which no redaction pass walks). The TOKEN decides, not
+          // the `secretsmanager` / `ssm-secure` spelling: a plain `ssm` token
+          // to a `SecureString` survives the pass too, and the spelling test
+          // published its alias as a phantom ADD (issue #4056). Gated on INTRINSIC
           // deliberately: for a LITERAL name the deploy substitutes nothing —
           // it uses the string verbatim as the key — so it publishes, and
           // refusing here would be a phantom REMOVE on every run. That gate is
@@ -902,8 +1017,9 @@ export async function resolveTemplateOutputs(
  * Two independent signals identify such a record, and BOTH are needed:
  *
  * - the desired side is still a secret-bearing expression per
- *   {@link isSecretDynamicReference} (this resolver runs with
- *   `skipDynamicReferences`) while the stored side is not; and
+ *   {@link isSecretReferenceText} (this resolver runs with
+ *   `skipDynamicReferences`, so a `SecureString` ssm token counts, issue
+ *   #4056) while the stored side is not; and
  * - `secretSourceKeys` — the template itself declares the key's value as such a
  *   reference. This one reaches a case the first cannot: a condition-skipped
  *   secret output has NO desired side at all and would otherwise print in full
@@ -1041,8 +1157,22 @@ export function computeOutputsDiff(
     // `cdkd scrub` itself admits it can leave — is read as post-GHSA and its
     // plaintext leaf then prints in a rendered row. A veto must be harder to
     // earn than a suspicion.
-    if (typeof oldValue === 'string' && isSecretDynamicReference(oldValue)) return false;
-    return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
+    //
+    // Both arms read the secret's TOKEN, not only its `secretsmanager` /
+    // `ssm-secure` spelling (issue #4056's sweep). `desired` is RESOLVED text,
+    // where a plain `{{resolve:ssm:...}}` survives only for a `SecureString`,
+    // so a record an older binary wrote with that parameter's plaintext printed
+    // it as the `old:` side of a MODIFY row. The stored side reads that token
+    // as an expression too, or a post-#1901 record storing it would be judged
+    // pre-GHSA by its own desired side and lose every previous value -- but
+    // only in the shape `storedSecretTokenIsExpression` accepts, never on a
+    // substring hit beside text that may be plaintext, whatever the token's
+    // spelling (issue #4101: the spelling arm vetoed on one and printed the
+    // plaintext beside it).
+    if (typeof oldValue === 'string' && storedSecretTokenIsExpression(oldValue, desired[name])) {
+      return false;
+    }
+    return containsSecretReferenceText(desired[name]) || secretSourceKeys.has(name);
   };
   const legacyRecord =
     unaccountableScan.forceLegacyRecord === true || Object.entries(currentBag).some(provesLegacy);
@@ -1052,14 +1182,54 @@ export function computeOutputsDiff(
   // and one redacted key is read as answering it for the whole bag — a reading
   // with the residuals the note above names (issue #2771 refuses the merge that
   // would add one). Same LEAF granularity, so a container holding an expression
-  // still does not earn it.
-  const recordProvesPostGhsa = bagHoldsSecretExpression(currentBag);
+  // still does not earn it. A key earns it only in the shape the pass-1 veto
+  // accepts (issue #4101): the shared `bagHoldsSecretExpression` is a substring
+  // spelling test, so a stored `{{resolve:secretsmanager:A}}-<plaintext>` of a
+  // REMOVED output exonerated its own record and printed on the REMOVE row.
+  // That helper stays as-is for its deploy-side readers.
+  const recordProvesPostGhsa = Object.entries(currentBag).some(
+    ([name, value]) =>
+      typeof value === 'string' && storedSecretTokenIsExpression(value, desired[name])
+  );
   const declaredKeys = unaccountableScan.declaredKeys ?? new Set<string>();
+  // A key's OWN stored value can prove it unsafe whatever the record's verdict:
+  // a secret token outside the shape `storedSecretTokenIsExpression` accepts
+  // is what a pre-#1901 deploy wrote around a plaintext (issue #4101), and that
+  // same deploy stored a sibling's whole token, which exonerates the record.
+  // So this refusal is per key, for a declared key too (its template value may
+  // since have turned public, so pass 1 has no desired-side signal), and is
+  // gated by neither the exoneration nor the template. One whole token is
+  // never refused here: it has no room for a plaintext. A CONTAINER is read
+  // leaf by leaf with no desired side to line up against, so any leaf holding
+  // a secret token beside other text withholds it (fail-closed; a pre-#1901
+  // deploy's value scan wrote the same shape inside an array or object).
+  const leafCarriesSecret = (leaf: string): boolean =>
+    (isSecretDynamicReference(leaf) || keepsSecretReferenceToken(leaf)) &&
+    !isWholeSecretReferenceToken(leaf);
+  const anyLeafCarriesSecret = (value: unknown): boolean => {
+    if (typeof value === 'string') return leafCarriesSecret(value);
+    if (Array.isArray(value)) return value.some(anyLeafCarriesSecret);
+    if (value !== null && typeof value === 'object') {
+      return Object.values(value as Record<string, unknown>).some(anyLeafCarriesSecret);
+    }
+    return false;
+  };
+  const ownValueHidesSecret = (name: string): boolean => {
+    const value = currentBag[name];
+    if (typeof value !== 'string') return anyLeafCarriesSecret(value);
+    return (
+      leafCarriesSecret(value) &&
+      !storedSecretTokenIsExpression(
+        value,
+        Object.prototype.hasOwnProperty.call(desired, name) ? desired[name] : undefined
+      )
+    );
+  };
   const unaccountable = (name: string): boolean =>
-    unaccountableScan.templateHasSecretReference === true &&
-    !recordProvesPostGhsa &&
     !declaredKeys.has(name) &&
-    !Object.prototype.hasOwnProperty.call(desired, name);
+    !Object.prototype.hasOwnProperty.call(desired, name) &&
+    ((unaccountableScan.templateHasSecretReference === true && !recordProvesPostGhsa) ||
+      ownValueHidesSecret(name));
 
   // THE KEY'S OWN VERDICT (issue #4015). A stored key is printed as a row
   // name, and a binary from before issue #1919 (or #2889) could publish an
@@ -1159,7 +1329,10 @@ export function computeOutputsDiff(
 
   const push = (change: OutputChange): void => {
     const shown: OutputChange = { ...change, ...nameDisplay(change.name) };
-    if (change.changeType !== 'ADD' && (legacyRecord || unaccountable(change.name))) {
+    if (
+      change.changeType !== 'ADD' &&
+      (legacyRecord || unaccountable(change.name) || ownValueHidesSecret(change.name))
+    ) {
       const { oldValue: _dropped, ...rest } = shown;
       changes.push({ ...rest, oldValueRedacted: true });
       return;

@@ -23,7 +23,6 @@ import {
   isReadableBag,
 } from '../../types/state.js';
 import {
-  isSecretBearingReferenceString,
   keptWholeReasonText,
   mergeNoChangeOutputs,
 } from '../../deployment/no-change-outputs-merge.js';
@@ -38,6 +37,7 @@ import {
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
   computeOutputsDiff,
+  isWholeSecretReferenceToken,
   resolveTemplateOutputs,
   templateHasSecretDynamicReference,
   templateLetsConditionsReachOutputs,
@@ -1404,10 +1404,16 @@ export async function computeStackDiff(
       // the key that holds one. So the record is treated as legacy, and every
       // stored value on a rendered row withheld, whenever a carried key's stored
       // value is anything but a secret expression: the one value pass 1 would
-      // have excused for that key.
+      // have excused for that key. That is one WHOLE secret token, of any
+      // spelling (a SecureString `ssm` one included, issue #4056). A token
+      // beside other text is not: a pre-#1901 deploy stored
+      // `{{resolve:secretsmanager:A}}-<SecureString plaintext>` itself (issue
+      // #4101), and a carried key has no resolved side here to compare the
+      // literal parts against, so pass 1's veto would excuse it as its own
+      // desired value.
       const storedOutputs = currentState.outputs ?? {};
       const withheld = merge.carriedKeys.some(
-        (key) => !isSecretBearingReferenceString(storedOutputs[key])
+        (key) => !isWholeSecretReferenceToken(storedOutputs[key])
       );
       outputChanges = diffOutputsAgainst(merge.outputs, new Set(merge.exportNames), withheld);
       // Every failure on this path is named (`failuresMirrorDeploy`), so the set

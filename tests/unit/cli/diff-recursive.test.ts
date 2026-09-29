@@ -3240,6 +3240,39 @@ describe('Outputs-only change (issue #1921)', () => {
       expect(carried[0]).not.toContain('Previous values in this Outputs section are withheld');
     });
 
+    // Issue #4056 review: a carried value that is one whole SecureString ssm
+    // token is the key's redacted expression, like a secretsmanager one; the
+    // same token beside other text is not, since that text may be plaintext.
+    it.each([
+      ['a whole secretsmanager token', '{{resolve:secretsmanager:s:SecretString:k}}', false],
+      ['a whole plain ssm token', '{{resolve:ssm:/sec/p}}', false],
+      ['a plain ssm token beside other text', '{{resolve:ssm:/sec/p}}-MAYBE-PLAINTEXT', true],
+      // Issue #4101: what a pre-#1901 deploy stored for a secretsmanager and a
+      // SecureString reference joined -- the first redacted, the second not.
+      ['a secretsmanager token beside other text', '{{resolve:secretsmanager:A}}-MAYBE-PLAINTEXT', true],
+      // `RegExp.test` coerces an array to its joined string, so only the
+      // `typeof` guard keeps a list holding one token from passing as one.
+      ['a list holding one whole token', ['{{resolve:ssm:/sec/p}}'], true],
+    ] as Array<[string, unknown, boolean]>)('carrying %s (%s) withholds previous values: %s', async (_label, stored, withheld) => {
+      vi.mocked(getLogger().warn).mockClear();
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: stored, Plain: 'old' }),
+        template({ Out: { Value: FAILING }, Plain: { Value: 'new' } })
+      );
+      expect(outputChanges).toEqual([
+        withheld
+          ? { name: 'Plain', changeType: 'MODIFY', newValue: 'new', isExport: false, oldValueRedacted: true }
+          : { name: 'Plain', changeType: 'MODIFY', oldValue: 'old', newValue: 'new', isExport: false },
+      ]);
+      // The CARRY'S OWN verdict, which pass 1 cannot stand in for: a carried
+      // list is also a desired value holding a token, and marks the record
+      // legacy that way whether or not the carry forces it.
+      const forced = carriedOutputWarnings().some((m) =>
+        m.includes('because a value carried from state for a failed output is not a secret reference')
+      );
+      expect(forced).toBe(withheld);
+    });
+
     it('makes the stack dirty for --fail', async () => {
       const node = await buildDiffTree({
         stackName: 'S',
@@ -3681,7 +3714,7 @@ describe('Outputs-only change (issue #1921)', () => {
       {
         // Pass 1's veto excuses only a STRING leaf, so a list holding a secret
         // expression cannot excuse the carried key, and the force does not either
-        // (`isSecretBearingReferenceString` is false for a non-string). The
+        // (`isWholeSecretReferenceToken` is false for a non-string). The
         // carried list also marks the record legacy through `desired`, so this is
         // a behaviour case rather than a pin of the force alone.
         shape: 'a carried stored value that is a list holding a secret expression',

@@ -390,10 +390,15 @@ break a consumer — was hidden the same way.
 - Because this is the first code path that **displays** a stored output value,
   it withholds an `oldValue` that is legacy secret plaintext. Two signals
   identify such a record: the desired side still being a secret-bearing dynamic
-  reference (`{{resolve:secretsmanager:` / `{{resolve:ssm-secure:` — a plain
-  `{{resolve:ssm:` is excluded, since per issue #1901 it is classified by the
-  parameter's type and a `String` parameter is public and legitimately stored
-  resolved) while the stored side is not (the condition `cdkd scrub` repairs),
+  reference (`{{resolve:secretsmanager:` / `{{resolve:ssm-secure:`, or a plain
+  `{{resolve:ssm:` token the diff's resolution kept — per issue #1901 it is
+  classified by the parameter's type, and only a `SecureString` keeps its
+  token while a public `String` resolves to its value, issue #4056) while the
+  stored side is not (the condition `cdkd scrub` repairs; a stored value counts
+  as the expression only as one whole token (where the desired value is one
+  whole token too, or absent) or under exactly the desired value's literal text, never as a token beside other text, issue #4101; a stored
+  value failing that shape, or a container with such a leaf, is itself withheld
+  per key, whatever else the record holds),
   and the template itself declaring the key's value as a dynamic reference —
   the latter collected for *every* declared output, including condition-skipped
   ones, because those have no desired side at all and would otherwise print in
@@ -414,7 +419,8 @@ break a consumer — was hidden the same way.
   output name plus every literal `Export.Name`) nor the resolved bag has its
   value withheld — gated on the template still proving a secret reference
   *anywhere*, `Resources` included, and exonerated when any stored value is
-  itself a secret expression (read as evidence the last write redacted the
+  itself a secret expression in the shape above — never a reference beside
+  other text, issue #4101 — (read as evidence the last write redacted the
   whole bag; a no-change deploy that carries a failed output's stored value
   refuses to create the one shape that breaks that reading, though a deploy
   that keeps the whole previous set can still produce it). This arm withholds per KEY
