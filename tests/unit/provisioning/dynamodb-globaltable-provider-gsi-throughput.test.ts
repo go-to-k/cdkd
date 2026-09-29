@@ -1713,13 +1713,37 @@ describe('GSI modify check ignores object key order (issue #3775)', () => {
       .filter((c): c is UpdateTableCommand => c instanceof UpdateTableCommand)
       .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? []);
 
-  it('does not flag an unchanged INCLUDE index whose Projection differs only in key order', async () => {
+  it('sends no GSI Update for an unchanged INCLUDE index whose Projection differs only in key order', async () => {
     await provider.update(
       'OnDemand',
       'od-table',
       RESOURCE_TYPE,
       withProjection(READBACK_ORDER),
       withProjection(TEMPLATE_ORDER),
+      { desiredFromAwsReadback: true }
+    );
+
+    expect(gsiUpdates()).toEqual([]);
+  });
+
+  it('does not advise recreating an unchanged INCLUDE index with no on-demand ceiling', async () => {
+    // With no ceiling a misclassified index has nothing to send, so it reaches
+    // the "Recreate the index" warning instead of an `Update` action.
+    const withoutCeilings = (projection: Record<string, unknown>): Record<string, unknown> => {
+      const props = withProjection(projection);
+      delete (props['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ];
+      delete (props['Replicas'] as Record<string, unknown>[])[0]!['GlobalSecondaryIndexes'];
+      return props;
+    };
+
+    await provider.update(
+      'OnDemand',
+      'od-table',
+      RESOURCE_TYPE,
+      withoutCeilings(READBACK_ORDER),
+      withoutCeilings(TEMPLATE_ORDER),
       { desiredFromAwsReadback: true }
     );
 
