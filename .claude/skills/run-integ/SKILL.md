@@ -39,7 +39,7 @@ verify, clean up.
    first**: `us-east-1`, unless the fixture's `verify.sh` header names a
    constraint (`asset-bootstrap` needs a region with no cdkd asset storage,
    #4063; its last ledger note shows a region that passed). Every resource-scan
-   `--region`, `AWS_REGION` and deploy/destroy `--region` in steps 4-7 then uses
+   `--region`, `AWS_REGION` and synth/deploy/destroy `--region` in steps 4-7 then uses
    that region. Synth first (for the stack name and resource types), then scan:
 
    ```bash
@@ -342,8 +342,8 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   planned for the same PR** — the marker is digest-bound to its src scope, so a
   post-integ review fix stales it and forces a full real-AWS re-run.
 - `--region us-east-1` unless the fixture names another (step 4); always
-  destroy after deploy; if deploy fails, still attempt destroy to clean up partial state — unless it failed on a
-  peer's lock (step 7).
+  destroy after deploy; if deploy fails, still attempt destroy to clean up
+  partial state — unless it failed on a peer's lock (step 7).
 - **A run blocked BEFORE its assertions is not a test failure — say which it
   was.** (A peer's lock — `cdkd gc` refuses on ANY stack's.) Record it as
   `FAIL` (the bar is exit-code-based) with a ledger note naming the blocker
