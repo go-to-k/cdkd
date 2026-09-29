@@ -4516,7 +4516,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
 
 describe('every repair the module exports is classified and has its read-only callers (go-to-k/cdkd#3504)', () => {
   /**
-   * Every IDENTIFIER in the file that names a repair, from the TypeScript AST —
+   * Every IDENTIFIER (or `ns['…']` key) in the file that names a repair, from the TypeScript AST —
    * so a name inside a comment, string, template or regex literal is not one,
    * and no hand-rolled scanner decides where a literal ends (one failed open in
    * go-to-k/cdkd#4062's review). A repair's own
@@ -4531,20 +4531,35 @@ describe('every repair the module exports is classified and has its read-only ca
       ts.ScriptTarget.Latest,
       true
     );
-    const diagnostics = (sf as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics;
-    if (diagnostics && diagnostics.length > 0) {
+    // An internal field: assert its shape, so a rename cannot switch the
+    // refusal off silently.
+    const diagnostics = (sf as unknown as { parseDiagnostics?: unknown }).parseDiagnostics;
+    if (!Array.isArray(diagnostics)) throw new Error('parseDiagnostics is gone; scan REFUSED');
+    if (diagnostics.length > 0) {
       throw new Error(`${relPath}: ${diagnostics.length} parse diagnostic(s) — scan REFUSED`);
     }
     const calls = new Set<string>();
     const mentions = new Set<string>();
     const visit = (node: ts.Node): void => {
-      if (ts.isIdentifier(node) && node.text.startsWith('repairMalformed')) {
+      // An identifier, or the string key of `ns['repairMalformed…']`.
+      const named =
+        ts.isIdentifier(node) ||
+        ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+          ts.isElementAccessExpression(node.parent) &&
+          node.parent.argumentExpression === node);
+      if (named && node.text.startsWith('repairMalformed')) {
         const parent = node.parent;
-        const isDeclarationName = ts.isFunctionDeclaration(parent) && parent.name === node;
+        const isDeclarationName =
+          (ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent)) &&
+          parent.name === node;
         if (!isDeclarationName) {
           mentions.add(node.text);
           // `name(…)` and `ns.name(…)` alike: the callee, or the name it ends in.
-          const callee = ts.isPropertyAccessExpression(parent) && parent.name === node ? parent : node;
+          const callee =
+            (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+            ts.isElementAccessExpression(parent)
+              ? parent
+              : node;
           if (ts.isCallExpression(callee.parent) && callee.parent.expression === callee) {
             calls.add(node.text);
           }
