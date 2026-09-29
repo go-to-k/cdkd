@@ -88,9 +88,11 @@ const ALLOWED_HAND_QUOTES: Readonly<Record<string, { count: number; reason: stri
  * - RIGHT adjacency: walking right from its `}` across no whitespace reaches
  *   the same quote character (`see ${x}'.`).
  *
- * KNOWN BOUND: a quote holding whitespace on BOTH sides of the value whose
- * closer is also followed by a word character (`'a ${x} b's`) is none of the
- * three. Braces nest, so `${f(g())}` is one interpolation.
+ * KNOWN BOUNDS: a quote whose opener follows a word character is read as an
+ * apostrophe (`prefix' ${x} suffix'.`), and one holding whitespace on BOTH
+ * sides of the value whose closer is also followed by a word character
+ * (`'a ${x} b's`) is none of the three. Braces nest, so `${f(g())}` is one
+ * interpolation.
  */
 export function quotedInterpolations(line: string): string[] {
   const word = /[\w$]/;
