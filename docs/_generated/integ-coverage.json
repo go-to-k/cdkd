@@ -5054,6 +5054,7 @@
         "ecs-fargate",
         "ecs-service-update-props",
         "full-stack-demo",
+        "glue-update-hardening",
         "local-start-alb-from-state",
         "log-pipeline",
         "loggroup-class-guard",
@@ -5108,6 +5109,9 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "glue-update-hardening": [
+          "l1"
         ],
         "local-start-alb-from-state": [
           "l2",

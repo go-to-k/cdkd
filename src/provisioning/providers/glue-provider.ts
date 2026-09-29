@@ -38,6 +38,8 @@ import {
   StartTriggerCommand,
   StopTriggerCommand,
   StopCrawlerCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   EntityNotFoundException,
   AlreadyExistsException,
   CrawlerRunningException,
@@ -100,6 +102,12 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import {
+  planTagDiff,
+  refuseMalformedDesiredTags,
+  tagMapAsList,
+  tagPlanWarning,
+} from '../tag-list.js';
 import {
   replayWarn,
   requireConfigArray,
@@ -3040,9 +3048,8 @@ export class GlueProvider implements ResourceProvider {
 // Glue Workflow has a clean SDK update path (`UpdateWorkflow`) covering
 // every mutable top-level field — `Description`, `DefaultRunProperties`,
 // `MaxConcurrentRuns`. `Name` is immutable on create. Tags ride on
-// `CreateWorkflow.Tags` but cdkd updates them out-of-band via
-// `TagResource` / `UntagResource` (kept simple here — tag updates are
-// always done by `cdkd drift --revert` against the current AWS shape).
+// `CreateWorkflow.Tags`; an update reconciles them out of band via
+// `TagResource` / `UntagResource` (`applyGlueTagDiff`).
 //
 // Surface used by `cdkd drift`:
 //   - `readCurrentState` reads via `GetWorkflow` and reverse-maps every
@@ -3115,12 +3122,12 @@ export class GlueWorkflowProvider implements ResourceProvider {
       );
     }
 
+    // Glue Workflow Tags may arrive as a CFn tag map OR a `{Key,Value}[]` list;
+    // a malformed one is refused before any call (go-to-k/cdkd#4073). The key
+    // is elided when there are no tags.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
+
     try {
-      // Glue Workflow Tags may arrive as a CFn `{Key,Value}[]` list OR a tag map
-      // (CDK can synth either shape); use the map-tolerant helper so a map shape
-      // is not silently dropped. Elide the key when there are no tags.
-      const tagsMap = cfnTagsToMap(properties['Tags']);
-      const tags = tagsMap && Object.keys(tagsMap).length > 0 ? tagsMap : undefined;
       await this.getClient().send(
         new CreateWorkflowCommand({
           Name: name,
@@ -3167,6 +3174,8 @@ export class GlueWorkflowProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Updating Glue Workflow ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       await this.getClient().send(
@@ -3182,6 +3191,19 @@ export class GlueWorkflowProvider implements ResourceProvider {
             MaxConcurrentRuns: coerceNumber(properties['MaxConcurrentRuns']) as number,
           }),
         })
+      );
+
+      // `UpdateWorkflow` does not carry tags: reconcile them out of band. Tags
+      // used to be dropped here, so a template or `drift --revert` tag change
+      // never reached AWS (go-to-k/cdkd#4073).
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.buildWorkflowArn(physicalId),
+        previousProperties['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
       );
 
       log.debug(`Successfully updated Glue Workflow ${logicalId}`);
@@ -3917,7 +3939,7 @@ function cleanCfnObject(obj: Record<string, unknown>): Record<string, unknown> {
 /**
  * Build the ARN for a Glue resource. Used by tag-fetch via
  * `GetTagsCommand` which only accepts an ARN, and by the Job / Crawler /
- * Trigger `applyTagDiff` as the `TagResource` / `UntagResource` target.
+ * Trigger `applyGlueTagDiff` as the `TagResource` / `UntagResource` target.
  * Account id falls back to STS when not provided.
  *
  * The partition is derived from the region (issue #1815). A hardcoded
@@ -4076,8 +4098,9 @@ export class GlueJobProvider implements ResourceProvider {
         logicalId
       );
     }
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
     try {
-      const tags = cfnTagsToMap(properties['Tags']);
       await this.getClient().send(
         new CreateJobCommand({
           Name: name,
@@ -4117,6 +4140,8 @@ export class GlueJobProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Updating Glue Job ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
     try {
       const command = properties['Command'] as Record<string, unknown> | undefined;
       const update: JobUpdate = {
@@ -4128,9 +4153,15 @@ export class GlueJobProvider implements ResourceProvider {
       await this.getClient().send(new UpdateJobCommand({ JobName: physicalId, JobUpdate: update }));
 
       // Tags are not part of JobUpdate; reconcile via TagResource diff if tags changed.
-      const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
-      const newTags = cfnTagsToMap(properties['Tags']) ?? {};
-      await this.applyTagDiff(physicalId, oldTags, newTags);
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId),
+        previousProperties['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
+      );
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -4257,39 +4288,15 @@ export class GlueJobProvider implements ResourceProvider {
     return result;
   }
 
-  private async applyTagDiff(
-    physicalId: string,
-    oldTags: Record<string, string>,
-    newTags: Record<string, string>
-  ): Promise<void> {
-    const arn = await buildGlueResourceArn(
+  /** The job ARN `TagResource` / `UntagResource` target. */
+  private resourceArn(physicalId: string): Promise<string> {
+    return buildGlueResourceArn(
       this.getClient(),
       this.getStsClient(),
       'job',
       physicalId,
       this.cachedAccountId
     );
-    const toAdd: Record<string, string> = {};
-    const toRemove: string[] = [];
-    for (const [k, v] of Object.entries(newTags)) {
-      if (oldTags[k] !== v) toAdd[k] = v;
-    }
-    for (const k of Object.keys(oldTags)) {
-      if (!Object.hasOwn(newTags, k)) toRemove.push(k);
-    }
-    // TagResource / UntagResource use the same Glue API (TagResource for add).
-    if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
-      // Lazy-import to avoid bundle bloat in delete-only paths.
-      const { TagResourceCommand, UntagResourceCommand } = await import('@aws-sdk/client-glue');
-      if (Object.keys(toAdd).length > 0) {
-        await this.getClient().send(new TagResourceCommand({ ResourceArn: arn, TagsToAdd: toAdd }));
-      }
-      if (toRemove.length > 0) {
-        await this.getClient().send(
-          new UntagResourceCommand({ ResourceArn: arn, TagsToRemove: toRemove })
-        );
-      }
-    }
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -4513,29 +4520,67 @@ function coerceNumber(value: unknown): unknown {
 }
 
 /**
- * Convert CFn `Tags: [{Key,Value}]` (or a tag map) to AWS Glue's
- * `Record<string,string>` shape used by Create commands and TagResource. Returns
- * `undefined` when the input is undefined so callers can elide the key.
+ * The shape a refused Glue `Tags` names. Every Glue type's CloudFormation
+ * `Tags` is a key -> value MAP; `readCurrentState` emits the `{Key,Value}[]`
+ * list, which a `drift --revert` hands back as the desired side, so both are
+ * read.
  */
-function cfnTagsToMap(tagsInput: unknown): Record<string, string> | undefined {
-  if (tagsInput === undefined) return undefined;
-  const out: Record<string, string> = {};
-  if (Array.isArray(tagsInput)) {
-    for (const entry of tagsInput) {
-      const e = entry as Record<string, unknown>;
-      const k = e['Key'];
-      const v = e['Value'];
-      if (typeof k === 'string') out[k] = typeof v === 'string' ? v : '';
-    }
-    return out;
+const GLUE_TAGS_WHAT =
+  'a map of tag keys to scalar values or a list of tags with a non-empty string Key and a scalar Value';
+
+/**
+ * Refuse a malformed desired Glue `Tags` before any call (go-to-k/cdkd#4073)
+ * and return it as the Glue `Record<string,string>` a Create command takes, or
+ * `undefined` when there are no tags so the caller elides the key. `physicalId`
+ * is set on the update path.
+ */
+function desiredGlueTags(
+  raw: unknown,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): Record<string, string> | undefined {
+  const tags = refuseMalformedDesiredTags(
+    tagMapAsList(raw),
+    resourceType,
+    logicalId,
+    physicalId,
+    'Tags',
+    GLUE_TAGS_WHAT
+  );
+  return tags.length > 0 ? Object.fromEntries(tags.map((t) => [t.Key, t.Value])) : undefined;
+}
+
+/**
+ * Reconcile a Glue resource's tags through `planTagDiff` (go-to-k/cdkd#4073):
+ * only the keys the desired side dropped are untagged and only new or changed
+ * tags are set; a recorded `Tags` cdkd cannot read untags nothing, and a
+ * recorded secret-derived key is never untagged. The desired side must already
+ * have passed {@link desiredGlueTags}. The ARN is resolved only when there is
+ * something to send.
+ */
+async function applyGlueTagDiff(
+  client: GlueClient,
+  resourceArn: () => Promise<string>,
+  recorded: unknown,
+  desired: unknown,
+  resourceType: string,
+  logicalId: string,
+  warn: (message: string) => void
+): Promise<void> {
+  const plan = planTagDiff(tagMapAsList(recorded), tagMapAsList(desired));
+  const warning = tagPlanWarning(plan, resourceType, logicalId);
+  if (warning !== undefined) warn(warning);
+  if (plan.set.size === 0 && plan.remove.length === 0) return;
+  const arn = await resourceArn();
+  if (plan.set.size > 0) {
+    await client.send(
+      new TagResourceCommand({ ResourceArn: arn, TagsToAdd: Object.fromEntries(plan.set) })
+    );
   }
-  if (typeof tagsInput === 'object' && tagsInput !== null) {
-    for (const [k, v] of Object.entries(tagsInput as Record<string, unknown>)) {
-      out[k] = typeof v === 'string' ? v : '';
-    }
-    return out;
+  if (plan.remove.length > 0) {
+    await client.send(new UntagResourceCommand({ ResourceArn: arn, TagsToRemove: plan.remove }));
   }
-  return out;
 }
 
 /**
@@ -4650,8 +4695,9 @@ export class GlueCrawlerProvider implements ResourceProvider {
         logicalId
       );
     }
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
     try {
-      const tags = cfnTagsToMap(properties['Tags']);
       await this.getClient().send(
         new CreateCrawlerCommand({
           Name: name,
@@ -4691,6 +4737,8 @@ export class GlueCrawlerProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Updating Glue Crawler ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
     try {
       const updateInput = {
         Name: physicalId,
@@ -4716,9 +4764,15 @@ export class GlueCrawlerProvider implements ResourceProvider {
         }
       }
 
-      const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
-      const newTags = cfnTagsToMap(properties['Tags']) ?? {};
-      await this.applyTagDiff(physicalId, oldTags, newTags);
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId),
+        previousProperties['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
+      );
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -4900,37 +4954,15 @@ export class GlueCrawlerProvider implements ResourceProvider {
     await this.getClient().send(new StopCrawlerScheduleCommand({ CrawlerName: physicalId }));
   }
 
-  private async applyTagDiff(
-    physicalId: string,
-    oldTags: Record<string, string>,
-    newTags: Record<string, string>
-  ): Promise<void> {
-    const arn = await buildGlueResourceArn(
+  /** The crawler ARN `TagResource` / `UntagResource` target. */
+  private resourceArn(physicalId: string): Promise<string> {
+    return buildGlueResourceArn(
       this.getClient(),
       this.getStsClient(),
       'crawler',
       physicalId,
       this.cachedAccountId
     );
-    const toAdd: Record<string, string> = {};
-    const toRemove: string[] = [];
-    for (const [k, v] of Object.entries(newTags)) {
-      if (oldTags[k] !== v) toAdd[k] = v;
-    }
-    for (const k of Object.keys(oldTags)) {
-      if (!Object.hasOwn(newTags, k)) toRemove.push(k);
-    }
-    if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
-      const { TagResourceCommand, UntagResourceCommand } = await import('@aws-sdk/client-glue');
-      if (Object.keys(toAdd).length > 0) {
-        await this.getClient().send(new TagResourceCommand({ ResourceArn: arn, TagsToAdd: toAdd }));
-      }
-      if (toRemove.length > 0) {
-        await this.getClient().send(
-          new UntagResourceCommand({ ResourceArn: arn, TagsToRemove: toRemove })
-        );
-      }
-    }
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -5522,8 +5554,9 @@ export class GlueTriggerProvider implements ResourceProvider {
         logicalId
       );
     }
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
     try {
-      const tags = cfnTagsToMap(properties['Tags']);
       await this.getClient().send(
         new CreateTriggerCommand({
           Name: name,
@@ -5580,6 +5613,9 @@ export class GlueTriggerProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Updating Glue Trigger ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call,
+    // so a doomed update never deactivates the trigger.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
     try {
       // Glue requires the trigger be DEACTIVATED before UpdateTrigger. Read the
       // current state to decide whether we need to stop+restart.
@@ -5652,9 +5688,15 @@ export class GlueTriggerProvider implements ResourceProvider {
       }
       if (updateError !== undefined) throw updateError;
 
-      const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
-      const newTags = cfnTagsToMap(properties['Tags']) ?? {};
-      await this.applyTagDiff(physicalId, oldTags, newTags);
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId),
+        previousProperties['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
+      );
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -5803,37 +5845,15 @@ export class GlueTriggerProvider implements ResourceProvider {
     return result;
   }
 
-  private async applyTagDiff(
-    physicalId: string,
-    oldTags: Record<string, string>,
-    newTags: Record<string, string>
-  ): Promise<void> {
-    const arn = await buildGlueResourceArn(
+  /** The trigger ARN `TagResource` / `UntagResource` target. */
+  private resourceArn(physicalId: string): Promise<string> {
+    return buildGlueResourceArn(
       this.getClient(),
       this.getStsClient(),
       'trigger',
       physicalId,
       this.cachedAccountId
     );
-    const toAdd: Record<string, string> = {};
-    const toRemove: string[] = [];
-    for (const [k, v] of Object.entries(newTags)) {
-      if (oldTags[k] !== v) toAdd[k] = v;
-    }
-    for (const k of Object.keys(oldTags)) {
-      if (!Object.hasOwn(newTags, k)) toRemove.push(k);
-    }
-    if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
-      const { TagResourceCommand, UntagResourceCommand } = await import('@aws-sdk/client-glue');
-      if (Object.keys(toAdd).length > 0) {
-        await this.getClient().send(new TagResourceCommand({ ResourceArn: arn, TagsToAdd: toAdd }));
-      }
-      if (toRemove.length > 0) {
-        await this.getClient().send(
-          new UntagResourceCommand({ ResourceArn: arn, TagsToRemove: toRemove })
-        );
-      }
-    }
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

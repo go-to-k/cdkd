@@ -4,6 +4,11 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as glue from 'aws-cdk-lib/aws-glue';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as logs from 'aws-cdk-lib/aws-logs';
+
+// Issue #4073: the update changes `env`, drops `team` and adds `owner`.
+const BASE_TAG_MAP = { env: 'integ', team: 'data-platform' };
+const UPDATED_TAG_MAP = { env: 'integ-updated', owner: 'cdkd' };
 
 /**
  * Glue update / delete hardening integ stack.
@@ -56,6 +61,11 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     `<db>|<name>` with the `|` in the database part, so every reader must
  *     place the table by the recorded DatabaseName: the `PipeDbTableRef` output
  *     is the `Ref`, and CDKD_TEST_UPDATE flips the table's description.
+ * 13. A `Tags` update on a Glue Workflow and Job (key -> value maps) and on a
+ *     CloudWatch Logs log group (a list), issue #4073: CDKD_TEST_UPDATE changes
+ *     one value, drops one key and adds one, and verify.sh asserts the exact
+ *     tag set AWS holds afterwards. The Workflow update used to drop Tags
+ *     altogether; which calls produced the set is pinned by unit tests.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -103,6 +113,7 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       executionProperty: {
         maxConcurrentRuns: 2,
       },
+      tags: isUpdate ? UPDATED_TAG_MAP : BASE_TAG_MAP,
     });
 
     // DynamoDB table referenced by the Crawler's `dynamoDbTargets` entry below.
@@ -157,10 +168,17 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     new glue.CfnWorkflow(this, 'EtlWorkflow', {
       name: `${this.stackName}-workflow`.toLowerCase(),
       maxConcurrentRuns: 1,
-      tags: {
-        env: 'integ',
-        team: 'data-platform',
-      },
+      tags: isUpdate ? UPDATED_TAG_MAP : BASE_TAG_MAP,
+    });
+
+    // CloudWatch Logs log group whose `Tags` list changes on update (issue
+    // #4073). Named so verify.sh can read its tags and prove it gone.
+    new logs.CfnLogGroup(this, 'TaggedLogGroup', {
+      logGroupName: `/cdkd-integ/${this.stackName}-tagged`,
+      tags: Object.entries(isUpdate ? UPDATED_TAG_MAP : BASE_TAG_MAP).map(([key, value]) => ({
+        key,
+        value,
+      })),
     });
 
     // Glue Database + Table — `StorageDescriptor.SkewedInfo` (issue #1505).

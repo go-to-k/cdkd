@@ -36,6 +36,7 @@ import {
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, refuseMalformedDesiredTags, tagPlanWarning } from '../tag-list.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import { toCfnInteger, toFiniteNumber } from '../dynamodb-warm-throughput.js';
 import { renderDisableCommand, UNNAMEABLE_ID_CLAUSE } from '../replacement-protection-advice.js';
@@ -300,6 +301,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
       (properties['LogGroupName'] as string | undefined) ||
       `/cdkd/${generateResourceName(logicalId, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
 
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+
     try {
       const createParams: import('@aws-sdk/client-cloudwatch-logs').CreateLogGroupCommandInput = {
         logGroupName,
@@ -316,9 +320,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
       if (properties['DeletionProtectionEnabled'] !== undefined) {
         createParams.deletionProtectionEnabled = properties['DeletionProtectionEnabled'] as boolean;
       }
-      if (properties['Tags']) {
-        const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
-        createParams.tags = Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]));
+      if (desiredTags.length > 0) {
+        createParams.tags = Object.fromEntries(desiredTags.map((t) => [t.Key, t.Value]));
       }
 
       // Track whether THIS call actually created the log group (vs hit the
@@ -549,8 +552,11 @@ export class LogsLogGroupProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
+      // CreateLogGroup sends the resolved tag values, which an AWS error can
+      // echo: the message goes through the operation's masker.
+      const mask = maskerOrIdentity(context?.maskSecrets);
       throw new ProvisioningError(
-        `Failed to create log group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create log group ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         logGroupName,
@@ -606,8 +612,11 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // raised deeper in the body already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
+      // An AWS error can echo a request value (a resolved tag value), so the
+      // message goes through the operation's masker.
+      const mask = maskerOrIdentity(context?.maskSecrets);
       throw new ProvisioningError(
-        `Failed to update log group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update log group ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -625,17 +634,21 @@ export class LogsLogGroupProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    // Read for TWO fields: `desiredFromAwsReadback`, which decides whether a
-    // numeric `0` is cdkd's own never-expire readback or a template's rejected
-    // zero (see `isAbsentRetention`), and `replayingState` (issue #3141), which
-    // downgrades the refusal on a rollback replay. No masker is threaded from
-    // it, and the one VALUE any of those warnings interpolates is
+    // Read for `desiredFromAwsReadback`, which decides whether a numeric `0` is
+    // cdkd's own never-expire readback or a template's rejected zero (see
+    // `isAbsentRetention`), for `replayingState` (issue #3141), which
+    // downgrades the refusal on a rollback replay, and for `maskSecrets`, applied
+    // to the Tags plan warning (which names no property value). The one VALUE
+    // any of the retention warnings interpolates is
     // `toFiniteNumber`'s positive-integer reading of the retention itself —
     // a day count, not a carrier for secret material (PR #3246 security
     // review, which flagged the previous "names no value" wording as stale).
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating log group ${logicalId}: ${physicalId}`);
+
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     // LogGroupClass is unchangeable after creation (no AWS API exists;
     // CloudFormation documents the property as "Update requires: Updates
@@ -1112,28 +1125,32 @@ export class LogsLogGroupProvider implements ResourceProvider {
       }
     }
 
-    // Update Tags if changed
-    const newTags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-    const oldTags = previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-    if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
-      const arn = await this.buildArn(physicalId);
-      // Remove old tags
-      if (oldTags && oldTags.length > 0) {
-        const oldTagKeys = oldTags.map((t) => t.Key);
+    // Update Tags through `planTagDiff` (go-to-k/cdkd#4073): only the keys the
+    // desired side dropped are untagged and only new or changed tags are set,
+    // and a recorded Tags cdkd cannot read untags nothing.
+    const tagPlan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+    const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(maskerOrIdentity(context?.maskSecrets)(tagWarning));
+    }
+    if (tagPlan.remove.length > 0 || tagPlan.set.size > 0) {
+      // The tagging APIs take the log-group ARN WITHOUT the trailing `:*`
+      // wildcard `buildArn` returns (the `Arn` attribute), as `readCurrentState`'s
+      // ListTagsForResource does.
+      const arn = (await this.buildArn(physicalId)).replace(/:\*$/, '');
+      if (tagPlan.remove.length > 0) {
         await this.logsClient.send(
           new UntagResourceCommand({
             resourceArn: arn,
-            tagKeys: oldTagKeys,
+            tagKeys: tagPlan.remove,
           })
         );
       }
-      // Apply new tags
-      if (newTags && newTags.length > 0) {
-        const tagsMap = Object.fromEntries(newTags.map((t) => [t.Key, t.Value]));
+      if (tagPlan.set.size > 0) {
         await this.logsClient.send(
           new TagResourceCommand({
             resourceArn: arn,
-            tags: tagsMap,
+            tags: Object.fromEntries(tagPlan.set),
           })
         );
       }

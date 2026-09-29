@@ -57,6 +57,14 @@
 #      cdkd refused the table in it. Asserted: the deploy records
 #      `<pipe db>|<table>`, the `Ref` output is the table name (the first-`|`
 #      reading would give `db|<table>`), and the update reaches that table.
+#  13. A `Tags` update on the Workflow, the Job and a CloudWatch Logs log group
+#      (issue #4073). The update changes `env`, drops `team` and adds `owner`;
+#      asserted as the EXACT tag set on AWS after each phase. The Workflow
+#      update used to drop Tags (the base set survived) and fails the update
+#      assertion. The final set alone cannot tell the log group's old
+#      untag-all-then-retag from the new diff (that is pinned by unit tests);
+#      the arm proves the update's tag calls reach AWS through the `:*`-less
+#      ARN. The Job's map diff was already correct: a regression guard.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -129,6 +137,8 @@ SEP_TABLE_NAME="${LOWER}-sep|table"
 # and the plain-named table inside it.
 PIPE_DB_NAME="${LOWER}-pipe|db"
 PIPE_DB_TABLE_NAME="${LOWER}-in-pipe-db"
+# Assertion 13 (issue #4073): the tagged log group's name, as the stack sets it.
+TAGGED_LG_NAME="/cdkd-integ/${STACK}-tagged"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -161,6 +171,8 @@ cleanup() {
         --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
         aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1
       done
+      # Assertion 13's log group, should a failed run leave it behind.
+      aws logs delete-log-group --log-group-name "${TAGGED_LG_NAME}" --region "${REGION}" >/dev/null 2>&1
       ;;
     *)
       echo "WARN: teardown sweep refused: STACK '${STACK}' is not this fixture's stack" >&2
@@ -280,6 +292,35 @@ if [ "${ENV_TAG}" != "integ" ] || [ "${TEAM_TAG}" != "data-platform" ]; then
   exit 1
 fi
 echo "    OK: Workflow MAP-shape tags reached AWS (env=integ, team=data-platform)"
+
+# --- Assertion 13: exact Tags on the Workflow, Job and log group (#4073) ---
+BASE_TAGS='{"env":"integ","team":"data-platform"}'
+UPDATED_TAGS='{"env":"integ-updated","owner":"cdkd"}'
+JOB_ARN="arn:aws:glue:${REGION}:${ACCOUNT_ID}:job/${JOB_NAME}"
+TAGGED_LG_ARN="arn:aws:logs:${REGION}:${ACCOUNT_ID}:log-group:${TAGGED_LG_NAME}"
+assert_tag_set() { # usage: assert_tag_set <label> <want tag map JSON> aws <service> <read-verb> [args...]
+  local label="$1" want="$2" raw got
+  shift 2
+  # A failed probe (throttle, auth) must not read as the #4073 regression.
+  raw="$("$@")" || { echo "FAIL: ${label}: the tag readback failed: $*" >&2; exit 1; }
+  got=$(printf '%s' "${raw}" | jq -cS '.')
+  want=$(printf '%s' "${want}" | jq -cS '.')
+  if [ "${got}" != "${want}" ]; then
+    echo "FAIL: ${label}: AWS holds tags ${got}, expected exactly ${want} (issue #4073)" >&2
+    exit 1
+  fi
+  echo "    OK: ${label}: AWS holds exactly ${got}"
+}
+assert_all_tag_sets() { # usage: assert_all_tag_sets <want tag map JSON> <phase label>
+  local want="$1" phase="$2"
+  assert_tag_set "${phase}: Workflow" "${want}" aws glue get-tags --resource-arn "${WF_ARN}" \
+    --region "${REGION}" --query 'Tags' --output json
+  assert_tag_set "${phase}: Job" "${want}" aws glue get-tags --resource-arn "${JOB_ARN}" \
+    --region "${REGION}" --query 'Tags' --output json
+  assert_tag_set "${phase}: log group" "${want}" aws logs list-tags-for-resource \
+    --resource-arn "${TAGGED_LG_ARN}" --region "${REGION}" --query 'tags' --output json
+}
+assert_all_tag_sets "${BASE_TAGS}" 'create'
 
 # --- Assertion 3: Crawler DynamoDB scan tuning reached AWS (#1391) -----
 # The SDK `DynamoDBTarget` spells the scan tuning `scanAll` / `scanRate`
@@ -516,6 +557,11 @@ if [ "${NEW_TIMEOUT}" != "90" ]; then
   exit 1
 fi
 echo "    OK: Job.Timeout updated to 90 (number)"
+
+# Issue #4073: `env` changed, `team` dropped, `owner` added. Before the fix the
+# Workflow kept its base set (its update dropped Tags) and the log group's
+# update untagged every key and re-tagged through an ARN ending in `:*`.
+assert_all_tag_sets "${UPDATED_TAGS}" 'update'
 
 # The UPDATE path has its own CFn -> SDK rename call site (UpdateCrawler), so
 # re-assert the scan tuning against the second, distinct pair.
@@ -813,6 +859,10 @@ for chk in \
 done
 echo "    OK: all Glue resources are gone"
 
+assert_gone "log group ${TAGGED_LG_NAME} still exists after destroy" \
+  aws logs list-tags-for-resource --resource-arn "${TAGGED_LG_ARN}" --region "${REGION}"
+echo "    OK: tagged log group is gone"
+
 # DeleteTable is async and the provider does not wait, so the table is normally
 # still DELETING moments after destroy returns. Accept GONE or DELETING; only a
 # live state (ACTIVE / UPDATING) means the delete never happened. Same shape as
@@ -837,4 +887,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + Workflow/Job/log group Tags update + clean destroy)"
