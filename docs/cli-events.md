@@ -46,9 +46,10 @@ name one.
 
 The human output routes every stored value through cdkd's terminal-sanitising
 helper, so a control byte in a provider `reason`, a logical id or an AWS error
-message cannot repaint a line of the post-mortem; `--json` is deliberately left
-byte-identical to the store, since it is machine-consumed. See
-[Deployment Events](deployment-events.md#rendering-control-bytes-are-neutralised-on-the-human-path-only)
+message cannot repaint a line of the post-mortem; `--json` is not sanitised,
+since it is machine-consumed, but writes those characters as `\uXXXX` escapes,
+so it parses back to the stored values. See
+[Deployment Events](deployment-events.md#rendering-the-human-path-sanitises---json-escapes)
 for what that does and does not cover.
 
 ## `cdkd events prune`

@@ -403,8 +403,13 @@ string alone whether a value is plaintext.
 and bidi characters before display.** An `Export.Name` is a value cdkd resolved
 (from an `Fn::Sub`, a parameter, an SSM lookup), so unlike a CloudFormation
 logical ID it never passed a validator. The `--json` payload is deliberately
-left byte-faithful — it is a machine interface, and mutating a name a consumer
-matches on would be worse than the display concern it would avoid.
+not stripped — it is a machine interface, and mutating a name a consumer
+matches on would be worse than the display concern it would avoid. It is
+escaped instead: every control, format, line-separator and paragraph-separator
+character (DEL, the C1 range, `U+2028` / `U+2029`, the bidi controls and the
+zero-width characters, as well as the C0 range) is written as a `\uXXXX`
+escape, so the payload parses back to exactly the same values and printing it
+cannot run a control sequence.
 
 ## When the state record is malformed
 

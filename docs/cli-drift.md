@@ -256,7 +256,11 @@ value that itself contains `->` is quoted there too: no unquoted value carries
 an arrow, so the only one outside quotes after the path is the separator. (The
 path itself is not quoted, as in the report.)
 
-`--json` is untouched — a consumer of that mode wants the stored value.
+`--json` is not sanitised — a consumer of that mode wants the stored value. It
+is escaped instead: every control, format, line-separator and
+paragraph-separator character is written as a `\uXXXX` escape, so the payload
+parses back to exactly the stored values and printing it cannot run a control
+sequence.
 
 ## Exit codes
 

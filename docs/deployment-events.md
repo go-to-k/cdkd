@@ -154,7 +154,7 @@ whose plaintext a run is known to have quoted — masking a later write does not
 un-persist an earlier one, and neither does deleting the stream
 ([earlier versions of it survive](#deleting-a-run-stream-does-not-remove-its-earlier-versions)).
 
-### Rendering: control bytes are neutralised on the HUMAN path only
+### Rendering: the human path sanitises, `--json` escapes
 
 Events are read back with a plain `JSON.parse`, which restores whatever bytes
 the writer stored — and several fields are provider- or template-authored (a
@@ -198,23 +198,13 @@ identifier`. Every value cdkd writes itself passes, so an ordinary listing is
 unchanged.
 
 `--json` / `--format json` is deliberately **not** sanitised: it is a
-machine-consumed payload whose contract is byte-fidelity with the store, and a
-substitution inside a value would corrupt what tooling reads back.
-`JSON.stringify` already escapes the whole C0 range (`U+0000`-`U+001F`) — where
-`ESC`, `CR` and every other line-forging mechanism lives — so the escape is
-spelled out rather than executed. It does so in a MIX of forms, not one: the
-two-character `\b` `\t` `\n` `\f` `\r` alongside six-character `\u00XX` for
-the rest, `ESC` included.
-
-What JSON does **not** escape, and what therefore reaches a terminal raw
-through this path: `U+007F` (DEL), `U+0085` (NEL), the C1 range (`U+009B` is
-CSI in UTF-8), `U+2028` / `U+2029`, and the Trojan-Source bidi overrides and
-isolates `U+202A`-`U+202E` / `U+2066`-`U+2069`, which visually reorder a line.
-That is JSON's residual **relative to what the human path strips**; the
-sanitiser's own documented residual — the invisible formatters
-`U+200B`-`U+200D` / `U+FEFF` and the bidi marks `U+200E` / `U+200F` / `U+061C`
-— survives on both paths. Page the payload or pipe it through `jq` rather than
-`cat`-ing it.
+machine-consumed payload, and a substitution inside a value would corrupt what
+tooling reads back. It is **escaped** instead: every control, format,
+line-separator and paragraph-separator character — the C0 range, DEL, the C1
+range (`U+009B` is CSI in UTF-8), `U+2028` / `U+2029`, the bidi controls and
+the zero-width characters — is written as a `\uXXXX` escape (C0 may take
+JSON's short forms such as `\n`). The payload parses back to exactly the
+stored values, and `cat`-ing it cannot run a control sequence.
 
 ## Where it lives (S3 key layout)
 
@@ -306,7 +296,8 @@ cdkd events MyStack --stack-region us-east-1
 - With `--run <id>`: prints that run's ordered events. Malformed / torn
   final lines (from an interrupted flush) are skipped, never hiding the
   rest of the stream.
-- `--format json` (or `--json`) emits the raw JSON.
+- `--format json` (or `--json`) emits the stored values as JSON, unsanitised
+  but escaped (see [Rendering](#rendering-the-human-path-sanitises---json-escapes)).
 - Region is auto-discovered from the `deployments/` key listing (not
   `state.json`), so it works for destroyed stacks too; `--stack-region`
   disambiguates when a stack has history in more than one region.

@@ -71,6 +71,7 @@ import {
   displayIdent,
   isPasteableIdent,
   safeMsg,
+  stringifyJsonPayload,
   truncateCodePoints,
 } from '../../utils/display-safe.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
@@ -7134,7 +7135,10 @@ function writeJsonReport(reports: StackDriftReport[]): void {
       notCompared,
     };
   });
-  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  // Escaped, not sanitised (go-to-k/cdkd#4045): the values parse back
+  // unchanged, but DEL, C1, a line separator or a bidi control in a stored
+  // value reaches the terminal as `\uXXXX` escape text.
+  process.stdout.write(`${stringifyJsonPayload(payload)}\n`);
 }
 
 /**

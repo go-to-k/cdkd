@@ -213,6 +213,54 @@ describe('events --json keeps stdout to the payload (issue #2280)', () => {
   });
 
   /**
+   * go-to-k/cdkd#4045: both payloads are ESCAPED, not sanitised. A planted C1
+   * CSI / LINE SEPARATOR in a stored value must reach stdout as `\uXXXX` escape
+   * text, and the payload must still parse back to the stored value.
+   */
+  it('--run <id> --json escapes a planted CSI in a stored reason and round-trips it', async () => {
+    const reason = 'bucket \u009b[2J wiped FAKE line';
+    mockGetRawObject.mockImplementation(async (key: string) => {
+      if (key === INDEX_KEY) return JSON.stringify({ runs: [RUN_SUMMARY] });
+      if (key === RUN_KEY) {
+        return JSON.stringify({
+          eventType: 'RESOURCE_FAILED',
+          timestamp: RUN_SUMMARY.startedAt,
+          logicalId: 'Bucket',
+          resourceType: 'AWS::S3::Bucket',
+          reason,
+        });
+      }
+      return null;
+    });
+
+    const { stdout, error } = await runEvents(['TestStack', '--run', RUN_SUMMARY.runId, '--json']);
+
+    expect(error).toBeUndefined();
+    expect(stdout).not.toContain('\u009b');
+    expect(stdout).not.toContain(' ');
+    expect(stdout).toContain('\\u009b');
+    expect(stdout).toContain('\\u2028');
+    const events = JSON.parse(stdout) as Array<{ reason?: string }>;
+    expect(events.map((e) => e.reason)).toEqual([reason]);
+  });
+
+  it('--json run listing escapes a planted CSI in a stored run field and round-trips it', async () => {
+    const command = 'deploy\u009b[2J';
+    mockGetRawObject.mockImplementation(async (key: string) => {
+      if (key === INDEX_KEY) return JSON.stringify({ runs: [{ ...RUN_SUMMARY, command }] });
+      return null;
+    });
+
+    const { stdout, error } = await runEvents(['TestStack', '--json']);
+
+    expect(error).toBeUndefined();
+    expect(stdout).not.toContain('\u009b');
+    expect(stdout).toContain('\\u009b');
+    const payload = JSON.parse(stdout) as { runs: Array<{ command: string }> };
+    expect(payload.runs.map((r) => r.command)).toEqual([command]);
+  });
+
+  /**
    * The other direction: the reservation is scoped to `--json`. The human run
    * listing renders through `logger.info`, which must STAY on stdout.
    */

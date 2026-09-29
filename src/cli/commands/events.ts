@@ -30,6 +30,7 @@ import {
   displaySafe,
   displayStackName,
   isPasteableIdent,
+  stringifyJsonPayload,
 } from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 
@@ -220,37 +221,16 @@ export async function eventsCommand(
           'EVENTS_RUN_NOT_FOUND'
         );
       }
-      // Issue #2438: the JSON payload is deliberately NOT routed through
-      // `displaySafe`. It is a machine-consumed stream whose whole contract is
-      // byte-fidelity with the store — replacing a character inside a value
-      // would corrupt what tooling reads back, and the escaping this path DOES
-      // need is already `JSON.stringify`'s: it escapes the WHOLE C0 range
-      // (U+0000-U+001F), which is where ESC, CR and every other line-forging
-      // mechanism lives, so a human `cat`-ing the payload sees the escape
-      // spelled out rather than executed. Do NOT restate that as one FORM:
-      // the output MIXES two-character short forms (`\b` `\t` `\n` `\f`
-      // `\r`) with six-character `\u00XX` for the other 27 (ESC among them),
-      // and an earlier revision of this comment named `\u00XX` alone while
-      // citing CR as its example — which is exactly the case that takes the
-      // short form. This is `QuoteJSONString` in ECMA-262, not a Node
-      // implementation detail, so it does not need re-measuring per runtime.
-      //
-      // Residual, recorded rather than implied away and measured in the same
-      // probe: `JSON.stringify` does NOT escape U+007F (DEL), U+0085 (NEL),
-      // the C1 range (U+009B is CSI in UTF-8), U+2028 / U+2029, OR the
-      // Trojan-Source bidi overrides and isolates U+202A-U+202E /
-      // U+2066-U+2069 — the last of which `displaySafe` strips precisely
-      // because they visually REORDER a line, so a reader told the residual is
-      // "NEL, C1 and the line separators" would not expect a reordered
-      // `reason` here. All of them reach a terminal raw. That list is what
-      // JSON leaves relative to `displaySafe`'s strip set; `display-safe.ts`'s
-      // OWN residual (the invisible formatters U+200B-U+200D / U+FEFF and the
-      // bidi MARKS U+200E / U+200F / U+061C) survives on BOTH paths and is
-      // documented there rather than restated here. Sanitising would break the
-      // payload for its actual consumer, so the answer for a human reading
-      // `--json` is a pager or `jq`, not a lossy transform.
+      // The JSON payload is ESCAPED, not sanitised (go-to-k/cdkd#4045). Issue
+      // #2438 kept `displaySafe` off it because replacing a character inside a
+      // value corrupts what tooling reads back, and that still holds; but
+      // `JSON.stringify` alone escapes only C0, so DEL, C1 (`U+009B` is a CSI),
+      // `U+2028` / `U+2029`, the bidi controls and the zero-width characters in
+      // a stored `reason` or id reached the terminal raw.
+      // `stringifyJsonPayload` writes each of them as a `\uXXXX` escape: the
+      // payload parses back to the same values, so a consumer sees no change.
       if (asJson) {
-        process.stdout.write(JSON.stringify(events, null, 2) + '\n');
+        process.stdout.write(`${stringifyJsonPayload(events)}\n`);
         return;
       }
       printRunEvents(stackName, targetRegion, options.run, events);
@@ -258,12 +238,9 @@ export async function eventsCommand(
     }
 
     const runs = await reader.listRuns(stackName, targetRegion);
-    // Issue #2438: unsanitised on purpose — same reasoning as the `--run`
-    // payload above.
+    // Escaped, not sanitised -- same reasoning as the `--run` payload above.
     if (asJson) {
-      process.stdout.write(
-        JSON.stringify({ stackName, region: targetRegion, runs }, null, 2) + '\n'
-      );
+      process.stdout.write(`${stringifyJsonPayload({ stackName, region: targetRegion, runs })}\n`);
       return;
     }
     printRunList(stackName, targetRegion, runs);

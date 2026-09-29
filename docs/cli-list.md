@@ -79,6 +79,9 @@ default, JSON under `--json`. The same renderer produces `cdkd synth`'s
 template, so the document parses back unchanged; one detail worth knowing is
 that an AWS account id is a string in the payload and is emitted quoted
 (`account: "123456789012"`), matching what `--json` returns.
+Under `--json`, any control, format, line-separator or paragraph-separator
+character left in a value (such as a zero-width space) is written as a
+`\uXXXX` escape rather than raw.
 
 **stdout is a payload stream on this command.** The listing goes to stdout and
 everything else — `Resolving missing context...`, the CDK app's re-emitted

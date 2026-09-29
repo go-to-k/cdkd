@@ -446,9 +446,10 @@ break a consumer — was hidden the same way.
 - It also strips control and bidi characters from template-controlled output /
   export names and rendered values before they reach the terminal — an
   `Export.Name` is a value cdkd *resolved*, so unlike a CFn logical ID it never
-  passed a validator. The `--json` payload is left byte-faithful on purpose: it
-  is a machine interface where mutating a name a consumer matches on would be a
-  correctness regression.
+  passed a validator. The `--json` payload is not stripped on purpose: it is a
+  machine interface where mutating a name a consumer matches on would be a
+  correctness regression. It is escaped instead (`stringifyJsonPayload`), so it
+  parses back to the same values ([#4045](https://github.com/go-to-k/cdkd/issues/4045)).
 
 The module is a deliberate SECOND implementation rather than shared code: the
 deploy-side block lives in `deploy-engine.ts`, which is in the `integ-destroy`

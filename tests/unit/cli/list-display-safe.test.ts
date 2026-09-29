@@ -206,6 +206,27 @@ describe('cdkd list renders manifest-derived values display-safe (#3479)', () =>
     });
   });
 
+  describe('--json escapes what displaySafe leaves (go-to-k/cdkd#4045)', () => {
+    it('writes the zero-width residual as \\u200b and parses back to the same value', async () => {
+      // `displaySafe` keeps a zero-width space (its documented residual), so
+      // the value reaches the encoder intact; `stringifyJsonPayload` must then
+      // spell it as an escape rather than emit it raw.
+      const displayName = `MyStage/${ZWSP}Api`;
+      primeStacks([makeStack({ stackName: 'MyStage-Api', displayName })]);
+      const stdout = await runList(['--long', '--json']);
+
+      expect(stdout).not.toContain(ZWSP);
+      expect(stdout).toContain('\\u200b');
+      expect(JSON.parse(stdout)).toEqual([
+        {
+          id: displayName,
+          name: 'MyStage-Api',
+          environment: { account: '111111111111', region: 'us-east-1' },
+        },
+      ]);
+    });
+  });
+
   describe('an account and a region take the asciiOnly ALLOWLIST, not the denylist', () => {
     it('removes an invisible formatter the denylist keeps', async () => {
       // `displaySafe`'s denylist records the invisible formatters as a
