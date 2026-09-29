@@ -150,7 +150,7 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
         `MyRes: AWS reports ${bag} key ${APPEARING.Key}, which the recorded baseline holds no value for.`
       );
       expect(lines[0]).toContain('leaves its live value in place');
-      expect(lines[0]).toContain("run 'cdkd drift --accept'");
+      expect(lines[0]).toContain("If its live value is what you intend, run 'cdkd drift --accept' to record it");
       expect(lines[0]).toContain('otherwise declare the value in the template and deploy');
     });
 
@@ -279,6 +279,7 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
     expect(all).not.toContain('sekrit-attribute-key');
     expect(all).toContain(`LoadBalancerAttributes keys ${APPEARING.Key}, ***, which`);
     expect(all).toContain("leaves their live values in place, and 'cdkd drift' keeps reporting them");
+    expect(all).toContain("If their live values are what you intend, run 'cdkd drift --accept' to record them; otherwise declare the values in the template and deploy.");
   });
 
   it('a logical id with a control character is made display-safe', async () => {
