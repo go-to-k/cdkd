@@ -28,6 +28,9 @@ A LEAF module: `isSecretBearingReferenceString` / `bagHoldsSecretExpression`
 live here for this refusal and the deploy engine. `outputs-diff.ts`'s #1948
 exoneration no longer reads `bagHoldsSecretExpression`: its substring spelling
 test let a stored `{{resolve:secretsmanager:A}}-<plaintext>` exonerate its own
-record (#4101), so the diff reads its own whole-token / literal-shape rule.
+record (#4101), so the diff reads its own whole-token / literal-shape rule,
+limited to a plain `ssm` token (#4108). `bagHoldsSecretExpression` itself counts
+a plain `ssm` token too (#4108), so the merge refuses to write a SecureString's
+first token beside a carried pre-#1901 plaintext.
 That exoneration is still BAG-level on purpose: every non-deploy state
 rewrite drops `skippedOutputs` while keeping the bag.

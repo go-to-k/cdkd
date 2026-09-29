@@ -405,6 +405,38 @@ describe('the #1948 exoneration of a REMOVED output reads the same shape (issue 
   });
 
   it.each([
+    // The desired side is PUBLIC text, so pass 1 sees no secret there and the
+    // exoneration alone decides; the ssm value fails #4101's shape.
+    ['an ssm token beside a plaintext', `${SSM_REF}-OLDSECRET`],
+    ['a whole ssm token whose desired side is public text', SSM_REF],
+  ])('does not exonerate the record for %s (issue #4108)', (_label, stored) => {
+    const changes = computeOutputsDiff(
+      { Gone: 'HUNTERSECURE', Sec: stored, Keep: 'k' },
+      { Sec: 'public', Keep: 'k' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['Keep', 'Sec']), templateHasSecretReference: true }
+    );
+    expect(JSON.stringify(changes)).not.toContain('HUNTERSECURE');
+    expect(changes.find((c) => c.name === 'Gone')).toEqual(
+      expect.objectContaining({ changeType: 'REMOVE', oldValueRedacted: true })
+    );
+  });
+
+  it('does not exonerate the record for a colon-less ssm token, which names no parameter', () => {
+    // The same token on both sides passes #4101's shape, so only the
+    // parameter-name check refuses it: no deploy writes one.
+    const changes = computeOutputsDiff(
+      { Gone: 'HUNTERSECURE', Sec: '{{resolve:ssm}}', Keep: 'k' },
+      { Sec: '{{resolve:ssm}}', Keep: 'k' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['Keep', 'Sec']), templateHasSecretReference: true }
+    );
+    expect(JSON.stringify(changes)).not.toContain('HUNTERSECURE');
+  });
+
+  it.each([
     ['a whole secretsmanager token', '{{resolve:secretsmanager:A}}'],
     ['a whole ssm-secure token', '{{resolve:ssm-secure:/a}}'],
   ])('does not exonerate the record for %s alone (issue #4108)', (_label, token) => {

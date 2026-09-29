@@ -325,6 +325,21 @@ describe('mergeNoChangeOutputs', () => {
       ).toEqual({ kind: 'kept', reason: 'mixed-generation' });
     });
 
+    it('REFUSES when the first expression is a SecureString plain ssm token (issue #4108)', () => {
+      // A pre-#1901 bag held both SecureString plaintexts. Merging would store
+      // `Sec`'s token beside `Fail`'s carried plaintext, a bag `cdkd diff` then
+      // reads as redacted throughout.
+      expect(
+        mergeNoChangeOutputs(
+          input({
+            persisted: { Sec: 'SECUREPLAIN1', Fail: 'SECUREPLAIN2' },
+            resolved: { Sec: '{{resolve:ssm:/sec}}', Fail: undefined },
+            declaredOutputs: { Sec: { Value: '{{resolve:ssm:/sec}}' }, Fail: { Value: 1 } },
+          })
+        )
+      ).toEqual({ kind: 'kept', reason: 'mixed-generation' });
+    });
+
     it('merges when the previous bag already held an expression', () => {
       const r = merged(
         mergeNoChangeOutputs(
@@ -386,6 +401,16 @@ describe('the shared secret-expression predicate', () => {
     expect(bagHoldsSecretExpression({ A: [SEC, 'plaintext'] })).toBe(false);
     expect(bagHoldsSecretExpression({})).toBe(false);
     expect(bagHoldsSecretExpression(undefined)).toBe(false);
+  });
+
+  it('counts a plain ssm token in a bag (issue #4108), though not in the spelling predicate', () => {
+    // A redacted bag keeps one only for a SecureString; a colon-less token
+    // names no parameter, so no deploy writes it.
+    expect(bagHoldsSecretExpression({ A: '{{resolve:ssm:/sec}}' })).toBe(true);
+    expect(bagHoldsSecretExpression({ A: 'x-{{resolve:ssm:/sec}}' })).toBe(true);
+    expect(bagHoldsSecretExpression({ A: '{{resolve:ssm}}' })).toBe(false);
+    expect(bagHoldsSecretExpression({ A: '{{resolve:ssmx:/p}}' })).toBe(false);
+    expect(bagHoldsSecretExpression({ A: '{{resolve:ssm-secure:/p}}' })).toBe(true);
   });
 
   it('names a reason for each refusal', () => {

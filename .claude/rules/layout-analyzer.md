@@ -86,15 +86,17 @@ text (signal 1's desired side, and an intrinsic `Export.Name`'s alias refusal)
 a surviving plain `ssm` token counts too: the skip pass keeps one only for a
 `SecureString` (#4056). The STORED-text readers — signal 1's per-key veto and the #1948 exoneration
 (both `storedSecretTokenIsExpression`), and the no-change merge's carried-value
-check in `diff-recursive.ts` — accept a secret token of any spelling only as one
+check in `diff-recursive.ts` — accept a secret token of any spelling (the
+exoneration: a plain `ssm` one only, see above) only as one
 whole token (for the veto and exoneration, where the desired side is one whole
 token too or has no string), or under exactly the desired side's literal parts
 (not the carried check); never on a substring hit, which a pre-#1901 deploy
 wrote beside a plaintext (#4101). A stored value failing that shape is also
 withheld PER KEY on its own (`ownValueHidesSecret`), declared or not, whatever
 the record verdict, the exoneration or `templateHasSecretReference` say (a
-container by any string leaf; one whole token never, it has no room for one): the
-same pre-#1901 write stored a sibling's whole token, which exonerates the record.
+container by any string leaf; one whole token never, it has no room for one): a
+declared key's template value may have turned public, leaving pass 1 no
+desired-side signal, and a `cdkd scrub` residual can exonerate the record.
 
 Outputs ROW names print only `secretSafeKeyDisplay`'s verdict (#4015): an
 older binary could store an `Export.Name` holding a secret. The diff fetches

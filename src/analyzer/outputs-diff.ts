@@ -406,11 +406,16 @@ function keepsSecretReferenceToken(resolvedName: string): boolean {
   );
 }
 
-/** True when `value` carries a plain `{{resolve:ssm:...}}` token (issue #4108). */
+/**
+ * True when `value` carries a plain `{{resolve:ssm:<name>...}}` token (issue
+ * #4108). A colon-less `{{resolve:ssm}}` names no parameter, so no deploy
+ * writes it and it proves nothing.
+ */
 function holdsPlainSsmToken(value: string): boolean {
-  return dynamicReferenceTokens(value).some(
-    (token) => token.slice('{{resolve:'.length, -'}}'.length).split(':')[0] === 'ssm'
-  );
+  return dynamicReferenceTokens(value).some((token) => {
+    const parts = token.slice('{{resolve:'.length, -'}}'.length).split(':');
+    return parts[0] === 'ssm' && parts.length >= 2;
+  });
 }
 
 /**
@@ -1200,8 +1205,12 @@ export function computeOutputsDiff(
   // after #1901, and a binary between the two stored a `SecureString`
   // parameter's PLAINTEXT beside that correctly redacted expression. A stored
   // plain `ssm` token is written only after #1901 (before it, every plain ssm
-  // reference resolved), so it is the one expression that proves the whole
-  // bag redacted. A record with none keeps the unaccountable-key signal:
+  // reference resolved): by a deploy, whose no-change merge refuses to put a
+  // first one beside a carried value (`bagHoldsSecretExpression` counts it),
+  // or by `cdkd scrub`, which rewrites only what it can name and can leave a
+  // plaintext it could not (the scrub residual the note above names). So it
+  // is the strongest evidence the bag is redacted, not a proof. A record with
+  // none keeps the unaccountable-key signal:
   // fail-closed, costing a removed output's value in a `secretsmanager`-only
   // stack.
   const recordProvesPost1901 = Object.entries(currentBag).some(

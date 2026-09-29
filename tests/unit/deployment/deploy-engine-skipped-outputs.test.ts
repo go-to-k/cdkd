@@ -592,6 +592,8 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
     }
 
     const SEC = '{{resolve:secretsmanager:db:SecretString:password}}';
+    /** A SecureString's plain ssm token: stored only by a post-#1901 cdkd (issue #4108). */
+    const SSM = '{{resolve:ssm:/db/password}}';
 
     it('an output ADDED beside the broken one lands, and the unchanged stack then diffs clean', async () => {
       const added = template();
@@ -639,30 +641,57 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
       expect(removed).toMatchObject({ changeType: 'REMOVE', oldValueRedacted: true });
       expect(JSON.stringify(rows)).not.toContain(PLAINTEXT);
 
-      // CONTROL: the bag an unguarded merge would have written exonerates the
-      // same row and exposes the plaintext as its returned `oldValue`, which
-      // the renderer then prints.
-      const unguarded = { ...saved, outputs: { Old: PLAINTEXT, Sec: SEC } };
-      const leaked = await diffWithWithholding(unguarded, deleted);
+      // CONTROL: the bag an unguarded merge would have written, once its first
+      // expression is a plain ssm token (the one expression that exonerates,
+      // issue #4108), exonerates the same row and exposes the plaintext as its
+      // returned `oldValue`, which the renderer then prints.
+      const deletedSsm: CloudFormationTemplate = { Resources: template().Resources, Outputs: { Sec: { Value: SSM } } };
+      const unguarded = { ...saved, outputs: { Old: PLAINTEXT, Sec: SSM } };
+      const leaked = await diffWithWithholding(unguarded, deletedSsm);
       expect(JSON.stringify(leaked)).toContain(PLAINTEXT);
     });
 
+    it('REFUSED merge when the first expression is a SecureString plain ssm token (issue #4108)', async () => {
+      const PLAINTEXT = 'pre-1901-securestring-plaintext';
+      const withSsm = (): CloudFormationTemplate => ({
+        Resources: template().Resources,
+        Outputs: { Old: { Value: '__boom__' }, Sec: { Value: SSM } },
+      });
+      const { engine, stateBackend } = buildEngine({ priorState: makeState({ Old: PLAINTEXT }) });
+      await engine.deploy(stackName, withSsm());
+      const saved = lastSaved(stateBackend);
+      expect(saved.outputs).toStrictEqual({ Old: PLAINTEXT });
+
+      // The raw template must prove a secret for the deleted-key signal to
+      // fire, and a plain ssm reference says nothing about its type there, so
+      // the deletion also adds a secretsmanager output.
+      const deleted: CloudFormationTemplate = {
+        Resources: template().Resources,
+        Outputs: { Sec: { Value: SSM }, Sm: { Value: SEC } },
+      };
+      const rows = await diffWithWithholding(saved, deleted);
+      expect(rows.find((r) => r.name === 'Old')).toMatchObject({ changeType: 'REMOVE', oldValueRedacted: true });
+      expect(JSON.stringify(rows)).not.toContain(PLAINTEXT);
+    });
+
     it('ALLOWED merge: from a bag that already held an expression, the carried value is merged and a later deletion returns it as the row\x27s old value', async () => {
-      const PREV = '{{resolve:secretsmanager:prev:SecretString:password}}';
+      // Plain ssm tokens: only a bag holding one proves every value redacted
+      // (issue #4108), so only such a bag returns the deleted key's value.
+      const PREV = '{{resolve:ssm:/prev/password}}';
       const tpl = (): CloudFormationTemplate => ({
         Resources: template().Resources,
-        Outputs: { Old: { Value: '__boom__' }, Prev: { Value: PREV }, Sec: { Value: SEC } },
+        Outputs: { Old: { Value: '__boom__' }, Prev: { Value: PREV }, Sec: { Value: SSM } },
       });
       const { engine, stateBackend } = buildEngine({
         priorState: makeState({ Old: 'an-ordinary-value', Prev: PREV }),
       });
       await engine.deploy(stackName, tpl());
       const saved = lastSaved(stateBackend);
-      expect(saved.outputs).toStrictEqual({ Old: 'an-ordinary-value', Prev: PREV, Sec: SEC });
+      expect(saved.outputs).toStrictEqual({ Old: 'an-ordinary-value', Prev: PREV, Sec: SSM });
 
       const deleted: CloudFormationTemplate = {
         Resources: template().Resources,
-        Outputs: { Prev: { Value: PREV }, Sec: { Value: SEC } },
+        Outputs: { Prev: { Value: PREV }, Sec: { Value: SSM } },
       };
       const rows = await diffWithWithholding(saved, deleted);
       expect(rows.find((r) => r.name === 'Old')).toMatchObject({
