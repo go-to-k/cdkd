@@ -413,12 +413,17 @@ export function validateAssetBucketName(name: string): void {
   }
 }
 
+/** The ECR repository name rule `validateContainerRepoName` and the marker parse share. */
+function isValidContainerRepoName(name: string): boolean {
+  return name.length >= 2 && name.length <= 256 && CONTAINER_REPO_NAME_PATTERN.test(name);
+}
+
 /**
  * Validate a custom container-asset ECR repository name
  * (`cdkd bootstrap --container-repo`). Throws before any AWS call.
  */
 export function validateContainerRepoName(name: string): void {
-  if (name.length < 2 || name.length > 256 || !CONTAINER_REPO_NAME_PATTERN.test(name)) {
+  if (!isValidContainerRepoName(name)) {
     throw new CdkdError(
       `--container-repo '${name}' is not a valid ECR repository name. Repository names ` +
         `must be 2-256 characters of lowercase letters and digits, optionally separated ` +
@@ -569,6 +574,23 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     throw new CdkdError(
       `${markerSubject(markerKey)} in the state bucket is malformed ` +
         `(missing assetBucket / containerRepo / assetSupportVersion). ` +
+        `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
+      'INVALID_BOOTSTRAP_MARKER'
+    );
+  }
+  // The names are held to the `--asset-bucket` / `--container-repo` rules, as
+  // every marker cdkd writes already is (go-to-k/cdkd#4114). The body is chosen
+  // by anyone with `s3:PutObject` on the state bucket, and every reader sends
+  // these names to S3 / ECR or deletes by them. A name no real bucket or
+  // repository can have is malformed, so `cdkd bootstrap` rewrites the marker
+  // and every other reader refuses.
+  if (
+    !ASSET_BUCKET_NAME_PATTERN.test(marker.assetBucket) ||
+    !isValidContainerRepoName(marker.containerRepo)
+  ) {
+    throw new CdkdError(
+      `${markerSubject(markerKey)} in the state bucket is malformed ` +
+        `(its asset bucket or container repository name is not a valid name). ` +
         `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER'
     );

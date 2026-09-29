@@ -87,6 +87,7 @@ import {
   type BootstrapMarker,
 } from '../../../src/assets/asset-storage.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { CdkdError } from '../../../src/utils/error-handler.js';
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import {
   CLAUSE_BREAK_PAYLOAD,
@@ -1817,6 +1818,16 @@ describe('raw bootstrap-marker key reachability (issue #2021)', () => {
  * pasted whole.
  */
 describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)', () => {
+  function isValidMarkerName(value: string): boolean {
+    try {
+      validateAssetBucketName(value);
+      validateContainerRepoName(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function messagesFor(value: string): Promise<Array<{ site: string; message: string }>> {
     const out: Array<{ site: string; message: string }> = [];
     const key = `${BOOTSTRAP_MARKER_PREFIX}${value}.json`;
@@ -1885,19 +1896,23 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
       ),
     });
     mockS3Send.mockResolvedValue({});
-    // `ensureAssetStorage` reuses the marker's bucket when no `--asset-bucket` is passed.
-    const reuse = (body: string) => ({
+    // `ensureAssetStorage`'s bucket-name sites. A marker naming a non-plain
+    // bucket is refused as malformed before it gets here (go-to-k/cdkd#4114),
+    // so the name arrives through the option instead; the render guards are
+    // the second layer and stay pinned.
+    const reuse = (name: string) => ({
       s3Client: new S3Client({ region: REGION }) as S3Client,
       ecrClient: new ECRClient({}) as ECRClient,
       stateBackend: {
         putRawObject: vi.fn(),
-        getRawObject: vi.fn().mockResolvedValue(body),
+        getRawObject: vi.fn().mockResolvedValue(null),
       } as unknown as S3StateBackend,
       accountId: ACCOUNT,
       region: REGION,
       force: false,
+      assetBucketName: name,
     });
-    const reused = JSON.stringify({ ...validMarker(), assetBucket: value });
+    const reused = value;
     mockS3Send.mockRejectedValueOnce(awsError('Forbidden', 403));
     out.push({
       site: 'ensure: bucket name taken (403)',
@@ -1915,6 +1930,9 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
       message: await thrown(() => ensureAssetStorage(reuse(reused))),
     });
     mockS3Send.mockResolvedValue({});
+    // The conflict names the EXISTING marker's names, which only a marker that
+    // parses can carry: a non-plain one is malformed and rewritten instead.
+    if (!isValidMarkerName(value)) return out;
     const existing = JSON.stringify({ ...validMarker(), assetBucket: value, containerRepo: value });
     out.push({
       site: 'name conflict',
@@ -2000,7 +2018,7 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
     for (const { value } of PAYLOADS) {
       for (const m of await messagesFor(value)) rendered.push({ value, ...m });
     }
-    expect(rendered).toHaveLength(PAYLOADS.length * 11);
+    expect(rendered).toHaveLength(PAYLOADS.length * 10);
     withPasteDir((dir) => {
       for (const { value, site, message } of rendered) {
         const label = `${site}: ${value}`;
@@ -2028,9 +2046,6 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
     expect(first('ensure: bucket name taken (BucketAlreadyExists)')).toMatch(
       /^An asset bucket name that is not a plain identifier is already taken by another AWS account\./
     );
-    expect(first('name conflict')).toContain(
-      'asset bucket with a name that is not a plain identifier (requested'
-    );
   }, 120_000);
 
   it("describes a value that is displayIdent's own cut output, which renders unchanged (go-to-k/cdkd#4109)", async () => {
@@ -2040,7 +2055,7 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
     // The bucket / repo sites. `messagesFor`'s marker-key sites prefix the value,
     // which pushes it past the cap, so they are driven directly below.
     const messages = await messagesFor(forged);
-    expect(messages).toHaveLength(11);
+    expect(messages).toHaveLength(10);
     for (const { site, message } of messages) {
       expect(message, site).not.toContain(suffix);
     }
@@ -2081,20 +2096,23 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
     expect(debugLine).not.toContain(suffix);
   });
 
-  it("renders a marker-supplied name through displayIdent in ensureAssetStorage's progress lines (go-to-k/cdkd#4109)", async () => {
+  it("renders a bucket / repository name through displayIdent in ensureAssetStorage's progress lines (go-to-k/cdkd#4109)", async () => {
+    // Through the options: a marker carrying this name is refused as
+    // malformed (go-to-k/cdkd#4114), and the render guard is the second layer.
     const forged = 'x (operation: deploy), expired 3h ago';
-    const body = JSON.stringify({ ...validMarker(), assetBucket: forged, containerRepo: forged });
     const run = () =>
       ensureAssetStorage({
         s3Client: new S3Client({ region: REGION }) as S3Client,
         ecrClient: new ECRClient({}) as ECRClient,
         stateBackend: {
           putRawObject: vi.fn().mockResolvedValue(undefined),
-          getRawObject: vi.fn().mockResolvedValue(body),
+          getRawObject: vi.fn().mockResolvedValue(null),
         } as unknown as S3StateBackend,
         accountId: ACCOUNT,
         region: REGION,
         force: false,
+        assetBucketName: forged,
+        containerRepoName: forged,
       });
     const infoLines = (): string[] => mockLoggerInfo.mock.calls.map((c) => String(c[0]));
 
@@ -2150,5 +2168,81 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
     expect(raced).toContain(`Container-asset repository ${JSON.stringify(forged)} already exists`);
 
     for (const line of [...created, ...existing, ...raced]) expect(line).not.toContain(` ${forged}`);
+  });
+});
+
+describe('a marker naming an invalid bucket or repository is malformed (go-to-k/cdkd#4114)', () => {
+  const key = `${BOOTSTRAP_MARKER_PREFIX}${REGION}.json`;
+  const invalid: Array<[string, Partial<BootstrapMarker>]> = [
+    ['bucket with a space', { assetBucket: 'my bucket' }],
+    ['bucket in upper case', { assetBucket: 'My-Bucket' }],
+    ['bucket too short', { assetBucket: 'ab' }],
+    ['repo with a quote', { containerRepo: "org/it's" }],
+    ['repo with a doubled separator', { containerRepo: 'org//repo' }],
+  ];
+
+  it('parseBootstrapMarker refuses it with the malformed-marker code', () => {
+    for (const [label, fields] of invalid) {
+      let caught: unknown;
+      try {
+        parseBootstrapMarker(JSON.stringify({ ...validMarker(), ...fields }), key);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, label).toBeInstanceOf(CdkdError);
+      expect((caught as CdkdError).code, label).toBe('INVALID_BOOTSTRAP_MARKER');
+      expect((caught as Error).message, label).toContain('is not a valid name');
+    }
+    // A marker cdkd writes itself still parses.
+    expect(parseBootstrapMarker(JSON.stringify(validMarker()), key)).toMatchObject({
+      assetBucket: validMarker().assetBucket,
+    });
+    expect(
+      parseBootstrapMarker(
+        JSON.stringify({ ...validMarker(), assetBucket: 'my-org.assets-1', containerRepo: 'my-org/cdkd_assets' }),
+        key
+      )
+    ).toMatchObject({ assetBucket: 'my-org.assets-1', containerRepo: 'my-org/cdkd_assets' });
+  });
+
+  it('ensureAssetStorage warns and rewrites it with the conventional names, never touching the marker-named storage', async () => {
+    const body = JSON.stringify({ ...validMarker(), assetBucket: 'my bucket', containerRepo: "org/it's" });
+    const putRawObject = vi.fn().mockResolvedValue(undefined);
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+    mockLoggerWarn.mockClear();
+
+    const result = await ensureAssetStorage({
+      s3Client: new S3Client({ region: REGION }) as S3Client,
+      ecrClient: new ECRClient({}) as ECRClient,
+      stateBackend: {
+        putRawObject,
+        getRawObject: vi.fn().mockResolvedValue(body),
+      } as unknown as S3StateBackend,
+      accountId: ACCOUNT,
+      region: REGION,
+      force: false,
+    });
+
+    expect(mockLoggerWarn.mock.calls.map((c) => String(c[0]))).toContain(
+      `Bootstrap marker '${getBootstrapMarkerKey(REGION)}' is malformed — rewriting it as part of this bootstrap.`
+    );
+    expect(result.assetBucket).toBe(getCdkdAssetBucketName(ACCOUNT, REGION));
+    expect(result.containerRepo).toBe(getCdkdContainerRepoName(ACCOUNT, REGION));
+    const written = JSON.parse(String(putRawObject.mock.calls[0]![1])) as BootstrapMarker;
+    expect(written.assetBucket).toBe(getCdkdAssetBucketName(ACCOUNT, REGION));
+    // The command doubles spread their input, so `Bucket` sits on the command.
+    const sentBuckets = mockS3Send.mock.calls
+      .map((c) => (c[0] as { Bucket?: string }).Bucket)
+      .filter((b): b is string => b !== undefined);
+    expect(sentBuckets.length).toBeGreaterThan(0);
+    expect(sentBuckets).not.toContain('my bucket');
+    expect(sentBuckets).toContain(getCdkdAssetBucketName(ACCOUNT, REGION));
   });
 });
