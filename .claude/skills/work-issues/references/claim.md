@@ -8,7 +8,8 @@ or worktree the lane agent will create.
 
 **IN-PLACE runs name the tree they are STANDING IN**: the `<ref>` is the branch
 §5 will create plus the opening report's `LANE_TREE`, never
-`git rev-parse --show-toplevel`, whose cwd may have reset to the main checkout.
+`git rev-parse --show-toplevel`, whose cwd may have reset to the main checkout;
+a concurrent lane's claim names its sibling tree instead (launch-mode.md row 1).
 
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
 Write "the branch §5 will create in `<LANE_TREE>`" and post now — a claim that
@@ -43,10 +44,13 @@ gh issue comment <n> --body-file "$SCRATCH/standdown-<n>.md"
 ```
 
 For EACH issue you start — PROMOTING a QUEUED one included — first re-check
-`gh issue view <n> --json state` and re-run §3's premise check on CURRENT
-`origin/main`: triage's findings date from TRIAGE time, and a peer can fix and
-close a queued issue before its turn (#3700/#3704/#3627: claimed after closing,
-one lane spent). Then:
+`gh issue view <n> --json state`, §2's open-PR `files` query, and §3's premise
+check on CURRENT `origin/main` — in a call BEFORE the claim, never chained with
+it. Triage's findings date from TRIAGE time: a peer can fix and close a queued
+issue, or open a PR holding its files, before its turn (#3700/#3704: claimed
+after closing; #3979: a chained claim posted before the query showed #3975
+holding its files).
+Then:
 
 ```bash
 gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <files>. \

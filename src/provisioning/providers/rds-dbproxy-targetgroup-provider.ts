@@ -17,12 +17,18 @@ import type { CreateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
 
 /**
  * AWS RDS DBProxyTargetGroup Provider
@@ -130,7 +136,12 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapError(error, 'CREATE (pool config)', resourceType, logicalId, undefined);
+        // An adjustment of the proxy's own target group, not the registration
+        // this resource creates: never this resource's collision (#3826).
+        throw markAuxiliaryFailure(
+          this.wrapError(error, 'CREATE (pool config)', resourceType, logicalId, undefined),
+          logicalId
+        );
       }
     }
 
@@ -349,8 +360,24 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     const props = properties ?? {};
+    // go-to-k/cdkd#3952: DeregisterDBProxyTargets names the proxy, the group
+    // and each target from the record, and the NotFound faults below read as
+    // "already gone" -- a redacted one would DROP the record over live targets.
+    // The physicalId is the target group ARN, which names none of them.
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      'DB proxy target group',
+      redactedDeleteAddressFields({
+        DBProxyName: props['DBProxyName'],
+        TargetGroupName: props['TargetGroupName'],
+        DBClusterIdentifiers: props['DBClusterIdentifiers'],
+        DBInstanceIdentifiers: props['DBInstanceIdentifiers'],
+      })
+    );
+    if (redactedSkip) return redactedSkip;
     const dbProxyName = props['DBProxyName'] as string | undefined;
     const targetGroupName = (props['TargetGroupName'] as string | undefined) ?? 'default';
     const dbClusterIdentifiers = props['DBClusterIdentifiers'] as string[] | undefined;

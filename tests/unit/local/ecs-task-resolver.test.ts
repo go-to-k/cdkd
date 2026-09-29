@@ -2105,3 +2105,59 @@ describe('custom-named cdkd asset repo classification (issue #1025)', () => {
     });
   });
 });
+
+describe('resolveEcsTaskTarget: a construct path under a CDK Stage (go-to-k/cdkd#3953)', () => {
+  function stageStack(stackName: string, displayName: string, logicalId: string): StackInfo {
+    return {
+      ...buildStack(stackName, {
+        [logicalId]: makeTaskDef({ cdkPath: `${displayName}/TD/Resource` }),
+      }),
+      displayName,
+    };
+  }
+
+  it('resolves a path in a stack under a Stage', () => {
+    const api = stageStack('MyStage-Api', 'MyStage/Api', 'ApiTD');
+    const top = stageStack('Top', 'Top', 'TopTD');
+    expect(resolveEcsTaskTarget('MyStage/Api/TD', [top, api]).taskDefinitionLogicalId).toBe('ApiTD');
+  });
+
+  it('resolves a path under a NESTED Stage by the longest prefix', () => {
+    const outer = stageStack('Outer', 'Outer', 'OuterTD');
+    const inner = stageStack('Outer-Inner-Api', 'Outer/Inner/Api', 'InnerTD');
+    expect(
+      resolveEcsTaskTarget('Outer/Inner/Api/TD', [outer, inner]).taskDefinitionLogicalId
+    ).toBe('InnerTD');
+  });
+
+  it('does not let a stack claim a sibling whose name it prefixes', () => {
+    const api = stageStack('MyStage-Api', 'MyStage/Api', 'ApiTD');
+    const v2 = stageStack('MyStage-ApiV2', 'MyStage/ApiV2', 'V2TD');
+    expect(resolveEcsTaskTarget('MyStage/ApiV2/TD', [api, v2]).taskDefinitionLogicalId).toBe(
+      'V2TD'
+    );
+  });
+
+  it('leaves the Stack:LogicalId form on the stack pattern it names', () => {
+    const api = stageStack('MyStage-Api', 'MyStage/Api', 'ApiTD');
+    const top = stageStack('Top', 'Top', 'TopTD');
+    expect(resolveEcsTaskTarget('MyStage-Api:ApiTD', [top, api]).taskDefinitionLogicalId).toBe(
+      'ApiTD'
+    );
+    // The stack a colon form NAMES wins even when its path part starts with
+    // another stack's path.
+    expect(() => resolveEcsTaskTarget('Top:MyStage/Api/TD', [top, api])).toThrow(
+      /did not match any ECS task definition in Top\./
+    );
+  });
+
+  it('still routes a head no stack path prefixes through the stack matcher', () => {
+    // A wildcard head selects the stack through matchStacks as before; the
+    // path itself is then matched literally, so it names no task there.
+    const api = stageStack('MyStage-Api', 'MyStage/Api', 'ApiTD');
+    const top = stageStack('Top', 'Top', 'TopTD');
+    expect(() => resolveEcsTaskTarget('To*/TD', [api, top])).toThrow(
+      /did not match any ECS task definition in Top\./
+    );
+  });
+});

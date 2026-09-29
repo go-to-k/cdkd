@@ -22,10 +22,11 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
+  CdkdError,
   NestedStackChildDirectDestroyError,
   PartialFailureError,
   StackTerminationProtectionError,
@@ -49,6 +50,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
+import { failedStageNote, type FailedStage } from '../../synthesis/failed-stages.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import {
   inferCrossStackStackDeps,
@@ -328,6 +330,15 @@ async function destroyCommand(
     // reverse-edge sort below). Only populated when synth succeeds; on the
     // state-only fallback path we have no templates and skip the inference.
     let synthScanStacks: CrossStackScanStack[] = [];
+    // Stays empty when synth fails: a Stage that failed to load says nothing
+    // about a stack found in STATE, so only a synthesized app can have lost a
+    // stack to one (#3507).
+    let failedStages: readonly FailedStage[] = [];
+    let synthesized = false;
+    // Why synth failed, carried to the refusals below as their `cause` so the
+    // operator sees what to fix. Unset when synth succeeded or no app is
+    // configured at all.
+    let synthError: Error | undefined;
 
     if (appCmd) {
       try {
@@ -362,9 +373,53 @@ async function destroyCommand(
           stackName: s.stackName,
           template: s.template,
         }));
-      } catch {
+        failedStages = result.failedStages;
+        synthesized = true;
+      } catch (error) {
+        synthError = error instanceof Error ? error : new Error(String(error));
         logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
+    }
+
+    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
+    const wildcardPatterns = stackPatterns.filter((p) => p.includes('*') || p.includes('?'));
+    // --all and a wildcard select among the stacks the APP synthesizes. With no
+    // app stack to select among, the state fallback below would widen either
+    // one to every stack in the bucket, other apps' included, so both are
+    // refused here -- before the bucket is even listed. An exact physical name
+    // still resolves through the fallback: it names one stack, and it is how a
+    // stack is reached without a working app.
+    if (appStacks.length === 0 && (options.all || wildcardPatterns.length > 0)) {
+      // The operator's own argv, but rendered as text all the same.
+      const selector = options.all
+        ? '--all'
+        : wildcardPatterns.map((p) => displaySafe(p)).join(', ');
+      if (synthesized) {
+        // The app synthesized NO stacks -- every stack under a Stage that
+        // failed to load, say (#3507).
+        throw new Error(
+          `${selector} selects among the stacks this app synthesizes, and it synthesized none; ` +
+            'refusing to fall back to every stack in state' +
+            (failedStageNote(options.all ? [] : wildcardPatterns, failedStages) || '.')
+        );
+      }
+      // No synthesized app -- synth failed, or no app is configured -- so there
+      // is no app scope at all (#3839). The hint names no batch form: every
+      // batch over state is cross-app.
+      const hole = commandHole('stack');
+      throw new CdkdError(
+        `${selector} selects among the stacks this app synthesizes, and ` +
+          (synthError ? 'the app could not be synthesized' : 'no app is configured') +
+          '; refusing to fall back to every stack in state, which spans every app ' +
+          'sharing this state bucket. ' +
+          (synthError
+            ? 'Fix the app so it synthesizes'
+            : 'Configure the app with --app or cdk.json') +
+          `, or name each stack exactly: cdkd destroy ${hole}, or cdkd state destroy ${hole}, ` +
+          'which needs no app.',
+        'DESTROY_NO_APP_SCOPE',
+        synthError
+      );
     }
 
     // Determine candidate stacks. State only carries physical names + regions
@@ -381,8 +436,9 @@ async function destroyCommand(
       // App synth succeeded: only consider stacks from this app
       const stateNames = new Set(allStateRefs.map((r) => r.stackName));
       candidateStacks = appStacks.filter((s) => stateNames.has(s.stackName));
-    } else if (stackArgs.length > 0 || options.stack || options.all) {
-      // No synth but explicit stack names or --all given: use state stacks
+    } else if (stackArgs.length > 0 || options.stack) {
+      // No app stacks but explicit exact names given (--all and wildcards were
+      // refused above): use state stacks
       // (deduplicate by name so a stack with two region records appears once
       // — the per-stack loop handles the multi-region case explicitly)
       const seen = new Set<string>();
@@ -393,14 +449,18 @@ async function destroyCommand(
         candidateStacks.push({ stackName: ref.stackName });
       }
     } else {
-      // No synth and no explicit stacks: refuse to guess
-      throw new Error(
+      // No app stacks and no stack named: refuse to guess. Reached whether
+      // synth failed, found no app, or synthesized zero stacks, so the code
+      // names the missing SELECTION rather than a missing app. `--all` is
+      // refused above in every one of those cases, so it is never offered here.
+      throw new CdkdError(
         'Could not determine which stacks belong to this app. ' +
-          'Specify stack names explicitly, use --all, or ensure --app / cdk.json is configured.'
+          'Specify stack names explicitly, or ensure --app / cdk.json is configured' +
+          (failedStageNote([], failedStages) || '.'),
+        'DESTROY_NO_STACK_SELECTED',
+        synthError
       );
     }
-
-    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
 
     // Aggregate error counts across stacks so a single partial failure
     // anywhere in the run propagates to a non-zero exit (PartialFailureError
@@ -461,7 +521,7 @@ async function destroyCommand(
       // Single stack: auto-select (CDK CLI compatible)
       stackNames = candidateStacks.map((s) => s.stackName);
     } else if (candidateStacks.length === 0) {
-      logger.info('No stacks found in state');
+      logger.info(safeMsg`No stacks found in state${failedStageNote([], failedStages)}`);
       return;
     } else {
       throw new Error(
@@ -512,7 +572,9 @@ async function destroyCommand(
           );
         }
       }
-      logger.info('No matching stacks found in state');
+      logger.info(
+        safeMsg`No matching stacks found in state${failedStageNote(stackPatterns, failedStages)}`
+      );
       return;
     }
 
@@ -910,7 +972,7 @@ async function destroyCommand(
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
           `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry. ` +
-          `If the same resource keeps failing, 'cdkd state orphan <stack>' removes the state record without deleting AWS resources.`
+          `If the same resource keeps failing, 'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record) without deleting AWS resources.`
       );
     }
     if (interrupted || (interruptWatch.interrupted() && stoppedEarly)) {
@@ -946,7 +1008,7 @@ async function destroyCommand(
           `counts as ONE entry and may cover several of its own resources — the per-stack ` +
           `summaries above give the exact breakdown. State preserved (the records are kept). ` +
           `Repair the physicalId in state.json and re-run 'cdkd destroy', or delete the ` +
-          `resources by hand and drop the records with 'cdkd state orphan <stack>'.`
+          `resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
       );
     }
   } finally {
@@ -1024,7 +1086,6 @@ export function createDestroyCommand(): Command {
     )
     .action(withErrorHandling(destroyCommand));
 
-  // Add options (appOptions accepted for CDK CLI compatibility, but not used)
   [
     ...commonOptions,
     ...appOptions,

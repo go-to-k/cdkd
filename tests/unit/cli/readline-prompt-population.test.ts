@@ -130,13 +130,6 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'form, and it sits in the integ-destroy gate scope, so ' +
       'folding it would buy a real-AWS run for a pure refactor.',
   },
-  'src/cli/commands/state.ts': {
-    sites: 1,
-    why:
-      "The issue #2247 `state destroy --all` batch prompt. Keeps its own inline " +
-      'guard: it passes an abort `signal` for the issue #2117 Ctrl-C handling, ' +
-      'which `confirmOrRefuse` does not model.',
-  },
   'src/cli/commands/gc.ts': {
     sites: 1,
     why: 'Pre-existing guarded prompt (`process.stdin.isTTY` + NON_INTERACTIVE_CONFIRM).',
@@ -164,8 +157,9 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
 /**
  * The SEVEN files that lost their whole readline interface to the fold. The
  * nine folded SITES are these seven plus two inside `state.ts` (`state orphan`
- * and `state refresh-observed`), which keeps a third, deliberately unfolded
- * one — so `state.ts` is asserted by count below rather than by absence.
+ * and `state refresh-observed`). `state.ts` kept a third, deliberately unfolded
+ * one — the `state destroy --all` batch prompt — until that option was removed
+ * (go-to-k/cdkd#3865), so it is asserted separately below.
  *
  * Written out so a regression at any one of them names that file rather than
  * showing up as an anonymous change in the total.
@@ -224,11 +218,13 @@ describe('readline interface population (issue #2275)', () => {
     // 11 = the post-fold measurement in the file header; 10 after the fold's
     // own follow-ups; 9 since `cdkd migrate` was removed with its whole
     // command (issue #2572), which took `migrate-command.ts`'s one site and
-    // its row above. Lowering a literal floor is only legitimate alongside
-    // the deletion that made it unreachable — which is this one.
+    // its row above; 8 since `state destroy --all` was removed with its batch
+    // prompt (go-to-k/cdkd#3865), which took `state.ts`'s last site and its
+    // row. Lowering a literal floor is only legitimate alongside the deletion
+    // that made it unreachable — which each of those is.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(9);
-    expect(Object.keys(EXPECTED)).toHaveLength(8);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(8);
+    expect(Object.keys(EXPECTED)).toHaveLength(7);
   });
 
   it('none of the seven fully-folded files constructs an interface any more', () => {
@@ -236,11 +232,13 @@ describe('readline interface population (issue #2275)', () => {
     for (const path of FOLDED_FILES) {
       expect(actual[path], `${path} constructs a readline interface again`).toBeUndefined();
     }
-    // `state.ts` held THREE before the fold and keeps exactly the one guarded
-    // `state destroy --all` prompt, so it is asserted by count rather than by
-    // absence — the two `state` sites (`state orphan`, `state
-    // refresh-observed`) are folded while the third is not.
-    expect(actual['src/cli/commands/state.ts']).toBe(1);
+    // `state.ts` held THREE before the fold: two were folded (`state orphan`,
+    // `state refresh-observed`) and the third, the `state destroy --all` batch
+    // prompt, went with that option (go-to-k/cdkd#3865).
+    expect(
+      actual['src/cli/commands/state.ts'],
+      'state.ts constructs a readline interface again'
+    ).toBeUndefined();
   });
 
   it('every folded site imports the shared guarded helper instead', () => {

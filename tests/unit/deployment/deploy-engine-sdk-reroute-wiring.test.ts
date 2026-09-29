@@ -129,6 +129,7 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
     };
     return new DeployEngine(
       mockStateBackend as unknown as never,

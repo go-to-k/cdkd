@@ -40,7 +40,8 @@ verify, clean up.
 
    ```bash
    # Always (cheap, broadly applicable):
-   aws s3 ls s3://<bucket>/cdkd/<StackName>/ --region us-east-1
+   # Recursive + filtered: deployments/** is retained history, not an orphan (below).
+   aws s3 ls s3://<bucket>/cdkd/<StackName>/ --recursive --region us-east-1 | grep -v '/deployments/'
    aws iam list-roles --query 'Roles[?contains(RoleName, `<StackName>`)].RoleName' --output text
    aws lambda list-functions --region us-east-1 \
      --query 'Functions[?contains(FunctionName, `<StackName>`)].FunctionName' --output text
@@ -55,10 +56,14 @@ verify, clean up.
      --query 'NetworkInterfaces[].[NetworkInterfaceId,Status]' --output text
    ```
 
-   **Anything found → abort** with the orphan list and cleanup commands; do NOT
-   deploy on top of orphans. **Except a `lock.json` whose `expiresAt` is in the
-   future: a LIVE peer on the same fixture** — wait, then re-scan. Expired: a
-   killed run's orphan.
+   **Any orphan found → abort** with the orphan list and cleanup commands; do NOT
+   deploy on top of orphans. Under the S3 prefix every key outside `deployments/`
+   counts (`state.json`, `lock.json`, `rollback-journal.json`, a legacy
+   region-less `state.json`); `deployments/**` is event-log history a clean
+   destroy RETAINS unless `--purge-events` (counting it aborted three clean
+   fixtures in the 2026-09-28 work-issues run). **Except a `lock.json` whose
+   `expiresAt` is in the future: a LIVE peer on the same fixture** — wait, then
+   re-scan. Expired: a killed run's orphan.
 
 5. **Run the test(s)**
 
@@ -123,7 +128,8 @@ verify, clean up.
    before any verdict exists.
 
 6. **Verify cleanup**
-   - `aws s3 ls s3://<bucket>/cdkd/ --region us-east-1` — no leftover state.
+   - Step 4's S3 listing, re-run per stack — empty = no leftover state (a bare
+     `aws s3 ls s3://<bucket>/cdkd/` is never empty: retained `deployments/`).
    - **The state bucket is VERSIONED**, so that listing shows nothing while every
      prior version stays readable (`aws s3 rm` writes a delete marker). For a
      fixture that WRITES a secret into state (redaction / scrub / drift ones do,

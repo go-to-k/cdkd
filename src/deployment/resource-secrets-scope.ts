@@ -6,20 +6,21 @@ import type { RecordedSecretValues } from './secret-redaction.js';
  * currently being provisioned, scoped to that provider call's async chain
  * (issue [#1903](https://github.com/go-to-k/cdkd/issues/1903)).
  *
- * WHY AN ASYNC-LOCAL STORE RATHER THAN A FIELD ON `CreateContext`. Exactly ONE
- * provider needs the pairs — `NestedStackProvider`, which must SEED them into
- * the child `DeployEngine` it builds (see
- * `DeployEngineOptions.inheritedSecrets`) — and a `RecordedSecretValues` is
- * keyed by PLAINTEXT. `.claude/rules/providers.md` already records the rule
- * this follows: the reason `SecretMaskingContext` carries a masking FUNCTION
- * and not the bag is that putting the bag on the shared context makes every one
- * of the ~130 registered providers a place a `[...secrets.keys()]` can leak
- * from. A function cannot substitute here — seeding needs the pairs, not the
- * ability to mask — so the bag is handed through a channel only this one
- * provider reads, instead of widening the type every provider sees.
+ * WHY AN ASYNC-LOCAL STORE RATHER THAN A FIELD ON `CreateContext`. Only the
+ * two providers {@link getCurrentResourceSecrets} names need the pairs — the
+ * first, `NestedStackProvider`, must SEED them into the child `DeployEngine` it
+ * builds (see `DeployEngineOptions.inheritedSecrets`) — and a
+ * `RecordedSecretValues` is keyed by PLAINTEXT. `.claude/rules/providers.md`
+ * already records the rule this follows: the reason `SecretMaskingContext`
+ * carries a masking FUNCTION and not the bag is that putting the bag on the
+ * shared context makes every registered provider a place a
+ * `[...secrets.keys()]` can leak from. A function cannot substitute here —
+ * seeding needs the pairs, not the ability to mask — so the bag is handed
+ * through a channel only those providers read, instead of widening the type
+ * every provider sees.
  *
- * It is also the idiom this particular provider already lives in:
- * `NestedStackProvider` reads its whole world out of
+ * It is also the idiom `NestedStackProvider` in particular already lives in:
+ * it reads its whole world out of
  * `getCurrentNestedStackContext()`, another `AsyncLocalStorage`.
  *
  * WHY ITS OWN LEAF MODULE rather than living in `deploy-engine.ts`, where it
@@ -35,8 +36,9 @@ import type { RecordedSecretValues } from './secret-redaction.js';
  * call itself, so the store is bound per resource and per retry attempt, and
  * two resources provisioned concurrently under `--concurrency` cannot see each
  * other's bag. Absent (every caller that binds nothing — `cdkd drift --revert`,
- * the import path, tests) reads as `undefined`, which the provider treats as
- * "no secrets to inherit" — the pre-#1903 behaviour.
+ * the import path, tests) reads as `undefined`, which each reader treats as
+ * "no pairs": `NestedStackProvider` seeds nothing (the pre-#1903 behaviour)
+ * and `asPersisted` returns its bag unrewritten.
  */
 const currentResourceSecretsStore = new AsyncLocalStorage<RecordedSecretValues>();
 
@@ -54,13 +56,15 @@ export function withCurrentResourceSecrets<T>(secrets: RecordedSecretValues, fn:
  * The bag {@link withCurrentResourceSecrets} bound for the provider call
  * currently in flight, or `undefined` when no binder is on the stack.
  *
- * Two readers, each handing the map on as a redaction seed and nothing else:
- * `NestedStackProvider` (seeds the child engine) and
+ * Three readers: `NestedStackProvider` (seeds the child engine),
  * `SecretsManagerSecretProvider.asPersisted` (issue #2472 — rewrites a desired
  * bag into the spelling state persisted so it can be COMPARED against the
  * previous one; a masking function cannot substitute there, because `***`
- * never equals the persisted `{{resolve:...}}` expression). A provider reading
- * this MUST NOT enumerate or log its KEYS — they are secret plaintext.
+ * never equals the persisted `{{resolve:...}}` expression), and
+ * `CustomResourceProvider`'s refusal to send a handler a secret (issue #4009),
+ * which asks only WHETHER an expression entry exists and where its plaintext
+ * sits. A provider reading this MUST NOT enumerate or log its KEYS — they are
+ * secret plaintext.
  */
 export function getCurrentResourceSecrets(): RecordedSecretValues | undefined {
   return currentResourceSecretsStore.getStore();

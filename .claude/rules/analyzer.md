@@ -15,8 +15,9 @@ paths:
 `Ref` resolves to the CFn `Ref` value (`cfnRefValueFromPhysicalId` holds the
 exceptions; `refStateLookupFromResource` recovers a few from a STATE KEY). That
 lookup's `SECRET_MASK` skip is **OPT-IN**: without an `onMaskedValue` callback
-it returns the mask, since the fall-through emits a raw physical id no guard
-recognises. Only `resolveRefValue` opts in, when
+it returns the mask, since the fall-through emits a raw physical id (or, for
+`AWS::Glue::Table`, a first-`|` guess) no guard recognises; the Glue reader
+returns that mask itself rather than guess. Only `resolveRefValue` opts in, when
 `context.redactedAttributeReads` exists, so `deploy` refuses while `diff` /
 `scrub` / `import` are unchanged.
 

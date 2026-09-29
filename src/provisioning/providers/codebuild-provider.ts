@@ -50,6 +50,16 @@ export class CodeBuildProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CodeBuildProvider');
 
+  /**
+   * `AWS::CodeBuild::Project` is `ProvisioningType: NON_PROVISIONABLE` — Cloud
+   * Control has no handlers for it — so the #614 silent-drop auto-route must
+   * not send a template using an unhandled property (`Triggers`, which CDK's
+   * `webhook: true` emits, `Visibility`, `ResourceAccessRole`) to CC, where it
+   * fails mid-deploy with an opaque UnsupportedActionException. With this
+   * opt-out the registry refuses such a template pre-flight (issue #3866).
+   */
+  readonly disableCcApiFallback = true;
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::CodeBuild::Project',

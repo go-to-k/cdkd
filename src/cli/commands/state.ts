@@ -1,4 +1,3 @@
-import * as readline from 'node:readline/promises';
 import {
   commandHole,
   pasteableCommand,
@@ -31,7 +30,9 @@ import { LockManager } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
+  displayStackName,
   isPasteableIdent,
+  safeMsg,
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
@@ -91,11 +92,7 @@ import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState, ResourceState } from '../../types/state.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
-import {
-  forwardSigtermToSigint,
-  isPromptAbortError,
-  watchCommandInterrupt,
-} from '../../utils/interrupt-signals.js';
+import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { removeProtectionTypeList } from '../../provisioning/remove-protection-types.js';
 
@@ -345,8 +342,7 @@ function formatStackRefSafe(ref: StackStateRef): string {
  * helper (`warnOnLiveForeignLock` renders its own `stack (region)` that way,
  * inside the same `state orphan` output); others sanitise NOTHING
  * (`stateRefreshObservedCommand` interpolates raw `listStacks` values into its
- * refusals, including a third `cdkd deploy` hint, and `stateDestroyCommand`
- * writes raw names into its `--all` confirmation list); and `describeStateKey`
+ * refusals, including a third `cdkd deploy` hint); and `describeStateKey`
  * (`state-file-keys.ts`) renders the same shape from raw key segments.
  * go-to-k/cdkd#3179 enumerates them all; a grep of this helper does not.
  */
@@ -683,7 +679,7 @@ async function stateListCommand(options: {
     const degraded = details.filter((d) => d.stateReadError !== null || d.lockReadError !== null);
     if (degraded.length > 0) {
       logger.warn(
-        `${degraded.length} of ${details.length} stack(s) could not be fully read or counted; ` +
+        safeMsg`${degraded.length} of ${details.length} stack(s) could not be fully read or counted; ` +
           `their rows say why.`
       );
     }
@@ -2091,7 +2087,7 @@ async function stateOrphanCommand(
     for (const stackName of stackArgs) {
       const stackRefs = refs.filter((r) => r.stackName === stackName);
       if (stackRefs.length === 0) {
-        logger.info(`No state found for stack: ${stackName}, skipping`);
+        logger.info(safeMsg`No state found for stack: ${stackName}, skipping`);
         continue;
       }
 
@@ -2153,8 +2149,16 @@ async function stateOrphanCommand(
               stateBucket: setup.bucket,
               statePrefix: options.statePrefix,
             });
+            // The name in `displayStackName`'s identifier boundary, never inside
+            // cdkd's own `'...'`: `asciiOnly` keeps `'`, `$` and `(`, so a name
+            // `x'$(touch OWNED) #` closed a hand-written quote and the rest ran
+            // when the sentence was pasted (go-to-k/cdkd#3436). The same head
+            // shape `buildLockContentionMessage` takes, at the same cap. Its
+            // double quotes do not stop `$(...)` or a backtick: the sentence is
+            // inert because ` (region)` follows the name, which aborts the span
+            // before expansion — selecting the name alone still runs those two.
             throw new Error(
-              `Stack '${displaySafe(stackName, { asciiOnly: true })}' (${where}) is locked. ` +
+              `Stack ${displayStackName(stackName)} (${where}) is locked. ` +
                 // Through the shared builder rather than hand-interpolated
                 // (issue #2170): `target.region` comes from an S3 key segment
                 // or a legacy state body, so a raw `\n` here forged a second
@@ -2228,7 +2232,7 @@ async function stateOrphanCommand(
           `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/?`
         );
         if (!ok) {
-          logger.info(`Cancelled removal of state for stack: ${stackName}`);
+          logger.info(safeMsg`Cancelled removal of state for stack: ${stackName}`);
           continue;
         }
       }
@@ -2258,7 +2262,7 @@ async function stateOrphanCommand(
           await setup.stateBackend.deleteLegacyState(stackName);
           await setup.lockManager.forceReleaseLock(stackName, undefined);
         }
-        logger.info(`✓ Removed state for stack: ${formatStackRefSafe(target)}`);
+        logger.info(safeMsg`✓ Removed state for stack: ${formatStackRefSafe(target)}`);
       }
     }
   } finally {
@@ -2364,6 +2368,24 @@ async function stateDestroyCommand(
     resourceTimeout?: ResourceTimeoutOption;
   }
 ): Promise<void> {
+  // `--all` is removed (go-to-k/cdkd#3865): the state bucket is shared by
+  // every CDK app deployed to the account, so it destroyed stacks ACROSS apps
+  // in one command. Refused FIRST -- before any option is validated, the state
+  // bucket is listed or anything is prompted, locked or deleted -- and whatever
+  // else is on the command line, stack names included: an operator still
+  // typing `--all` expected the old meaning, so running only the named stacks
+  // would do something they did not ask for.
+  if (options.all) {
+    throw new CdkdError(
+      'cdkd state destroy no longer accepts --all: it destroyed every stack in the state ' +
+        'bucket, which every CDK app deployed to this account shares, so one command ' +
+        'reached across apps. Name each stack to destroy: ' +
+        `cdkd state destroy ${commandHole('stacks...')} (cdkd state list shows them), ` +
+        "or run cdkd destroy --all from the CDK app, which destroys only that app's stacks.",
+      'STATE_DESTROY_ALL_REMOVED'
+    );
+  }
+
   const logger = getLogger();
   if (options.verbose) {
     logger.setLevel('debug');
@@ -2379,9 +2401,9 @@ async function stateDestroyCommand(
   // cap can lift it to the user-resolved budget (issue #1280).
   setResolvedResourceTimeouts(options.resourceTimeout);
 
-  if (!options.all && stackArgs.length === 0) {
+  if (stackArgs.length === 0) {
     throw new Error(
-      `Stack name is required. Usage: cdkd state destroy ${commandHole('stacks...')} | --all`
+      `Stack name is required. Usage: cdkd state destroy ${commandHole('stacks...')}`
     );
   }
 
@@ -2416,135 +2438,18 @@ async function stateDestroyCommand(
     // two regions is two entries.
     const stateRefs = await setup.stateBackend.listStacks();
     const knownStackNames = new Set(stateRefs.map((r) => r.stackName));
-    let stackNames: string[];
-    if (options.all) {
-      stackNames = [...knownStackNames].sort();
-      if (stackNames.length === 0) {
-        logger.info('No stacks found in state');
-        return;
-      }
-    } else {
-      // Be strict: every named stack must exist in state. Silently skipping
-      // typos here would be more dangerous than helpful for a destroy command.
-      const missing = stackArgs.filter((name) => !knownStackNames.has(name));
-      if (missing.length > 0) {
-        throw new Error(
-          `No state found for stack(s): ${missing.join(', ')}. ` +
-            `Run 'cdkd state list' to see available stacks.`
-        );
-      }
-      stackNames = stackArgs;
-    }
-
-    // --all confirmation prompt (single prompt for the whole batch). The
-    // per-stack prompt inside `runDestroyForStack` covers the per-stack case
-    // when `--yes` is not given.
-    if (options.all && !options.yes) {
-      process.stdout.write(
-        `\nWARNING: This destroys ${stackNames.length} stack(s) and removes their state records:\n`
+    // Be strict: every named stack must exist in state. Silently skipping
+    // typos here would be more dangerous than helpful for a destroy command.
+    const missing = stackArgs.filter((name) => !knownStackNames.has(name));
+    if (missing.length > 0) {
+      throw new Error(
+        `No state found for stack(s): ${missing.join(', ')}. ` +
+          `Run 'cdkd state list' to see available stacks.`
       );
-      for (const name of stackNames) {
-        process.stdout.write(`  - ${name}\n`);
-      }
-      process.stdout.write('\n');
-      // NON-INTERACTIVE runs are refused BEFORE the prompt, which is this
-      // repo's existing answer to exactly this question. FOUR sites place the
-      // guard the same way -- `gc.ts`, `bootstrap-destroy.ts`,
-      // `recreate-confirm-prompt.ts` and `prefix-migration-check.ts` all test
-      // `process.stdin.isTTY` before creating the interface -- but only TWO
-      // share the error SHAPE this one copies: `gc.ts` and
-      // `bootstrap-destroy.ts` throw `CdkdError` with the
-      // `NON_INTERACTIVE_CONFIRM` code. The other two throw a bare `Error`
-      // (`recreate-confirm-prompt.ts`, `prefix-migration-check.ts`). Matching
-      // the two that carry the code is deliberate: a destroy refusal is
-      // something CI should be able to branch on. An earlier revision of this
-      // comment said all of them threw the code, which is not true and was
-      // measured to be wrong. The count was FIVE until `cdkd migrate` was
-      // removed (issue #2572); its prompt threw a `LocalMigrateError`.
-      //
-      // It closes the hang issue #1342 is about — `rl.question` never settles
-      // when stdin is already at EOF, so `cdkd state destroy --all` without
-      // `--yes` parked forever in CI on nothing more than an absent stdin —
-      // and it does so without a race. A first cut of this fix raced the
-      // question against readline's `close` event and turned EOF into a
-      // decline; measured against real `node:readline/promises` on Node
-      // 24.15.0, that lost three ways:
-      //
-      //   - `printf 'y' |` (a real answer with no trailing newline) DECLINED,
-      //     silently discarding the answer, because `rl.line` is `''` at close;
-      //   - `(sleep 0.3; echo y) |` DECLINED — a delayed answer simply loses
-      //     the race;
-      //   - at a TTY readline consumes `^C` itself and calls `close()` (no
-      //     process SIGINT in raw mode), so the INTERACTIVE Ctrl-C landed on
-      //     the EOF arm and exited 0 with "stdin closed" instead of the 130 +
-      //     "Destroy cancelled" the abort arm below deliberately produces.
-      //
-      // A refusal has none of those: no answer can be discarded, the TTY path
-      // is untouched, and a piped CI run gets a non-zero exit naming `--yes`
-      // rather than an exit 0 that is success-shaped over a destroy that did
-      // nothing.
-      if (process.stdin.isTTY !== true) {
-        throw new CdkdError(
-          'The state destroy --all confirmation prompt cannot run in a non-interactive ' +
-            'environment. Pass --yes / -y to confirm the batch, or run the command ' +
-            'from a real terminal.',
-          'NON_INTERACTIVE_CONFIRM'
-        );
-      }
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-      });
-      // Issue #2117: the prompt takes the watch's abort signal, because this
-      // await blocks on the USER rather than on AWS. Registering any SIGINT
-      // listener disables Node's default terminate, so once this command owns
-      // a handler a Ctrl-C here would be RECORDED and then wait forever for an
-      // answer that is never coming — a single SIGTERM from CI or `kill` hung
-      // the process where it previously exited 130. At a TTY readline
-      // intercepts ^C itself; the piped / non-TTY shape is exactly the CI
-      // population issue #1342 exists for.
-      //
-      // `destroy.ts` needs no counterpart: it owns no prompt, and the per-stack
-      // prompt inside `runDestroyForStack` runs BEFORE that runner arms its own
-      // handler, so the watch takes its pre-registration force-quit there
-      // rather than deferring — an exit, not a hang.
-      //
-      // This arm covers a SIGNALLED run and nothing else. The OTHER way this
-      // await never returned — an already-at-EOF stdin, which carries no
-      // signal at all — is handled by the non-interactive REFUSAL above,
-      // before the interface is even created. See that comment for why the
-      // refusal replaced a `Promise.race` against readline's `close`.
-      let answer: string;
-      try {
-        answer = await rl.question(`Destroy all ${stackNames.length} stack(s)? (y/N): `, {
-          signal: interruptWatch.signal,
-        });
-      } catch (error) {
-        if (interruptWatch.interrupted() && isPromptAbortError(error)) {
-          // Nothing has been read, locked or deleted at this point, so exiting
-          // straight out is safe and is what the user asked for. 130 is the
-          // code Node's own default terminate would have produced here before
-          // this command owned a SIGINT handler.
-          //
-          // `rl.close()` here as well as in the `finally`: `process.exit` is
-          // synchronous and never unwinds, so the `finally` below does NOT run
-          // on this path. Closing twice is a documented no-op.
-          process.stderr.write('\nDestroy cancelled — nothing was destroyed.\n');
-          rl.close();
-          process.exit(130);
-        }
-        throw error;
-      } finally {
-        rl.close();
-      }
-      const trimmed = answer.trim().toLowerCase();
-      if (trimmed !== 'y' && trimmed !== 'yes') {
-        logger.info('Destroy cancelled');
-        return;
-      }
     }
+    const stackNames = stackArgs;
 
-    logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
+    logger.info(safeMsg`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
 
     let totalErrors = 0;
     // Issue #1752: resources whose provider reported `{ outcome: 'skipped' }`
@@ -2576,10 +2481,11 @@ async function stateDestroyCommand(
      * `--stack-region us-east-1`, a later name whose only state record lives in
      * eu-west-1 is warn-and-skipped by the `targets.length === 0` branch below
      * — it was never going to be destroyed, so a signal before it leaves
-     * nothing undone and the run must still exit 0. Measured on
-     * `state destroy --all --yes --stack-region us-east-1` with StackA in
-     * us-east-1 and StackB only in eu-west-1: the index form exited 2 having
-     * dispatched StackA, i.e. every target it had.
+     * nothing undone and the run must still exit 0. Measured with StackA in
+     * us-east-1 and StackB only in eu-west-1 under `--stack-region us-east-1`
+     * (through the since-removed `--all`, go-to-k/cdkd#3865, which fed this
+     * loop the same two names): the index form exited 2 having dispatched
+     * StackA, i.e. every target it had.
      *
      * The predicate mirrors that branch's own filter over `stateRefs`, the
      * same list the loop selects from. `destroy.ts` needs no counterpart: its
@@ -2604,7 +2510,7 @@ async function stateDestroyCommand(
         targets = refs.filter((r) => r.region === options.stackRegion || !r.region);
         if (targets.length === 0) {
           logger.warn(
-            `Skipping ${stackName}: no state record matches --stack-region '${options.stackRegion}'`
+            safeMsg`Skipping ${stackName}: no state record matches --stack-region '${options.stackRegion}'`
           );
           continue;
         }
@@ -2613,14 +2519,14 @@ async function stateDestroyCommand(
       } else {
         const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
         throw new Error(
-          `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+          safeMsg`Stack '${stackName}' has state in multiple regions: ${regions}. ` +
             `Use --stack-region <region> to pick one.`
         );
       }
 
       for (const [refIndex, ref] of targets.entries()) {
         logger.info(
-          `\nPreparing to destroy stack: ${stackName}${ref.region ? ` (${ref.region})` : ''}`
+          safeMsg`\nPreparing to destroy stack: ${stackName}${ref.region ? ` (${ref.region})` : ''}`
         );
 
         const stateResult = await setup.stateBackend.getState(
@@ -2629,7 +2535,7 @@ async function stateDestroyCommand(
         );
         if (!stateResult) {
           logger.warn(
-            `No state found for stack ${stackName}${ref.region ? ` in ${ref.region}` : ''}, skipping`
+            safeMsg`No state found for stack ${stackName}${ref.region ? ` in ${ref.region}` : ''}, skipping`
           );
           continue;
         }
@@ -2697,11 +2603,8 @@ async function stateDestroyCommand(
                 ...(options.profile && { profile: options.profile }),
                 stateBucket: setup.bucket,
                 statePrefix: options.statePrefix,
-                // --yes covers both the --all batch prompt above (already consumed)
-                // and the per-stack prompt inside the runner. Per-stack prompts are
-                // skipped when `options.yes` is set OR `--all` was set (the user
-                // already accepted the batch prompt).
-                skipConfirmation: options.yes || options.all === true,
+                // --yes skips the per-stack prompt inside the runner.
+                skipConfirmation: options.yes,
                 removeProtection: options.removeProtection === true,
                 skipFinalSnapshot: options.skipFinalSnapshot === true,
                 exportIndexStore: setup.exportIndexStore,
@@ -2755,7 +2658,7 @@ async function stateDestroyCommand(
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
           `inspect 'cdkd state show <stack>' and re-run 'cdkd state destroy' to retry. ` +
-          `If the same resource keeps failing, 'cdkd state orphan <stack>' removes the state record without deleting AWS resources.`
+          `If the same resource keeps failing, 'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record) without deleting AWS resources.`
       );
     }
     if (interrupted || (interruptWatch.interrupted() && stoppedEarly)) {
@@ -2781,7 +2684,7 @@ async function stateDestroyCommand(
           `counts as ONE entry and may cover several of its own resources — the per-stack ` +
           `summaries above give the exact breakdown. State preserved (the records are kept). ` +
           `Repair the physicalId in state.json and re-run 'cdkd state destroy', or delete the ` +
-          `resources by hand and drop the records with 'cdkd state orphan <stack>'.`
+          `resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
       );
     }
   } finally {
@@ -2803,7 +2706,10 @@ function createStateDestroyCommand(): Command {
         "For removing only the state record (keeping AWS resources intact), use 'cdkd state orphan'."
     )
     .argument('[stacks...]', 'Stack name(s) to destroy (physical CloudFormation names)')
-    .option('--all', 'Destroy every stack in the state bucket', false)
+    // Removed (go-to-k/cdkd#3865), but still DECLARED, hidden, so passing it
+    // reaches `stateDestroyCommand`'s refusal, which names the replacement,
+    // rather than commander's generic `unknown option '--all'`.
+    .addOption(new Option('--all').hideHelp())
     .option(
       '--remove-protection',
       'Bypass deletion protection on protected resources by flipping the per-resource ' +
@@ -2818,7 +2724,6 @@ function createStateDestroyCommand(): Command {
         'Examples:',
         '  cdkd state destroy MyStack',
         '  cdkd state destroy MyStack OtherStack',
-        '  cdkd state destroy --all -y',
         '  cdkd state destroy MyStack --state-bucket cdkd-state-test',
         '  cdkd state destroy MyStack --stack-region us-west-2',
         '',
@@ -3044,7 +2949,7 @@ async function listAssetStorageMarkers(s3: S3Client, bucket: string): Promise<As
       });
     } catch (error) {
       logger.warn(
-        `Skipping malformed/unreadable bootstrap marker '${key}': ${(error as Error).message}`
+        safeMsg`Skipping malformed/unreadable bootstrap marker '${key}': ${(error as Error).message}`
       );
     }
   }
@@ -3151,7 +3056,7 @@ async function stateInfoCommand(options: {
       tolerateNonStandardClient: true,
       onRebuild: ({ bucketRegion, currentRegion }) => {
         logger.debug(
-          `State bucket '${bucket}' is in '${bucketRegion}' (state-info client was '${String(currentRegion)}'); building a region-corrected S3 client for info reads.`
+          safeMsg`State bucket '${bucket}' is in '${bucketRegion}' (state-info client was '${String(currentRegion)}'); building a region-corrected S3 client for info reads.`
         );
       },
     });
@@ -3336,8 +3241,8 @@ async function stateRefreshObservedCommand(
           if (!ref) {
             const seen = matches.map((r) => r.region ?? '(legacy)').join(', ');
             throw new Error(
-              `No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
-                `Available regions: ${seen}.`
+              safeMsg`No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
+                safeMsg`Available regions: ${seen}.`
             );
           }
           targets.push(ref);
@@ -3346,7 +3251,7 @@ async function stateRefreshObservedCommand(
         } else {
           const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
           throw new Error(
-            `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+            safeMsg`Stack '${stackName}' has state in multiple regions: ${regions}. ` +
               `Re-run with --stack-region <region> to disambiguate.`
           );
         }
@@ -3495,7 +3400,7 @@ async function stateRefreshObservedCommand(
     const summary = options.dryRun
       ? `Plan: ${totalRefreshed} resource(s) would be refreshed, ${totalUnsupported} unsupported, ${totalFailed} would fail (--dry-run, no state was written)`
       : `Done: ${totalRefreshed} resource(s) refreshed, ${totalUnsupported} unsupported, ${totalFailed} failed`;
-    logger.info(`\n${summary}`);
+    logger.info(safeMsg`\n${summary}`);
 
     // Issue #2944. Its OWN line rather than a fourth count in the summary, and
     // at `warn`: a refused resource is one the user asked to refresh and cdkd
@@ -3506,7 +3411,7 @@ async function stateRefreshObservedCommand(
     // is unchanged.
     if (totalRefusedBaseline > 0) {
       logger.warn(
-        `${totalRefusedBaseline} resource(s) ${options.dryRun ? 'would NOT be refreshed' : 'were NOT refreshed'}: ` +
+        safeMsg`${totalRefusedBaseline} resource(s) ${options.dryRun ? 'would NOT be refreshed' : 'were NOT refreshed'}: ` +
           `a 'cdkd import' run refused to capture their ` +
           `observed-properties baseline, because their recorded properties can no longer position the secret ` +
           `redaction — refreshing against those properties could persist a resolved secret into state.json in ` +
@@ -3583,11 +3488,11 @@ async function warnOnLiveForeignLock(
     const owner = info.owner;
     const operation = info.operation ? `, operation: ${info.operation}` : '';
     logger.warn(
-      `Force-releasing a LIVE lock on ${where} ` +
+      safeMsg`Force-releasing a LIVE lock on ${where} ` +
         // Agrees with `lock-contention-message.ts`: an unusable owner withholds
         // the "still running" CERTIFICATION but not the expiry, when the lock
         // file carries a readable one.
-        `${owner ? `held by ${owner}${operation}` : 'held by an unnamed holder'}. ` +
+        safeMsg`${owner ? `held by ${owner}${operation}` : 'held by an unnamed holder'}. ` +
         (owner && expiryKnown
           ? `That process is still running and will keep writing; its next state write `
           : expiryKnown
@@ -3629,7 +3534,7 @@ async function refreshObservedForStack(
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
     throw new Error(
-      `No state found for stack '${stackName}' (${region}). ` +
+      safeMsg`No state found for stack '${stackName}' (${region}). ` +
         `Run 'cdkd state list' to see available stacks.`
     );
   }
@@ -3672,7 +3577,7 @@ async function refreshObservedForStack(
   const entries = Object.entries(state.resources);
 
   if (entries.length === 0) {
-    logger.info(`✓ ${stackName} (${region}): no resources in state, skipping`);
+    logger.info(safeMsg`✓ ${stackName} (${region}): no resources in state, skipping`);
     return { refreshed: 0, unsupported: 0, failed: 0, refusedBaseline: 0 };
   }
 
@@ -3704,8 +3609,8 @@ async function refreshObservedForStack(
       else wouldUnsupported++;
     }
     logger.info(
-      `Plan ${stackName} (${region}): ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported` +
-        (wouldRefuse > 0 ? `, ${wouldRefuse} refused (import baseline refusal)` : '')
+      safeMsg`Plan ${stackName} (${region}): ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported` +
+        (wouldRefuse > 0 ? safeMsg`, ${wouldRefuse} refused (import baseline refusal)` : '')
     );
     return {
       refreshed: wouldRefresh,
@@ -3903,8 +3808,8 @@ async function refreshObservedForStack(
         } catch (err) {
           failed++;
           logger.warn(
-            `  ✗ ${stackName}/${logicalId} (${resource.resourceType}): ` +
-              `readCurrentState failed — ${err instanceof Error ? err.message : String(err)}`
+            safeMsg`  ✗ ${stackName}/${logicalId} (${resource.resourceType}): ` +
+              safeMsg`readCurrentState failed — ${err instanceof Error ? err.message : String(err)}`
           );
         }
       });
@@ -3929,19 +3834,18 @@ async function refreshObservedForStack(
     await stateBackend.saveState(stackName, region, state, saveOptions);
 
     logger.info(
-      `✓ ${stackName} (${region}): ` +
-        `${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed` +
+      safeMsg`✓ ${stackName} (${region}): ` +
+        safeMsg`${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed` +
         // Issue #2944: appended rather than always printed, so a stack with no
         // refused record renders byte-identically to the pre-v10 line.
-        (refusedBaseline > 0 ? `, ${refusedBaseline} refused (import baseline refusal)` : '')
+        (refusedBaseline > 0 ? safeMsg`, ${refusedBaseline} refused (import baseline refusal)` : '')
     );
 
     return { refreshed, unsupported, failed, refusedBaseline };
   } finally {
     await lockManager.releaseLock(stackName, region).catch((err) => {
       logger.warn(
-        `Failed to release lock for ${stackName} (${region}): ` +
-          (err instanceof Error ? err.message : String(err))
+        safeMsg`Failed to release lock for ${stackName} (${region}): ${err instanceof Error ? err.message : String(err)}`
       );
     });
   }

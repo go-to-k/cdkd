@@ -102,6 +102,7 @@ describe('DeployEngine — same-name replacement with a name-idempotent Create A
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
     };
 
     return new DeployEngine(

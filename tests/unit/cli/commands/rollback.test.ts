@@ -45,6 +45,8 @@ vi.mock('../../../../src/provisioning/nested-stack-context.js', () => ({
 
 vi.mock('../../../../src/provisioning/resource-name.js', () => ({
   withStackName: (_name: string, fn: () => unknown) => fn(),
+  withSkipPrefix: (_skip: boolean, fn: () => unknown) => fn(),
+  getCurrentSkipPrefix: () => true,
 }));
 
 vi.mock('../../../../src/cli/commands/deployment-events-run.js', () => ({
@@ -82,6 +84,13 @@ import {
   rollbackCommand,
 } from '../../../../src/cli/commands/rollback.js';
 import { CdkdError, PartialFailureError } from '../../../../src/utils/error-handler.js';
+import {
+  PASTE_PAYLOADS,
+  expectOnlyDisplayResidual,
+  spansThatRun,
+  withPasteDir,
+} from '../../utils/paste-harness.js';
+import { readAtKeyRegion } from '../../_state-read-double.js';
 
 interface FakeBackend {
   listStacks: ReturnType<typeof vi.fn>;
@@ -333,7 +342,7 @@ describe('rollbackCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
-    expect(readlineQuestion).toHaveBeenCalledWith("Roll back 'S' (us-east-1)? (y/N): ");
+    expect(readlineQuestion).toHaveBeenCalledWith("Roll back S (us-east-1)? (y/N): ");
     // A decline is a different outcome from a refusal, reached through the
     // same code: the command returns cleanly and replays nothing.
     expect(replayProvider.delete).not.toHaveBeenCalled();
@@ -1692,7 +1701,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
       expect(line).not.toMatch(INVISIBLE);
     }
-    expect(lines.some((l) => l.includes("Rollback plan for '\"Gho st"))).toBe(true);
+    expect(lines.some((l) => l.includes('Rollback plan for "Gho st'))).toBe(true);
   });
 
   it('the CONFIRMATION PROMPT itself is sanitized', async () => {
@@ -1735,7 +1744,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const prompt = String(readlineQuestion.mock.calls[0]![0]);
     expect(prompt).not.toMatch(CTRL);
     expect(prompt).not.toMatch(INVISIBLE);
-    expect(prompt).toContain("Roll back '\"Gho st");
+    expect(prompt).toContain('Roll back "Gho st');
   });
 
   it('the previewState LOOKUPS stay keyed on the RAW logicalId', async () => {
@@ -1859,7 +1868,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const prompt = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
 
     expect(forgedRowCount(lines)).toBe(0);
-    expect(lines.some((l) => l.includes("Rollback plan for 'S' (\"us- east-1"))).toBe(true);
+    expect(lines.some((l) => l.includes('Rollback plan for S ("us- east-1'))).toBe(true);
     expect(prompt).not.toMatch(CTRL);
     expect(prompt).not.toMatch(INVISIBLE);
     expect(prompt).toContain('("us- east-1');
@@ -3195,5 +3204,261 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     });
     // The parent's journal is in ANOTHER region, so the child is its own choice.
     await expect(rollbackCommand(undefined, { ...baseOpts })).rejects.toThrow(/Multiple stacks/);
+  });
+});
+
+describe('rollbackCommand — a nested child engine own-rollback segment (go-to-k/cdkd#3859)', () => {
+  // A nested child engine's own in-process rollback leaves an
+  // `auto-rollback-started` segment in the CHILD's journal, under the parent's
+  // run id; the child's row is one of the parent's FAILED ops, so the parent's
+  // rollback replays it only through `--revert-failed`, as a child revert
+  // `--orphan` does not reach. The remedy a refusal in that replay prints
+  // names the child stack, so this pins what it rests on — a direct
+  // `cdkd rollback <parent>~<child> --orphan <id>` proceeds over such a journal
+  // (it is not a `nested-pending-parent` record) and honours the id.
+  beforeEach(() => vi.clearAllMocks());
+
+  it('proceeds and orphans the named op instead of reverting it', async () => {
+    replayProvider.delete.mockClear();
+    const child = 'Top~Child';
+    const bucketOp = {
+      logicalId: 'Bucket',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-Bucket',
+    };
+    const journals: Record<string, unknown> = {
+      [child]: {
+        journalVersion: 1,
+        stackName: child,
+        region: 'us-east-1',
+        segments: [
+          { runId: 'run-1', timestamp: 2, reason: 'auto-rollback-started', initialDeploy: false, operations: [bucketOp] },
+        ],
+      },
+      Top: {
+        journalVersion: 1,
+        stackName: 'Top',
+        region: 'us-east-1',
+        segments: [
+          {
+            runId: 'run-1',
+            timestamp: 1,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [
+              { logicalId: 'Child', changeType: 'UPDATE', resourceType: 'AWS::CloudFormation::Stack', physicalId: child },
+            ],
+          },
+        ],
+      },
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([
+        { stackName: 'Top', region: 'us-east-1' },
+        { stackName: child, region: 'us-east-1' },
+      ]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: child,
+          region: 'us-east-1',
+          resources: {
+            Bucket: { physicalId: 'phys-Bucket', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {}, dependencies: [] },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn(async (name: string) => journals[name] ?? null),
+    });
+
+    await expect(rollbackCommand(child, { ...baseOpts, orphan: ['Bucket'] })).resolves.toBeUndefined();
+
+    // The replay ran on the child's journal and honoured the id: the resource
+    // is left in AWS, not deleted, and its row leaves the child's state
+    // (`--orphan` on a CREATE mints no record, issue #2934).
+    expect(backend.loadRollbackJournal).toHaveBeenCalledWith(child, 'us-east-1');
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    const saved = backend.saveState.mock.calls.at(-1)![2] as { resources: Record<string, unknown> };
+    expect(saved.resources).not.toHaveProperty('Bucket');
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
+  });
+
+  it('CONTROL: without --orphan the same replay deletes the resource', async () => {
+    replayProvider.delete.mockClear();
+    const child = 'Top~Child';
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: child, region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: child,
+          region: 'us-east-1',
+          resources: {
+            Bucket: { physicalId: 'phys-Bucket', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {}, dependencies: [] },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn(async (name: string) =>
+        name === child
+          ? {
+              journalVersion: 1,
+              stackName: child,
+              region: 'us-east-1',
+              segments: [
+                {
+                  runId: 'run-1',
+                  timestamp: 2,
+                  reason: 'auto-rollback-started',
+                  initialDeploy: false,
+                  operations: [
+                    { logicalId: 'Bucket', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-Bucket' },
+                  ],
+                },
+              ],
+            }
+          : null
+      ),
+    });
+    await expect(rollbackCommand(child, { ...baseOpts })).resolves.toBeUndefined();
+    expect(replayProvider.delete).toHaveBeenCalled();
+  });
+});
+
+/**
+ * A record stack name in this file's PROSE sits behind `safeStack`'s own
+ * boundary, never inside a hand-written `'...'` (go-to-k/cdkd#3950). The
+ * embedded-quote payload closed that quote and ran what followed it when the
+ * sentence was pasted; each message below is rendered with every
+ * `PASTE_PAYLOADS` family as the stack name and fed WHOLE to the paste harness.
+ */
+describe('rollbackCommand — a stack name in prose is never inside cdkd quotes (go-to-k/cdkd#3950)', () => {
+  let originalIsTTY: boolean | undefined;
+  beforeEach(() => {
+    originalIsTTY = process.stdin.isTTY;
+    vi.clearAllMocks();
+  });
+  afterEach(() => setStdinIsTty(originalIsTTY));
+
+  const journalWith = (stackName: string, initialDeploy: boolean) => ({
+    journalVersion: 1,
+    stackName,
+    region: 'us-east-1',
+    segments: [
+      {
+        timestamp: 1,
+        reason: 'no-rollback-failure',
+        initialDeploy,
+        operations: [
+          { logicalId: 'Bucket', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-Bucket' },
+        ],
+      },
+    ],
+  });
+  const stateWith = (stackName: string, region = 'us-east-1') => ({
+    version: 8,
+    stackName,
+    region,
+    resources: {
+      Bucket: {
+        physicalId: 'phys-Bucket',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+    },
+    outputs: {},
+    lastModified: 1,
+  });
+
+  /** Every message one payload name reaches, by site. */
+  async function messagesFor(name: string): Promise<Record<string, string>> {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const listStacks = vi.fn().mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
+    const out: Record<string, string> = {};
+    const thrownBy = async (): Promise<string> => {
+      const e = await rollbackCommand(name, { ...baseOpts }).catch((err: unknown) => err);
+      return e instanceof Error ? e.message : String(e);
+    };
+
+    installSetup({ listStacks });
+    out['nothing to roll back'] = await thrownBy();
+
+    installSetup({ listStacks, loadRollbackJournal: vi.fn().mockResolvedValue(journalWith(name, false)) });
+    out['journal without state'] = await thrownBy();
+
+    installSetup({
+      listStacks,
+      getState: vi.fn().mockResolvedValue(readAtKeyRegion(stateWith(name, 'eu-west-1') as never, 'us-east-1')),
+      loadRollbackJournal: vi.fn().mockResolvedValue(journalWith(name, false)),
+    });
+    out['divergent record region'] = await thrownBy();
+
+    // The plan header, the prompt, and both completion lines, from one run of
+    // an initial deploy's segment that empties the record.
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('y');
+    info.mockClear();
+    installSetup({
+      listStacks,
+      getState: vi.fn().mockResolvedValue({ state: stateWith(name), etag: 'e0' }),
+      loadRollbackJournal: vi.fn().mockResolvedValue(journalWith(name, true)),
+      popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+    });
+    await rollbackCommand(name, { ...baseOpts, force: false, yes: false });
+    const lines = info.mock.calls.map((c) => String(c[0]).replace(/^\n/, ''));
+    out['plan header'] = lines.find((l) => l.startsWith('Rollback plan for ')) ?? '';
+    out['prompt'] = String(readlineQuestion.mock.calls.at(-1)?.[0] ?? '');
+    out['state removed'] = lines.find((l) => l.startsWith('State for ')) ?? '';
+    out['complete'] = lines.find((l) => l.startsWith('Rollback of ')) ?? '';
+    return out;
+  }
+
+  it('a PLAIN name prints bare, with no quotes of its own', async () => {
+    const messages = await messagesFor('S');
+    for (const [site, message] of Object.entries(messages)) {
+      expect(message, site).toMatch(/(^|\s)S \(us-east-1\)/);
+      expect(message, site).not.toContain("'S'");
+    }
+  });
+
+  it('every payload name is JSON-bounded, and no pasted span of any message runs a command', async () => {
+    const rendered: Array<{ value: string; site: string; message: string }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const [site, message] of Object.entries(await messagesFor(value))) {
+        rendered.push({ value, site, message });
+      }
+    }
+    // Every site is reached for every payload -- an empty message would pass
+    // the paste assertions vacuously.
+    expect(rendered).toHaveLength(PASTE_PAYLOADS.length * 7);
+    withPasteDir((dir) => {
+      for (const { value, site, message } of rendered) {
+        const label = `${site}: ${value}`;
+        // The boundary, pinned DIRECTLY: the paste alone cannot see it where a
+        // parenthesis after the name aborts the span anyway.
+        expect(message, label).toContain(`${displayStackName(value)} (us-east-1)`);
+        expect(message, label).not.toContain(`'${displayStackName(value)}'`);
+        expect(message, label).not.toContain(`'${value}'`);
+        expectOnlyDisplayResidual(message, dir, value);
+      }
+    });
+  }, 120_000);
+
+  it('CONTROL: the pre-fix hand-quoted spelling runs the embedded-quote payload', () => {
+    // Proves the harness sees the class this block fences: the same prompt
+    // with cdkd's own quotes around the name runs when pasted.
+    const value = "x'$(touch OWNED) #";
+    withPasteDir((dir) => {
+      expect(spansThatRun(`Roll back '${displayStackName(value)}' (us-east-1)?`, dir)).not.toEqual([]);
+    });
   });
 });

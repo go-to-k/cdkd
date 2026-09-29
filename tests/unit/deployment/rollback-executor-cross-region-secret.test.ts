@@ -293,6 +293,23 @@ describe('rollback replay refuses a region-ambiguous secret reference (issue #20
     expect(logLines.join('\n')).not.toContain(IRELAND_PASSWORD);
   });
 
+  it("in a nested child's own rollback, the refusal's re-run names the nested stack (go-to-k/cdkd#3859)", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const ctx = makeCtx({ update }, [PRODUCER_REGION]);
+    ctx.nestedChildStack = 'Top~Child';
+    const { ops, state } = revertScenario(NAME_EXPR);
+
+    const result = await replayRollback(ops, state, 'Top~Child', ctx);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    const refusal = logLines.find((l) => l.includes('Rollback failed for Idp'));
+    expect(refusal).toContain(
+      "re-run the rollback of the nested stack 'Top~Child' itself."
+    );
+    expect(refusal).not.toContain("re-run 'cdkd rollback'");
+  });
+
   it('same-region imports only: resolves in the consumer region exactly as before', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const ctx = makeCtx({ update }, [CONSUMER_REGION]);

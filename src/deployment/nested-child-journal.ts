@@ -59,8 +59,12 @@ import {
   withNestedStackContext,
   type NestedStackProviderContext,
 } from '../provisioning/nested-stack-context.js';
-import { withStackName } from '../provisioning/resource-name.js';
-import { displayIdent, displaySafe } from '../utils/display-safe.js';
+import {
+  getCurrentSkipPrefix,
+  withSkipPrefix,
+  withStackName,
+} from '../provisioning/resource-name.js';
+import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
 
 /** The segment reason a nested engine records on success. */
 export const NESTED_PENDING_PARENT_REASON = 'nested-pending-parent' as const;
@@ -225,7 +229,7 @@ export async function dropNestedChildJournals(args: {
       await withChildLock(args.lockManager, child, region, logger, () =>
         stateBackend.deleteRollbackJournal(child, region)
       );
-      logger.debug(`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
+      logger.debug(safeMsg`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
     } catch (error) {
       warnUncleared(logger, child, error);
     }
@@ -283,7 +287,7 @@ export async function dropSettledNestedJournals(args: {
       );
       if (removed > 0) {
         logger.debug(
-          `Dropped ${removed} settled rollback journal segment(s) of ${displaySafe(child)}`
+          safeMsg`Dropped ${removed} settled rollback journal segment(s) of ${displaySafe(child)}`
         );
       }
     } catch (error) {
@@ -309,7 +313,7 @@ async function withChildLock<T>(
   } finally {
     await lockManager.releaseLock(child, region).catch((error: unknown) => {
       logger.warn(
-        `Failed to release the lock of nested stack ${displayIdent(child)}: ${errorText(error)}`
+        safeMsg`Failed to release the lock of nested stack ${displayIdent(child)}: ${errorText(error)}`
       );
     });
   }
@@ -327,15 +331,15 @@ function depthExceeded(
 ): boolean {
   if (depth < MAX_NESTED_WALK_DEPTH) return false;
   logger.warn(
-    `Stopped clearing nested rollback journals below ${displayIdent(parentStackName)}: ` +
-      `the nesting is deeper than ${MAX_NESTED_WALK_DEPTH} levels.`
+    safeMsg`Stopped clearing nested rollback journals below ${displayIdent(parentStackName)}: ` +
+      safeMsg`the nesting is deeper than ${MAX_NESTED_WALK_DEPTH} levels.`
   );
   return true;
 }
 
 function warnUncleared(logger: Pick<Logger, 'warn'>, child: string, error: unknown): void {
   logger.warn(
-    `Could not clear the rollback journal of nested stack ${displayIdent(child)}: ${errorText(error)}. ` +
+    safeMsg`Could not clear the rollback journal of nested stack ${displayIdent(child)}: ${errorText(error)}. ` +
       `It is inert to every parent revert (they select segments by run) and the next ` +
       `successful deploy of the top-level stack removes it.`
   );
@@ -477,8 +481,8 @@ export async function revertNestedChildFromJournal(args: {
           persisted = true;
         } catch (retryError) {
           logger.warn(
-            `Failed to persist the state of nested stack ${shownChild} after reverting it: ` +
-              `${errorText(retryError)}. The resources were reverted in AWS.`
+            safeMsg`Failed to persist the state of nested stack ${shownChild} after reverting it: ` +
+              safeMsg`${errorText(retryError)}. The resources were reverted in AWS.`
           );
         }
       }
@@ -501,6 +505,9 @@ export async function revertNestedChildFromJournal(args: {
         imports: [...(base.imports ?? []), ...(restoredReads?.imports ?? [])],
         outputReads: [...(base.outputReads ?? []), ...(restoredReads?.outputReads ?? [])],
       }),
+      // No `--orphan` reaches this replay: the flag feeds only the replay of
+      // the stack it is run on (go-to-k/cdkd#3845).
+      nestedChildRevert: true,
     };
     // The child is the "parent" of its own rows: a grandchild row reverted by
     // this replay derives `<child>~<Grandchild>` from here. No templates — a
@@ -518,19 +525,25 @@ export async function revertNestedChildFromJournal(args: {
     const settledBelow: SettledNestedRows = new Map();
     for (let s = segments.length - 1; s >= 0; s--) {
       const segment = segments[s]!;
+      // Issue #4018: the child's segment was written by the same deploy run as
+      // the parent's, under the prefix flag it records; a segment an older cdkd
+      // wrote keeps the enclosing scope (the parent replay's).
+      const skipPrefix = segment.skipPrefix ?? getCurrentSkipPrefix();
       const result = await withNestedStackContext(childCtx, () =>
-        withStackName(childStackName, () =>
-          withNestedRevertRun(runId, async (inner) => {
-            const replayed = await replayRollback(
-              segment.operations,
-              stateResources,
-              childStackName,
-              execCtx,
-              { afterOp: save, onOrphan: (record) => mintedOrphans.push(record) }
-            );
-            for (const [id, below] of inner.settled) settledBelow.set(id, below);
-            return { ...replayed, warnings: replayed.warnings + inner.warnings };
-          })
+        withSkipPrefix(skipPrefix, () =>
+          withStackName(childStackName, () =>
+            withNestedRevertRun(runId, async (inner) => {
+              const replayed = await replayRollback(
+                segment.operations,
+                stateResources,
+                childStackName,
+                execCtx,
+                { afterOp: save, onOrphan: (record) => mintedOrphans.push(record) }
+              );
+              for (const [id, below] of inner.settled) settledBelow.set(id, below);
+              return { ...replayed, warnings: replayed.warnings + inner.warnings };
+            })
+          )
         )
       );
       failures += result.failures;
@@ -549,7 +562,7 @@ export async function revertNestedChildFromJournal(args: {
     }
     if (warnings > 0) {
       logger.warn(
-        `Nested stack ${shownChild}: ${warnings} operation(s) were skipped with a warning during ` +
+        safeMsg`Nested stack ${shownChild}: ${warnings} operation(s) were skipped with a warning during ` +
           `its revert (see above); they may need attention by hand.`
       );
     }
@@ -561,7 +574,9 @@ export async function revertNestedChildFromJournal(args: {
     return { warnings };
   } finally {
     await ctx.lockManager.releaseLock(childStackName, region).catch((error: unknown) => {
-      logger.warn(`Failed to release the lock of nested stack ${shownChild}: ${errorText(error)}`);
+      logger.warn(
+        safeMsg`Failed to release the lock of nested stack ${shownChild}: ${errorText(error)}`
+      );
     });
   }
 }

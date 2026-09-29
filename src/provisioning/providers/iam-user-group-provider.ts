@@ -43,7 +43,23 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { collectInlinePolicyNamesManagedBySiblings } from './iam-role-provider.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+} from '../masked-retry-logger.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  onlySecretDerived,
+  readPrincipalLists,
+  recordedPrincipalsRepair,
+  SECRET_DERIVED_READ_LIVE,
+} from '../iam-policy-targets.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import type {
+  CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -51,6 +67,10 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the no-properties
@@ -75,6 +95,107 @@ export const MEMBERSHIP_MISSING_FIELDS_SKIP_REASON =
   'GroupName/Users missing from state — membership not removed';
 
 /**
+ * Sibling of {@link MEMBERSHIP_MISSING_FIELDS_SKIP_REASON} for a record whose
+ * `Users` is present but not a list of IAM user names (go-to-k/cdkd#3888). A
+ * cast iterated a string by character, removing one-letter users from the
+ * group and never the recorded one; it is refused before any call.
+ */
+export const MEMBERSHIP_MALFORMED_USERS_SKIP_REASON =
+  'malformed Users in state — membership not removed';
+
+/**
+ * What an `AWS::IAM::UserToGroupAddition` update or delete says about a
+ * secret-derived recorded `Users`: it has no live source (IAM lists a group's
+ * members, not which of them this resource added), so cdkd cannot diff it, and
+ * editing state is not the repair. `cdkd orphan` drops just this record, and
+ * the next deploy re-creates it from the template (`AddUserToGroup` is
+ * idempotent).
+ */
+const MEMBERSHIP_SECRET_DERIVED_REPAIR =
+  'cdkd cannot diff it, so make the membership change by hand, then drop this record with ' +
+  "'cdkd orphan <constructPath>' so the next deploy re-creates it from the template";
+
+/**
+ * Read a desired and a recorded principal list, refusing either when it is not
+ * a list of IAM names, before any write (go-to-k/cdkd#3888). The previous side
+ * is the state record, and a rollback revert or `drift --revert` replays
+ * `update()` with a recorded bag as the desired side. With `readLive`, a
+ * recorded list cdkd redacted (a dynamic reference or its mask) is read from
+ * IAM instead when the desired side is well-formed (go-to-k/cdkd#3906) — ADD-
+ * only: IAM's list also holds memberships made elsewhere (a
+ * `UserToGroupAddition`, another stack, by hand), so the returned previous side
+ * is IAM's list narrowed to the desired names, and nothing is removed on its
+ * evidence. `unmatchedKinds` names the kinds read that way where IAM holds a
+ * name the desired side does not, for the caller's warning.
+ */
+async function readPrincipalSides<K extends string>(opts: {
+  desired: Record<K, unknown>;
+  recorded: Record<K, unknown>;
+  subject: string;
+  nothingDone: string;
+  names: string;
+  secretDerivedRepair: string;
+  readLive?: () => Promise<Record<K, string[]>>;
+  resourceType: string;
+  logicalId: string;
+  physicalId: string;
+}): Promise<{
+  next: Record<K, string[] | undefined>;
+  prev: Record<K, string[] | undefined>;
+  unmatchedKinds: K[];
+}> {
+  const { subject, nothingDone, names, resourceType, logicalId, physicalId } = opts;
+  const next = readPrincipalLists(opts.desired);
+  let prev = readPrincipalLists(opts.recorded);
+  const unmatchedKinds: K[] = [];
+  if (opts.readLive && !('malformed' in next) && onlySecretDerived(prev)) {
+    const kinds = prev.malformed.join(' / ');
+    let live: Record<K, string[]>;
+    try {
+      live = await opts.readLive();
+    } catch (error) {
+      throw new ProvisioningError(
+        `the recorded ${kinds} of ${subject} ${logicalId} is secret-derived and could not be ` +
+          `read from IAM — ${nothingDone}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
+    const lists = { ...prev.lists };
+    for (const kind of prev.malformed) {
+      const desired = next.lists[kind] ?? [];
+      lists[kind] = live[kind].filter((name) => desired.includes(name));
+      if (live[kind].some((name) => !desired.includes(name))) unmatchedKinds.push(kind);
+    }
+    prev = { lists };
+  }
+  if ('malformed' in next || 'malformed' in prev) {
+    const which = [
+      ...('malformed' in next ? next.malformed.map((k) => `desired ${k}`) : []),
+      ...('malformed' in prev ? prev.malformed.map((k) => `recorded ${k}`) : []),
+    ];
+    throw new ProvisioningError(
+      `${which.join(' / ')} of ${subject} ${logicalId} is not a list of ${names} — ` +
+        nothingDone +
+        ('malformed' in prev
+          ? `: ${recordedPrincipalsRepair(
+              prev.malformed,
+              prev.secretDerived,
+              names,
+              opts.secretDerivedRepair
+            )}`
+          : ''),
+      resourceType,
+      logicalId,
+      physicalId
+    );
+  }
+  return { next: next.lists, prev: prev.lists, unmatchedKinds };
+}
+
+/**
  * The deploy-side caveat both `UserToGroupAddition` skip warnings carry (issue
  * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
  *
@@ -92,6 +213,40 @@ const DEPLOY_SKIP_CAVEAT =
   `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, remove the memberships by hand.`;
 
 /**
+ * `generateResourceNameWithFallback`'s `maxLength` for a User / Group name:
+ * ONE spelling, shared by the create arms and {@link derivedNamePairs}, so the
+ * name a needle is built from cannot drift from the name the create sends.
+ */
+const USER_NAME_MAX_LENGTH = 64;
+const GROUP_NAME_MAX_LENGTH = 128;
+
+/**
+ * `[template value, physical name derived from it]` for the types whose name
+ * `generateResourceNameWithFallback` rewrites (issue #2177), with the SAME
+ * options `createUser` / `createGroup` use (the constants above).
+ * `UserToGroupAddition` names nothing.
+ */
+function derivedNamePairs(
+  resourceType: string,
+  logicalId: string,
+  properties: Record<string, unknown>
+): Array<readonly [unknown, string]> {
+  const spec =
+    resourceType === 'AWS::IAM::User'
+      ? { key: 'UserName', maxLength: USER_NAME_MAX_LENGTH }
+      : resourceType === 'AWS::IAM::Group'
+        ? { key: 'GroupName', maxLength: GROUP_NAME_MAX_LENGTH }
+        : undefined;
+  if (!spec) return [];
+  const raw = properties[spec.key];
+  // Only a string can be a recorded secret, and deriving from anything else
+  // could throw inside the generator on a path (`update()`) that never derived
+  // a name before.
+  if (typeof raw !== 'string') return [];
+  return [[raw, generateResourceNameWithFallback(raw, logicalId, { maxLength: spec.maxLength })]];
+}
+
+/**
  * AWS IAM User / Group / UserToGroupAddition Provider
  *
  * Implements resource provisioning for:
@@ -104,6 +259,16 @@ const DEPLOY_SKIP_CAVEAT =
 export class IAMUserGroupProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMUserGroupProvider');
+
+  /**
+   * The sinks the DELETE path hands the cleanup helpers it shares with
+   * `create()`: `DeleteContext` carries no masker (issue #2007), so these are
+   * identity. Spelled at the call site rather than as a parameter default, so a
+   * create-path caller that forgets its own sinks is a type error.
+   */
+  private unmaskedDeleteSinks(): MaskedLogSinks {
+    return createMaskedLogSinks(this.logger, undefined);
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -133,15 +298,30 @@ export class IAMUserGroupProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
+    // shape), built here and handed to whichever type's arm runs. Every
+    // bag-derived value is masked RAW as well -- user / group names, attached
+    // ARNs, group memberships and inline policy names all come out of the
+    // resolved `properties` bag. Absent context means identity.
+    //
+    // A User / Group name is REWRITTEN from the template value (stack prefix,
+    // charset folding, truncation), so the masker cannot recognise it by
+    // itself: it is added as a needle when the value it came from is a secret.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      derivedNamePairs(resourceType, logicalId, properties)
+    );
     switch (resourceType) {
       case 'AWS::IAM::User':
-        return this.createUser(logicalId, resourceType, properties);
+        return this.createUser(logicalId, resourceType, properties, log);
       case 'AWS::IAM::Group':
-        return this.createGroup(logicalId, resourceType, properties);
+        return this.createGroup(logicalId, resourceType, properties, log);
       case 'AWS::IAM::UserToGroupAddition':
-        return this.createUserToGroupAddition(logicalId, resourceType, properties);
+        return this.createUserToGroupAddition(logicalId, resourceType, properties, log);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -156,18 +336,39 @@ export class IAMUserGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // Issue #2177 -- see `create()`. The recorded name is also paired with the
+    // PREVIOUS value it was derived from.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [
+        ...derivedNamePairs(resourceType, logicalId, properties),
+        ...derivedNamePairs(resourceType, logicalId, previousProperties).map(
+          ([raw]) => [raw, physicalId] as const
+        ),
+      ]
+    );
     switch (resourceType) {
       case 'AWS::IAM::User':
-        return this.updateUser(logicalId, physicalId, resourceType, properties, previousProperties);
+        return this.updateUser(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          log
+        );
       case 'AWS::IAM::Group':
         return this.updateGroup(
           logicalId,
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       case 'AWS::IAM::UserToGroupAddition':
         return this.updateUserToGroupAddition(
@@ -175,7 +376,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       default:
         throw new ProvisioningError(
@@ -222,15 +424,27 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async createUser(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM user ${logicalId}`);
+    const { value: v } = log;
+    log.debug(`Creating IAM user ${logicalId}`);
 
     const userName = generateResourceNameWithFallback(
       properties['UserName'] as string | undefined,
       logicalId,
-      { maxLength: 64 }
+      { maxLength: USER_NAME_MAX_LENGTH }
     );
+    // Read before any call (go-to-k/cdkd#3888): a rollback's
+    // reverse-replacement create passes a recorded bag here.
+    const groups = readPrincipalLists({ Groups: properties['Groups'] });
+    if ('malformed' in groups) {
+      throw new ProvisioningError(
+        `Groups of IAM user ${logicalId} is not a list of IAM group names — no user was created`,
+        resourceType,
+        logicalId
+      );
+    }
 
     try {
       const createParams: {
@@ -274,7 +488,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               PermissionsBoundary: permissionsBoundary,
             })
           );
-          this.logger.debug(`Set permissions boundary on user ${userName}`);
+          log.debug(`Set permissions boundary on user ${v(userName)}`);
         }
 
         // Create login profile if specified
@@ -289,7 +503,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               PasswordResetRequired: loginProfile.PasswordResetRequired ?? false,
             })
           );
-          this.logger.debug(`Created login profile for user ${userName}`);
+          log.debug(`Created login profile for user ${v(userName)}`);
         }
 
         // Attach managed policies if specified
@@ -302,13 +516,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 PolicyArn: policyArn,
               })
             );
-            this.logger.debug(`Attached managed policy ${policyArn} to user ${userName}`);
+            log.debug(`Attached managed policy ${v(policyArn)} to user ${v(userName)}`);
           }
         }
 
         // Add user to groups if specified
-        const userGroups = properties['Groups'] as string[] | undefined;
-        if (userGroups && Array.isArray(userGroups)) {
+        const userGroups = groups.lists.Groups;
+        if (userGroups) {
           for (const groupName of userGroups) {
             await this.iamClient.send(
               new AddUserToGroupCommand({
@@ -316,7 +530,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 GroupName: groupName,
               })
             );
-            this.logger.debug(`Added user ${userName} to group ${groupName}`);
+            log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
           }
         }
 
@@ -337,14 +551,14 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 PolicyDocument: policyDoc,
               })
             );
-            this.logger.debug(`Added inline policy ${policy.PolicyName} to user ${userName}`);
+            log.debug(`Added inline policy ${v(policy.PolicyName)} to user ${v(userName)}`);
           }
         }
       } catch (innerError) {
         try {
-          await this.removeUserFromAllGroups(userName);
-          await this.detachAllUserPolicies(userName);
-          await this.deleteAllUserInlinePolicies(userName);
+          await this.removeUserFromAllGroups(userName, log);
+          await this.detachAllUserPolicies(userName, log);
+          await this.deleteAllUserInlinePolicies(userName, log);
           try {
             await this.iamClient.send(new DeleteLoginProfileCommand({ UserName: userName }));
           } catch (err) {
@@ -358,24 +572,28 @@ export class IAMUserGroupProvider implements ResourceProvider {
             if (!(err instanceof NoSuchEntityException)) throw err;
           }
           await this.iamClient.send(new DeleteUserCommand({ UserName: userName }));
-          this.logger.debug(
-            `Cleaned up partially-created IAM user ${logicalId} (${userName}) after wiring failure`
+          log.debug(
+            `Cleaned up partially-created IAM user ${logicalId} (${v(userName)}) after wiring failure`
           );
         } catch (cleanupError) {
-          // The name in the commands below is left BARE on purpose (issue
-          // #3136): it is `generateResourceNameWithFallback`'s output, whose
+          // The name is `generateResourceNameWithFallback`'s output, whose
           // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-          // and trims leading and trailing `-`, so no template spelling reaches
-          // the shell as anything but one plain word. Pinned by this type's
-          // partial-create cleanup test.
-          this.logger.warn(
-            `Failed to clean up partially-created IAM user ${logicalId} (${userName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (aws iam delete-login-profile --user-name ${userName}), remove permissions boundary (aws iam delete-user-permissions-boundary --user-name ${userName}), then aws iam delete-user --user-name ${userName}`
+          // (issue #3136), so it renders BARE -- but it can still BE a resolved
+          // secret, so every command goes through `pasteableAwsCommand` with the
+          // masker (issue #2177): a masked name is WITHHELD rather than printed
+          // as `***`, which would act on a different principal. Pinned by this
+          // type's partial-create cleanup test.
+          const aws = pasteableAwsCommand(log.mask);
+          log.warn(
+            `Failed to clean up partially-created IAM user ${logicalId} (${v(userName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (${aws`aws iam delete-login-profile --user-name ${userName}`.render()}), remove permissions boundary (${aws`aws iam delete-user-permissions-boundary --user-name ${userName}`.render()}), then ${aws`aws iam delete-user --user-name ${userName}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
-      this.logger.debug(`Successfully created IAM user ${logicalId}: ${userName}`);
+      log.debug(`Successfully created IAM user ${logicalId}: ${v(userName)}`);
 
       return {
         physicalId: userName,
@@ -386,7 +604,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM user ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create IAM user ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         userName,
@@ -400,16 +618,54 @@ export class IAMUserGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM user ${logicalId}: ${physicalId}`);
+    const { value: v } = log;
+    log.debug(`Updating IAM user ${logicalId}: ${v(physicalId)}`);
+    // `Groups` on BOTH sides before any call (go-to-k/cdkd#3888): a string was
+    // walked by character, removing the user from one-letter groups.
+    const groups = await readPrincipalSides({
+      desired: { Groups: properties['Groups'] },
+      recorded: { Groups: previousProperties['Groups'] },
+      subject: 'IAM user',
+      nothingDone: 'no group membership, tag, policy or login profile was changed',
+      names: 'group names',
+      secretDerivedRepair: SECRET_DERIVED_READ_LIVE,
+      // `deleteUser` reads the same list (`removeUserFromAllGroups`).
+      readLive: async () => {
+        try {
+          return { Groups: await this.readLiveGroups(physicalId) };
+        } catch (error) {
+          throw new ProvisioningError(
+            `ListGroupsForUser failed for IAM user ${logicalId}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          );
+        }
+      },
+      resourceType,
+      logicalId,
+      physicalId,
+    });
+    if (groups.unmatchedKinds.length > 0) {
+      log.warn(
+        `The recorded Groups of IAM user ${logicalId} is secret-derived, and IAM lists ` +
+          `memberships the template does not name: cdkd removes the user from none of them, ` +
+          `since IAM's list includes memberships made elsewhere. Remove the user by hand from ` +
+          `any that this list used to name.`
+      );
+    }
 
     try {
       // Apply tag diff. IAM User uses TagUser/UntagUser keyed by UserName.
       await this.applyUserTagDiff(
         physicalId,
         previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        log
       );
 
       // Update permissions boundary
@@ -423,12 +679,12 @@ export class IAMUserGroupProvider implements ResourceProvider {
               PermissionsBoundary: newPermBoundary,
             })
           );
-          this.logger.debug(`Updated permissions boundary on user ${physicalId}`);
+          log.debug(`Updated permissions boundary on user ${v(physicalId)}`);
         } else if (oldPermBoundary) {
           await this.iamClient.send(
             new DeleteUserPermissionsBoundaryCommand({ UserName: physicalId })
           );
-          this.logger.debug(`Removed permissions boundary from user ${physicalId}`);
+          log.debug(`Removed permissions boundary from user ${v(physicalId)}`);
         }
       }
 
@@ -447,7 +703,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
             PasswordResetRequired: newLoginProfile.PasswordResetRequired ?? false,
           })
         );
-        this.logger.debug(`Created login profile for user ${physicalId}`);
+        log.debug(`Created login profile for user ${v(physicalId)}`);
       } else if (newLoginProfile && oldLoginProfile) {
         await this.iamClient.send(
           new UpdateLoginProfileCommand({
@@ -456,11 +712,11 @@ export class IAMUserGroupProvider implements ResourceProvider {
             PasswordResetRequired: newLoginProfile.PasswordResetRequired ?? false,
           })
         );
-        this.logger.debug(`Updated login profile for user ${physicalId}`);
+        log.debug(`Updated login profile for user ${v(physicalId)}`);
       } else if (!newLoginProfile && oldLoginProfile) {
         try {
           await this.iamClient.send(new DeleteLoginProfileCommand({ UserName: physicalId }));
-          this.logger.debug(`Deleted login profile for user ${physicalId}`);
+          log.debug(`Deleted login profile for user ${v(physicalId)}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
@@ -472,15 +728,12 @@ export class IAMUserGroupProvider implements ResourceProvider {
       await this.updateUserManagedPolicies(
         physicalId,
         properties['ManagedPolicyArns'] as string[] | undefined,
-        previousProperties['ManagedPolicyArns'] as string[] | undefined
+        previousProperties['ManagedPolicyArns'] as string[] | undefined,
+        log
       );
 
       // Update groups
-      await this.updateUserGroups(
-        physicalId,
-        properties['Groups'] as string[] | undefined,
-        previousProperties['Groups'] as string[] | undefined
-      );
+      await this.updateUserGroups(physicalId, groups.next.Groups, groups.prev.Groups, log);
 
       // Update inline policies
       await this.updateUserInlinePolicies(
@@ -490,7 +743,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
           | undefined,
         previousProperties['Policies'] as
           | Array<{ PolicyName: string; PolicyDocument: unknown }>
-          | undefined
+          | undefined,
+        log
       );
 
       // Get updated user info
@@ -508,7 +762,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM user ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update IAM user ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -546,13 +800,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
       }
 
       // Step 1: Remove from all groups
-      await this.removeUserFromAllGroups(physicalId);
+      await this.removeUserFromAllGroups(physicalId, this.unmaskedDeleteSinks());
 
       // Step 2: Detach all managed policies
-      await this.detachAllUserPolicies(physicalId);
+      await this.detachAllUserPolicies(physicalId, this.unmaskedDeleteSinks());
 
       // Step 3: Delete all inline policies
-      await this.deleteAllUserInlinePolicies(physicalId);
+      await this.deleteAllUserInlinePolicies(physicalId, this.unmaskedDeleteSinks());
 
       // Step 4: Delete login profile if exists
       try {
@@ -594,7 +848,27 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
   }
 
-  private async removeUserFromAllGroups(userName: string): Promise<void> {
+  /** Every group the user belongs to, read from IAM (paginated). */
+  private async readLiveGroups(userName: string): Promise<string[]> {
+    const groups: string[] = [];
+    let marker: string | undefined;
+    do {
+      const resp = await this.iamClient.send(
+        new ListGroupsForUserCommand({ UserName: userName, ...(marker && { Marker: marker }) })
+      );
+      for (const g of resp.Groups ?? []) if (g.GroupName) groups.push(g.GroupName);
+      marker = resp.IsTruncated ? resp.Marker : undefined;
+    } while (marker);
+    return groups;
+  }
+
+  private async removeUserFromAllGroups(
+    userName: string,
+    // REQUIRED, so a create-path caller cannot silently fall back to an
+    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
     try {
       const response = await this.iamClient.send(
         new ListGroupsForUserCommand({ UserName: userName })
@@ -610,7 +884,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 GroupName: group.GroupName,
               })
             );
-            this.logger.debug(`Removed user ${userName} from group ${group.GroupName}`);
+            log.debug(`Removed user ${v(userName)} from group ${v(group.GroupName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -650,7 +924,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
   }
 
-  private async detachAllUserPolicies(userName: string): Promise<void> {
+  private async detachAllUserPolicies(
+    userName: string,
+    // REQUIRED, so a create-path caller cannot silently fall back to an
+    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
     try {
       const response = await this.iamClient.send(
         new ListAttachedUserPoliciesCommand({ UserName: userName })
@@ -666,7 +946,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 PolicyArn: policy.PolicyArn,
               })
             );
-            this.logger.debug(`Detached managed policy ${policy.PolicyArn} from user ${userName}`);
+            log.debug(`Detached managed policy ${v(policy.PolicyArn)} from user ${v(userName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -682,7 +962,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
   }
 
-  private async deleteAllUserInlinePolicies(userName: string): Promise<void> {
+  private async deleteAllUserInlinePolicies(
+    userName: string,
+    // REQUIRED, so a create-path caller cannot silently fall back to an
+    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
     try {
       const response = await this.iamClient.send(
         new ListUserPoliciesCommand({ UserName: userName })
@@ -697,7 +983,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               PolicyName: policyName,
             })
           );
-          this.logger.debug(`Deleted inline policy ${policyName} from user ${userName}`);
+          log.debug(`Deleted inline policy ${v(policyName)} from user ${v(userName)}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
@@ -719,8 +1005,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async applyUserTagDiff(
     userName: string,
     oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const toMap = (
       tags: Array<{ Key?: string; Value?: string }> | undefined
     ): Map<string, string> => {
@@ -747,19 +1035,21 @@ export class IAMUserGroupProvider implements ResourceProvider {
       await this.iamClient.send(
         new UntagUserCommand({ UserName: userName, TagKeys: tagsToRemove })
       );
-      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from IAM user ${userName}`);
+      log.debug(`Removed ${tagsToRemove.length} tag(s) from IAM user ${v(userName)}`);
     }
     if (tagsToAdd.length > 0) {
       await this.iamClient.send(new TagUserCommand({ UserName: userName, Tags: tagsToAdd }));
-      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on IAM user ${userName}`);
+      log.debug(`Added/updated ${tagsToAdd.length} tag(s) on IAM user ${v(userName)}`);
     }
   }
 
   private async updateUserManagedPolicies(
     userName: string,
     newPolicies: string[] | undefined,
-    oldPolicies: string[] | undefined
+    oldPolicies: string[] | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newSet = new Set(newPolicies || []);
     const oldSet = new Set(oldPolicies || []);
 
@@ -772,7 +1062,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
             PolicyArn: policyArn,
           })
         );
-        this.logger.debug(`Attached managed policy ${policyArn} to user ${userName}`);
+        log.debug(`Attached managed policy ${v(policyArn)} to user ${v(userName)}`);
       }
     }
 
@@ -786,7 +1076,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               PolicyArn: policyArn,
             })
           );
-          this.logger.debug(`Detached managed policy ${policyArn} from user ${userName}`);
+          log.debug(`Detached managed policy ${v(policyArn)} from user ${v(userName)}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
@@ -799,8 +1089,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async updateUserGroups(
     userName: string,
     newGroups: string[] | undefined,
-    oldGroups: string[] | undefined
+    oldGroups: string[] | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newSet = new Set(newGroups || []);
     const oldSet = new Set(oldGroups || []);
 
@@ -813,7 +1105,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
             GroupName: groupName,
           })
         );
-        this.logger.debug(`Added user ${userName} to group ${groupName}`);
+        log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
       }
     }
 
@@ -827,7 +1119,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               GroupName: groupName,
             })
           );
-          this.logger.debug(`Removed user ${userName} from group ${groupName}`);
+          log.debug(`Removed user ${v(userName)} from group ${v(groupName)}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
@@ -840,8 +1132,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async updateUserInlinePolicies(
     userName: string,
     newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
-    oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined
+    oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
     const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
 
@@ -855,7 +1149,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           PolicyDocument: policyDocument,
         })
       );
-      this.logger.debug(`Updated inline policy ${policyName} on user ${userName}`);
+      log.debug(`Updated inline policy ${v(policyName)} on user ${v(userName)}`);
     }
 
     // Delete removed policies
@@ -868,7 +1162,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               PolicyName: policyName,
             })
           );
-          this.logger.debug(`Deleted inline policy ${policyName} from user ${userName}`);
+          log.debug(`Deleted inline policy ${v(policyName)} from user ${v(userName)}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
@@ -883,14 +1177,16 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async createGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM group ${logicalId}`);
+    const { value: v } = log;
+    log.debug(`Creating IAM group ${logicalId}`);
 
     const groupName = generateResourceNameWithFallback(
       properties['GroupName'] as string | undefined,
       logicalId,
-      { maxLength: 128 }
+      { maxLength: GROUP_NAME_MAX_LENGTH }
     );
 
     try {
@@ -930,7 +1226,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 PolicyArn: policyArn,
               })
             );
-            this.logger.debug(`Attached managed policy ${policyArn} to group ${groupName}`);
+            log.debug(`Attached managed policy ${v(policyArn)} to group ${v(groupName)}`);
           }
         }
 
@@ -951,32 +1247,36 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 PolicyDocument: policyDoc,
               })
             );
-            this.logger.debug(`Added inline policy ${policy.PolicyName} to group ${groupName}`);
+            log.debug(`Added inline policy ${v(policy.PolicyName)} to group ${v(groupName)}`);
           }
         }
       } catch (innerError) {
         try {
-          await this.detachAllGroupPolicies(groupName);
-          await this.deleteAllGroupInlinePolicies(groupName);
+          await this.detachAllGroupPolicies(groupName, log);
+          await this.deleteAllGroupInlinePolicies(groupName, log);
           await this.iamClient.send(new DeleteGroupCommand({ GroupName: groupName }));
-          this.logger.debug(
-            `Cleaned up partially-created IAM group ${logicalId} (${groupName}) after wiring failure`
+          log.debug(
+            `Cleaned up partially-created IAM group ${logicalId} (${v(groupName)}) after wiring failure`
           );
         } catch (cleanupError) {
-          // The name in the commands below is left BARE on purpose (issue
-          // #3136): it is `generateResourceNameWithFallback`'s output, whose
+          // The name is `generateResourceNameWithFallback`'s output, whose
           // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-          // and trims leading and trailing `-`, so no template spelling reaches
-          // the shell as anything but one plain word. Pinned by this type's
-          // partial-create cleanup test.
-          this.logger.warn(
-            `Failed to clean up partially-created IAM group ${logicalId} (${groupName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then aws iam delete-group --group-name ${groupName}`
+          // (issue #3136), so it renders BARE -- but it can still BE a resolved
+          // secret, so every command goes through `pasteableAwsCommand` with the
+          // masker (issue #2177): a masked name is WITHHELD rather than printed
+          // as `***`, which would act on a different principal. Pinned by this
+          // type's partial-create cleanup test.
+          const aws = pasteableAwsCommand(log.mask);
+          log.warn(
+            `Failed to clean up partially-created IAM group ${logicalId} (${v(groupName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then ${aws`aws iam delete-group --group-name ${groupName}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
-      this.logger.debug(`Successfully created IAM group ${logicalId}: ${groupName}`);
+      log.debug(`Successfully created IAM group ${logicalId}: ${v(groupName)}`);
 
       return {
         physicalId: groupName,
@@ -987,7 +1287,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create IAM group ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         groupName,
@@ -1001,16 +1301,19 @@ export class IAMUserGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM group ${logicalId}: ${physicalId}`);
+    const { value: v } = log;
+    log.debug(`Updating IAM group ${logicalId}: ${v(physicalId)}`);
 
     try {
       // Update managed policies
       await this.updateGroupManagedPolicies(
         physicalId,
         properties['ManagedPolicyArns'] as string[] | undefined,
-        previousProperties['ManagedPolicyArns'] as string[] | undefined
+        previousProperties['ManagedPolicyArns'] as string[] | undefined,
+        log
       );
 
       // Update inline policies
@@ -1021,7 +1324,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
           | undefined,
         previousProperties['Policies'] as
           | Array<{ PolicyName: string; PolicyDocument: unknown }>
-          | undefined
+          | undefined,
+        log
       );
 
       // Get updated group info
@@ -1029,7 +1333,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
         new GetGroupCommand({ GroupName: physicalId })
       );
 
-      this.logger.debug(`Successfully updated IAM group ${logicalId}`);
+      log.debug(`Successfully updated IAM group ${logicalId}`);
 
       return {
         physicalId,
@@ -1041,7 +1345,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update IAM group ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1060,10 +1364,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
     try {
       // Step 1: Detach all managed policies
-      await this.detachAllGroupPolicies(physicalId);
+      await this.detachAllGroupPolicies(physicalId, this.unmaskedDeleteSinks());
 
       // Step 2: Delete all inline policies
-      await this.deleteAllGroupInlinePolicies(physicalId);
+      await this.deleteAllGroupInlinePolicies(physicalId, this.unmaskedDeleteSinks());
 
       // Step 3: Remove all users from group
       await this.removeAllUsersFromGroup(physicalId);
@@ -1096,7 +1400,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
   }
 
-  private async detachAllGroupPolicies(groupName: string): Promise<void> {
+  private async detachAllGroupPolicies(
+    groupName: string,
+    // REQUIRED, so a create-path caller cannot silently fall back to an
+    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
     try {
       const response = await this.iamClient.send(
         new ListAttachedGroupPoliciesCommand({ GroupName: groupName })
@@ -1112,9 +1422,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 PolicyArn: policy.PolicyArn,
               })
             );
-            this.logger.debug(
-              `Detached managed policy ${policy.PolicyArn} from group ${groupName}`
-            );
+            log.debug(`Detached managed policy ${v(policy.PolicyArn)} from group ${v(groupName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -1163,8 +1471,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async updateGroupManagedPolicies(
     groupName: string,
     newPolicies: string[] | undefined,
-    oldPolicies: string[] | undefined
+    oldPolicies: string[] | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newSet = new Set(newPolicies || []);
     const oldSet = new Set(oldPolicies || []);
 
@@ -1177,7 +1487,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
             PolicyArn: policyArn,
           })
         );
-        this.logger.debug(`Attached managed policy ${policyArn} to group ${groupName}`);
+        log.debug(`Attached managed policy ${v(policyArn)} to group ${v(groupName)}`);
       }
     }
 
@@ -1190,12 +1500,18 @@ export class IAMUserGroupProvider implements ResourceProvider {
             PolicyArn: policyArn,
           })
         );
-        this.logger.debug(`Detached managed policy ${policyArn} from group ${groupName}`);
+        log.debug(`Detached managed policy ${v(policyArn)} from group ${v(groupName)}`);
       }
     }
   }
 
-  private async deleteAllGroupInlinePolicies(groupName: string): Promise<void> {
+  private async deleteAllGroupInlinePolicies(
+    groupName: string,
+    // REQUIRED, so a create-path caller cannot silently fall back to an
+    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
     try {
       const response = await this.iamClient.send(
         new ListGroupPoliciesCommand({ GroupName: groupName })
@@ -1210,7 +1526,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               PolicyName: policyName,
             })
           );
-          this.logger.debug(`Deleted inline policy ${policyName} from group ${groupName}`);
+          log.debug(`Deleted inline policy ${v(policyName)} from group ${v(groupName)}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
@@ -1228,8 +1544,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async updateGroupInlinePolicies(
     groupName: string,
     newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
-    oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined
+    oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
     const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
     const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
 
@@ -1243,7 +1561,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           PolicyDocument: policyDocument,
         })
       );
-      this.logger.debug(`Updated inline policy ${policyName} on group ${groupName}`);
+      log.debug(`Updated inline policy ${v(policyName)} on group ${v(groupName)}`);
     }
 
     // Delete removed policies
@@ -1256,7 +1574,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               PolicyName: policyName,
             })
           );
-          this.logger.debug(`Deleted inline policy ${policyName} from group ${groupName}`);
+          log.debug(`Deleted inline policy ${v(policyName)} from group ${v(groupName)}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
@@ -1271,12 +1589,24 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async createUserToGroupAddition(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM UserToGroupAddition ${logicalId}`);
+    const { value: v } = log;
+    log.debug(`Creating IAM UserToGroupAddition ${logicalId}`);
 
     const groupName = properties['GroupName'] as string;
-    const users = properties['Users'] as string[];
+    const read = readPrincipalLists({ Users: properties['Users'] });
+    if ('malformed' in read) {
+      // Before any call (go-to-k/cdkd#3888).
+      throw new ProvisioningError(
+        `Users of IAM UserToGroupAddition ${logicalId} is not a list of IAM user names — no ` +
+          `user was added to the group`,
+        resourceType,
+        logicalId
+      );
+    }
+    const users = read.lists.Users;
 
     if (!groupName) {
       throw new ProvisioningError(
@@ -1285,7 +1615,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
         logicalId
       );
     }
-    if (!users || !Array.isArray(users) || users.length === 0) {
+    if (!users || users.length === 0) {
       throw new ProvisioningError(`Users is required for ${logicalId}`, resourceType, logicalId);
     }
 
@@ -1297,10 +1627,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
             UserName: userName,
           })
         );
-        this.logger.debug(`Added user ${userName} to group ${groupName}`);
+        log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
       }
 
-      this.logger.debug(`Successfully created IAM UserToGroupAddition ${logicalId}`);
+      log.debug(`Successfully created IAM UserToGroupAddition ${logicalId}`);
 
       // Physical ID is the logical ID (no AWS-generated ID for this resource)
       return {
@@ -1309,7 +1639,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM UserToGroupAddition ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create IAM UserToGroupAddition ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -1323,14 +1653,27 @@ export class IAMUserGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM UserToGroupAddition ${logicalId}`);
+    const { value: v } = log;
+    log.debug(`Updating IAM UserToGroupAddition ${logicalId}`);
 
+    const users = await readPrincipalSides({
+      desired: { Users: properties['Users'] },
+      recorded: { Users: previousProperties['Users'] },
+      subject: 'IAM UserToGroupAddition',
+      nothingDone: 'no user was added to or removed from a group',
+      names: 'user names',
+      secretDerivedRepair: MEMBERSHIP_SECRET_DERIVED_REPAIR,
+      resourceType,
+      logicalId,
+      physicalId,
+    });
     const groupName = properties['GroupName'] as string;
-    const newUsers = new Set((properties['Users'] as string[]) || []);
+    const newUsers = new Set(users.next.Users ?? []);
     const oldGroupName = previousProperties['GroupName'] as string;
-    const oldUsers = new Set((previousProperties['Users'] as string[]) || []);
+    const oldUsers = new Set(users.prev.Users ?? []);
 
     try {
       // If group changed, remove from old group and add to new group
@@ -1367,7 +1710,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 UserName: userName,
               })
             );
-            this.logger.debug(`Added user ${userName} to group ${groupName}`);
+            log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
           }
         }
         for (const userName of oldUsers) {
@@ -1379,7 +1722,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
                   UserName: userName,
                 })
               );
-              this.logger.debug(`Removed user ${userName} from group ${groupName}`);
+              log.debug(`Removed user ${v(userName)} from group ${v(groupName)}`);
             } catch (error) {
               if (!(error instanceof NoSuchEntityException)) {
                 throw error;
@@ -1396,7 +1739,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM UserToGroupAddition ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update IAM UserToGroupAddition ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1432,8 +1775,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     // An empty `Users: []` is a genuinely different shape and stays a
     // `deleted`: an array is truthy, so it falls through to the loop below and
     // correctly does nothing. Its producer is UPDATE, not create —
-    // `updateUserToGroupAddition` reads `(properties['Users'] as string[]) || []`,
-    // removes every old user when the new list is empty, and records `[]`.
+    // `updateUserToGroupAddition` diffs against the new list, so an EMPTY desired
+    // `Users: []` removes every old user and records `[]`.
     // (Create cannot produce it: it rejects `users.length === 0`.)
     this.logger.debug(`Deleting IAM UserToGroupAddition ${logicalId}`);
 
@@ -1447,7 +1790,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           `Users are both required to call RemoveUserFromGroup, so no AWS call is issued and ` +
           `the group memberships are LEFT IN PLACE, UNLESS the group or the users are ` +
           `themselves part of this stack (their own deletes remove exactly these memberships, ` +
-          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
           `Otherwise restore the record's properties in state.json and re-run, or remove the ` +
           `users from the group by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -1463,15 +1806,46 @@ export class IAMUserGroupProvider implements ResourceProvider {
           `call RemoveUserFromGroup, so no AWS call is issued and the group memberships are ` +
           `LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack ` +
           `(their own deletes remove exactly these memberships, and then only the cdkd record ` +
-          `is stale — clear it with 'cdkd state orphan <stack>'). Otherwise restore them in ` +
+          `is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). Otherwise restore them in ` +
           `state.json and re-run, or remove the users from the group by hand. ` +
           `${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: MEMBERSHIP_MISSING_FIELDS_SKIP_REASON };
     }
 
+    // go-to-k/cdkd#3952: Users is read below (a redacted entry is malformed
+    // there); GroupName is the other half of the address.
+    const redactedGroup = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      'UserToGroupAddition',
+      redactedDeleteAddressFields({ GroupName: properties['GroupName'] })
+    );
+    if (redactedGroup) return redactedGroup;
+
+    // A present `Users` that is not a list of IAM user names (go-to-k/cdkd#3888):
+    // refused before any call rather than guessing which users it names.
+    const read = readPrincipalLists({ Users: properties['Users'] });
+    if ('malformed' in read) {
+      // The same parent clause the missing-fields arm carries: a group or users
+      // deleted by this destroy remove exactly these memberships.
+      const repair =
+        read.secretDerived.length > 0
+          ? 'The recorded Users is secret-derived (cdkd keeps the dynamic reference or its mask ' +
+            'in state), so do not write the name into state.json: cdkd will keep skipping this ' +
+            'record. Remove the users from the group by hand; on cdkd destroy every other ' +
+            "resource is still deleted, so once this is the stack's last record " +
+            "'cdkd state orphan <stack> --stack-region <region>' clears it."
+          : 'Repair the recorded Users in state.json to a list of user names and re-run, or ' +
+            'remove the users from the group by hand.';
+      this.logger.warn(
+        safeMsg`The state record for UserToGroupAddition ${logicalId} holds a Users that is not a list of IAM user names — skipping deletion rather than guessing which users it names. No AWS call is issued, so the group memberships are LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack (their own deletes remove exactly these memberships, and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ${repair} ${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: MEMBERSHIP_MALFORMED_USERS_SKIP_REASON };
+    }
+
     try {
-      for (const userName of users) {
+      for (const userName of read.lists.Users ?? []) {
         try {
           await this.iamClient.send(
             new RemoveUserFromGroupCommand({

@@ -14,7 +14,9 @@ Two `orphan` variants at different granularities:
 
 - `cdkd orphan '<constructPath>'...` — synth-driven, **per-resource**.
   Rewrites every sibling reference (Ref / Fn::GetAtt / Fn::Sub /
-  dependencies) so the next deploy doesn't re-create the orphan.
+  dependencies) so the next deploy doesn't re-create the orphan. The path
+  starts with the stack's display path, which for a stack inside a CDK
+  `Stage` includes the Stage (`cdkd orphan 'MyStage/Api/MyBucket'`).
 - `cdkd state orphan '<stack>'...` — state-driven, **whole-stack**.
   Removes the entire state record. Works without the CDK app.
 

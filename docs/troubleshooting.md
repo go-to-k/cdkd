@@ -19,6 +19,8 @@ This document summarizes common issues when using cdkd and their solutions.
   - [Cross-region state bucket ("is in a different region", `PermanentRedirect`)](#cross-region-state-bucket-is-in-a-different-region-permanentredirect)
 - [Deployment Errors](#deployment-errors)
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
+  - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
+  - ["Custom resource X: Y resolved to the value of a secret"](#custom-resource-x-y-resolved-to-the-value-of-a-secret)
   - ["The following resources declare a nested property block without a member it requires"](#the-following-resources-declare-a-nested-property-block-without-a-member-it-requires)
   - ["Resource already exists" Error](#resource-already-exists-error)
   - [An unsupported resource type](#an-unsupported-resource-type)
@@ -26,6 +28,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - ["bucket is not empty" / "still contains images" on destroy](#bucket-is-not-empty-still-contains-images-on-destroy)
   - ["has DeletionPolicy: Snapshot, but ..." refusal on delete](#has-deletionpolicy-snapshot-but-refusal-on-delete)
   - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
+  - ["SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"](#selfmanagedkafkaeventsourceconfig-consumptionmode-cannot-be-sent-by-cdkd-yet)
   - [deleting a Cognito `Policies` sub-key changes nothing on the pool](#deleting-a-cognito-policies-sub-key-changes-nothing-on-the-pool)
   - ["cdkd stopped waiting for it" — a network outage during a Cloud Control operation](#cdkd-stopped-waiting-for-it-a-network-outage-during-a-cloud-control-operation)
 - [Asset Publishing Issues](#asset-publishing-issues)
@@ -115,7 +118,7 @@ LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts
 > **not** proceed while another process holds the lock:
 >
 > ```text
-> Could not acquire lock for stack 'MyStack' (us-east-1) — held by alice@host:4242, operation: deploy, expires in 12m4s. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
+> Could not acquire lock for stack MyStack (us-east-1) — held by alice@host:4242, operation: deploy, expires in 12m4s. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
 > ```
 >
 > **Read the holder before acting on the suggestion.** cdkd cleans up an
@@ -590,6 +593,69 @@ of the two survives resolution:
 }
 ```
 
+### "The following custom resources pass a secure dynamic reference"
+
+**Symptoms:**
+
+```
+The following custom resources pass a secure dynamic reference ({{resolve:secretsmanager:...}} / {{resolve:ssm-secure:...}}) in their properties:
+  - DbInit: Password
+```
+
+**Causes:**
+
+A custom resource (`Custom::*` or `AWS::CloudFormation::CustomResource`) has a
+property whose value holds a `{{resolve:secretsmanager:...}}` or
+`{{resolve:ssm-secure:...}}` reference, directly or inside an intrinsic --
+including the token CDK splits across `Fn::Join` parts around a same-stack
+secret's `Ref`. CloudFormation does not support secure dynamic references in custom
+resources ("Dynamic references can't be used for secure values ... in custom
+resources", User Guide, dynamic references). cdkd refuses it at pre-flight, before
+anything is resolved, so the reference is never resolved into the handler's
+event. A plain `{{resolve:ssm:...}}` is accepted here; one that names a
+SecureString parameter is refused when the handler would be invoked instead
+(next entry).
+
+Like the checks above, this fires on every deploy, including one where the
+resource is unchanged, and there is no `--allow-*` escape hatch. `cdkd destroy`
+does not run it, so a stack deployed before this check can still be torn down.
+
+**Solutions:**
+
+- Pass the secret's name or ARN instead, and have the handler read the value
+  itself (grant its role `secretsmanager:GetSecretValue` or `ssm:GetParameter`).
+- For a value that is not secret, use a plain `{{resolve:ssm:...}}` parameter.
+
+### "Custom resource X: Y resolved to the value of a secret"
+
+**Symptoms:**
+
+```
+Custom resource DbInit: Password resolved to the value of a secret (a Secrets Manager secret, or an SSM SecureString parameter -- including one read through a plain {{resolve:ssm:...}} reference or a nested stack parameter). ...
+```
+
+**Causes:**
+
+The same rule as the entry above, caught at the handler invoke rather than in
+the template. A property of the custom resource resolved to a secret's value by
+a route the template does not show: a plain `{{resolve:ssm:...}}` that names a
+SecureString parameter, a nested stack's child reading a parent parameter the
+parent filled from a secret, or a rollback re-resolving an older record --
+including `cdkd rollback --revert-failed`, which sends a failed update's
+attempted properties as the event's `OldResourceProperties` (named
+`OldResourceProperties.<path>`). The check is whether the resource's resolution
+recorded a secret at all, so a value derived from one (base64-encoded, a
+fragment) is refused too. cdkd refuses before the handler runs, so the value
+never reaches its event. A rollback replay is refused too rather than
+downgraded, since the downgrade would send the value.
+
+**Solutions:**
+
+- Pass the secret's or parameter's name or ARN instead, and have the handler
+  read the value itself.
+- For a nested stack, pass the name down as the parameter, not the resolved
+  value.
+
 ### "The following resources declare a nested property block without a member it requires"
 
 **Symptoms:**
@@ -934,6 +1000,33 @@ Glue writes the Iceberg metadata itself — the created table comes back with
 `Parameters.table_type = ICEBERG` and a populated `Parameters.metadata_location`.
 See [Glue table Iceberg support](supported-resources.md#glue-table-iceberg-support-icebergtableinput-is-refused)
 for the full probe transcript and rationale.
+
+---
+
+### "SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"
+
+**Symptoms:**
+
+```text
+AWS::Lambda::EventSourceMapping MyMapping: SelfManagedKafkaEventSourceConfig.ConsumptionMode
+cannot be sent by cdkd yet — the AWS SDK for JavaScript does not model the member, ...
+```
+
+**Cause:**
+
+The CloudFormation schema declares `ConsumptionMode` (`Stream` or `Queue`) on a
+self-managed Kafka event source mapping, but the AWS SDK cdkd calls Lambda
+through does not model it yet and drops it from the request. Lambda itself
+currently rejects the member through CloudFormation's own handler too
+(`Unsupported 'ConsumptionMode' parameter for given event source mapping type`),
+so switching the resource to Cloud Control does not help. Rather than deploy a
+mapping without the mode you asked for, cdkd refuses a create that declares it,
+and an update that adds or changes it, before calling Lambda. A `cdkd rollback` or
+`cdkd drift --revert` only warns, because those paths replay a recorded
+configuration you cannot edit from the template.
+
+**Solution:** remove `ConsumptionMode` from `SelfManagedKafkaEventSourceConfig`
+to deploy the mapping without it.
 
 ---
 

@@ -92,6 +92,10 @@ down: `new apigw2.HttpApi(stack, 'MyHttpApi')` lands at
 `MyStack/MyHttpApi/Resource`, and `MyStack/MyHttpApi` resolves it without you
 having to type the `/Resource` suffix.
 
+A path form also selects the stack when `--stack` is omitted: the stack whose
+display path is the longest prefix of the target, so a stack inside a CDK
+`Stage` is reached as `MyStage/MyStack/MyHttpApi`.
+
 Routes from templates with no `aws:cdk:path` metadata — hand-rolled `CfnResource`
 definitions, for instance — still match by bare logical id and by
 stack-qualified logical id. Only the two path forms need the metadata.
@@ -667,11 +671,17 @@ credentials into the container, in two forms:
 | `--assume-role <arn>` | A single global default ARN used for every routed Lambda. |
 | `--assume-role <LogicalId>=<arn>` | A per-Lambda override. Repeatable. |
 
+Either ARN must be a well-formed role ARN
+(`arn:<partition>:iam::<account>:role/<name>`, at most 2048 characters), or the
+command errors at boot. Surrounding whitespace is trimmed.
+
 `--assume-role-auto` resolves **each** routed Lambda's own execution role
 instead of using one global default: it tries the synthesized template's
 literal-ARN `Properties.Role`, then a deployed-state lookup (pair it with
 `--from-state` or `--from-cfn-stack`), then warns and passes the developer
-credentials through on a miss. Boot is slower — one STS call per Lambda — but
+credentials through on a miss. A role ARN that is found but is not a
+well-formed role ARN stops startup instead, naming the Lambda: a broken ARN is
+not treated as a missing one. Boot is slower — one STS call per Lambda — but
 it is the right shape when each Lambda's deployed role differs.
 
 `--assume-role-auto` is mutually exclusive with the global-default

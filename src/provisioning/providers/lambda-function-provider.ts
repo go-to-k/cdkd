@@ -52,6 +52,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -301,6 +302,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
     refuseImageFunctionUnsupported(logicalId, resourceType, properties);
 
+    // Set once CreateFunction returns: every failure after it is an auxiliary
+    // call's and must not classify as this function's name collision (#3826).
+    let functionCreated = false;
     try {
       // Build tags map from CDK tag format [{Key, Value}]
       let tags: Record<string, string> | undefined;
@@ -360,6 +364,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       };
 
       const response = await this.lambdaClient.send(new CreateFunctionCommand(createParams));
+      functionCreated = true;
 
       // RecursiveLoop is a post-create control-plane prop: AWS sets it via
       // a SEPARATE `PutFunctionRecursionConfig` API, NOT on `CreateFunction`.
@@ -500,6 +505,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (functionCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create Lambda function ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,

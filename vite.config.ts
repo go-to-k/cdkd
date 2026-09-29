@@ -396,6 +396,10 @@ export default defineConfig({
         command: 'node scripts/check-aws-client-defaults.ts --check',
         cache: false,
       },
+      'audit:raw-log-interpolation:check': {
+        command: 'node scripts/check-raw-log-interpolation.ts --check',
+        cache: false,
+      },
       'integ-coverage': {
         command: 'node --experimental-strip-types scripts/build-integ-coverage-matrix.ts',
         cache: false,

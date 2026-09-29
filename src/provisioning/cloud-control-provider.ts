@@ -3790,11 +3790,13 @@ export class CloudControlProvider implements ResourceProvider {
    *
    * The two arms below the `GetResource` — a `JSON.parse` failure, and a model
    * that parsed to something other than an object — cannot mask anything (there
-   * is no bag to walk), so they yield `attributes: {}`. That is the DROP
-   * outcome this design rejects one section up: the key is absent,
-   * `resolveGetAtt` falls through to `constructAttribute`, and the physical id
-   * ships. "cdkd could not read the model" is the same epistemic state as "cdkd
-   * could not read the schema", so both report at DEFAULT verbosity. They used
+   * is no bag to walk), so they yield `attributes: {}`. For a resource with no
+   * same-physical-id record in state that is the DROP outcome this design
+   * rejects one section up: the key is absent, `resolveGetAtt` falls through to
+   * `constructAttribute`, and the physical id ships. (With such a record,
+   * `cdkd import` keeps its attributes instead — issue #2927.) "cdkd could not
+   * read the model" is the same epistemic state as "cdkd could not read the
+   * schema", so both report at DEFAULT verbosity. They used
    * to differ — the schema arm warned while these logged at `debug` — which
    * meant the one outcome that ships a wrong value silently was the one nobody
    * was told about. Neither line prints any part of the model: the parse arm
@@ -3892,8 +3894,8 @@ export class CloudControlProvider implements ResourceProvider {
               parsed === null ? 'null' : Array.isArray(parsed) ? 'an array' : typeof parsed;
             this.logger.warn(
               `CC API ResourceModel for ${safeType}/${safeId} parsed to ` +
-                `${shape}, not an object — recording no attributes for it. An Fn::GetAtt against ` +
-                `this resource will fall back to a value constructed from its physical id.`
+                `${shape}, not an object — this import yields no attributes for it. ` +
+                IMPORT_YIELDED_NO_ATTRIBUTES_CONSEQUENCE
             );
           }
         } catch (parseErr) {
@@ -3907,8 +3909,7 @@ export class CloudControlProvider implements ResourceProvider {
           this.logger.warn(
             `Failed to parse CC API ResourceModel for ${safeType}/${safeId}: ${
               parseErr instanceof Error ? parseErr.name : typeof parseErr
-            }. Recording no attributes for it; an Fn::GetAtt against this resource will fall ` +
-              `back to a value constructed from its physical id.`
+            }. This import yields no attributes for it. ` + IMPORT_YIELDED_NO_ATTRIBUTES_CONSEQUENCE
           );
           // Fall through with empty attributes — physicalId is enough
           // to register the resource in state. Fn::GetAtt will
@@ -4019,6 +4020,19 @@ export class CloudControlProvider implements ResourceProvider {
     return masked;
   }
 }
+
+/**
+ * What an `import()` that yields no attributes means downstream, for the two
+ * unreadable-model warnings. `cdkd import`'s `reimportedAttributes` keeps the
+ * attributes a record already holds for the SAME physical id when an import
+ * yields none, so "falls back to the physical id" is true only without such a
+ * record; stated unconditionally, it contradicted the re-import's own
+ * mask-kept warning (issue #2927).
+ */
+const IMPORT_YIELDED_NO_ATTRIBUTES_CONSEQUENCE =
+  `Attributes the stack's state already records for this physical id are kept; without ` +
+  `them, an Fn::GetAtt against this resource falls back to a value constructed from its ` +
+  `physical id.`;
 
 /**
  * Every LEAF of `value` replaced by {@link SECRET_MASK}, with object and array

@@ -46,9 +46,29 @@ const SECRET_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:password::}
 const SIBLING_PLAINTEXT = 'sibling-op-secret-77c2';
 const SIBLING_EXPR = '{{resolve:secretsmanager:other-secret:SecretString:password::}}';
 
+// A secret whose spelling carries a whitespace RUN: the collision refusal
+// collapses the AWS text it quotes (M8 of the go-to-k/cdkd#3764 review), and
+// collapsing BEFORE the mask would turn the echoed secret into a spelling the
+// mask no longer finds. The CAP is the same ordering question, pinned by its
+// own case below with a secret straddling the truncation boundary.
+const SPACED_PLAINTEXT = 'spaced  secret  9f3a1c';
+const SPACED_EXPR = '{{resolve:secretsmanager:spaced-secret:SecretString:password::}}';
+
+// A secret carrying a double quote: `displayIdent` escapes it (`\"`), so a
+// mask applied AFTER the display rendering no longer finds it (#3979 review).
+const QUOTED_PLAINTEXT = 'tok"en-4d7e2b';
+const QUOTED_EXPR = '{{resolve:secretsmanager:quoted-secret:SecretString:password::}}';
+
 const mockSMSend = vi.fn(async (cmd?: { input?: { SecretId?: string } }) => ({
   SecretString: JSON.stringify({
-    password: cmd?.input?.SecretId === 'other-secret' ? SIBLING_PLAINTEXT : SECRET_PLAINTEXT,
+    password:
+      cmd?.input?.SecretId === 'other-secret'
+        ? SIBLING_PLAINTEXT
+        : cmd?.input?.SecretId === 'spaced-secret'
+          ? SPACED_PLAINTEXT
+          : cmd?.input?.SecretId === 'quoted-secret'
+            ? QUOTED_PLAINTEXT
+            : SECRET_PLAINTEXT,
   }),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -58,6 +78,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const IDP_TYPE = 'AWS::Cognito::UserPoolIdentityProvider';
+/** Both records name the one IdP, so a collision reaches the arm under test (#3979). */
+const IDP_NAME = { UserPoolId: 'us-east-1_pool', ProviderName: 'idp' };
 
 /**
  * The feared shape (#2038): an AWS error that QUOTES the offending value back,
@@ -369,7 +391,7 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
   } {
     const prev = res({
       physicalId: 'phys-OLD',
-      properties: { ProviderDetails: { password: SECRET_EXPR } },
+      properties: { ...IDP_NAME, ProviderDetails: { password: SECRET_EXPR } },
     });
     return {
       ops: [
@@ -384,7 +406,7 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
       state: {
         Idp: res({
           physicalId: 'phys-NEW',
-          properties: { ProviderDetails: { password: 'unrelated' } },
+          properties: { ...IDP_NAME, ProviderDetails: { password: 'unrelated' } },
         }),
       },
     };
@@ -499,6 +521,104 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
     expect(attemptLine).toContain(SECRET_MASK);
     expect(debugs.join('\n')).not.toContain(SECRET_PLAINTEXT);
     expect(warns.join('\n')).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  // The collision REFUSAL (the new copy is pinned by `UpdateReplacePolicy:
+  // Retain`) quotes the AWS text, collapsed and capped. The mask must run on
+  // the RAW text: a secret with a whitespace run, echoed back, would otherwise
+  // be collapsed into a spelling the mask never matches.
+  it('the Retain collision refusal masks a spaced secret before collapsing the AWS text', async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValue(awsSdkError(`Resource already exists. Value '${SPACED_PLAINTEXT}' is taken`));
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, warns, events } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-OLD', properties: { ...IDP_NAME, ProviderDetails: { password: SPACED_EXPR } } });
+    await replayRollback(
+      [{ logicalId: 'Idp', changeType: 'UPDATE', resourceType: IDP_TYPE, physicalId: 'phys-NEW', previousState: prev }],
+      {
+        Idp: res({
+          physicalId: 'phys-NEW',
+          properties: { ...IDP_NAME, ProviderDetails: { password: 'unrelated' } },
+          updateReplacePolicy: 'Retain',
+        }),
+      },
+      'S',
+      ctx
+    );
+    // Non-vacuity: the secret was re-resolved and reached create(), the refusal
+    // fired (not the delete-new-first fallback), and it quoted the AWS text.
+    expect((create.mock.calls[0]![2] as Record<string, Record<string, unknown>>)['ProviderDetails'])
+      .toEqual({ password: SPACED_PLAINTEXT });
+    expect(del).not.toHaveBeenCalled();
+    const refusal = warns.find((m) => m.includes('Underlying collision:'));
+    expect(refusal).toBeDefined();
+    expect(refusal).toContain(SECRET_MASK);
+    const collapsed = SPACED_PLAINTEXT.replace(/\s{2,}/g, ' ');
+    for (const text of [warns.join('\n'), JSON.stringify(events)]) {
+      expect(text).not.toContain(SPACED_PLAINTEXT);
+      expect(text).not.toContain(collapsed);
+    }
+  });
+
+  it('the unproven-holder refusal masks a secret-derived NAME before rendering it (#3979)', async () => {
+    // The refusal quotes the name the re-create asked for, which comes from
+    // the PLAINTEXT replay bag. Rendered first, the quote in it is escaped and
+    // the outer mask finds nothing.
+    const create = vi.fn().mockRejectedValue(awsSdkError('Resource already exists.'));
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, warns, events } = makeCtx({ create, delete: del });
+    const prev = res({
+      physicalId: 'phys-OLD',
+      properties: { UserPoolId: 'us-east-1_pool', ProviderName: QUOTED_EXPR },
+    });
+    await replayRollback(
+      [{ logicalId: 'Idp', changeType: 'UPDATE', resourceType: IDP_TYPE, physicalId: 'phys-NEW', previousState: prev }],
+      { Idp: res({ physicalId: 'phys-NEW', properties: { ...IDP_NAME } }) },
+      'S',
+      ctx
+    );
+    // Non-vacuity: the secret reached create() resolved, and the refusal fired.
+    expect((create.mock.calls[0]![2] as Record<string, unknown>)['ProviderName']).toBe(QUOTED_PLAINTEXT);
+    expect(del).not.toHaveBeenCalled();
+    const refusal = warns.find((m) => m.includes('another resource holds the colliding name'));
+    expect(refusal).toBeDefined();
+    expect(refusal).toContain(SECRET_MASK);
+    for (const text of [warns.join('\n'), JSON.stringify(events)]) {
+      expect(text).not.toContain('4d7e2b');
+    }
+  });
+
+  it('the Retain collision refusal masks a secret the cap would cut before the cap runs', async () => {
+    // Placed so the 4096-code-point cap on the collapsed text falls INSIDE the
+    // secret: capped before masking, its first characters survive unmasked.
+    const lead = 'Resource already exists. ';
+    const fill = 'x'.repeat(4090 - lead.length);
+    const create = vi.fn().mockRejectedValue(awsSdkError(`${lead}${fill}${SECRET_PLAINTEXT} is taken`));
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, warns, events } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-OLD', properties: { ...IDP_NAME, ProviderDetails: { password: SECRET_EXPR } } });
+    await replayRollback(
+      [{ logicalId: 'Idp', changeType: 'UPDATE', resourceType: IDP_TYPE, physicalId: 'phys-NEW', previousState: prev }],
+      {
+        Idp: res({
+          physicalId: 'phys-NEW',
+          properties: { ...IDP_NAME, ProviderDetails: { password: 'unrelated' } },
+          updateReplacePolicy: 'Retain',
+        }),
+      },
+      'S',
+      ctx
+    );
+    expect(del).not.toHaveBeenCalled();
+    const refusal = warns.find((m) => m.includes('Underlying collision:'));
+    expect(refusal).toBeDefined();
+    // Non-vacuity: the quoted text WAS cut.
+    expect(refusal).toContain('[cut: ');
+    const fragment = SECRET_PLAINTEXT.slice(0, 6);
+    for (const text of [warns.join('\n'), JSON.stringify(events)]) {
+      expect(text).not.toContain(fragment);
+    }
   });
 
   // The delete-new-AFTER-recreate warn: the old resource is back, so this is a

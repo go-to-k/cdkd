@@ -11,7 +11,8 @@ that state stays that way. Reach for it after upgrading cdkd on a stack you do
 not want to re-provision, whenever you suspect a state file predates a
 redaction fix, and as a standing CI gate. It creates, updates and deletes no
 AWS resource; what it writes is the state bucket — each targeted stack's
-`state.json`, and the entries a scrubbed stack publishes in the shared
+`state.json` (and those of the [nested stacks](#nested-stacks) under it), and
+the entries a scrubbed stack publishes in the shared
 [exports index](#the-exports-index).
 
 ```bash
@@ -26,7 +27,7 @@ cdkd scrub MyStack --verbose              # explain a stack that reports clean
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stacks...]` | — | Stack name(s) to scrub. Physical name or CDK display path. |
+| `[stacks...]` | — | Stack name(s) to scrub. Physical name or CDK display path. The [nested stacks](#nested-stacks) under each are scrubbed too. |
 | `--all` | off | Scrub every stack in the synthesized app. |
 | `--dry-run` | off | Report what would be scrubbed without writing state. |
 | `--fail` | off | Exit non-zero when plaintext is found. With `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
@@ -43,6 +44,14 @@ cdkd scrub MyStack --verbose              # explain a stack that reports clean
 
 `--region` is deprecated — prefer `AWS_REGION` or your AWS profile — but it is
 still honored if passed, and it is not a no-op.
+
+A stack argument that matches nothing is refused with the patterns and the
+stacks the app does have, and when a CDK `Stage` failed to load, the Stage is
+named: its stacks are missing from the synthesized app, so they cannot be
+selected ([the failed-Stage note](cli-deploy-safety.md)). The same note is
+appended when the app synthesized no stacks at all. `--all` covers only the
+stacks that did synthesize — a Stage that failed to load is reported by the
+synthesis warning, and its stacks are not examined.
 
 `cdkd scrub` takes no `--parameters`, which is load-bearing in two places
 below: which `Fn::If` branch it evaluates, and which `Export.Name` values it
@@ -160,12 +169,83 @@ inferred from the templates. One run therefore normally scrubs a producer and
 then resolves its expression in the consumer.
 
 A refusal is per stack: the remaining stacks are still scrubbed, and the run
-ends non-zero naming the ones it could not examine. The summary line never
+ends non-zero naming the ones it could not examine — including each nested
+stack under a stack that failed, which is refused rather than scrubbed. The summary line never
 counts a stack the run could not reach.
 
 `--dry-run` writes nothing, so the producer is never rewritten — a dry run
 over a not-yet-scrubbed producer is exactly where the producer-plaintext
 refusal below is expected.
+
+## Nested stacks
+
+A nested stack (`cdk.NestedStack`) keeps its own state record, at
+`<state-prefix>/<Parent>~<Child>/<region>/state.json`, but it is not a stack of
+the synthesized app, so it cannot be named on the command line. **Scrubbing a
+stack scrubs every nested stack under it**, at any depth, each one right after
+the stack that deploys it and under its own lock. `cdkd scrub --all` and the
+`--dry-run --fail` CI gate therefore cover nested stacks too. A stack argument
+spelled like a child's state name (`Parent~Child`) matches nothing, and the
+refusal names the parent to pass instead.
+
+A child's template consumes a secret through a parameter — `{Ref: DbPassword}`
+— so the child alone does not say which values are secrets. `scrub` learns them
+from the PARENT: it resolves the `Parameters` the parent passes the child, and
+scrubs the child with those values and the secrets they came from, exactly as a
+deploy hands them down. A secret is looked for in the records of the child
+resources that consumed the parameter, not in an unrelated resource whose
+literal merely contains the same text. This is what repairs a child record a cdkd
+older than the nested-parameter redaction wrote with the decrypted secret — a
+record no redeploy rewrites while the child's resources stay unchanged.
+
+When `scrub` cannot derive what a child was deployed with, a child that HAS a
+record is refused with `SCRUB_NESTED_CHILD_UNRESOLVABLE` (exit `2`) rather than
+reported clean. The message says which cause applies:
+
+- the parent's template no longer declares the child — deploying the parent
+  destroys the child, record included;
+- the parent's record has no row for the child — deploy the parent so it
+  records the row, then re-run `scrub` (if a `Condition` keeps the row out of
+  the deploy, the child record is left over: remove it);
+- no row in the parent's template or record reaches the record at all — the
+  parent's own record was removed (`cdkd state orphan <Parent>` removes only
+  the parent's key), or both sides dropped the row. `scrub` finds these by
+  listing the state records under `<Parent>~` in the parent's region, and
+  refuses each one, its own nested records included;
+- the scrub of the stack that deploys it failed — that failure is reported
+  too; fix it and re-run;
+- a value in the `Parameters` the parent passes could not be resolved, or the
+  child's own parameter declaration rejects it — the message, or `--verbose`,
+  shows which value;
+- the synthesized template names no template file for the child's row.
+
+A child that never had a record is skipped silently. A stack argument spelled
+like a child's state name that matches nothing is warned about even when other
+arguments matched, since it was not scrubbed.
+
+The parent's own row mirrors each child output as an `Outputs.<Name>`
+attribute, and on a parent record older than the redaction of nested-stack
+outputs that attribute can hold the plaintext of a child output sourced from
+the CHILD's own `{{resolve:...}}`. The parent is scrubbed before its children
+and has no needle for it, so after each child's scrub `scrub` re-opens the
+parent's record, under the parent's lock, and rewrites such an attribute to
+the child's output — reported as `Scrubbed N nested-stack output attribute(s)
+in <Parent>`. It rewrites one only when the attribute is EXACTLY what the
+child's output resolves to in this run, so an unrelated value is never
+touched. An attribute that still holds a plaintext this run recorded but does
+not match any output exactly is reported instead, and like the rewrite it keeps
+`--dry-run --fail` red; deploying the child rewrites it. The parent's own
+per-stack line says it covers the parent's own records only.
+
+A nested template tree
+that is cyclic or points outside the assembly is refused for the whole stack
+before anything is written, with `SCRUB_NESTED_TEMPLATE_TREE_MALFORMED`; any nested
+record under that stack is refused as well.
+
+Rewriting a child's record has the same bound as any other: on a versioned
+state bucket the pre-scrub body survives as a noncurrent version of the
+child's key — see
+[Scrubbing supersedes the plaintext, it does not erase it](#scrubbing-supersedes-the-plaintext-it-does-not-erase-it).
 
 ## Rotate the secret — and scrub first
 
@@ -217,7 +297,8 @@ To see whether any survive, and to remove them yourself:
 
 ```bash
 # List the noncurrent versions of one stack's state key. `cdkd` is the default
-# --state-prefix; substitute yours if you set one.
+# --state-prefix; substitute yours if you set one. A nested stack's <stack> is
+# its state name, `<Parent>~<Child>`.
 aws s3api list-object-versions --bucket <state-bucket> \
   --prefix "<state-prefix>/<stack>/<region>/state.json" \
   --query 'Versions[?IsLatest==`false`].{Key:Key,Id:VersionId,Modified:LastModified}' \
@@ -434,6 +515,8 @@ These error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_STACKS_FAILED` | Under `--all`, one or more stacks ended in one of the above. | Fix each named stack; the others were still scrubbed. Each stack's own reason was logged as it happened. |
 | `STATE_RESOURCES_MALFORMED` | A state record's `resources` map is absent, `null`, or not an object, or holds a row that is not an object or carries no `resourceType`; its `outputs` map is `null` or not an object; or its `orphans` field is present but not a list, or holds a record that is not an object, has no string `logicalId` or shares it with another record, or whose `state` is not a readable resource entry with a non-empty string `physicalId` — including that entry's `properties` and `attributes` maps. A real run refuses the stack, which under `--all` is reported as `SCRUB_STACKS_FAILED`; `--dry-run` audits the other containers and reports this code rather than a clean result. An ABSENT `outputs` map or `orphans` list is not a defect and is never refused. | Inspect the record with `cdkd state show '<stack>' --stack-region '<region>' --json` and repair or remove it. `cdkd deploy` and `cdkd destroy` refuse every one of these shapes themselves. |
 | `SCRUB_PRODUCER_RECORD_UNREADABLE` | A stack imports from a PRODUCER whose own `outputs` map cannot be read, so this run could not tell whether that producer still holds the plaintext. Raised with or without `--fail`, `--dry-run` included. | `cdkd scrub '<producer>'` cannot run until that record is repaired — inspect it with `cdkd state show '<producer>' --stack-region '<region>' --json`, repair it, scrub the producer, then re-run. The importing stack was still scrubbed for everything else (audited, under `--dry-run`). |
+| `SCRUB_NESTED_CHILD_UNRESOLVABLE` | A [nested stack](#nested-stacks) has a state record, but `scrub` could not derive what its parent deployed it with. | Follow the remedy the message names for its cause. Every other stack was still scrubbed; when the cause is the parent's own failure, that failure is reported too. |
+| `SCRUB_NESTED_TEMPLATE_TREE_MALFORMED` | The nested template tree under a stack is cyclic, too deep or too large, or names an absolute or escaping `aws:asset:path` — a hand-modified or non-CDK assembly. | Re-synthesize the app with CDK. Nothing in that stack or under it was written; any nested record under it is refused too. |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a
@@ -917,9 +1000,10 @@ Two paths do not inherit this redaction, both because they resolve a reference
 through a context that does not record secrets:
 
 - A secret reference used as a NESTED STACK's `Parameters` value is resolved
-  by the parent and handed to the child as a literal, so the child stack's own
-  state records the plaintext, and `cdkd diff --recursive` decrypts it at plan
-  time.
+  by the parent and handed to the child as a literal, so `cdkd diff
+  --recursive` decrypts it at plan time. (The child's STATE is redacted by the
+  deploy, and a child record an older cdkd wrote is repaired through its
+  parent — see [Nested stacks](#nested-stacks).)
 - [`cdkd export`](cli-export.md) writes the resolved value into the exported
   CloudFormation template's Parameter value, so the plaintext lands in the
   template it hands to CloudFormation.

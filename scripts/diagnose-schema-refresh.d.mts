@@ -475,6 +475,19 @@ export declare function parseCcFallbackOptOuts(
 export declare function parseNonProvisionableTypes(generatedSource: string): Set<string>;
 
 /**
+ * The registered SDK-provider types AWS reports NON_PROVISIONABLE, read out of
+ * `SDK_PROVIDER_NON_PROVISIONABLE_TYPES` in `unsupported-types.ts`. Refuses an
+ * unread or empty table.
+ */
+export declare function parseSdkNonProvisionableTypes(unsupportedTypesSource: string): Set<string>;
+
+/**
+ * The generated Tier 3 set UNION `SDK_PROVIDER_NON_PROVISIONABLE_TYPES`: every
+ * type Cloud Control has no handlers for, as the route reads it.
+ */
+export declare function loadNoCloudControlHandlerTypes(repoRoot?: string): Set<string>;
+
+/**
  * A type that LOST silent-drop properties in this refresh — the changelog's
  * removal population, and the complement of `RemovedEntry`: a removed property
  * the provider declares was never a drop.

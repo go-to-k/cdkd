@@ -10,6 +10,9 @@
 # CR attributes only exist after the CR Lambda runs). If the GetAtt-of-CR-Data
 # resolves wrong/empty or the deploy fails, this FAILs with specifics.
 #
+# Phases: 1 deploy + assertions (incl. the NoEcho arms, #2274 / #2453),
+# 2 redeploy with a rotated NoEcho token (#2453), 3 destroy.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -68,6 +71,12 @@ EXPECTED_NUMERIC="42"
 # needles above.
 EXPECTED_NOECHO="noecho-token-integ"
 SECRET_MASK="***"
+# Issue #2453: the same token EMBEDDED in a longer leaf. Phase 2 re-runs the
+# handler with a new seed, so the rotated token must reach AWS through the
+# embedded dependent although its record holds `***` before and after.
+ROTATED_SEED="rotated"
+EXPECTED_NOECHO_ROTATED="noecho-token-${ROTATED_SEED}"
+embedded_value() { printf 'postgres://integ-user:%s@db.example.invalid/app' "$1"; }
 
 # SSM parameter names (must match parameterName in the stack, with id=STACK).
 PARAM_PREFIX="/cdkd-integ/cr-getatt-data/${STACK}"
@@ -75,6 +84,7 @@ PARAM_COMPUTED="${PARAM_PREFIX}/computed"
 PARAM_ANOTHER="${PARAM_PREFIX}/another"
 PARAM_NUMERIC="${PARAM_PREFIX}/numeric"
 PARAM_NOECHO="${PARAM_PREFIX}/noecho"
+PARAM_NOECHO_EMBEDDED="${PARAM_PREFIX}/noecho-embedded"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -97,7 +107,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   # Best-effort delete of the SSM parameters in case a partial destroy left them.
-  for p in "${PARAM_COMPUTED}" "${PARAM_ANOTHER}" "${PARAM_NUMERIC}" "${PARAM_NOECHO}"; do
+  for p in "${PARAM_COMPUTED}" "${PARAM_ANOTHER}" "${PARAM_NUMERIC}" "${PARAM_NOECHO}" "${PARAM_NOECHO_EMBEDDED}"; do
     aws ssm delete-parameter --region "${REGION}" --name "${p}" >/dev/null 2>&1 || true
   done
   set -eu
@@ -203,6 +213,7 @@ assert_param "${PARAM_NUMERIC}" "${EXPECTED_NUMERIC}" "NumericValue"
 # and persisting in the clear.
 echo "==> Asserting the NoEcho CR Data reached AWS in the CLEAR"
 assert_param "${PARAM_NOECHO}" "${EXPECTED_NOECHO}" "NoEcho Token"
+assert_param "${PARAM_NOECHO_EMBEDDED}" "$(embedded_value "${EXPECTED_NOECHO}")" "NoEcho Token embedded"
 
 echo "==> Asserting the NoEcho CR Data is MASKED in cdkd state"
 STATE_AFTER=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
@@ -242,6 +253,26 @@ if [ "${OUT_NOECHO}" != "${SECRET_MASK}" ]; then
 fi
 echo "    OK: state output NoEchoValueResolved is masked"
 
+# 2c'. Issue #2453: the EMBEDDED dependent and output. The leaf merely
+# CONTAINS the token, so it must be masked WHOLE -- a whole-leaf `***` is what
+# `drift --revert` / `--accept` and the rollback replay recognise and refuse.
+assert_embedded_masked() {
+  local state="$1" prop out
+  prop=$(echo "${state}" | jq -r --arg n "${PARAM_NOECHO_EMBEDDED}" '[.resources[] | select(.properties.Name == $n) | .properties.Value] | first // "<absent>"')
+  if [ "${prop}" != "${SECRET_MASK}" ]; then
+    echo "FAIL: the embedded dependent's state Value is '${prop}', expected '${SECRET_MASK}'" >&2
+    echo "    => a NoEcho value embedded in a longer leaf reached state (issue #2453)" >&2
+    exit 1
+  fi
+  out=$(echo "${state}" | jq -r '.outputs.NoEchoEmbeddedResolved // "<absent>"')
+  if [ "${out}" != "${SECRET_MASK}" ]; then
+    echo "FAIL: state output NoEchoEmbeddedResolved is '${out}', expected '${SECRET_MASK}'" >&2
+    exit 1
+  fi
+  echo "    OK: the embedded dependent's state Value and the embedding output are masked whole"
+}
+assert_embedded_masked "${STATE_AFTER}"
+
 # 2d. The WHOLE blob. The three checks above name the routes we know about;
 # this one is what catches a fourth (observedProperties, a nested copy, an
 # events record folded into state) without having to enumerate it.
@@ -261,18 +292,22 @@ echo "    OK: the NoEcho token appears NOWHERE in the state blob"
 # invoke a "Lambda" named '***'. Asserted on AWS-shaped data rather than on a
 # fixed literal, because the ARN is CDK-derived.
 echo "==> Asserting the echoed ServiceToken survived the redaction"
-NOECHO_SERVICE_TOKEN=$(echo "${STATE_AFTER}" | jq -r '[.resources[] | select(.attributes.Token != null) | .properties.ServiceToken] | first // "<absent>"')
-case "${NOECHO_SERVICE_TOKEN}" in
-  arn:aws*:lambda:*:function:*)
-    echo "    OK: the NoEcho CR ServiceToken is still an addressable Lambda ARN"
-    ;;
-  *)
-    echo "FAIL: the NoEcho CR's state ServiceToken is '${NOECHO_SERVICE_TOKEN}', expected a Lambda ARN" >&2
-    echo "    => the handler's ECHO of a cdkd-supplied input was registered as a redaction needle" >&2
-    echo "       (issue #2274 review): a masked ServiceToken makes destroy invoke a Lambda named '***'" >&2
-    exit 1
-    ;;
-esac
+assert_service_token_addressable() {
+  local token
+  token=$(echo "$1" | jq -r '[.resources[] | select(.attributes.Token != null) | .properties.ServiceToken] | first // "<absent>"')
+  case "${token}" in
+    arn:aws*:lambda:*:function:*)
+      echo "    OK: the NoEcho CR ServiceToken is still an addressable Lambda ARN"
+      ;;
+    *)
+      echo "FAIL: the NoEcho CR's state ServiceToken is '${token}', expected a Lambda ARN" >&2
+      echo "    => the handler's ECHO of a cdkd-supplied input was registered as a redaction needle" >&2
+      echo "       (issue #2274 review): a masked ServiceToken makes destroy invoke a Lambda named '***'" >&2
+      exit 1
+      ;;
+  esac
+}
+assert_service_token_addressable "${STATE_AFTER}"
 
 # --- The NEGATIVE arm, in state -------------------------------------------
 # A custom resource WITHOUT `NoEcho` must be untouched by any of this. The
@@ -291,8 +326,38 @@ if [ "${CLEAR_PROP}" != "${EXPECTED_COMPUTED}" ]; then
 fi
 echo "    OK: the non-NoEcho custom resource and its dependent stay in the clear in state"
 
-# --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Phase 2: re-run the NoEcho handler with a NEW token (issue #2453) ----
+# The embedded dependent's record holds `***` before and after, so a no-change
+# skip comparing the redacted bags would call it unchanged and leave the OLD
+# token on AWS. The new value must reach AWS, and still reach no state.
+echo "==> Phase 2: redeploy with a rotated NoEcho token"
+CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+assert_param "${PARAM_NOECHO}" "${EXPECTED_NOECHO_ROTATED}" "rotated NoEcho Token"
+assert_param "${PARAM_NOECHO_EMBEDDED}" "$(embedded_value "${EXPECTED_NOECHO_ROTATED}")" "rotated NoEcho Token embedded"
+
+STATE_ROTATED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${STATE_ROTATED}" ]; then
+  echo "FAIL: could not re-read the state file after the rotated deploy" >&2
+  exit 1
+fi
+assert_embedded_masked "${STATE_ROTATED}"
+for token in "${EXPECTED_NOECHO}" "${EXPECTED_NOECHO_ROTATED}"; do
+  if printf '%s' "${STATE_ROTATED}" | grep -qF "${token}"; then
+    echo "FAIL: the NoEcho token '${token}' appears in the state blob after the rotated deploy" >&2
+    exit 1
+  fi
+done
+echo "    OK: neither NoEcho token appears in the state blob after the rotated deploy"
+# The rotated deploy re-ran the handler, which is when an over-mask of the
+# ServiceToken would be written -- and the destroy below reads it.
+assert_service_token_addressable "${STATE_ROTATED}"
+
+# --- Phase 3: destroy -------------------------------------------------
+echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -301,11 +366,11 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
-# The CR + backing Lambda + the three SSM parameters must all be gone.
-for p in "${PARAM_COMPUTED}" "${PARAM_ANOTHER}" "${PARAM_NUMERIC}" "${PARAM_NOECHO}"; do
+# The CRs + backing Lambdas + every SSM parameter must all be gone.
+for p in "${PARAM_COMPUTED}" "${PARAM_ANOTHER}" "${PARAM_NUMERIC}" "${PARAM_NOECHO}" "${PARAM_NOECHO_EMBEDDED}"; do
   assert_gone "SSM parameter ${p} still exists after destroy (orphan)" aws ssm get-parameter --region "${REGION}" --name "${p}"
 done
-echo "    OK: all four SSM parameters are gone"
+echo "    OK: all five SSM parameters are gone"
 
 for arn in ${LAMBDA_ARNS}; do
   assert_gone "backing Lambda ${arn} still exists after destroy (orphan)" aws lambda get-function --region "${REGION}" --function-name "${arn}"

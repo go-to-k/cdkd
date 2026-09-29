@@ -28,7 +28,11 @@ Attempts to import **every** resource in the synthesized template, without
 naming physical ids by hand. Per resource, cdkd tries two lookups in order:
 
 1. **By physical name** — the template's own name property
-   (`ManagedPolicyName`, `TopicName`, `TableName`, ...).
+   (`ManagedPolicyName`, `TopicName`, `TableName`, ...). A name built from the
+   account or region — `` `app-${this.account}` `` on an env-agnostic stack,
+   which synthesizes to an `Fn::Join` or `Fn::Sub` over `AWS::AccountId` — is
+   resolved first, for the account cdkd runs as and the stack's region (see
+   [Names built from the account or region](#names-built-from-the-account-or-region)).
 2. **From CloudFormation** — if a CloudFormation stack of the same name exists,
    its `DescribeStackResources` mapping. This is what makes adopting a
    `cdk deploy`-managed stack work without naming ids by hand.
@@ -616,7 +620,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::Route53::HostedZone — [see below](#aws-route53-hostedzone)
 - AWS::StepFunctions::StateMachine
 - AWS::Glue::Database
-- AWS::Glue::Table (stored and displayed as the composite `<databaseName>|<tableName>`; `--resource` also accepts CloudFormation's bare table name, paired with the template's `DatabaseName`)
+- AWS::Glue::Table (stored and displayed as the composite `<databaseName>|<tableName>`; `--resource` also accepts CloudFormation's bare table name, paired with the template's `DatabaseName`. A table or database name that contains `|` is adopted when it is paired with the template's own `DatabaseName`, either way round. An id with a `|` is also tried as a whole table name in the template's database, and when more than one reading names an existing table the import refuses rather than guess)
 - AWS::Glue::Job
 - AWS::Glue::Crawler
 - AWS::Glue::Connection
@@ -668,6 +672,27 @@ Three details are worth knowing before you rely on it:
 Neither path heals on a plain `cdkd deploy`: an unchanged zone is `NO_CHANGE`
 and never calls `update()`. Re-run the import for that row with `--force`, or
 make a template change that forces an UPDATE.
+
+#### Names built from the account or region
+
+Before a provider looks a resource up, cdkd resolves every intrinsic in its
+properties that is built only from string literals, `Fn::Join`, `Fn::Sub` and
+the pseudo-parameters `AWS::AccountId`, `AWS::Region`, `AWS::Partition` and
+`AWS::URLSuffix` — the account comes from `sts:GetCallerIdentity`, the region
+is the stack's `env.region`. An environment-agnostic stack takes `--region`,
+then `AWS_REGION`, then `us-east-1` — not the profile's region — so set
+`AWS_REGION` when the resources live elsewhere. This is what lets a name like
+`{"Fn::Join": ["", ["cdkd-test-", {"Ref": "AWS::AccountId"}, ".internal."]]}`
+reach the lookup as `cdkd-test-123456789012.internal.`.
+
+Anything else in the intrinsic leaves it **unresolved**: a `Ref` to a
+resource or parameter, `Fn::GetAtt`, `Fn::Select`, `AWS::StackName`, or a
+`{{resolve:...}}` reference. The name route then declines that resource as
+before, and stage 2 or `--resource` adopts it. When `sts:GetCallerIdentity`
+fails and `AWS_ACCOUNT_ID` is not set, names that need the account are left
+unresolved rather than built from a placeholder account. This only changes
+what the lookup sees: the properties recorded in state are resolved from the
+template as before.
 
 ### Override-only — no standalone identity / list API
 
@@ -782,6 +807,15 @@ next created or updated by a deploy, which is what rewrites its attributes;
 deploying the stack does not on its own heal a resource nothing changed. The
 direct remedy is to grant `cloudformation:DescribeType` and re-run
 `cdkd import`.
+
+A re-import of a resource already in state (same physical id) never replaces
+an unmasked attribute value that record holds with the mask: it keeps the
+recorded value and says so, naming each key, since that value is what the last
+deploy recorded and may be stale. Certified attributes still take the freshly
+read value. When a re-import produces no value for a key the record already
+masks — `GetResource` returned no readable model, the key is masked again, or
+the import omits it — the mask is kept rather than dropped, and the import
+warns, naming each key that stays masked.
 
 This does not make an imported record safe to treat as non-sensitive, for three
 reasons. A credential that is itself a read-only attribute is still recorded in

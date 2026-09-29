@@ -17,7 +17,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
-import { displayIdent, displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
@@ -55,6 +55,17 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
+import {
+  carriesResolvedSecret,
+  findResolvedSecretPaths,
+} from '../custom-resource-secure-references.js';
+import {
+  carriesSecretMask,
+  dynamicReferenceTokens,
+  SECRET_MASK,
+} from '../../deployment/secret-redaction.js';
 
 /**
  * The DELETE path threads NO masker (issue #2178).
@@ -96,6 +107,40 @@ export const CR_NO_PROPERTIES_SKIP_REASON = 'no properties in state — Delete h
  */
 export const CR_NO_SERVICE_TOKEN_SKIP_REASON =
   'no ServiceToken in state — Delete handler not invoked';
+
+/**
+ * Sibling of {@link CR_NO_SERVICE_TOKEN_SKIP_REASON} for a record whose
+ * `ServiceToken` is the redaction mask (go-to-k/cdkd#3938). A dependent custom
+ * resource reading a `NoEcho` value equal to, or contained in, its own
+ * ServiceToken persists `ServiceToken: "***"`, and that mask used to reach
+ * `GetFunction` and the Delete invoke as a function name. Distinct because
+ * the repair differs: the field is present, but what it held was redacted.
+ */
+export const CR_MASKED_SERVICE_TOKEN_SKIP_REASON =
+  'masked ServiceToken in state — Delete handler not invoked';
+
+/**
+ * Sibling of {@link CR_MASKED_SERVICE_TOKEN_SKIP_REASON} for a record whose
+ * `ServiceToken` holds a `{{resolve:...}}` token (go-to-k/cdkd#3960). State
+ * keeps a SECRET reference's expression rather than its value, so a template
+ * ServiceToken built from `{{resolve:secretsmanager:...}}` /
+ * `{{resolve:ssm-secure:...}}` is recorded as that expression, and the delete
+ * path used to send it to Lambda as a function name. A plain
+ * `{{resolve:ssm:...}}` is normally stored RESOLVED, but one embedded in a
+ * longer leaf can still be recorded as its expression (issue #2036), so the
+ * arm matches any token and its wording does not assume a secret.
+ *
+ * A skip rather than resolving the reference: CloudFormation does not support
+ * SECURE dynamic references in custom resources at all, so the main shape here
+ * exists only because cdkd deployed a template CloudFormation does not support
+ * (which it refuses pre-flight since go-to-k/cdkd#3976; an older record stays),
+ * and the delete path has no resolver to spend on reviving it. The
+ * "exhaust every addressable source" rule (provider-delete-path.md) does not
+ * reach it: the record holds no address, only a pointer to a secret or
+ * parameter.
+ */
+export const CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON =
+  'dynamic reference as ServiceToken in state — handler not invoked';
 
 /**
  * Third sibling of the two above, for the arm where cdkd HAD everything it
@@ -155,7 +200,8 @@ export const CR_DELETE_INVOKE_FAILED_SKIP_REASON =
  * exit-code question). `cdkd destroy` has no such flag — a skip raises
  * `PartialFailureError` unconditionally (`src/cli/commands/destroy.ts`) — so
  * there the remedy is the one that command's own summary names: confirm the
- * resource is gone, then drop the record with `cdkd state orphan <stack>`.
+ * resource is gone, then drop the record with
+ * `cdkd state orphan <stack> --stack-region <region>`.
  * Messages must not offer the flag on the destroy path, which is the path this
  * arm is mostly reached from.
  *
@@ -205,8 +251,8 @@ export const CR_DELETE_HANDLER_FAILED_SKIP_REASON =
 const CR_SKIP_NOT_A_RETRY_CAVEAT =
   `NOTE this record is a POINTER, not a retry: the same destroy run deletes the backing Lambda, ` +
   `so the next 'cdkd destroy' finds the handler gone and DROPS this record (issue 804 pre-check). ` +
-  `Tear the resource down by hand, then clear the stack's records with 'cdkd state orphan <stack>' ` +
-  `— that command drops EVERY record for the stack, not just this one.`;
+  `Tear the resource down by hand, then clear the stack's records with 'cdkd state orphan <stack> --stack-region <region>' ` +
+  `— that command drops EVERY record for the stack in that region, not just this one.`;
 
 const DEPLOY_SKIP_CAVEAT =
   `NOTE this arm is ALSO reached from cdkd deploy. Since issue 1762 the DELETE of a resource ` +
@@ -1299,11 +1345,13 @@ export class CustomResourceProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
           `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
+          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
         resourceType,
         logicalId
       );
     }
+
+    this.refuseResolvedSecret(logicalId, resourceType, properties);
 
     try {
       const cfnResponse = await this.invokeCustomResourceWithRetry(
@@ -1349,6 +1397,10 @@ export class CustomResourceProvider implements ResourceProvider {
         ...(cfnResponse.NoEcho === true && { noEchoAttributes: true }),
       };
     } catch (error) {
+      // Every AWS call here acts on something other than the custom resource
+      // (the handler function, the response object, the SNS topic): none can
+      // be this resource's name collision (#3826).
+      markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create custom resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1388,12 +1440,14 @@ export class CustomResourceProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
           `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
+          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
         resourceType,
         logicalId,
         physicalId
       );
     }
+
+    this.refuseResolvedSecret(logicalId, resourceType, properties, physicalId, previousProperties);
 
     try {
       const cfnResponse = await this.invokeCustomResourceWithRetry(
@@ -1510,11 +1564,61 @@ export class CustomResourceProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
           `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
+          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
         resourceType,
         logicalId,
         physicalId
       );
+    }
+
+    // go-to-k/cdkd#3938: a SKIP, for the same reason as the no-ServiceToken arm
+    // above — what names the handler is not in the record. The mask must never
+    // reach Lambda: it names no function, so the issue-#804 pre-check and the
+    // invoke fail with an AWS error that says nothing about the mask, and a
+    // `ResourceNotFoundException` there would read as "backing Lambda gone"
+    // and DROP the record over a live resource. Re-deploying does not repair
+    // the record while the NoEcho attribute still carries that value: the
+    // same needle masks the same leaf again.
+    if (carriesSecretMask(serviceToken)) {
+      this.logger.warn(
+        safeMsg`ServiceToken for custom resource ${logicalId} is recorded in state as the redaction ` +
+          safeMsg`mask '${SECRET_MASK}' (a NoEcho value this resource reads equals, or is contained ` +
+          `in, its ServiceToken), so cdkd cannot address the handler; skipping deletion — ` +
+          `anything this custom resource manages is LEFT IN PLACE. Re-deploying does not repair ` +
+          `the record while that attribute still carries the value. Tear the resource down by ` +
+          `hand, then clear the stack's records with 'cdkd state orphan <stack> --stack-region <region>' — that command ` +
+          `drops EVERY record for the stack in that region, not just this one. Restoring ServiceToken (the ` +
+          `provider's Lambda function or SNS topic ARN) in state.json and re-running helps only ` +
+          `while that handler still exists: a destroy goes on to delete its backing Lambda. ` +
+          safeMsg`${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: CR_MASKED_SERVICE_TOKEN_SKIP_REASON };
+    }
+
+    // go-to-k/cdkd#3960: the other redaction channel. A secret reference is
+    // persisted as its `{{resolve:...}}` EXPRESSION, which names no function
+    // either — it fails `GetFunction`'s name validation exactly as the mask
+    // does, which on #3938's pre-fix run left the issue-#804 pre-check
+    // inconclusive and the readiness waiter polling for its full 10 minutes
+    // before the invoke failed. ANY token, not only a whole-leaf one: an ARN
+    // assembled around a reference cannot be addressed either. The
+    // expression itself is template text, but it is still not interpolated —
+    // the logical id names the record well enough.
+    if (dynamicReferenceTokens(serviceToken).length > 0) {
+      this.logger.warn(
+        safeMsg`ServiceToken for custom resource ${logicalId} is recorded in state as a ` +
+          `'{{resolve:...}}' dynamic reference, which cdkd does not resolve on delete, so it ` +
+          `cannot address the handler; skipping deletion — anything this custom resource ` +
+          `manages is LEFT IN PLACE. CloudFormation does not support secure (secretsmanager / ` +
+          `ssm-secure) dynamic references in custom resources, and cdkd now refuses such a ` +
+          `template at deploy time. Tear the resource down by hand, then clear ` +
+          `the stack's records with 'cdkd state orphan <stack> --stack-region <region>' — that ` +
+          `command drops EVERY record for the stack in that region, not just this one. Restoring ServiceToken (the provider's ` +
+          `Lambda function or SNS topic ARN) in state.json and re-running helps only while that ` +
+          `handler still exists: a destroy goes on to delete its backing Lambda. ` +
+          safeMsg`${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON };
     }
 
     // Fail-fast for re-run idempotency (issue #804): after an interrupted /
@@ -1620,6 +1724,64 @@ export class CustomResourceProvider implements ResourceProvider {
       );
       return { outcome: 'skipped', reason: CR_DELETE_INVOKE_FAILED_SKIP_REASON };
     }
+  }
+
+  /**
+   * Refuse to send a handler an event carrying a secret's PLAINTEXT
+   * (go-to-k/cdkd#4009). CloudFormation does not support secure dynamic
+   * references in custom resources; the template pre-flight
+   * (`custom-resource-secure-references.ts`, #3976) refuses the spellings it
+   * can see, and this catches the rest at the only point that sees the resolved
+   * value: a plain `ssm` reference to a SecureString, a nested child reading a
+   * parent parameter resolved from a secret, and a rollback replay re-resolving
+   * a recorded reference. The test is the bag the caller bound for THIS
+   * resource (`carriesResolvedSecret`), so a transformed secret -- base64, a
+   * fragment -- is refused too; the paths only NAME where it sits. On an update
+   * both sides count: `previousProperties` is sent as `OldResourceProperties`,
+   * and `cdkd rollback --revert-failed` re-resolves a failed op's attempted
+   * properties into exactly that side.
+   *
+   * Not downgraded on a replay (`replayingState`), deliberately: this is a
+   * disclosure guard, not a template pre-flight, and the downgrade would send
+   * the plaintext to the handler -- which `provider-replay-and-refusals.md`
+   * does not license ("no relaxing of data-safety guards"). A refused replay
+   * leaves that resource's rollback op failed and recoverable; a leaked secret
+   * is not. Marked non-retryable: nothing a retry does changes the bag.
+   *
+   * The message names property PATHS only, never a value.
+   */
+  private refuseResolvedSecret(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    physicalId?: string,
+    previousProperties?: Record<string, unknown>
+  ): void {
+    const secrets = getCurrentResourceSecrets();
+    if (!carriesResolvedSecret(secrets)) return;
+    const paths = [
+      ...findResolvedSecretPaths(properties, secrets),
+      ...findResolvedSecretPaths(previousProperties, secrets).map(
+        (path) => `OldResourceProperties.${path}`
+      ),
+    ];
+    const where =
+      paths.length > 0
+        ? paths.join(', ')
+        : 'a property (in a form cdkd cannot point to, e.g. base64-encoded or a fragment)';
+    throw markNonRetryable(
+      new ProvisioningError(
+        `Custom resource ${logicalId}: ${where} resolved to the value of a secret ` +
+          `(a Secrets Manager secret, or an SSM SecureString parameter -- including one read ` +
+          `through a plain {{resolve:ssm:...}} reference or a nested stack parameter). ` +
+          `CloudFormation does not support secure dynamic references in custom resources, so ` +
+          `cdkd does not send the secret's value to the handler. Pass the secret's name or ARN ` +
+          `instead and have the handler read it.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
   }
 
   /**

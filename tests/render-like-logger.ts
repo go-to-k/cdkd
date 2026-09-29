@@ -1,4 +1,4 @@
-import { displaySafe } from '../src/utils/display-safe.js';
+import { displaySafe, terminalSafe } from '../src/utils/display-safe.js';
 
 /**
  * A MIRROR of `ConsoleLogger.formatMessage`'s body, minus the timestamp / level
@@ -41,5 +41,5 @@ export function renderLikeLogger(call: readonly unknown[]): string {
   const [message, ...args] = call;
   const formattedArgs =
     args.length > 0 ? ' ' + displaySafe(args.map((a) => JSON.stringify(a)).join(' ')) : '';
-  return String(message) + formattedArgs;
+  return terminalSafe(String(message)) + formattedArgs;
 }

@@ -36,6 +36,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * The value SNS enforces for a topic that never set `MaximumMessageSize`
@@ -293,7 +294,9 @@ export class SNSTopicProvider implements ResourceProvider {
             `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
           );
         }
-        throw innerError;
+        // The topic itself was created: an "already exists" from its wiring is an
+        // auxiliary object's, not this topic's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created SNS topic ${logicalId}: ${topicArn}`);

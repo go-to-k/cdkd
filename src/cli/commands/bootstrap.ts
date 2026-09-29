@@ -550,7 +550,10 @@ export function createBootstrapCommand(): Command {
             ...(options.stateBucket && { stateBucket: options.stateBucket }),
             ...(options.region && { region: options.region }),
             ...(options.profile && { profile: options.profile }),
-            ...(options.roleArn && { roleArn: options.roleArn }),
+            // `!== undefined`, not truthiness (issue #2348): `--role-arn ""` is an
+            // explicit value `applyRoleArnIfSet` refuses; dropping it here ran
+            // this DESTRUCTIVE command as the caller (or as `CDKD_ROLE_ARN`).
+            ...(options.roleArn !== undefined && { roleArn: options.roleArn }),
             force: options.force,
             includeStateBucket: options.includeStateBucket,
             yes: options.yes,

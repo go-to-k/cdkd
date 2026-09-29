@@ -103,10 +103,6 @@ vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal
 vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   parseEcsTarget: vi.fn().mockReturnValue({ stackPattern: undefined }),
-  // `undefined` short-circuits `buildEcsImageResolutionContext` at its first
-  // line, which is what keeps the state / pseudo-parameter machinery out of a
-  // test about credentials.
-  pickCandidateStack: vi.fn().mockReturnValue(undefined),
   resolveEcsTaskTarget: vi.fn().mockReturnValue({
     stack: { stackName: 'CdkdUnitStack', region: 'us-east-1' },
     taskDefinitionLogicalId: 'TaskDef',

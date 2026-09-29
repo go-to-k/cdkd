@@ -135,6 +135,17 @@ rather than the user's template, so refusing a malformed value recorded there
 by an older binary would make the stack undeployable with no way out short of
 hand-editing the state file.
 
+**A list whose removals are the gap between the two sides is the exception**
+(issue [#3948](https://github.com/go-to-k/cdkd/issues/3948)): Auto Scaling
+group attachment and entry lists (tags, metrics, lifecycle hooks, traffic
+sources, notifications), Firehose tags. There, reading a malformed
+DESIRED side as empty detaches or deletes everything the record holds, so it
+is refused before any call on every path, a state replay included. A malformed
+RECORDED side only misses removals: read it from the live resource ADD-only
+where you can (keep the live entries the desired side names, warn about the
+rest), otherwise refuse it with a repair that never asks for a secret in
+state.json. `undefined` / `null` stays the empty list.
+
 A **top-level** read takes two further decisions, both per site (issue
 [#1513](https://github.com/go-to-k/cdkd/issues/1513)), expressed as options on
 `requireConfigString`:
@@ -238,7 +249,11 @@ implementation. Three details are worth copying:
     on the value having changed wherever an unchanged one sends nothing, and
     do NOT gate it where the value goes out on every update: Glue's
     `UpdateDatabase` replaces `DatabaseInput` wholesale, so its malformed
-    blocks are refused whether or not they changed (#3740).
+    blocks are refused whether or not they changed (#3740). A list whose
+    removals are the gap between the two sides refuses on a replay too (see
+    "A list whose removals are the gap between the two sides is the
+    exception" above, #3948): warning and reading it as empty would remove
+    everything the record holds.
     Separately, a create-only
     value such as `AWS::RDS::DBProxyTargetGroup` `TargetGroupName` or
     `AWS::Lambda::EventInvokeConfig` `Qualifier` keeps the warning on purpose,
@@ -271,11 +286,13 @@ implementation. Three details are worth copying:
     provider call now carries `maskSecrets`, see the `maskSecrets` bullet below — so the test
     fences for this read the context's key set rather than the call's arity.)
   - **Do not re-create inside `update()` if you have a create-side refusal.**
-    Several providers call `this.create(logicalId, resourceType, properties)`
-    from their own `update()` (ACM certificate, IAM managed policy, IAM role,
-    Lambda permission, SNS subscription). Those internal re-creates CANNOT
-    receive a `CreateContext` — `update()`'s own context is an `UpdateContext`,
-    and none of the five builds one from it — and the
+    Several providers call `this.create(...)` from their own `update()` (ACM
+    certificate, IAM managed policy, IAM role, Lambda permission, SNS
+    subscription). Those internal re-creates never receive `replayingState` —
+    `update()`'s own context is an `UpdateContext`, and the most any of the
+    five builds from it is a `CreateContext` carrying only `maskSecrets` (IAM
+    role and IAM managed policy, issue
+    [#2177](https://github.com/go-to-k/cdkd/issues/2177)) — and the
     `properties` they forward ARE a state record during a rollback replay. So
     the refusal would fire on a replay with no way to detect it. None of those
     providers has a pre-flight refusal today (they validate required fields
@@ -339,7 +356,12 @@ implementation. Three details are worth copying:
     `const mask = context?.maskSecrets ?? ((t: string) => t)` — since `create()`
     / `update()` are also called by `cdkd drift --revert`, by the import path,
     and by tests. It is per-CALL, so never cache it on `this`: providers are
-    registered as singletons and serve concurrent resources.
+    registered as singletons and serve concurrent resources. A provider whose
+    `create()` / `update()` reach many private helpers may instead re-enter
+    itself on a fresh per-call object whose prototype is the singleton and
+    whose logger is masked, so every helper's `this.logger` line is masked by
+    construction (`S3BucketProvider.maskedView`, issue
+    [#2177](https://github.com/go-to-k/cdkd/issues/2177)).
     **Mask the VALUE before it is stringified or interpolated; the finished
     message is a FALLBACK, not an equivalent.** Two independent reasons:
     (1) *escaping* — a masker matches by literal occurrence, and
@@ -353,7 +375,12 @@ implementation. Three details are worth copying:
     string leaf before interpolating (catches escaped and short secrets), and
     route the assembled message through the masker too (catches interpolations
     added later, and text the leaf pass never sees). The mask is idempotent, so
-    the layers compose.
+    the layers compose. `createMaskedLogSinks` (in `masked-retry-logger.ts`,
+    below) builds both halves for one operation: a raw `value` masker plus
+    masked `debug` / `warn` sinks. A physical name derived from a secret by
+    `generateResourceNameWithFallback` (stack prefix, folded characters,
+    truncation) no longer OCCURS literally, so `withDerivedNameMasks` adds the
+    derived spelling as a needle when its raw value is a secret.
     **Use `maskDeep` from
     [src/provisioning/masked-retry-logger.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/masked-retry-logger.ts)
     for the leaf pass — do NOT hand-roll one.** Issue
@@ -882,10 +909,29 @@ above, and — since issue [#1770](https://github.com/go-to-k/cdkd/issues/1770) 
 eight same-class arms outside the composite-id family: both malformed
 `LayerVersionArn` arms in `lambda-layer-provider.ts`, the missing-`FunctionName`
 arm in `lambda-permission-provider.ts`, the no-properties / no-`ServiceToken`
-arms in `custom-resource-provider.ts`, the empty-policy-name arm in
+arms in `custom-resource-provider.ts` (and, since issue
+[#3938](https://github.com/go-to-k/cdkd/issues/3938) and
+[#3960](https://github.com/go-to-k/cdkd/issues/3960), its masked- and
+secret-reference-`ServiceToken` arms), the empty-policy-name arm in
 `iam-policy-provider.ts`, and both `AWS::IAM::UserToGroupAddition` arms in
-`iam-user-group-provider.ts`. Each exports its `reason` as a named constant
-beside the provider, so the wording is pinned by a test instead of retyped.
+`iam-user-group-provider.ts`. Issue
+[#3878](https://github.com/go-to-k/cdkd/issues/3878) added the
+malformed-target-list arm in `iam-policy-provider.ts`: a recorded `Roles` /
+`Groups` / `Users` that is not a list of IAM names. Issue
+[#3888](https://github.com/go-to-k/cdkd/issues/3888) added the same arm for an
+`AWS::IAM::UserToGroupAddition` record's `Users`. Each exports its `reason` as
+a named constant beside the provider, so the wording is pinned by a test instead
+of retyped.
+
+Issue [#3952](https://github.com/go-to-k/cdkd/issues/3952) added one shared
+arm, `redactedDeleteAddressSkip` (`src/provisioning/redacted-delete-address.ts`),
+for a delete whose recorded address property cdkd redacted (the `***` mask or a
+secret `{{resolve:...}}` expression): ApiGateway / ApiGatewayV2 children, ECS
+services, Glue catalog-scoped resources, Scheduler schedules, Route 53 record
+sets, security-group ingress rules, CloudWatch anomaly detectors, DB proxy
+target groups, and the
+fallback-less arms of the Lambda permission, IAM policy, UserToGroupAddition and
+ECS service deletes.
 
 Three lessons from that issue's code review are worth reusing before you add a
 skip arm of your own.
@@ -989,12 +1035,16 @@ Three rules, each of which has a failure mode behind it:
 - **Check what the API does with a repeat, and for how long.** Most return the
   original resource; Route 53 REFUSES a repeated `CallerReference`
   (`HostedZoneAlreadyExists`), so that provider recovers by looking the zone up
-  by its caller reference and adopting it. EFS is both at once: a
-  `CreateAccessPoint` `ClientToken` either replays, or is refused with
-  `AccessPointAlreadyExists` (which names the surviving `AccessPointId`), so
+  by its caller reference and adopting it. EFS refuses too: a repeated
+  `CreateAccessPoint` `ClientToken` is refused with `AccessPointAlreadyExists`
+  (which names the surviving `AccessPointId`) whether or not the repeat's
+  parameters match (measured in #2442), so
   `EFSProvider.createOrAdoptAccessPoint` reads that access point back, confirms
-  BOTH that its `ClientToken` is the one cdkd minted and that it belongs to the
-  file system cdkd asked for, and adopts it. A stable token that turns every
+  that its `ClientToken` is the one cdkd minted, that it belongs to the file
+  system cdkd asked for, and that its `PosixUser` and `RootDirectory` are the
+  ones this create requested (read through EFS's defaults: an absent or `null`
+  POSIX user, a `/` root), and adopts it. Because the refusal ignores the parameters, the
+  token alone would adopt a mismatched access point. A stable token that turns every
   retry into a hard failure is only half a fix. Note EFS documents no
   retirement period for this token -- the "one minute" in the EFS User Guide's
   "Creation token and idempotency" section is about file-system CREATION
@@ -1763,7 +1813,7 @@ This is the **structural defense** against the "provider author forgets to emit 
 So the emission gate needs a companion that removes the path from the COMPARISON too:
 
 - For a TOP-LEVEL key, declare it in `getDriftUnknownPaths(resourceType, properties)` — per-resource via the #1602 seam, so it is ignored on BOTH sides when the template declares nothing and still compared when it does. That covers the transition and the steady state with one declaration.
-- For a PER-ELEMENT key there is no such declaration: an ignore-path never crosses an array (see the divergence note below), and declaring the enclosing array instead switches drift off for the whole subtree. That case needs a BOTH-SIDES normalizer in the `drift-protocol-normalize.ts` mould, and a live test seeded with a STALE observed baseline — a fresh-deploy fixture takes both sides from the same readback and structurally cannot exercise the transition. `AWS::DynamoDB::GlobalTable`'s `GlobalSecondaryIndexes[].WarmThroughput` is exactly this shape, and is now the WORKED example rather than the open question: PR [#1859](https://github.com/go-to-k/cdkd/pull/1859) closed it through the `canonicalizeDriftProperties` seam (issue [#1784](https://github.com/go-to-k/cdkd/issues/1784)), which IS the both-sides normalizer this bullet asks for — the provider names the member in a closed `DRIFT_STRIPPED_INDEX_MEMBERS` table and strips it from each bag, so an already-written baseline and a post-fix readback converge on carrying no member at all. Copy the NORMALIZER half's shape — but note it is only half of what this bullet asks for: the live test seeded with a STALE observed baseline was NOT shipped with it and is still outstanding (issue [#1939](https://github.com/go-to-k/cdkd/issues/1939)), so #1859 is the worked answer for the mechanism and an open question for the proof. Take the two things that come with it as well: the emission change and the normalizer had to ship in ONE change (landing the readback half alone is precisely the stranding described above), and the accepted cost is that a DECLARED per-element value stops being reported entirely — the hook sees one bag with no desired-side reference, so it cannot express the declared-gate `getDriftUnknownPaths` gives you for a top-level key. The sibling `AWS::DynamoDB::Table` type has the same shape and has not adopted the seam yet (issue [#1812](https://github.com/go-to-k/cdkd/issues/1812)).
+- For a PER-ELEMENT key there is no such declaration: an ignore-path never crosses an array (see the divergence note below), and declaring the enclosing array instead switches drift off for the whole subtree. That case needs a BOTH-SIDES normalizer in the `drift-protocol-normalize.ts` mould, and a live test seeded with a STALE observed baseline — a fresh-deploy fixture takes both sides from the same readback and structurally cannot exercise the transition. `AWS::DynamoDB::GlobalTable`'s `GlobalSecondaryIndexes[].WarmThroughput` is exactly this shape, and is now the WORKED example rather than the open question: PR [#1859](https://github.com/go-to-k/cdkd/pull/1859) closed it through the `canonicalizeDriftProperties` seam (issue [#1784](https://github.com/go-to-k/cdkd/issues/1784)), which IS the both-sides normalizer this bullet asks for — the provider names the member in a closed `DRIFT_STRIPPED_INDEX_MEMBERS` table and strips it from each bag, so an already-written baseline and a post-fix readback converge on carrying no member at all. Copy the NORMALIZER half's shape — but note it is only half of what this bullet asks for: the live test seeded with a STALE observed baseline was NOT shipped with it and is still outstanding (issue [#1939](https://github.com/go-to-k/cdkd/issues/1939)), so #1859 is the worked answer for the mechanism and an open question for the proof. Take the two things that come with it as well: the emission change and the normalizer had to ship in ONE change (landing the readback half alone is precisely the stranding described above), and the accepted cost is that a DECLARED per-element value stops being reported entirely — the hook sees one bag with no desired-side reference, so it cannot express the declared-gate `getDriftUnknownPaths` gives you for a top-level key. The sibling `AWS::DynamoDB::Table` type adopts the same seam with a narrower key: it strips only members an SDK index DESCRIPTION carries and a CFn value never does (`IndexStatus`, `NumberOfDecreasesToday`, a `WarmThroughput` with `Status`, ...), so a baseline written by an older binary converges while a template or a current readback passes through by identity and keeps every declared value reported.
 
 Contrast an ORDERING fix, which has no such asymmetry: `getDriftUnorderedPaths` canonicalizes both sides, so an existing baseline and the readback converge rather than diverge, and it can ship on its own.
 
@@ -1806,7 +1856,7 @@ function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
   // nothing, so answer 'declared' and keep comparing. A wrong DROP here is
   // unrecoverable phantom drift; the residual is a loud revert failure.
   if (!desiredBagIsInformative(properties)) return true;
-  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);
+  return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);
 }
 ```
 
@@ -1887,6 +1937,8 @@ When `readCurrentState` starts emitting something it used to omit, every `observ
 
 - `cdkd drift --revert` passes its DESIRED bag, the recorded baseline, through the same hook against the raw readback and sends the returned baseline to `update()`. A member missing there is a REMOVAL to the provider. A legacy GlobalTable record sent without its local entry untagged the local table.
 - `--accept` writes each change's `awsValue` from the AWS side. Leaving that side intact means an accept stores the current shape and heals the record.
+
+The reverse change, a readback that STOPS emitting something, is the one case where the hook drops from the baseline. `AWS::DynamoDB::Table` reads back only the `WarmThroughput` members cdkd sends (issue [#3777](https://github.com/go-to-k/cdkd/issues/3777)), so a baseline block is trimmed to the members the recorded declaration sends, read from the `properties` argument the hook also receives. Key such a trim on the declaration, never on what the readback omitted: a member AWS transiently fails to report must stay reported. That is safe only because a warm-throughput member missing from the desired side is not a removal: every send site coerces the block to its usable members, and AWS cannot lower or unset warm throughput. Before copying it, check that the same holds for your member.
 
 It is non-mutating and returns both inputs by identity when nothing applies. It is async only so a provider can resolve the same client region its readback used; it issues no AWS call.
 
@@ -2056,22 +2108,31 @@ Rationales are free text but should be greppable. Common shapes:
 - `"covered by separate AWS::Foo::Bar resource type"`
 - `"OpenAPI-import-only flag; meaningful only on the ImportApi code path"`
 
-**NON_PROVISIONABLE types: set `disableCcApiFallback`.** A template property
-in neither `handledProperties` nor the allow set normally auto-routes the
-resource through Cloud Control (issue #614). If your provider covers a
-`ProvisioningType: NON_PROVISIONABLE` type (the reason SDK providers exist
-for e.g. `AWS::FSx::FileSystem` / `AWS::DLM::LifecyclePolicy`), that route
-target does not exist — Cloud Control has no handlers — and the runtime
-Tier 3 set cannot catch it (it excludes SDK-covered types by design, so
-`isNonProvisionable()` returns false once your provider is registered).
-Declare `readonly disableCcApiFallback = true;` on the provider class: the
-`ProviderRegistry` then rejects such templates pre-flight with a clear
-error (property rationale + `--prefer-sdk-route` escape hatch)
-instead of failing at provisioning time with an opaque
-`UnsupportedActionException`. It matters for every such type, fully handled
-or not: a property missing from the schema snapshot also triggers the
-auto-route, and the flag is what keeps it on the SDK provider with a warning
-instead.
+**NON_PROVISIONABLE types: list them in `SDK_PROVIDER_NON_PROVISIONABLE_TYPES`.**
+A template property in neither `handledProperties` nor the allow set normally
+auto-routes the resource through Cloud Control (issue #614), and so does a key
+the schema snapshot does not know (#3713). If your provider covers a
+`ProvisioningType: NON_PROVISIONABLE` type (e.g. `AWS::FSx::FileSystem`,
+`AWS::CodeBuild::Project`), that route target does not exist — Cloud Control
+has no handlers — and the generated Tier 3 set cannot catch it: it excludes
+SDK-covered types by design, so `isNonProvisionable()` returns false once the
+audit is regenerated after your provider is registered. Add the type to
+`SDK_PROVIDER_NON_PROVISIONABLE_TYPES` in
+`src/provisioning/unsupported-types.ts` (measured with
+`aws cloudformation list-types --visibility PUBLIC --type RESOURCE
+--provisioning-type NON_PROVISIONABLE`). The `ProviderRegistry` then rejects a
+silent-drop property pre-flight with a clear error (property rationale +
+`--prefer-sdk-route` escape hatch) instead of failing at provisioning time with
+an opaque `UnsupportedActionException`, and keeps an unknown key on the SDK
+provider with a warning. It matters for every such type, fully handled or not,
+and it is per TYPE, so a provider class that also serves provisionable types
+(`EC2Provider` for `AWS::EC2::NetworkAclEntry`) needs nothing else.
+`property-coverage-cc-fallback-binding.test.ts` fails while a registered type is
+still in the Tier 3 set and missing from the list.
+
+`readonly disableCcApiFallback = true;` on a provider class is the other
+opt-out: it covers every type the class serves, for a provider that must not
+fall back for a reason other than missing handlers (`NestedStackProvider`).
 
 ### Workflow when adding a new provider
 

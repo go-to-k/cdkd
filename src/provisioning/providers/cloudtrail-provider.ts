@@ -34,6 +34,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * The selector set a trail carries when its template declares NO
@@ -239,6 +240,9 @@ export class CloudTrailProvider implements ResourceProvider {
     const eventSelectors = properties['EventSelectors'] as EventSelector[] | undefined;
     const insightSelectors = properties['InsightSelectors'] as InsightSelector[] | undefined;
 
+    // Set once CreateTrail returns: a later failure is an auxiliary call's and
+    // must not classify as this trail's name collision (#3826).
+    let trailCreated = false;
     try {
       const result = await this.getClient().send(
         new CreateTrailCommand({
@@ -257,6 +261,7 @@ export class CloudTrailProvider implements ResourceProvider {
         })
       );
 
+      trailCreated = true;
       const trailArn = result.TrailARN!;
 
       // Apply EventSelectors if specified (requires separate API call)
@@ -301,6 +306,7 @@ export class CloudTrailProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (trailCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create CloudTrail Trail ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,

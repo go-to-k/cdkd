@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vite-plus/test';
 import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 import {
   NON_PROVISIONABLE_TYPES,
+  SDK_PROVIDER_NON_PROVISIONABLE_TYPES,
+  hasNoCloudControlHandlers,
   isNonProvisionable,
   unsupportedTypeIssueUrl,
 } from '../../../src/provisioning/unsupported-types.js';
@@ -16,6 +18,18 @@ describe('unsupported-types helpers', () => {
   it('isNonProvisionable mirrors the generated set', () => {
     expect(isNonProvisionable('AWS::AppMesh::Mesh')).toBe(true);
     expect(isNonProvisionable('AWS::S3::Bucket')).toBe(false);
+  });
+
+  // Issue #3871: each disjunct on its own, since the route tests mock this
+  // predicate whole. The Tier 3 arm is the mid-transition window (a provider
+  // registered before the audit regen); the table arm is every registered
+  // NON_PROVISIONABLE type after it.
+  it('hasNoCloudControlHandlers answers true from EITHER set, false for a provisionable type', () => {
+    expect(SDK_PROVIDER_NON_PROVISIONABLE_TYPES.has('AWS::AppMesh::Mesh')).toBe(false);
+    expect(hasNoCloudControlHandlers('AWS::AppMesh::Mesh')).toBe(true);
+    expect(isNonProvisionable('AWS::SQS::QueuePolicy')).toBe(false);
+    expect(hasNoCloudControlHandlers('AWS::SQS::QueuePolicy')).toBe(true);
+    expect(hasNoCloudControlHandlers('AWS::S3::Bucket')).toBe(false);
   });
 
   it('unsupportedTypeIssueUrl builds a 1-click pre-filled issue link', () => {

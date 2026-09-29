@@ -83,7 +83,9 @@ export interface ConfirmOrRefuseOptions {
  * budget. Measured on Node 24.15.0, the version `.node-version` pins, against
  * real `node:readline/promises`: `echo y |` resolves `"y"`, while both
  * `printf 'y' |` (a real answer with no trailing newline) and `< /dev/null`
- * stay pending indefinitely.
+ * stay pending indefinitely. (Pending, not running: with nothing else holding
+ * the event loop the process drains, which `runCli` now reports as a failed
+ * command rather than Node's silent exit 0 — still a failure, not an answer.)
  *
  * REFUSE rather than auto-confirm, at every one of the TEN sites that route
  * through this helper. Every one of them guards a MUTATION — a rollback
@@ -95,9 +97,9 @@ export interface ConfirmOrRefuseOptions {
  * auto-confirm (`options.yes || !process.stdin.isTTY` -> proceed) stays the
  * deliberate exception, because a deploy that assumes "yes" is recoverable.
  *
- * A first cut of this guard (in `state.ts`, see the long comment at the
- * `state destroy --all` prompt) raced the question against readline's `close`
- * event and turned EOF into a decline. That lost three measured ways — a real
+ * A first cut of this guard (in `state.ts`'s `state destroy --all` batch
+ * prompt, removed with that option in go-to-k/cdkd#3865) raced the question
+ * against readline's `close` event and turned EOF into a decline. That lost three measured ways — a real
  * answer with no trailing newline was silently discarded, a delayed answer
  * lost the race, and an interactive Ctrl-C landed on the EOF arm — so do not
  * reintroduce it. A refusal has none of those.
@@ -117,16 +119,15 @@ export interface ConfirmOrRefuseOptions {
  * There were FIVE until `cdkd migrate` was removed (issue #2572); its prompt
  * threw a `LocalMigrateError`, and that class went with it.
  *
- * TWO GUARDED PROMPTS DELIBERATELY DO NOT ROUTE THROUGH HERE:
- * `destroy-runner.ts`'s per-stack prompt (the issue #2259 fix) and
- * `state.ts`'s `state destroy --all` batch prompt (issue #2247). Both already
- * carry this exact guard inline, and both differ in ways a shared helper would
- * have to grow parameters for — `destroy-runner.ts` has a default-YES bare
- * form alongside a default-NO `--remove-protection` form, and `state.ts`
- * passes an abort `signal` for the issue #2117 Ctrl-C handling. Folding them
- * in would also drag `destroy-runner.ts` (in the `integ-destroy` AND
- * `integ-broad` gate scopes) into a pure refactor's blast radius, buying a
- * real-AWS run for no behaviour change. The other four pre-existing guarded
+ * ONE GUARDED PROMPT DELIBERATELY DOES NOT ROUTE THROUGH HERE:
+ * `destroy-runner.ts`'s per-stack prompt (the issue #2259 fix). It already
+ * carries this exact guard inline, and differs in a way a shared helper would
+ * have to grow parameters for — a default-YES bare form alongside a default-NO
+ * `--remove-protection` form. Folding it in would also drag
+ * `destroy-runner.ts` (in the `integ-destroy` AND `integ-broad` gate scopes)
+ * into a pure refactor's blast radius, buying a real-AWS run for no behaviour
+ * change. (There were TWO until `state destroy --all` and its batch prompt
+ * were removed, go-to-k/cdkd#3865.) The other four pre-existing guarded
  * prompts (`gc.ts`, `bootstrap-destroy.ts`, `recreate-confirm-prompt.ts`,
  * `prefix-migration-check.ts`) stay put for the same reason: each guards its
  * own flow with its own error type.

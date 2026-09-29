@@ -28,7 +28,9 @@ refusal shuts the command that repairs it
 `orphanLogicalIds` comes from the SYNTHESIZED `aws:cdk:path` index, so an id the
 app no longer declares cannot enter the orphan set; the text leads with the
 TEMPLATE-FREE ways out (hand repair, `cdkd state orphan <stack>`) and conditions
-the third. There is deliberately **no `--force`**: forcing still
+the third. The drop is not available for a stack name beginning with `-`, and
+the message retracts it for that record rather than leaving it offered beside a
+hole that must not be filled (go-to-k/cdkd#3436). There is deliberately **no `--force`**: forcing still
 leaves a record `cdkd deploy` refuses.
 
 **It scans a survivor's `properties` ONLY.** Three siblings take the rest of

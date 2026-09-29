@@ -900,6 +900,10 @@ async function deployCommand(
             // `getProviderType(rt) === 'sdk'` instead — true ONLY when a
             // dedicated SDK provider is registered for the type.
             hasSdkProvider: (rt) => stackProviderRegistry.getProviderType(rt) === 'sdk',
+            // Issue #3887: the SAME predicate the routing layer refuses the
+            // Cloud Control auto-route with, so a recreate is refused for
+            // exactly the types Cloud Control cannot create.
+            ccRouteUnavailableReason: (rt) => stackProviderRegistry.ccRouteUnavailableReason(rt),
           });
           // Issues [#648] / [#2558] — promote the two conditionally
           // stateful types whose sync reason is `null` (which means

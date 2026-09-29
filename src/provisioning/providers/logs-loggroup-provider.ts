@@ -49,6 +49,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * Whether a raw `RetentionInDays` is CloudFormation's spelling of "no
@@ -520,7 +521,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
             );
           }
         }
-        throw innerError;
+        // The log group itself is in hand: an "already exists" from its wiring
+        // is an auxiliary object's, not this log group's (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created log group ${logicalId}: ${logGroupName}`);

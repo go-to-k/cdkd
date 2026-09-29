@@ -289,6 +289,7 @@
         "local-start-api-container",
         "local-start-api-websocket",
         "migrate-from-cfn",
+        "redacted-delete-address",
         "serverless-api"
       ],
       "signals": {
@@ -323,6 +324,10 @@
         ],
         "migrate-from-cfn": [
           "l2"
+        ],
+        "redacted-delete-address": [
+          "l1",
+          "literal"
         ],
         "serverless-api": [
           "l1"
@@ -429,6 +434,7 @@
         "local-start-api-container",
         "local-start-api-websocket",
         "migrate-from-cfn",
+        "redacted-delete-address",
         "serverless-api"
       ],
       "signals": {
@@ -454,6 +460,10 @@
         ],
         "migrate-from-cfn": [
           "l2"
+        ],
+        "redacted-delete-address": [
+          "l1",
+          "literal"
         ],
         "serverless-api": [
           "l1"
@@ -611,24 +621,33 @@
       "resourceType": "AWS::CloudFormation::Stack",
       "integs": [
         "custom-resource-noecho-nested",
+        "custom-resource-resolved-secret",
         "export-nested-stack",
         "import-nested-stack",
+        "list-parameters",
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
         "nested-stack-replace-guard",
         "nested-stack-rollback",
         "nested-stack-secret",
-        "recreate-nested-logical-id-collision"
+        "recreate-nested-logical-id-collision",
+        "scrub-nested-child"
       ],
       "signals": {
         "custom-resource-noecho-nested": [
+          "literal"
+        ],
+        "custom-resource-resolved-secret": [
           "literal"
         ],
         "export-nested-stack": [
           "literal"
         ],
         "import-nested-stack": [
+          "literal"
+        ],
+        "list-parameters": [
           "literal"
         ],
         "nested-stack": [
@@ -650,6 +669,9 @@
           "literal"
         ],
         "recreate-nested-logical-id-collision": [
+          "literal"
+        ],
+        "scrub-nested-child": [
           "literal"
         ]
       }
@@ -1747,8 +1769,7 @@
           "l2"
         ],
         "rollback-replay-effective-props": [
-          "l1",
-          "literal"
+          "l1"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -2190,6 +2211,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
@@ -2313,6 +2335,10 @@
         ],
         "launchtemplate-asg-inplace": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -2606,6 +2632,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
+        "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
@@ -2742,6 +2769,10 @@
         ],
         "launchtemplate-asg-inplace": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -3702,10 +3733,18 @@
     {
       "resourceType": "AWS::IAM::Group",
       "integs": [
+        "iam-managed-policy",
+        "iam-secret-derived-principals",
         "import-attribute-readback-misc",
         "infra-security"
       ],
       "signals": {
+        "iam-managed-policy": [
+          "l2"
+        ],
+        "iam-secret-derived-principals": [
+          "l2"
+        ],
         "import-attribute-readback-misc": [
           "l1"
         ],
@@ -3721,6 +3760,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "iam-managed-policy",
         "import-attribute-readback-misc",
         "propagation-races-2",
         "remove-protection"
@@ -3741,6 +3781,10 @@
           "l1",
           "literal"
         ],
+        "iam-managed-policy": [
+          "l1",
+          "literal"
+        ],
         "import-attribute-readback-misc": [
           "l1"
         ],
@@ -3756,11 +3800,16 @@
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
         "iam-managed-policy",
+        "iam-secret-derived-principals",
         "import-attributes",
         "import-auto-mode"
       ],
       "signals": {
         "iam-managed-policy": [
+          "literal"
+        ],
+        "iam-secret-derived-principals": [
+          "l1",
           "literal"
         ],
         "import-attributes": [
@@ -3833,6 +3882,7 @@
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
+        "iam-secret-derived-principals",
         "import-attribute-readback",
         "import-attribute-readback-final",
         "import-attribute-readback-misc",
@@ -3844,6 +3894,7 @@
         "lambda-microvm-image",
         "lambda-snapstart",
         "local-invoke-dotnet",
+        "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-provided",
         "local-invoke-ruby",
@@ -3864,6 +3915,7 @@
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "retain-orphan-redeploy",
+        "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-replay-cc-generated-name",
         "s3-replication-and-filter",
@@ -3875,6 +3927,7 @@
         "sns-sqs-event",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
@@ -3985,6 +4038,9 @@
           "l2",
           "literal"
         ],
+        "iam-secret-derived-principals": [
+          "l2"
+        ],
         "import-attribute-readback": [
           "l2",
           "literal"
@@ -4017,6 +4073,9 @@
           "literal"
         ],
         "local-invoke-dotnet": [
+          "l2"
+        ],
+        "local-invoke-from-state": [
           "l2"
         ],
         "local-invoke-java": [
@@ -4081,6 +4140,10 @@
           "l2",
           "literal"
         ],
+        "rollback-explicit-name-rewrite": [
+          "l1",
+          "literal"
+        ],
         "rollback-failure-injection": [
           "l2"
         ],
@@ -4117,6 +4180,9 @@
         "stepfunctions-s3-definition": [
           "l2"
         ],
+        "stream-delete-redeploy": [
+          "l2"
+        ],
         "synthetics-canary": [
           "l2"
         ],
@@ -4141,6 +4207,8 @@
       "resourceType": "AWS::IAM::User",
       "integs": [
         "iam-access-key",
+        "iam-managed-policy",
+        "iam-secret-derived-principals",
         "import-attribute-readback-misc",
         "import-heal-prefix-record",
         "infra-security"
@@ -4148,6 +4216,13 @@
       "signals": {
         "iam-access-key": [
           "l2"
+        ],
+        "iam-managed-policy": [
+          "l2"
+        ],
+        "iam-secret-derived-principals": [
+          "l1",
+          "literal"
         ],
         "import-attribute-readback-misc": [
           "l1"
@@ -4163,9 +4238,14 @@
     {
       "resourceType": "AWS::IAM::UserToGroupAddition",
       "integs": [
+        "iam-managed-policy",
         "infra-security"
       ],
       "signals": {
+        "iam-managed-policy": [
+          "l1",
+          "literal"
+        ],
         "infra-security": [
           "literal"
         ]
@@ -4252,7 +4332,8 @@
         "kinesis-stream-mode-switch",
         "log-pipeline",
         "replacement-immutable-name",
-        "sdk-ccapi-crossref"
+        "sdk-ccapi-crossref",
+        "stream-delete-redeploy"
       ],
       "signals": {
         "cache-streaming": [
@@ -4276,16 +4357,25 @@
         ],
         "sdk-ccapi-crossref": [
           "literal"
+        ],
+        "stream-delete-redeploy": [
+          "l2",
+          "literal"
         ]
       }
     },
     {
       "resourceType": "AWS::KinesisFirehose::DeliveryStream",
       "integs": [
-        "log-pipeline"
+        "log-pipeline",
+        "stream-delete-redeploy"
       ],
       "signals": {
         "log-pipeline": [
+          "l1",
+          "literal"
+        ],
+        "stream-delete-redeploy": [
           "l1",
           "literal"
         ]
@@ -4362,8 +4452,10 @@
         "cognito-lambda-triggers",
         "composite-stack",
         "custom-resource-getatt-data",
+        "custom-resource-masked-service-token",
         "custom-resource-noecho-nested",
         "custom-resource-provider",
+        "custom-resource-resolved-secret",
         "data-pipeline",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -4415,6 +4507,7 @@
         "local-invoke-provided",
         "local-invoke-python",
         "local-invoke-ruby",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-rest-v1-non-proxy",
@@ -4434,6 +4527,7 @@
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
+        "redacted-delete-address",
         "rename-refactor",
         "rollback-failure-injection",
         "s3-asset-deploy",
@@ -4510,12 +4604,20 @@
         "custom-resource-getatt-data": [
           "l2"
         ],
+        "custom-resource-masked-service-token": [
+          "l2",
+          "literal"
+        ],
         "custom-resource-noecho-nested": [
           "l2",
           "literal"
         ],
         "custom-resource-provider": [
           "l2"
+        ],
+        "custom-resource-resolved-secret": [
+          "l2",
+          "literal"
         ],
         "data-pipeline": [
           "l2"
@@ -4686,6 +4788,9 @@
           "l1",
           "l2"
         ],
+        "local-invoke-stage": [
+          "l2"
+        ],
         "local-start-api": [
           "l2"
         ],
@@ -4745,6 +4850,10 @@
         ],
         "recreate-via-sdk-provider": [
           "l1"
+        ],
+        "redacted-delete-address": [
+          "l2",
+          "literal"
         ],
         "rename-refactor": [
           "l2",
@@ -5123,6 +5232,7 @@
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
         "import-attribute-readback-final",
+        "list-parameters",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack"
@@ -5130,6 +5240,10 @@
       "signals": {
         "import-attribute-readback-final": [
           "l1"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "rds-aurora": [
           "l2"
@@ -5217,6 +5331,7 @@
         "s3-replication-and-filter",
         "s3-subconfig-removal",
         "state-destroy",
+        "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
         "update-policy-mutations",
@@ -5349,6 +5464,7 @@
           "literal"
         ],
         "rollback-replay-effective-props": [
+          "l1",
           "literal"
         ],
         "s3-analytics-inventory": [
@@ -5378,6 +5494,9 @@
           "literal"
         ],
         "state-destroy": [
+          "l2"
+        ],
+        "stream-delete-redeploy": [
           "l2"
         ],
         "synthetics-canary": [
@@ -5540,6 +5659,7 @@
         "importvalue-chain",
         "intrinsics-torture",
         "intrinsics-torture-2",
+        "launchtemplate-asg-inplace",
         "microservices",
         "migrate-from-cfn",
         "monitoring",
@@ -5628,6 +5748,9 @@
           "l2"
         ],
         "intrinsics-torture-2": [
+          "l2"
+        ],
+        "launchtemplate-asg-inplace": [
           "l2"
         ],
         "microservices": [
@@ -5776,6 +5899,7 @@
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
+        "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
@@ -5911,6 +6035,10 @@
           "l1",
           "literal"
         ],
+        "rollback-explicit-name-rewrite": [
+          "l1",
+          "literal"
+        ],
         "rollback-failure-injection": [
           "l1"
         ],
@@ -6018,6 +6146,7 @@
         "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-nested-stack",
+        "import-reimport-masked-attrs",
         "import-retain-destroy",
         "import-secret-observed",
         "import-value-strong-ref",
@@ -6028,6 +6157,7 @@
         "intrinsics-torture-2",
         "legacy-bucket-name-fallback",
         "legacy-state-migration",
+        "list-parameters",
         "local-invoke-from-cfn-stack-multi-stack",
         "microservices",
         "multi-region-same-stack",
@@ -6056,6 +6186,7 @@
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration",
+        "scrub-nested-child",
         "sdk-ccapi-crossref",
         "secrets-dynamic-ref",
         "stale-attribute-heal",
@@ -6174,6 +6305,10 @@
           "l2",
           "literal"
         ],
+        "import-reimport-masked-attrs": [
+          "l1",
+          "literal"
+        ],
         "import-retain-destroy": [
           "l2"
         ],
@@ -6207,6 +6342,10 @@
         ],
         "legacy-state-migration": [
           "l2"
+        ],
+        "list-parameters": [
+          "l1",
+          "literal"
         ],
         "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
@@ -6302,6 +6441,10 @@
         ],
         "schema-v9-to-v10-migration": [
           "l1",
+          "literal"
+        ],
+        "scrub-nested-child": [
+          "l2",
           "literal"
         ],
         "sdk-ccapi-crossref": [
@@ -6606,6 +6749,7 @@
     "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",
+    "AWS::HealthImaging::Datastore",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
     "AWS::Lambda::CapacityProvider",
@@ -6631,6 +6775,7 @@
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
     "AWS::Signer::SigningProfile",
+    "AWS::StepFunctions::Activity",
     "AWS::VerifiedPermissions::PolicyStore",
     "AWS::WAFv2::IPSet",
     "AWS::WAFv2::WebACLAssociation"

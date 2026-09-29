@@ -90,6 +90,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     verifyBucketExists: mockVerifyBucketExists,
     listRawKeys: mockListRawKeys,
     getRawObject: mockGetRawObject,
+    deleteRawObjects: vi.fn(async () => {}),
   })),
 }));
 
@@ -103,6 +104,12 @@ import {
 } from '../../../src/cli/commands/events.js';
 import { bold, cyan, gray, green, red, yellow } from '../../../src/utils/colors.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
+import { displayIdent, displayStackName } from '../../../src/utils/display-safe.js';
+import {
+  PASTE_PAYLOADS,
+  expectOnlyDisplayResidual,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 /** A CSI erase-line: blanks the line the cursor is on. */
 const CSI_ERASE_LINE = '\u001b[2K';
@@ -646,7 +653,7 @@ describe('the error and prompt paths sanitise too (issue #2438)', () => {
     const err = await eventsCommand(POISONED_STACK, { ...stateOpts }).catch((e: unknown) => e);
     const message = String((err as Error).message);
     expect(message).not.toContain(CSI_ERASE_LINE);
-    expect(message).toContain("stack 'TestStack [2K'");
+    expect(message).toContain('stack "TestStack [2K"');
   });
 
   it('neutralises every region in EVENTS_REGION_AMBIGUOUS', async () => {
@@ -660,8 +667,10 @@ describe('the error and prompt paths sanitise too (issue #2438)', () => {
     const err = await eventsCommand(POISONED_STACK, { ...stateOpts }).catch((e: unknown) => e);
     const message = String((err as Error).message);
     expect(message).not.toContain(CSI_ERASE_LINE);
-    expect(message).toContain("Stack 'TestStack [2K'");
-    expect(message).toContain('multiple regions: eu-west-1 [2K, us-east-1.');
+    // Described, not displayed: the message ends in a `--stack-region` remedy
+    // (go-to-k/cdkd#3950, #3760's rule).
+    expect(message).toContain('A stack whose name is not a plain identifier has');
+    expect(message).toContain('multiple regions: us-east-1, a region that is not a plain identifier.');
   });
 
   it('neutralises the run id, stack and region in EVENTS_RUN_NOT_FOUND', async () => {
@@ -676,8 +685,8 @@ describe('the error and prompt paths sanitise too (issue #2438)', () => {
     }).catch((e: unknown) => e);
     const message = String((err as Error).message);
     expect(message).not.toContain(CSI_ERASE_LINE);
-    expect(message).toContain("run 'run-1 [2K'");
-    expect(message).toContain("stack 'TestStack [2K'");
+    expect(message).toContain('run "run-1 [2K"');
+    expect(message).toContain('stack "TestStack [2K"');
   });
 
   it('neutralises the prune confirmation prompt, which is what the operator answers', async () => {
@@ -966,17 +975,17 @@ describe('the header, error and event-type fallbacks all execute (issue #2438)',
 
     const err = await eventsCommand(ALL_CONTROL, { ...stateOpts }).catch((e: unknown) => e);
     // `stack ''` would read as "you passed no stack name", which is false.
-    expect(String((err as Error).message)).toContain("stack '<unrenderable>'");
+    expect(String((err as Error).message)).toContain('stack <unrenderable>');
   });
 
-  it('names an unrenderable region among the ambiguous ones', async () => {
+  it('describes an unrenderable region among the ambiguous ones', async () => {
     mockListRawKeys.mockImplementation(async () => [
       `cdkd/TestStack/us-east-1/deployments/index.json`,
       `cdkd/TestStack/${ALL_CONTROL}/deployments/index.json`,
     ]);
 
     const err = await eventsCommand('TestStack', { ...stateOpts }).catch((e: unknown) => e);
-    expect(String((err as Error).message)).toContain('multiple regions: <unrenderable>, us-east-1.');
+    expect(String((err as Error).message)).toContain('multiple regions: us-east-1, a region that is not a plain identifier.');
   });
 
   it('names an unrenderable run id AND the region in EVENTS_RUN_NOT_FOUND', async () => {
@@ -992,8 +1001,8 @@ describe('the header, error and event-type fallbacks all execute (issue #2438)',
       run: ALL_CONTROL,
     }).catch((e: unknown) => e);
     const message = String((err as Error).message);
-    expect(message).toContain("run '<unrenderable>'");
-    expect(message).toContain("region '<unrenderable>'");
+    expect(message).toContain('run <unrenderable>');
+    expect(message).toContain('region <unrenderable>');
   });
 
   /**
@@ -1039,14 +1048,14 @@ describe('the header, error and event-type fallbacks all execute (issue #2438)',
     );
   });
 
-  it('falls back on the stack name in EVENTS_REGION_AMBIGUOUS', async () => {
+  it('describes an unrenderable stack name in EVENTS_REGION_AMBIGUOUS', async () => {
     mockListRawKeys.mockImplementation(async () => [
       `cdkd/${ALL_CONTROL}/us-east-1/deployments/index.json`,
       `cdkd/${ALL_CONTROL}/eu-west-1/deployments/index.json`,
     ]);
 
     const err = await eventsCommand(ALL_CONTROL, { ...stateOpts }).catch((e: unknown) => e);
-    expect(String((err as Error).message)).toContain("Stack '<unrenderable>' has");
+    expect(String((err as Error).message)).toContain('A stack whose name is not a plain identifier has');
   });
 
   it('falls back on the stack name in EVENTS_RUN_NOT_FOUND', async () => {
@@ -1058,7 +1067,7 @@ describe('the header, error and event-type fallbacks all execute (issue #2438)',
     const err = await eventsCommand(ALL_CONTROL, { ...stateOpts, run: 'run-1' }).catch(
       (e: unknown) => e
     );
-    expect(String((err as Error).message)).toContain("stack '<unrenderable>'");
+    expect(String((err as Error).message)).toContain('stack <unrenderable>');
   });
 
   it('falls back on BOTH interpolations of the single-run header', () => {
@@ -1115,4 +1124,208 @@ describe('the header, error and event-type fallbacks all execute (issue #2438)',
       cyan('<unrenderable>')
     );
   });
+});
+
+/**
+ * A stack name, region or run id named in an `EVENTS_*` error or in the prune
+ * lines sits behind `displayIdent`'s boundary, never inside a hand-written
+ * `'...'` (go-to-k/cdkd#3950). The embedded-quote payload closed that quote and
+ * ran what followed it when the sentence was pasted. Every message is rendered
+ * with each `PASTE_PAYLOADS` family in each slot and fed WHOLE to the harness.
+ */
+describe('a record value in events prose is never inside cdkd quotes (go-to-k/cdkd#3950)', () => {
+  const stateOpts = { stateBucket: 'test-bucket', region: 'us-east-1', statePrefix: 'cdkd' };
+  // What an operator copies from a terminal carries no colour escapes.
+  const plain = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, '');
+
+  beforeEach(() => {
+    infoSpy.mockReset();
+    confirmSpy.mockClear();
+    mockListRawKeys.mockReset();
+    mockGetRawObject.mockReset();
+    mockVerifyBucketExists.mockReset();
+    mockVerifyBucketExists.mockImplementation(async () => {});
+  });
+
+  const thrown = async (stack: string, opts: Record<string, unknown> = {}): Promise<string> => {
+    const e = await eventsCommand(stack, { ...stateOpts, ...opts }).catch((err: unknown) => err);
+    return plain(e instanceof Error ? e.message : String(e));
+  };
+
+  /** Every message one payload reaches, with where the payload sat in each. */
+  async function messagesFor(v: string): Promise<Array<{ site: string; message: string; shown: string }>> {
+    const out: Array<{ site: string; message: string; shown: string }> = [];
+
+    mockListRawKeys.mockImplementation(async () => []);
+    out.push({ site: 'EVENTS_NOT_FOUND', message: await thrown(v), shown: `stack ${displayStackName(v)}.` });
+
+    mockListRawKeys.mockImplementation(async () => [
+      `cdkd/${v}/us-east-1/deployments/index.json`,
+      `cdkd/${v}/eu-west-1/deployments/index.json`,
+    ]);
+    // This message ends in a `--stack-region` remedy, so a non-plain value is
+    // DESCRIBED rather than displayed (go-to-k/cdkd#3760's rule).
+    const described = (what: string): string => (v === 'Plain-1' ? v : `a ${what} that is not a plain identifier`);
+    out.push({
+      site: 'EVENTS_REGION_AMBIGUOUS stack',
+      message: await thrown(v),
+      shown: v === 'Plain-1' ? 'Stack Plain-1 has' : 'A stack whose name is not a plain identifier has',
+    });
+    mockListRawKeys.mockImplementation(async () => [
+      `cdkd/S/us-east-1/deployments/index.json`,
+      `cdkd/S/${v}/deployments/index.json`,
+    ]);
+    // The regions come back sorted, so the payload's position is not assumed.
+    out.push({ site: 'EVENTS_REGION_AMBIGUOUS region', message: await thrown('S'), shown: described('region') });
+
+    mockGetRawObject.mockImplementation(async () => null);
+    mockListRawKeys.mockImplementation(async () => [`cdkd/${v}/${v}/deployments/index.json`]);
+    out.push({
+      site: 'EVENTS_RUN_NOT_FOUND',
+      message: await thrown(v, { run: v }),
+      shown: `run ${displayIdent(v)} of stack ${displayStackName(v)} in region ${displayIdent(v)}.`,
+    });
+
+    // The prune prompt, and the line a run matching nothing prints.
+    mockGetRawObject.mockImplementation(async () => JSON.stringify({ runs: [] }));
+    await eventsPruneCommand(v, { ...stateOpts });
+    out.push({
+      site: 'prune prompt',
+      message: plain(String(confirmSpy.mock.calls.at(-1)?.[0] ?? '')),
+      shown: `for ${displayStackName(v)} (${displayIdent(v)}):`,
+    });
+    infoSpy.mockReset();
+    await eventsPruneCommand(v, { ...stateOpts, yes: true, keep: 5 });
+    out.push({
+      site: 'prune nothing matched',
+      message: plain(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')),
+      shown: `for ${displayStackName(v)} (${displayIdent(v)}).`,
+    });
+    // `--all` over an index with no run streams, then over one with a stream:
+    // the two remaining result lines.
+    infoSpy.mockReset();
+    mockListRawKeys.mockImplementation(async () => [`cdkd/${v}/${v}/deployments/index.json`]);
+    await eventsPruneCommand(v, { ...stateOpts, yes: true, all: true });
+    out.push({
+      site: 'prune removed empty index',
+      message: plain(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')),
+      shown: `index for ${displayStackName(v)} (${displayIdent(v)});`,
+    });
+    infoSpy.mockReset();
+    mockListRawKeys.mockImplementation(async (prefix: string) =>
+      prefix.endsWith('/deployments/')
+        ? [`${prefix}20260101T000000000Z-aa.jsonl`, `${prefix}index.json`]
+        : [`cdkd/${v}/${v}/deployments/index.json`]
+    );
+    await eventsPruneCommand(v, { ...stateOpts, yes: true, all: true });
+    out.push({
+      site: 'prune pruned runs',
+      message: plain(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')),
+      shown: `run(s) for ${displayStackName(v)} (${displayIdent(v)});`,
+    });
+    return out;
+  }
+
+  it('a PLAIN value prints bare, with no quotes of its own', async () => {
+    for (const { site, message } of await messagesFor('Plain-1')) {
+      expect(message, site).toContain('Plain-1');
+      expect(message, site).not.toContain("'Plain-1'");
+      expect(message, site).not.toContain('"Plain-1"');
+    }
+  });
+
+  it('the --keep parse error bounds its value, and names a plain one bare', () => {
+    // The operator's OWN argument, so no trust boundary is crossed and it is
+    // not a paste case: the message names `--keep` itself, which the harness
+    // counts as a command fragment beside any value that runs. The boundary is
+    // pinned directly instead.
+    const keepError = (value: string): string => {
+      try {
+        createEventsPruneCommand().parseOptions(['--keep', value]);
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+      throw new Error('--keep did not refuse');
+    };
+    expect(keepError('abc')).toContain('Invalid --keep value abc: ');
+    for (const { value } of PASTE_PAYLOADS) {
+      const message = keepError(value);
+      expect(message, value).toContain(`Invalid --keep value ${JSON.stringify(value)}: `);
+      expect(message, value).not.toContain(`'${value}'`);
+    }
+  });
+
+  const LISTING_HINT =
+    "'aws s3 ls s3://<state-bucket>/<prefix>/ --recursive' lists the deployment-event keys as stored";
+
+  it('points at a read-only key listing whenever it describes a value, and only then', async () => {
+    // All plain: every value is named, so there is nothing to look up.
+    mockListRawKeys.mockImplementation(async () => [
+      `cdkd/S/us-east-1/deployments/index.json`,
+      `cdkd/S/eu-west-1/deployments/index.json`,
+    ]);
+    expect(await thrown('S')).not.toContain(LISTING_HINT);
+    // A described stack, and a described region: each earns the pointer.
+    mockListRawKeys.mockImplementation(async () => [
+      `cdkd/x y/us-east-1/deployments/index.json`,
+      `cdkd/x y/eu-west-1/deployments/index.json`,
+    ]);
+    expect(await thrown('x y')).toContain(LISTING_HINT);
+    mockListRawKeys.mockImplementation(async () => [
+      `cdkd/S/us-east-1/deployments/index.json`,
+      `cdkd/S/x y/deployments/index.json`,
+    ]);
+    expect(await thrown('S')).toContain(LISTING_HINT);
+    // Everything described: the remedy names no region, the pointer is there.
+    mockListRawKeys.mockImplementation(async () => [
+      `cdkd/x y/a b/deployments/index.json`,
+      `cdkd/x y/c d/deployments/index.json`,
+    ]);
+    const all = await thrown('x y');
+    expect(all).toContain(
+      'A stack whose name is not a plain identifier has deployment-event history in multiple ' +
+        'regions: 2 regions that are not plain identifiers.'
+    );
+    expect(all).toContain(LISTING_HINT);
+  });
+
+  it('spells an EMPTY --keep value as "", not <unrenderable>', () => {
+    let message = '';
+    try {
+      createEventsPruneCommand().parseOptions(['--keep', '']);
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(message).toContain('Invalid --keep value "": ');
+    expect(message).not.toContain('<unrenderable>');
+  });
+
+  it('COUNTS the regions it describes, naming the plain ones', async () => {
+    mockListRawKeys.mockImplementation(async () => [
+      `cdkd/S/us-east-1/deployments/index.json`,
+      `cdkd/S/x$(a)/deployments/index.json`,
+      `cdkd/S/y z/deployments/index.json`,
+    ]);
+    expect(await thrown('S')).toContain(
+      'multiple regions: us-east-1, 2 regions that are not plain identifiers.'
+    );
+  });
+
+  it('every payload is JSON-bounded, and no pasted span runs a command', async () => {
+    const rendered: Array<{ value: string; site: string; message: string; shown: string }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const m of await messagesFor(value)) rendered.push({ value, ...m });
+    }
+    expect(rendered).toHaveLength(PASTE_PAYLOADS.length * 8);
+    withPasteDir((dir) => {
+      for (const { value, site, message, shown } of rendered) {
+        const label = `${site}: ${value}`;
+        // The boundary, pinned DIRECTLY, and the hand-quoted spelling absent.
+        expect(message, label).toContain(shown);
+        expect(message, label).not.toContain(`'${displayIdent(value)}'`);
+        expect(message, label).not.toContain(`'${value}'`);
+        expectOnlyDisplayResidual(message, dir, value);
+      }
+    });
+  }, 120_000);
 });

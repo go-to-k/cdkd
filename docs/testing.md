@@ -647,6 +647,20 @@ every new one read back from AWS, then drives the same change through the
 automatic rollback and through `cdkd rollback` from a `--no-rollback` journal,
 each of which has to re-create every OLD type through its own provider.
 
+For the name a reverse-replacement asks AWS for, see
+`tests/integration/rollback-explicit-name-rewrite/` (scenario tag
+`rollback-reverse-replacement-explicit-name-rewrite`, issue #4018). Its subject
+is an explicitly named IAM Role, a type whose provider rewrites even a declared
+name under the user-supplied-name prefix setting. The fixture reads the setting
+each failing deploy recorded in its journal segment, plants a squatter on the
+name the re-create will send and asserts `cdkd rollback` refuses it, naming
+that name and deleting nothing (issue #4010), then removes the squatter and
+asserts the role comes back under exactly its old name. An in-place change of
+the role's description is then failed and rolled back, and the role must keep
+its name and `RoleId`. A second cycle deploys
+with `--prefix-user-supplied-names` and rolls back without it: the recorded
+setting must win, so the role comes back prefixed.
+
 For the rollback arm that must NOT delete the resource a replacement created,
 see `tests/integration/rollback-replacement-retain/` (scenario tag
 `rollback-replacement-updatereplacepolicy-retain`, issue #2598). Three

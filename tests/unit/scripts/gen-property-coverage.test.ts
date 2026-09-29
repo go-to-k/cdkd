@@ -5,6 +5,7 @@ import {
   findMissingCoverageTypes,
   parseCcBrokenTypes,
   parseProviderSource,
+  parseSdkNonProvisionableTypes,
 } from '../../../scripts/gen-property-coverage.js';
 import { STICKY_CC_MIGRATION_EXEMPT } from '../../../src/provisioning/provider-registry.js';
 
@@ -158,6 +159,38 @@ const SDK_COVERAGE_ENTRY = `  [
       physicalIdForm: 'mentions cc-broken in prose only',
     },
   ],`;
+
+describe('parseSdkNonProvisionableTypes (issue #3871)', () => {
+  it('reads the real set exactly as the runtime holds it', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { SDK_PROVIDER_NON_PROVISIONABLE_TYPES } = await import(
+      '../../../src/provisioning/unsupported-types.js'
+    );
+    const parsed = parseSdkNonProvisionableTypes(
+      readFileSync(new URL('../../../src/provisioning/unsupported-types.ts', import.meta.url), 'utf8')
+    );
+    expect([...parsed].sort()).toEqual([...SDK_PROVIDER_NON_PROVISIONABLE_TYPES].sort());
+  });
+
+  it('ignores a type quoted in a comment inside the set', () => {
+    const source = `export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
+  'AWS::Example::One',
+  // not 'AWS::Example::Commented'
+]);`;
+    expect([...parseSdkNonProvisionableTypes(source)]).toEqual(['AWS::Example::One']);
+  });
+
+  it('refuses an unreadable or empty set', () => {
+    expect(() => parseSdkNonProvisionableTypes('export const OTHER = 1;')).toThrow(
+      /could not read SDK_PROVIDER_NON_PROVISIONABLE_TYPES/
+    );
+    expect(() =>
+      parseSdkNonProvisionableTypes(
+        'export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([\n]);'
+      )
+    ).toThrow(/parsed to zero types/);
+  });
+});
 
 describe('parseCcBrokenTypes (issue #3713)', () => {
   it("returns only the 'cc-broken' entries, whichever order they come in", () => {

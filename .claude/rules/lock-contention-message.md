@@ -21,15 +21,22 @@ hint included.
 - `cdkd force-unlock` re-resolves the state bucket from the AMBIENT profile, so
   a hint with only `--stack-region` can unlock a same-named stack in another
   account. `buildForceUnlockCommand` emits whichever of
-  `LockRecoveryContext`'s `profile` / `stateBucket` / `statePrefix` were set.
+  `LockRecoveryContext`'s `profile` / `stateBucket` / `statePrefix` were set,
+  and builds through the shared `pasteableCommand` gate, SUPPRESSING the whole
+  command on any withheld value — so a leading `-` (`--state-bucket=attacker`
+  parses as the FLAG once the shell strips the quotes) and a name past the
+  stack-ref cap suppress beside an altered or empty one (go-to-k/cdkd#3436).
 - `DEFAULT_STATE_PREFIX` comes from `src/state/state-prefix.ts`; importing it
   from `src/cli/commands/` inverts the layering.
 
 ## Rules a later edit must not undo
 
-- Every value reaching the terminal is sanitized THEN shell-quoted, in the PROSE
-  as well as the command — `stackName` and `region` come from S3 key segments,
-  so both are plantable, and quoting does nothing about an ESC. The unsafe class
+- Every value reaching the terminal is sanitized first — `stackName` and
+  `region` come from S3 key segments, so both are plantable, and quoting does
+  nothing about an ESC — then shell-quoted in the COMMAND, while the PROSE
+  renders the stack name in `displayStackName`'s identifier boundary and never
+  inside cdkd's own quotes (a hand-quoted name ran when pasted with its
+  sentence, go-to-k/cdkd#3436). The unsafe class
   is wider than C0+DEL: U+0085, C1, U+2028/9 and the bidi overrides. Fragments
   take the DENYLIST while stack and region take `asciiOnly`, since a profile
   name legitimately is not ASCII (issue

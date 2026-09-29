@@ -56,6 +56,10 @@ import {
   type StatefulReason,
 } from '../provisioning/stateful-types.js';
 import { findActionableSilentDrops } from '../provisioning/property-coverage.js';
+import {
+  hasNoCloudControlHandlers,
+  NO_CC_HANDLERS_REASON,
+} from '../provisioning/unsupported-types.js';
 import { assertRegionMatch } from '../provisioning/region-check.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { getLogger } from '../utils/logger.js';
@@ -172,6 +176,16 @@ export interface RecreateTargetsValidation {
    */
   blockedNoSdkProvider: RecreateTarget[];
   /**
+   * Issue [#3887]: `--recreate-via-cc-api <id>` named on a resource whose
+   * TEMPLATE type Cloud Control cannot create — `NON_PROVISIONABLE` (no
+   * handlers) or a provider opting out via `disableCcApiFallback`. The
+   * recreate deletes the old resource through its SDK provider FIRST and only
+   * then asks Cloud Control to create the new one, which fails: the resource
+   * is gone and nothing recreates it. Refused before anything is touched, with
+   * no bypass flag. `reason` is the registry's own wording of why.
+   */
+  blockedNoCcRoute: Array<RecreateTarget & { templateType: string; reason: string }>;
+  /**
    * #651: logical id named in BOTH `--recreate-via-cc-api` AND
    * `--recreate-via-sdk-provider`. Ambiguous — pick one direction.
    */
@@ -264,6 +278,15 @@ export function validateRecreateTargets(input: {
    * stays empty.
    */
   hasSdkProvider?: (resourceType: string) => boolean;
+  /**
+   * Issue [#3887]: why Cloud Control cannot create `resourceType`, or
+   * `undefined` when it can — `ProviderRegistry.ccRouteUnavailableReason`,
+   * which also covers a provider's `disableCcApiFallback`. When omitted, the
+   * registry-free half ({@link hasNoCloudControlHandlers}) still refuses, so a
+   * caller that forgets it cannot re-open the delete-then-fail path for a
+   * NON_PROVISIONABLE type.
+   */
+  ccRouteUnavailableReason?: (resourceType: string) => string | undefined;
 }): RecreateTargetsValidation {
   const seenCcApi = new Set<string>(input.recreateViaCcApi);
   const seenSdk = new Set<string>(input.recreateViaSdkProvider ?? []);
@@ -283,6 +306,11 @@ export function validateRecreateTargets(input: {
   const blockedAlreadySdk: RecreateTarget[] = [];
   const blockedAlreadyCcApi: RecreateTarget[] = [];
   const blockedNoSdkProvider: RecreateTarget[] = [];
+  const blockedNoCcRoute: RecreateTargetsValidation['blockedNoCcRoute'] = [];
+  const ccRouteUnavailableReason =
+    input.ccRouteUnavailableReason ??
+    ((resourceType: string): string | undefined =>
+      hasNoCloudControlHandlers(resourceType) ? NO_CC_HANDLERS_REASON : undefined);
 
   const conflictSet = new Set(conflictingDirections);
 
@@ -367,14 +395,30 @@ export function validateRecreateTargets(input: {
     // create half. Neither is a single-resource recreate, so each type alone
     // leaves one of the two open — the same pair `type-change-guard.ts` refuses
     // on the unflagged path, for the reasons stated there.
-    if (
+    const nestedStackRow =
       resourceType === NESTED_STACK_RESOURCE_TYPE ||
-      templateResource.Type === NESTED_STACK_RESOURCE_TYPE
-    ) {
+      templateResource.Type === NESTED_STACK_RESOURCE_TYPE;
+    if (nestedStackRow) {
       blockedNestedStackTargets.push(target);
     }
 
     if (direction === 'to-cc-api') {
+      // Issue [#3887]: the CREATE half runs on Cloud Control with the TEMPLATE's
+      // type (issue #2668), after the old resource was already deleted through
+      // its SDK provider. A type Cloud Control cannot create would be deleted
+      // and never recreated, so refuse here, before anything is touched. A
+      // nested-stack row is already refused above, for a reason of its own.
+      const noCcRoute = nestedStackRow
+        ? undefined
+        : ccRouteUnavailableReason(templateResource.Type);
+      if (noCcRoute !== undefined) {
+        blockedNoCcRoute.push({
+          ...target,
+          templateType: templateResource.Type,
+          reason: noCcRoute,
+        });
+      }
+
       // Ambiguous-intent overlap with --prefer-sdk-route.
       // The overlap only fires when the template carries a silent-drop
       // property AND that property is in the override allow-set —
@@ -460,6 +504,7 @@ export function validateRecreateTargets(input: {
     blockedAlreadySdk,
     blockedAlreadyCcApi,
     blockedNoSdkProvider,
+    blockedNoCcRoute,
     conflictingDirections,
     nestedStackLogicalIds: Object.entries(input.template.Resources ?? {})
       .filter(([, resource]) => resource?.Type === NESTED_STACK_RESOURCE_TYPE)
@@ -693,6 +738,23 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
       `  Fix: remove --recreate-via-cc-api <id> for these resources. ` +
         `They are already CC-managed; a destroy + recreate cycle would ` +
         `produce the same end state at the cost of unnecessary downtime.`
+    );
+  }
+
+  if (validation.blockedNoCcRoute.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `--recreate-via-cc-api named ${validation.blockedNoCcRoute.length} ` +
+        `resource(s) of types Cloud Control API cannot create:`
+    );
+    for (const blocked of validation.blockedNoCcRoute) {
+      lines.push(`  - ${blocked.logicalId} (${blocked.templateType}) — ${blocked.reason}`);
+    }
+    lines.push(
+      `  The recreate deletes the existing resource first and then creates it ` +
+        `through Cloud Control, which would fail and leave the resource deleted. ` +
+        `None of these resources was touched. Fix: remove --recreate-via-cc-api <id> ` +
+        `for these resources; they stay on their current route. There is no bypass flag.`
     );
   }
 

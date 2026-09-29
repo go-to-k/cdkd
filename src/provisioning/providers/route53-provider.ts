@@ -29,6 +29,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markNameCollision } from '../../deployment/retryable-errors.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { readConfigString } from '../config-shape.js';
@@ -41,6 +42,7 @@ import {
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -50,6 +52,11 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
 
 /**
  * True when Route 53 refused a zone mutation because the zone's
@@ -97,10 +104,12 @@ const RECORD_SET_COMPOSITE_SEGMENTS = 3;
  *
  * Returns `undefined` for anything else — most importantly CloudFormation's
  * OWN physicalId for this type, which is the record name alone (`Ref` on an
- * `AWS::Route53::RecordSet` returns the domain name, and a DNS name can never
- * contain `|`). `cdkd import` stored that scalar verbatim before issue #1658,
- * so state files in the wild carry BOTH shapes and every consumer has to know
- * which one it is holding.
+ * `AWS::Route53::RecordSet` returns the domain name). That scalar CAN contain
+ * `|`: Route 53 accepts one in a record name, while cdkd still refuses to
+ * create such a record (#3890), and `importRecordSet` cross-checks a
+ * three-part override against the template. `cdkd import` stored that scalar
+ * verbatim before issue #1658, so state files in the wild carry BOTH shapes
+ * and every consumer has to know which one it is holding.
  */
 export function parseRecordSetCompositeId(
   physicalId: string
@@ -166,8 +175,14 @@ function normalizeRecordName(name: string): string {
  * Is this value ONLY an unresolved intrinsic — `{Ref: …}` / `{Fn::If: […]}` —
  * rather than a real object with members?
  *
- * `import.ts` substitutes only single-key `{Ref}` before calling a provider,
- * so an element behind a condition reaches `import()` in this shape.
+ * `import.ts` runs two pre-passes before calling a provider:
+ * `resolvePseudoParameterIntrinsics` evaluates a `Ref` / `Fn::Join` /
+ * `Fn::Sub` built only from literals and the `AWS::AccountId` /
+ * `AWS::Region` / `AWS::Partition` / `AWS::URLSuffix` pseudo-parameters, and
+ * `substituteOverrideRefs` replaces a `{Ref}` to an overridden resource.
+ * Neither removes an `Fn::If` wrapper (`substituteOverrideRefs` only rewrites
+ * an overridden `{Ref}` inside its arms), so an element behind a condition
+ * still reaches `import()` in this shape.
  */
 function isIntrinsicOnly(value: unknown): boolean {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -432,7 +447,7 @@ export class Route53Provider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
         return this.deleteHostedZone(logicalId, physicalId, resourceType, context);
@@ -479,6 +494,11 @@ export class Route53Provider implements ResourceProvider {
       );
     }
 
+    // Set once CreateHostedZone returns (or a replay ADOPTS the zone). No
+    // failure after it is this zone's name collision: it is an auxiliary
+    // call's (AssociateVPCWithHostedZone, UpdateHostedZoneFeatures) or cdkd's
+    // own, so every one is marked (#3826, #3877).
+    let zoneCreated = false;
     try {
       const hostedZoneConfig = properties['HostedZoneConfig'] as
         | Record<string, unknown>
@@ -540,6 +560,7 @@ export class Route53Provider implements ResourceProvider {
             }
           : {}),
       });
+      zoneCreated = true;
 
       const hostedZone = response.HostedZone;
       if (!hostedZone?.Id) {
@@ -653,6 +674,9 @@ export class Route53Provider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // BEFORE the rethrow: the Accelerated Recovery arm throws its own
+      // ProvisioningError, which must carry the mark too.
+      if (zoneCreated) markAuxiliaryFailure(error, logicalId);
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -1309,7 +1333,7 @@ export class Route53Provider implements ResourceProvider {
         : undefined;
       if (identityChanged && !liveOldRecord) {
         this.logger.debug(
-          `Record set ${logicalId}: the previous record is not live in ${hostedZoneId}; writing the renamed record only`
+          safeMsg`Record set ${logicalId}: the previous record is not live in ${hostedZoneId}; writing the renamed record only`
         );
       }
       const changes: Change[] = liveOldRecord
@@ -1390,7 +1414,7 @@ export class Route53Provider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Route 53 record set ${logicalId}: ${physicalId}`);
 
     // We need the full record details for DELETE action
@@ -1402,6 +1426,34 @@ export class Route53Provider implements ResourceProvider {
         physicalId
       );
     }
+
+    // go-to-k/cdkd#3952: a record-set DELETE must match the live record set
+    // EXACTLY, so every field `buildResourceRecordSet` sends is part of the
+    // address, and the InvalidChangeBatch arm below reads any mismatch as
+    // "already deleted" -- a TXT value (or a HealthCheckId, a Weight) holding
+    // the mask of a NoEcho value would DROP the record over a live DNS record.
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      'Route 53 record set',
+      redactedDeleteAddressFields({
+        Name: properties['Name'],
+        Type: properties['Type'],
+        TTL: properties['TTL'],
+        ResourceRecords: properties['ResourceRecords'],
+        AliasTarget: properties['AliasTarget'],
+        SetIdentifier: properties['SetIdentifier'],
+        Weight: properties['Weight'],
+        Region: properties['Region'],
+        Failover: properties['Failover'],
+        MultiValueAnswer: properties['MultiValueAnswer'],
+        HealthCheckId: properties['HealthCheckId'],
+        GeoLocation: properties['GeoLocation'],
+        GeoProximityLocation: properties['GeoProximityLocation'],
+        CidrRoutingConfig: properties['CidrRoutingConfig'],
+      })
+    );
+    if (redactedSkip) return redactedSkip;
 
     // Parse composite ID: hostedZoneId|name|type. A physicalId that is NOT
     // the composite is CloudFormation's own form (the record name alone —
@@ -1427,6 +1479,18 @@ export class Route53Provider implements ResourceProvider {
     if (composite) {
       hostedZoneId = composite.hostedZoneId;
     } else {
+      // The zone comes from the recorded properties only on this arm; a
+      // composite physicalId above already addresses it (#3952).
+      const redactedZoneSkip = redactedDeleteAddressSkip(
+        this.logger,
+        logicalId,
+        'Route 53 record set',
+        redactedDeleteAddressFields({
+          HostedZoneId: properties['HostedZoneId'],
+          HostedZoneName: properties['HostedZoneName'],
+        })
+      );
+      if (redactedZoneSkip) return redactedZoneSkip;
       try {
         hostedZoneId = await this.resolveHostedZoneId(
           properties,
@@ -2852,9 +2916,13 @@ export class Route53Provider implements ResourceProvider {
    * `readRecordSet` both accept the scalar form (the other half of this fix).
    *
    * The ordinary shape that makes verification legitimately fail is a
-   * `HostedZoneId` still carrying an unresolved intrinsic (`import.ts`
-   * substitutes only single-key `{Ref}` before calling a provider). A
-   * split-horizon zone name is refused for safety and lands here too.
+   * `HostedZoneId` still carrying an unresolved intrinsic: `import.ts`
+   * pre-resolves only literal / pseudo-parameter `Ref` / `Fn::Join` /
+   * `Fn::Sub` (`resolvePseudoParameterIntrinsics`) and a `{Ref}` to an
+   * overridden resource (`substituteOverrideRefs`) before calling a provider,
+   * so a `{Ref}` to a zone that is not overridden, or an `Fn::GetAtt`, stays
+   * an object. A split-horizon zone name is refused for safety and lands here
+   * too.
    * (Wildcard records used to fail here as well; `normalizeRecordName` now
    * decodes Route 53's octal escapes, so they canonicalize normally.)
    *
@@ -2918,10 +2986,10 @@ export class Route53Provider implements ResourceProvider {
     // verbatim id decodes to nothing, so `delete` / `drift` fall back to
     // resolving the record from the template properties, where the canonical
     // composite would have frozen a mis-arity id into state that nothing can
-    // parse. Structurally near-unreachable — `identity.name` is the record
-    // name, and Route 53 accepts a `|` in one only as the `\174` escape — so
-    // this is the same defense-in-depth the sweep applied to the AWS-generated
-    // segments elsewhere.
+    // parse. Reachable: `identity.name` is the record name, and Route 53
+    // accepts a `|` in one, written either as the character or as the `\174`
+    // escape (its API returns the escape either way; "DNS domain name
+    // format", Route 53 Developer Guide). Lifting this refusal is #3890.
     const segments = [
       { name: 'hostedZoneId', value: identity.hostedZoneId },
       { name: 'recordName', value: identity.name },
@@ -2982,9 +3050,8 @@ export class Route53Provider implements ResourceProvider {
    * else degrades.
    *
    * **The degraded answer is the EMPTY map, and that is load-bearing rather
-   * than tidy.** `import.ts`'s attribute carry-over is gated on the returned
-   * map being NON-empty (`row.attributes && Object.keys(...).length > 0 ?
-   * row.attributes : undefined`, then `?? priorAttributes ?? {}`) — a gate
+   * than tidy.** `import.ts`'s attribute carry-over (`reimportedAttributes`)
+   * keeps the stored map only when the returned map is EMPTY — a gate
    * that exists precisely because almost every provider spells
    * `attributes: {}` explicitly. So a partial `{ Id }` is NON-empty, takes
    * the row branch, and OVERWRITES a previously-recorded good map: a zone

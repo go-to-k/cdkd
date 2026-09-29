@@ -2,7 +2,12 @@ import type { ResourceProvider } from '../types/resource.js';
 import { CloudControlProvider } from './cloud-control-provider.js';
 import { CustomResourceProvider } from './providers/custom-resource-provider.js';
 import { getLogger } from '../utils/logger.js';
-import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
+import {
+  hasNoCloudControlHandlers,
+  isNonProvisionable,
+  NO_CC_HANDLERS_REASON,
+  unsupportedTypeIssueUrl,
+} from './unsupported-types.js';
 import {
   containsIntrinsic,
   findAcceptedSilentDrops,
@@ -18,6 +23,10 @@ import {
   findMutuallyExclusiveViolations,
 } from './mutually-exclusive-properties.js';
 import { buildNestedRequiredMessage, findNestedRequiredViolations } from './nested-required.js';
+import {
+  buildSecureReferenceMessage,
+  findSecureReferencePaths,
+} from './custom-resource-secure-references.js';
 
 /**
  * The provisioning layer that owns a particular resource: SDK Provider
@@ -516,13 +525,13 @@ export class ProviderRegistry {
         return { provider: specificProvider, provisionedBy: 'sdk' };
       }
       // The CC auto-route target must actually be able to manage the type.
-      // Providers for NON_PROVISIONABLE types (no Cloud Control handlers)
-      // declare `disableCcApiFallback` — e.g. FSxFileSystemProvider, whose
-      // Windows/ONTAP/OpenZFS config blocks are deliberately unhandled;
-      // routing them to CC would fail at provisioning time with an opaque
+      // A NON_PROVISIONABLE type (no Cloud Control handlers) with an SDK
+      // provider is listed in SDK_PROVIDER_NON_PROVISIONABLE_TYPES, per type,
+      // and a provider may also opt out wholesale via `disableCcApiFallback`;
+      // routing either to CC would fail at provisioning time with an opaque
       // UnsupportedActionException. Throw the clear error here instead.
-      // (`isNonProvisionable` additionally covers the mid-transition window
-      // where a provider is registered but the Tier 3 regen hasn't run.)
+      // (The Tier 3 set additionally covers the mid-transition window where a
+      // provider is registered but the Tier 3 regen hasn't run.)
       const unroutable = this.ccRouteUnavailableReason(resourceType);
       if (unroutable !== undefined) {
         throw new Error(
@@ -571,11 +580,13 @@ export class ProviderRegistry {
    * `undefined` when it can. The ONE predicate both refusal sites
    * (`getProviderFor` and `reportSilentDropDecisions`) and the accepted-drop
    * warn read, so the warn that predicts what a flag-less deploy does cannot
-   * disagree with the refusal that deploy then hits (issue #2792).
+   * disagree with the refusal that deploy then hits (issue #2792). Public for
+   * `validateRecreateTargets`, which refuses `--recreate-via-cc-api` on such a
+   * type before the recreate deletes anything (issue #3887).
    */
-  private ccRouteUnavailableReason(resourceType: string): string | undefined {
-    if (isNonProvisionable(resourceType)) {
-      return 'ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it';
+  ccRouteUnavailableReason(resourceType: string): string | undefined {
+    if (hasNoCloudControlHandlers(resourceType)) {
+      return NO_CC_HANDLERS_REASON;
     }
     if (this.providers.get(resourceType)?.disableCcApiFallback === true) {
       return "the type's SDK provider opts out of the Cloud Control fallback (disableCcApiFallback)";
@@ -777,6 +788,7 @@ export class ProviderRegistry {
     const materialized = [...resources];
     this.validateMutuallyExclusiveProperties(materialized);
     this.validateNestedRequiredProperties(materialized);
+    this.validateCustomResourceSecureReferences(materialized);
     this.reportSilentDropDecisions(materialized);
   }
 
@@ -850,6 +862,42 @@ export class ProviderRegistry {
         lines.join('\n') +
         `\n\nCloudFormation rejects these blocks too. ` +
         `Declare the missing members; leaving a whole block out is not a violation.`
+    );
+  }
+
+  /**
+   * Reject a custom resource whose properties hold a SECURE dynamic reference
+   * (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm-secure:...}}`), which
+   * CloudFormation does not support in custom resources
+   * (go-to-k/cdkd#3976; the rule lives in `custom-resource-secure-references.ts`).
+   *
+   * Aggregated into ONE error with no `--allow-*` escape hatch, like the two
+   * checks above: CloudFormation documents the shape as unsupported. Fires on a NO_CHANGE
+   * resource as well, so an existing stack holding one must edit its template
+   * before its next deploy; `cdkd destroy` does not run this check.
+   */
+  validateCustomResourceSecureReferences(
+    resources: Iterable<{
+      logicalId: string;
+      resourceType: string;
+      properties: Record<string, unknown> | undefined;
+    }>
+  ): void {
+    const lines: string[] = [];
+    for (const { logicalId, resourceType, properties } of resources) {
+      const paths = findSecureReferencePaths(resourceType, properties);
+      if (paths.length > 0) lines.push(buildSecureReferenceMessage(logicalId, paths));
+    }
+    if (lines.length === 0) return;
+
+    throw new Error(
+      `The following custom resources pass a secure dynamic reference ` +
+        `({{resolve:secretsmanager:...}} / {{resolve:ssm-secure:...}}) in their properties:\n` +
+        lines.join('\n') +
+        `\n\nCloudFormation does not support secure dynamic references in custom resources, ` +
+        `so the template is rejected before anything is resolved. Have the handler read the ` +
+        `secret itself (pass its name or ARN instead), or use a plain {{resolve:ssm:...}} ` +
+        `parameter for a value that is not secret.`
     );
   }
 

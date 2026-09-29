@@ -30,6 +30,14 @@
 #      future CDK change that flattens it turns this into a loud failure
 #      rather than a silently vacuous run.
 #   3. invoke both Lambdas and assert their DISTINCT markers.
+#   3b. (Phase 2b) hide the Stage's manifest.json and assert destroy names
+#      the Stage and leaves the stack in state (go-to-k/cdkd#3507).
+#   3c. (Phase 2c) the same for `scrub --dry-run`, after a control over the
+#      intact assembly (go-to-k/cdkd#3507).
+#   3d. (Phase 2d) the same for `import`, which must refuse at selection and
+#      leave the stack's state untouched (go-to-k/cdkd#3507).
+#   3e. (Phase 2e) `orphan --dry-run` by a construct path that starts with
+#      the Stage resolves the Stage stack and writes nothing (go-to-k/cdkd#3943).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -90,10 +98,20 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 ECR_REPO=""
 IMAGE_TAG=""
 
+# Phase 2 invokes both Lambdas, so Lambda creates their
+# `/aws/lambda/CdkdStageAssets-Stack-*` log groups, which no stack owns and
+# destroy therefore leaves behind.
+. ../cr-log-groups.sh
+
 cleanup() {
   rc=$?
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # An interrupt inside Phase 2b, 2c or 2d would otherwise leave cdk.out with the
+  # Stage's manifest hidden.
+  if [ -n "${STAGE_DIR:-}" ] && [ -f "${STAGE_DIR}/manifest.json.hidden" ]; then
+    mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+  fi
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -112,6 +130,7 @@ cleanup() {
     aws ecr batch-delete-image --repository-name "${ECR_REPO}" \
       --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   set -eu
   exit "${rc}"
 }
@@ -279,6 +298,149 @@ if [ "${IMAGE_MARKER}" != "stage-docker-asset" ]; then
 fi
 echo "    OK: both markers correct"
 
+# --- Phase 2b: destroy while the Stage fails to load names the Stage --------
+# Hiding the Stage's own manifest.json is the one Stage failure the assembly
+# reader tolerates: the stack drops out of the synthesized app, so the
+# selection comes back empty. destroy must name the Stage rather than answer a
+# bare "No matching stacks found in state" (go-to-k/cdkd#3507), and must not
+# touch the stack, which is still in state. `--app cdk.out` reads the Phase 0
+# assembly instead of re-synthesizing over the hidden file.
+echo "==> Phase 2b: destroy with the Stage manifest hidden names the Stage"
+mv "${STAGE_DIR}/manifest.json" "${STAGE_DIR}/manifest.json.hidden"
+set +e
+HIDDEN_OUT=$(node "${LOCAL_DIST}" destroy "${STACK_PATH}" --app cdk.out \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)
+HIDDEN_RC=$?
+set -e
+mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+printf '%s\n' "${HIDDEN_OUT}"
+if [ "${HIDDEN_RC}" -ne 0 ]; then
+  echo "FAIL: destroy with the Stage hidden exited ${HIDDEN_RC}, expected 0 (nothing selected)" >&2
+  exit 1
+fi
+if ! printf '%s' "${HIDDEN_OUT}" | grep -qF "No matching stacks found in state. Stage CdkdStageAssets failed to load"; then
+  echo "FAIL: destroy did not name the Stage that failed to load" >&2
+  exit 1
+fi
+if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null; then
+  echo "FAIL: state file gone after a destroy that selected nothing" >&2
+  exit 1
+fi
+echo "    OK: Stage named, stack left in place"
+
+# --- Phase 2c: scrub while the Stage fails to load names the Stage ----------
+# The scrub twin of Phase 2b (go-to-k/cdkd#3507): with the Stage's manifest
+# hidden the display path selects nothing, and scrub must refuse naming the
+# pattern and the Stage rather than answer a bare "No stacks matched.". The
+# control runs first, over the intact assembly, so the refusal is attributable
+# to the hidden manifest and not to a pattern scrub could never select.
+# `--dry-run` on both: this phase asserts selection, and writes no state.
+echo "==> Phase 2c: scrub with the Stage manifest hidden names the Stage"
+set +e
+SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${STACK_PATH}" --app cdk.out --dry-run \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+SCRUB_RC=$?
+set -e
+printf '%s\n' "${SCRUB_OUT}"
+if [ "${SCRUB_RC}" -ne 0 ]; then
+  echo "FAIL: control scrub --dry-run over the intact assembly exited ${SCRUB_RC}, expected 0" >&2
+  exit 1
+fi
+mv "${STAGE_DIR}/manifest.json" "${STAGE_DIR}/manifest.json.hidden"
+set +e
+HIDDEN_OUT=$(node "${LOCAL_DIST}" scrub "${STACK_PATH}" --app cdk.out --dry-run \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+HIDDEN_RC=$?
+set -e
+mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+printf '%s\n' "${HIDDEN_OUT}"
+if [ "${HIDDEN_RC}" -eq 0 ]; then
+  echo "FAIL: scrub with the Stage hidden exited 0, expected a selection refusal" >&2
+  exit 1
+fi
+# One needle, so it pins the pattern, the zero-stack wording and an UNHEDGED
+# Stage together: the app's only stacks sit under the hidden Stage, and a
+# display-path pattern attributes to it rather than `Possibly unrelated:`.
+if ! printf '%s' "${HIDDEN_OUT}" | grep -qF "No stacks matching ${STACK_PATH} found in assembly. The assembly has no stacks. Stage CdkdStageAssets failed to load"; then
+  echo "FAIL: scrub did not name the pattern and the Stage that failed to load" >&2
+  exit 1
+fi
+echo "    OK: control selected the stack; hidden Stage named"
+
+# --- Phase 2d: import while the Stage fails to load names the Stage ---------
+# The import twin (go-to-k/cdkd#3507). Selection refuses before any state read
+# or write, so the stack deployed in Phase 1 keeps its state object byte for
+# byte -- compared by ETag, since import's write path would replace it.
+echo "==> Phase 2d: import with the Stage manifest hidden names the Stage"
+ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ -z "${ETAG_BEFORE}" ]; then
+  echo "FAIL: could not read the state object's ETag before Phase 2d" >&2
+  exit 1
+fi
+mv "${STAGE_DIR}/manifest.json" "${STAGE_DIR}/manifest.json.hidden"
+set +e
+# `import` takes no `--region`: AWS_REGION, which verify.sh already runs
+# under, is how it picks one.
+HIDDEN_OUT=$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK_PATH}" --app cdk.out \
+  --yes --state-bucket "${STATE_BUCKET}" 2>&1)
+HIDDEN_RC=$?
+set -e
+mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+printf '%s\n' "${HIDDEN_OUT}"
+if [ "${HIDDEN_RC}" -eq 0 ]; then
+  echo "FAIL: import with the Stage hidden exited 0, expected a selection refusal" >&2
+  exit 1
+fi
+if ! printf '%s' "${HIDDEN_OUT}" | grep -qF "No stacks matching ${STACK_PATH} found in assembly. The assembly has no stacks. Stage CdkdStageAssets failed to load"; then
+  echo "FAIL: import did not name the pattern and the Stage that failed to load" >&2
+  exit 1
+fi
+ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
+  echo "FAIL: state object changed across a refused import (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: Stage named, state untouched"
+
+# --- Phase 2e: orphan by a construct path under the Stage -------------------
+# A Stage stack's construct paths start with the Stage (`CdkdStageAssets/
+# Stack/...`); cdkd once split the path at its FIRST `/` and looked up
+# `CdkdStageAssets` as a stack, which never matched (go-to-k/cdkd#3943).
+# `--dry-run` resolves the path against the deployed state and returns before
+# the lock and the save, so Phase 3 still destroys everything. The ZipFn L2
+# covers its role and function, and nothing else references either, so there
+# is no reference rewrite to fail on.
+echo "==> Phase 2e: orphan --dry-run by a construct path under the Stage"
+ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ -z "${ETAG_BEFORE}" ]; then
+  echo "FAIL: could not read the state object's ETag before Phase 2e" >&2
+  exit 1
+fi
+set +e
+ORPHAN_OUT=$(node "${LOCAL_DIST}" orphan "${STACK_PATH}/ZipFn" --app cdk.out --dry-run \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+ORPHAN_RC=$?
+set -e
+printf '%s\n' "${ORPHAN_OUT}"
+if [ "${ORPHAN_RC}" -ne 0 ]; then
+  echo "FAIL: orphan --dry-run by a Stage construct path exited ${ORPHAN_RC}, expected 0" >&2
+  exit 1
+fi
+if ! printf '%s' "${ORPHAN_OUT}" | grep -qF "Target: ${STACK} (${REGION}); orphaning 2 resource(s)"; then
+  echo "FAIL: orphan did not resolve ${STACK_PATH}/ZipFn to ${STACK}'s two ZipFn resources" >&2
+  exit 1
+fi
+ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
+  echo "FAIL: state object changed across orphan --dry-run (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: Stage construct path resolved, state untouched"
+
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK_PATH}" \
@@ -317,5 +479,6 @@ trap - EXIT INT TERM
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
 aws ecr batch-delete-image --repository-name "${ECR_REPO}" \
   --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1 || true
+sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
 
 echo "[verify] PASS"

@@ -164,9 +164,9 @@ export class RdsAuroraStack extends cdk.Stack {
     // ModifyDBCluster has merge semantics (an absent input field means "no
     // change"), so without the #1160 fix AWS would keep the phase-1 values —
     // and DeletionProtection=true would then make the phase-3 destroy fail.
-    // verify.sh asserts both reset to their CFn defaults (false / false), and
-    // the destroy succeeding WITHOUT --remove-protection is itself proof the
-    // DeletionProtection reset landed.
+    // verify.sh asserts both reset to their CFn defaults (false / false), then
+    // turns DeletionProtection back ON out of band for its issue #2204 arm, so
+    // its destroys pass --remove-protection.
     new rds.CfnDBCluster(this, 'SecurityCluster', {
       engine: 'aurora-postgresql',
       masterUsername: 'postgres',

@@ -13,6 +13,9 @@
  *   - When the wrapped operation settles first, both timers are cleared
  *     and neither callback fires.
  *
+ * The timers are REF'd: while the operation is pending, the timeout is what
+ * guarantees the wrapper settles, so it must keep the process alive.
+ *
  * Caveat: this is a `Promise.race`-style abort, not a true cancellation.
  * The underlying provider call keeps running for some additional time
  * after the timer fires — that is documented and accepted; threading
@@ -108,7 +111,6 @@ export async function withResourceDeadline<T>(
           // onWarn is best-effort UX — never let it sink the operation.
         }
       }, opts.warnAfterMs);
-      if (typeof warnTimer.unref === 'function') warnTimer.unref();
     }
 
     timeoutTimer = setTimeout(() => {
@@ -118,7 +120,12 @@ export async function withResourceDeadline<T>(
       const elapsed = Date.now() - startedAt;
       reject(opts.onTimeout(elapsed));
     }, opts.timeoutMs);
-    if (typeof timeoutTimer.unref === 'function') timeoutTimer.unref();
+    // Both timers stay REF'd (issue #3939): the caller is awaiting this
+    // promise, and the timeout is its one guaranteed way to settle. Unref'd,
+    // an operation stuck with nothing else holding the event loop let the
+    // loop drain instead of timing out, so the process exited 0 mid-command
+    // with the stack lock still held. Both are cleared the moment the
+    // operation settles, so they never outlive it.
 
     // Run the operation eagerly. If the timeout has already fired by the
     // time the operation settles, swallow the result silently — we have

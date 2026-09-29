@@ -76,13 +76,37 @@ interface FakeAccessPoint {
   AccessPointArn: string;
   FileSystemId: string;
   ClientToken: string | undefined;
+  /**
+   * As the SDK DELIVERS it: absent when the request set none. EFS puts `null`
+   * on the wire (issue #2442, via the AWS CLI), and the SDK deserializer drops
+   * null members, so production never sees the `null`.
+   */
+  PosixUser?: Record<string, unknown>;
+  /** As EFS REPORTS it: an omitted root reads back `{ Path: '/' }` (issue #2442). */
+  RootDirectory: Record<string, unknown>;
 }
+
+/**
+ * The `RootDirectory` EFS reports for a requested one: an omitted root reads
+ * back as `{ Path: '/' }` (measured, issue #2442). A root with no `Path` is
+ * ASSUMED to read back the same way (unmeasured), and an omitted
+ * `CreationInfo` is absent rather than an empty block.
+ */
+const reportedRootDirectory = (requested: unknown): Record<string, unknown> => {
+  const root = (requested ?? {}) as { Path?: string; CreationInfo?: unknown };
+  return {
+    Path: root.Path ?? '/',
+    ...(root.CreationInfo !== undefined ? { CreationInfo: root.CreationInfo } : {}),
+  };
+};
 
 /**
  * A fake EFS that models the two behaviours the fix depends on, and nothing
  * else: inside the replay window a `CreateAccessPoint` carrying a `ClientToken`
  * AWS has already seen returns the access point that token minted, and outside
- * it the same token is refused with `AccessPointAlreadyExists`.
+ * it the same token is refused with `AccessPointAlreadyExists`. The in-window
+ * replay is the fake's DEFAULT but has never been observed on real EFS (see
+ * `replayWindowClosed`).
  *
  * `created` is the discriminator issue #2080's acceptance item 2 asks for. It
  * counts RESOURCES, not calls — a retry is ALLOWED to repeat the call, and a
@@ -109,6 +133,13 @@ class FakeEfs {
    * (the one minute in the EFS User Guide is about file-system CREATION
    * tokens), so this flag selects the arm rather than modelling a duration.
    * Flipping it is how the adopt arm is reached.
+   *
+   * Only the REFUSAL arm has been observed on real EFS (issue #2442, us-east-1):
+   * a repeat seconds after the first create was refused whether its parameters
+   * matched or not, with the first access point's id in the error's
+   * `AccessPointId`, and `DescribeAccessPoints` echoed the `ClientToken`. The
+   * replay arm stays modelled because no retirement window is documented, so a
+   * replay after some window is not ruled out; it has never been observed.
    */
   replayWindowClosed = false;
   /** The next create provisions the access point and then loses its response. */
@@ -123,6 +154,10 @@ class FakeEfs {
   describeTokenOverride: string | undefined;
   /** What `DescribeAccessPoints` reports as the access point's `FileSystemId`. */
   describeFileSystemOverride: string | undefined;
+  /** What `DescribeAccessPoints` reports as the access point's `PosixUser`. */
+  describePosixUserOverride: Record<string, unknown> | null | undefined;
+  /** What `DescribeAccessPoints` reports as the access point's `RootDirectory`. */
+  describeRootDirectoryOverride: Record<string, unknown> | undefined;
   /** Drop the id + ARN from the read-back, as a partial description would. */
   describeWithoutIds = false;
   /** Drop ONLY the ARN, so an `||` collapsed to `&&` is caught. */
@@ -180,6 +215,10 @@ class FakeEfs {
       AccessPointArn: `arn:aws:elasticfilesystem:us-east-1:111122223333:access-point/${id}`,
       FileSystemId: input['FileSystemId'] as string,
       ClientToken: token,
+      ...(input['PosixUser'] !== undefined
+        ? { PosixUser: input['PosixUser'] as Record<string, unknown> }
+        : {}),
+      RootDirectory: reportedRootDirectory(input['RootDirectory']),
     };
     this.created.push(accessPoint);
     if (token !== undefined) {
@@ -229,6 +268,12 @@ class FakeEfs {
                     : {}),
                   ...(this.describeFileSystemOverride !== undefined
                     ? { FileSystemId: this.describeFileSystemOverride }
+                    : {}),
+                  ...(this.describePosixUserOverride !== undefined
+                    ? { PosixUser: this.describePosixUserOverride }
+                    : {}),
+                  ...(this.describeRootDirectoryOverride !== undefined
+                    ? { RootDirectory: this.describeRootDirectoryOverride }
                     : {}),
                   ...(this.describeWithoutIds
                     ? { AccessPointId: undefined, AccessPointArn: undefined }
@@ -289,9 +334,12 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
     vi.useRealTimers();
   });
 
-  const createAccessPoint = (logicalId = 'AccessPoint'): Promise<{ physicalId: string }> =>
+  const createAccessPoint = (
+    logicalId = 'AccessPoint',
+    props: Record<string, unknown> = ACCESS_POINT_PROPS
+  ): Promise<{ physicalId: string }> =>
     withRetry(
-      () => provider.create(logicalId, 'AWS::EFS::AccessPoint', { ...ACCESS_POINT_PROPS }),
+      () => provider.create(logicalId, 'AWS::EFS::AccessPoint', { ...props }),
       logicalId,
       { sleep: advancingSleep }
     );
@@ -321,6 +369,32 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
       CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' },
     });
     expect(sent['Tags']).toEqual([{ Key: 'Name', Value: 'cdkd-ap' }]);
+  });
+
+  it('sends neither PosixUser nor RootDirectory when the template omits both (issue #2442)', async () => {
+    await provider.create('AccessPoint', 'AWS::EFS::AccessPoint', {
+      FileSystemId: 'fs-0123456789abcdef0',
+    });
+
+    expect(aws.createInputs).toHaveLength(1);
+    const sent = aws.createInputs[0]!;
+    expect(sent['FileSystemId']).toBe('fs-0123456789abcdef0');
+    // `undefined`, not `{}`: an empty object would be serialised as a block
+    // with no Uid/Gid rather than omitted.
+    expect(sent['PosixUser']).toBeUndefined();
+    expect(sent['RootDirectory']).toBeUndefined();
+  });
+
+  it('sends a RootDirectory without CreationInfo when the template gives only a Path (issue #2442)', async () => {
+    await provider.create('AccessPoint', 'AWS::EFS::AccessPoint', {
+      FileSystemId: 'fs-0123456789abcdef0',
+      RootDirectory: { Path: '/data' },
+    });
+
+    expect(aws.createInputs).toHaveLength(1);
+    const sent = aws.createInputs[0]!;
+    expect(sent['RootDirectory']).toEqual({ Path: '/data', CreationInfo: undefined });
+    expect(sent['PosixUser']).toBeUndefined();
   });
 
   it('a retried create whose 500 hid a successful CreateAccessPoint produces exactly ONE access point', async () => {
@@ -497,6 +571,207 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
         expect(aws.describeCalls).toBe(1);
       }
       expect(warnSpy.mock.calls.flat().join('\n')).toContain('declined to adopt it');
+    });
+
+    describe('PosixUser and RootDirectory confirmation (issue #3894)', () => {
+      // EFS refuses a repeated token whether or not the repeat's parameters
+      // match (measured in issue #2442), so the refusal alone cannot tell this
+      // create's access point from one minted with the same token and
+      // different parameters.
+      const declineMessage = (props?: Record<string, unknown>): Promise<string> =>
+        createAccessPoint('AccessPoint', props).then(
+          () => '<resolved, expected a rejection>',
+          (e: unknown) => (e instanceof Error ? e.message : String(e))
+        );
+
+      it('ADOPTS a default-root access point: EFS reads an omitted root back as `/` and an omitted user as absent', async () => {
+        // The normalisation discriminator: a raw comparison of `undefined`
+        // against `{ Path: '/' }` / `null` declines every legitimate adoption
+        // of an access point whose template sets neither field.
+        aws.loseNextResponse = true;
+
+        const result = await createAccessPoint('AccessPoint', {
+          FileSystemId: 'fs-0123456789abcdef0',
+        });
+
+        expect(result.physicalId).toBe('fsap-001');
+        expect(aws.created).toHaveLength(1);
+        // The fake really does report EFS's defaults, not an echo of the
+        // request -- otherwise this case passes against a raw comparison.
+        expect('PosixUser' in aws.created[0]!).toBe(false);
+        expect(aws.created[0]!.RootDirectory).toEqual({ Path: '/' });
+      });
+
+      it('ADOPTS when the description carries the wire form `PosixUser: null`', async () => {
+        // The SDK drops a null member today; a transport that kept it must
+        // still read as "no POSIX user", not as a mismatch.
+        aws.loseNextResponse = true;
+        aws.describePosixUserOverride = null;
+
+        const result = await createAccessPoint('AccessPoint', {
+          FileSystemId: 'fs-0123456789abcdef0',
+        });
+
+        expect(result.physicalId).toBe('fsap-001');
+      });
+
+      it('ADOPTS with CDK-shaped STRING ids, which the request coerces before comparing', async () => {
+        // `CfnAccessPoint` types Uid / Gid / SecondaryGids / OwnerUid / OwnerGid
+        // as strings, so a real template carries `"1000"`. EFS reads numbers
+        // back, so dropping any `Number(...)` in the request builder would
+        // decline every real adoption.
+        aws.loseNextResponse = true;
+        aws.describePosixUserOverride = { Uid: 1000, Gid: 1000, SecondaryGids: [2000] };
+        aws.describeRootDirectoryOverride = {
+          Path: '/data',
+          CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' },
+        };
+
+        const result = await createAccessPoint('AccessPoint', {
+          FileSystemId: 'fs-0123456789abcdef0',
+          PosixUser: { Uid: '1000', Gid: '1000', SecondaryGids: ['2000'] },
+          RootDirectory: {
+            Path: '/data',
+            CreationInfo: { OwnerUid: '1000', OwnerGid: '1000', Permissions: '755' },
+          },
+        });
+
+        expect(result.physicalId).toBe('fsap-001');
+      });
+
+      it('ADOPTS when the template gives a root with no Path (EFS reads it back as `/`)', async () => {
+        aws.loseNextResponse = true;
+        const creationInfo = { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' };
+
+        const result = await createAccessPoint('AccessPoint', {
+          FileSystemId: 'fs-0123456789abcdef0',
+          RootDirectory: { CreationInfo: creationInfo },
+        });
+
+        expect(result.physicalId).toBe('fsap-001');
+        expect(aws.created[0]!.RootDirectory).toEqual({ Path: '/', CreationInfo: creationInfo });
+      });
+
+      it('ADOPTS when EFS reports the same SecondaryGids in another order and the same mode spelled `0755`', async () => {
+        aws.loseNextResponse = true;
+        aws.describePosixUserOverride = { Uid: 1000, Gid: 1000, SecondaryGids: [3000, 2000] };
+        aws.describeRootDirectoryOverride = {
+          Path: '/data',
+          CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '0755' },
+        };
+
+        const result = await createAccessPoint('AccessPoint', {
+          ...ACCESS_POINT_PROPS,
+          PosixUser: { Uid: 1000, Gid: 1000, SecondaryGids: [2000, 3000] },
+        });
+
+        expect(result.physicalId).toBe('fsap-001');
+      });
+
+      it('ADOPTS when the request omits SecondaryGids and EFS reports an empty list', async () => {
+        aws.loseNextResponse = true;
+        aws.describePosixUserOverride = { Uid: 1000, Gid: 1000, SecondaryGids: [] };
+
+        const result = await createAccessPoint('AccessPoint', {
+          ...ACCESS_POINT_PROPS,
+          PosixUser: { Uid: 1000, Gid: 1000 },
+        });
+
+        expect(result.physicalId).toBe('fsap-001');
+      });
+
+      it.each([
+        ['a different Uid', { Uid: 1001, Gid: 1000, SecondaryGids: [2000] }],
+        ['a different Gid', { Uid: 1000, Gid: 1001, SecondaryGids: [2000] }],
+        ['different SecondaryGids', { Uid: 1000, Gid: 1000, SecondaryGids: [2001] }],
+        ['an extra SecondaryGid', { Uid: 1000, Gid: 1000, SecondaryGids: [2000, 2001] }],
+        ['no SecondaryGids', { Uid: 1000, Gid: 1000 }],
+        ['no POSIX user at all', null],
+      ])('DECLINES when the access point carries %s', async (_label, reported) => {
+        aws.loseNextResponse = true;
+        aws.describePosixUserOverride = reported;
+
+        const message = await declineMessage();
+
+        expect(message.startsWith('EFS refused CreateAccessPoint')).toBe(true);
+        expect(message).toMatch(/access point fsap-001 has a different PosixUser/);
+        expect(aws.created).toHaveLength(1);
+        expect(warnSpy.mock.calls.flat().join('\n')).toContain('declined to adopt it');
+      });
+
+      it('DECLINES when the request sets no POSIX user but the access point carries one', async () => {
+        aws.loseNextResponse = true;
+        aws.describePosixUserOverride = { Uid: 0, Gid: 0 };
+
+        const message = await declineMessage({ FileSystemId: 'fs-0123456789abcdef0' });
+
+        expect(message).toMatch(/access point fsap-001 has a different PosixUser/);
+      });
+
+      it.each([
+        [
+          'a different Path',
+          { Path: '/other', CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' } },
+        ],
+        [
+          'the default `/` Path',
+          { Path: '/', CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' } },
+        ],
+        [
+          'a different OwnerUid',
+          { Path: '/data', CreationInfo: { OwnerUid: 1001, OwnerGid: 1000, Permissions: '755' } },
+        ],
+        [
+          'a different OwnerGid',
+          { Path: '/data', CreationInfo: { OwnerUid: 1000, OwnerGid: 1001, Permissions: '755' } },
+        ],
+        [
+          'different Permissions',
+          { Path: '/data', CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '750' } },
+        ],
+        ['no CreationInfo', { Path: '/data' }],
+      ])('DECLINES when the access point carries %s', async (_label, reported) => {
+        aws.loseNextResponse = true;
+        aws.describeRootDirectoryOverride = reported;
+
+        const message = await declineMessage();
+
+        expect(message.startsWith('EFS refused CreateAccessPoint')).toBe(true);
+        expect(message).toMatch(/access point fsap-001 has a different RootDirectory/);
+        expect(aws.created).toHaveLength(1);
+      });
+
+      it.each([
+        ['a non-default Path', { Path: '/data' }],
+        [
+          'CreationInfo',
+          { Path: '/', CreationInfo: { OwnerUid: 0, OwnerGid: 0, Permissions: '755' } },
+        ],
+      ])(
+        'DECLINES when the request sets no root but the access point carries %s',
+        async (_label, reported) => {
+          aws.loseNextResponse = true;
+          aws.describeRootDirectoryOverride = reported;
+
+          const message = await declineMessage({ FileSystemId: 'fs-0123456789abcdef0' });
+
+          expect(message).toMatch(/access point fsap-001 has a different RootDirectory/);
+        }
+      );
+
+      it('names the mismatched FIELD, never either value', async () => {
+        aws.loseNextResponse = true;
+        aws.describeRootDirectoryOverride = { Path: '/somebody-elses-path' };
+
+        const message = await declineMessage();
+
+        expect(message).toMatch(/has a different RootDirectory/);
+        expect(message).not.toContain('/somebody-elses-path');
+        expect(message).not.toContain('/data');
+        const warned = warnSpy.mock.calls.flat().join('\n');
+        expect(warned).toContain('has a different RootDirectory');
+        expect(warned).not.toContain('/somebody-elses-path');
+      });
     });
 
     it("keeps a TRANSPORT read-back failure's wording, and withholds a credential one (issue #3297)", async () => {

@@ -3,10 +3,10 @@
  *
  * Every command that prompts is guarded by `process.stdin.isTTY !== true`
  * (issue [#2275](https://github.com/go-to-k/cdkd/issues/2275) folded nine of
- * them into `confirmOrRefuse`; `destroy-runner.ts` and `state.ts`'s
- * `state destroy --all` keep their own inline copies), so every suite that
- * exercises one has to drive that flag. Eleven of them had grown their own
- * byte-identical copy of this function — the same duplication class
+ * them into `confirmOrRefuse`; `destroy-runner.ts` keeps its own inline
+ * copy), so every suite that exercises one has to drive that flag. Eleven of
+ * them had grown their own byte-identical copy of this function — the same
+ * duplication class
  * `tests/unit/cli/readline-prompt-population.test.ts` exists to end one layer
  * up, reproduced in the tests that fence it.
  *

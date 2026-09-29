@@ -9,6 +9,11 @@
  * kept sending `knownPhysicalId` would still fail here.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import {
+  PASTE_PAYLOADS,
+  expectOnlyDisplayResidual,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 const mockCloudControlSend = vi.fn();
 const mockCloudFormationSend = vi.fn();
@@ -230,7 +235,7 @@ describe('toCloudControlIdentifier', () => {
     expect(mockWarn).not.toHaveBeenCalled();
     const noted = mockDebug.mock.calls
       .map((c) => String(c[0]))
-      .filter((line) => line.includes("the supplied id 'cfn-generated-name' is not used"));
+      .filter((line) => line.includes('the supplied id cfn-generated-name is not used'));
     expect(noted).toHaveLength(1);
   });
 
@@ -317,5 +322,125 @@ describe('toCloudControlIdentifier', () => {
     expect(() => toCloudControlIdentifier({ ...base, physicalId: 'x', properties })).toThrow(
       'no literal value for A or B'
     );
+  });
+
+  /**
+   * Every value these messages name sits behind `displayIdent`'s boundary,
+   * never inside a hand-written `'...'` (go-to-k/cdkd#3950), and the
+   * `--resource` remedy names the logical id only when `isPasteableIdent`
+   * admits it. Each `PASTE_PAYLOADS` family is rendered as the supplied id and
+   * as the logical id, and every message -- the two refusals and the two DEBUG
+   * notes -- is fed WHOLE to the paste harness.
+   */
+  describe('a value in these messages is never inside cdkd quotes (go-to-k/cdkd#3950)', () => {
+    const debugLines = (): string[] => mockDebug.mock.calls.map((c) => String(c[0]));
+    const refusal = (input: Parameters<typeof toCloudControlIdentifier>[0]): string => {
+      try {
+        toCloudControlIdentifier(input);
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error('toCloudControlIdentifier did not refuse');
+    };
+
+    /** Every message one payload reaches, with the boundary it must show. */
+    function messagesFor(v: string): Array<{ site: string; message: string; shown: string }> {
+      const out: Array<{ site: string; message: string; shown: string }> = [];
+      out.push({
+        site: 'unplaceable id',
+        message: refusal({ ...base, physicalId: v, properties: { A: 'a' } }),
+        shown: `so ${JSON.stringify(v)} cannot be placed`,
+      });
+      out.push({
+        site: 'wrong arity',
+        message: refusal({ ...base, physicalId: `${v}|b`, properties: {} }),
+        shown: `Res: ${JSON.stringify(`${v}|b`)} has 2 `,
+      });
+      out.push({
+        site: 'id equal to a template value',
+        message: refusal({ ...base, physicalId: v, properties: { A: v, C: 'c' } }),
+        shown: `Res: ${JSON.stringify(v)} equals`,
+      });
+      out.push({
+        site: 'hostile logical id',
+        message: refusal({ ...base, logicalId: v, physicalId: 'x', properties: { A: 'a' } }),
+        shown: `AWS::X::Y ${JSON.stringify(v)}: `,
+      });
+      mockDebug.mockClear();
+      toCloudControlIdentifier({ ...base, physicalId: v, properties: { A: 'a', B: 'b', C: 'c' } });
+      out.push({
+        site: 'set-aside note',
+        message: debugLines().find((l) => l.includes('is not used')) ?? '',
+        shown: `the supplied id ${JSON.stringify(v)} is not used`,
+      });
+      // The payload in the TEMPLATE, so it reaches the composite the note
+      // names (`so <identifier> is looked up`) rather than the supplied id.
+      mockDebug.mockClear();
+      toCloudControlIdentifier({ ...base, physicalId: 'cfn-id', properties: { A: v, B: 'b', C: 'c' } });
+      out.push({
+        site: 'set-aside note, template composite',
+        message: debugLines().find((l) => l.includes('is not used')) ?? '',
+        shown: `so ${JSON.stringify(`${v}|b|c`)} is looked up`,
+      });
+      // The payload as the RESOURCE TYPE.
+      out.push({
+        site: 'hostile resource type',
+        message: refusal({ ...base, resourceType: v, physicalId: 'x', properties: { A: 'a' } }),
+        shown: `${JSON.stringify(v)} Res: `,
+      });
+      mockDebug.mockClear();
+      toCloudControlIdentifier({ ...base, physicalId: v, properties: { A: 'a', C: 'c' } });
+      out.push({
+        site: 'completed note',
+        message: debugLines().find((l) => l.includes(' completed ')) ?? '',
+        shown: `completed ${JSON.stringify(v)} to the Cloud Control identifier ${JSON.stringify(`a|${v}|c`)}`,
+      });
+      return out;
+    }
+
+    it('names a PLAIN id bare, and a plain logical id in the --resource remedy', () => {
+      const message = refusal({ ...base, physicalId: 'id-b', properties: { A: 'a' } });
+      expect(message).toContain('so id-b cannot be placed');
+      expect(message).toContain("--resource 'Res=<A>|<B>|<C>'");
+      expect(message).not.toContain("'id-b'");
+      // A composite carries `|`, which is not a plain identifier character, so
+      // the arity refusal JSON-quotes even a legitimate one -- never `'a|b'`.
+      const arity = refusal({ ...base, physicalId: 'a|b', properties: {} });
+      expect(arity).toContain('Res: "a|b" has 2 ');
+      expect(arity).not.toContain("'a|b'");
+    });
+
+    it('names a long ARN whole, at the ARN ceiling rather than the 255 default', () => {
+      const arn = `arn:aws:x:us-east-1:111122223333:thing/${'n'.repeat(1900)}`;
+      const message = refusal({ ...base, physicalId: arn, properties: { A: 'a' } });
+      expect(message).toContain(`so ${arn} cannot be placed`);
+      expect(message).not.toContain('withheld');
+    });
+
+    it('holes a logical id the remedy could not carry, and still displays it in prose', () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = refusal({ ...base, logicalId: value, physicalId: 'x', properties: { A: 'a' } });
+        const fragment = message.split('instead: ')[1] ?? '';
+        expect(fragment, value).toBe("--resource '<logicalId>=<A>|<B>|<C>'.");
+        expect(message, value).toContain(`AWS::X::Y ${JSON.stringify(value)}: `);
+      }
+    });
+
+    it('every payload is JSON-bounded, and no pasted span runs a command', () => {
+      const rendered: Array<{ value: string; site: string; message: string; shown: string }> = [];
+      for (const { value } of PASTE_PAYLOADS) {
+        for (const m of messagesFor(value)) rendered.push({ value, ...m });
+      }
+      expect(rendered).toHaveLength(PASTE_PAYLOADS.length * 8);
+      withPasteDir((dir) => {
+        for (const { value, site, message, shown } of rendered) {
+          const label = `${site}: ${value}`;
+          expect(message, label).toContain(shown);
+          expect(message, label).not.toContain(`'${value}'`);
+          expect(message, label).not.toContain(`'${JSON.stringify(value)}'`);
+          expectOnlyDisplayResidual(message, dir, value);
+        }
+      });
+    }, 120_000);
   });
 });

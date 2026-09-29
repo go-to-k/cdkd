@@ -16,7 +16,11 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
+import { readRecordedPrincipals, type RecordedPrincipals } from '../iam-policy-targets.js';
 import type {
+  CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -24,6 +28,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the no-policy-name DELETE arm
@@ -48,6 +53,17 @@ export const POLICY_NAME_SKIP_REASON = 'no policy name in state — no delete is
 export const POLICY_NO_TARGET_SKIP_REASON = 'no Roles/Groups/Users in state — no delete issued';
 
 /**
+ * The short `ResourceDeleteResult.reason` for a record whose `Roles` /
+ * `Groups` / `Users` is present but not a list of IAM names (go-to-k/cdkd#3878).
+ * Such a value used to be cast and iterated: a string was walked character by
+ * character, removing a same-named inline policy from one-letter principals
+ * the record never named. It is refused before ANY call, not per kind, so a
+ * record cannot be half-detached.
+ */
+export const POLICY_MALFORMED_TARGET_SKIP_REASON =
+  'malformed Roles/Groups/Users in state — no delete issued';
+
+/**
  * The deploy-side caveat the skip warning in this file carries (issue
  * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
  *
@@ -63,6 +79,45 @@ const DEPLOY_SKIP_CAVEAT =
   `removed from the template behaves like destroy — the record is KEPT and the next deploy ` +
   `re-attempts it — but a REPLACEMENT / rollback delete FAILS the resource instead ` +
   `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, remove the resource by hand.`;
+
+/** The three principal lists of one `AWS::IAM::Policy` bag, each ABSENT as `undefined`. */
+interface PolicyTargetLists {
+  roles: string[] | undefined;
+  groups: string[] | undefined;
+  users: string[] | undefined;
+}
+
+/**
+ * Read a bag's `Roles` / `Groups` / `Users` through the shared reader
+ * (go-to-k/cdkd#3878), or return the kinds that are present but not a list of
+ * IAM names. Every method here that sends a `Put*Policy`, `Delete*Policy` or
+ * `Get*Policy` per name reads through this, because each used to cast and
+ * iterate the value: a string was walked character by character, addressing
+ * one-letter principals the bag never named — a GRANT on the create / update
+ * put paths (a rollback replays `update()` with a recorded bag as the desired
+ * side), a detach on delete and update, and a read of another principal's
+ * policy on drift.
+ */
+function readPolicyTargetLists(
+  bag: Record<string, unknown> | undefined
+): PolicyTargetLists | { malformed: string[] } {
+  const recorded = {
+    Roles: readRecordedPrincipals(bag?.['Roles']),
+    Groups: readRecordedPrincipals(bag?.['Groups']),
+    Users: readRecordedPrincipals(bag?.['Users']),
+  };
+  const malformed = (Object.keys(recorded) as Array<keyof typeof recorded>).filter(
+    (k) => recorded[k].kind === 'malformed'
+  );
+  if (malformed.length > 0) return { malformed };
+  const namesOf = (r: RecordedPrincipals): string[] | undefined =>
+    r.kind === 'names' ? r.names : undefined;
+  return {
+    roles: namesOf(recorded.Roles),
+    groups: namesOf(recorded.Groups),
+    users: namesOf(recorded.Users),
+  };
+}
 
 /**
  * AWS IAM Policy Provider
@@ -92,17 +147,31 @@ export class IAMPolicyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM policy ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
+    // shape), and every bag-derived value masked RAW as well. Absent context
+    // means identity.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const { value: v } = log;
+    log.debug(`Creating IAM policy ${logicalId}`);
 
     const policyName =
       (properties['PolicyName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 64 });
     const policyDocument = properties['PolicyDocument'];
-    const roles = properties['Roles'] as string[] | undefined;
-    const groups = properties['Groups'] as string[] | undefined;
-    const users = properties['Users'] as string[] | undefined;
+    const targets = readPolicyTargetLists(properties);
+    if ('malformed' in targets) {
+      // CloudFormation rejects a non-list here too; refused before any call.
+      throw new ProvisioningError(
+        `${targets.malformed.join(' / ')} of IAM policy ${logicalId} is not a list of IAM ` +
+          `names — no inline policy was attached`,
+        resourceType,
+        logicalId
+      );
+    }
+    const { roles, groups, users } = targets;
 
     if (!policyDocument) {
       throw new ProvisioningError(
@@ -139,7 +208,7 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
-          this.logger.debug(`Attached inline policy ${policyName} to role ${roleName}`);
+          log.debug(`Attached inline policy ${v(policyName)} to role ${v(roleName)}`);
         }
       }
 
@@ -153,7 +222,7 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
-          this.logger.debug(`Attached inline policy ${policyName} to group ${groupName}`);
+          log.debug(`Attached inline policy ${v(policyName)} to group ${v(groupName)}`);
         }
       }
 
@@ -167,11 +236,11 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
-          this.logger.debug(`Attached inline policy ${policyName} to user ${userName}`);
+          log.debug(`Attached inline policy ${v(policyName)} to user ${v(userName)}`);
         }
       }
 
-      this.logger.debug(`Successfully created IAM policy ${logicalId}: ${policyName}`);
+      log.debug(`Successfully created IAM policy ${logicalId}: ${v(policyName)}`);
 
       // For inline policies, physical ID is the policy name
       const physicalId = policyName;
@@ -185,7 +254,7 @@ export class IAMPolicyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create IAM policy ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         policyName,
@@ -202,19 +271,51 @@ export class IAMPolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM policy ${logicalId}: ${physicalId}`);
+    // Derive old policy name from physical ID (may contain ':roleName' suffix from old format)
+    const oldPolicyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
+    // Issue #2177 -- see `create()`. The recorded name is ALSO a needle when the
+    // PREVIOUS value it came from is secret-derived: after a rotated or
+    // re-pointed secret, that previous value is the `{{resolve:` reference state
+    // holds and the OLD plaintext is in no masker bag of this deploy.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[previousProperties['PolicyName'], oldPolicyName]]
+    );
+    const { value: v } = log;
+    log.debug(`Updating IAM policy ${logicalId}: ${v(physicalId)}`);
 
     const newPolicyName =
       (properties['PolicyName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 64 });
-    const newRoles = properties['Roles'] as string[] | undefined;
-    const oldRoles = previousProperties['Roles'] as string[] | undefined;
-    const newGroups = properties['Groups'] as string[] | undefined;
-    const oldGroups = previousProperties['Groups'] as string[] | undefined;
-    const newUsers = properties['Users'] as string[] | undefined;
-    const oldUsers = previousProperties['Users'] as string[] | undefined;
+    // BOTH sides before any call: the previous side is the state record, and a
+    // rollback replays this method with a recorded bag as the DESIRED side.
+    const newTargets = readPolicyTargetLists(properties);
+    const oldTargets = readPolicyTargetLists(previousProperties);
+    if ('malformed' in newTargets || 'malformed' in oldTargets) {
+      const which = [
+        ...('malformed' in newTargets ? newTargets.malformed.map((k) => `desired ${k}`) : []),
+        ...('malformed' in oldTargets ? oldTargets.malformed.map((k) => `recorded ${k}`) : []),
+      ];
+      // A RECORDED value is in cdkd state, which no template change reaches,
+      // so the message says where to repair it.
+      throw new ProvisioningError(
+        `${which.join(' / ')} of IAM policy ${logicalId} is not a list of IAM names — no ` +
+          `inline policy was attached or detached` +
+          ('malformed' in oldTargets
+            ? `. Repair the recorded ${oldTargets.malformed.join(' / ')} in state.json to a ` +
+              `list of role / group / user names and re-run`
+            : ''),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const { roles: newRoles, groups: newGroups, users: newUsers } = newTargets;
+    const { roles: oldRoles, groups: oldGroups, users: oldUsers } = oldTargets;
     const policyDocument = properties['PolicyDocument'];
 
     if (!policyDocument) {
@@ -245,9 +346,6 @@ export class IAMPolicyProvider implements ResourceProvider {
       const policyDoc =
         typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
-      // Derive old policy name from physical ID (may contain ':roleName' suffix from old format)
-      const oldPolicyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
-
       // ── Roles ──
       const newRoleSet = new Set(newRoles || []);
       const oldRoleSet = new Set(oldRoles || []);
@@ -261,7 +359,7 @@ export class IAMPolicyProvider implements ResourceProvider {
             PolicyDocument: policyDoc,
           })
         );
-        this.logger.debug(`Attached inline policy ${newPolicyName} to role ${roleName}`);
+        log.debug(`Attached inline policy ${v(newPolicyName)} to role ${v(roleName)}`);
       }
 
       // Remove policy from old roles no longer in the list
@@ -274,7 +372,7 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: oldPolicyName,
               })
             );
-            this.logger.debug(`Removed inline policy ${oldPolicyName} from role ${roleName}`);
+            log.debug(`Removed inline policy ${v(oldPolicyName)} from role ${v(roleName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -296,7 +394,7 @@ export class IAMPolicyProvider implements ResourceProvider {
             PolicyDocument: policyDoc,
           })
         );
-        this.logger.debug(`Attached inline policy ${newPolicyName} to group ${groupName}`);
+        log.debug(`Attached inline policy ${v(newPolicyName)} to group ${v(groupName)}`);
       }
 
       // Remove policy from old groups no longer in the list
@@ -309,7 +407,7 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: oldPolicyName,
               })
             );
-            this.logger.debug(`Removed inline policy ${oldPolicyName} from group ${groupName}`);
+            log.debug(`Removed inline policy ${v(oldPolicyName)} from group ${v(groupName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -331,7 +429,7 @@ export class IAMPolicyProvider implements ResourceProvider {
             PolicyDocument: policyDoc,
           })
         );
-        this.logger.debug(`Attached inline policy ${newPolicyName} to user ${userName}`);
+        log.debug(`Attached inline policy ${v(newPolicyName)} to user ${v(userName)}`);
       }
 
       // Remove policy from old users no longer in the list
@@ -344,7 +442,7 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: oldPolicyName,
               })
             );
-            this.logger.debug(`Removed inline policy ${oldPolicyName} from user ${userName}`);
+            log.debug(`Removed inline policy ${v(oldPolicyName)} from user ${v(userName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -353,7 +451,7 @@ export class IAMPolicyProvider implements ResourceProvider {
         }
       }
 
-      this.logger.debug(`Successfully updated IAM policy ${logicalId}`);
+      log.debug(`Successfully updated IAM policy ${logicalId}`);
 
       const newPhysicalId = newPolicyName;
 
@@ -367,7 +465,7 @@ export class IAMPolicyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update IAM policy ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -408,21 +506,38 @@ export class IAMPolicyProvider implements ResourceProvider {
     // non-string `PolicyName` (a number, an unresolved intrinsic object) would
     // otherwise be handed to `DeleteRolePolicy` as-is, while an empty string is
     // already falsy and falls through the `||` to the skip below.
+    // go-to-k/cdkd#3952: a redacted PolicyName names nothing; the physicalId
+    // stays the first source, and a redacted fallback is a named skip below.
+    const recordedPolicyName = properties?.['PolicyName'];
+    const policyNameRedacted = isRedactedRecordedValue(recordedPolicyName);
     const policyNameFromProperties =
-      typeof properties?.['PolicyName'] === 'string' ? properties['PolicyName'] : undefined;
+      typeof recordedPolicyName === 'string' && !policyNameRedacted
+        ? recordedPolicyName
+        : undefined;
     const policyName = policyNameFromPhysicalId || policyNameFromProperties;
 
     // Target lists, hoisted out of the try below so the no-target guard can see
     // them. `legacyRoleFromPhysicalId` reproduces the legacy
     // "<policyName>:<roleName>" branch's own condition exactly, so the two
     // cannot drift.
-    const roles = properties?.['Roles'] as string[] | undefined;
-    const groups = properties?.['Groups'] as string[] | undefined;
-    const users = properties?.['Users'] as string[] | undefined;
+    // Read through the reader `cdkd export`'s pre-delete shares, so the two
+    // agree on which principals a record names (go-to-k/cdkd#3878). ABSENT
+    // (`undefined` / `null`) stays `undefined` here, keeping the truthiness
+    // tests below exactly as they were; a MALFORMED list is refused before any
+    // AWS call, after the name check below.
+    const targets = readPolicyTargetLists(properties);
+    const malformedKinds = 'malformed' in targets ? targets.malformed : [];
+    const { roles, groups, users } =
+      'malformed' in targets ? { roles: undefined, groups: undefined, users: undefined } : targets;
     const legacyRoleFromPhysicalId =
       !roles && !groups && !users && physicalId.includes(':')
         ? physicalId.split(':')[1]
         : undefined;
+
+    if (!policyName && policyNameRedacted) {
+      const skip = redactedDeleteAddressSkip(this.logger, logicalId, 'IAM policy', ['PolicyName']);
+      if (skip) return skip;
+    }
 
     if (!policyName) {
       this.logger.warn(
@@ -430,11 +545,22 @@ export class IAMPolicyProvider implements ResourceProvider {
           `properties — skipping deletion. No AWS call is issued, so the inline policy is LEFT ` +
           `ATTACHED to its roles / groups / users, UNLESS the role / group / user it is attached ` +
           `to is itself part of this stack (deleting that principal removes its inline policies, ` +
-          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
           `Otherwise repair the physicalId in state.json and re-run, or delete the inline policy ` +
           `by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: POLICY_NAME_SKIP_REASON };
+    }
+
+    if (malformedKinds.length > 0) {
+      this.logger.warn(
+        `The state record for IAM policy ${logicalId} holds ${malformedKinds.join(' / ')} that ` +
+          `is not a list of IAM names — skipping deletion rather than guessing which principals ` +
+          `it names. No AWS call is issued, so the inline policy is LEFT ATTACHED wherever it ` +
+          `is. Repair ${malformedKinds.join(' / ')} in state.json to a list of role / group / ` +
+          `user names and re-run, or delete the inline policy by hand. ${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: POLICY_MALFORMED_TARGET_SKIP_REASON };
     }
 
     // Issue #1770 review: an inline policy exists ONLY as an attachment, so a
@@ -463,7 +589,7 @@ export class IAMPolicyProvider implements ResourceProvider {
           `attachment, so with no principal named there is no delete to issue and the policy is ` +
           `LEFT ATTACHED wherever it is, UNLESS the role / group / user it is attached to is ` +
           `itself part of this stack (deleting that principal removes its inline policies, and ` +
-          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
           `Otherwise restore Roles / Groups / Users in state.json and re-run, or delete the ` +
           `inline policy by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -625,9 +751,11 @@ export class IAMPolicyProvider implements ResourceProvider {
     // physicalId may be in legacy "policyName:roleName" format
     const policyName = physicalId.includes(':') ? physicalId.split(':')[0]! : physicalId;
 
-    const roles = properties['Roles'] as string[] | undefined;
-    const groups = properties['Groups'] as string[] | undefined;
-    const users = properties['Users'] as string[] | undefined;
+    // A malformed recorded list is drift UNKNOWN: reading its first "name"
+    // would read ANOTHER principal's same-named policy (go-to-k/cdkd#3878).
+    const targets = readPolicyTargetLists(properties);
+    if ('malformed' in targets) return undefined;
+    const { roles, groups, users } = targets;
 
     let liveDocument: unknown;
 

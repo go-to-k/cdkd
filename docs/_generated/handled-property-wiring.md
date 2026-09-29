@@ -14,11 +14,11 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 
 ## Summary
 
-- Provider classes classified: **84**
-- Declared properties: **1140** (**1138** with read evidence)
-- Fully wired classes: **82**
+- Provider classes classified: **85**
+- Declared properties: **1142** (**1140** with read evidence)
+- Fully wired classes: **83**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **23**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **26**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -43,8 +43,10 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ACMCertificateProvider` (acm-certificate-provider.ts) | `computed key in update()` |
 | `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
+| `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()` |
 | `CognitoUserPoolProvider` (cognito-provider.ts) | `object spread in narrowMfaConfiguration()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in canonicalizeDriftProperties()`, `computed key in collectDesiredKeyAttributeNames()`, `computed key in update()`, `extractLocalTags(...) in update()`, `object spread in canonicalizeDriftProperties()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
+| `DynamoDBTableProvider` (dynamodb-table-provider.ts) | `computed key in canonicalizeDriftPair()`, `object spread in canonicalizeDriftProperties()` |
 | `EC2Provider` (ec2-provider.ts) | `computed key in narrowRouteDestinations()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
@@ -54,12 +56,13 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `FirehoseProvider` (firehose-provider.ts) | `computed key in applyUpdate()` |
 | `FSxFileSystemProvider` (fsx-filesystem-provider.ts) | `computed key in detectVariantConfigKey()`, `computed key in update()` |
+| `IAMUserGroupProvider` (iam-user-group-provider.ts) | `computed key in derivedNamePairs()` |
 | `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
 | `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()` |
 | `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
-| `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applyAllSubConfigsForCreate()`, `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `computed key in versioningOrLoggingRefusal()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()`, `S3BucketProvider.versioningOrLoggingRefusal(...) in update()`, `this.noWriteProbe().applySubConfigDiffs(...) in update()` |
+| `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applyAllSubConfigsForCreate()`, `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `computed key in versioningOrLoggingRefusal()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()`, `S3BucketProvider.versioningOrLoggingRefusal(...) in update()`, `this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(...) in create()`, `this.maskedView(sinks).update(...) in update()`, `this.noWriteProbe().applySubConfigDiffs(...) in update()` |
 | `S3DirectoryBucketProvider` (s3-directory-bucket-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `SecretsManagerSecretProvider` (secretsmanager-secret-provider.ts) | `object spread in retainPreviousGenerateBlock()` |
 | `SNSTopicProvider` (sns-topic-provider.ts) | `computed key in applyUpdate()` |
@@ -88,7 +91,8 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `CodeCommitRepositoryProvider` | codecommit-repository-provider.ts | wired | 6 | 6 |
 | `CognitoUserPoolProvider` | cognito-provider.ts | wired | 30 | 30 |
 | `DLMLifecyclePolicyProvider` | dlm-lifecycle-policy-provider.ts | wired | 12 | 12 |
-| `DocDBProvider` | docdb-provider.ts | wired | 21 | 21 |
+| `DocDBProvider` | docdb-provider.ts | wired | 19 | 19 |
+| `DocDBSubnetGroupProvider` | docdb-subnet-group-provider.ts | wired | 4 | 4 |
 | `DynamoDBGlobalTableProvider` | dynamodb-globaltable-provider.ts | wired | 14 | 14 |
 | `DynamoDBTableProvider` | dynamodb-table-provider.ts | wired | 19 | 19 |
 | `EC2Provider` | ec2-provider.ts | wired | 70 | 70 |

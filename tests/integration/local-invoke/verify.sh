@@ -209,6 +209,11 @@ echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
   exit 1
 }
+# Control for tests 3 / 4: with no --env-vars, no `__proto__` var exists.
+echo "${RESULT_1}" | grep -q '"protoEnv":"unset"' || {
+  echo "FAIL: expected protoEnv=unset without --env-vars, got: ${RESULT_1}"
+  exit 1
+}
 
 # Test 2 — event payload via --event
 echo "==> [2/7] Invoking EchoHandler with --event payload"
@@ -228,11 +233,18 @@ ENV_FILE=$(mktemp)
 trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 # Use a wildcard `Parameters` block so the test doesn't break if the
 # L1 logical ID changes.
-echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
+# `__proto__` rides along: an env var literally named `__proto__` must reach
+# the container instead of hitting Object.prototype's setter (issue #3515,
+# fixed in the bundled cdk-local's env resolution, go-to-k/cdk-local#769).
+echo '{"Parameters":{"GREETING":"overridden","__proto__":"proto-parameters"}}' > "${ENV_FILE}"
 RESULT_3=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_3}"
 echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
+  exit 1
+}
+echo "${RESULT_3}" | grep -q '"protoEnv":"proto-parameters"' || {
+  echo "FAIL: expected the --env-vars __proto__ key delivered (issue #3515), got: ${RESULT_3}"
   exit 1
 }
 
@@ -242,11 +254,15 @@ DP_ENV_FILE=$(mktemp)
 trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}"' EXIT
 # The display-path key matches `Metadata['aws:cdk:path']` — i.e. the
 # same form `cdkd local invoke <target>` already accepts.
-echo '{"CdkdLocalInvokeFixture/EchoHandler":{"GREETING":"path-key-overridden"}}' > "${DP_ENV_FILE}"
+echo '{"CdkdLocalInvokeFixture/EchoHandler":{"GREETING":"path-key-overridden","__proto__":"proto-path-key"}}' > "${DP_ENV_FILE}"
 RESULT_4=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${DP_ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_4}"
 echo "${RESULT_4}" | grep -q '"greeting":"path-key-overridden"' || {
   echo "FAIL: expected greeting=path-key-overridden, got: ${RESULT_4}"
+  exit 1
+}
+echo "${RESULT_4}" | grep -q '"protoEnv":"proto-path-key"' || {
+  echo "FAIL: expected the function-specific __proto__ key delivered (issue #3515), got: ${RESULT_4}"
   exit 1
 }
 

@@ -24,6 +24,8 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { displayIdent } from '../../../src/utils/display-safe.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 // Single-attempt pass-through so the collision arm does not sleep through the
 // real 2-10s name-release schedule.
@@ -81,7 +83,9 @@ function replacementOp(oldResourceRetained?: boolean): CompletedOperation {
     changeType: 'UPDATE',
     resourceType: 'AWS::SQS::Queue',
     physicalId: 'phys-new',
-    previousState: res({ physicalId: 'phys-old', properties: { a: 1 } }),
+    // Both records name the queue `q`, so a collision is provably the NEW
+    // copy's (#3979) and reaches the Retain arm under test.
+    previousState: res({ physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
     ...(oldResourceRetained !== undefined && { oldResourceRetained }),
   };
 }
@@ -106,7 +110,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const del = vi.fn().mockResolvedValue(undefined);
       const { ctx, warns } = makeCtx({ create, delete: del });
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
 
       const result = await replayRollback([replacementOp()], state, 'S', ctx);
@@ -159,7 +163,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2' });
       const lookups: Array<'create' | 'delete'> = [];
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
       const warns: string[] = [];
       const logger = {
@@ -243,18 +247,21 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         } as unknown as RollbackExecutorContext['providerRegistry'],
       };
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
       const op = replacementOp();
       op.previousState = res({
         physicalId: 'phys-old',
-        properties: { a: 1 },
+        properties: { QueueName: 'q', a: 1 },
         provisionedBy: 'cc-api',
       });
 
       const result = await replayRollback([op], state, 'S', ctx, { isInterrupted: () => false });
 
-      // The refusal is what failed the op — NOT the delete-route lookup.
+      // The refusal is what failed the op — NOT the delete-route lookup. And
+      // it is the RETAIN refusal (the names agree, so the #3979 holder guard
+      // passes), or a re-hoisted lookup above it would go unseen.
+      expect(warns.join('\n')).toContain('UpdateReplacePolicy: Retain pins');
       expect(lookups).toEqual(['create']);
       expect(result.failures).toBe(1);
       expect(state.B!.physicalId).toBe('phys-new');
@@ -345,7 +352,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         if (e.error?.message) refusals.push(e.error.message);
       };
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
 
       const result = await replayRollback([replacementOp()], state, 'S', ctx, {
@@ -367,6 +374,210 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       expect(refusals.join('\n')).toContain('Cannot reverse the replacement of B');
     });
 
+    it('the UNROUTABLE refusal prints its --orphan remedy unwrapped, named or as a quoted hole', async () => {
+      // `unroutableReplacementError` (issue #2668's arm) is reached by
+      // `rollback-executor-type-change-routing.test.ts`, which pins the
+      // REFUSAL; nothing pinned the remedy's SPELLING, so restoring the
+      // backtick wrapper go-to-k/cdkd#3436 removed, or the bare `<id>`,
+      // reddened nothing (round-51 proxy finding on the follow-up). The journal here
+      // records NO old type, which is the first refusal in
+      // `resolveReplacementOldType`, so the replay classifies the op as
+      // `refuse-replacement-routing` and throws through the per-op catch.
+      const errors: Array<{ message?: string }> = [];
+      const { ctx } = makeCtx({ create: vi.fn(), delete: vi.fn() });
+      ctx.recordEvent = (e) => {
+        if (e.error) errors.push(e.error);
+      };
+      const unroutable = (logicalId: string): CompletedOperation => ({
+        logicalId,
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'phys-new',
+        previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
+      });
+      const ids = ['B', 'Bad Id', ...PASTE_PAYLOADS.map(({ value }) => value)];
+      const state: Record<string, ResourceState> = Object.fromEntries(
+        ids.map((id) => [id, res({ physicalId: 'phys-new' })])
+      );
+
+      const result = await replayRollback(ids.map(unroutable), state, 'S', ctx, {
+        isInterrupted: () => false,
+      });
+
+      expect(result.failures).toBe(ids.length);
+      const text = errors.map((e) => e.message ?? '').join('\n');
+      // Positive control: the arm under test fired for every id.
+      expect(text.match(/Cannot reverse the replacement of/g)).toHaveLength(ids.length);
+      // The paste fence for THIS site: each refusal as `replayRollback`
+      // rendered it — the named arm, the withheld arm, and one per payload
+      // family (withheld, with the id still displayed in prose through
+      // `safe()`) — fed to bash at line, sentence and clause granularity with
+      // decoys planted for every hole (`tests/unit/utils/paste-harness.ts`).
+      // Per ID, unconditionally: the refusal is found by the id it names, its
+      // remedy spelling is asserted (named for `B`, the quoted hole for every
+      // other), and THEN it is pasted — so a regression printing a payload
+      // raw fails on the spelling rather than skipping its own paste check.
+      withPasteDir((dir) => {
+        for (const id of ids) {
+          const message = errors
+            .map((e) => e.message ?? '')
+            .find((m) => m.includes(`replacement of ${displayIdent(id)} (`));
+          expect(message, id).toBeDefined();
+          // The remedy is the message's labelled LAST line, on its own: an
+          // over-selection of the old mid-sentence form passed the next word
+          // (`to`) as the stack argument.
+          if (id === 'B') {
+            expect(message).toMatch(/\nTo orphan it: cdkd rollback --orphan B$/);
+            expect(message).not.toContain('withheld');
+          } else {
+            expect(message, id).toMatch(/\nTo orphan it: cdkd rollback --orphan '<id>'$/);
+            expect(message, id).toContain(
+              'The id is withheld from that command: it is not a plain CloudFormation logical id'
+            );
+            expect(message, id).toContain('read it from cdkd events and fill the quoted hole.');
+          }
+          // Inert at EVERY granularity, payload id included -- the `(` after
+          // the displayed id aborts every span before expansion, so the
+          // stronger contract holds and is what is pinned (the residual
+          // criterion would be vacuous here and accept a future running
+          // display).
+          expect(spansThatRun(message!, dir), id).toEqual([]);
+        }
+      });
+      // Named arm: a CloudFormation logical id is printed bare, on the line.
+      expect(text).toContain('\nTo orphan it: cdkd rollback --orphan B');
+      // Withheld arm: not a logical id, so a QUOTED hole on the line and the
+      // pointer in the prose above it.
+      expect(text).toContain("\nTo orphan it: cdkd rollback --orphan '<id>'");
+      expect(text).toContain('read it from cdkd events and fill the quoted hole.');
+      // And NEITHER is backtick-wrapped -- pasted with the wrapper that is
+      // command SUBSTITUTION, the shape the fence cannot see -- nor
+      // mid-sentence.
+      expect(text).not.toContain('`cdkd rollback');
+      expect(text).not.toContain('--orphan <id>`');
+      expect(text).not.toMatch(/--orphan \S+ to leave/);
+      // The same refusal's fix-forward pointer lost its wrapper too, and it
+      // is a separate literal: the `--orphan` needles above do not reach it.
+      expect(text).toContain('fix forward with cdkd deploy, or leave this resource');
+      expect(text).not.toContain('`cdkd deploy`');
+    }, 120_000);
+
+    it("in a nested child's own rollback, both refusals' --orphan command names the child stack (go-to-k/cdkd#3859)", async () => {
+      // The child's own failure segment is replayed only by a rollback of the
+      // CHILD: a stack-less command resolves to the parent, which never
+      // replays it. Both arms, each asserted to FIRE first; the named child,
+      // then a child name the gate withholds, then the whole message pasted.
+      const run = async (child: string): Promise<string[]> => {
+        const errors: string[] = [];
+        const collide = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
+        const { ctx } = makeCtx({ create: collide, delete: vi.fn() });
+        ctx.nestedChildStack = child;
+        ctx.recordEvent = (e) => {
+          if (e.error?.message) errors.push(e.error.message);
+        };
+        const unroutable: CompletedOperation = {
+          logicalId: 'U',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'phys-new',
+          previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
+        };
+        const result = await replayRollback(
+          [replacementOp(), unroutable],
+          {
+            B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
+            U: res({ physicalId: 'phys-new' }),
+          },
+          child,
+          ctx,
+          { isInterrupted: () => false }
+        );
+        expect(result.failures).toBe(2);
+        return errors;
+      };
+
+      const named = await run('Top~Child');
+      const collision = named.find((m) => m.includes('replacement of B ('));
+      const unrouted = named.find((m) => m.includes('replacement of U ('));
+      expect(collision).toContain('UpdateReplacePolicy: Retain pins that new resource in place');
+      expect(unrouted).toContain('so cdkd will not guess which provider re-creates');
+      expect(collision).toMatch(/\nTo orphan it: cdkd rollback 'Top~Child' --stack-region us-east-1 --orphan B$/);
+      expect(unrouted).toMatch(/\nTo orphan it: cdkd rollback 'Top~Child' --stack-region us-east-1 --orphan U$/);
+      // The collision's own resume sentence names the nested stack too: a
+      // stack-less `cdkd rollback` resolves to the parent.
+      expect(collision).not.toContain('re-run cdkd rollback —');
+      expect(collision).toContain(
+        "then re-run the rollback of the nested stack 'Top~Child' itself — the journal is kept"
+      );
+      for (const message of [collision!, unrouted!]) {
+        expect(message).toContain("This is the nested stack's own rollback, and only a rollback of the nested stack itself honours --orphan for this op");
+        expect(message).toContain('command below');
+      }
+
+      // A child name the gate will not print becomes a quoted hole, explained.
+      const held = await run('Top~Child; touch OWNED');
+      for (const message of held) {
+        expect(message).toMatch(/\nTo orphan it: cdkd rollback '<stack>' --stack-region us-east-1 --orphan [BU]$/);
+        expect(message).toContain("The nested stack's name");
+      }
+
+      // Pasted whole, neither message runs anything.
+      withPasteDir((dir) => {
+        for (const message of [...named, ...held]) expect(spansThatRun(message, dir)).toEqual([]);
+      });
+    }, 120_000);
+
+    it('inside a nested child revert, neither refusal offers an --orphan command (go-to-k/cdkd#3845)', async () => {
+      // `cdkd rollback --orphan` reaches only the replay of the stack it is
+      // run on, and a direct rollback of the child is refused while the
+      // parent's run is unsettled, so a printed command would send the
+      // operator round the same refusal. Both arms, each asserted to FIRE
+      // (the refusal text) before the remedy's absence is read.
+      const errors: string[] = [];
+      const collide = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
+      const { ctx } = makeCtx({ create: collide, delete: vi.fn() });
+      ctx.nestedChildRevert = true;
+      ctx.recordEvent = (e) => {
+        if (e.error?.message) errors.push(e.error.message);
+      };
+      const unroutable: CompletedOperation = {
+        logicalId: 'U',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'phys-new',
+        previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
+      };
+      const state: Record<string, ResourceState> = {
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
+        U: res({ physicalId: 'phys-new' }),
+      };
+
+      const result = await replayRollback([replacementOp(), unroutable], state, 'S', ctx, {
+        isInterrupted: () => false,
+      });
+
+      expect(result.failures).toBe(2);
+      const collision = errors.find((m) => m.includes('replacement of B ('));
+      const unrouted = errors.find((m) => m.includes('replacement of U ('));
+      expect(collision).toContain('UpdateReplacePolicy: Retain pins that new resource in place');
+      expect(unrouted).toContain('so cdkd will not guess which provider re-creates');
+      for (const message of [collision!, unrouted!]) {
+        // No command naming an id: the prose mentions the flag only to say it
+        // cannot reach this replay.
+        expect(message).not.toMatch(/--orphan (?:B|U|'<id>')/);
+        expect(message).not.toContain('\n');
+        expect(message).not.toContain('To orphan it:');
+        expect(message).not.toContain('command below');
+        expect(message).toContain(
+          "where cdkd rollback --orphan cannot reach it: resolve the cause and re-run the top-level stack's rollback"
+        );
+      }
+      // The collision text stays in the prose, and the unroutable refusal's
+      // fix-forward pointer ends its sentence rather than offering the command.
+      expect(collision).toContain('Underlying collision: Queue already exists');
+      expect(unrouted).toContain('fix forward with cdkd deploy. This op is reverted inside');
+    });
+
     it('the collision refusal names the pinning policy and the recovery path', async () => {
       // Separated from the case above because the refusal is caught per-op:
       // the replay never rethrows it, so the assertion has to reach the error
@@ -377,13 +588,29 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       ctx.recordEvent = (e) => {
         if (e.error) errors.push(e.error);
       };
-      const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
-      };
+      // `B` plus a withheld plain id plus one id per payload family, so the
+      // paste fence below drives THIS refusal's renderer with every family —
+      // the unroutable case above covers the other `--orphan` remedy only.
+      const ids = ['B', 'Bad Id', ...PASTE_PAYLOADS.map(({ value }) => value)];
+      const state: Record<string, ResourceState> = Object.fromEntries(
+        ids.map((id) => [
+          id,
+          res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
+        ])
+      );
 
-      await replayRollback([replacementOp()], state, 'S', ctx, { isInterrupted: () => false });
+      await replayRollback(
+        ids.map((id) => ({ ...replacementOp(), logicalId: id })),
+        state,
+        'S',
+        ctx,
+        { isInterrupted: () => false }
+      );
 
       const text = errors.map((e) => e.message ?? '').join('\n');
+      expect(text.match(/UpdateReplacePolicy: Retain pins that new resource in place/g)).toHaveLength(
+        ids.length
+      );
       expect(text).toContain('UpdateReplacePolicy: Retain pins that new resource in place');
       expect(text).toContain('phys-new');
       // The remedy has to be actionable, and the journal survival is the part
@@ -394,8 +621,48 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // The remedy that lets the REST of the rollback finish — one op failure
       // breaks the segment loop, so without `--orphan` a single pinned
       // resource halts every older segment too.
-      expect(text).toContain('cdkd rollback --orphan B');
-    });
+      expect(text).toContain('\nTo orphan it: cdkd rollback --orphan B');
+      // ...and NOT wrapped in backticks. Pasted with the wrapper that is
+      // command SUBSTITUTION, a worse wrapper than `'...'` and one the source
+      // fence cannot see (go-to-k/cdkd#3436, named by hand as M8 of the
+      // go-to-k/cdkd#3613 review). The id here is already gated by
+      // `PASTEABLE_LOGICAL_ID`, so nothing untrusted ran; what is removed is
+      // the SHAPE, in the module most likely to have an untrusted id in scope.
+      expect(text).not.toContain('`cdkd rollback --orphan');
+      // ...nor mid-sentence: the command is the message's labelled LAST line,
+      // with the AWS collision text in the prose ABOVE it.
+      expect(text).not.toMatch(/--orphan \S+: one op failure/);
+      expect(text).toMatch(/Underlying collision: [^\n]*\nTo orphan it: cdkd rollback --orphan B$/m);
+      // The standalone re-run pointer earlier in the same message is its own
+      // literal, so the `--orphan` needle above says nothing about it.
+      expect(text).toContain('then re-run cdkd rollback — the');
+      expect(text).not.toContain('`cdkd rollback`');
+      // The paste fence for THIS refusal, per id and unconditionally, as in
+      // the unroutable case above.
+      withPasteDir((dir) => {
+        for (const id of ids) {
+          const message = errors
+            .map((e) => e.message ?? '')
+            .find((m) => m.includes(`of ${displayIdent(id)} `));
+          expect(message, id).toBeDefined();
+          if (id === 'B') {
+            expect(message).toMatch(/\nTo orphan it: cdkd rollback --orphan B$/);
+            expect(message).not.toContain('withheld');
+          } else {
+            expect(message, id).toMatch(/\nTo orphan it: cdkd rollback --orphan '<id>'$/);
+            expect(message, id).toContain(
+              'The id is withheld from that command: it is not a plain CloudFormation logical id'
+            );
+          }
+          // Inert at EVERY granularity, payload id included -- the `(` after
+          // the displayed id aborts every span before expansion, so the
+          // stronger contract holds and is what is pinned (the residual
+          // criterion would be vacuous here and accept a future running
+          // display).
+          expect(spansThatRun(message!, dir), id).toEqual([]);
+        }
+      });
+    }, 120_000);
   });
 
   describe('reverse-replacement-readopt (the old resource is still alive)', () => {
@@ -404,7 +671,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const create = vi.fn();
       const { ctx, warns } = makeCtx({ create, delete: del });
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
 
       // `oldResourceRetained: true` is what selects the readopt arm (issue
@@ -452,7 +719,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         } as unknown as RollbackExecutorContext['providerRegistry'],
       };
       const state: Record<string, ResourceState> = {
-        B: res({ physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+        B: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
       };
 
       const result = await replayRollback([replacementOp(true)], state, 'S', ctx);
