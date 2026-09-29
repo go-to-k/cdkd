@@ -68,6 +68,8 @@ import {
   maskRecordedSecretsInText,
   maskSecretsInError,
   recordLogOnlyValue,
+  recordLogOnlyParameterValue,
+  unionOfSecretBags,
   carryLogOnlyValuesCarriedBy,
   hasMaskableValues,
   hasLogOnlyValues,
@@ -4599,18 +4601,9 @@ export class IntrinsicFunctionResolver {
   ): void {
     const bag = context.recordedSecretValues;
     if (paramDef?.NoEcho !== true || bag === undefined) return;
-    const record = (leaf: unknown): void => {
-      if (typeof leaf === 'string') recordLogOnlyValue(bag, leaf);
-      else if (typeof leaf === 'number' || typeof leaf === 'boolean') {
-        recordLogOnlyValue(bag, String(leaf));
-      }
-    };
-    if (Array.isArray(value)) {
-      for (const element of value) record(element);
-      record(value.map((element: unknown) => String(element)).join(','));
-      return;
-    }
-    record(value);
+    // One spelling rule, shared with the deploy's diff log masker, which
+    // records every `NoEcho` value up front (go-to-k/cdkd#4049).
+    recordLogOnlyParameterValue(bag, value);
   }
 
   /**
@@ -10890,11 +10883,13 @@ export class IntrinsicFunctionResolver {
     // single call reaches every link.
     let masked: unknown = error;
     let positional = extraMask;
-    for (const bag of [context?.inheritedSecrets, context?.recordedSecretValues]) {
-      // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a bag holding only
-      // log-only needles still masks a thrown message.
-      if (!bag || !hasMaskableValues(bag)) continue;
-      masked = maskSecretsInError(masked, bag, positional);
+    // ONE pass over the UNION of both bags (go-to-k/cdkd#4049): masked bag by
+    // bag, the first bag's shorter needle cut a longer needle the second bag
+    // held, and the rest of it printed. `hasMaskableValues`, not `size`
+    // (go-to-k/cdkd#1998): a bag holding only log-only needles still masks.
+    const union = unionOfSecretBags([context?.inheritedSecrets, context?.recordedSecretValues]);
+    if (hasMaskableValues(union)) {
+      masked = maskSecretsInError(masked, union, positional);
       positional = undefined;
     }
     // FAIL CLOSED when both bags are empty. An earlier revision deleted this
@@ -11736,10 +11731,16 @@ export class IntrinsicFunctionResolver {
     // unsupported-service arm refuses on it, and the log-twin machinery that
     // `Fn::Base64` reads is built from it — so a log-only needle must not move
     // it. The render adds the log-only needles in {@link maskSecretsRaw}.
-    const inherited = context?.inheritedSecrets;
-    if (inherited && inherited.size > 0) masked = maskRecordedSecretsInText(masked, inherited);
-    const secrets = context?.recordedSecretValues;
-    if (secrets && secrets.size > 0) masked = maskRecordedSecretsInText(masked, secrets);
+    //
+    // ONE pass over both bags' entries (go-to-k/cdkd#4049): masked bag by bag,
+    // the inherited bag's shorter needle cut a longer needle the pass bag held
+    // and the rest of it printed. Whether the text CHANGES is the same either
+    // way, so the detectors reading this answer are unaffected.
+    const union: RecordedSecretValues = new Map([
+      ...(context?.inheritedSecrets ?? []),
+      ...(context?.recordedSecretValues ?? []),
+    ]);
+    if (union.size > 0) masked = maskRecordedSecretsInText(masked, union);
     return masked;
   }
 
@@ -11761,12 +11762,9 @@ export class IntrinsicFunctionResolver {
    * overlaps. Never a detector: see {@link maskNeedlesForLog}.
    */
   private maskPrintedNeedlesForLog(text: string, context?: ResolverContext): string {
-    let masked = text;
-    const inherited = context?.inheritedSecrets;
-    if (inherited && hasMaskableValues(inherited)) masked = maskSecretsInText(masked, inherited);
-    const secrets = context?.recordedSecretValues;
-    if (secrets && hasMaskableValues(secrets)) masked = maskSecretsInText(masked, secrets);
-    return masked;
+    // ONE pass over both bags (go-to-k/cdkd#4049), as {@link maskNeedlesForLog}.
+    const union = unionOfSecretBags([context?.inheritedSecrets, context?.recordedSecretValues]);
+    return hasMaskableValues(union) ? maskSecretsInText(text, union) : text;
   }
 
   /**

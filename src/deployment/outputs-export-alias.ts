@@ -98,11 +98,11 @@
  *   REFUSED, and the name is published as before. Since go-to-k/cdkd#1998 the
  *   resolver records such a value as a LOG-ONLY needle of the pass's bag,
  *   read by the printing maskers (`maskSecretsInText` and the provider
- *   masker), but it is no map ENTRY, and every reader here iterates the map:
- *   the refusal above and this module's own warning masks. Deliberately so —
- *   the decision on #1998 left persistence unchanged, and refusing the alias
- *   would change what the deploy publishes into state and the exports index.
- *   Whether it should is go-to-k/cdkd#4043.
+ *   masker), but it is no map ENTRY, and the refusal above iterates the map.
+ *   Deliberately so — the decision on #1998 left persistence unchanged, and
+ *   refusing the alias would change what the deploy publishes into state and
+ *   the exports index. Whether it should is go-to-k/cdkd#4043. This module's
+ *   WARNINGS do mask it (go-to-k/cdkd#4049), through `printingCorpusOf`.
  * - In the DEPLOY ENGINE, `evaluateConditions` runs before any bag is built and
  *   records into a map that caller discards, while still WARMING the resolver's
  *   dynamic-reference cache — so a PINNED reference (`secretsmanager`, or a
@@ -133,7 +133,7 @@
 
 import type { TemplateOutput } from '../types/resource.js';
 import { displayIdent, displayStackName } from '../utils/display-safe.js';
-import { SECRET_MASK, type RecordedSecretValues } from './secret-redaction.js';
+import { SECRET_MASK, printingCorpusOf, type RecordedSecretValues } from './secret-redaction.js';
 
 /**
  * Does CloudFormation suppress this output on this deploy?
@@ -714,7 +714,10 @@ export function secretBearingExportNameWarning(
   // sub-floor or fragment substitution containment cannot, and containment
   // sees a second recorded secret the resolver did not put here but which this
   // name happens to hold.
-  const corpus = secrets ?? exposure;
+  // A PRINTING corpus (go-to-k/cdkd#4049): a `NoEcho` parameter's value
+  // embedded beside the secret is masked in this line too. The refusal that
+  // led here was decided from the map alone.
+  const corpus = printingCorpusOf(secrets ?? exposure);
   const name = secretSafeKeyDisplay(exportName, corpus, exposure);
   const shown = name.kind === 'masked' ? `${maskedLabel(name.text)} ` : '';
   // THE OUTPUT KEY'S FORCE-MASK SET IS BOUNDED; the export name's is not, and
@@ -1042,8 +1045,15 @@ export function exportAliasCollisionWarning(
   // plaintext when omitted -- the same foot-gun `exportAliasCollisionScrubWarning`
   // avoids by requiring its own. BOTH names go through the test: `outputKey`
   // is template-controlled and printed three times in this message.
-  const shown = displayTextOrWithheld(secretSafeKeyDisplay(exportName, secrets));
-  const from = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, secrets));
+  //
+  // The PRINTING corpus (go-to-k/cdkd#4049): the map's entries plus the
+  // pass's LOG-ONLY needles, so an `Export.Name` built from a `NoEcho`
+  // parameter's value is masked here. The refusal upstream still reads the
+  // map alone: whether such a name is published is go-to-k/cdkd#4043's
+  // decision, not this message's.
+  const corpus = printingCorpusOf(secrets);
+  const shown = displayTextOrWithheld(secretSafeKeyDisplay(exportName, corpus));
+  const from = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, corpus));
   return (
     `Output ${from} exports as "${shown}", which is also the name of another output in this stack — ` +
     `skipping the export alias, so output ${shown} keeps its own value and the export is not published. ` +
@@ -1107,7 +1117,11 @@ export function exportAliasCollisionScrubWarning(
   // `secretSafeKeyDisplay` keeps the print-always behaviour — the collision
   // and its remedy are actionable whether or not a name can be shown — while
   // making the printed text and the verdict the same string.
-  const nameDisplay = (name: string): SecretSafeKeyDisplay => secretSafeKeyDisplay(name, secrets);
+  // The PRINTING corpus, as in {@link exportAliasCollisionWarning}
+  // (go-to-k/cdkd#4049): this message only prints, so the log-only needles of
+  // scrub's bag take part; its secret-bearing KEY scan does not use this.
+  const corpus = printingCorpusOf(secrets);
+  const nameDisplay = (name: string): SecretSafeKeyDisplay => secretSafeKeyDisplay(name, corpus);
   const exportDisplay = nameDisplay(exportName);
   const shown = displayTextOrWithheld(exportDisplay);
   // The `stored value under "..."` clause loses its referent when the name is

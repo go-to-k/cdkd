@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
@@ -23,8 +24,17 @@ import { Construct } from 'constructs';
  *   error masking and the recorded event, the three surfaces the fix covers.
  *   An `AllowedPattern` rejection was the first vehicle and does NOT quote the
  *   value (`Parameter value, cannot be validated against allowedPattern`).
+ * - `NoEchoRenamed` (go-to-k/cdkd#4049): an SNS topic whose create-only
+ *   `TopicName` is a literal, and under `CDKD_TEST_NOECHO_RENAME=true` embeds
+ *   the token, so that redeploy prints the diff's `--verbose`
+ *   `requires replacement (<old> -> <new>)` line over it.
+ * - the alias-token output / `NoEchoAliasProbe` (go-to-k/cdkd#4049): the probe's
+ *   `Export.Name` is a second `NoEcho` parameter, whose value
+ *   (`CDKD_TEST_NOECHO_ALIAS_TOKEN`, letters and digits only) is also the
+ *   owner output's logical id, so every deploy prints the export-alias
+ *   collision warning naming it.
  *
- * covers: AWS::SSM::Parameter
+ * covers: AWS::SSM::Parameter, AWS::SNS::Topic
  */
 export class NoechoParameterMaskingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -42,6 +52,24 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
       name: `cdkd-test-noecho-consumer-${account}`,
       type: 'String',
       value: cdk.Fn.sub('token=${NoEchoToken}'),
+    });
+
+    new sns.CfnTopic(this, 'NoEchoRenamed', {
+      topicName:
+        process.env['CDKD_TEST_NOECHO_RENAME'] === 'true'
+          ? cdk.Fn.sub('cdkd-test-noecho-rename-${AWS::AccountId}-${NoEchoToken}')
+          : `cdkd-test-noecho-rename-${account}-a`,
+    });
+
+    const aliasToken = new cdk.CfnParameter(this, 'NoEchoAliasToken', {
+      type: 'String',
+      noEcho: true,
+      default: process.env['CDKD_TEST_NOECHO_ALIAS_TOKEN'] ?? 'CdkdNoEchoAliasUnset',
+    });
+    new cdk.CfnOutput(this, aliasToken.default as string, { value: 'alias-owner-value' });
+    new cdk.CfnOutput(this, 'NoEchoAliasProbe', {
+      value: 'alias-probe-value',
+      exportName: aliasToken.valueAsString,
     });
 
     if (process.env['CDKD_TEST_NOECHO_REJECT'] === 'true') {

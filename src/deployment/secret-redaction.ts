@@ -1091,6 +1091,108 @@ export function shareLogOnlyValues(view: RecordedSecretValues, target: RecordedS
 }
 
 /**
+ * Record `value`, a `NoEcho` parameter's value, as LOG-ONLY needles of
+ * `secrets` in every spelling a log line can carry it: a string itself, the
+ * `String()` form of a number or boolean, and for a list each element plus
+ * the comma-joined whole. The ONE spelling rule: the resolver's
+ * `recordNoEchoParameterValue` calls it when a `Ref` serves the parameter, and
+ * the deploy's diff log masker calls it up front, before any `Ref` resolves
+ * (go-to-k/cdkd#4049).
+ */
+export function recordLogOnlyParameterValue(secrets: RecordedSecretValues, value: unknown): void {
+  const record = (leaf: unknown): void => {
+    if (typeof leaf === 'string') recordLogOnlyValue(secrets, leaf);
+    else if (typeof leaf === 'number' || typeof leaf === 'boolean') {
+      recordLogOnlyValue(secrets, String(leaf));
+    }
+  };
+  if (Array.isArray(value)) {
+    for (const element of value) record(element);
+    record(value.map((element: unknown) => String(element)).join(','));
+    return;
+  }
+  record(value);
+}
+
+/**
+ * `secrets` as a PRINTING corpus (go-to-k/cdkd#4049): its map entries plus
+ * each of its log-only needles as an entry masked to {@link SECRET_MASK}, for
+ * a printer that tests a name against a map rather than calling
+ * {@link maskSecretsInText} (`outputs-export-alias.ts`'s warnings). Returns
+ * `secrets` itself when it holds no log-only needle. A NEW map otherwise, so
+ * never hand it to anything that persists, positions or decides what is
+ * published: the verdicts there read the map alone.
+ */
+export function printingCorpusOf(secrets: RecordedSecretValues): RecordedSecretValues {
+  const logOnly = logOnlyValuesOf.get(secrets);
+  if (logOnly === undefined || logOnly.size === 0) return secrets;
+  const corpus: RecordedSecretValues = new Map(secrets);
+  for (const needle of logOnly) if (!corpus.has(needle)) corpus.set(needle, SECRET_MASK);
+  return corpus;
+}
+
+/**
+ * How many LOG-ONLY needles `secrets` holds: a change stamp for a caller
+ * caching a union of bags (go-to-k/cdkd#4049). The set only grows.
+ */
+export function logOnlyValueCount(secrets: RecordedSecretValues): number {
+  return logOnlyValuesOf.get(secrets)?.size ?? 0;
+}
+
+/**
+ * The union of `bags` as ONE new bag, log-only needles included, for a caller
+ * that must mask an ERROR with several bags in one pass
+ * ({@link maskSecretsInError} takes one bag). Printing only.
+ */
+export function unionOfSecretBags(
+  bags: ReadonlyArray<RecordedSecretValues | undefined>
+): RecordedSecretValues {
+  const union: RecordedSecretValues = new Map();
+  for (const bag of bags) {
+    if (bag === undefined) continue;
+    for (const [plaintext, expression] of bag)
+      if (!union.has(plaintext)) union.set(plaintext, expression);
+    carryLogOnlyValues(bag, union);
+  }
+  return union;
+}
+
+/**
+ * ONE printing masker over several bags (go-to-k/cdkd#4049): their map
+ * entries and log-only needles as a single union, masked in one
+ * {@link maskSecretsInText} call. Masking bag by bag lets one bag's shorter
+ * needle cut a longer needle another bag holds, printing the rest of it,
+ * since longest-first holds only within one call. The bags are read by
+ * reference; the needle set and its regex are rebuilt only when a bag's map
+ * or log-only set changed size, which is sound because a pass's bags only
+ * GROW. Do not hand it a bag that is cleared and refilled.
+ */
+export function createUnionSecretMasker(
+  bags: ReadonlyArray<RecordedSecretValues | undefined>
+): SecretMasker {
+  const present = bags.filter((bag): bag is RecordedSecretValues => bag !== undefined);
+  let stamp: string | undefined;
+  let needles = new Set<string>();
+  let regex: RegExp | undefined;
+  return (text: string) => {
+    const now = present.map((bag) => `${bag.size}:${logOnlyValueCount(bag)}`).join(',');
+    if (now !== stamp) {
+      needles = new Set<string>();
+      for (const bag of present) {
+        for (const plaintext of bag.keys()) needles.add(plaintext);
+        for (const plaintext of logOnlyValuesOf.get(bag) ?? []) needles.add(plaintext);
+      }
+      regex = buildNeedleRegex(needles);
+      stamp = now;
+    }
+    // {@link maskSecretsInText}'s two arms over the union: a whole text equal
+    // to a needle at any length, then the substring scan, longest first.
+    if (text !== '' && needles.has(text)) return SECRET_MASK;
+    return regex ? text.replace(regex, SECRET_MASK) : text;
+  };
+}
+
+/**
  * Is there at least one LOG-ONLY needle in `secrets`? The cheap test a
  * printing path asks before building the combined regex.
  */

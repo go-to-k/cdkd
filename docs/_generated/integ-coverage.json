@@ -5669,6 +5669,7 @@
         "migrate-from-cfn",
         "monitoring",
         "nested-stack-3level",
+        "noecho-parameter-masking",
         "replacement-fanout",
         "retain-orphan-redeploy",
         "s3-lifecycle",
@@ -5769,6 +5770,10 @@
         ],
         "nested-stack-3level": [
           "l2"
+        ],
+        "noecho-parameter-masking": [
+          "l1",
+          "literal"
         ],
         "replacement-fanout": [
           "l2",

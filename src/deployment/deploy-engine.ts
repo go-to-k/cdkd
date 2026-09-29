@@ -86,7 +86,11 @@ import {
   wholeStringLeavesOf,
   TEMPLATE_SOURCED_RULES,
   type FreshNoEchoLeaf,
+  recordLogOnlyParameterValue,
+  createUnionSecretMasker,
+  unionOfSecretBags,
   type RecordedSecretValues,
+  type SecretMasker,
 } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
 import {
@@ -1750,6 +1754,38 @@ export class DeployEngine {
         redactedAttributeReads: base.redactedAttributeReads,
       }),
     };
+  }
+
+  /**
+   * The printing masker the diff calculator's log lines take
+   * (go-to-k/cdkd#4049): the diff pass's own bag, every `NoEcho` parameter's
+   * value, then a nested child's inherited bag. The diff bag is bound by
+   * reference, so a needle the pass records after this call is masked too.
+   *
+   * The parameter values are recorded HERE, up front, into a bag of this
+   * masker's own: the diff records a value only when a `Ref` serves it, in
+   * template order, so a resource whose property STOPPED reading the
+   * parameter would otherwise print its old value from state whenever the
+   * parameter's other readers come later in the template, or none remain.
+   * Never the diff bag: nothing but this printer reads it.
+   *
+   * ONE pass over the union (`createUnionSecretMasker`): a pass per bag let
+   * one bag's shorter needle cut a longer needle another bag held and print
+   * the rest of it.
+   */
+  private diffLogMasker(
+    diffSecrets: RecordedSecretValues | undefined,
+    template: CloudFormationTemplate,
+    parameterValues: Record<string, unknown>
+  ): SecretMasker {
+    const inherited = this.options.inheritedSecrets;
+    const noEchoValues: RecordedSecretValues = new Map();
+    for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
+      if (definition?.NoEcho === true && Object.hasOwn(parameterValues, name)) {
+        recordLogOnlyParameterValue(noEchoValues, parameterValues[name]);
+      }
+    }
+    return createUnionSecretMasker([diffSecrets, noEchoValues, inherited]);
   }
 
   /**
@@ -4178,7 +4214,17 @@ export class DeployEngine {
         // value the parent supplied in THIS deploy. The diff side binds the
         // redacted bag above, where such a value is `***` like its record, so
         // the calculator promotes each reader instead.
-        this.freshNoEchoParameters(parameterValues)
+        this.freshNoEchoParameters(parameterValues),
+        // go-to-k/cdkd#4049: the diff pass resolves a `Ref` to a `NoEcho`
+        // parameter to its plaintext and records it as a log-only needle of
+        // THIS context's bag, so the calculator's replacement line masks with
+        // it (and with a nested child's inherited bag). Printing only: the
+        // changes it returns are unmasked.
+        this.diffLogMasker(
+          diffResolverContext.recordedSecretValues,
+          effectiveTemplate,
+          parameterValues
+        )
       );
       // The diff was the prefetch's only consumer: withdraw what it did not
       // need, so it stops spending the account's DescribeType quota that the
@@ -10054,19 +10100,22 @@ export class DeployEngine {
     // is kept as the fallback because it is the strictly-better half of the
     // prefix: `new Error()` has an empty message, and an AWS SDK error often
     // carries its code in the NAME over a generic message.
-    let detail = error instanceof Error ? error.message || error.name : String(error);
-    for (const bag of [inheritedSecrets, secrets]) detail = maskSecretsInText(detail, bag);
+    // ONE pass over both bags (go-to-k/cdkd#4049): masked bag by bag, one
+    // bag's shorter needle cut a longer needle the other held, and the rest
+    // of it printed.
+    const union = unionOfSecretBags([inheritedSecrets, secrets]);
+    const detail = maskSecretsInText(
+      error instanceof Error ? error.message || error.name : String(error),
+      union
+    );
     if (this.options.strictGetAtt) {
       // The cause is masked on THIS arm only: `maskSecretsInError` clones the
       // whole chain and reads each link's `stack` accessor (a V8 trace
       // materialization per link), and the warn arm below never uses it.
-      let cause: unknown = error;
-      for (const bag of [inheritedSecrets, secrets]) {
-        cause =
-          typeof cause === 'string'
-            ? maskSecretsInText(cause, bag)
-            : maskSecretsInError(cause, bag);
-      }
+      const cause: unknown =
+        typeof error === 'string'
+          ? maskSecretsInText(error, union)
+          : maskSecretsInError(error, union);
       // `cause` is load-bearing, not decoration (issue #1874 review). The
       // non-retryable marker is a NON-ENUMERABLE symbol on the original error,
       // so re-wrapping without a cause DROPS it — while inlining the refusal's
