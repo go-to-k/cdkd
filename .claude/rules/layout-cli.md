@@ -57,10 +57,11 @@ Index of every area: [code-layout.md](code-layout.md).
   its display id puts `displayName` FIRST, and `displayIdent` would quote a
   legitimate `My Stack` into a stream a shell loop reads, so `formatDisplayId`
   sanitizes locally with `displaySafe`. `toLongRecord` does too:
-  NEITHER `JSON.stringify` nor `yaml` escapes DEL, C1, `U+2028` or the
-  bidi overrides, so the encoder is not the boundary for the `--long` /
-  `--show-dependencies` payloads. They disagree about C0, which is not what that
-  rests on. Two
+  `yaml` does not escape DEL, C1, `U+2028` or the bidi overrides, so the
+  encoder is not the boundary for the `--long` / `--show-dependencies`
+  payloads; the `--json` arm goes through `stringifyJsonPayload`
+  ([#4045](https://github.com/go-to-k/cdkd/issues/4045)), which escapes only
+  what `displaySafe` leaves. Two
   residuals, both on that issue's open helper-choice row: a control-only name
   sanitizes to EMPTY, which reads as absent; and sanitizing is MANY-TO-ONE, so
   two distinct manifest entries can emit one identical record — a `jq` select on
