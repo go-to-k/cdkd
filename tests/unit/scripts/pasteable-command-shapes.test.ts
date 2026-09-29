@@ -123,13 +123,15 @@ describe('pasteable-command shape fence — the classifier sees its input', () =
     // after a rebase onto a `main` that removed cdkd's own quotes from around
     // displayed identifiers (go-to-k/cdkd#3658): the SPAN count fell while the
     // other two rose, which is the shape of that change and not of a narrowing.
+    // go-to-k/cdkd#3950's `export.ts` pass did the same again: removing its
+    // hand-written quotes took the span count below the 1300 this held.
     // Both non-file magnitudes moved DOWN during review without the scan
     // narrowing: a duplicate visit of nested literals was removed, and folding
     // `+` runs merges several literals into the one command literal they
     // spell — which is the command counter's whole subject.
     const report = realTree();
     expect(report.filesScanned).toBeGreaterThan(340);
-    expect(report.spansExamined).toBeGreaterThan(1300);
+    expect(report.spansExamined).toBeGreaterThan(1200);
     expect(report.commandLiteralsExamined).toBeGreaterThan(800);
   }, 60_000);
 

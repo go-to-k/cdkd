@@ -38,7 +38,6 @@ const HAND_QUOTED =
 
 /** Files whose sites go-to-k/cdkd#3950 still lists as open, each with its reason. */
 const ALLOWED: Readonly<Record<string, string>> = {
-  'src/cli/commands/export.ts': 'open row of go-to-k/cdkd#3950 (other lanes hold this file)',
   'src/deployment/intrinsic-function-resolver.ts':
     "open row of go-to-k/cdkd#3950 (the resolver's displayMasked / displayLeaf renders inside single quotes; they keep `'`). While listed, the two sites #4052 fixed here rely on their paste cases, not this fence",
   'src/cli/options.ts': 'open row of go-to-k/cdkd#3950 (--assume-role parse errors, displayIdent inside double quotes)',
