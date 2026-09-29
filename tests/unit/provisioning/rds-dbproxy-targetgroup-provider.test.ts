@@ -273,6 +273,24 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       const lines = warn.mock.calls.map((c) => String(c[0]));
       expect(lines).toHaveLength(1);
       expect(lines[0]).not.toContain('SECRETKEY');
+      expect(lines[0]).toContain('is not a list of tags');
+    });
+
+    it('the replay warning gives the secret-derived-key reason without the key', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = getLogger().child('x').warn as ReturnType<typeof vi.fn>;
+      warn.mockClear();
+      mockSend.mockResolvedValueOnce(describeOk);
+      await provider.create(
+        'TG',
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy', Tags: [{ Key: '{{resolve:ssm:SECRETKEY}}', Value: 'v' }] },
+        { replayingState: true }
+      );
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('holds a dynamic reference or its mask');
+      expect(lines[0]).not.toContain('SECRETKEY');
     });
 
     it('update checks the region before reading a missing target as already deregistered', async () => {
@@ -288,7 +306,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
           { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: ['c-gone'] },
           { expectedRegion: 'us-west-2' }
         )
-      ).rejects.toThrow(/does not match stack state region/);
+      ).rejects.toThrow(/Refusing to update TG .*does not match stack state region/);
     });
 
     it('a failed tag call with no registered targets has nothing to retire', async () => {

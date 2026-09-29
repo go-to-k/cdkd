@@ -269,12 +269,14 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     // only after the targets are registered. A state replay cannot fix its
     // record from the template, so there it warns and skips tagging, and the
     // key is dropped from what gets recorded.
-    const skipTags =
-      context?.replayingState === true &&
-      readTagList(properties['Tags'], 'desired', DBPROXY_TAG_OPTIONS).kind === 'malformed';
+    const desiredRead = readTagList(properties['Tags'], 'desired', DBPROXY_TAG_OPTIONS);
+    const skipTags = context?.replayingState === true && desiredRead.kind === 'malformed';
     if (skipTags) {
+      const reason = desiredRead.secretDerived
+        ? 'holds a dynamic reference or its mask where a tag key belongs'
+        : `is not ${DBPROXY_TAGS_WHAT}`;
       this.logger.warn(
-        safeMsg`${logicalId}: the recorded Tags is not ${DBPROXY_TAGS_WHAT}; re-creating the target group without tags.`
+        safeMsg`${logicalId}: the recorded Tags ${reason}; re-creating the target group without tags.`
       );
     }
     const tags = skipTags
@@ -643,7 +645,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           context?.expectedRegion,
           resourceType,
           logicalId,
-          physicalId
+          physicalId,
+          'pre-update'
         );
       }
     }
