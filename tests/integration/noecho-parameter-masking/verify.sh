@@ -5,9 +5,11 @@
 # records the value as a LOG-ONLY needle: the deploy's provider, error, event
 # and resolver surfaces mask it (the resolver's --verbose lines, the provider's
 # masker, the engine's error text, the deployments/*.jsonl events), and what
-# cdkd PERSISTS is unchanged. So do the diff's `requires replacement` line and
-# the export-alias collision warning (go-to-k/cdkd#4049). `cdkd diff` and the
-# other surfaces that never read the bag are go-to-k/cdkd#4049's other rows.
+# cdkd PERSISTS is unchanged. So do the diff's `requires replacement` line, the
+# export-alias collision warning, and `cdkd diff`'s own rendering, human and
+# --json (go-to-k/cdkd#4049). Still open on #4049: the deploy summary's Outputs
+# display, the CommaDelimitedList / Fn::Split coverage edges, and the forwarded
+# synth output.
 #
 # Phases:
 #   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: token=...` line
@@ -18,6 +20,12 @@
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
+#   3a. `cdkd diff --verbose` and `cdkd diff --json --fail` with
+#      CDKD_TEST_NOECHO_RENAME=true, before the redeploy that applies it:
+#      NoEchoRenamed's TopicName row prints its new side masked and its old
+#      side withheld, human and --json, and so does the diff's own
+#      `requires replacement` line; the exit codes are unchanged (0, and 1
+#      under --fail). Nothing in either output carries the value.
 #   3. Redeploy with CDKD_TEST_NOECHO_RENAME=true: NoEchoRenamed's create-only
 #      TopicName now embeds the value, and the `requires replacement` line
 #      prints it masked while AWS holds the real name (#4049). After Phase 2,
@@ -341,6 +349,83 @@ if [ "${EVENTS_REJECTION}" -lt 1 ]; then
   exit 1
 fi
 echo "    OK: no deployment-events object carries the value (${EVENTS_SCANNED} objects, ${EVENTS_REJECTION} with the rejection)"
+
+# --- Phase 3a: cdkd diff renders the pending rename masked -------------------
+# BEFORE Phase 3 applies it, so state still holds the literal name and the
+# diff has a real TopicName row whose new side embeds the value (#4049).
+echo "==> Phase 3a: cdkd diff (human --verbose, and --json --fail) over the pending rename"
+set +e
+DIFF_OUT_P3A=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_REJECT \
+  node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose 2>&1)
+DIFF_RC_P3A=$?
+DIFF_JSON_ERR=$(mktemp)
+SCRATCH_FILES+=("${DIFF_JSON_ERR}")
+DIFF_JSON_P3A=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_REJECT \
+  node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --json \
+  --fail 2>"${DIFF_JSON_ERR}")
+DIFF_JSON_RC_P3A=$?
+set -e
+DIFF_JSON_STDERR_P3A=$(cat "${DIFF_JSON_ERR}")
+# The disclosure check FIRST, over everything both runs printed.
+if [[ "${DIFF_OUT_P3A}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 3a 'cdkd diff --verbose' output carries the NoEcho value in plaintext (issue #4049)" >&2
+  exit 1
+fi
+if [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 3a 'cdkd diff --json' output carries the NoEcho value in plaintext (issue #4049)" >&2
+  exit 1
+fi
+# The exit codes are unchanged: a plain diff exits 0 over a change, and
+# --fail exits 1 because the change is still REPORTED, only masked.
+if [ "${DIFF_RC_P3A}" -ne 0 ]; then
+  echo "FAIL: 'cdkd diff --verbose' exited ${DIFF_RC_P3A}, not 0" >&2
+  diag_output "${DIFF_OUT_P3A}"
+  exit 1
+fi
+if [ "${DIFF_JSON_RC_P3A}" -ne 1 ]; then
+  echo "FAIL: 'cdkd diff --json --fail' exited ${DIFF_JSON_RC_P3A}, not 1 -- the pending rename was not reported as a change" >&2
+  diag_output "${DIFF_JSON_STDERR_P3A}"
+  exit 1
+fi
+# PREMISE + the masked row, human: the TopicName row exists (its header is the
+# SENTINEL, which carries no value), with the new side masked in place and
+# the old side withheld whole.
+RENAMED_ROW='  [~] NoEchoRenamed (AWS::SNS::Topic)'
+if [[ "${DIFF_OUT_P3A}" != *"${RENAMED_ROW}"* ]]; then
+  echo "FAIL: premise: 'cdkd diff' printed no UPDATE row for NoEchoRenamed -- this arm did not run" >&2
+  diag_output "${DIFF_OUT_P3A}"
+  exit 1
+fi
+if [[ "${DIFF_OUT_P3A}" != *'          old: "***"'* ]] \
+  || [[ "${DIFF_OUT_P3A}" != *"          new: \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\""* ]]; then
+  echo "FAIL: the NoEchoRenamed row does not print its old side withheld and its new side masked (issue #4049)" >&2
+  diag_output "${DIFF_OUT_P3A}"
+  exit 1
+fi
+# The diff's own --verbose replacement line, which Phase 3 checks on the deploy.
+DIFF_REPLACE_LINE="Property TopicName of AWS::SNS::Topic requires replacement (*** -> \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\")"
+if [[ "${DIFF_OUT_P3A}" != *"${DIFF_REPLACE_LINE}"* ]]; then
+  echo "FAIL: 'cdkd diff --verbose' does not print the masked 'requires replacement' line for NoEchoRenamed (issue #4049)" >&2
+  diag_output "$(grep -F 'requires replacement' <<< "${DIFF_OUT_P3A}" || true)"
+  exit 1
+fi
+# The --json payload: the same row, masked at the value.
+JSON_ROW=$(jq -c --arg name "cdkd-test-noecho-rename-${ACCOUNT_ID}-***" '
+  [.[] | .changes[] | select(.logicalId == "NoEchoRenamed") | .propertyChanges[]?
+   | select(.path == "TopicName" and .oldValue == "***" and .newValue == $name)] | length
+' <<< "${DIFF_JSON_P3A}" 2>/dev/null || echo "unparsable")
+if [ "${JSON_ROW}" != "1" ]; then
+  echo "FAIL: the --json payload does not carry NoEchoRenamed's TopicName change masked (issue #4049; got ${JSON_ROW})" >&2
+  diag_output "${DIFF_JSON_P3A}"
+  exit 1
+fi
+echo "    OK: cdkd diff masks the NoEcho value on its rows, its --json payload and its replacement line"
 
 # --- Phase 3: a create-only property now embeds the value --------------------
 # AFTER Phase 2's events scan: this deploy records the new topic's ARN, which

@@ -88,6 +88,17 @@ preprocessing best-effort, falling back to the raw template on failure.
   since an Outputs write drives no resource op.
 - A property side whose WHOLE value is an unresolved intrinsic renders as that
   raw intrinsic marked `(known after deploy)`, not `undefined`.
+- A `NoEcho` parameter's value is masked at the VALUE, at the END of
+  `computeStackDiff`, so both renderers and `--json` read masked copies while
+  every consumer above still reads resolved ones
+  ([#4049](https://github.com/go-to-k/cdkd/issues/4049)). The corpus
+  (`printingSecrets`) is the resolver's bag, holding every `NoEcho` value, plus
+  the parent's corpus. A child inherits it, deleted subtrees included, and so
+  does every resolver pass of the child (binding, conditions, the diff) and
+  the parent's child-parameter resolver. That INHERITED corpus is LOG-ONLY
+  needles over an EMPTY map (`diffPrintingSecrets`), since every resolver
+  reader that decides reads the map; the node's own resolver records into its
+  bag directly.
 - Nested-object changes are pruned to the changed keys JOINTLY over both sides
   (`stripUnchangedValuePair`), so a key addition renders `old: {}` /
   `new: {AddedKey}`, not as a removal.

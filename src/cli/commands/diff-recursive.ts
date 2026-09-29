@@ -15,7 +15,12 @@ import {
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
-import type { ResourceChange, ResourceState, StackState } from '../../types/state.js';
+import type {
+  PropertyChange,
+  ResourceChange,
+  ResourceState,
+  StackState,
+} from '../../types/state.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   hasReadableExportSet,
@@ -50,6 +55,18 @@ import {
   type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
 import { bindingSkippedOutputs } from '../../analyzer/skipped-outputs.js';
+import {
+  SECRET_MASK,
+  createUnionSecretMasker,
+  hasMaskableValues,
+  isSingleDynamicReferenceToken,
+  logOnlyValueCount,
+  printingCorpusOf,
+  recordLogOnlyParameterValue,
+  recordLogOnlyValue,
+  type RecordedSecretValues,
+} from '../../deployment/secret-redaction.js';
+import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import {
@@ -694,6 +711,14 @@ export interface StackDiffResult {
    * DELETEs as live (go-to-k/cdkd#3815).
    */
   effectiveTemplate: CloudFormationTemplate;
+  /**
+   * This node's PRINTING corpus (go-to-k/cdkd#4049), already applied to
+   * `changes` and `outputChanges`: its `NoEcho` parameter values, what its diff
+   * resolver recorded, and what it inherited. A nested child inherits it, since
+   * a parent's `NoEcho` value reaches the child through a parameter the child
+   * need not declare `NoEcho`.
+   */
+  printingSecrets: RecordedSecretValues;
 }
 
 /**
@@ -775,6 +800,234 @@ function tokenValueForComparison(token: unknown, declaredType: string | undefine
 }
 
 /**
+ * The PRINTING corpus of one `cdkd diff` node (go-to-k/cdkd#4049), as one bag
+ * of log-only needles: every needle of the diff resolver's own bag, of the
+ * node's `NoEcho` parameter values, and of the bag a nested child inherits
+ * from its parent. ONE bag, so `maskSecretsInText` matches longest-first over
+ * all of them in one pass.
+ *
+ * A needle that IS one whole `{{resolve:...}}` token is left out: this
+ * command prints a dynamic reference as its expression (it never resolves a
+ * secret), and a `NoEcho` parameter fed one is that expression, not a value.
+ * A needle merely CONTAINING one keeps its literal part secret, so it stays.
+ *
+ * Its map is EMPTY, only log-only needles: the resolver takes it as
+ * `inheritedSecrets` for its debug lines, and every resolver reader that
+ * DECIDES (the coerced-secret refusal, the parameter associations, the
+ * recorded-secret tests) reads the map. It persists nothing: `cdkd diff`
+ * writes nothing.
+ */
+function diffPrintingSecrets(
+  bags: ReadonlyArray<RecordedSecretValues | undefined>
+): RecordedSecretValues {
+  const all: RecordedSecretValues = new Map();
+  for (const bag of bags) {
+    if (bag === undefined) continue;
+    for (const needle of printingCorpusOf(bag).keys()) {
+      if (!isSingleDynamicReferenceToken(needle)) recordLogOnlyValue(all, needle);
+    }
+  }
+  return all;
+}
+
+/** A parameter value that is one whole `{{resolve:...}}` token, or a list of them. */
+function isWholeDynamicReferenceValue(value: unknown): boolean {
+  if (typeof value === 'string') return isSingleDynamicReferenceToken(value);
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((element) => typeof element === 'string' && isSingleDynamicReferenceToken(element))
+  );
+}
+
+/**
+ * ONE cached printing masker over a node's bags (go-to-k/cdkd#4049): the
+ * {@link diffPrintingSecrets} corpus and its regex are rebuilt only when a bag
+ * GREW, so a value walk masks every leaf against one compiled regex while a
+ * needle the resolver records mid-walk (an `Fn::Base64` encoding) still lands
+ * on the next call. Sound because a pass's bags only grow.
+ */
+function createDiffPrintingMasker(bags: ReadonlyArray<RecordedSecretValues | undefined>): {
+  mask: MaskerFn;
+  corpus: () => RecordedSecretValues;
+} {
+  const present = bags.filter((bag): bag is RecordedSecretValues => bag !== undefined);
+  let stamp: string | undefined;
+  let corpus: RecordedSecretValues = new Map();
+  let masker: MaskerFn = (text) => text;
+  const refresh = (): void => {
+    const now = present.map((bag) => `${bag.size}:${logOnlyValueCount(bag)}`).join(',');
+    if (now === stamp) return;
+    corpus = diffPrintingSecrets(present);
+    masker = createUnionSecretMasker([corpus]);
+    stamp = now;
+  };
+  return {
+    mask: (text) => {
+      refresh();
+      return masker(text);
+    },
+    corpus: () => {
+      refresh();
+      return corpus;
+    },
+  };
+}
+
+/**
+ * Past this depth a value is tested WHOLE: every string leaf, key and
+ * number / boolean leaf below it is visited ITERATIVELY, and the subtree is
+ * kept as it is when none holds a needle, replaced by the mask when one does.
+ * Never returned unmasked with a needle inside.
+ */
+const DIFF_VALUE_MASK_MAX_DEPTH = 32;
+
+/** Does any leaf or key under `value` change under `mask`? No recursion, so no depth limit. */
+function subtreeCarriesNeedle(value: unknown, mask: MaskerFn): boolean {
+  const pending: unknown[] = [value];
+  // A shared subtree is walked once: a DAG of references is otherwise walked
+  // once per path, exponential in its depth.
+  const visited = new Set<object>();
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (next !== null && typeof next === 'object') {
+      if (visited.has(next)) continue;
+      visited.add(next);
+    }
+    if (typeof next === 'string') {
+      if (mask(next) !== next) return true;
+    } else if (typeof next === 'number' || typeof next === 'boolean') {
+      if (mask(String(next)) !== String(next)) return true;
+    } else if (Array.isArray(next)) {
+      pending.push(...next);
+    } else if (next !== null && typeof next === 'object') {
+      for (const [key, leaf] of Object.entries(next as Record<string, unknown>)) {
+        pending.push(key, leaf);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * `value` as `cdkd diff` prints it (go-to-k/cdkd#4049): each string leaf and
+ * object key through `mask`, and a number or boolean leaf whose printed form
+ * `mask` changes replaced by the mask (a `Number` `NoEcho` parameter). Masks
+ * the VALUE, not the serialised text, so a needle holding `"` or `\` is still
+ * found, and `--json` escapes what is left.
+ *
+ * Returns `value` ITSELF when nothing changed, so an unmasked record keeps
+ * its identity and shape. Never mutates `value`: the old side is the state
+ * record's own object.
+ */
+export function maskDiffValue(value: unknown, mask: MaskerFn, depth = 0): unknown {
+  if (typeof value === 'string') return mask(value);
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    const text = String(value);
+    return mask(text) === text ? value : SECRET_MASK;
+  }
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= DIFF_VALUE_MASK_MAX_DEPTH) {
+    return subtreeCarriesNeedle(value, mask) ? SECRET_MASK : value;
+  }
+  if (Array.isArray(value)) {
+    const masked = value.map((element: unknown) => maskDiffValue(element, mask, depth + 1));
+    return masked.every((element, index) => element === value[index]) ? value : masked;
+  }
+  let changed = false;
+  const masked = nullPrototypeRecord<unknown>();
+  for (const [key, leaf] of Object.entries(value as Record<string, unknown>)) {
+    const shownKey = mask(key);
+    const shownLeaf = maskDiffValue(leaf, mask, depth + 1);
+    if (shownKey !== key || shownLeaf !== leaf) changed = true;
+    // Two keys masking to one spelling would drop a row: the object is then
+    // withheld whole instead.
+    if (Object.prototype.hasOwnProperty.call(masked, shownKey)) return SECRET_MASK;
+    masked[shownKey] = shownLeaf;
+  }
+  return changed ? masked : value;
+}
+
+/**
+ * The OLD side shown beside a new side (go-to-k/cdkd#4049). State keeps a
+ * `NoEcho` value in the clear, and only the CURRENT value is a needle, so a
+ * rotated value's previous plaintext would print. When the new side carries a
+ * needle, the old side is therefore withheld whole: the property served by a
+ * secret now is taken to have been served by it before. CloudFormation's
+ * change set prints `****` for both sides the same way.
+ */
+function maskedOldSide(oldValue: unknown, newCarriesNeedle: boolean, mask: MaskerFn): unknown {
+  if (newCarriesNeedle && oldValue !== undefined) return SECRET_MASK;
+  return maskDiffValue(oldValue, mask);
+}
+
+/** One resource change as `cdkd diff` prints it; the same object when nothing is masked. */
+function maskResourceChangeForDisplay(change: ResourceChange, mask: MaskerFn): ResourceChange {
+  if (!change.propertyChanges || change.propertyChanges.length === 0) return change;
+  let changed = false;
+  const propertyChanges = change.propertyChanges.map((propertyChange): PropertyChange => {
+    const newValue = maskDiffValue(propertyChange.newValue, mask);
+    const oldValue = maskedOldSide(
+      propertyChange.oldValue,
+      newValue !== propertyChange.newValue,
+      mask
+    );
+    // `path` is a top-level property NAME the template's resource schema
+    // spells, never a value, so it is printed as it is.
+    if (newValue === propertyChange.newValue && oldValue === propertyChange.oldValue) {
+      return propertyChange;
+    }
+    changed = true;
+    return { ...propertyChange, oldValue, newValue };
+  });
+  return changed ? { ...change, propertyChanges } : change;
+}
+
+/**
+ * One Outputs change as `cdkd diff` prints it (go-to-k/cdkd#4049): the values
+ * as {@link maskResourceChangeForDisplay} masks a property's, and a row NAME
+ * holding a needle (an `Export.Name` built from a `NoEcho` value) through
+ * `secretSafeKeyDisplay`'s verdict, unless `computeOutputsDiff` already gave
+ * it one.
+ */
+export function maskOutputChangeForDisplay(
+  change: OutputChange,
+  mask: MaskerFn,
+  nameCorpus: RecordedSecretValues
+): OutputChange {
+  const shown: OutputChange = { ...change };
+  let changed = false;
+  let newCarriesNeedle = false;
+  if (Object.prototype.hasOwnProperty.call(change, 'newValue')) {
+    shown.newValue = maskDiffValue(change.newValue, mask);
+    newCarriesNeedle = shown.newValue !== change.newValue;
+    changed ||= newCarriesNeedle;
+  }
+  if (Object.prototype.hasOwnProperty.call(change, 'oldValue')) {
+    shown.oldValue = maskedOldSide(change.oldValue, newCarriesNeedle, mask);
+    changed ||= shown.oldValue !== change.oldValue;
+  }
+  if (change.nameDisplay === undefined) {
+    const display = secretSafeKeyDisplay(change.name, nameCorpus);
+    if (display.kind !== 'safe') {
+      shown.nameDisplay = display;
+      changed = true;
+    }
+  } else if (
+    change.nameDisplay.kind === 'masked' &&
+    secretSafeKeyDisplay(change.name, nameCorpus).kind !== 'safe'
+  ) {
+    // `computeOutputsDiff` masked another secret in it, and the RAW name holds
+    // a `NoEcho` value too. Its masked text is a normalised string, so masking
+    // that again would test a different string than the verdict did: the name
+    // is withheld instead, decided on the raw key alone.
+    shown.nameDisplay = { kind: 'withheld' };
+    changed = true;
+  }
+  return changed ? shown : change;
+}
+
+/**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
  * vs `template` (synth desired state), with a best-effort intrinsic
  * resolver so changes buried inside intrinsics (e.g. `Fn::Join` literal
@@ -849,9 +1102,30 @@ export async function computeStackDiff(
       stackName: string,
       region: string
     ) => Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }>;
+    /**
+     * The parent node's {@link StackDiffResult.printingSecrets} for a nested
+     * child (go-to-k/cdkd#4049). Printing only: never handed to the resolver.
+     */
+    inheritedSecrets?: RecordedSecretValues;
   } = {}
 ): Promise<StackDiffResult> {
-  const { parameters, canonicalizeProperties, cfnFallback, inheritSecretBearingTemplate } = options;
+  const {
+    parameters,
+    canonicalizeProperties,
+    cfnFallback,
+    inheritSecretBearingTemplate,
+    inheritedSecrets,
+  } = options;
+  // The parent's printing corpus (go-to-k/cdkd#4049), as the `inheritedSecrets`
+  // of every resolver pass this node runs: parameter binding, condition
+  // evaluation and the diff resolver each print debug lines, and a child's
+  // parameter need not be `NoEcho` to hold the parent's `NoEcho` value. The
+  // parent's `printingSecrets` is already a `diffPrintingSecrets` corpus with
+  // an EMPTY map, so it is handed on as it is, not copied per pass.
+  const inheritedForResolver =
+    inheritedSecrets !== undefined && hasMaskableValues(inheritedSecrets)
+      ? inheritedSecrets
+      : undefined;
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
   });
@@ -932,7 +1206,13 @@ export async function computeStackDiff(
         userParameters[name] = String(value);
       }
     }
-    const templateParameters = await intrinsicResolver.resolveParameters(template, userParameters);
+    // `inheritedForResolver` masks this method's `using user-provided value`
+    // debug lines (go-to-k/cdkd#4049).
+    const templateParameters = await intrinsicResolver.resolveParameters(
+      template,
+      userParameters,
+      inheritedForResolver ? { inheritedSecrets: inheritedForResolver } : undefined
+    );
     // `resolveParameters` output wins for template-declared parameters — it
     // carries the deploy-coerced values (a Number-typed nested input becomes
     // a number, like deploy) — while raw nested inputs survive for any name
@@ -1003,6 +1283,9 @@ export async function computeStackDiff(
         stackName,
         bestEffort: true,
         ...(mergedParameters && { parameters: mergedParameters }),
+        // Its `Evaluated condition` / `Resolved` debug lines print a condition
+        // over a parent-fed value (go-to-k/cdkd#4049).
+        ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
       });
       effectiveTemplate = new TemplateParser().filterResourcesByCondition(template, conditions);
     } catch (error) {
@@ -1012,8 +1295,41 @@ export async function computeStackDiff(
     }
   }
 
+  // The PRINTING half of go-to-k/cdkd#4049. The diff resolver gets a bag of its
+  // own, as the deploy's diff pass does, so a `Ref` to a `NoEcho` parameter
+  // records its value there as a log-only needle, and so does an encoding
+  // derived from one (`Fn::Base64`). Every `NoEcho` parameter's bound value is
+  // ALSO recorded into it up front: the resolver records one only when a `Ref`
+  // serves it, while a property that STOPPED reading the parameter still holds
+  // it on the stored side, and a `Fn::GetAtt` reading a stored copy prints it
+  // in the resolver's own debug lines. Log-only needles decide nothing: every
+  // resolver reader that decides reads the bag's MAP. That map holds at most
+  // the mask-only entries of an encoding derived from a needle
+  // (`Fn::Base64`), since `skipDynamicReferences` resolves no secret, and the
+  // INHERITED bag handed to the resolver below has an empty map.
+  const diffSecrets: RecordedSecretValues = new Map();
+  for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
+    if (
+      (definition as { NoEcho?: unknown } | undefined)?.NoEcho === true &&
+      mergedParameters !== undefined &&
+      Object.prototype.hasOwnProperty.call(mergedParameters, name) &&
+      // A value that IS a `{{resolve:...}}` token is an expression the diff
+      // prints as written (a nested input), so it is no needle: the rows
+      // leave it, and so must the resolver's own lines.
+      !isWholeDynamicReferenceValue(mergedParameters[name])
+    ) {
+      recordLogOnlyParameterValue(diffSecrets, mergedParameters[name]);
+    }
+  }
+  // ONE cached masker for the `--verbose` replacement line and the final pass
+  // below; it re-reads the bags when they grow, as they do mid-walk.
+  const printing = createDiffPrintingMasker([diffSecrets, inheritedForResolver]);
+  const maskForLog: MaskerFn = printing.mask;
+
   const resolveFn = (value: unknown): Promise<unknown> =>
     intrinsicResolver.resolve(value, {
+      recordedSecretValues: diffSecrets,
+      ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
       template: effectiveTemplate,
       resources: currentState.resources,
       stateBackend,
@@ -1246,7 +1562,12 @@ export async function computeStackDiff(
     stateForDiff,
     effectiveTemplate,
     resolveFn,
-    canonicalizeProperties
+    canonicalizeProperties,
+    undefined,
+    undefined,
+    // `--verbose`'s `requires replacement (<old> -> <new>)` line prints
+    // resolved values (go-to-k/cdkd#4049).
+    maskForLog
   );
 
   // The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453), read
@@ -1496,15 +1817,46 @@ export async function computeStackDiff(
     }
   }
 
+  // go-to-k/cdkd#4049: mask what this node PRINTS, at the value, once every
+  // consumer that reads the values above has run. The human renderer and
+  // `--json` both read these, so neither prints a `NoEcho` value. Only the
+  // copies change: `stateForDiff`'s records are never written through.
+  const printingSecrets = printing.corpus();
+  let shownChanges = changes;
+  let shownOutputChanges = outputChanges;
+  let shownBlocking = blocking;
+  let shownDeployRefusals = deployRefusals;
+  if (hasMaskableValues(printingSecrets)) {
+    const mask: MaskerFn = printing.mask;
+    // A refusal can quote a physical id or a record value that embeds one.
+    // Masked, stripped, then masked again: the renderer strips control
+    // characters, which would otherwise reassemble a needle a control
+    // character split.
+    const maskReason = (reason: string): string => mask(stripControlChars(mask(reason)));
+    shownBlocking = blocking.map(maskReason);
+    shownDeployRefusals = deployRefusals.map(maskReason);
+    shownChanges = new Map(
+      [...changes].map(([logicalId, change]) => [
+        logicalId,
+        maskResourceChangeForDisplay(change, mask),
+      ])
+    );
+    const nameCorpus = printingCorpusOf(printingSecrets);
+    shownOutputChanges = outputChanges.map((change) =>
+      maskOutputChangeForDisplay(change, mask, nameCorpus)
+    );
+  }
+
   return {
-    changes,
-    outputChanges,
+    changes: shownChanges,
+    outputChanges: shownOutputChanges,
     adoptedOrphans,
     adoptedRecords,
-    blocking,
+    blocking: shownBlocking,
     unreadableOrphans,
-    deployRefusals,
+    deployRefusals: shownDeployRefusals,
     effectiveTemplate,
+    printingSecrets,
   };
 }
 
@@ -1556,7 +1908,14 @@ async function resolveChildStackParameters(
   parentStackName: string,
   stateBackend: S3StateBackend,
   parentParameters: Record<string, unknown> | undefined,
-  cfnFallback?: boolean
+  cfnFallback?: boolean,
+  /**
+   * The PARENT node's printing corpus (go-to-k/cdkd#4049): this resolver's
+   * `--verbose` lines print a child input assembled from a parent `NoEcho`
+   * value (`Fn::Sub`), or a physical id embedding one. Log-only needles over
+   * an empty map, so it decides nothing.
+   */
+  printingSecrets?: RecordedSecretValues
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -1575,6 +1934,8 @@ async function resolveChildStackParameters(
         // parameter is expected (caught + omitted below), not warn-worthy.
         bestEffort: true,
         ...(parentParameters && { parameters: parentParameters }),
+        ...(printingSecrets &&
+          hasMaskableValues(printingSecrets) && { inheritedSecrets: printingSecrets }),
         // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED here
         // too (issue #1903). Without it `cdkd diff --recursive` DECRYPTED a
         // secret-bearing nested-stack input parameter at plan time and printed
@@ -1756,6 +2117,11 @@ export async function buildDiffTree(args: {
    * above diffs a damaged root with such a name.
    */
   isNestedChild: boolean;
+  /**
+   * The parent node's printing corpus (go-to-k/cdkd#4049), see
+   * {@link StackDiffResult.printingSecrets}. Absent at the root.
+   */
+  inheritedSecrets?: RecordedSecretValues;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -1774,6 +2140,7 @@ export async function buildDiffTree(args: {
     previewOrphanAdoption,
     ancestorTemplatePaths,
     isNestedChild,
+    inheritedSecrets,
   } = args;
 
   const { state, unreadable, unreadableContainers, deployRefusals } = await loadStateOrEmpty(
@@ -1827,6 +2194,7 @@ export async function buildDiffTree(args: {
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
+        ...(inheritedSecrets && { inheritedSecrets }),
         // A live template of its own, so this node decides for itself; the
         // inherited flag only matters for the DELETED children below.
         inheritSecretBearingTemplate: false,
@@ -1844,6 +2212,7 @@ export async function buildDiffTree(args: {
     unreadableOrphans,
     deployRefusals: adoptedDeployRefusals,
     effectiveTemplate,
+    printingSecrets,
   } = stackDiff;
   // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
   // off each record for the sticky-Cloud-Control annotation, and an adopted
@@ -1972,7 +2341,8 @@ export async function buildDiffTree(args: {
       stackName,
       stateBackend,
       parameters,
-      cfnFallback
+      cfnFallback,
+      printingSecrets
     );
     node.children.push(
       await buildDiffTree({
@@ -1992,6 +2362,7 @@ export async function buildDiffTree(args: {
         ancestorTemplatePaths: childAncestorTemplatePaths,
         isNestedChild: true,
         parentHasSecretReference: secretBearingAbove,
+        inheritedSecrets: printingSecrets,
       })
     );
   }
@@ -2023,7 +2394,8 @@ export async function buildDiffTree(args: {
         // empty template, so without this its whole stored bag renders with
         // values. Accumulated from above, so an intermediate template that
         // happens to carry no reference cannot break the chain.
-        secretBearingAbove
+        secretBearingAbove,
+        printingSecrets
       )
     );
   }
@@ -2042,7 +2414,10 @@ async function buildDeletedSubtree(
   region: string,
   stateBackend: S3StateBackend,
   diffCalculator: DiffCalculator,
-  parentHasSecretReference: boolean
+  parentHasSecretReference: boolean,
+  // The nearest live node's printing corpus (go-to-k/cdkd#4049): a REMOVE
+  // row's stored value can hold a `NoEcho` value that node passed down.
+  inheritedSecrets: RecordedSecretValues
 ): Promise<DiffTreeNode> {
   const { state, unreadable, unreadableContainers } = await loadStateOrEmpty(
     stackName,
@@ -2056,7 +2431,7 @@ async function buildDeletedSubtree(
     stackName,
     stateBackend,
     diffCalculator,
-    { inheritSecretBearingTemplate: parentHasSecretReference }
+    { inheritSecretBearingTemplate: parentHasSecretReference, inheritedSecrets }
   );
   const node: DiffTreeNode = {
     stackName,
@@ -2105,7 +2480,8 @@ async function buildDeletedSubtree(
         region,
         stateBackend,
         diffCalculator,
-        parentHasSecretReference
+        parentHasSecretReference,
+        inheritedSecrets
       )
     );
   }
