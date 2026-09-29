@@ -82,7 +82,9 @@ verify, clean up.
    - `cd tests/integration/<test-name>/`; `npm install` if no `node_modules`.
    - **If `verify.sh` exists**:
      `AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh` — the script does
-     its own deploy + destroy; steps 6/7 STILL run after. Propagate its exit code
+     its own deploy + destroy; steps 6/7 STILL run after. A region constraint in
+     the `verify.sh` header or the fixture's last ledger note overrides
+     `us-east-1` (`asset-bootstrap` needs a region with no cdkd asset storage, #4063). Propagate its exit code
      so a non-zero exit drives the failure path; never swallow failures.
    - **Otherwise** (standard flow):
      - `node ../../../dist/cli.js synth --region us-east-1`
@@ -337,7 +339,7 @@ Which fixture to run is a coverage judgement, not a marker lookup.
 - **Run `/review-pr` (and apply its fixes) BEFORE this skill when both are
   planned for the same PR** — the marker is digest-bound to its src scope, so a
   post-integ review fix stales it and forces a full real-AWS re-run.
-- Always `--region us-east-1`; always destroy after deploy; if deploy fails,
+- `--region us-east-1` unless the fixture names another (step 5); always destroy after deploy; if deploy fails,
   still attempt destroy to clean up partial state — unless it failed on a
   peer's lock (step 7).
 - **A run blocked BEFORE its assertions is not a test failure — say which it
