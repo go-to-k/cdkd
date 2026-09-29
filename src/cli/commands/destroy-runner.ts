@@ -2353,7 +2353,7 @@ export async function runDestroyForStack(
         await ctx.lockManager.releaseLock(stackName, regionForState);
       } catch (releaseErr) {
         logger.warn(
-          `Failed to release lock for stack ${displayStackName(stackName)}:${describeAwsFailure(releaseErr).detail}`
+          `Failed to release lock for stack ${displayStackName(stackName)}: ${describeAwsFailure(releaseErr).detail}`
         );
       }
     } finally {

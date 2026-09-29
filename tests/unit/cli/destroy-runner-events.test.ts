@@ -290,6 +290,33 @@ describe('runDestroyForStack - #808 deployment events', () => {
     for (const bad of ['\x1b', '\r', '\n', '‮']) expect(warn).not.toContain(bad);
   });
 
+  it('renders a planted stack name inert in the lock-release warning (issue #3811)', async () => {
+    const provider = { delete: vi.fn().mockResolvedValue(undefined) };
+    const ctx = makeContext({ provider, recorder: new CollectingRecorder() });
+    const lockManager = {
+      acquireLock: vi.fn().mockResolvedValue(true),
+      releaseLock: vi.fn().mockRejectedValue(new Error('boom')),
+    } as unknown as LockManager;
+
+    const state = makeState({
+      Topic: {
+        physicalId: 'phys',
+        resourceType: 'AWS::SNS::Topic',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      },
+    });
+
+    await runDestroyForStack('S\r\nX‮', state, { ...ctx, lockManager });
+
+    const warn = logWarn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to release lock'));
+    expect(warn).toMatch(/^Failed to release lock for stack "S {2}X": \S/);
+  });
+
   it('treats an already-gone resource as a successful delete (RESOURCE_SUCCEEDED)', async () => {
     const recorder = new CollectingRecorder();
     const provider = {
