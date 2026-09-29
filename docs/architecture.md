@@ -397,8 +397,8 @@ break a consumer — was hidden the same way.
   stored side is not (the condition `cdkd scrub` repairs; a stored value counts
   as the expression only as one whole token (where the desired value is one
   whole token too, or absent) or under exactly the desired value's literal text, never as a token beside other text, issue #4101; a stored
-  value failing that shape is itself withheld per key, whatever else the record
-  holds),
+  value failing that shape, or a container with such a leaf, is itself withheld
+  per key, whatever else the record holds),
   and the template itself declaring the key's value as a dynamic reference —
   the latter collected for *every* declared output, including condition-skipped
   ones, because those have no desired side at all and would otherwise print in

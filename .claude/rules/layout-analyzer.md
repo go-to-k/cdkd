@@ -87,7 +87,8 @@ token too or has no string), or under exactly the desired side's literal parts
 (not the carried check); never on a substring hit, which a pre-#1901 deploy
 wrote beside a plaintext (#4101). A stored value failing that shape is also
 withheld PER KEY on its own (`ownValueHidesSecret`), declared or not, whatever
-the record verdict, the exoneration or `templateHasSecretReference` say: the
+the record verdict, the exoneration or `templateHasSecretReference` say (a
+container by any string leaf; one whole token never, it has no room for one): the
 same pre-#1901 write stored a sibling's whole token, which exonerates the record.
 
 Outputs ROW names print only `secretSafeKeyDisplay`'s verdict (#4015): an

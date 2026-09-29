@@ -357,6 +357,38 @@ describe('the #1948 exoneration of a REMOVED output reads the same shape (issue 
   });
 
   it.each([
+    ['a removed array', { Gone: ['{{resolve:secretsmanager:A}}-GONEPLAINTEXT'] }, {}],
+    ['a removed object', { Gone: { k: '{{resolve:secretsmanager:A}}-GONEPLAINTEXT' } }, {}],
+    ['a declared array turned public', { Gone: ['{{resolve:secretsmanager:A}}-GONEPLAINTEXT'] }, { Gone: ['pub'] }],
+  ])('withholds a mixed secret leaf inside %s', (_label, stored, desiredExtra) => {
+    const changes = computeOutputsDiff(
+      { Sec: '{{resolve:secretsmanager:S}}', ...stored },
+      { Sec: '{{resolve:secretsmanager:S}}', ...desiredExtra },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['Sec', ...Object.keys(desiredExtra)]), templateHasSecretReference: true }
+    );
+    expect(JSON.stringify(changes)).not.toContain('GONEPLAINTEXT');
+    expect(changes).toEqual([expect.objectContaining({ name: 'Gone', oldValueRedacted: true })]);
+  });
+
+  it.each([
+    ['a whole token', '{{resolve:secretsmanager:A}}'],
+    ['an array of whole tokens', ['{{resolve:secretsmanager:A}}', SSM_REF]],
+  ])('prints %s turned public: it has no room for a plaintext', (_label, stored) => {
+    const changes = computeOutputsDiff(
+      { Out: stored, Keep: 'k' },
+      { Out: 'public', Keep: 'k' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['Out', 'Keep']), templateHasSecretReference: false }
+    );
+    expect(changes).toEqual([
+      { name: 'Out', changeType: 'MODIFY', oldValue: stored, newValue: 'public', isExport: false },
+    ]);
+  });
+
+  it.each([
     ['a whole secretsmanager token', '{{resolve:secretsmanager:A}}'],
     ['a whole SecureString ssm token', SSM_REF],
   ])('still exonerates the record for %s beside the removed key', (_label, token) => {

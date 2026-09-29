@@ -1198,12 +1198,27 @@ export function computeOutputsDiff(
   // same deploy stored a sibling's whole token, which exonerates the record.
   // So this refusal is per key, for a declared key too (its template value may
   // since have turned public, so pass 1 has no desired-side signal), and is
-  // gated by neither the exoneration nor the template.
+  // gated by neither the exoneration nor the template. One whole token is
+  // never refused here: it has no room for a plaintext. A CONTAINER is read
+  // leaf by leaf with no desired side to line up against, so any leaf holding
+  // a secret token beside other text withholds it (fail-closed; a pre-#1901
+  // deploy's value scan wrote the same shape inside an array or object).
+  const leafCarriesSecret = (leaf: string): boolean =>
+    (isSecretDynamicReference(leaf) || keepsSecretReferenceToken(leaf)) &&
+    !isWholeSecretReferenceToken(leaf);
+  const anyLeafCarriesSecret = (value: unknown): boolean => {
+    if (typeof value === 'string') return leafCarriesSecret(value);
+    if (Array.isArray(value)) return value.some(anyLeafCarriesSecret);
+    if (value !== null && typeof value === 'object') {
+      return Object.values(value as Record<string, unknown>).some(anyLeafCarriesSecret);
+    }
+    return false;
+  };
   const ownValueHidesSecret = (name: string): boolean => {
     const value = currentBag[name];
+    if (typeof value !== 'string') return anyLeafCarriesSecret(value);
     return (
-      typeof value === 'string' &&
-      (isSecretDynamicReference(value) || keepsSecretReferenceToken(value)) &&
+      leafCarriesSecret(value) &&
       !storedSecretTokenIsExpression(
         value,
         Object.prototype.hasOwnProperty.call(desired, name) ? desired[name] : undefined
