@@ -457,7 +457,11 @@ if [ "${TG_ARN_AFTER}" != "${TG_ARN}" ]; then
   exit 1
 fi
 # The witness that the flip was an in-place update: no replacement line for
-# the target group, and the flip announced itself. The announcement's
+# the target group, and the flip announced itself. The ARN check above is
+# weaker than it looks -- the proxy's `default` group keeps its ARN even
+# across a replacement on the same proxy -- so the `Replacing` grep is the
+# real witness, trusted because the flip line at the same info level must
+# match. The announcement's
 # sentinel is the flipped record above: a flip with no line means the wording
 # drifted, not the behavior.
 if grep -qE "Replacing ${TG_LOGICAL} " <<<"${DEPLOY_1C_PLAIN}"; then
@@ -637,6 +641,17 @@ if ! grep -qF -- "--remove-protection had turned DeletionProtection off, so it w
   exit 1
 fi
 echo "    OK: SecurityCluster DeletionProtection restored after the terminal delete failure (#2204)"
+
+# Issue #4087: the target group seeded to cc-api must have been DELETED, not
+# merely absent from the failure set -- a skipped or never-attempted delete
+# prints no failure line and keeps its record. State survives this destroy
+# (the SecurityCluster failed), so the record's absence is readable.
+TG_LEFT=$(tg_field .physicalId)
+if [ -n "${TG_LEFT}" ]; then
+  echo "FAIL: #4087: the cc-api DBProxyTargetGroup record survived the phase 2b destroy (${TG_LEFT}); it was not deleted through the SDK provider" >&2
+  exit 1
+fi
+echo "    OK: the cc-api target group record was deleted through the SDK provider (#4087)"
 
 delete_oob_instance "${OOB_INSTANCE_ID}"
 OOB_INSTANCE_ID=""

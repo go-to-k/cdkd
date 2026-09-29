@@ -17,7 +17,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
-import type { CreateContext } from '../../types/resource.js';
+import type { CreateContext, UpdateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -138,8 +138,11 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     const tagRefusal = tagListRefusal(properties['Tags']);
     const skipTags = tagRefusal !== undefined && context?.replayingState === true;
     if (skipTags) {
+      const mask = context?.maskSecrets ?? ((t: string) => t);
       this.logger.warn(
-        safeMsg`${logicalId}: the recorded Tags ${tagRefusal}; re-creating the target group without tags.`
+        mask(
+          safeMsg`${logicalId}: the recorded Tags ${tagRefusal}; re-creating the target group without tags.`
+        )
       );
     }
     const tags = skipTags
@@ -207,14 +210,30 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       );
       targetGroupArn = describeResponse.TargetGroups?.[0]?.TargetGroupArn;
     } catch (error) {
-      throw this.wrapError(error, 'CREATE (describe)', resourceType, logicalId, undefined);
+      // Every throw from here on leaves the registration above live with
+      // nothing recorded, so each retires it first.
+      throw await this.retireRegistrationAfterFailedCreate(
+        this.wrapError(error, 'CREATE (describe)', resourceType, logicalId, undefined),
+        dbProxyName,
+        targetGroupName,
+        dbClusterIdentifiers,
+        dbInstanceIdentifiers,
+        context?.maskSecrets
+      );
     }
 
     if (!targetGroupArn) {
-      throw new ProvisioningError(
-        `Failed to recover TargetGroupArn for ${dbProxyName}/${targetGroupName} after create`,
-        resourceType,
-        logicalId
+      throw await this.retireRegistrationAfterFailedCreate(
+        new ProvisioningError(
+          `Failed to recover TargetGroupArn for ${dbProxyName}/${targetGroupName} after create`,
+          resourceType,
+          logicalId
+        ),
+        dbProxyName,
+        targetGroupName,
+        dbClusterIdentifiers,
+        dbInstanceIdentifiers,
+        context?.maskSecrets
       );
     }
 
@@ -224,8 +243,6 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           new AddTagsToResourceCommand({ ResourceName: targetGroupArn, Tags: tags })
         );
       } catch (error) {
-        // The registration above is live and nothing will be recorded, so the
-        // next deploy would register again over it: retire it first.
         throw await this.retireRegistrationAfterFailedCreate(
           this.wrapError(error, 'CREATE (add tags)', resourceType, logicalId, undefined),
           dbProxyName,
@@ -260,7 +277,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const dbProxyName = properties['DBProxyName'] as string | undefined;
     if (!dbProxyName) {
@@ -319,8 +337,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     // before any call (issue #3948). A malformed RECORDED list only hides
     // removals, and every add is idempotent, so it degrades to adds alone.
     const desiredTags = readTagList(properties['Tags'], resourceType, logicalId, physicalId);
+    const mask = context?.maskSecrets ?? ((t: string) => t);
     const recordedTags = readRecordedTagList(previousProperties['Tags'], (message) =>
-      this.logger.warn(safeMsg`${logicalId}: ${message}`)
+      this.logger.warn(mask(safeMsg`${logicalId}: ${message}`))
     );
 
     const client = this.getClient();

@@ -188,6 +188,55 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       );
     });
 
+    it.each([
+      ['a failed Describe', () => mockSend.mockRejectedValueOnce(new Error('Throttling'))],
+      ['a Describe with no ARN', () => mockSend.mockResolvedValueOnce({ TargetGroups: [] })],
+    ])('%s after registering retires the registration', async (_label, primeDescribe) => {
+      mockSend.mockResolvedValueOnce({ DBProxyTargets: [] }); // Register
+      primeDescribe();
+      mockSend.mockResolvedValueOnce({}); // Deregister (cleanup)
+      await expect(
+        provider.create('TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['my-cluster'],
+        })
+      ).rejects.toThrow(ProvisioningError);
+      expect(names()).toEqual([
+        'RegisterDBProxyTargetsCommand',
+        'DescribeDBProxyTargetGroupsCommand',
+        'DeregisterDBProxyTargetsCommand',
+      ]);
+    });
+
+    it('routes the tag-refusal warnings through the caller masker', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = getLogger().child('x').warn as ReturnType<typeof vi.fn>;
+      warn.mockClear();
+      const maskSecrets = (t: string) => t.replaceAll('SECRETKEY', '***');
+      mockSend.mockResolvedValueOnce(describeOk);
+      await provider.create(
+        'TG',
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy', Tags: [{ Key: 'SECRETKEY', Value: 1 }] },
+        { replayingState: true, maskSecrets }
+      );
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'TG',
+        TARGET_GROUP_ARN,
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy', Tags: [{ Key: 'a', Value: '1' }] },
+        { DBProxyName: 'AuroraProxy', Tags: [{ Key: 'SECRETKEY', Value: 1 }] },
+        { maskSecrets }
+      );
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines).toHaveLength(2);
+      for (const line of lines) {
+        expect(line).toContain('***');
+        expect(line).not.toContain('SECRETKEY');
+      }
+    });
+
     it('a failed tag call with no registered targets has nothing to retire', async () => {
       mockSend
         .mockResolvedValueOnce(describeOk)
