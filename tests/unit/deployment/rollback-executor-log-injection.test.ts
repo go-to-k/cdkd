@@ -1054,7 +1054,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // terminal (M1 of the go-to-k/cdkd#3764 review) while every line of it is
     // still sanitized. Both call sites, and both arms, are pinned by shape.
     expect((src.match(wrapped) ?? []).length).toBe(2);
-    expect((src.match(/\$\{rollbackFailureText\((\w+)\)\}/g) ?? []).length).toBe(2);
+    // Since issue #4037 both call sites reach it through `maskedFailureText`.
+    expect((src.match(/^\s+(?:rollbackError|revertError),\n\s+mask\n\s+\)/gm) ?? []).length).toBe(2);
+    expect((src.match(/maskedFailureText\(\n/g) ?? []).length).toBe(2);
+    expect(src).toContain('const text = rollbackFailureText(error);');
     expect(src).toContain('return displaySafe(error instanceof Error ? error.message : String(error));');
     expect(src).toContain('.map((line) => displaySafe(line))');
     // The per-line arm is keyed on IDENTITY, and all three of this module's
@@ -1075,7 +1078,8 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).not.toContain('isNameCollisionError(msg)');
     expect(src).toContain('.replace(/[\\s\\p{Cf}\\p{Default_Ignorable_Code_Point}\\u2800]{2,}/gu, \' \')');
     expect(src).toMatch(/return displayAwsMessage\(\s*displaySafe\(msg\)\.replace\(/);
-    expect(src).toContain('${collisionText(maskSecretsInText(msg, secrets))}');
+    // Through the op's masker since issue #4037.
+    expect(src).toContain('${collisionText(mask(msg))}');
   });
 
   it('a forged OLD type (issue #2668) cannot forge a line through the Type-change renders', async () => {
@@ -1230,8 +1234,9 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(lines.filter((l) => /\$\{prev\.physicalId\}/.test(l)).length).toBeGreaterThanOrEqual(1);
     // The thrown collision message -- the one carrying the pasted `--orphan`
     // remedy -- renders both physical ids with a BOUNDARY, not the denylist.
-    expect(src).toContain('(${safe(prev.physicalId)}) collided with the');
-    expect(src).toContain('(${safe(current.physicalId)}), and');
+    // Masked first (issue #4037), so the boundary renders the MASKED id.
+    expect(src).toContain('(${safe(mask(prev.physicalId))}) collided with the');
+    expect(src).toContain('(${safe(mask(current.physicalId))}), and');
     // And the helper's warn half wraps its parameters.
     expect(src).toContain('`  ⚠ ${safe(logicalId)} (${safe(resourceType)}) has UpdateReplacePolicy');
   });
