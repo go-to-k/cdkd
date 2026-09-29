@@ -177,7 +177,10 @@ describe('RDSDBProxyTargetGroupProvider', () => {
           DBInstanceIdentifiers: ['i-1', 'i-2'],
           Tags: [{ Key: 'team', Value: 'db' }],
         })
-        .catch((e: unknown) => e as Error);
+        .then(
+          () => new Error('create resolved'),
+          (e: unknown) => e as Error
+        );
       expect(error.message).toMatch(/^CREATE \(add tags\) failed for TG: AccessDenied/);
       expect(error.message).toContain(
         'aws rds deregister-db-proxy-targets --db-proxy-name AuroraProxy ' +

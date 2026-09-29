@@ -1969,6 +1969,7 @@
     "--resource-arns",
     "--resource-id",
     "--resource-ids",
+    "--resource-name",
     "--resource-request-status-filter",
     "--resource-type",
     "--rest-api-id",
