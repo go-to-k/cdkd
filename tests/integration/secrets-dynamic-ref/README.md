@@ -89,6 +89,14 @@ covers the optional-trailing-field grammar.
      `cdkd scrub`, and asserts the password is gone and the key now reads
      `{{resolve:{{resolve:secretsmanager:...}}}}`. The key is dropped again
      afterwards.
+   - Phase 1b6 (issue [#2889](https://github.com/go-to-k/cdkd/issues/2889)):
+     `CDKD_TEST_MARK_SPLIT_EXPORT=true` declares an output whose `Export.Name`
+     (an `Fn::Sub` over literals; CDK refuses a literal non-ASCII name) resolves
+     to the password with a zero-width nonspacing mark
+     (`U+09BC`) inside it. Asserts the deploy refuses the alias with a warn
+     that prints neither the name nor the password, and that neither
+     `state.outputs` nor the exports index carries the name as a key. The
+     output is dropped from state afterwards.
 2. Read the consumer Lambda's env vars via `GetFunctionConfiguration`.
 3. For each env var: it is **not** still a literal `{{resolve:...}}` token, AND
    it equals the known expected value. A wrong-or-literal value FAILS with

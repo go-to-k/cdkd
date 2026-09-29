@@ -1351,6 +1351,15 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // disclose on a schedule.
       const named = (exportName: string): string => {
         const shown = scrubbed.exportNameDisplay(exportName);
+        // NON-ASCII IS WITHHELD on BOTH printable arms, the rule
+        // `maskedLabel` in `outputs-export-alias.ts` applies to the warnings:
+        // `displayIdent` blanks such a character to a space AFTER the verdict,
+        // so the printed text is no longer the tested text -- a name spelling
+        // `correct` + U+09BC (or NBSP) + `horse` beside a recorded
+        // `correct horse` printed the passphrase byte for byte.
+        if (shown.kind !== 'withheld' && /[^ -~]/.test(shown.text)) {
+          return '(name withheld: it carries characters this line cannot show as tested)';
+        }
         switch (shown.kind) {
           case 'safe':
             return displayIdent(shown.text);

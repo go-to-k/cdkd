@@ -3,6 +3,7 @@ import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3
 import {
   ExportIndexStore,
   EXPORT_INDEX_VERSION,
+  NAME_WITHHELD_NON_ASCII,
   type ExportIndexFile,
 } from '../../../src/state/export-index-store.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -680,10 +681,44 @@ describe('ExportIndexStore', () => {
       await store.updateForStack('Mine', 'us-east-1', { 'Shared\u0007X': 'mine' });
 
       expect(warnings()).toHaveLength(1);
-      // The BEL byte is replaced by a space, which makes the name non-plain, so
-      // `displayIdent` gives it a boundary; no raw control byte survives.
-      expect(warnings()[0]).not.toContain('\u0007');
-      expect(warnings()[0]).toContain('Export "Shared X" is published');
+      // A name carrying anything outside printable ASCII is WITHHELD (#2889
+      // review): blanking the BEL to a space would print a text nothing tested.
+      expect(warnings()[0]).not.toContain(String.fromCharCode(7));
+      expect(warnings()[0]).not.toContain('Shared X');
+      expect(warnings()[0]).toContain(`Export ${NAME_WITHHELD_NON_ASCII} is published`);
+    });
+
+    it('WITHHOLDS a name whose non-ASCII character would be blanked into a passphrase (#2889 review)', async () => {
+      // `displayIdent` turns a non-ASCII character into a space, so each of
+      // these names used to print as the recorded passphrase `correct horse`.
+      for (const code of [0x00a0, 0x09bc, 0x2028]) {
+        loggerSpies.warn.mockClear();
+        const name = `correct${String.fromCharCode(code)}horse`;
+        const indexFile: ExportIndexFile = {
+          indexVersion: 1,
+          region: 'us-east-1',
+          exports: { [name]: { value: 'theirs', producerStack: 'Other', producerRegion: 'us-east-1' } },
+          lastModified: 1,
+        };
+        const s3 = mockS3(async (cmd) => {
+          if (cmd.constructor.name === 'GetObjectCommand') {
+            return {
+              Body: { transformToString: async () => JSON.stringify(indexFile) },
+              ETag: '"e1"',
+            };
+          }
+          if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"e2"' };
+          throw new Error('unexpected');
+        });
+        const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+        await store.updateForStack('Mine', 'us-east-1', { [name]: 'mine' });
+
+        expect(warnings()).toHaveLength(1);
+        expect(warnings()[0]).toContain(`Export ${NAME_WITHHELD_NON_ASCII} is published`);
+        expect(warnings()[0]).not.toContain('correct horse');
+        expect(warnings()[0]).not.toContain('correct');
+      }
     });
 
     it('drops all entries when outputs map is empty', async () => {

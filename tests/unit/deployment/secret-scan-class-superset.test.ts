@@ -135,8 +135,9 @@ describe('the canonical secret-scan class', () => {
   });
 
   it('deletes the ENCLOSING marks, which render at zero advance width', () => {
-    // `\p{Me}` is the sibling of the `\p{Mn}` residual (issue #2889) and is
-    // CLOSED here rather than deferred with it, because #2889's cost argument
+    // `\p{Me}` is the sibling of `\p{Mn}` (issue #2889) and is deleted from
+    // the PRINTED space, where `\p{Mn}` is only removed for detection, because
+    // #2889's cost argument
     // -- deleting `\p{Mn}` would mangle Devanagari, Arabic, Hebrew and
     // Vietnamese names -- does not transfer to about a dozen code points with
     // no legitimate use in a resource name.
@@ -151,14 +152,15 @@ describe('the canonical secret-scan class', () => {
     }
   });
 
-  it('a NONSPACING mark is the recorded residual, and stays one', () => {
-    // Pinned so the residual cannot be quietly closed OR quietly widen. If a
-    // future change deletes `\p{Mn}` too, this reds and the author has to
-    // reckon with issue #2889's cost argument rather than discover it in a
-    // bug report about mangled non-Latin names.
+  it('a NONSPACING mark is caught in detection space, not deleted from the printed one', () => {
+    // Closed by issue #2889 WITHOUT adding `\p{Mn}` to this class: the split
+    // secret is found by the wider detection space and the name is withheld,
+    // while a mark-bearing name with no secret still prints its marks. The
+    // whole-class scan lives in `secret-detection-space-2889.test.ts`.
     const secrets = new Map([[SECRET, EXPR]]);
     const key = `alias-${SECRET.slice(0, 5)}\u09bc${SECRET.slice(5)}-suffix`;
-    expect(secretSafeKeyDisplay(key, secrets).kind).toBe('safe');
+    expect(secretSafeKeyDisplay(key, secrets)).toEqual({ kind: 'withheld' });
+    expect(canonicalDeletes('\u09bc')).toBe(false);
   });
 
   it('does NOT delete an ordinary visible character', () => {

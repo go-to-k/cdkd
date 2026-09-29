@@ -187,7 +187,7 @@ instead; the two rows overlap there, and the second one decides.) And a
 LITERAL name in a
 stack that resolves a secret makes `cdkd diff` omit its Outputs section
 entirely for that run — but only while state does NOT already hold the
-alias key. The deploy refuses such a name only when it CONTAINS the
+alias key. The deploy refuses such a name only when it contains, or renders, the
 resolved plaintext, which the preview never resolves, so with no stored
 verdict it declines to guess rather than print a row whose key may hold
 that plaintext; the omission is reported as the usual could-not-resolve

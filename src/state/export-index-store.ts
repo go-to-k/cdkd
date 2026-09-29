@@ -154,6 +154,13 @@ function describeIndexVersion(value: unknown): string {
 }
 
 /**
+ * What {@link ExportIndexStore} prints in place of an export name carrying a
+ * character outside printable ASCII -- see `warnOnForeignOverwrite`.
+ */
+export const NAME_WITHHELD_NON_ASCII =
+  '(name withheld: it carries characters this line cannot print faithfully)';
+
+/**
  * On-disk shape of `_index/{region}/exports.json`.
  *
  * Note: the index intentionally does NOT carry a `consumers[]` list
@@ -739,9 +746,20 @@ export class ExportIndexStore {
     // is read back from the persisted index, which nothing validated. Each
     // renders through `displayIdent` / `displayStackName`, which supply their
     // own boundary, so none sits inside quotes of cdkd's (go-to-k/cdkd#3617).
+    //
+    // The export NAME is WITHHELD when it carries anything outside printable
+    // ASCII (#2889 review), the rule `maskedLabel` in
+    // `src/deployment/outputs-export-alias.ts` applies: `displayIdent` blanks
+    // such a character to a space, so a name spelling `correct` + NBSP (or a
+    // nonspacing mark, or U+2028) + `horse` printed a recorded passphrase
+    // `correct horse` verbatim. This store holds no secret corpus to test the
+    // name against, so it cannot print a faithful rendering either way.
     const theirs = displayStackName(existing.producerStack);
+    const shownName = /[^ -~]/.test(exportName)
+      ? NAME_WITHHELD_NON_ASCII
+      : displayIdent(exportName);
     this.logger.warn(
-      `Export ${displayIdent(exportName)} is published by both ${theirs} ` +
+      `Export ${shownName} is published by both ${theirs} ` +
         `(${displayIdent(existing.producerRegion)}) and ${displayStackName(stackName)} ` +
         `(${displayIdent(producerRegion)}); the exports ` +
         `index keeps the latest writer, so an Fn::ImportValue on it binds to whichever ` +

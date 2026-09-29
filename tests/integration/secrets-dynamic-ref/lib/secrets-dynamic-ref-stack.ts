@@ -443,6 +443,32 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         ),
       });
     }
+    // Issue #2889: an `Export.Name` holding the password split by
+    // `U+09BC` (BENGALI SIGN NUKTA), a zero-width nonspacing mark, so the name
+    // READS as the password. The value resolves the password, so this pass
+    // records it and the export-name containment test has it as a needle.
+    // Before #2889 the name was published as a state key and into the exports
+    // index; it is now refused and warned. Gated on its own token for one
+    // probe deploy, and verify.sh drops the output from state afterwards for
+    // the reason `OutputFailureLeak` states. Escaped, since committed files
+    // are ASCII-only English.
+    //
+    // An `Fn::Sub`, not a literal: CDK's `CfnOutput` refuses a LITERAL export
+    // name with any character outside `[A-Za-z0-9:-]` at synth (measured on
+    // the first live run of this arm), and skips the check for a token. A
+    // resolved intrinsic is also the shape that reaches this refusal in a real
+    // template. Every variable is a literal, so the name resolves to
+    // `cdkd-dynref-mark-split-` + the password with U+09BC inside it.
+    if (process.env.CDKD_TEST_MARK_SPLIT_EXPORT === 'true') {
+      new cdk.CfnOutput(this, 'MarkSplitExport', {
+        value: `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}`,
+        exportName: cdk.Fn.sub('cdkd-dynref-mark-split-${Head}${Mark}${Tail}', {
+          Head: 'cdkd-known-pw',
+          Mark: '\u09bc',
+          Tail: '-123',
+        }),
+      });
+    }
     // A literal OUTPUT embedding the two-character reference (issue #2516):
     // the same leaf shape as DB_PORT_LITERAL, walked by the outputs
     // redaction against the template's `Outputs`. verify.sh asserts

@@ -274,21 +274,19 @@ const MIN_SECRET_NEEDLE = 4;
  *   JOINER.
  *
  * - `\p{Me}` ENCLOSING marks. The same zero-advance-width shape as `\p{Mn}`
- *   below, and INCLUDED rather than deferred because the cost argument that
- *   defers `\p{Mn}` does not transfer: `\p{Me}` is about a dozen code points
+ *   below, and INCLUDED in the printed class because the cost argument that
+ *   keeps `\p{Mn}` out of it does not transfer: `\p{Me}` is about a dozen code points
  *   with no legitimate use in a resource name.
  *
- * NAMED RESIDUAL, because `\p{Default_Ignorable_Code_Point}` is Unicode's
- * INTENT-TO-BE-IGNORED property and NOT "everything that renders as nothing"
- * -- an earlier revision of this comment claimed the latter and review refuted
- * it. NONSPACING marks (`\p{Mn}`) carry zero advance width, so a secret split
- * by one renders contiguous while this class keeps it: measured with `U+09BC`,
- * which verdicts `safe` AND publishes the alias. Not widened here, because
- * `\p{Mn}` is the diacritics of Devanagari, Arabic, Hebrew and Vietnamese and
- * deleting it would mangle legitimate names for every user. Tracked as issue
- * [#2889](https://github.com/go-to-k/cdkd/issues/2889), which also carries the
- * homoglyph question. `origin/main` behaves identically, so this is a recorded
- * residual rather than something this change introduced.
+ * NOT `\p{Mn}`. `\p{Default_Ignorable_Code_Point}` is Unicode's
+ * INTENT-TO-BE-IGNORED property, NOT "everything that renders as nothing":
+ * NONSPACING marks carry zero advance width too, so a secret split by one
+ * (`U+09BC`) renders contiguous. They are kept in THIS class because it is
+ * also the PRINTED space, and `\p{Mn}` is the diacritics of Devanagari,
+ * Arabic, Hebrew and Vietnamese -- deleting it would mangle legitimate names
+ * for every user. They are caught instead by the wider DETECTION space,
+ * {@link SECRET_DETECTION_ONLY} (issue
+ * [#2889](https://github.com/go-to-k/cdkd/issues/2889)).
  *
  * THE THIRD BULLET REPLACED A HAND TAIL, and the hand tail was measured
  * leaking. A first cut listed the ranges by hand -- `FE00-FE0F`,
@@ -313,6 +311,70 @@ const MIN_SECRET_NEEDLE = 4;
  * does not.
  */
 const SECRET_SCAN_INVISIBLES = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+/**
+ * Characters deleted from the canonical (printed) space ONLY for the secret
+ * containment test, never from what is printed (issue
+ * [#2889](https://github.com/go-to-k/cdkd/issues/2889)): NONSPACING marks,
+ * after canonical decomposition. {@link detectionForm} decomposes (NFD),
+ * deletes the marks, and recomposes (NFC), so a precomposed letter and its
+ * decomposed spelling -- which render identically -- meet as the same base
+ * letter, and a Hangul syllable recomposes rather than staying split into
+ * jamo that would inflate its length past the floor.
+ *
+ * WHY THIS DOES NOT REOPEN #2874, whose finding was a verdict and a printed
+ * text in DIFFERENT spaces. That bug needed a secret VISIBLE in the printed
+ * string and ABSENT from the tested one. {@link secretsPresentIn} keeps every
+ * printed-space arm and ORs the detection arm beside them, so the verdict is a
+ * SUPERSET of the printed-space verdict by construction: a name judged safe
+ * was tested in the printed space AND in a wider one. A name whose ONLY hit is
+ * in the detection space is masked in neither (its canonical needle is not in
+ * the printed string), so {@link secretSafeKeyDisplay} withholds it rather
+ * than printing it, and its post-mask re-test runs the detection arm too.
+ *
+ * Its COST is over-refusal, stated rather than hidden, in both directions: a
+ * recorded secret CARRYING marks (`cafe` + `U+0301`) matches its unmarked
+ * skeleton (`cafe` in `cafeteria-export`), and an unmarked recorded secret
+ * matches a name that spells it with marks added (`cafe` in
+ * `cafe` + `U+0301` + `-api`, or the precomposed `caf` + `U+00E9` + `-api`).
+ * Either export alias is refused and warned. Fail-safe, and it takes a
+ * skeleton of at least {@link MIN_SECRET_NEEDLE} characters or a whole-name
+ * match.
+ */
+const SECRET_DETECTION_ONLY = /\p{Mn}/gu;
+
+/** `canonical` in DETECTION space: see {@link SECRET_DETECTION_ONLY}. */
+function detectionForm(canonical: string): string {
+  return canonical.normalize('NFD').replace(SECRET_DETECTION_ONLY, '').normalize('NFC');
+}
+
+/**
+ * A recorded secret's needle in DETECTION space, computed once per map
+ * rather than on every call that scans against it (#2889 review). Keyed by
+ * the map object and then by PLAINTEXT, and the form is a pure function of
+ * the plaintext, so an entry added to the map later is simply computed on
+ * first use and a stale entry can never be wrong. The cache dies with the
+ * map, as the side tables in `secret-redaction.ts` do.
+ */
+const DETECTION_NEEDLES = new WeakMap<RecordedSecretValues, Map<string, string>>();
+
+function detectionNeedleOf(
+  secrets: RecordedSecretValues,
+  plaintext: string,
+  canonical: string
+): string {
+  let forms = DETECTION_NEEDLES.get(secrets);
+  if (forms === undefined) {
+    forms = new Map();
+    DETECTION_NEEDLES.set(secrets, forms);
+  }
+  let form = forms.get(plaintext);
+  if (form === undefined) {
+    form = detectionForm(canonical);
+    forms.set(plaintext, form);
+  }
+  return form;
+}
 
 /**
  * A possibly-secret-bearing name as PRINTED: {@link secretScanHaystacks}'
@@ -346,8 +408,10 @@ function canonicalForSecretScan(text: string): string {
  * was three strings that could each hold a secret the others did not. These
  * two are one string and a trim of it: the trimmed one is a SUBSTRING of the
  * untrimmed one, and {@link secretSafeKeyDisplay} masks the UNTRIMMED string
- * and prints the trim of the result. Every verdict arm implies the canonical
- * needle occurs in that untrimmed string -- the raw arm too, since deleting
+ * and prints the trim of the result. Every verdict arm EXCEPT the detection arm
+ * ({@link SECRET_DETECTION_ONLY}, whose hits {@link secretSafeKeyDisplay}
+ * withholds) implies the canonical needle occurs in that untrimmed string --
+ * the raw arm too, since deleting
  * characters from a text containing the plaintext leaves the plaintext's own
  * deletion contiguous in it. So every occurrence a verdict can see is masked
  * before the trim, and the trim can only drop mask-free
@@ -438,7 +502,8 @@ function secretsPresentIn(
   // rewrite -- this module creating the exact state it tells the user it
   // cannot fix.
   //
-  // TWO ARMS, EACH BOUNDED BY ITS OWN LENGTH, because a single floor fails in
+  // TWO PRINTED-SPACE ARMS, EACH BOUNDED BY ITS OWN LENGTH (the detection
+  // arm below is a third, bounded the same way), because a single floor fails in
   // one direction or the other and both single-arm forms were measured:
   //
   // - Bounding by the RECORDED length alone makes the floor DEFEATABLE. A
@@ -474,6 +539,16 @@ function secretsPresentIn(
   // raw arm does buy is the key that carries the invisibles too, which main
   // caught and a canonical-only form would have dropped.
   const haystacks = secretScanHaystacks(text);
+  // THREE detection haystacks, because the trim and the mark removal do not
+  // commute and each order catches a whole-value match the other misses
+  // (#2889 review): trimmed AFTER the marks go catches U+0301 + space + `ab`
+  // beside a recorded `ab`; the trimmed printed haystack in detection form
+  // catches U+0301 + ` ab` beside a recorded ` ab`, whose edge whitespace is
+  // part of the secret; and the untrimmed one catches a needle whose own edge
+  // whitespace survives only there (a recorded ` abc` in ` ` + U+0301 + `abc`).
+  // Every one of the three runs BOTH the whole-value and the embedded test.
+  const wideUntrimmed = detectionForm(haystacks[1]);
+  const wideHaystacks = [wideUntrimmed.trim(), wideUntrimmed, detectionForm(haystacks[0])];
   const exposure: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of secrets) {
     // NO EMPTY-NEEDLE GUARD HERE, and the reason has now been wrong twice, so
@@ -503,8 +578,18 @@ function secretsPresentIn(
       (haystack) =>
         haystack === needle || (needle.length >= MIN_SECRET_NEEDLE && haystack.includes(needle))
     );
+    // DETECTION SPACE (issue #2889): the three detection haystacks above,
+    // bounded by the DETECTION needle's own length for the
+    // reason the canonical arm is bounded by its own. An ADDED arm, never a
+    // replacement: `canonicalHit` is not implied by it, since deleting marks
+    // can shorten a needle below the floor.
+    const wideNeedle = detectionNeedleOf(secrets, plaintext, needle);
+    const wideHit = wideHaystacks.some(
+      (wide) =>
+        wide === wideNeedle || (wideNeedle.length >= MIN_SECRET_NEEDLE && wide.includes(wideNeedle))
+    );
     const rawHit = plaintext.length >= MIN_SECRET_NEEDLE && text.includes(plaintext);
-    if (canonicalHit || rawHit) exposure.set(plaintext, expression);
+    if (canonicalHit || wideHit || rawHit) exposure.set(plaintext, expression);
   }
   return exposure.size > 0 ? exposure : undefined;
 }
@@ -693,6 +778,16 @@ export type SecretSafeKeyDisplay =
   | { kind: 'masked'; text: string }
   | { kind: 'withheld' };
 
+/** The union of two exposures, or `undefined` when both are. */
+function mergedExposure(
+  a: RecordedSecretValues | undefined,
+  b: RecordedSecretValues | undefined
+): RecordedSecretValues | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return new Map([...a, ...b]);
+}
+
 /**
  * Test `key` for recorded secret plaintext and return how it may be shown.
  *
@@ -737,7 +832,19 @@ export function secretSafeKeyDisplay(
   // is keyed to the RECORDED length -- passing canonical needles would apply
   // the floor to the shortened form and drop a secret that only LOOKS
   // degenerate after its invisible characters are removed.
-  const exposure = stateKeySecretExposure(key, secrets);
+  //
+  // The FORCE-MASK set is tested by containment too, and a hit JOINS the
+  // exposure (#2889 review): its needles are masked only in the printed
+  // space, so a force-mask value split by a nonspacing mark and absent from
+  // `secrets` -- an owner key spelling `hunter` + U+09BC + `2pass` beside a
+  // substituted `hunter2pass` -- was masked by nothing and printed `safe`.
+  // As an exposure it ends `withheld` when masking cannot reach it. A
+  // force-mask value simply ABSENT from the text is still no exposure, so
+  // the innocent-output-key case below keeps printing.
+  const exposure = mergedExposure(
+    stateKeySecretExposure(key, secrets),
+    forceMask === undefined ? undefined : secretsPresentIn(key, forceMask)
+  );
 
   // The caller's AUTHORITATIVE exposure -- what resolution PUT in this name --
   // is force-masked and deliberately NOT part of the verdict above.
@@ -760,10 +867,13 @@ export function secretSafeKeyDisplay(
     //
     // With an exposure, a needle really is in this text and masking failed to
     // remove it, so the name is withheld -- fail closed. Every verdict arm with
-    // a non-empty needle puts it in `untrimmed` (see `secretScanHaystacks`), so
-    // what reaches here is a recorded value equal to the mask itself, or an
-    // exposure whose needle canonicalised to empty beside an absent force-mask
-    // needle. With NO exposure the
+    // a non-empty needle puts it in `untrimmed` (see `secretScanHaystacks`)
+    // EXCEPT the detection arm, so what reaches here is a recorded value equal
+    // to the mask itself, an exposure whose needle canonicalised to empty
+    // beside an absent force-mask needle, or a secret split by a nonspacing
+    // mark, found only in detection space (issue #2889) -- masking in the
+    // printed space cannot reach it, and the name keeps its marks, so it is
+    // withheld rather than printed. With NO exposure the
     // only needles were force-mask ones that are simply absent from the text,
     // which is the ordinary case for the OUTPUT KEY beside a secret-bearing
     // export name: collapsing that into `withheld` withheld an innocent name
@@ -783,8 +893,15 @@ export function secretSafeKeyDisplay(
   // and this re-test is what PROVES it rather than asserting it: any needle
   // still present after masking withholds the whole name. It reads the masked
   // UNTRIMMED string, so its trimmed haystack is exactly the text returned
-  // below -- the re-test and the print are one string.
-  if (stateKeySecretExposure(masked, secrets)) return { kind: 'withheld' };
+  // below -- the re-test and the print are one string. It also runs the
+  // DETECTION arm (issue #2889), so a second copy split by a nonspacing mark
+  // withholds the name rather than surviving the canonical-space mask.
+  if (
+    stateKeySecretExposure(masked, secrets) ||
+    (forceMask !== undefined && secretsPresentIn(masked, forceMask))
+  ) {
+    return { kind: 'withheld' };
+  }
   return { kind: 'masked', text: canonicalForSecretScan(masked) };
 }
 
