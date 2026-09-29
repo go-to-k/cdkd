@@ -59,7 +59,11 @@
  * `secretsmanager:` / `ssm-secure:`, or a resolved value or intrinsic name
  * keeping a secret token after the skip pass (a plain-`ssm` SecureString, or
  * a `secretsmanager` reference spelled only in a name; issue
- * [#4143](https://github.com/go-to-k/cdkd/issues/4143)).
+ * [#4143](https://github.com/go-to-k/cdkd/issues/4143)), counting only a token
+ * the template SPELLS in that output, since one arriving through a `Ref` to a
+ * parameter is not recorded. The diff reads the whole pass where the deploy
+ * checks a literal only against names resolved before it: an over-approximation
+ * that suppresses the section rather than previewing a phantom.
  *
  * Residual, a reporting defect rather than a disclosure (the preview never
  * substitutes a plaintext):

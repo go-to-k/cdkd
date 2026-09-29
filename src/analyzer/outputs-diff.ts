@@ -683,10 +683,28 @@ export async function resolveTemplateOutputs(
   // or intrinsic `Export.Name` that keeps a deploy-resolved token after the
   // skip pass (a plain `ssm` SecureString, or a `secretsmanager` reference
   // spelled only in a name) is the other, invisible to that raw spelling
-  // test. Decided after the loop, so LITERAL aliases wait for it.
+  // test. Decided after the loop, so LITERAL aliases wait for it. Every alias
+  // is written after the loop, in declaration order, as the deploy's alias
+  // pass does (values first, then aliases).
+  //
+  // Only a token the template SPELLS in that output counts: one that arrives
+  // through a `Ref` to a parameter (a nested child's secret parameter, which
+  // the diff passes on as its token) is not recorded in the deploy's pass map,
+  // so counting it suppressed a section main published (#4145 review).
+  //
+  // Over-approximation, stated: the deploy's alias pass checks a literal name
+  // against the names resolved BEFORE it in declaration order, while this
+  // gate reads the whole pass; a literal declared before the only intrinsic
+  // name recording a secret is decided from state here and published there.
+  // Suppression, never a phantom row.
   let passResolvesSecret = false;
-  const pendingLiteralAliases: Array<{ outputKey: string; exportName: string; value: unknown }> =
-    [];
+  const spellsToken = (raw: unknown): boolean => JSON.stringify(raw ?? null).includes('{{resolve:');
+  const pendingAliases: Array<{
+    outputKey: string;
+    exportName: string;
+    value: unknown;
+    literal: boolean;
+  }> = [];
   const keepsTokenInLeaves = (value: unknown): boolean => {
     if (typeof value === 'string') return keepsSecretReferenceToken(value);
     if (Array.isArray(value)) return value.some(keepsTokenInLeaves);
@@ -867,7 +885,7 @@ export async function resolveTemplateOutputs(
       continue;
     }
     outputs[outputKey] = value;
-    if (keepsTokenInLeaves(value)) passResolvesSecret = true;
+    if (spellsToken(output.Value) && keepsTokenInLeaves(value)) passResolvesSecret = true;
 
     if (output.Export?.Name) {
       let exportName: unknown = output.Export.Name;
@@ -896,6 +914,7 @@ export async function resolveTemplateOutputs(
       if (typeof exportName === 'string') recordTokenBearingExportName(exportName);
       if (
         declaredExportIsIntrinsic &&
+        spellsToken(output.Export.Name) &&
         typeof exportName === 'string' &&
         keepsSecretReferenceToken(exportName)
       ) {
@@ -930,12 +949,15 @@ export async function resolveTemplateOutputs(
           logger.debug(
             `Diff skipping export alias ${stripControlChars(exportName)} of ${stripControlChars(outputKey)} — collides with an output name`
           );
-        } else if (!declaredExportIsIntrinsic) {
-          // Decided after the loop, once `passResolvesSecret` is known.
-          pendingLiteralAliases.push({ outputKey, exportName, value });
         } else {
-          outputs[exportName] = value;
-          exportNames.add(exportName);
+          // Written after the loop (a LITERAL one decided there, once
+          // `passResolvesSecret` is known).
+          pendingAliases.push({
+            outputKey,
+            exportName,
+            value,
+            literal: !declaredExportIsIntrinsic,
+          });
         }
       } else {
         // An Export.Name that stayed intrinsic means the alias key the deploy
@@ -948,8 +970,8 @@ export async function resolveTemplateOutputs(
   }
 
   const deployRecordsSecret = secretSourceKeys.size > 0 || passResolvesSecret;
-  for (const { outputKey, exportName, value } of pendingLiteralAliases) {
-    if (!deployRecordsSecret) {
+  for (const { outputKey, exportName, value, literal } of pendingAliases) {
+    if (!literal || !deployRecordsSecret) {
       outputs[exportName] = value;
       exportNames.add(exportName);
       continue;

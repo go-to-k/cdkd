@@ -544,7 +544,12 @@ describe('a LITERAL Export.Name in a stack whose only recorded secret is not spe
 
   it('counts a secretsmanager reference spelled only in an intrinsic Export.Name', async () => {
     const tpl = template({
-      Named: { Value: 'n', Export: { Name: { 'Fn::Join': ['', ['x']] } as unknown as string } },
+      Named: {
+        Value: 'n',
+        Export: {
+          Name: { 'Fn::Join': ['', ['app-', '{{resolve:secretsmanager:db:SecretString:pw}}']] } as unknown as string,
+        },
+      },
       Lit: { Value: 'v', Export: { Name: LITERAL } },
     });
     const r = await resolveTemplateOutputs(
@@ -556,4 +561,45 @@ describe('a LITERAL Export.Name in a stack whose only recorded secret is not spe
     expect(Object.prototype.hasOwnProperty.call(r.outputs, LITERAL)).toBe(false);
     expect(r.failedKeys.has(LITERAL)).toBe(true);
   });
+
+  it('NEGATIVE CONTROL: a token arriving through a Ref to a parameter is not a recorded secret (#4145 review)', async () => {
+    // A nested child's secret parameter reaches the diff as its token, but the
+    // deploy never records it in the outputs pass, so the alias publishes.
+    const tpl = template({ A: { Value: { Ref: 'P' } as unknown as string, Export: { Name: LITERAL } } });
+    const r = await resolveTemplateOutputs(
+      tpl,
+      async (value: unknown) =>
+        typeof value === 'object' && value !== null && 'Ref' in value
+          ? '{{resolve:secretsmanager:S:SecretString:pw}}'
+          : value,
+      undefined,
+      {}
+    );
+    expect(r.outputs[LITERAL]).toBe('{{resolve:secretsmanager:S:SecretString:pw}}');
+    expect(r.resolutionFailed).toBe(false);
+  });
+
+  it('writes every alias after the values, in declaration order, as the deploy does', async () => {
+    const tpl = template({
+      A: { Value: 'a', Export: { Name: 'litA' } },
+      B: { Value: 'b', Export: { Name: { 'Fn::Join': ['', ['x']] } as unknown as string } },
+      C: { Value: 'c', Export: { Name: 'litC' } },
+    });
+    const r = await resolveTemplateOutputs(tpl, resolver('unused', 'intrB'), undefined, {});
+    expect(Object.keys(r.outputs)).toEqual(['A', 'B', 'C', 'litA', 'intrB', 'litC']);
+  });
+
+  it('an INTRINSIC alias is never gated by the literal rule, in a stack that records a secret', async () => {
+    // The deploy resolves an intrinsic name and refuses it only when that name
+    // carries a secret, which the token arm above already skips; state is not
+    // consulted, so a first deploy of the alias publishes.
+    const tpl = template({
+      Sec: { Value: SSM_REF },
+      Named: { Value: 'n', Export: { Name: { 'Fn::Join': ['', ['x']] } as unknown as string } },
+    });
+    const r = await resolveTemplateOutputs(tpl, resolver(SSM_REF, 'plain-intrinsic-name'), undefined, {});
+    expect(r.outputs['plain-intrinsic-name']).toBe('n');
+    expect(r.resolutionFailed).toBe(false);
+  });
 });
+
