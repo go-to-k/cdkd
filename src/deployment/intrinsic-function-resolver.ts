@@ -939,7 +939,13 @@ function buildUnknownIntrinsicError(key: string): Error {
   // and none of those can start a substitution without a `$` or a backtick. (Percent-encoding
   // is itself a mask-evading transform, so if `key` were ever in the SECRET
   // class this would be too -- it is not, being a structural operand.)
-  const shown = displayIdent(key) === key ? `"${key}"` : 'whose name is not a plain identifier';
+  // Whitespace FIRST: the round-trip alone admits a key ending in
+  // `displayIdent`'s own cut marker (255 plain characters then
+  // ` [cut: 35 more characters withheld]` renders as itself).
+  const shown =
+    !/\s/.test(key) && displayIdent(key) === key
+      ? `"${key}"`
+      : 'whose name is not a plain identifier';
   return new Error(
     `Unsupported CloudFormation intrinsic function ${shown}: ` +
       `cdkd does not support resolving it yet. ` +

@@ -256,6 +256,18 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
     });
   }, 120_000);
 
+  it("describes an unsupported intrinsic key ending in displayIdent's own cut marker", async () => {
+    // 255 plain characters, then exactly the suffix `displayIdent` appends
+    // when it cuts 35: the round-trip alone reads the key as plain.
+    const forged = `Fn::${'a'.repeat(251)} [cut: 35 more characters withheld]`;
+    expect(forged.length - 255).toBe(35);
+    const message = await refusal({ [forged]: 1 });
+    expect(message).toContain(
+      'Unsupported CloudFormation intrinsic function whose name is not a plain identifier:'
+    );
+    expect(message).not.toContain(`"${forged}"`);
+  });
+
   it('keeps an empty mapping name visible as an empty quote', async () => {
     expect(await refusal({ 'Fn::FindInMap': ['', 'k', 'present'] }, MAPPINGS('M', 'k'))).toContain(
       "mapping '' not found"
