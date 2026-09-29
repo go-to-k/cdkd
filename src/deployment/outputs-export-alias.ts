@@ -30,26 +30,31 @@
  * and it was carried in review reports rather than in the code until a round
  * traded one divergence for two. Every row is pinned by a test on BOTH sides —
  * `deploy-engine-outputs-export-name-collision.test.ts` and
- * `analyzer/outputs-diff.test.ts` — because a row tested on one side only is
- * how the last divergence shipped.
+ * `analyzer/outputs-diff.test.ts` (the SecureString rows:
+ * `analyzer/outputs-diff-ssm-export-name-4056.test.ts`) — because a row tested
+ * on one side only is how the last divergence shipped.
  *
- * | `Export.Name` shape                          | deploy            | diff              |
- * |----------------------------------------------|-------------------|-------------------|
- * | intrinsic, substitutes a secretsmanager ref    | refuse (exact)    | refuse (spelling) |
- * | intrinsic, substitutes a PINNED SecureString   | refuse (exact)    | publish (residual)|
- * | LITERAL, spelled as a `{{resolve:...}}` token | publish           | publish           |
- * | LITERAL, contains a recorded plaintext        | refuse            | decide from STATE |
- * | intrinsic/literal, unpinned `ssm:` plaintext  | refuse if recorded| publish (residual)|
- * | collides with a published output name         | refuse            | refuse            |
+ * | `Export.Name` shape                            | deploy            | diff              |
+ * |------------------------------------------------|-------------------|-------------------|
+ * | intrinsic, substitutes a secretsmanager ref    | refuse (exact)    | refuse (token)    |
+ * | intrinsic, substitutes a PINNED SecureString   | refuse (exact)    | refuse (token)    |
+ * | intrinsic, substitutes an unpinned SecureString| refuse if recorded| refuse (token)    |
+ * | LITERAL, spelled as a `{{resolve:...}}` token  | publish           | publish           |
+ * | LITERAL, contains a recorded plaintext         | refuse            | decide from STATE |
+ * | LITERAL, contains an unpinned `ssm:` plaintext | refuse if recorded| publish (residual)|
+ * | collides with a published output name          | refuse            | refuse            |
  *
- * The SecureString row is a real divergence, recorded rather than closed: the
- * diff's spelling test matches only `secretsmanager:` / `ssm-secure:`, because a
- * plain `{{resolve:ssm:...}}` is secret by parameter TYPE (issue #1901) and
- * treating the spelling as a signal would fire on ordinary public config. So an
- * intrinsic name substituting a pinned SecureString is refused by the deploy and
- * published by the preview — a permanent phantom ADD. No plaintext escapes (the
- * preview never substitutes one), so it is a reporting defect, not a
- * disclosure.
+ * The SecureString rows no longer diverge (issue
+ * [#4056](https://github.com/go-to-k/cdkd/issues/4056)): the diff refuses an
+ * intrinsic alias whose RESOLVED name still carries a token of a service the
+ * deploy resolves (`keepsSecretReferenceToken` in `outputs-diff.ts`), and its
+ * `skipDynamicReferences` pass keeps a plain `{{resolve:ssm:...}}` token only
+ * for a parameter the lookup finds secure, while a `String` one resolves to
+ * its value. On RAW template text the spelling test still excludes a plain
+ * `ssm:` token, since there it says nothing about the parameter's type. The one
+ * remaining residual is a LITERAL name holding an unpinned `ssm:` plaintext:
+ * the preview never substitutes one, so it cannot see it, and no plaintext
+ * escapes (a reporting defect, not a disclosure).
  *
  * Two rows deserve their reason stated, because both look wrong in isolation:
  *
