@@ -7,7 +7,7 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 acm-certificate	2026-09-25T19:22:55Z	PASS	100	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 agentcore-tools	2026-09-14T14:50:12Z	PASS	113	verify.sh	#3103 gating: 3 phases ok, 5 deleted 0 err 0 orph
-alb	2026-09-25T19:22:55Z	FAIL	221	verify.sh	pre-existing: routing.http.response.server.enabled removal assertion (same as main); destroy clean, 0 orphans (#3786)
+alb	2026-09-29T04:11:48Z	FAIL	220	verify.sh	PR #4032 merge-gate run; pre-existing listener routing.http.response.server.enabled removal assertion (#2085, tooling backlog); Targets update phases pass; destroy clean, 0 orphans
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-09-25T20:09:32Z	PASS	65	verify.sh	rc ok, orph clean (#3136 PR #3793)
@@ -31,7 +31,7 @@ bench-cdk-sample	2026-08-19T18:33:33Z	PASS	424	standard	#2038/#2031 masking lane
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-09-01T14:50:59Z	PASS	240	verify.sh	PR#2398 arm 2/6: bootstrap.ts three-client path + region resolution, rc 0, 0 orphans
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
-budgets	2026-09-24T22:46:12Z	PASS	53	verify.sh	rc ok, 0 orphans (#3663)
+budgets	2026-09-29T04:12:45Z	PASS	55	verify.sh	PR #4032 merge-gate run; rc ok, orph clean
 cache-streaming	2026-09-27T15:53:36Z	PASS	536	verify.sh	rc ok, orph clean (log-group sweep added)
 cc-api-fallback	2026-09-29T03:32:02Z	PASS	60	verify.sh	rc ok, orph clean (#3993 PR #4031)
 cc-api-fallback-transitions	2026-09-29T03:32:02Z	PASS	126	verify.sh	rc ok, orph clean (#3993 PR #4031)
@@ -45,7 +45,7 @@ cloudtrail-trail	2026-09-28T07:22:06Z	PASS	196	verify.sh	#3885 log-group sweep; 
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-09-28T17:37:17Z	PASS	71	verify.sh	rc ok, orph clean (#3996, after merging main)
 codebuild-project	2026-09-27T19:00:18Z	PASS	116	verify.sh	rc ok, orph clean (#3887)
-codecommit	2026-09-24T22:46:12Z	PASS	125	verify.sh	rc ok, 0 orphans (#3663)
+codecommit	2026-09-29T04:14:27Z	PASS	100	verify.sh	PR #4032 merge-gate run; rc ok, orph clean
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-09-25T19:22:55Z	PASS	245	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 cognito-custom-attribute-add	2026-09-05T21:47:13Z	PASS	51	verify.sh	PR2662 gate run; 3 phases, destroy 0 errors, 0 orphans
@@ -83,7 +83,7 @@ dlm-lifecycle-policy	2026-09-24T22:46:12Z	PASS	109	verify.sh	rc ok, 0 orphans (#
 docdb-neptune	2026-09-28T17:20:47Z	PASS	5463	verify.sh	rc ok, orph clean (#2204 PR #3956 step 3g; fix-reverted run RED at the readback)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-09-28T13:55:11Z	PASS	160	verify.sh	PR #3974 merge-gate run; rc ok, orph clean
-drift-revert-arrays	2026-09-28T09:57:45Z	PASS	211	verify.sh	PR #3944 merge-gate run; rc ok, orph clean
+drift-revert-arrays	2026-09-29T04:17:42Z	PASS	195	verify.sh	PR #4032 merge-gate run; rc ok, orph clean
 drift-revert-vpc	2026-09-29T00:37:02Z	PASS	350	verify.sh	PR #4026 merge-gate run; rc ok, orph clean; #4021 step 2 + 6c pass (ALL enables 25 metrics live)
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
