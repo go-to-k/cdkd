@@ -414,7 +414,8 @@ it holds a secret, or replaced by `<name withheld: contains a secret>` when
 masking cannot hide it. `diff` fetches no secret, so it finds one only in the
 part of a stored key that a secret-bearing `Export.Name`'s `{{resolve:...}}`
 reference covers, or where a key holds the stored value of a secret output in a
-pre-redaction record or of a key the template no longer declares. A stale alias
+pre-redaction record or of a key the template no longer declares. A name
+embedding a `NoEcho` parameter's value is masked too (see the third point). A stale alias
 sharing that `Export.Name`'s literal text is masked too.
 
 Because that search cannot see every secret, a **removed export alias is
@@ -428,6 +429,36 @@ which reads as an Output logical ID; and any alias in a stack whose template no
 longer references a secret through `{{resolve:secretsmanager:` or
 `{{resolve:ssm-secure:` — including one whose only secret is a plain
 `{{resolve:ssm:...}}` to a `SecureString` parameter.
+
+**Third, a `NoEcho: true` parameter's value is printed as `***`**, as a
+CloudFormation change set prints `****`. This covers a property's `old:` /
+`new:` lines, an Outputs value, an export row name, `--json`'s
+`propertyChanges` and `outputChanges`, and the `--verbose` lines (the
+`requires replacement` line and the resolver's own). It also covers an
+encoding the diff derives from the value (an `Fn::Base64`), and a nested child
+that receives the parent's value through a parameter it does not itself declare
+`NoEcho`. When the new side carries the value, the old side is shown whole as
+`***` too, because state keeps the previous value in the clear. For an object
+this hides the rest of its old side as well. The change is still reported. A
+`NoEcho` parameter fed a SECRET `{{resolve:...}}` reference
+(`secretsmanager`, `ssm-secure`, or `ssm` to a `SecureString`) prints as that
+expression, like every secret reference here.
+
+Limits:
+- A value of 1-3 characters is masked only where it is a whole value, not
+  where it is embedded in a longer string. The whole-value match can also
+  over-mask: an unrelated value that happens to EQUAL a short `NoEcho` value
+  (a `1`, a `true`) prints as `***` too.
+- Only the CURRENT value is known. A previous value still in state prints
+  where the new side no longer carries the current one: a property or output
+  REMOVED in the same deploy that rotated the value, or a property that
+  switched away from a `NoEcho` parameter in that deploy. The stored previous
+  plaintext prints as its `old:` side.
+- A `NoEcho` parameter fed a plain `{{resolve:ssm:...}}` reference to a
+  `String` parameter prints its resolved value where an `Fn::Sub` / `Fn::Join`
+  embeds the reference, and the expression where a bare `Ref` serves it: a
+  `String` parameter is public configuration, and the diff resolves it as the
+  deploy does.
 
 The `--json` payload is deliberately not stripped — it is a machine interface,
 and mutating a name a consumer matches on would be worse than the display
