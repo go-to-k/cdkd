@@ -20,7 +20,12 @@
  * two of three. `subject` now varies only the noun.
  */
 
-import { displaySafe, displayStackName, UNRENDERABLE } from '../utils/display-safe.js';
+import {
+  displaySafe,
+  displayStackName,
+  plainIdentOr,
+  UNRENDERABLE,
+} from '../utils/display-safe.js';
 // Both moved to `src/utils/pasteable-command.ts` with the shared builder
 // (go-to-k/cdkd#3436): `src/utils/**` imports nothing from `src/state/**`, so
 // the builder could not have reached them here. Re-exported because this
@@ -121,6 +126,22 @@ export function formatLockExpiry(expiresAt: number): string {
   return remainingMs > 0
     ? `expires in ${formatDuration(remainingMs)}`
     : `expired ${formatDuration(-remainingMs)} ago`;
+}
+
+/**
+ * The ONE rendering of a `lock.json` owner beside cdkd's own clauses, shared by
+ * this module and `LockManager` like {@link formatLockExpiry}. `getLockRecord`'s
+ * `displaySafe` keeps spaces, so an owner `x (operation: deploy), expired 3h
+ * ago` would make a live lock read as expired and invite a force-unlock: a
+ * value that is not a plain identifier is described (go-to-k/cdkd#4115).
+ */
+export function formatLockOwner(owner: string): string {
+  return plainIdentOr(owner, 'a lock owner that is not a plain identifier');
+}
+
+/** {@link formatLockOwner} for the `operation` field. */
+export function formatLockOperation(operation: string): string {
+  return plainIdentOr(operation, 'a lock operation that is not a plain identifier');
 }
 
 /** `1m23s` / `45s` from a non-negative millisecond count. */
@@ -363,7 +384,9 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   try {
     const info = await lockManager.getLockInfo(stackName, region);
     if (info) {
-      const operation = info.operation ? `, operation: ${displaySafe(info.operation)}` : '';
+      const operation = info.operation
+        ? `, operation: ${formatLockOperation(displaySafe(info.operation))}`
+        : '';
       const expires = formatLockExpiry(info.expiresAt);
       const owner = displaySafe(info.owner);
       // An ABSENT / empty owner is not evidence of a live holder. `getLockInfo`
@@ -376,7 +399,9 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
       // the previous revision dropped both, which threw away the one fact the
       // lock file definitely carries. Only the "still running" CERTIFICATION
       // is withheld, since that is what an owner-less record cannot support.
-      const holder = owner ? `held by ${owner}${operation}` : `held by an unnamed holder`;
+      const holder = owner
+        ? `held by ${formatLockOwner(owner)}${operation}`
+        : `held by an unnamed holder`;
       held = `${heldClause ? `${heldClause} — ` : ''}${holder}, ${expires}`;
       // LAST, and only for a NAMED holder: setting it earlier paired the
       // degraded wording with the confident advice.

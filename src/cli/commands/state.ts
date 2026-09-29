@@ -38,7 +38,12 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
-import { buildForceUnlockCommand, formatLockExpiry } from '../../state/lock-contention-message.js';
+import {
+  buildForceUnlockCommand,
+  formatLockExpiry,
+  formatLockOperation,
+  formatLockOwner,
+} from '../../state/lock-contention-message.js';
 import {
   buildLockContentionMessage,
   type LockRecoveryContext,
@@ -383,21 +388,6 @@ function legacyRecordRefusal(stackName: string): Error {
  * records as stored.
  */
 const STATE_LIST_POINTER = `'cdkd state list --long' shows the records as stored.`;
-
-/**
- * A lock.json field (`owner`, `operation`) beside a labelled row: the value
- * when it renders as itself through `displayIdent` -- an identifier-shaped
- * token with no space, no quote and under the cap, which a host / pid owner is
- * -- and a description otherwise. Not `plainOrDescribed`: `isPasteableIdent`
- * refuses the `@` and `:` every genuine owner carries (go-to-k/cdkd#3760).
- * Whitespace is refused first: a value that IS `displayIdent`'s own cut output
- * renders unchanged too (go-to-k/cdkd#4109).
- */
-function plainValueOrDescribed(value: string, what: string): string {
-  return !/\s/.test(value) && displayIdent(value) === value
-    ? value
-    : `a ${what} that is not a plain identifier`;
-}
 
 /** Whether `describedStackRef` describes either half of `ref`. */
 function refIsDescribed(ref: StackStateRef): boolean {
@@ -1325,7 +1315,7 @@ function formatLastModified(value: unknown): string {
  * whole control class with spaces, and absorbs a value whose coercion THROWS
  * (go-to-k/cdkd#2947). That keeps the spaces, though, so an owner reading
  * `x (operation: deploy), expired 3h ago` would make a live lock look expired:
- * both go through `plainValueOrDescribed` here (go-to-k/cdkd#4109).
+ * both go through `formatLockOwner` / `formatLockOperation` (go-to-k/cdkd#4109).
  *
  * `expiresAt` is declared a number and is not guaranteed to be one, but it
  * reaches the row only through `formatLockExpiry`, which tests the raw value
@@ -1342,9 +1332,9 @@ function formatLockSummary(lockInfo: LockInfo | null): string {
   // Described unless plain: an owner carrying `(operation: deploy), expired 3h
   // ago` would otherwise make a live lock read as expired (go-to-k/cdkd#4109).
   const opStr = lockInfo.operation
-    ? ` (operation: ${plainValueOrDescribed(lockInfo.operation, 'lock operation')})`
+    ? ` (operation: ${formatLockOperation(lockInfo.operation)})`
     : '';
-  return `locked by ${plainValueOrDescribed(lockInfo.owner, 'lock owner')}${opStr}, ${formatLockExpiry(lockInfo.expiresAt)}`;
+  return `locked by ${formatLockOwner(lockInfo.owner)}${opStr}, ${formatLockExpiry(lockInfo.expiresAt)}`;
 }
 
 /**
@@ -3647,10 +3637,8 @@ async function warnOnLiveForeignLock(
     // this reader adds the #3760 rule on top -- a value shows only when it
     // renders as itself through `displayIdent` (no space, no quote, under the
     // cap), and is described otherwise. `alice@host:4242` and `deploy` show.
-    const owner = info.owner ? plainValueOrDescribed(info.owner, 'lock owner') : '';
-    const operation = info.operation
-      ? `, operation: ${plainValueOrDescribed(info.operation, 'lock operation')}`
-      : '';
+    const owner = info.owner ? formatLockOwner(info.owner) : '';
+    const operation = info.operation ? `, operation: ${formatLockOperation(info.operation)}` : '';
     logger.warn(
       safeMsg`Force-releasing a LIVE lock on ${where} ` +
         // Agrees with `lock-contention-message.ts`: an unusable owner withholds

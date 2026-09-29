@@ -24,6 +24,8 @@ import {
   UNREPRODUCIBLE_LOCK_CLAUSE,
   buildForceUnlockCommand,
   formatLockExpiry,
+  formatLockOperation,
+  formatLockOwner,
 } from './lock-contention-message.js';
 import { hostname } from 'os';
 
@@ -496,7 +498,7 @@ export class LockManager {
               `previous owner crashed or was suspended`
             : `Its expiresAt is not a finite number, which cdkd treats as already expired`;
           this.logger.warn(
-            `Took over an EXPIRED lock for stack: ${safeSegment(stackName)} (${safeSegment(region)}, owner: ${existing.info.owner}, ` +
+            `Took over an EXPIRED lock for stack: ${safeSegment(stackName)} (${safeSegment(region)}, owner: ${formatLockOwner(existing.info.owner)}, ` +
               `${formatLockExpiry(existing.info.expiresAt)}). ${why} -- ` +
               `if it is in fact still running, both processes are now writing to the same stack.`
           );
@@ -991,8 +993,8 @@ export class LockManager {
     this.logger.warn(
       lockInfo
         ? `Force releasing lock for stack: ${where}, ` +
-            `owner: ${lockInfo.owner}` +
-            `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
+            `owner: ${formatLockOwner(lockInfo.owner)}` +
+            `${lockInfo.operation ? `, operation: ${formatLockOperation(lockInfo.operation)}` : ''}` +
             `, expired: ${this.isLockExpired(lockInfo)}`
         : `Force releasing lock for stack: ${where} (no lock body read — ` +
             `absent or unparseable; deleting the object either way, since a ` +
@@ -1526,11 +1528,11 @@ export class LockManager {
         // The retry line is the SIBLING of the throw below and renders the
         // same two values, so it takes the same sanitization -- as does every
         // other stack-name render in this module since issue #3027.
-        // `owner` / `operation` need nothing anywhere, being sanitized at
-        // their single source, `getLockRecord`.
+        // `owner` / `operation` go through `formatLockOwner` /
+        // `formatLockOperation`, like every lock render (go-to-k/cdkd#4115).
         const holder = lockInfo
-          ? `is locked by ${lockInfo.owner}` +
-            `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
+          ? `is locked by ${formatLockOwner(lockInfo.owner)}` +
+            `${lockInfo.operation ? ` (operation: ${formatLockOperation(lockInfo.operation)})` : ''}` +
             `. Lock ${formatLockExpiry(lockInfo.expiresAt)}.`
           : `could not be locked, and no readable lock was found.`;
         this.logger.info(
@@ -1597,8 +1599,8 @@ export class LockManager {
     throw new LockError(
       `Failed to acquire lock for stack ${safeStack} (${safeRegion}) after ${attempts} attempt${attempts === 1 ? '' : 's'}. ` +
         (lockInfo
-          ? `Locked by: ${lockInfo.owner}` +
-            `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
+          ? `Locked by: ${formatLockOwner(lockInfo.owner)}` +
+            `${lockInfo.operation ? `, operation: ${formatLockOperation(lockInfo.operation)}` : ''}` +
             `, ${expiry}. ` +
             recovery
           : `No lock could be read after the last failed attempt, so it was most likely released ` +

@@ -80,6 +80,40 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
     expect(message).toContain('operation: deploy');
   });
 
+  it('describes an owner or operation that would restate the expiry, in the throw and the retry line (go-to-k/cdkd#4115)', async () => {
+    const forged = 'x, expired 3h ago';
+    for (const [fields, throwText, retryText] of [
+      [
+        { owner: forged },
+        'Locked by: a lock owner that is not a plain identifier, operation: deploy, expires in ',
+        'is locked by a lock owner that is not a plain identifier (operation: deploy). Lock expires in ',
+      ],
+      [
+        { operation: forged },
+        'Locked by: alice@host, operation: a lock operation that is not a plain identifier, expires in ',
+        'is locked by alice@host (operation: a lock operation that is not a plain identifier). Lock expires in ',
+      ],
+    ] as const) {
+      const lock = { ...LIVE_LOCK(), ...fields } as LockInfo;
+      // eslint-disable-next-line no-await-in-loop
+      const message = await failureMessage('MyStack', 'us-east-1', lock);
+      expect(message).toContain(throwText);
+      expect(message).not.toContain('expired 3h ago');
+
+      const manager = managerThatCannotAcquire(lock);
+      const lines: string[] = [];
+      (manager as unknown as { logger: { info: (m: string) => void } }).logger = {
+        info: (m: string) => lines.push(m),
+      } as never;
+      // eslint-disable-next-line no-await-in-loop
+      await manager
+        .acquireLockWithRetry('MyStack', 'us-east-1', undefined, 'deploy', 1, 0)
+        .catch(() => undefined);
+      expect(lines.join('\n')).toContain(retryText);
+      expect(lines.join('\n')).not.toContain('expired 3h ago');
+    }
+  });
+
   it('gives the recovery command even when the lock body could not be read', async () => {
     // Pre-#2610 this arm ended with no remedy at all; pre-#4055 it also said
     // "Lock exists" about a read that found none.

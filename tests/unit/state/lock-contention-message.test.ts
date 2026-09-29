@@ -442,6 +442,25 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     expect(msg).toMatch(/expires in 1[12]m\d+s/);
   });
 
+  it('describes an owner or operation that would restate the expiry (go-to-k/cdkd#4115)', async () => {
+    const forged = 'x, expired 3h ago';
+    for (const [lock, expected] of [
+      [{ owner: forged, operation: 'deploy' }, 'held by a lock owner that is not a plain identifier, operation: deploy, expires in '],
+      [
+        { owner: 'alice@host:4242', operation: forged },
+        'held by alice@host:4242, operation: a lock operation that is not a plain identifier, expires in ',
+      ],
+    ] as const) {
+      // eslint-disable-next-line no-await-in-loop
+      const msg = await buildLockContentionMessage({
+        ...base,
+        lockManager: lockManagerReturning({ ...lock, expiresAt: Date.now() + 12 * 60_000 }),
+      });
+      expect(msg).toContain(expected);
+      expect(msg).not.toContain('expired 3h ago');
+    }
+  });
+
   it('reads the holder for the region it was asked about', async () => {
     const spy = vi.fn();
     await buildLockContentionMessage({
