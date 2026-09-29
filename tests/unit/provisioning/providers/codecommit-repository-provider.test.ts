@@ -549,6 +549,7 @@ describe('CodeCommitRepositoryProvider', () => {
 
     it('renames in place via UpdateRepositoryName and returns the new physicalId (CFn parity — no replacement)', async () => {
       mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository(old): id before the rename (#4042)
         .mockResolvedValueOnce({}) // UpdateRepositoryName
         .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) });
 
@@ -560,10 +561,11 @@ describe('CodeCommitRepositoryProvider', () => {
         { RepositoryName: 'my-repo' }
       );
 
-      const renameCmd = mockSend.mock.calls[0][0];
+      expect(mockSend.mock.calls[0][0].input).toEqual({ repositoryName: 'my-repo' });
+      const renameCmd = mockSend.mock.calls[1][0];
       expect(renameCmd).toBeInstanceOf(UpdateRepositoryNameCommand);
       expect(renameCmd.input).toEqual({ oldName: 'my-repo', newName: 'new-name' });
-      const getCmd = mockSend.mock.calls[1][0];
+      const getCmd = mockSend.mock.calls[2][0];
       expect(getCmd).toBeInstanceOf(GetRepositoryCommand);
       expect(getCmd.input).toEqual({ repositoryName: 'new-name' });
       expect(result.physicalId).toBe('new-name');
@@ -572,6 +574,7 @@ describe('CodeCommitRepositoryProvider', () => {
 
     it('rename + description change: every follow-up call targets the NEW name (rename runs first)', async () => {
       mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository(old) (#4042)
         .mockResolvedValueOnce({}) // UpdateRepositoryName
         .mockResolvedValueOnce({}) // UpdateRepositoryDescription
         .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) });
@@ -584,40 +587,54 @@ describe('CodeCommitRepositoryProvider', () => {
         { RepositoryName: 'my-repo', RepositoryDescription: 'old desc' }
       );
 
-      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(UpdateRepositoryNameCommand);
-      const descCmd = mockSend.mock.calls[1][0];
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(UpdateRepositoryNameCommand);
+      const descCmd = mockSend.mock.calls[2][0];
       expect(descCmd).toBeInstanceOf(UpdateRepositoryDescriptionCommand);
       expect(descCmd.input.repositoryName).toBe('new-name');
-      const getCmd = mockSend.mock.calls[2][0];
+      const getCmd = mockSend.mock.calls[3][0];
       expect(getCmd).toBeInstanceOf(GetRepositoryCommand);
       expect(getCmd.input.repositoryName).toBe('new-name');
       expect(result.physicalId).toBe('new-name');
     });
 
-    it('rename retry-safety: NotFound on rename + newName already exists -> treated as already applied', async () => {
+    it('rename retry-safety: a retry after this run renamed the SAME repository (matching id) adopts it (#4042)', async () => {
       mockSend
-        .mockRejectedValueOnce(notFound()) // UpdateRepositoryName (old name gone — prior attempt renamed)
-        .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) }) // GetRepository(newName) probe
-        .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) }); // final GetRepository
+        // Attempt 1: id read, rename lands, the description write fails.
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository(old)
+        .mockResolvedValueOnce({}) // UpdateRepositoryName
+        .mockRejectedValueOnce(new Error('throttled')) // UpdateRepositoryDescription
+        // Attempt 2 (the engine's retry, same provider instance, OLD physicalId).
+        .mockRejectedValueOnce(notFound()) // GetRepository(old): gone, the rename landed
+        .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) }) // probe
+        .mockResolvedValueOnce({}) // UpdateRepositoryDescription
+        .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) }); // final
 
+      const props = { RepositoryName: 'new-name', RepositoryDescription: 'd' };
+      await expect(
+        provider.update('MyRepo', 'my-repo', 'AWS::CodeCommit::Repository', props, {
+          RepositoryName: 'my-repo',
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
       const result = await provider.update(
         'MyRepo',
         'my-repo',
         'AWS::CodeCommit::Repository',
-        { RepositoryName: 'new-name' },
+        props,
         { RepositoryName: 'my-repo' }
       );
 
-      const probeCmd = mockSend.mock.calls[1][0];
+      const probeCmd = mockSend.mock.calls[4][0];
       expect(probeCmd).toBeInstanceOf(GetRepositoryCommand);
       expect(probeCmd.input.repositoryName).toBe('new-name');
+      expect(mockSend.mock.calls[5][0]).toBeInstanceOf(UpdateRepositoryDescriptionCommand);
+      expect(mockSend.mock.calls[5][0].input.repositoryName).toBe('new-name');
       expect(result.physicalId).toBe('new-name');
       expect(result.wasReplaced).toBe(false);
     });
 
-    it('rename retry-safety: NotFound on rename + newName also missing -> fails', async () => {
+    it('rename retry-safety: old name gone at the id read + newName also missing -> fails, nothing sent', async () => {
       mockSend
-        .mockRejectedValueOnce(notFound()) // UpdateRepositoryName
+        .mockRejectedValueOnce(notFound()) // GetRepository(old)
         .mockRejectedValueOnce(notFound()); // GetRepository(newName) probe
 
       await expect(
@@ -628,7 +645,11 @@ describe('CodeCommitRepositoryProvider', () => {
           { RepositoryName: 'new-name' },
           { RepositoryName: 'my-repo' }
         )
-      ).rejects.toBeInstanceOf(ProvisioningError);
+      ).rejects.toThrow(/Failed to update CodeCommit Repository MyRepo/);
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
+        'GetRepositoryCommand',
+        'GetRepositoryCommand',
+      ]);
     });
 
     it('updates the encryption key when KmsKeyId changed', async () => {
