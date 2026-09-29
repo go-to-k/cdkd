@@ -81,6 +81,7 @@ import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 
 /**
  * Test seam for the capacity-reservation stabilize poll (mirrors
@@ -659,10 +660,10 @@ export class ELBv2Provider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating LoadBalancer ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     try {
-      const tags = this.extractTags(properties);
-
       const lbName = generateResourceNameWithFallback(
         properties['Name'] as string | undefined,
         logicalId,
@@ -879,11 +880,13 @@ export class ELBv2Provider implements ResourceProvider {
   private async updateLoadBalancer(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     // ELBv2 LoadBalancer Name / Type / Scheme are immutable after
     // creation. The deploy engine detects these via immutable-property
     // detection and replaces the resource. The remaining surface is
@@ -1174,8 +1177,10 @@ export class ELBv2Provider implements ResourceProvider {
     // ─── Tags ────────────────────────────────────────────────────────
     await this.applyTagDiff(
       physicalId,
-      previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-      properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      resourceType,
+      logicalId,
+      previousProperties['Tags'],
+      properties['Tags']
     );
 
     return { physicalId, wasReplaced: false };
@@ -1312,6 +1317,8 @@ export class ELBv2Provider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating TargetGroup ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     // go-to-k/cdkd#3989: refused before CreateTargetGroup, so a malformed list
     // neither strands a half-wired group nor registers a subset of it.
@@ -1328,7 +1335,6 @@ export class ELBv2Provider implements ResourceProvider {
     }
 
     try {
-      const tags = this.extractTags(properties);
       const matcher = properties['Matcher'] as { HttpCode?: string; GrpcCode?: string } | undefined;
 
       const tgName = generateResourceNameWithFallback(
@@ -1462,6 +1468,8 @@ export class ELBv2Provider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating TargetGroup ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     // IpAddressType is createOnly in the CFn schema (the registry fallback
     // already classifies its change as replacement); TargetControlPort has
@@ -1667,8 +1675,10 @@ export class ELBv2Provider implements ResourceProvider {
       // Apply tag diff. ELBv2 uses AddTags / RemoveTags with [arn].
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       this.logger.debug(`Successfully updated TargetGroup ${logicalId}`);
@@ -1734,9 +1744,10 @@ export class ELBv2Provider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Listener ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     try {
-      const tags = this.extractTags(properties);
       const defaultActions = this.convertActions(
         properties['DefaultActions'] as Array<Record<string, unknown>> | undefined
       );
@@ -1901,6 +1912,8 @@ export class ELBv2Provider implements ResourceProvider {
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Listener ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       const defaultActions = this.convertActions(
@@ -1989,8 +2002,10 @@ export class ELBv2Provider implements ResourceProvider {
       // safety.
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       this.logger.debug(`Successfully updated Listener ${logicalId}`);
@@ -2052,15 +2067,6 @@ export class ELBv2Provider implements ResourceProvider {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────
-
-  /**
-   * Extract Tags from CDK properties
-   * CDK format: Array<{Key: string, Value: string}> — same as ELBv2 API format
-   */
-  private extractTags(properties: Record<string, unknown>): Tag[] {
-    if (!properties['Tags']) return [];
-    return properties['Tags'] as Tag[];
-  }
 
   /**
    * Normalize a CFn `ListenerAttributes` value (an array of `{ Key, Value }`
@@ -2274,34 +2280,23 @@ export class ELBv2Provider implements ResourceProvider {
    * Apply a diff between old and new CFn-shape Tags arrays via ELBv2's
    * `AddTags` / `RemoveTags` APIs. Both accept `ResourceArns: [arn]`
    * (single ARN), `Tags: [{Key, Value}]` for AddTags, and
-   * `TagKeys: [...]` for RemoveTags.
+   * `TagKeys: [...]` for RemoveTags. Both sides are read through
+   * `planTagDiff` (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     arn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Tag[] = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(

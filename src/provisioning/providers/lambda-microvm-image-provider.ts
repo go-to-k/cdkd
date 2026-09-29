@@ -22,6 +22,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -142,6 +143,8 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tagList = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     this.logger.debug(`Creating MicroVM image ${logicalId}`);
 
     const name = properties['Name'] as string | undefined;
@@ -169,8 +172,7 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
       codeArtifact: codeArtifact!,
       ...buildCommonImageInput(properties),
     };
-    const tags = mapKeyValueListToRecord(properties['Tags']);
-    if (tags) input.tags = tags;
+    if (tagList.length > 0) input.tags = Object.fromEntries(tagList.map((t) => [t.Key, t.Value]));
 
     try {
       const response = await this.client.send(new CreateMicrovmImageCommand(input));
@@ -227,6 +229,8 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     this.logger.debug(`Updating MicroVM image ${logicalId}: ${physicalId}`);
 
     // Name is create-only; cdkd's create-only detection routes a Name change to
@@ -248,7 +252,13 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
       // they are reconciled out-of-band via TagResource / UntagResource, and a
       // tags-only change must NOT trigger an image rebuild. Reconcile them
       // first (a build rebuild below re-applies nothing tag-related).
-      await this.reconcileTags(physicalId, properties['Tags'], previousProperties['Tags']);
+      await this.reconcileTags(
+        physicalId,
+        resourceType,
+        logicalId,
+        properties['Tags'],
+        previousProperties['Tags']
+      );
 
       // Only issue an UpdateMicrovmImage (which triggers an async rebuild) when
       // a build-affecting property actually changed. A tags-only update skips
@@ -572,21 +582,24 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
    * Reconcile the resource's tags to the desired set via TagResource /
    * UntagResource (diff of the CFn `Tags` list, old vs new). Tags are NOT a
    * field on UpdateMicrovmImage, so this is the only way a tag change reaches
-   * AWS on update — and it applies without an image rebuild.
+   * AWS on update — and it applies without an image rebuild. Both sides are
+   * read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record
+   * untags nothing.
    */
   private async reconcileTags(
     physicalId: string,
+    resourceType: string,
+    logicalId: string,
     newTags: unknown,
     oldTags: unknown
   ): Promise<void> {
-    const newMap = mapKeyValueListToRecord(newTags) ?? {};
-    const oldMap = mapKeyValueListToRecord(oldTags) ?? {};
-
-    const keysToRemove = Object.keys(oldMap).filter((k) => !Object.hasOwn(newMap, k));
-    const tagsToAdd: Record<string, string> = {};
-    for (const [k, v] of Object.entries(newMap)) {
-      if (oldMap[k] !== v) tagsToAdd[k] = v;
+    const plan = planTagDiff(oldTags, newTags);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
+    const keysToRemove = plan.remove;
+    const tagsToAdd: Record<string, string> = Object.fromEntries(plan.set);
 
     if (keysToRemove.length > 0) {
       await this.client.send(
@@ -757,8 +770,8 @@ function mapHooks(value: unknown): Hooks | undefined {
 }
 
 /**
- * Convert a CFn `[{Key, Value}]` list (used by both `Tags` and
- * `EnvironmentVariables`) to the SDK `Record<string, string>` shape. Returns
+ * Convert a CFn `[{Key, Value}]` list (`EnvironmentVariables`; `Tags` is read
+ * through `tag-list.ts`) to the SDK `Record<string, string>` shape. Returns
  * `undefined` for an empty / absent list so the request omits the field.
  */
 function mapKeyValueListToRecord(value: unknown): Record<string, string> | undefined {

@@ -79,18 +79,21 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
   });
 
   describe('create', () => {
-    it('forwards a malformed non-array Tags verbatim (AWS rejects loudly)', async () => {
+    it('refuses a malformed non-array Tags before any call (go-to-k/cdkd#3994)', async () => {
       mockS3Send.mockResolvedValue({});
       const malformed = { team: 'not-a-tag-array' };
 
-      await provider.create('DirectoryBucket', RESOURCE_TYPE, {
-        BucketName: PHYSICAL_ID,
-        DataRedundancy: 'SingleAvailabilityZone',
-        LocationName: 'us-east-1c--x-s3',
-        Tags: malformed,
-      });
+      await expect(
+        provider.create('DirectoryBucket', RESOURCE_TYPE, {
+          BucketName: PHYSICAL_ID,
+          DataRedundancy: 'SingleAvailabilityZone',
+          LocationName: 'us-east-1c--x-s3',
+          Tags: malformed,
+        })
+      ).rejects.toThrow(ProvisioningError);
 
-      expect(mockS3Send.mock.calls[0][0].input.CreateBucketConfiguration.Tags).toBe(malformed);
+      expect(mockS3Send).not.toHaveBeenCalled();
+      expect(mockEc2Send).not.toHaveBeenCalled();
     });
 
     it('forwards Tags on CreateBucketConfiguration', async () => {
@@ -160,7 +163,7 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
       });
     });
 
-    it('untags removed keys, then re-applies the surviving set', async () => {
+    it('untags removed keys and re-tags nothing unchanged', async () => {
       mockControlSend.mockResolvedValue({});
 
       await provider.update(
@@ -176,7 +179,7 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
         }
       );
 
-      expect(mockControlSend).toHaveBeenCalledTimes(2);
+      expect(mockControlSend).toHaveBeenCalledTimes(1);
       const untag = mockControlSend.mock.calls[0][0];
       expect(untag).toBeInstanceOf(UntagResourceCommand);
       expect(untag.input).toEqual({
@@ -184,7 +187,6 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
         ResourceArn: ARN,
         TagKeys: ['dropped'],
       });
-      expect(mockControlSend.mock.calls[1][0]).toBeInstanceOf(TagResourceCommand);
     });
 
     it('removing the whole Tags property untags every previous key (no TagResource)', async () => {
@@ -219,25 +221,25 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
       expect(mockStsSend).not.toHaveBeenCalled();
     });
 
-    it('forwards a malformed non-array Tags verbatim and never untags from garbage', async () => {
-      // Same policy as create: AWS rejects the malformed value loudly.
+    it('refuses a malformed non-array Tags before any call and never untags from garbage', async () => {
       // Computing "removed keys" against garbage would silently strip every
-      // live tag (reviewer catch on PR #1528).
+      // live tag (reviewer catch on PR #1528); go-to-k/cdkd#3994 refuses it
+      // before any call, as the create path does.
       mockControlSend.mockResolvedValue({});
       const malformed = { team: 'not-a-tag-array' };
 
-      await provider.update(
-        'DirectoryBucket',
-        PHYSICAL_ID,
-        RESOURCE_TYPE,
-        { Tags: malformed },
-        { Tags: [{ Key: 'keep-me', Value: 'v' }] }
-      );
+      await expect(
+        provider.update(
+          'DirectoryBucket',
+          PHYSICAL_ID,
+          RESOURCE_TYPE,
+          { Tags: malformed },
+          { Tags: [{ Key: 'keep-me', Value: 'v' }] }
+        )
+      ).rejects.toThrow(ProvisioningError);
 
-      expect(mockControlSend).toHaveBeenCalledTimes(1);
-      const cmd = mockControlSend.mock.calls[0][0];
-      expect(cmd).toBeInstanceOf(TagResourceCommand);
-      expect(cmd.input.Tags).toBe(malformed);
+      expect(mockControlSend).not.toHaveBeenCalled();
+      expect(mockStsSend).not.toHaveBeenCalled();
     });
 
     it('wraps S3 Control failures in ProvisioningError', async () => {

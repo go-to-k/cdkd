@@ -173,7 +173,8 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
     //     the strong assert is on observedProperties (see verify.sh).
     //   - Monitoring: 60s = the AWS default resolution (no detailed-monitoring
     //     cost); acceptance-only live proof (no DescribeServices read-back).
-    //   - ForceNewDeployment: nonce-only object; phase 2b bumps the nonce and
+    //   - ForceNewDeployment: EnableForceNewDeployment false (a member CFn requires)
+    //     plus the nonce; phase 2b bumps the nonce and
     //     verify.sh asserts a fresh rollout appeared.
     // All injected via addPropertyOverride so the wire shape is exactly what a
     // hand-written template emits, independent of the installed aws-cdk-lib's
@@ -186,6 +187,7 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
       ],
     });
     cfnService.addPropertyOverride('ForceNewDeployment', {
+      EnableForceNewDeployment: false,
       ForceNewDeploymentNonce: isForceNonce ? 'cdkd-nonce-2' : 'cdkd-nonce-1',
     });
 

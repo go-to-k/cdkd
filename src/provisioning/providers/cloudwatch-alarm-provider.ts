@@ -19,6 +19,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -112,6 +113,8 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudWatch alarm ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const alarmName =
       (properties['AlarmName'] as string | undefined) ||
@@ -123,9 +126,8 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       // PutMetricAlarm `Tags` param is replace-only and does not remove
       // tags), so only the create path sends Tags through PutMetricAlarm.
       const createParams = this.buildAlarmParams(alarmName, properties);
-      const tags = this.buildCreateTags(properties['Tags']);
-      if (tags) {
-        createParams.Tags = tags;
+      if (desiredTags.length > 0) {
+        createParams.Tags = desiredTags.map(({ Key, Value }) => ({ Key, Value }));
       }
 
       await this.cloudWatchClient.send(new PutMetricAlarmCommand(createParams));
@@ -166,6 +168,8 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CloudWatch alarm ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       await this.cloudWatchClient.send(
@@ -181,8 +185,10 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       // keyed by ResourceARN.
       await this.applyTagDiff(
         alarmArn,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       return {
@@ -304,52 +310,25 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
   }
 
   /**
-   * Build the PutMetricAlarm `Tags` param from CFn-shape `[{Key, Value}]`
-   * Tags for the create path. Returns `undefined` when no tags are present
-   * so the field is omitted from the AWS call (matching create()'s
-   * omit-when-unset convention for other optional fields).
-   */
-  private buildCreateTags(raw: unknown): Array<{ Key: string; Value: string }> | undefined {
-    if (!Array.isArray(raw) || raw.length === 0) return undefined;
-    const tags: Array<{ Key: string; Value: string }> = [];
-    for (const t of raw as Array<{ Key?: string; Value?: string }>) {
-      if (t.Key !== undefined && t.Value !== undefined) {
-        tags.push({ Key: t.Key, Value: t.Value });
-      }
-    }
-    return tags.length > 0 ? tags : undefined;
-  }
-
-  /**
    * Apply a diff between old and new CFn-shape Tags arrays via CloudWatch's
    * `TagResource` / `UntagResource` APIs (keyed by `ResourceARN`).
    */
   private async applyTagDiff(
     resourceArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    // go-to-k/cdkd#3994: both sides are read through `planTagDiff`; an
+    // unreadable record untags nothing.
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.cloudWatchClient.send(

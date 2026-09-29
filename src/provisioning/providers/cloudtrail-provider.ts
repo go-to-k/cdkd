@@ -23,6 +23,12 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  planTagDiff,
+  readTagList,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+} from '../tag-list.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { requireConfigArray } from '../config-shape.js';
 import type {
@@ -202,6 +208,8 @@ export class CloudTrailProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudTrail Trail ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const s3BucketName = properties['S3BucketName'] as string | undefined;
     if (!s3BucketName) {
@@ -220,7 +228,6 @@ export class CloudTrailProvider implements ResourceProvider {
       | undefined;
     const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
     const isLogging = properties['IsLogging'] as boolean | undefined;
-    const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
     // `emptyToUndefined` on the create path too (issue #1565): a state replay
     // can feed an always-emit `''` placeholder in here, and `CreateTrail` with
     // an empty ARN is an unprobed shape. On create `''` and absent both mean
@@ -252,7 +259,9 @@ export class CloudTrailProvider implements ResourceProvider {
           IsMultiRegionTrail: isMultiRegionTrail,
           IncludeGlobalServiceEvents: includeGlobalServiceEvents,
           EnableLogFileValidation: enableLogFileValidation,
-          TagsList: tags ? tags.map((t) => ({ Key: t.Key, Value: t.Value })) : undefined,
+          TagsList: properties['Tags']
+            ? desiredTags.map((t) => ({ Key: t.Key, Value: t.Value }))
+            : undefined,
           CloudWatchLogsLogGroupArn: cloudWatchLogsLogGroupArn,
           CloudWatchLogsRoleArn: cloudWatchLogsRoleArn,
           KmsKeyId: kmsKeyId,
@@ -326,6 +335,8 @@ export class CloudTrailProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CloudTrail Trail ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     // `readCurrentState` always-emits empty-string `''` placeholders for
     // several optional fields (S3KeyPrefix, KMSKeyId, SnsTopicName) so
@@ -657,8 +668,10 @@ export class CloudTrailProvider implements ResourceProvider {
       // CloudTrail SDK contract.
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       this.logger.debug(`Successfully updated CloudTrail Trail ${logicalId}`);
@@ -732,34 +745,29 @@ export class CloudTrailProvider implements ResourceProvider {
    * Apply a diff between old and new CFn-shape Tags arrays via CloudTrail's
    * `AddTags` / `RemoveTags` APIs. Note: CloudTrail's `RemoveTags` takes
    * full `{Key, Value}` objects in `TagsList` (NOT just keys), unlike most
-   * other AWS services.
+   * other AWS services. Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     trailArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of oldMap) {
-      if (!newMap.has(k)) tagsToRemove.push({ Key: k, Value: v });
-    }
+    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    // `plan.remove` is non-empty only when the record was readable; its
+    // values ride along because RemoveTags takes full {Key, Value} objects.
+    const recorded = readTagList(oldTagsRaw, 'recorded');
+    const oldMap = new Map(
+      recorded.kind === 'tags' ? recorded.tags.map((t) => [t.Key, t.Value] as const) : []
+    );
+    const tagsToRemove = plan.remove.map((Key) => ({ Key, Value: oldMap.get(Key) ?? '' }));
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(

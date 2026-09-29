@@ -19,6 +19,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -28,12 +29,6 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-
-/** CFn tag-list entry shape (`{ Key, Value }`). */
-interface CfnTag {
-  Key?: string;
-  Value?: string;
-}
 
 /**
  * SDK Provider for AWS::DLM::LifecyclePolicy (Data Lifecycle Manager).
@@ -98,22 +93,6 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       });
     }
     return this.client;
-  }
-
-  /**
-   * Convert the CFn `Tags` list (`[{ Key, Value }]`) to the DLM tag map
-   * (`Record<string, string>`). Returns `undefined` for an absent / empty
-   * list so callers can omit the field.
-   */
-  private cfnTagsToMap(tags: unknown): Record<string, string> | undefined {
-    if (!Array.isArray(tags)) return undefined;
-    const map: Record<string, string> = {};
-    for (const t of tags as CfnTag[]) {
-      if (typeof t?.Key === 'string' && t.Key.length > 0) {
-        map[t.Key] = typeof t.Value === 'string' ? t.Value : '';
-      }
-    }
-    return Object.keys(map).length > 0 ? map : undefined;
   }
 
   /**
@@ -287,9 +266,15 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DLM Lifecycle Policy ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     try {
-      const tags = this.cfnTagsToMap(properties['Tags']);
+      // CFn `[{ Key, Value }]` -> DLM tag map; omitted when empty.
+      const tags =
+        desiredTags.length > 0
+          ? Object.fromEntries(desiredTags.map((t) => [t.Key, t.Value]))
+          : undefined;
       const input: CreateLifecyclePolicyCommandInput = {
         ...this.toSdkFields(properties),
         ...(properties['DefaultPolicy'] !== undefined && {
@@ -346,6 +331,9 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+
     if (
       JSON.stringify(properties['DefaultPolicy']) !==
       JSON.stringify(previousProperties['DefaultPolicy'])
@@ -388,11 +376,15 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       // from the template (partial removal) — or the entire `Tags` property
       // removed (full removal, newTags === undefined) — would survive on AWS
       // unless we explicitly UntagResource the removed keys (the #981 ECR
-      // regression class).
-      const newTags = this.cfnTagsToMap(properties['Tags']) ?? {};
-      const oldTags = this.cfnTagsToMap(previousProperties['Tags']) ?? {};
+      // regression class). Both sides are read through `planTagDiff`
+      // (go-to-k/cdkd#3994): an unreadable record untags nothing.
+      const plan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+      const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+      if (tagWarning !== undefined) {
+        this.logger.warn(tagWarning);
+      }
       const arn = await this.fetchPolicyArn(physicalId);
-      const tagsChanged = JSON.stringify(newTags) !== JSON.stringify(oldTags);
+      const tagsChanged = plan.set.size > 0 || plan.remove.length > 0;
       if (tagsChanged && !arn) {
         // GetLifecyclePolicy returned a Policy without PolicyArn — should not
         // happen in practice, but silently skipping the tag diff would leave
@@ -402,7 +394,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         );
       }
       if (tagsChanged && arn) {
-        const removedKeys = Object.keys(oldTags).filter((k) => !Object.hasOwn(newTags, k));
+        const removedKeys = plan.remove;
         if (removedKeys.length > 0) {
           await this.getClient().send(
             new UntagResourceCommand({ ResourceArn: arn, TagKeys: removedKeys })
@@ -411,10 +403,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
             `Removed ${removedKeys.length} tag(s) from DLM Lifecycle Policy ${physicalId}`
           );
         }
-        const tagsToAdd: Record<string, string> = {};
-        for (const [k, v] of Object.entries(newTags)) {
-          if (oldTags[k] !== v) tagsToAdd[k] = v;
-        }
+        const tagsToAdd = Object.fromEntries(plan.set);
         if (Object.keys(tagsToAdd).length > 0) {
           await this.getClient().send(
             new TagResourceCommand({ ResourceArn: arn, Tags: tagsToAdd })

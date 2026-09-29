@@ -41,6 +41,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -329,6 +330,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     if (resourceType !== 'AWS::FSx::FileSystem') {
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,
@@ -393,7 +396,6 @@ export class FSxFileSystemProvider implements ResourceProvider {
     // logical ids and keep the hash suffix for uniqueness.
     const clientRequestToken = `cdkd-${logicalId.slice(0, 45)}-${tokenHash}`;
 
-    const tags = properties['Tags'] as Tag[] | undefined;
     const common = {
       ClientRequestToken: clientRequestToken,
       SubnetIds: properties['SubnetIds'] as string[],
@@ -417,7 +419,10 @@ export class FSxFileSystemProvider implements ResourceProvider {
       OpenZFSConfiguration: this.toCreateOpenZFSConfiguration(
         properties['OpenZFSConfiguration'] as Record<string, unknown> | undefined
       ),
-      Tags: tags?.map((t) => ({ Key: t.Key, Value: t.Value })),
+      Tags:
+        properties['Tags'] !== undefined && properties['Tags'] !== null
+          ? tags.map((t) => ({ Key: t.Key, Value: t.Value }))
+          : undefined,
     };
 
     let fileSystemId: string | undefined;
@@ -755,6 +760,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const changed = (key: string): boolean =>
       JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
 
@@ -914,8 +921,10 @@ export class FSxFileSystemProvider implements ResourceProvider {
       if (tagsChanged) {
         await this.applyTagDiff(
           physicalId,
-          properties['Tags'] as Tag[] | undefined,
-          previousProperties['Tags'] as Tag[] | undefined
+          resourceType,
+          logicalId,
+          properties['Tags'],
+          previousProperties['Tags']
         );
       }
 
@@ -1214,13 +1223,17 @@ export class FSxFileSystemProvider implements ResourceProvider {
   /**
    * Apply a `Tags` diff via `TagResource` / `UntagResource` (the FSx
    * `UpdateFileSystem` API does not accept tags). Needs the ARN — resolve
-   * it from `DescribeFileSystems`.
+   * it from `DescribeFileSystems`. Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     physicalId: string,
-    nextTags: Tag[] | undefined,
-    prevTags: Tag[] | undefined
+    resourceType: string,
+    logicalId: string,
+    nextTags: unknown,
+    prevTags: unknown
   ): Promise<void> {
+    const plan = planTagDiff(prevTags, nextTags);
     const resp = await this.getClient().send(
       new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
     );
@@ -1229,18 +1242,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
       throw new Error(`could not resolve ResourceARN for FSx FileSystem ${physicalId}`);
     }
 
-    const next = new Map((nextTags ?? []).map((t) => [t.Key, t.Value]));
-    const prev = new Map((prevTags ?? []).map((t) => [t.Key, t.Value]));
-
-    const toSet: Tag[] = [];
-    for (const [key, value] of next) {
-      if (key === undefined) continue;
-      if (prev.get(key) !== value) toSet.push({ Key: key, Value: value });
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const toRemove: string[] = [];
-    for (const key of prev.keys()) {
-      if (key !== undefined && !next.has(key)) toRemove.push(key);
-    }
+    const toSet: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const toRemove = plan.remove;
 
     if (toSet.length > 0) {
       await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: toSet }));

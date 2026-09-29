@@ -34,6 +34,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   toSdkConfigurations,
   toSdkInstanceTypeConfigs,
@@ -239,6 +240,8 @@ export class EMRClusterProvider implements ResourceProvider {
     }
 
     this.logger.debug(`Creating EMR Cluster ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     let clusterId: string | undefined;
 
@@ -246,7 +249,8 @@ export class EMRClusterProvider implements ResourceProvider {
       // Build the RunJobFlow input INSIDE the try so a malformed template value
       // (e.g. a bad Instances shape) surfaces as a wrapped ProvisioningError
       // rather than a raw throw.
-      const tags = properties['Tags'] as Tag[] | undefined;
+      const tags =
+        properties['Tags'] !== undefined && properties['Tags'] !== null ? desiredTags : undefined;
       const input = {
         Name: properties['Name'] as string,
         ReleaseLabel: properties['ReleaseLabel'] as string | undefined,
@@ -497,6 +501,9 @@ export class EMRClusterProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+
     const changed = (key: string): boolean => !jsonEqual(properties[key], previousProperties[key]);
 
     // The `Instances` block is NOT registry-createOnly, so a change to it
@@ -668,8 +675,10 @@ export class EMRClusterProvider implements ResourceProvider {
       if (tagsChanged) {
         await this.applyTagDiff(
           physicalId,
-          properties['Tags'] as Tag[] | undefined,
-          previousProperties['Tags'] as Tag[] | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -715,25 +724,24 @@ export class EMRClusterProvider implements ResourceProvider {
    * Apply a `Tags` diff via `AddTags` / `RemoveTags`. Full-tag-removal is
    * handled explicitly (a tag present before and absent now must be removed
    * via `RemoveTags` — mirrors the #981 ECR regression class where an empty
-   * desired tag set silently left the old tags in place).
+   * desired tag set silently left the old tags in place). Both sides are read
+   * through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record untags
+   * nothing.
    */
   private async applyTagDiff(
     physicalId: string,
-    nextTags: Tag[] | undefined,
-    prevTags: Tag[] | undefined
+    resourceType: string,
+    logicalId: string,
+    prevTagsRaw: unknown,
+    nextTagsRaw: unknown
   ): Promise<void> {
-    const next = new Map((nextTags ?? []).map((t) => [t.Key, t.Value]));
-    const prev = new Map((prevTags ?? []).map((t) => [t.Key, t.Value]));
-
-    const toSet: Tag[] = [];
-    for (const [key, value] of next) {
-      if (key === undefined) continue;
-      if (prev.get(key) !== value) toSet.push({ Key: key, Value: value });
+    const plan = planTagDiff(prevTagsRaw, nextTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const toRemove: string[] = [];
-    for (const key of prev.keys()) {
-      if (key !== undefined && !next.has(key)) toRemove.push(key);
-    }
+    const toSet: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const toRemove = plan.remove;
 
     if (toRemove.length > 0) {
       await this.getClient().send(

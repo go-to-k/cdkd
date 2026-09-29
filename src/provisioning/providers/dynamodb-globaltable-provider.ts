@@ -55,6 +55,12 @@ import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  type CfnTagEntry,
+} from '../tag-list.js';
+import {
   coerceCfnInteger,
   configStringRefusal,
   readConfigString,
@@ -437,6 +443,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     this.logger.debug(`Creating DynamoDB GlobalTable ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed `Replicas[].Tags` is refused before any call.
+    const desiredReplicaTags = refuseMalformedReplicaTags(properties, resourceType, logicalId);
 
     const tableName =
       (properties['TableName'] as string | undefined) ||
@@ -1051,9 +1059,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // Tags are propagated AFTER the replicas flip ACTIVE — see the
     // `applyCrossRegionReplicaTagsDiff` loop further down (Issue #441).
     const localReplicaForTags = replicas.find((r) => r['Region'] === currentRegion);
-    const localReplicaTags = localReplicaForTags?.['Tags'] as Tag[] | undefined;
+    const localReplicaTags =
+      localReplicaForTags !== undefined ? desiredReplicaTags.get(localReplicaForTags) : undefined;
     if (localReplicaTags && localReplicaTags.length > 0) {
-      createParams.Tags = localReplicaTags;
+      createParams.Tags = localReplicaTags.map((t): Tag => ({ Key: t.Key, Value: t.Value }));
     }
 
     // Pre-flight the CROSS-REGION replica blocks through the same translators
@@ -1142,13 +1151,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       for (const replica of replicas) {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
-        const replicaTags = replica['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
+        const replicaTags = desiredReplicaTags.get(replica);
         if (!replicaTags || replicaTags.length === 0) continue;
         await this.applyCrossRegionReplicaTagsDiff(
           tableInfo.tableArn,
           region,
           undefined, // create() has no previous state — every tag is an add
           replicaTags,
+          resourceType,
+          logicalId,
           tableName,
           maskSecrets
         );
@@ -1616,6 +1627,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // stream rather than by review.
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     debug(`Updating DynamoDB GlobalTable ${logicalId}: ${maskSecrets(physicalId)}`);
+    // go-to-k/cdkd#3994: a malformed desired `Replicas[].Tags` is refused
+    // before any call.
+    refuseMalformedReplicaTags(properties, resourceType, logicalId, physicalId);
 
     // ─── Immutable property guards (defense-in-depth) ───────────────────
     // Issue [#2610] sites 5-7. The three refusals below advise a replacement,
@@ -1861,18 +1875,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         new DescribeTableCommand({ TableName: physicalId })
       );
       const tableArn = describeResp.Table?.TableArn;
-      const extractLocalTags = (
-        props: Record<string, unknown>
-      ): Array<{ Key?: string; Value?: string }> | undefined => {
+      const extractLocalTags = (props: Record<string, unknown>): unknown => {
         // The SHARED predicate, not a second spelling of it: this reader is
         // the one that throws FIRST on the apply path, and it kept the
         // unguarded form for a round after its sibling was fixed.
         const local = localReplicaEntry(props, currentRegion);
-        return local?.['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
+        return local?.['Tags'];
       };
       if (tableArn) {
         await this.applyTagDiff(
           tableArn,
+          resourceType,
+          logicalId,
           extractLocalTags(previousProperties),
           extractLocalTags(properties)
         );
@@ -2984,14 +2998,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // not accept a `Tags` field, so any `Replicas[].Tags` declared
         // in the new replica entry must be applied via a separate
         // `TagResource` against the replica's region-scoped ARN.
-        const newReplicaTags = replica['Tags'] as
-          | Array<{ Key?: string; Value?: string }>
-          | undefined;
+        const newReplicaTags: unknown = replica['Tags'];
         await this.applyCrossRegionReplicaTagsDiff(
           tableArn,
           region,
           undefined,
           newReplicaTags,
+          resourceType,
+          logicalId,
           physicalId,
           maskSecrets
         );
@@ -3034,12 +3048,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const oldReplica = (
           (previousProperties['Replicas'] ?? []) as Array<Record<string, unknown>>
         ).find((r) => r['Region'] === region);
-        const oldReplicaTags = oldReplica?.['Tags'] as
-          | Array<{ Key?: string; Value?: string }>
-          | undefined;
-        const newReplicaTags = replica['Tags'] as
-          | Array<{ Key?: string; Value?: string }>
-          | undefined;
+        const oldReplicaTags: unknown = oldReplica?.['Tags'];
+        const newReplicaTags: unknown = replica['Tags'];
 
         // Cross-region Tags propagation (Issue #389): delegate to the
         // shared `applyCrossRegionReplicaTagsDiff` helper (also used by
@@ -3052,6 +3062,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           region,
           oldReplicaTags,
           newReplicaTags,
+          resourceType,
+          logicalId,
           physicalId,
           maskSecrets
         );
@@ -3758,10 +3770,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    */
   private async applyTagDiff(
     tableArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    await this.applyTagDiffOnClient(this.dynamoDBClient, tableArn, oldTagsRaw, newTagsRaw);
+    await this.applyTagDiffOnClient(
+      this.dynamoDBClient,
+      tableArn,
+      resourceType,
+      logicalId,
+      oldTagsRaw,
+      newTagsRaw
+    );
   }
 
   /**
@@ -3788,8 +3809,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async applyCrossRegionReplicaTagsDiff(
     tableArn: string | undefined,
     region: string,
-    oldTags: Array<{ Key?: string; Value?: string }> | undefined,
-    newTags: Array<{ Key?: string; Value?: string }> | undefined,
+    oldTags: unknown,
+    newTags: unknown,
+    resourceType: string,
+    logicalId: string,
     physicalIdForLogs: string,
     // The caller's secret masker (issue #1997). All three warnings below name
     // `physicalIdForLogs`, which is the resolved table name. Defaults to
@@ -3815,7 +3838,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
     try {
       const regionalClient = this.getRegionalClient(region);
-      await this.applyTagDiffOnClient(regionalClient, replicaArn, oldTags, newTags);
+      await this.applyTagDiffOnClient(
+        regionalClient,
+        replicaArn,
+        resourceType,
+        `${logicalId} (replica ${region})`,
+        oldTags,
+        newTags,
+        maskSecrets
+      );
     } catch (tagErr) {
       warn(
         `Could not apply Tags diff to cross-region replica ${region} of ${physicalIdForLogs}: ${describeAwsFailure(tagErr).detail}. The replica's Tags state will surface as drift until the next successful deploy.`
@@ -3827,35 +3858,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * Apply a Tags diff against the given `DynamoDBClient` (which may be
    * the local client or a per-region client returned by
    * `getRegionalClient`). Used by the local-replica path AND the
-   * cross-region replica Tags propagation path (Issue #389 / #441).
+   * cross-region replica Tags propagation path (Issue #389 / #441). Both
+   * sides are read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable
+   * record untags nothing. `id` names the replica in that warning.
    */
   private async applyTagDiffOnClient(
     client: DynamoDBClient,
     tableArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    id: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown,
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, id);
+    if (tagWarning !== undefined) {
+      this.logger.warn(maskSecrets(tagWarning));
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = [...plan.set].map(([k, v]) => ({ Key: k, Value: v }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await client.send(new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove }));
@@ -6578,6 +6600,40 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 }
 
 // ─── Pure-functional diff helpers (exported for testing) ───────────────
+
+/**
+ * Refuse a malformed desired `Replicas[].Tags` (go-to-k/cdkd#3994) before any
+ * call, naming the replica by index and never its content. The type has no
+ * top-level `Tags`; each replica's list is a CloudFormation `[{ Key, Value }]`
+ * bag. Returns each replica entry's well-formed list, keyed by the entry. A
+ * `Replicas` that is not a list, or an entry that is not an object, is left to
+ * the readers that own it.
+ */
+function refuseMalformedReplicaTags(
+  properties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): Map<Record<string, unknown>, CfnTagEntry[]> {
+  const tagsByReplica = new Map<Record<string, unknown>, CfnTagEntry[]>();
+  const replicas = properties['Replicas'];
+  if (!Array.isArray(replicas)) return tagsByReplica;
+  replicas.forEach((entry: unknown, index) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return;
+    const replica = entry as Record<string, unknown>;
+    tagsByReplica.set(
+      replica,
+      refuseMalformedDesiredTags(
+        replica['Tags'],
+        resourceType,
+        logicalId,
+        physicalId,
+        `Replicas[${index}].Tags`
+      )
+    );
+  });
+  return tagsByReplica;
+}
 
 /**
  * The `Replicas[]` entry for `region`, or `undefined`.

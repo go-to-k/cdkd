@@ -46,6 +46,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -70,25 +71,6 @@ export function evaluatorIdFromArn(arnOrId: string): string {
   const marker = ':evaluator/';
   const idx = arnOrId.indexOf(marker);
   return idx >= 0 ? arnOrId.slice(idx + marker.length) : arnOrId;
-}
-
-/** CFn `[{Key, Value}]` tag list → SDK `Record<string, string>` map. */
-function cfnTagListToMap(tags: unknown): Record<string, string> {
-  const map: Record<string, string> = {};
-  if (Array.isArray(tags)) {
-    for (const tag of tags) {
-      if (
-        tag !== null &&
-        typeof tag === 'object' &&
-        typeof (tag as Record<string, unknown>)['Key'] === 'string'
-      ) {
-        map[(tag as Record<string, unknown>)['Key'] as string] = String(
-          (tag as Record<string, unknown>)['Value'] ?? ''
-        );
-      }
-    }
-  }
-  return map;
 }
 
 /** SDK `Record<string, string>` tag map → CFn `[{Key, Value}]` list. */
@@ -131,6 +113,8 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating BedrockAgentCore Evaluator ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const evaluatorName = properties['EvaluatorName'] as string;
     if (!evaluatorName) {
@@ -164,11 +148,8 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       if (properties['KmsKeyArn'] !== undefined) {
         input['kmsKeyArn'] = properties['KmsKeyArn'];
       }
-      if (properties['Tags'] !== undefined) {
-        const tags = cfnTagListToMap(properties['Tags']);
-        if (Object.keys(tags).length > 0) {
-          input['tags'] = tags;
-        }
+      if (desiredTags.length > 0) {
+        input['tags'] = Object.fromEntries(desiredTags.map((t) => [t.Key, t.Value]));
       }
 
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
@@ -216,6 +197,8 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating BedrockAgentCore Evaluator ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -241,7 +224,13 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       const response = await this.client.send(new UpdateEvaluatorCommand(input as any));
 
-      await this.syncTags(physicalId, properties['Tags'], previousProperties['Tags']);
+      await this.syncTags(
+        physicalId,
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
+      );
 
       const evaluatorArn = response.evaluatorArn ?? physicalId;
 
@@ -270,23 +259,24 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
   }
 
   /**
-   * Apply CFn tag-list changes via TagResource / UntagResource.
+   * Apply CFn tag-list changes via TagResource / UntagResource. Both sides are
+   * read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record
+   * untags nothing.
    */
   private async syncTags(
     evaluatorArn: string,
-    nextTagsRaw: unknown,
-    previousTagsRaw: unknown
+    resourceType: string,
+    logicalId: string,
+    previousTagsRaw: unknown,
+    nextTagsRaw: unknown
   ): Promise<void> {
-    const nextTags = cfnTagListToMap(nextTagsRaw);
-    const previousTags = cfnTagListToMap(previousTagsRaw);
-
-    const removedKeys = Object.keys(previousTags).filter((key) => !Object.hasOwn(nextTags, key));
-    const upserts: Record<string, string> = {};
-    for (const [key, value] of Object.entries(nextTags)) {
-      if (previousTags[key] !== value) {
-        upserts[key] = value;
-      }
+    const plan = planTagDiff(previousTagsRaw, nextTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
+    const removedKeys = plan.remove;
+    const upserts = Object.fromEntries(plan.set);
 
     if (removedKeys.length > 0) {
       await this.client.send(

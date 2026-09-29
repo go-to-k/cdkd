@@ -67,6 +67,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { requireConfigArray } from '../config-shape.js';
 import {
   compositeIdFormatMessage,
@@ -804,6 +805,9 @@ export class AppSyncProvider implements ResourceProvider {
     // `cdkd drift --revert`) — issue #3740.
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+
     // `Name` is immutable on AWS — UpdateGraphqlApi REQUIRES `name` in the
     // input shape but rejects any value other than the existing one.
     // Replacement-detection should have routed the diff through
@@ -985,8 +989,8 @@ export class AppSyncProvider implements ResourceProvider {
       physicalId,
       resourceType,
       logicalId,
-      previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-      properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      previousProperties['Tags'],
+      properties['Tags']
     );
 
     // `attributes` is deliberately OMITTED, not `{}`: the deploy engine
@@ -1307,18 +1311,22 @@ export class AppSyncProvider implements ResourceProvider {
    * Tags are keyed by the GraphqlApi ARN — recover it from
    * `GetGraphqlApi`. Failure to recover the ARN is a hard error (the API
    * itself just changed) rather than a silent drop, so the user knows
-   * the tag diff was not applied.
+   * the tag diff was not applied. Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     apiId: string,
     resourceType: string,
     logicalId: string,
-    oldTags: Array<{ Key?: string; Value?: string }> | undefined,
-    newTags: Array<{ Key?: string; Value?: string }> | undefined
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const oldMap = this.tagsToMap(oldTags ?? []);
-    const newMap = this.tagsToMap(newTags ?? []);
-    if (this.deepEqual(oldMap, newMap)) return;
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
+    }
+    if (plan.set.size === 0 && plan.remove.length === 0) return;
 
     let arn = this.arnCache.get(apiId);
     if (!arn) {
@@ -1339,11 +1347,8 @@ export class AppSyncProvider implements ResourceProvider {
       this.arnCache.set(apiId, arn);
     }
 
-    const tagKeysToRemove = Object.keys(oldMap).filter((k) => !Object.hasOwn(newMap, k));
-    const tagsToAdd: Record<string, string> = {};
-    for (const [k, v] of Object.entries(newMap)) {
-      if (oldMap[k] !== v) tagsToAdd[k] = v;
-    }
+    const tagKeysToRemove = plan.remove;
+    const tagsToAdd = Object.fromEntries(plan.set);
 
     if (tagKeysToRemove.length > 0) {
       try {
@@ -1369,16 +1374,6 @@ export class AppSyncProvider implements ResourceProvider {
         throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi (tag)');
       }
     }
-  }
-
-  private tagsToMap(tags: Array<{ Key?: string; Value?: string }>): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const t of tags) {
-      if (t.Key !== undefined && t.Value !== undefined) {
-        out[t.Key] = t.Value;
-      }
-    }
-    return out;
   }
 
   private wrapUpdateError(
@@ -2600,6 +2595,8 @@ export class AppSyncProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating GraphQL API ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const name = properties['Name'] as string;
     if (!name) {
@@ -2655,15 +2652,7 @@ export class AppSyncProvider implements ResourceProvider {
 
       // Tags
       if (properties['Tags']) {
-        const tags = properties['Tags'] as Array<{
-          Key: string;
-          Value: string;
-        }>;
-        const tagMap: Record<string, string> = {};
-        for (const tag of tags) {
-          tagMap[tag.Key] = tag.Value;
-        }
-        input.tags = tagMap;
+        input.tags = Object.fromEntries(desiredTags.map((t) => [t.Key, t.Value]));
       }
 
       this.applyGraphQLApiConfig(input, properties, { logicalId, shapeGuard });

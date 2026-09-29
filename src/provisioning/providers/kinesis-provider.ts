@@ -28,6 +28,7 @@ import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -305,6 +306,8 @@ export class KinesisStreamProvider implements ResourceProvider {
     const warn = (message: string): void => this.logger.warn(mask(message));
 
     this.logger.debug(`Creating Kinesis stream ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const streamName =
       (properties['Name'] as string | undefined) ||
@@ -388,20 +391,17 @@ export class KinesisStreamProvider implements ResourceProvider {
       const streamInfo = await this.waitForStreamActive(streamName);
 
       // Apply tags if specified
-      if (properties['Tags']) {
-        const tagList = properties['Tags'] as Array<{ Key: string; Value: string }>;
-        const tags: Record<string, string> = {};
-        for (const tag of tagList) {
-          tags[tag.Key] = tag.Value;
-        }
-        if (Object.keys(tags).length > 0) {
-          await this.getClient().send(
-            new AddTagsToStreamCommand({
-              StreamName: streamName,
-              Tags: tags,
-            })
-          );
-        }
+      const tags: Record<string, string> = {};
+      for (const tag of desiredTags) {
+        tags[tag.Key] = tag.Value;
+      }
+      if (Object.keys(tags).length > 0) {
+        await this.getClient().send(
+          new AddTagsToStreamCommand({
+            StreamName: streamName,
+            Tags: tags,
+          })
+        );
       }
 
       // Apply RetentionPeriodHours if specified (default is 24 hours)
@@ -529,6 +529,8 @@ export class KinesisStreamProvider implements ResourceProvider {
     const warn = (message: string): void => this.logger.warn(mask(message));
 
     this.logger.debug(`Updating Kinesis stream ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       const streamModeDetails = properties['StreamModeDetails'] as
@@ -637,8 +639,10 @@ export class KinesisStreamProvider implements ResourceProvider {
       // RemoveTagsFromStream (TagKeys list).
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       // Update StreamEncryption if changed.
@@ -926,34 +930,23 @@ export class KinesisStreamProvider implements ResourceProvider {
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via Kinesis's
    * `AddTagsToStream` (map shape) / `RemoveTagsFromStream` (TagKeys list)
-   * APIs.
+   * APIs. Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
+   * unreadable record untags nothing.
    */
   private async applyTagDiff(
     streamName: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Record<string, string> = {};
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = Object.fromEntries(plan.set);
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(

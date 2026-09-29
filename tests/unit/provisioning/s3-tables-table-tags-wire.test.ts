@@ -105,23 +105,22 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
       expect(mockSend.mock.calls[0][0].input.tags).toBeUndefined();
     });
 
-    it('drops Tags entries with missing or non-string Key (defensive)', async () => {
-      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
-      await provider.create('L', 'AWS::S3Tables::Table', {
-        TableBucketARN: BUCKET_ARN,
-        Namespace: NAMESPACE,
-        Name: TABLE_NAME,
-        Format: 'ICEBERG',
-        Tags: [
-          { Key: 'good', Value: 'yes' },
-          { Value: 'no-key' },
-          { Key: 'no-value' },
-          { Key: 'numeric', Value: 42 as unknown as string },
-          { Key: 'bool', Value: true as unknown as string },
-        ],
-      });
-      const tags = mockSend.mock.calls[0][0].input.tags;
-      expect(tags).toEqual({ good: 'yes', 'no-value': '', numeric: '42', bool: 'true' });
+    it('refuses Tags entries with a missing Key or a non-string Value before any call (go-to-k/cdkd#3994)', async () => {
+      await expect(
+        provider.create('L', 'AWS::S3Tables::Table', {
+          TableBucketARN: BUCKET_ARN,
+          Namespace: NAMESPACE,
+          Name: TABLE_NAME,
+          Format: 'ICEBERG',
+          Tags: [
+            { Key: 'good', Value: 'yes' },
+            { Value: 'no-key' },
+            { Key: 'no-value' },
+            { Key: 'numeric', Value: 42 as unknown as string },
+          ],
+        })
+      ).rejects.toThrow(/Tags of AWS::S3Tables::Table L is not a list of tags/);
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

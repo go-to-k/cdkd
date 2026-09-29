@@ -30,6 +30,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -100,6 +101,8 @@ export class IAMRoleProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
     // shape), and every bag-derived value masked RAW as well -- the name, the
     // attached ARNs and the inline policy names all come out of the resolved
@@ -216,8 +219,7 @@ export class IAMRoleProvider implements ResourceProvider {
         }
 
         // Add tags if specified
-        const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-        if (tags && Array.isArray(tags)) {
+        if (properties['Tags'] !== undefined && properties['Tags'] !== null) {
           await this.iamClient.send(
             new TagRoleCommand({
               RoleName: roleName,
@@ -291,6 +293,8 @@ export class IAMRoleProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const derivedRoleName = generateResourceNameWithFallback(
       properties['RoleName'] as string | undefined,
       logicalId,
@@ -529,8 +533,10 @@ export class IAMRoleProvider implements ResourceProvider {
       // Update tags
       await this.updateTags(
         physicalId,
-        properties['Tags'] as Array<{ Key: string; Value: string }> | undefined,
-        previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined,
+        resourceType,
+        logicalId,
+        properties['Tags'],
+        previousProperties['Tags'],
         log
       );
 
@@ -866,33 +872,25 @@ export class IAMRoleProvider implements ResourceProvider {
   }
 
   /**
-   * Update tags on the role
+   * Update tags on the role. Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async updateTags(
     roleName: string,
-    newTags: Array<{ Key: string; Value: string }> | undefined,
-    oldTags: Array<{ Key: string; Value: string }> | undefined,
+    resourceType: string,
+    logicalId: string,
+    newTags: unknown,
+    oldTags: unknown,
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;
-    const newTagMap = new Map((newTags || []).map((t) => [t.Key, t.Value]));
-    const oldTagMap = new Map((oldTags || []).map((t) => [t.Key, t.Value]));
-
-    // Find tags to remove (present in old but not in new)
-    const tagsToRemove: string[] = [];
-    for (const key of oldTagMap.keys()) {
-      if (!newTagMap.has(key)) {
-        tagsToRemove.push(key);
-      }
+    const plan = planTagDiff(oldTags, newTags);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      log.warn(tagWarning);
     }
-
-    // Find tags to add/update (new or changed value)
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [key, value] of newTagMap) {
-      if (oldTagMap.get(key) !== value) {
-        tagsToAdd.push({ Key: key, Value: value });
-      }
-    }
+    const tagsToRemove = plan.remove;
+    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
 
     if (tagsToRemove.length > 0) {
       await this.iamClient.send(

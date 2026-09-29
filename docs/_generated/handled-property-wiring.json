@@ -5671,7 +5671,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildTags",
             "create",
             "createDBCluster",
             "createDBInstance",
@@ -5755,11 +5754,9 @@
             "AWS::DocDB::DBSubnetGroup"
           ],
           "evidence": [
-            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "buildTags",
             "create",
             "update"
           ]
@@ -7435,7 +7432,6 @@
             "element-read"
           ],
           "seededBy": [
-            "applyTags",
             "applyUpdate",
             "create",
             "createEip",
@@ -9205,11 +9201,12 @@
             "element-read"
           ],
           "seededBy": [
-            "buildTags",
             "create",
             "createCacheCluster",
+            "createSubnetGroup",
             "update",
-            "updateCacheCluster"
+            "updateCacheCluster",
+            "updateSubnetGroup"
           ]
         },
         {
@@ -9809,7 +9806,6 @@
             "createListener",
             "createLoadBalancer",
             "createTargetGroup",
-            "extractTags",
             "update",
             "updateListener",
             "updateLoadBalancer",
@@ -15365,7 +15361,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildTags",
             "create",
             "createDBCluster",
             "createDBInstance",
@@ -16233,7 +16228,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildTags",
             "create",
             "createDBCluster",
             "createDBInstance",
@@ -17060,11 +17054,9 @@
             "AWS::S3::Bucket"
           ],
           "evidence": [
-            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "applyConfiguration",
             "create",
             "update"
           ]
@@ -17874,7 +17866,8 @@
             "update",
             "updateHttpNamespace",
             "updateNamespace",
-            "updatePublicDnsNamespace"
+            "updatePublicDnsNamespace",
+            "updateService"
           ]
         },
         {

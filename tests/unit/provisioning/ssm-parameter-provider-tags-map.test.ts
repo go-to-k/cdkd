@@ -167,28 +167,19 @@ describe('SSMParameterProvider Tags map shape (AWS::SSM::Parameter.Tags is a map
     expect(names).toEqual(['PutParameterCommand']);
   });
 
-  it('create: a non-primitive tag value (e.g. an unresolved object) coerces to empty string', async () => {
-    // SSM tag values must be strings. A non-primitive (object/array) value
-    // would otherwise stringify to "[object Object]"; coerce to '' instead.
-    // In practice intrinsics are resolved before the provider sees them, so
-    // this only documents the defensive coercion.
-    mockSend.mockResolvedValueOnce({}); // PutParameterCommand
-    mockSend.mockResolvedValueOnce({}); // AddTagsToResourceCommand
-
-    await provider.create('MyParam', RESOURCE_TYPE, {
-      Name: '/foo/bar',
-      Type: 'String',
-      Value: 'baz',
-      Tags: { Weird: { nested: 'object' }, Ok: 'fine' },
-    });
-
-    const addCall = mockSend.mock.calls.find(
-      (c) => c[0].constructor.name === 'AddTagsToResourceCommand'
-    );
-    expect(addCall![0].input.Tags).toEqual([
-      { Key: 'Weird', Value: '' },
-      { Key: 'Ok', Value: 'fine' },
-    ]);
+  it('create: refuses a non-scalar tag value before any call (go-to-k/cdkd#3994)', async () => {
+    // SSM tag values must be strings. A non-scalar value used to be coerced to
+    // '' -- a malformed Tags read as something it does not say -- so it is now
+    // refused before PutParameter, naming the property only.
+    await expect(
+      provider.create('MyParam', RESOURCE_TYPE, {
+        Name: '/foo/bar',
+        Type: 'String',
+        Value: 'baz',
+        Tags: { Weird: { nested: 'object' }, Ok: 'fine' },
+      })
+    ).rejects.toThrow(/^Tags of AWS::SSM::Parameter MyParam is not a map of tag keys/);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('update: unchanged map does NOT fire any tag mutation', async () => {

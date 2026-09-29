@@ -26,6 +26,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -526,6 +527,8 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating WAFv2 WebACL ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const name =
       (properties['Name'] as string | undefined) ||
@@ -545,13 +548,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
 
     try {
       // Build tags
-      const tags: Tag[] = [];
-      if (properties['Tags']) {
-        const tagList = properties['Tags'] as Array<{ Key: string; Value: string }>;
-        for (const tag of tagList) {
-          tags.push({ Key: tag.Key, Value: tag.Value });
-        }
-      }
+      const tags: Tag[] = desiredTags.map((tag) => ({ Key: tag.Key, Value: tag.Value }));
 
       const response = await this.getClient().send(
         new CreateWebACLCommand({
@@ -631,6 +628,8 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating WAFv2 WebACL ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
 
@@ -675,8 +674,10 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       // ResourceARN (the physicalId is the WebACL ARN).
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       this.logger.debug(`Successfully updated WAFv2 WebACL ${logicalId}`);
@@ -792,34 +793,24 @@ export class WAFv2WebACLProvider implements ResourceProvider {
 
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via WAFv2's
-   * `TagResource` / `UntagResource` APIs (keyed by `ResourceARN`).
+   * `TagResource` / `UntagResource` APIs (keyed by `ResourceARN`). Both
+   * sides are read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable
+   * record untags nothing.
    */
   private async applyTagDiff(
     arn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Tag[] = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(

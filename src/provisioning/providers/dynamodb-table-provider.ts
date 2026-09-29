@@ -51,6 +51,7 @@ import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { coerceCfnInteger, replayWarn, requireConfigString } from '../config-shape.js';
 import {
   WARM_THROUGHPUT_MEMBERS,
@@ -1627,6 +1628,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     this.logger.debug(`Creating DynamoDB table ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const tableName =
       (properties['TableName'] as string | undefined) ||
@@ -1856,7 +1859,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
       // Tags
       if (properties['Tags']) {
-        createParams.Tags = properties['Tags'] as Tag[];
+        createParams.Tags = desiredTags.map((t): Tag => ({ Key: t.Key, Value: t.Value }));
       }
 
       // DeletionProtectionEnabled
@@ -2022,6 +2025,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // stream rather than by review.
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     debug(`Updating DynamoDB table ${logicalId}: ${maskSecrets(physicalId)}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // An unreadable `StreamSpecification.ResourcePolicy` / `.Tags` (issue
@@ -2129,8 +2134,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
       if (table?.TableArn) {
         await this.applyTagDiff(
           table.TableArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -3883,34 +3890,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via DynamoDB's
    * `TagResource` / `UntagResource` APIs. Both take the table ARN as
-   * `ResourceArn`.
+   * `ResourceArn`. Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
   private async applyTagDiff(
     tableArn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = [...plan.set].map(([k, v]) => ({ Key: k, Value: v }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.dynamoDBClient.send(

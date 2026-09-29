@@ -14,8 +14,7 @@ import type { Logger } from '../../types/config.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { safeMsg } from '../../utils/display-safe.js';
-
-type CfnTag = { Key?: string; Value?: string };
+import { planTagDiff, tagPlanWarning } from '../tag-list.js';
 
 export function isDocDBNotFoundError(error: unknown, faultName: string): boolean {
   if (!(error instanceof Error)) return false;
@@ -27,34 +26,25 @@ export function isDocDBNotFoundError(error: unknown, faultName: string): boolean
 /**
  * Apply a diff between old and new CFn-shape Tags arrays via DocDB's
  * `AddTagsToResource` / `RemoveTagsFromResource` APIs (keyed by
- * `ResourceName=arn`).
+ * `ResourceName=arn`). Both sides are read through `planTagDiff`
+ * (go-to-k/cdkd#3994): an unreadable record untags nothing.
  */
 export async function applyDocDBTagDiff(
   client: DocDBClient,
   logger: Logger,
   arn: string,
-  oldTagsRaw: CfnTag[] | undefined,
-  newTagsRaw: CfnTag[] | undefined
+  resourceType: string,
+  logicalId: string,
+  oldTagsRaw: unknown,
+  newTagsRaw: unknown
 ): Promise<void> {
-  const toMap = (tags: CfnTag[] | undefined): Map<string, string> => {
-    const m = new Map<string, string>();
-    for (const t of tags ?? []) {
-      if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-    }
-    return m;
-  };
-
-  const oldMap = toMap(oldTagsRaw);
-  const newMap = toMap(newTagsRaw);
-
-  const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-  for (const [k, v] of newMap) {
-    if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+  const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+  const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+  if (tagWarning !== undefined) {
+    logger.warn(tagWarning);
   }
-  const tagsToRemove: string[] = [];
-  for (const k of oldMap.keys()) {
-    if (!newMap.has(k)) tagsToRemove.push(k);
-  }
+  const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+  const tagsToRemove = plan.remove;
 
   if (tagsToRemove.length > 0) {
     await client.send(

@@ -27,6 +27,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -157,13 +158,14 @@ export class KMSProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating KMS Key ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const description = properties['Description'] as string | undefined;
     const keyPolicy = properties['KeyPolicy'];
     const keySpec = properties['KeySpec'] as string | undefined;
     const keyUsage = properties['KeyUsage'] as string | undefined;
     const enableKeyRotation = properties['EnableKeyRotation'] as boolean | undefined;
-    const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
     const multiRegion = properties['MultiRegion'] as boolean | undefined;
     const origin = properties['Origin'] as string | undefined;
     const bypassPolicyLockoutSafetyCheck = properties['BypassPolicyLockoutSafetyCheck'] as
@@ -184,7 +186,10 @@ export class KMSProvider implements ResourceProvider {
               ? keyPolicy
               : JSON.stringify(keyPolicy)
             : undefined,
-          Tags: tags ? tags.map((t) => ({ TagKey: t.Key, TagValue: t.Value })) : undefined,
+          Tags:
+            properties['Tags'] !== undefined && properties['Tags'] !== null
+              ? tags.map((t) => ({ TagKey: t.Key, TagValue: t.Value }))
+              : undefined,
           MultiRegion: multiRegion,
           Origin: origin as OriginType | undefined,
           BypassPolicyLockoutSafetyCheck: bypassPolicyLockoutSafetyCheck,
@@ -246,6 +251,8 @@ export class KMSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating KMS Key ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Update Description if changed
@@ -301,8 +308,10 @@ export class KMSProvider implements ResourceProvider {
       // tags through Untag→Tag on every update.
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       // Update KeyPolicy if changed. Truthy gate (`&& newPolicyStr` below)
@@ -398,34 +407,24 @@ export class KMSProvider implements ResourceProvider {
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via KMS's
    * `TagResource` / `UntagResource` APIs. KMS uses `{TagKey, TagValue}`
-   * (NOT the standard `{Key, Value}` shape) keyed by `KeyId`.
+   * (NOT the standard `{Key, Value}` shape) keyed by `KeyId`. Both sides are
+   * read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record
+   * untags nothing.
    */
   private async applyTagDiff(
     keyId: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ TagKey: string; TagValue: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ TagKey: k, TagValue: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = [...plan.set].map(([k, v]) => ({ TagKey: k, TagValue: v }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(

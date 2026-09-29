@@ -106,6 +106,12 @@ import {
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from '../ec2-termination-protection.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  type CfnTagEntry,
+} from '../tag-list.js';
 import { definedAttributes } from '../attribute-map.js';
 import { isSettledInstanceState } from '../ec2-instance-state.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
@@ -791,7 +797,7 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::InternetGateway':
         return this.updateInternetGateway(logicalId, physicalId);
       case 'AWS::EC2::EIP':
-        return this.updateEip(logicalId, physicalId, properties, previousProperties);
+        return this.updateEip(logicalId, physicalId, resourceType, properties, previousProperties);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.updateVpcGatewayAttachment(logicalId, physicalId);
       case 'AWS::EC2::NatGateway':
@@ -940,6 +946,8 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating VPC ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const cidrBlock = properties['CidrBlock'] as string;
     if (!cidrBlock) {
@@ -1001,7 +1009,7 @@ export class EC2Provider implements ResourceProvider {
         }
 
         // Apply tags
-        await this.applyTags(vpcId, properties, logicalId);
+        await this.applyTags(vpcId, desiredTags, logicalId);
 
         // Fetch VPC details for attributes
         await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
@@ -1074,6 +1082,8 @@ export class EC2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating VPC ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Coerce CFn-string-or-bool ("true" | true) into a real boolean so the
@@ -1114,8 +1124,10 @@ export class EC2Provider implements ResourceProvider {
       // Update tags (diff add/remove against previousProperties)
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       this.logger.debug(`Successfully updated VPC ${logicalId}`);
@@ -1272,6 +1284,8 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Subnet ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const vpcId = properties['VpcId'] as string;
     const cidrBlock = properties['CidrBlock'] as string;
@@ -1307,7 +1321,7 @@ export class EC2Provider implements ResourceProvider {
       // associations attached, so a single DeleteSubnet suffices.
       try {
         // Apply tags
-        await this.applyTags(subnetId, properties, logicalId);
+        await this.applyTags(subnetId, desiredTags, logicalId);
 
         // Set MapPublicIpOnLaunch if specified
         const mapPublicIp = properties['MapPublicIpOnLaunch'];
@@ -1369,6 +1383,8 @@ export class EC2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // VpcId / CidrBlock / AvailabilityZone are CREATE-only. The diff layer
@@ -1409,8 +1425,10 @@ export class EC2Provider implements ResourceProvider {
       // Update tags (diff add/remove against previousProperties)
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       this.logger.debug(`Successfully updated Subnet ${logicalId}`);
@@ -1616,13 +1634,15 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating InternetGateway ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     try {
       const response = await this.ec2Client.send(new CreateInternetGatewayCommand({}));
       const igwId = response.InternetGateway!.InternetGatewayId!;
 
       // Apply tags
-      await this.applyTags(igwId, properties, logicalId);
+      await this.applyTags(igwId, desiredTags, logicalId);
 
       this.logger.debug(`Successfully created InternetGateway ${logicalId}: ${igwId}`);
 
@@ -1758,6 +1778,8 @@ export class EC2Provider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating EIP ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     let allocationId: string;
     let publicIp: string;
@@ -1782,7 +1804,7 @@ export class EC2Provider implements ResourceProvider {
       allocationId = response.AllocationId!;
       publicIp = response.PublicIp!;
 
-      await this.applyTags(allocationId, properties, logicalId);
+      await this.applyTags(allocationId, desiredTags, logicalId);
 
       // Associate to an instance on the fast SDK path, keeping EIP+InstanceId
       // off the ~20s Cloud Control async-poll route.
@@ -1867,18 +1889,23 @@ export class EC2Provider implements ResourceProvider {
   private async updateEip(
     logicalId: string,
     physicalId: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     // Tags and InstanceId (association) are mutable in place; Domain / pool /
     // border group are create-only and handled by the replacement path.
     this.logger.debug(`Updating EIP ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const { allocationId } = this.parseEipPhysicalId(physicalId);
     if (allocationId) {
       await this.applyTagDiff(
         allocationId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       const oldInstanceId = previousProperties['InstanceId'] as string | undefined;
@@ -2167,6 +2194,8 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating NatGateway ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const subnetId = properties['SubnetId'] as string | undefined;
     if (!subnetId) {
@@ -2214,7 +2243,7 @@ export class EC2Provider implements ResourceProvider {
       // staying consistent with `applyTags` keeps tag handling in one
       // place — and the extra API call is dwarfed by the optional
       // available-state wait below.
-      await this.applyTags(natGatewayId, properties, logicalId);
+      await this.applyTags(natGatewayId, desiredTags, logicalId);
 
       // Wait for `available` state unless --no-wait is set. Same gating
       // pattern as CloudFront / RDS / ElastiCache providers (env var
@@ -2379,6 +2408,8 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating RouteTable ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const vpcId = properties['VpcId'] as string;
     if (!vpcId) {
@@ -2404,7 +2435,7 @@ export class EC2Provider implements ResourceProvider {
       const routeTableId = response.RouteTable!.RouteTableId!;
 
       // Apply tags
-      await this.applyTags(routeTableId, properties, logicalId);
+      await this.applyTags(routeTableId, desiredTags, logicalId);
 
       this.logger.debug(`Successfully created RouteTable ${logicalId}: ${routeTableId}`);
 
@@ -2913,6 +2944,8 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroup ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const groupDescription = properties['GroupDescription'] as string;
     if (!groupDescription) {
@@ -2995,7 +3028,7 @@ export class EC2Provider implements ResourceProvider {
             firstRejection ??= { error };
           });
         await Promise.all([
-          recordRejection(this.applyTags(groupId, properties, logicalId)),
+          recordRejection(this.applyTags(groupId, desiredTags, logicalId)),
           recordRejection(this.authorizeInlineIngress(groupId, ingressRules)),
           recordRejection(this.applyInlineEgress(groupId, egressRules)),
         ]);
@@ -3146,13 +3179,17 @@ export class EC2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SecurityGroup ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Update tags (diff add/remove against previousProperties)
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       // Diff and apply ingress rule changes (symmetric with egress below).
@@ -3836,6 +3873,8 @@ export class EC2Provider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating EC2 Instance ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const imageId = properties['ImageId'] as string;
     if (!imageId) {
@@ -3970,7 +4009,7 @@ export class EC2Provider implements ResourceProvider {
       // failed.
       try {
         // Apply tags
-        await this.applyTags(instanceId, properties, logicalId);
+        await this.applyTags(instanceId, desiredTags, logicalId);
 
         // Wait for instance to reach running state unless --no-wait is set.
         // Same gating pattern as the NAT Gateway wait above. Before issue
@@ -4330,12 +4369,16 @@ export class EC2Provider implements ResourceProvider {
     // STOPPED instance, so an EbsOptimized change is routed to replacement via
     // the ReplacementRulesRegistry rather than modified here.
     this.logger.debug(`Updating EC2 Instance ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
@@ -4982,6 +5025,8 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating NetworkAcl ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const vpcId = properties['VpcId'] as string;
     if (!vpcId) {
@@ -5007,7 +5052,7 @@ export class EC2Provider implements ResourceProvider {
       const networkAclId = response.NetworkAcl!.NetworkAclId!;
 
       // Apply tags
-      await this.applyTags(networkAclId, properties, logicalId);
+      await this.applyTags(networkAclId, desiredTags, logicalId);
 
       this.logger.debug(`Successfully created NetworkAcl ${logicalId}: ${networkAclId}`);
 
@@ -5312,11 +5357,10 @@ export class EC2Provider implements ResourceProvider {
    */
   private async applyTags(
     resourceId: string,
-    properties: Record<string, unknown>,
+    tags: CfnTagEntry[],
     logicalId: string
   ): Promise<void> {
-    const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-    if (tags && Array.isArray(tags) && tags.length > 0) {
+    if (tags.length > 0) {
       try {
         await this.ec2Client.send(
           new CreateTagsCommand({
@@ -5337,34 +5381,23 @@ export class EC2Provider implements ResourceProvider {
    * Apply a diff between old and new CFn-shape Tags arrays via EC2's
    * `CreateTags` / `DeleteTags` APIs. Used by `update*` paths so that
    * tag removals reach AWS too. EC2 keys both APIs by a list of resource
-   * ids.
+   * ids. Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
+   * unreadable record untags nothing.
    */
   private async applyTagDiff(
     resourceId: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: Array<{ Key: string }> = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push({ Key: k });
-    }
+    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const tagsToRemove = plan.remove.map((Key) => ({ Key }));
 
     if (tagsToRemove.length > 0) {
       try {

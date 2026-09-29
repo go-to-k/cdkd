@@ -20,6 +20,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { refuseMalformedDesiredTags } from '../tag-list.js';
 import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
 import { safeMsg } from '../../utils/display-safe.js';
 
@@ -54,11 +55,6 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
     return this.docdbClient;
   }
 
-  private buildTags(properties: Record<string, unknown>): Array<{ Key: string; Value: string }> {
-    if (!properties['Tags']) return [];
-    return properties['Tags'] as Array<{ Key: string; Value: string }>;
-  }
-
   /** The one type this provider serves; anything else is a registration bug. */
   private assertType(resourceType: string, logicalId: string, physicalId?: string): void {
     if (resourceType !== 'AWS::DocDB::DBSubnetGroup') {
@@ -78,14 +74,14 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.assertType(resourceType, logicalId);
     this.logger.debug(safeMsg`Creating DocDB DBSubnetGroup ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 255, lowercase: true });
 
     try {
-      const tags = this.buildTags(properties);
-
       await this.getClient().send(
         new CreateDBSubnetGroupCommand({
           DBSubnetGroupName: dbSubnetGroupName,
@@ -127,6 +123,8 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.assertType(resourceType, logicalId, physicalId);
     this.logger.debug(safeMsg`Updating DocDB DBSubnetGroup ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Class 2 — `SubnetIds: []` would be rejected by AWS as a structurally
@@ -162,8 +160,10 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
           this.getClient(),
           this.logger,
           arn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 

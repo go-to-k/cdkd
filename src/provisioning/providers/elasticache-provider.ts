@@ -18,11 +18,18 @@ import {
 } from '@aws-sdk/client-elasticache';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  planTagDiff,
+  readTagList,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+} from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -196,6 +203,9 @@ export class ElastiCacheProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CacheSubnetGroup ${logicalId}`);
+    // go-to-k/cdkd#3994: `Tags` was declared handled and never sent; a
+    // malformed one is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const cacheSubnetGroupName =
       (properties['CacheSubnetGroupName'] as string | undefined) ||
@@ -213,6 +223,7 @@ export class ElastiCacheProvider implements ResourceProvider {
             (properties['CacheSubnetGroupDescription'] as string | undefined) ??
             `Subnet group for ${logicalId}`,
           SubnetIds: properties['SubnetIds'] as string[],
+          ...(tags.length > 0 && { Tags: tags }),
         })
       );
 
@@ -246,6 +257,8 @@ export class ElastiCacheProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheSubnetGroup ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // #1160 reset-on-removal — ModifyCacheSubnetGroup has merge semantics
@@ -257,7 +270,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       // required on AWS::ElastiCache::SubnetGroup, so a removal is
       // CFn-invalid anyway — but cdkd's create path tolerates the absence
       // with this default, and update must not silently keep the old value.)
-      await this.getClient().send(
+      const modified = await this.getClient().send(
         new ModifyCacheSubnetGroupCommand({
           CacheSubnetGroupName: physicalId,
           CacheSubnetGroupDescription: clearOnUpdateRemoval(
@@ -271,6 +284,33 @@ export class ElastiCacheProvider implements ResourceProvider {
         })
       );
 
+      // Apply the tag diff (go-to-k/cdkd#3994: `Tags` used to be ignored on
+      // update). A group created before that fix never received its recorded
+      // tags, so the diff is checked against the group's LIVE tag set: see
+      // `applySubnetGroupTagDiff`. ModifyCacheSubnetGroup returns the ARN.
+      if (properties['Tags'] != null || previousProperties['Tags'] != null) {
+        const subnetGroupArn = modified.CacheSubnetGroup?.ARN;
+        if (!subnetGroupArn) {
+          throw new ProvisioningError(
+            safeMsg`Could not resolve the ARN of CacheSubnetGroup ${logicalId}; its Tags were not updated`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        const live = await this.getClient().send(
+          new ListTagsForResourceCommand({ ResourceName: subnetGroupArn })
+        );
+        await this.applySubnetGroupTagDiff(
+          subnetGroupArn,
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags'],
+          normalizeAwsTagsToCfn(live.TagList)
+        );
+      }
+
       this.logger.debug(`Successfully updated CacheSubnetGroup ${logicalId}`);
 
       return {
@@ -281,6 +321,8 @@ export class ElastiCacheProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // cdkd's own refusal (the missing-ARN one above) passes through as it is.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update CacheSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -339,14 +381,14 @@ export class ElastiCacheProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CacheCluster ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const cacheClusterId =
       (properties['ClusterName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 40, lowercase: true });
 
     try {
-      const tags = this.buildTags(properties);
-
       await this.getClient().send(
         new CreateCacheClusterCommand({
           CacheClusterId: cacheClusterId,
@@ -440,6 +482,8 @@ export class ElastiCacheProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheCluster ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Class 2 sanitization: `readCurrentState` always-emits
@@ -556,8 +600,10 @@ export class ElastiCacheProvider implements ResourceProvider {
       if (described?.ARN) {
         await this.applyTagDiff(
           described.ARN,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -685,36 +731,64 @@ export class ElastiCacheProvider implements ResourceProvider {
   }
 
   /**
+   * The subnet group's tag diff (go-to-k/cdkd#3994). REMOVALS come from the
+   * record, as everywhere else, so a tag cdkd never recorded (an operator's,
+   * a tag policy's) is never untagged; the LIVE set only narrows them to keys
+   * AWS actually holds (no `TagNotFoundFault` for a group created before the
+   * fix, which never received its recorded tags). ADDS are every desired tag
+   * whose live value differs, so such a group gets its tags now.
+   */
+  private async applySubnetGroupTagDiff(
+    arn: string,
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown,
+    liveTags: Array<{ Key: string; Value: string }>
+  ): Promise<void> {
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
+    }
+    const live = new Map(liveTags.map((t) => [t.Key, t.Value]));
+    const desired = readTagList(newTagsRaw, 'desired');
+    const tagsToAdd =
+      desired.kind === 'tags' ? desired.tags.filter((t) => live.get(t.Key) !== t.Value) : [];
+    const tagsToRemove = plan.remove.filter((k) => live.has(k));
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(
+        new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
+      );
+    }
+    if (tagsToAdd.length > 0) {
+      await this.getClient().send(
+        new AddTagsToResourceCommand({ ResourceName: arn, Tags: tagsToAdd })
+      );
+    }
+  }
+
+  /**
    * Apply a diff between old and new CFn-shape Tags arrays via ElastiCache's
    * `AddTagsToResource` / `RemoveTagsFromResource` APIs (keyed by
    * `ResourceName=arn`).
    */
   private async applyTagDiff(
     arn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    // go-to-k/cdkd#3994: both sides are read through `planTagDiff`; an
+    // unreadable record untags nothing.
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
@@ -728,11 +802,6 @@ export class ElastiCacheProvider implements ResourceProvider {
       );
       this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ElastiCache resource ${arn}`);
     }
-  }
-
-  private buildTags(properties: Record<string, unknown>): Array<{ Key: string; Value: string }> {
-    if (!properties['Tags']) return [];
-    return properties['Tags'] as Array<{ Key: string; Value: string }>;
   }
 
   private isNotFoundError(error: unknown, faultName: string): boolean {

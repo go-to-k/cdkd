@@ -97,6 +97,13 @@ import {
 } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  planTagDiff,
+  readTagList,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  type CfnTagEntry,
+} from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -2066,28 +2073,56 @@ export class S3BucketProvider implements ResourceProvider {
    * S3's `PutBucketTagging` replaces the entire tag set in one call, so we
    * don't need separate add/remove API operations. When the new set is
    * empty, we issue `DeleteBucketTagging` to clear it. When old and new
-   * are equal, we skip the call entirely.
+   * name the same tags, we skip the call entirely.
+   *
+   * Both sides are read through `planTagDiff` (go-to-k/cdkd#3994). A full
+   * replace removes every live key the desired side does not name, so when
+   * the record cannot name every key it holds — it is unreadable, or it
+   * carries a secret-derived Key — the live tag set is read and every live
+   * key neither the desired side nor the readable record names is kept.
    */
   private async applyTagDiff(
     bucketName: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const normalize = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Array<{ Key: string; Value: string }> => {
-      const out: Array<{ Key: string; Value: string }> = [];
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) out.push({ Key: t.Key, Value: t.Value });
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const desiredRead = readTagList(newTagsRaw, 'desired');
+    const desired = desiredRead.kind === 'tags' ? desiredRead.tags : [];
+    const recordedRead = readTagList(oldTagsRaw, 'recorded');
+    const recordHidesKeys =
+      plan.recordedUnreadable ||
+      (Array.isArray(oldTagsRaw) &&
+        recordedRead.kind === 'tags' &&
+        recordedRead.tags.length !== oldTagsRaw.length);
+
+    let tagSet: CfnTagEntry[];
+    if (recordHidesKeys) {
+      const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+      if (tagWarning !== undefined) {
+        this.logger.warn(tagWarning);
       }
-      return out;
-    };
+      const live = await this.readTags(bucketName);
+      const named = new Set([...desired.map((t) => t.Key), ...plan.remove]);
+      tagSet = [...desired, ...live.filter((t) => !named.has(t.Key))];
+      const toMap = (tags: CfnTagEntry[]): Map<string, string> =>
+        new Map(tags.map((t) => [t.Key, t.Value] as const));
+      const liveMap = toMap(live);
+      const nextMap = toMap(tagSet);
+      if (
+        liveMap.size === nextMap.size &&
+        [...nextMap].every(([k, v]) => liveMap.has(k) && liveMap.get(k) === v)
+      ) {
+        return;
+      }
+    } else {
+      if (plan.set.size === 0 && plan.remove.length === 0) return;
+      tagSet = desired;
+    }
 
-    const oldNorm = normalize(oldTagsRaw);
-    const newNorm = normalize(newTagsRaw);
-    if (JSON.stringify(oldNorm) === JSON.stringify(newNorm)) return;
-
-    if (newNorm.length === 0) {
+    if (tagSet.length === 0) {
       // Clear tags. Use PutBucketTaggingCommand with empty TagSet — S3
       // does not have a public `DeleteBucketTagging` parity for the SDK
       // we use, so emit an empty Tagging set instead.
@@ -2110,11 +2145,11 @@ export class S3BucketProvider implements ResourceProvider {
     await this.s3Client.send(
       new PutBucketTaggingCommand({
         Bucket: bucketName,
-        Tagging: { TagSet: newNorm },
+        Tagging: { TagSet: tagSet },
       })
     );
     this.logger.debug(
-      `Replaced tag set on bucket ${this.shown(bucketName)} (${newNorm.length} tags)`
+      `Replaced tag set on bucket ${this.shown(bucketName)} (${tagSet.length} tags)`
     );
   }
 
@@ -4228,9 +4263,16 @@ export class S3BucketProvider implements ResourceProvider {
   private async applyConfiguration(
     bucketName: string,
     properties: Record<string, unknown>,
-    options: { skipTags?: boolean; skipDiffManaged?: boolean; context?: CreateContext } = {}
+    options: { skipDiffManaged?: boolean; context?: CreateContext } & (
+      | { skipTags: true }
+      // The list `refuseMalformedDesiredTags` returned (go-to-k/cdkd#3994):
+      // required whenever tags are applied, so no caller can drop them.
+      | { skipTags?: false; desiredTags: CfnTagEntry[] }
+    )
   ): Promise<Map<string, unknown>> {
-    const { skipTags = false, skipDiffManaged = false, context } = options;
+    const { skipDiffManaged = false, context } = options;
+    const skipTags = options.skipTags === true;
+    const desiredTags = options.skipTags === true ? [] : options.desiredTags;
     // `effectiveProperties` overrides for anything a replay downgrade SKIPPED
     // (issue #1612). This method only runs the versioning applier on the CREATE
     // path — `update()` passes `skipDiffManaged` and lets `applySubConfigDiffs`
@@ -4262,9 +4304,8 @@ export class S3BucketProvider implements ResourceProvider {
     // Tags. Only applied at create time here (`applyTags` is full-replace, no
     // removal). For update, the caller passes `skipTags=true` and uses the
     // diff-aware `applyTagDiff` helper instead.
-    const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-    if (!skipTags && tags && Array.isArray(tags) && tags.length > 0) {
-      await this.applyTags(bucketName, tags);
+    if (!skipTags && desiredTags.length > 0) {
+      await this.applyTags(bucketName, desiredTags);
     }
 
     // Ownership Controls (e.g., BucketOwnerPreferred for CloudFront logs)
@@ -6321,6 +6362,8 @@ export class S3BucketProvider implements ResourceProvider {
       );
     }
     this.logger.debug(`Creating S3 bucket ${displaySafe(logicalId)}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const bucketName =
       (properties['BucketName'] as string | undefined) ||
@@ -6648,6 +6691,7 @@ export class S3BucketProvider implements ResourceProvider {
       try {
         effectiveOverrides = await this.applyConfiguration(bucketName, properties, {
           ...(context ? { context } : {}),
+          desiredTags,
         });
         for (const [key, value] of await this.applyAllSubConfigsForCreate(
           bucketName,
@@ -6786,6 +6830,8 @@ export class S3BucketProvider implements ResourceProvider {
       );
     }
     this.logger.debug(`Updating S3 bucket ${displaySafe(logicalId)}: ${this.shown(physicalId)}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     const newBucketName = properties['BucketName'] as string | undefined;
 
@@ -6917,8 +6963,10 @@ export class S3BucketProvider implements ResourceProvider {
       // DeleteBucketTagging when the new tag set is empty.
       await this.applyTagDiff(
         physicalId,
-        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags']
       );
 
       const attributes = await this.buildAttributes(physicalId);

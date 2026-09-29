@@ -27,6 +27,7 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -126,6 +127,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
     // shape), and every bag-derived value masked RAW as well. The ARN is
     // AWS-minted but EMBEDS the template-chosen name and path, so it is masked
@@ -191,8 +194,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       if (properties['Path']) {
         createParams.Path = properties['Path'] as string;
       }
-      const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-      if (tags && Array.isArray(tags) && tags.length > 0) {
+      if (tags.length > 0) {
         createParams.Tags = tags;
       }
 
@@ -273,6 +275,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const derivedPolicyName = generateResourceNameWithFallback(
       properties['ManagedPolicyName'] as string | undefined,
       logicalId,
@@ -524,8 +528,11 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       // Diff tags.
       await this.updateTags(
         physicalId,
-        properties['Tags'] as Array<{ Key: string; Value: string }> | undefined,
-        previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined
+        resourceType,
+        logicalId,
+        properties['Tags'],
+        previousProperties['Tags'],
+        log
       );
 
       return {
@@ -1020,22 +1027,25 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     log.debug(`Pruned oldest non-default version ${v(victim.VersionId)} of ${v(policyArn)}`);
   }
 
+  /**
+   * Diff the policy's tags. Both sides are read through `planTagDiff`
+   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
+   */
   private async updateTags(
     policyArn: string,
-    newTags: Array<{ Key: string; Value: string }> | undefined,
-    oldTags: Array<{ Key: string; Value: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    newTags: unknown,
+    oldTags: unknown,
+    log: MaskedLogSinks
   ): Promise<void> {
-    const newTagMap = new Map((newTags || []).map((t) => [t.Key, t.Value]));
-    const oldTagMap = new Map((oldTags || []).map((t) => [t.Key, t.Value]));
-
-    const tagsToRemove: string[] = [];
-    for (const key of oldTagMap.keys()) {
-      if (!newTagMap.has(key)) tagsToRemove.push(key);
+    const plan = planTagDiff(oldTags, newTags);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      log.warn(tagWarning);
     }
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [key, value] of newTagMap) {
-      if (oldTagMap.get(key) !== value) tagsToAdd.push({ Key: key, Value: value });
-    }
+    const tagsToRemove = plan.remove;
+    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
 
     if (tagsToRemove.length > 0) {
       await this.iamClient.send(

@@ -12,7 +12,6 @@ import {
   ReplicateSecretToRegionsCommand,
   RemoveRegionsFromReplicationCommand,
   ResourceNotFoundException,
-  type Tag,
 } from '@aws-sdk/client-secrets-manager';
 import { getLogger } from '../../utils/logger.js';
 import {
@@ -28,6 +27,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
@@ -290,6 +290,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating secret ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const name =
       (properties['Name'] as string | undefined) ||
@@ -358,8 +360,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       if (secretString) createParams.SecretString = secretString;
       if (properties['Description']) createParams.Description = properties['Description'] as string;
       if (properties['KmsKeyId']) createParams.KmsKeyId = properties['KmsKeyId'] as string;
-      if (properties['Tags']) {
-        createParams.Tags = properties['Tags'] as Tag[];
+      if (properties['Tags'] != null) {
+        createParams.Tags = desiredTags;
       }
       if (properties['ReplicaRegions']) {
         const replicaRegions = properties['ReplicaRegions'] as Array<Record<string, unknown>>;
@@ -414,6 +416,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating secret ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
+    // (read as empty, it would untag every recorded key).
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     // Decided BEFORE the `try` below, so a template-path refusal from
     // `changedSecretValue` is not re-labelled as an AWS update failure, and
@@ -519,31 +524,31 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
 
       await this.smClient.send(new UpdateSecretCommand(updateParams));
 
-      // Update Tags if changed
-      const newTags = properties['Tags'] as Tag[] | undefined;
-      const oldTags = previousProperties['Tags'] as Tag[] | undefined;
-      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
-        // Remove old tags
-        if (oldTags && oldTags.length > 0) {
-          const oldTagKeys = oldTags.map((t) => t.Key).filter((k): k is string => !!k);
-          if (oldTagKeys.length > 0) {
-            await this.smClient.send(
-              new UntagResourceCommand({
-                SecretId: physicalId,
-                TagKeys: oldTagKeys,
-              })
-            );
-          }
-        }
-        // Apply new tags
-        if (newTags && newTags.length > 0) {
-          await this.smClient.send(
-            new TagResourceCommand({
-              SecretId: physicalId,
-              Tags: newTags,
-            })
-          );
-        }
+      // Update Tags: untag the recorded keys the desired side no longer
+      // names, then tag the new / changed ones. Both sides are read through
+      // `planTagDiff` (go-to-k/cdkd#3994): an unreadable record untags nothing.
+      const tagPlan = planTagDiff(previousProperties['Tags'], properties['Tags']);
+      const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
+      if (tagWarning !== undefined) {
+        this.logger.warn(tagWarning);
+      }
+      if (tagPlan.remove.length > 0) {
+        await this.smClient.send(
+          new UntagResourceCommand({
+            SecretId: physicalId,
+            TagKeys: tagPlan.remove,
+          })
+        );
+      }
+      if (tagPlan.set.size > 0) {
+        await this.smClient.send(
+          new TagResourceCommand({
+            SecretId: physicalId,
+            Tags: [...tagPlan.set].map(([Key, Value]) => ({ Key, Value })),
+          })
+        );
+      }
+      if (tagPlan.remove.length > 0 || tagPlan.set.size > 0) {
         this.logger.debug(`Updated tags for secret ${physicalId}`);
       }
 

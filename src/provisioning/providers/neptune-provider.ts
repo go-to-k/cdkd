@@ -23,6 +23,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -276,14 +277,14 @@ export class NeptuneProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBSubnetGroup ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 255, lowercase: true });
 
     try {
-      const tags = this.buildTags(properties);
-
       await this.getClient().send(
         new CreateDBSubnetGroupCommand({
           DBSubnetGroupName: dbSubnetGroupName,
@@ -324,6 +325,8 @@ export class NeptuneProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBSubnetGroup ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Class 2 — `SubnetIds: []` would be rejected by AWS as a
@@ -355,8 +358,10 @@ export class NeptuneProvider implements ResourceProvider {
       if (arn) {
         await this.applyTagDiff(
           arn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -428,14 +433,14 @@ export class NeptuneProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBCluster ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
     try {
-      const tags = this.buildTags(properties);
-
       const response = await this.getClient().send(
         new CreateDBClusterCommand({
           DBClusterIdentifier: dbClusterIdentifier,
@@ -513,6 +518,8 @@ export class NeptuneProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBCluster ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
@@ -597,8 +604,10 @@ export class NeptuneProvider implements ResourceProvider {
       if (described?.DBClusterArn) {
         await this.applyTagDiff(
           described.DBClusterArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -764,14 +773,14 @@ export class NeptuneProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBInstance ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
     try {
-      const tags = this.buildTags(properties);
-
       const response = await this.getClient().send(
         new CreateDBInstanceCommand({
           DBInstanceIdentifier: dbInstanceIdentifier,
@@ -832,6 +841,8 @@ export class NeptuneProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBInstance ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
@@ -878,8 +889,10 @@ export class NeptuneProvider implements ResourceProvider {
       if (described?.DBInstanceArn) {
         await this.applyTagDiff(
           described.DBInstanceArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          resourceType,
+          logicalId,
+          previousProperties['Tags'],
+          properties['Tags']
         );
       }
 
@@ -1030,30 +1043,20 @@ export class NeptuneProvider implements ResourceProvider {
    */
   private async applyTagDiff(
     arn: string,
-    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
-    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+    resourceType: string,
+    logicalId: string,
+    oldTagsRaw: unknown,
+    newTagsRaw: unknown
   ): Promise<void> {
-    const toMap = (
-      tags: Array<{ Key?: string; Value?: string }> | undefined
-    ): Map<string, string> => {
-      const m = new Map<string, string>();
-      for (const t of tags ?? []) {
-        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
-      }
-      return m;
-    };
-
-    const oldMap = toMap(oldTagsRaw);
-    const newMap = toMap(newTagsRaw);
-
-    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    // go-to-k/cdkd#3994: both sides are read through `planTagDiff`; an
+    // unreadable record untags nothing.
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
+    if (tagWarning !== undefined) {
+      this.logger.warn(tagWarning);
     }
-    const tagsToRemove: string[] = [];
-    for (const k of oldMap.keys()) {
-      if (!newMap.has(k)) tagsToRemove.push(k);
-    }
+    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
+    const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
@@ -1067,11 +1070,6 @@ export class NeptuneProvider implements ResourceProvider {
       );
       this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on Neptune resource ${arn}`);
     }
-  }
-
-  private buildTags(properties: Record<string, unknown>): Array<{ Key: string; Value: string }> {
-    if (!properties['Tags']) return [];
-    return properties['Tags'] as Array<{ Key: string; Value: string }>;
   }
 
   private isNotFoundError(error: unknown, faultName: string): boolean {
