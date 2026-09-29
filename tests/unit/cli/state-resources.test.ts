@@ -565,6 +565,31 @@ describe('cdkd state resources', () => {
     ]);
   });
 
+  it('--json escapes planted control and bidi characters and round-trips them (go-to-k/cdkd#3163)', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    const physicalId = 'id\u009b[2J‮';
+    mockGetState.mockResolvedValue(
+      makeState({
+        [`Logical Id`]: makeResource({ resourceType: 'AWS::S3::Bucket', physicalId }),
+      })
+    );
+
+    const out = await runStateResources(['resources', 'StackA', '--json']);
+
+    expect(out.replace(/\n/g, '')).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+    expect(out).toContain('\\u009b');
+    expect(out).toContain('\\u2028');
+    expect(JSON.parse(out)).toEqual([
+      {
+        logicalId: 'Logical Id',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId,
+        dependencies: [],
+        attributes: {},
+      },
+    ]);
+  });
+
   it('does not leak `properties` into any output mode', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(

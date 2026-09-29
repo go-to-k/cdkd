@@ -293,6 +293,7 @@ describe('cdkd state list', () => {
         lastModified: '2026-01-01T00:00:00.000Z',
         locked: true,
         stateReadError: null,
+        stateReadErrorKind: null,
         lockReadError: null,
       },
     ]);
@@ -435,6 +436,7 @@ describe('cdkd state list', () => {
           lastModified: '2026-09-03T00:00:00.000Z',
           locked: null,
           stateReadError: null,
+          stateReadErrorKind: null,
           lockReadError: LOCK_REASON,
         },
         {
@@ -444,6 +446,7 @@ describe('cdkd state list', () => {
           lastModified: null,
           locked: true,
           stateReadError: STATE_REASON,
+          stateReadErrorKind: 'read-failed',
           lockReadError: null,
         },
       ]);
@@ -671,20 +674,23 @@ describe('cdkd state list', () => {
         stackName: string;
         resourceCount: number | null;
         stateReadError: string | null;
+        stateReadErrorKind: string | null;
       }>;
+      // The kind is what a consumer branches on (go-to-k/cdkd#3163): a malformed
+      // bag is persistent, so it must never read as the retryable `read-failed`.
       expect(
         Object.keys(bags).map((name) => {
           const row = rows.find((r) => r.stackName === name)!;
-          return [name, row.resourceCount, row.stateReadError];
+          return [name, row.resourceCount, row.stateReadError, row.stateReadErrorKind];
         })
       ).toEqual([
-        ['Str', null, reason],
-        ['List', null, reason],
-        ['Num', null, reason],
-        ['Bool', null, reason],
-        ['NullBag', 0, null],
-        ['Absent', 0, null],
-        ['Healthy', 2, null],
+        ['Str', null, reason, 'resources-malformed'],
+        ['List', null, reason, 'resources-malformed'],
+        ['Num', null, reason, 'resources-malformed'],
+        ['Bool', null, reason, 'resources-malformed'],
+        ['NullBag', 0, null, null],
+        ['Absent', 0, null, null],
+        ['Healthy', 2, null, null],
       ]);
     });
 
@@ -1286,6 +1292,112 @@ describe('cdkd state list', () => {
           '',
         ].join('\n')
       );
+    });
+  });
+
+  /**
+   * Every `--json` mode escapes the terminal-active class instead of emitting
+   * it raw (go-to-k/cdkd#3163). A stack name reaches these payloads from an S3
+   * key segment and a legacy region from the state body, so both are chosen by
+   * whoever can write the bucket. Each case checks both directions: the output
+   * carries none of the planted characters RAW, and it still parses back to
+   * exactly the planted values, since `--json` is a machine contract.
+   */
+  describe('--json escapes control, format and separator characters (#3163)', () => {
+    // The issue's table, one entry per code point, plus an astral format
+    // character so the surrogate-pair arm is reached.
+    const PLANTED: ReadonlyArray<[string, string]> = [
+      ['DEL', '\u007f'],
+      ['NEL', '\u0085'],
+      ['CSI', '\u009b'],
+      ['LS', ' '],
+      ['PS', ' '],
+      ['RLO', '‮'],
+      ['LRI', '⁦'],
+      ['ZWSP', '​'],
+      ['BOM', '﻿'],
+      ['TAG', '\u{e0001}'],
+    ];
+    const RAW_CLASS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+    /** The output with its structural newlines removed, which JSON itself emits. */
+    function withoutLayout(out: string): string {
+      return out.replace(/\n/g, '');
+    }
+
+    it('premise: plain JSON.stringify emits every planted character raw', () => {
+      for (const [, ch] of PLANTED) {
+        expect(JSON.stringify({ v: ch })).toContain(ch);
+      }
+    });
+
+    it.each(PLANTED)('--json escapes %s in a stack name and a region', async (_label, ch) => {
+      mockListStacks.mockResolvedValue([
+        { stackName: `Decoy${ch}ProdStack`, region: `us-east-1${ch}` },
+      ]);
+
+      const out = await runStateList(['list', '--json']);
+
+      expect(withoutLayout(out)).not.toMatch(RAW_CLASS);
+      expect(out).toContain(`\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+      expect(JSON.parse(out)).toEqual([
+        { stackName: `Decoy${ch}ProdStack`, region: `us-east-1${ch}` },
+      ]);
+    });
+
+    it('--long --json escapes the whole class and round-trips every row', async () => {
+      mockListStacks.mockResolvedValue(
+        PLANTED.map(([label, ch]) => ({ stackName: `${label}${ch}Stack`, region: `r${ch}` }))
+      );
+      mockGetState.mockResolvedValue({ state: { resources: { A: {} }, lastModified: 0 } });
+      mockIsLocked.mockResolvedValue(false);
+
+      const out = await runStateList(['list', '--long', '--json']);
+
+      expect(withoutLayout(out)).not.toMatch(RAW_CLASS);
+      const rows = JSON.parse(out) as Array<{ stackName: string; region: string }>;
+      expect(rows.map((r) => [r.stackName, r.region]).sort()).toEqual(
+        PLANTED.map(([label, ch]) => [`${label}${ch}Stack`, `r${ch}`]).sort()
+      );
+    });
+
+    it('--tree --json escapes the class in names and parent links, and round-trips', async () => {
+      const csi = '\u009b';
+      const ls = ' ';
+      mockListStacks.mockResolvedValue([
+        { stackName: `Parent${csi}`, region: 'us-east-1' },
+        { stackName: `Parent${csi}~Child${ls}`, region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name) =>
+        name === `Parent${csi}~Child${ls}`
+          ? {
+              state: {
+                resources: {},
+                lastModified: 0,
+                parentStack: `Parent${csi}`,
+                parentLogicalId: `Child${ls}`,
+                parentRegion: 'us-east-1',
+              },
+            }
+          : { state: { resources: {}, lastModified: 0 } }
+      );
+
+      const out = await runStateList(['list', '--tree', '--json']);
+
+      expect(withoutLayout(out)).not.toMatch(RAW_CLASS);
+      expect(out).toContain('\\u009b');
+      expect(out).toContain('\\u2028');
+      // Premise: the child really nested under its parent, so the planted
+      // parent fields were on the emitted path.
+      const parsed = JSON.parse(out) as Array<{
+        stackName: string;
+        children: Array<{ stackName: string; parentLogicalId: string | null }>;
+      }>;
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]!.stackName).toBe(`Parent${csi}`);
+      expect(parsed[0]!.children.map((c) => [c.stackName, c.parentLogicalId])).toEqual([
+        [`Parent${csi}~Child${ls}`, `Child${ls}`],
+      ]);
     });
   });
 });
