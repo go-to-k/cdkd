@@ -7549,40 +7549,65 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
  * operator does not fill the hole with the spelling the prose shows.
  */
 describe('the inspect command explains a withheld value before its label (go-to-k/cdkd#3436)', () => {
-  const INSPECT_CALLERS: ReadonlyArray<readonly [string, (s: string, r: string) => string]> = [
-    ['malformedDeployResourceEntriesRefusalMessage', (s, r) => malformedDeployResourceEntriesRefusalMessage(s, r, ['A'])],
-    ['malformedDeployResourcesRefusalMessage', (s, r) => malformedDeployResourcesRefusalMessage(s, r)],
-    ['malformedDestroyOutputsRefusalMessage', (s, r) => malformedDestroyOutputsRefusalMessage(s, r)],
-    ['malformedDestroyResourceEntriesRefusalMessage', (s, r) => malformedDestroyResourceEntriesRefusalMessage(s, r, ['A'])],
-    ['malformedExportNamesWarning', (s, r) => malformedExportNamesWarning(s, r)],
-    ['malformedExportSourceWarning', (s, r) => malformedExportSourceWarning(s, r)],
-    ['malformedImportUnrepairedEntriesRefusalMessage', (s, r) => malformedImportUnrepairedEntriesRefusalMessage(s, r, ['A'])],
-    ['malformedLocalOutputsWarning', (s, r) => malformedLocalOutputsWarning(s, r)],
-    ['malformedLocalResourceEntriesWarning', (s, r) => malformedLocalResourceEntriesWarning(s, r, ['A'])],
-    ['malformedLocalResourcesWarning', (s, r) => malformedLocalResourcesWarning(s, r)],
-    ['malformedNestedChildOutputsRefusalMessage', (s, r) => malformedNestedChildOutputsRefusalMessage(s, r)],
-    ['malformedOrphanRecordsWarning', (s, r) => malformedOrphanRecordsWarning(s, r, ['A'], false)],
-    ['malformedOrphanRowsKeptWarning', (s, r) => malformedOrphanRowsKeptWarning(s, r, ['A'])],
-    ['malformedOrphansRefusalMessage', (s, r) => malformedOrphansRefusalMessage(s, r)],
-    ['malformedOrphansWarning', (s, r) => malformedOrphansWarning(s, r)],
-    ['malformedOutputsRefusalMessage', (s, r) => malformedOutputsRefusalMessage(s, r)],
-    ['malformedOutputsWarning', (s, r) => malformedOutputsWarning(s, r)],
-    ['malformedRenderedContainersWarning', (s, r) => malformedRenderedContainersWarning(s, r, ['outputs'])],
-    ['malformedResourceEntriesRefusalMessage', (s, r) => malformedResourceEntriesRefusalMessage(s, r, ['A'])],
-    ['malformedResourceEntriesWarning', (s, r) => malformedResourceEntriesWarning(s, r, ['A'])],
-    ['malformedResourcePropertiesRefusalMessage', (s, r) => malformedResourcePropertiesRefusalMessage(s, r, ['A'])],
-    ['malformedResourcePropertiesWarning', (s, r) => malformedResourcePropertiesWarning(s, r, ['A'])],
-    ['malformedResourcesWarning', (s, r) => malformedResourcesWarning(s, r)],
-    ['malformedScrubResourceEntriesRefusalMessage', (s, r) => malformedScrubResourceEntriesRefusalMessage(s, r, ['A'])],
-    ['malformedStateRefusalMessage', (s, r) => malformedStateRefusalMessage(s, r)],
+  // Each entry carries the builder ITSELF, labelled by its own `name`, and an
+  // adapter checked to call it, so a label cannot credit a builder the entry
+  // does not exercise (m3 of the go-to-k/cdkd#4011 review).
+  type Caller = (s: string, r: string) => string;
+  const entry = <F extends (...a: never[]) => string>(
+    fn: F,
+    call: (fn: F, s: string, r: string) => string
+  ): readonly [string, Caller] => [
+    fn.name,
+    (s, r) => {
+      // And the adapter must actually CALL what it was handed: one that
+      // ignored `fn` and called a sibling would otherwise still pass.
+      let called = false;
+      const spy = ((...a: Parameters<F>) => {
+        called = true;
+        return fn(...a);
+      }) as F;
+      const text = call(spy, s, r);
+      expect(called, `${fn.name}'s entry did not call ${fn.name}`).toBe(true);
+      return text;
+    },
+  ];
+  const INSPECT_CALLERS: ReadonlyArray<readonly [string, Caller]> = [
+    entry(malformedDeployResourceEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedDeployResourcesRefusalMessage, (f, s, r) => f(s, r)),
+    entry(malformedDestroyOutputsRefusalMessage, (f, s, r) => f(s, r)),
+    entry(malformedDestroyResourceEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedExportNamesWarning, (f, s, r) => f(s, r)),
+    entry(malformedExportSourceWarning, (f, s, r) => f(s, r)),
+    entry(malformedImportUnrepairedEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedLocalOutputsWarning, (f, s, r) => f(s, r)),
+    entry(malformedLocalResourceEntriesWarning, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedLocalResourcesWarning, (f, s, r) => f(s, r)),
+    entry(malformedNestedChildOutputsRefusalMessage, (f, s, r) => f(s, r)),
+    entry(malformedOrphanRecordsWarning, (f, s, r) => f(s, r, ['A'], false)),
+    entry(malformedOrphanRowsKeptWarning, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedOrphansRefusalMessage, (f, s, r) => f(s, r)),
+    entry(malformedOrphansWarning, (f, s, r) => f(s, r)),
+    entry(malformedOutputsRefusalMessage, (f, s, r) => f(s, r)),
+    entry(malformedOutputsWarning, (f, s, r) => f(s, r)),
+    entry(malformedRenderedContainersWarning, (f, s, r) => f(s, r, ['outputs'])),
+    entry(malformedResourceEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedResourceEntriesWarning, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedResourcePropertiesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedResourcePropertiesWarning, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedResourcesWarning, (f, s, r) => f(s, r)),
+    entry(malformedScrubResourceEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedStateRefusalMessage, (f, s, r) => f(s, r)),
   ];
   const FILL =
     "Take the values from 'cdkd state list --json', which writes each name raw rather than " +
     'sanitized, and act on the one whose key matches, replacing each quoted hole in the ' +
-    'command below, quotes included, with the shell-quoted value. ';
+    'command at the end of this line, quotes included, with the shell-quoted value. ';
+  /** The no-fill rule where the stack's reason is `altered` / `too-long`, so it restates the parse. */
   const NO_FILL =
     "A value beginning with '-' could parse as an option there, so do not fill the stack " +
     'hole with it: repair or remove the record by hand. ';
+  /** The same rule after an `option-shaped` reason, which already said it (m1 of the go-to-k/cdkd#4011 review). */
+  const NO_FILL_SHORT = 'Do not fill the stack hole with it: repair or remove the record by hand. ';
 
   it('covers every caller: each inspectCommand call handed an identity carries the clause', () => {
     // DERIVED per CALL from the comment-stripped module, so a new call fails
@@ -7597,8 +7622,9 @@ describe('the inspect command explains a withheld value before its label (go-to-
     // Every CALL EXPRESSION in the module, whatever declares it (a function,
     // an arrow const, a branch): the definition itself is the only
     // `inspectCommand(` that is not a call.
-    // `\s*`: a comment between the name and its parenthesis is stripped to
-    // whitespace above, and must not hide the call from either census.
+    // `\s*`: a block comment between the name and its parenthesis is
+    // stripped above (to nothing, leaving any whitespace around it), and must
+    // not hide the call from either census.
     const callAt = [...src.matchAll(/\binspectCommand\s*\(/g)]
       .map((m) => m.index!)
       .filter((at) => !src.slice(Math.max(0, at - 9), at).endsWith('function '));
@@ -7620,7 +7646,11 @@ describe('the inspect command explains a withheld value before its label (go-to-
       }
       // The nearest TOP-LEVEL declaration above names the caller.
       const decl =
-        [...src.slice(0, at).matchAll(/\n(?:export )?(?:function|const) (\w+)/g)].pop()?.[1] ?? '?';
+        [
+          ...src
+            .slice(0, at)
+            .matchAll(/\n(?:export )?(?:async )?(?:function\*?|const|let) (\w+)/g),
+        ].pop()?.[1] ?? '?';
       // PER CALL: the clause with the same arguments sits within a few lines
       // BEFORE this call, with no other call between.
       const clauseAt = src.lastIndexOf(`\${inspectClause(${args})}`, at);
@@ -7630,10 +7660,31 @@ describe('the inspect command explains a withheld value before its label (go-to-
       callers.push(decl);
     }
     expect(exempt).toBe(3);
-    // Every DERIVED exported caller is driven below; `inspectTail` is driven
-    // through the two builders that call it.
+    // Labels come from each entry's own function (`entry`), so they are
+    // unique by construction; distinct renderings add that no two builders
+    // collapse to one message — the same reason the `BUILDERS` census checks
+    // duplicate renderings.
+    const rendered = INSPECT_CALLERS.map(([, build]) => build('S', 'us-east-1'));
+    expect(new Set(rendered).size).toBe(INSPECT_CALLERS.length);
+    expect(new Set(INSPECT_CALLERS.map(([n]) => n)).size).toBe(INSPECT_CALLERS.length);
+    // Every DERIVED exported caller is driven below, `inspectTail`'s callers
+    // included.
     const driven = new Set(INSPECT_CALLERS.map(([n]) => n));
-    for (const name of callers.filter((n) => n !== 'inspectTail')) {
+    // `inspectTail`'s own callers are DERIVED the same way, so a builder
+    // reaching the clause through it cannot go undriven either.
+    const tailCallers = [...src.matchAll(/\binspectTail\s*\(/g)]
+      .map((m) => m.index!)
+      .filter((at) => !src.slice(Math.max(0, at - 9), at).endsWith('function '))
+      .map(
+        (at) =>
+          [
+            ...src
+              .slice(0, at)
+              .matchAll(/\n(?:export )?(?:async )?(?:function\*?|const|let) (\w+)/g),
+          ].pop()?.[1] ?? '?'
+      );
+    expect(tailCallers.length).toBeGreaterThan(0);
+    for (const name of [...callers.filter((n) => n !== 'inspectTail'), ...tailCallers]) {
       expect(driven.has(name), `${name} is not in INSPECT_CALLERS`).toBe(true);
     }
     expect(callers.length).toBeGreaterThanOrEqual(24);
@@ -7644,8 +7695,8 @@ describe('the inspect command explains a withheld value before its label (go-to-
       const text = build('a b', 'us-east-1');
       const clause =
         "The stack name above is not a plain identifier (a letter or digit, then letters, " +
-        "digits, '~', '_', '.' or '-'), the only shape the command below names, since it sits " +
-        'beside a labelled line, so the command below prints a quoted hole in its place. ';
+        "digits, '~', '_', '.' or '-'), the only shape the command at the end of this line names, since it sits " +
+        'beside a labelled line, so the command at the end of this line prints a quoted hole in its place. ';
       // IMMEDIATELY before the label: after it, the clause would sit inside
       // the labelled command line.
       const tail = text.slice(text.indexOf(clause + FILL) + (clause + FILL).length);
@@ -7659,9 +7710,11 @@ describe('the inspect command explains a withheld value before its label (go-to-
       const text = build('--all', 'us-east-1');
       expect(text).toContain(
         "The stack name above begins with a '-', which 'cdkd state show' could parse as an " +
-          'option, so the command below prints a quoted hole in its place. ' +
-          NO_FILL
+          'option, so the command at the end of this line prints a quoted hole in its place. ' +
+          NO_FILL_SHORT
       );
+      // Not restated after a reason that already said it (m1).
+      expect(text).not.toContain(NO_FILL);
       expect(text).not.toContain(FILL);
     });
 
@@ -7675,8 +7728,8 @@ describe('the inspect command explains a withheld value before its label (go-to-
       const named = build('MyStack', 'us-east-1');
       const withheld = build('MyStack', 'us-east-1 ');
       const clause =
-        'The region above did not render exactly, so the command below prints a quoted hole ' +
-        'in its place. ';
+        'The region above did not render exactly, so the command at the end of this line prints ' +
+        'a quoted hole in its place. ';
       expect(withheld).toContain(clause + FILL);
       expect(named).toBe(
         withheld
@@ -7708,8 +7761,8 @@ describe('the inspect command explains a withheld value before its label (go-to-
     const text = malformedOutputsWarning('S ', '-x');
     expect(text).toContain(
       'The stack name above did not render exactly, and the region above begins with a ' +
-        "'-', which cdkd refuses to print as an argument, so the command below prints quoted " +
-        'holes in its place. ' +
+        "'-', which cdkd refuses to print as an argument, so the command at the end of this " +
+        'line prints quoted holes in their place. ' +
         FILL
     );
     for (const [region, why] of [
@@ -7726,7 +7779,7 @@ describe('the inspect command explains a withheld value before its label (go-to-
     // A SINGLE dash as well as two, and a bare `-`: the rule is the leading `-`.
     for (const name of ['-x', '-']) {
       const single = malformedOutputsWarning(name, 'us-east-1');
-      expect(single, name).toContain(NO_FILL);
+      expect(single, name).toContain(NO_FILL_SHORT);
       expect(single, name).not.toContain(FILL);
     }
     // A region-LESS identity takes the clause too (the legacy record the

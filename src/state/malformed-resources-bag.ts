@@ -488,6 +488,16 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
 }
 
 /**
+ * Where a withheld identity is taken from, and why there: `cdkd state list
+ * --json` writes each name raw rather than sanitized. ONE spelling, shared by
+ * {@link WITHHELD_LISTING_POINTER} and {@link inspectClause}, so the two
+ * cannot drift (M3 of the go-to-k/cdkd#4011 review).
+ */
+const LISTING_SOURCE =
+  `'cdkd state list --json', which writes each name raw rather than sanitized, and act on the ` +
+  `one whose key matches`;
+
+/**
  * Where the three DESTROY withhold arms send the reader for the exact name
  * (go-to-k/cdkd#3420): {@link malformedDestroyResourcesRefusalMessage},
  * {@link malformedDestroyOrphansRefusalMessage} and
@@ -510,8 +520,7 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
  * either, so the listing reads the same bucket that command does.
  */
 const WITHHELD_LISTING_POINTER =
-  `'cdkd state list --json', which writes each name raw rather than sanitized, and act on the ` +
-  `one whose key matches, filling the Inspect command's holes from it — replacing each quoted ` +
+  `${LISTING_SOURCE}, filling the Inspect command's holes from it — replacing each quoted ` +
   `hole, quotes included, with the shell-quoted value`;
 
 /**
@@ -2220,15 +2229,24 @@ function inspectClause(stackName: string | undefined, region: string | undefined
     inspectWithheldPart('region above', withheld, 'region', false),
   ].filter((part) => part !== '');
   if (parts.length === 0) return '';
-  const holes = parts.length === 1 ? 'a quoted hole' : 'quoted holes';
+  // The command follows its label on the SAME line (`... Inspect it with:
+  // cdkd state show ...`), so the sentence says "at the end of this line", not
+  // "below" (M1 of the go-to-k/cdkd#4011 review).
+  const holes = parts.length === 1 ? 'a quoted hole in its place' : 'quoted holes in their place';
+  // The no-fill rule restates the option parse only when the stack's own
+  // reason did not already say it (`altered` / `too-long` win first), m1.
+  const stackReason = withheld.find((w) => w.hole === 'stack')?.reason;
+  const noFill =
+    (stackReason === 'option-shaped'
+      ? ''
+      : `A value beginning with '-' could parse as an option there, so `) +
+    `do not fill the stack hole with it: repair or remove the record by hand. `;
   return (
-    `The ${parts.join(', and the ')}, so the command below prints ${holes} in its place. ` +
+    `The ${parts.join(', and the ')}, so the command at the end of this line prints ${holes}. ` +
     (stackName.startsWith('-')
-      ? `A value beginning with '-' could parse as an option there, so do not fill the ` +
-        `stack hole with it: repair or remove the record by hand. `
-      : `Take the values from 'cdkd state list --json', which writes each name raw rather ` +
-        `than sanitized, and act on the one whose key matches, replacing each quoted hole in ` +
-        `the command below, quotes included, with the shell-quoted value. `)
+      ? noFill.charAt(0).toUpperCase() + noFill.slice(1)
+      : `Take the values from ${LISTING_SOURCE}, replacing each quoted hole in the command at ` +
+        `the end of this line, quotes included, with the shell-quoted value. `)
   );
 }
 
@@ -2258,7 +2276,7 @@ function inspectWithheldPart(
     case 'not-plain':
       return (
         `${what} is not a plain identifier (a letter or digit, then letters, digits, '~', ` +
-        `'_', '.' or '-'), the only shape the command below names, since it sits beside a ` +
+        `'_', '.' or '-'), the only shape the command at the end of this line names, since it sits beside a ` +
         `labelled line`
       );
     // Unreachable: `inspectGate` passes no `patternMatched`.
