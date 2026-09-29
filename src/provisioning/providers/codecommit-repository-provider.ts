@@ -267,10 +267,11 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   private logger = getLogger().child('CodeCommitRepositoryProvider');
   /**
    * Renames this provider instance STARTED, keyed by the old name, with the
-   * repository id read just before the rename (go-to-k/cdkd#4042). It is the
-   * only evidence a retry's probe has: `update()` is handed no recorded
-   * attributes, so the `RepositoryId` cdkd records is out of its reach. The
-   * deploy engine's retry re-invokes `update()` on this same instance.
+   * repository id read just before the rename (go-to-k/cdkd#4042): the
+   * same-run evidence a retry's probe accepts beside the recorded
+   * `RepositoryId` (`UpdateContext.recordedAttributes`, go-to-k/cdkd#4051),
+   * and the only evidence for a record that holds none. The deploy engine's
+   * retry re-invokes `update()` on this same instance.
    */
   private readonly renamesStarted = new Map<string, string>();
 
@@ -465,8 +466,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     const prevTags = readRepoList('Tags', previousProperties['Tags'], 'recorded');
     // Every call below is addressed by a state-recorded NAME, so a client in
     // another region would act on a same-named repository cdkd does not manage.
+    // The client's region is resolved only when there is one to compare with.
     assertRegionMatch(
-      await this.getClient().config.region(),
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
       context?.expectedRegion,
       resourceType,
       logicalId,
@@ -508,12 +510,27 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       if (newName && newName !== physicalId) {
         // Read the repository's id BEFORE renaming, and remember it: a retry
         // then adopts the repository under the new name only when it is the
-        // same one (go-to-k/cdkd#4042).
+        // same one (go-to-k/cdkd#4042). A repository under the recorded name
+        // whose id is not the recorded one (the recorded repository deleted
+        // out of band and the name taken since) is refused before anything is
+        // sent to it (go-to-k/cdkd#4051).
         let gone = false;
         try {
           const before = await this.getRepositoryMetadata(physicalId);
           // A read with no id leaves no evidence, never an earlier attempt's.
           this.renamesStarted.delete(physicalId);
+          if (
+            recordedId !== undefined &&
+            before?.repositoryId !== undefined &&
+            before.repositoryId !== recordedId
+          ) {
+            throw this.notThisRepository(
+              logicalId,
+              resourceType,
+              physicalId,
+              'the repository now holding the recorded name'
+            );
+          }
           if (before?.repositoryId) {
             this.renamesStarted.set(physicalId, before.repositoryId);
           }
@@ -533,11 +550,12 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         }
         if (gone) {
           // Retry safety: the deploy engine's outer `withRetry` re-invokes
-          // update() with the OLD physicalId. If a previous attempt already
-          // renamed the repository and then failed on a later step, the old
-          // name is gone. The repository under the NEW name is adopted only
-          // when its id is the one this instance read before renaming; any
-          // other holder of that name is refused, with nothing sent to it.
+          // update() with the OLD physicalId. If a previous attempt (this run's
+          // or an earlier deploy's) already renamed the repository and then
+          // failed before recording the new name, the old name is gone. The
+          // repository under the NEW name is adopted only when its id is the
+          // recorded RepositoryId or the one this instance read before
+          // renaming; any other holder is refused, with nothing sent to it.
           await this.verifyRenamedRepository(
             logicalId,
             resourceType,
@@ -849,14 +867,11 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       `CodeCommit Repository ${logicalId} no longer exists under the name cdkd recorded, and ` +
       `the repository holding the desired RepositoryName is not this resource's`;
     if (known.length > 0) {
-      throw markNonRetryable(
-        new ProvisioningError(
-          `${intro} (its repository id is not the one cdkd holds for this resource) — nothing ` +
-            `was sent to that repository. Choose a RepositoryName no other repository holds.`,
-          resourceType,
-          logicalId,
-          oldName
-        )
+      throw this.notThisRepository(
+        logicalId,
+        resourceType,
+        oldName,
+        'the repository holding the desired RepositoryName'
       );
     }
     throw markNonRetryable(
@@ -864,7 +879,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         `${intro} as far as cdkd can verify (its record holds no RepositoryId, and this run ` +
           `started no rename of this resource) — nothing was sent to that repository. If it is ` +
           `this resource's repository (an earlier deploy renamed it and stopped before ` +
-          `recording the new name), first confirm it is yours, and re-adopt it only then; ` +
+          `recording the new name), first confirm it is yours (\`aws codecommit get-repository\` ` +
+          `shows its id, ARN, description and creation date), and re-adopt it only then; ` +
           `otherwise choose a RepositoryName no other repository holds.\nRe-adopt with:\n` +
           // Unwrapped, on its own line, last; every value through the shared
           // gate (a hole when it cannot be printed exactly).
@@ -880,6 +896,30 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         resourceType,
         logicalId,
         oldName
+      )
+    );
+  }
+
+  /**
+   * The refusal for a repository whose id is KNOWN not to be this resource's
+   * (go-to-k/cdkd#4042, go-to-k/cdkd#4051): nothing is sent to it, and no
+   * re-adoption is offered. `which` names the repository by role, never by
+   * name.
+   */
+  private notThisRepository(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    which: string
+  ): ProvisioningError {
+    return markNonRetryable(
+      new ProvisioningError(
+        `CodeCommit Repository ${logicalId}: ${which} is not this resource's (its repository ` +
+          `id is not the one cdkd holds for this resource) — nothing was sent to that ` +
+          `repository. Choose a RepositoryName no other repository holds.`,
+        resourceType,
+        logicalId,
+        physicalId
       )
     );
   }

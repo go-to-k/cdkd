@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 // go-to-k/cdkd#4042: the rename-retry probe adopted ANY repository holding the
 // desired RepositoryName once the old name was gone, then overwrote its
 // description / key / tags / triggers and recorded it as this resource (which
-// a later destroy deletes). It now adopts only the repository whose id this
-// provider instance read just before starting that rename.
+// a later destroy deletes). It now adopts only a repository whose id is the
+// recorded RepositoryId (go-to-k/cdkd#4051) or the one this provider instance
+// read just before starting that rename.
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -401,8 +402,10 @@ describe('CodeCommit rename-retry probe verifies against the RECORDED Repository
   it('refuses before any call when the client region is not the recorded one', async () => {
     primeAccount({ oursUnder: OLD });
 
+    // A malformed recorded Triggers, so the live trigger read would run first
+    // if the region check came after it.
     const err = await rejection(
-      provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, {
+      provider.update('Repo', OLD, TYPE, DESIRED, { ...RECORDED, Triggers: {} }, {
         expectedRegion: 'eu-west-1',
         ...recorded('id-ours'),
       })
@@ -410,5 +413,34 @@ describe('CodeCommit rename-retry probe verifies against the RECORDED Repository
 
     expect(err.message).toContain('eu-west-1');
     expect(sentNames()).toEqual([]);
+  });
+
+  it('a repository under the RECORDED name whose id is not the recorded one is refused before the rename', async () => {
+    // The recorded repository was deleted out of band and a foreign one took
+    // its name: nothing may be renamed or written.
+    mockSend.mockImplementation((cmd: { constructor: { name: string }; input: Record<string, unknown> }) =>
+      cmd.constructor.name === 'GetRepositoryCommand' && cmd.input['repositoryName'] === OLD
+        ? Promise.resolve({ repositoryMetadata: { repositoryId: 'id-foreign', Arn: ARN } })
+        : gone()
+    );
+
+    const err = await rejection(
+      provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, recorded('id-ours'))
+    );
+
+    expect(err.message).toContain('the repository now holding the recorded name is not this resource');
+    expect(err.message).not.toContain('cdkd import');
+    expect(err.message).not.toContain(OLD);
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    expect(sentNames()).toEqual(['GetRepositoryCommand']);
+  });
+
+  it('a repository under the recorded name with the recorded id is renamed as usual', async () => {
+    primeAccount({ oursUnder: OLD });
+
+    const result = await provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, recorded('id-ours'));
+
+    expect(result.physicalId).toBe(NEW);
+    expect(sentNames().slice(0, 2)).toEqual(['GetRepositoryCommand', 'UpdateRepositoryNameCommand']);
   });
 });
