@@ -239,6 +239,23 @@ export class ReplacementRulesRegistry {
   }
 
   /**
+   * The type's `conditionalReplacements` predicate for `propertyPath`, applied
+   * to two concrete values, or `undefined` when the property has none (issue
+   * [#4134](https://github.com/go-to-k/cdkd/issues/4134)). Deliberately not
+   * {@link requiresReplacement}: that one answers `false` for an unclassified
+   * property, which a caller outside the diff cannot tell from "in place".
+   */
+  conditionalReplacementVerdict(
+    resourceType: string,
+    propertyPath: string,
+    oldValue: unknown,
+    newValue: unknown
+  ): boolean | undefined {
+    const condition = this.rules.get(resourceType)?.conditionalReplacements?.get(propertyPath);
+    return condition === undefined ? undefined : condition(oldValue, newValue);
+  }
+
+  /**
    * Whether the registry has an EXPLICIT opinion about a property's
    * replacement behavior — i.e. the type has a rule AND the property is listed
    * in its `replacementProperties`, `updateableProperties`, OR

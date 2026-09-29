@@ -205,6 +205,24 @@ function replacementSidesForLog(
 export class DiffCalculator {
   private logger = getLogger().child('DiffCalculator');
   private replacementRules = new ReplacementRulesRegistry();
+
+  /**
+   * {@link ReplacementRulesRegistry.conditionalReplacementVerdict}, for the
+   * deploy engine's replacement-ceiling lowering (issue #4134).
+   */
+  conditionalReplacementVerdict(
+    resourceType: string,
+    propertyPath: string,
+    oldValue: unknown,
+    newValue: unknown
+  ): boolean | undefined {
+    return this.replacementRules.conditionalReplacementVerdict(
+      resourceType,
+      propertyPath,
+      oldValue,
+      newValue
+    );
+  }
   private parser = new TemplateParser();
 
   /**

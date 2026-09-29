@@ -7290,7 +7290,20 @@ export class DeployEngine {
             const moved =
               keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
               keyOrderFreeJson(currentPropsAsWritten[pc.path]);
-            if (moved) {
+            // A value that MOVED still keeps the ceiling, unless the type's own
+            // conditional rule reads the move as in place (issue #4134) -- the
+            // same predicate the diff applies to a template edit. A property
+            // with no conditional rule answers `undefined` and keeps it.
+            const conditionalVerdict =
+              moved && !typeChanged
+                ? this.diffCalculator.conditionalReplacementVerdict?.(
+                    resourceType,
+                    pc.path,
+                    currentPropsAsWritten[pc.path],
+                    desiredForSkipCheckAsWritten[pc.path]
+                  )
+                : undefined;
+            if (moved && conditionalVerdict !== false) {
               lowered.push(pc);
               continue;
             }
