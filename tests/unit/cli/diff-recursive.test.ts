@@ -3228,6 +3228,25 @@ describe('Outputs-only change (issue #1921)', () => {
       expect(carried[0]).not.toContain('Previous values in this Outputs section are withheld');
     });
 
+    // Issue #4056 review: a carried value that is one whole SecureString ssm
+    // token is the key's redacted expression, like a secretsmanager one; the
+    // same token beside other text is not, since that text may be plaintext.
+    it.each([
+      ['a whole secretsmanager token', '{{resolve:secretsmanager:s:SecretString:k}}', false],
+      ['a whole plain ssm token', '{{resolve:ssm:/sec/p}}', false],
+      ['a plain ssm token beside other text', '{{resolve:ssm:/sec/p}}-MAYBE-PLAINTEXT', true],
+    ])('carrying %s (%s) withholds previous values: %s', async (_label, stored, withheld) => {
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: stored, Plain: 'old' }),
+        template({ Out: { Value: FAILING }, Plain: { Value: 'new' } })
+      );
+      expect(outputChanges).toEqual([
+        withheld
+          ? { name: 'Plain', changeType: 'MODIFY', newValue: 'new', isExport: false, oldValueRedacted: true }
+          : { name: 'Plain', changeType: 'MODIFY', oldValue: 'old', newValue: 'new', isExport: false },
+      ]);
+    });
+
     it('makes the stack dirty for --fail', async () => {
       const node = await buildDiffTree({
         stackName: 'S',

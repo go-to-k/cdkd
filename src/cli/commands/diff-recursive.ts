@@ -38,6 +38,7 @@ import {
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
   computeOutputsDiff,
+  isWholeSecretReferenceToken,
   resolveTemplateOutputs,
   templateHasSecretDynamicReference,
   templateLetsConditionsReachOutputs,
@@ -1358,10 +1359,15 @@ export async function computeStackDiff(
       // the key that holds one. So the record is treated as legacy, and every
       // stored value on a rendered row withheld, whenever a carried key's stored
       // value is anything but a secret expression: the one value pass 1 would
-      // have excused for that key.
+      // have excused for that key. A carried value that is one whole
+      // SecureString `ssm` token is such an expression too (issue #4056); a
+      // token beside other text is not, since that text may be plaintext and
+      // there is no resolved side here to compare the literal parts against.
       const storedOutputs = currentState.outputs ?? {};
       const withheld = merge.carriedKeys.some(
-        (key) => !isSecretBearingReferenceString(storedOutputs[key])
+        (key) =>
+          !isSecretBearingReferenceString(storedOutputs[key]) &&
+          !isWholeSecretReferenceToken(storedOutputs[key])
       );
       outputChanges = diffOutputsAgainst(merge.outputs, new Set(merge.exportNames), withheld);
       // Every failure on this path is named (`failuresMirrorDeploy`), so the set

@@ -8,7 +8,9 @@ import {
   type SecretSafeKeyDisplay,
 } from '../deployment/outputs-export-alias.js';
 import {
+  DYNAMIC_REFERENCE_TOKEN_SCAN,
   dynamicReferenceTokens,
+  WHOLE_DYNAMIC_REFERENCE_PATTERN,
   type RecordedSecretValues,
 } from '../deployment/secret-redaction.js';
 import { stripControlChars } from '../utils/regexp.js';
@@ -397,8 +399,56 @@ const DEPLOY_RESOLVED_REFERENCE_SERVICES: ReadonlySet<string> = new Set([
  * says nothing about the parameter's type.
  */
 function keepsSecretReferenceToken(resolvedName: string): boolean {
+  // `inner.split(':')[0]`, the resolver's own reading of the service, with the
+  // closing braces sliced off so a colon-less `{{resolve:ssm-secure}}` reads
+  // `ssm-secure` there and here alike.
   return dynamicReferenceTokens(resolvedName).some((token) =>
-    DEPLOY_RESOLVED_REFERENCE_SERVICES.has(token.slice('{{resolve:'.length).split(':')[0] ?? '')
+    DEPLOY_RESOLVED_REFERENCE_SERVICES.has(
+      token.slice('{{resolve:'.length, -'}}'.length).split(':')[0] ?? ''
+    )
+  );
+}
+
+/**
+ * True when a STORED value is exactly one secret-bearing token and nothing
+ * else, so it holds no plaintext whatever produced it (issue #4056). Exported
+ * for the no-change merge preview in `diff-recursive.ts`, which asks the same
+ * question of a carried value with no resolved side to compare it against.
+ */
+export function isWholeSecretReferenceToken(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    WHOLE_DYNAMIC_REFERENCE_PATTERN.test(value) &&
+    keepsSecretReferenceToken(value)
+  );
+}
+
+/**
+ * The literal text around each `{{resolve:...}}` token. `split` builds its own
+ * splitter from the shared global pattern and leaves the constant's
+ * `lastIndex` untouched, which is what its doc forbids `.exec` / `.test` for.
+ */
+function literalPartsAroundTokens(text: string): string[] {
+  return text.split(DYNAMIC_REFERENCE_TOKEN_SCAN);
+}
+
+/**
+ * May a STORED string carrying a plain `ssm` token be read as the key's
+ * redacted expression (issue #4056)? A substring hit is not enough: `cdkd
+ * scrub` can leave `{{resolve:ssm:/A}}-<plaintext>` when it could name one
+ * secret in a value and not the other. So the stored string must be one
+ * whole token, or carry exactly the LITERAL parts the resolved desired side
+ * carries, so every stretch that differs sits where a token is.
+ */
+function storedSsmTokenIsExpression(stored: string, desired: unknown): boolean {
+  if (!keepsSecretReferenceToken(stored)) return false;
+  if (isWholeSecretReferenceToken(stored)) return true;
+  if (typeof desired !== 'string') return false;
+  const storedParts = literalPartsAroundTokens(stored);
+  const desiredParts = literalPartsAroundTokens(desired);
+  return (
+    storedParts.length === desiredParts.length &&
+    storedParts.every((part, index) => part === desiredParts[index])
   );
 }
 
@@ -1102,10 +1152,17 @@ export function computeOutputsDiff(
     // `ssm-secure` spelling (issue #4056's sweep). `desired` is RESOLVED text,
     // where a plain `{{resolve:ssm:...}}` survives only for a `SecureString`,
     // so a record an older binary wrote with that parameter's plaintext printed
-    // it as the `old:` side of a MODIFY row. The stored side is read the same
-    // way, or a post-#1901 record storing that token as its expression would be
-    // judged pre-GHSA by its own desired side and lose every previous value.
-    if (typeof oldValue === 'string' && isSecretReferenceText(oldValue)) return false;
+    // it as the `old:` side of a MODIFY row. The stored side reads that token
+    // as an expression too, or a post-#1901 record storing it would be judged
+    // pre-GHSA by its own desired side and lose every previous value -- but
+    // only in the shape `storedSsmTokenIsExpression` accepts, never on a
+    // substring hit beside text that may be plaintext.
+    if (
+      typeof oldValue === 'string' &&
+      (isSecretDynamicReference(oldValue) || storedSsmTokenIsExpression(oldValue, desired[name]))
+    ) {
+      return false;
+    }
     return containsSecretReferenceText(desired[name]) || secretSourceKeys.has(name);
   };
   const legacyRecord =

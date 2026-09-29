@@ -32,7 +32,7 @@ vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) => {
 
 import { computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
-import { resolveTemplateOutputs } from '../../../src/analyzer/outputs-diff.js';
+import { computeOutputsDiff, resolveTemplateOutputs } from '../../../src/analyzer/outputs-diff.js';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { exportNameSecretExposure } from '../../../src/deployment/outputs-export-alias.js';
 import { clearRecordedSecretExpressions } from '../../../src/deployment/secret-redaction.js';
@@ -208,6 +208,47 @@ describe('a stored value beside a SecureString ssm output (issue #4056 sweep)', 
   });
 });
 
+describe('the stored-side ssm veto needs the whole shape, not a substring (review M1)', () => {
+  const MIXED_DESIRED = `${SSM_REF}-{{resolve:secretsmanager:S}}`;
+
+  it.each([
+    // `cdkd scrub` named the ssm secret and not the rotated secretsmanager one.
+    ['a token beside a plaintext where the desired side has a token', `${SSM_REF}-OLDSECRET`, MIXED_DESIRED],
+    ['a token beside a plaintext under a different literal', `x-${SSM_REF}-OLDSECRET`, `x-${SSM_REF}-{{resolve:secretsmanager:S}}`],
+    // Fails closed: the literal changed, so the shapes no longer line up.
+    ['a redacted expression whose literal part changed', `old-${SSM_REF}`, `new-${SSM_REF}`],
+  ])('withholds the record for %s', (_label, stored, desired) => {
+    const changes = computeOutputsDiff(
+      { Out: stored, Other: 'o1' },
+      { Out: desired, Other: 'o2' },
+      new Set(),
+      new Set(['Out'])
+    );
+    expect(JSON.stringify(changes)).not.toContain('OLDSECRET');
+    for (const change of changes) expect(change.oldValueRedacted).toBe(true);
+  });
+
+  it.each([
+    ['one whole token, whatever the desired side is', SSM_REF, `new-${SSM_REF}`],
+    ['a mixed expression with the desired side literal parts', `app-${SSM_REF}-x`, `app-${SSM_REF}-x`],
+    ['a mixed expression whose token changed under the same literals', `app-${SSM_REF}-x`, 'app-{{resolve:ssm:/sec/q}}-x'],
+  ])('keeps previous values for %s', (_label, stored, desired) => {
+    const changes = computeOutputsDiff(
+      { Out: stored, Other: 'o1' },
+      { Out: desired, Other: 'o2' },
+      new Set(),
+      new Set(['Out'])
+    );
+    expect(changes.find((c) => c.name === 'Other')).toEqual({
+      name: 'Other',
+      changeType: 'MODIFY',
+      oldValue: 'o1',
+      newValue: 'o2',
+      isExport: false,
+    });
+  });
+});
+
 describe('resolveTemplateOutputs: which surviving tokens refuse an intrinsic alias', () => {
   /** A resolver that hands back `name` for the Export.Name and `v` for the value. */
   const resolverReturning =
@@ -222,6 +263,7 @@ describe('resolveTemplateOutputs: which surviving tokens refuse an intrinsic ali
     ['a plain ssm token', `app-${SSM_REF}`],
     ['an ssm-secure token', 'app-{{resolve:ssm-secure:/sec/p}}'],
     ['a secretsmanager token', 'app-{{resolve:secretsmanager:db:SecretString:pw}}'],
+    ['a colon-less ssm-secure token, read as the resolver reads it', 'app-{{resolve:ssm-secure}}'],
     ['a secret token beside an unsupported one', `app-{{resolve:foo:bar}}-${SSM_REF}`],
   ])('skips the alias for %s, without suppressing the section', async (_label, resolvedName) => {
     const r = await resolveTemplateOutputs(
