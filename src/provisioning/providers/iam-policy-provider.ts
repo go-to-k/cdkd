@@ -17,7 +17,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
-import { readRecordedPrincipals, type RecordedPrincipals } from '../iam-policy-targets.js';
+import { readPrincipalLists, recordedPrincipalsRepair } from '../iam-policy-targets.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -87,6 +87,15 @@ interface PolicyTargetLists {
   users: string[] | undefined;
 }
 
+type PolicyTargetKind = 'Roles' | 'Groups' | 'Users';
+
+/** The kinds of one bag that are present but not a list of IAM names. */
+interface MalformedPolicyTargets {
+  malformed: PolicyTargetKind[];
+  /** The malformed kinds holding a dynamic reference or its mask (go-to-k/cdkd#3907). */
+  secretDerived: PolicyTargetKind[];
+}
+
 /**
  * Read a bag's `Roles` / `Groups` / `Users` through the shared reader
  * (go-to-k/cdkd#3878), or return the kinds that are present but not a list of
@@ -100,23 +109,105 @@ interface PolicyTargetLists {
  */
 function readPolicyTargetLists(
   bag: Record<string, unknown> | undefined
-): PolicyTargetLists | { malformed: string[] } {
-  const recorded = {
-    Roles: readRecordedPrincipals(bag?.['Roles']),
-    Groups: readRecordedPrincipals(bag?.['Groups']),
-    Users: readRecordedPrincipals(bag?.['Users']),
-  };
-  const malformed = (Object.keys(recorded) as Array<keyof typeof recorded>).filter(
-    (k) => recorded[k].kind === 'malformed'
+): PolicyTargetLists | MalformedPolicyTargets {
+  const read = readPrincipalLists({
+    Roles: bag?.['Roles'],
+    Groups: bag?.['Groups'],
+    Users: bag?.['Users'],
+  });
+  if ('malformed' in read) return { malformed: read.malformed, secretDerived: read.secretDerived };
+  return { roles: read.lists.Roles, groups: read.lists.Groups, users: read.lists.Users };
+}
+
+/** The note a secret-derived kind carries: it is never repaired in state.json. */
+const SECRET_DERIVED_NOTE =
+  'is secret-derived (cdkd keeps the dynamic reference or its mask in state), so do not ' +
+  'write the name into state.json';
+
+/**
+ * The way out of an update refused over a secret-derived RECORDED principal
+ * list (go-to-k/cdkd#3907). Writing the name into state is not it, and unlike
+ * `AWS::IAM::ManagedPolicy` there is no live source to read the old side from:
+ * IAM has no call listing the principals that hold one INLINE policy by name.
+ * `cdkd orphan` drops just this record, and the next deploy re-attaches the
+ * policy from the template (`Put*Policy` is idempotent) under the DESIRED
+ * name only, so a rename (`renamed`) also leaves the old-named policy behind.
+ */
+function policySecretDerivedRepair(renamed: boolean): string {
+  return (
+    'IAM has no call that lists the principals holding an inline policy, so cdkd cannot ' +
+    'diff it: detach the inline policy by hand from every principal it should no longer be ' +
+    'on' +
+    (renamed
+      ? ', and since this change renames the policy, also remove the OLD-named inline policy ' +
+        'from every principal that holds it (the re-created record names only the new one)'
+      : '') +
+    ", then drop this record with 'cdkd orphan <constructPath>' so the next deploy " +
+    're-attaches it from the template (an attachment left in place across the orphan is no ' +
+    'longer tracked by cdkd). The new record keeps the reference (or its mask) again, so a ' +
+    'later change to this policy is refused the same way'
   );
-  if (malformed.length > 0) return { malformed };
-  const namesOf = (r: RecordedPrincipals): string[] | undefined =>
-    r.kind === 'names' ? r.names : undefined;
-  return {
-    roles: namesOf(recorded.Roles),
-    groups: namesOf(recorded.Groups),
-    users: namesOf(recorded.Users),
-  };
+}
+
+/**
+ * The repair clause for a malformed RECORDED side. When any kind is
+ * secret-derived, the orphan route is the ONLY repair: it drops the whole
+ * record, and a state.json repair of a plain kind alone would still be refused
+ * over the secret-derived one. (The shared `recordedPrincipalsRepair` joins
+ * both repairs, which is right for its other callers, whose secret-derived
+ * route is a live read that NEEDS every other kind well-formed.)
+ */
+function recordedSideRepair(targets: MalformedPolicyTargets, renamed: boolean): string {
+  const { malformed, secretDerived } = targets;
+  if (secretDerived.length === 0) {
+    return recordedPrincipalsRepair(malformed, [], 'role / group / user names', '');
+  }
+  const plain = malformed.filter((k) => !secretDerived.includes(k));
+  return (
+    `the recorded ${secretDerived.join(' / ')} ${SECRET_DERIVED_NOTE}` +
+    (plain.length > 0
+      ? `, and the recorded ${plain.join(' / ')} need not be repaired there either: the ` +
+        `route below drops the whole record`
+      : '') +
+    `; ${policySecretDerivedRepair(renamed)}`
+  );
+}
+
+/**
+ * The repair clauses of an `update()` refused over a malformed side, in the
+ * order they must be done (go-to-k/cdkd#3907). The desired side comes FIRST:
+ * both the state.json repair and the orphan route re-apply it.
+ *
+ * A desired side reaches this holding a dynamic reference or cdkd's mask only
+ * when the TEMPLATE itself holds it: a deploy refuses a masked attribute read
+ * (a `NoEcho` custom resource's `Data`) in `refuseRedactedAttributeReads`
+ * before any provider call, a rollback replay re-resolves every reference and
+ * refuses a masked bag in `refuseMaskedReplayBaseline`, and `drift --revert`
+ * never gets here.
+ */
+function refusalRepair(
+  desired: PolicyTargetLists | MalformedPolicyTargets,
+  recorded: PolicyTargetLists | MalformedPolicyTargets,
+  renamed: boolean
+): string {
+  const clauses: string[] = [];
+  const recordedMalformed = 'malformed' in recorded;
+  if ('malformed' in desired) {
+    if (desired.secretDerived.length > 0) {
+      clauses.push(
+        `the desired ${desired.secretDerived.join(' / ')} holds a dynamic reference or cdkd's ` +
+          `mask that resolved to no names; fix that value in the template` +
+          (recordedMalformed ? ' first, since the repair below re-applies it' : '')
+      );
+    } else if (recordedMalformed) {
+      clauses.push('fix the desired side first, since the repair below re-applies it');
+    }
+  }
+  if (recordedMalformed) {
+    const repair = recordedSideRepair(recorded, renamed);
+    clauses.push('malformed' in desired ? `then ${repair}` : repair);
+  }
+  return clauses.length > 0 ? `: ${clauses.join('; ')}` : '';
 }
 
 /**
@@ -301,14 +392,21 @@ export class IAMPolicyProvider implements ResourceProvider {
         ...('malformed' in oldTargets ? oldTargets.malformed.map((k) => `recorded ${k}`) : []),
       ];
       // A RECORDED value is in cdkd state, which no template change reaches,
-      // so the message says where to repair it.
+      // so the message says how to repair it — and a secret-derived one is
+      // never repaired by writing the name into state (go-to-k/cdkd#3907).
+      // The DESIRED side is not always the template: a rollback revert and
+      // `drift --revert` replay this method with a recorded bag there, so the
+      // message says so rather than naming one source. (`drift --revert` does
+      // not reach this refusal today: `readCurrentState` reads a malformed
+      // recorded list as drift unknown, so the resource is never reverted.)
       throw new ProvisioningError(
         `${which.join(' / ')} of IAM policy ${logicalId} is not a list of IAM names — no ` +
           `inline policy was attached or detached` +
-          ('malformed' in oldTargets
-            ? `. Repair the recorded ${oldTargets.malformed.join(' / ')} in state.json to a ` +
-              `list of role / group / user names and re-run`
-            : ''),
+          ('malformed' in newTargets
+            ? ` (the desired side is the template's value on a deploy, and the recorded value ` +
+              `being restored on a rollback revert or 'cdkd drift --revert')`
+            : '') +
+          refusalRepair(newTargets, oldTargets, newPolicyName !== oldPolicyName),
         resourceType,
         logicalId,
         physicalId
@@ -527,6 +625,7 @@ export class IAMPolicyProvider implements ResourceProvider {
     // AWS call, after the name check below.
     const targets = readPolicyTargetLists(properties);
     const malformedKinds = 'malformed' in targets ? targets.malformed : [];
+    const secretDerivedKinds = 'malformed' in targets ? targets.secretDerived : [];
     const { roles, groups, users } =
       'malformed' in targets ? { roles: undefined, groups: undefined, users: undefined } : targets;
     const legacyRoleFromPhysicalId =
@@ -553,12 +652,32 @@ export class IAMPolicyProvider implements ResourceProvider {
     }
 
     if (malformedKinds.length > 0) {
+      // go-to-k/cdkd#3907: a secret-derived kind stays `{{resolve:...}}` (or
+      // `***`) in state by design, so "repair state.json" would have the user
+      // write the secret-derived name into it; it is named apart, with the way
+      // out that holds for it.
+      // With any kind secret-derived, a state.json repair of a PLAIN kind alone
+      // would still skip, so that repair is not offered beside it.
+      const plainKinds = malformedKinds.filter((k) => !secretDerivedKinds.includes(k));
+      const repair =
+        secretDerivedKinds.length === 0
+          ? `Repair ${plainKinds.join(' / ')} in state.json to a list of role / group / user ` +
+            `names and re-run, or delete the inline policy by hand.`
+          : `The recorded ${secretDerivedKinds.join(' / ')} is secret-derived (cdkd keeps the ` +
+            `dynamic reference or its mask in state), so do not write the name into ` +
+            `state.json: cdkd will keep skipping this record` +
+            (plainKinds.length > 0
+              ? `, whatever is repaired in the recorded ${plainKinds.join(' / ')}`
+              : '') +
+            `. Remove the inline policy from its principals by hand (a principal this stack ` +
+            `also deletes takes its inline policies with it); on cdkd destroy every other ` +
+            `resource is still deleted, so once this is the stack's last record 'cdkd state ` +
+            `orphan <stack> --stack-region <region>' clears it.`;
       this.logger.warn(
         `The state record for IAM policy ${logicalId} holds ${malformedKinds.join(' / ')} that ` +
           `is not a list of IAM names — skipping deletion rather than guessing which principals ` +
           `it names. No AWS call is issued, so the inline policy is LEFT ATTACHED wherever it ` +
-          `is. Repair ${malformedKinds.join(' / ')} in state.json to a list of role / group / ` +
-          `user names and re-run, or delete the inline policy by hand. ${DEPLOY_SKIP_CAVEAT}`
+          `is. ${repair} ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: POLICY_MALFORMED_TARGET_SKIP_REASON };
     }
