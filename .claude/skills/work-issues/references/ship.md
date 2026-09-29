@@ -5,7 +5,8 @@
 The PARENT's serialization point: grant one merge-ready lane at a time its turn
 and run `/run-integ` and `gh pr merge` yourself FROM THAT LANE'S WORKTREE — never
 the lane agent, whose real-AWS integ and merge the auto-mode permission
-classifier refuses (go-to-k/cdkd#3930, go-to-k/cdkd#4059). While that tree is
+classifier can refuse, and a refused one is the user's call, not a retry
+(go-to-k/cdkd#3930, go-to-k/cdkd#4059). While that tree is
 busy with a follow-up branch, ship from a SECOND sibling on the PR's branch
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
 running BOTH the integ and the merge there (the marker is per tree); Cleanup

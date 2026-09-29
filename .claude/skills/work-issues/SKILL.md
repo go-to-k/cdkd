@@ -75,7 +75,7 @@ file that holds that section.
   merge-ready lane its turn and run `/run-integ` and `gh pr merge` yourself
   FROM THAT LANE'S WORKTREE (the `integ-destroy` marker is read from the
   worktree the command runs from) — never the lane agent, whose integ and
-  merge the auto-mode permission classifier refuses. Post-merge (pull →
+  merge the auto-mode permission classifier can refuse. Post-merge (pull →
   rebuild → worktree cleanup) follows §9.
 - **Retro (stage 10): a subagent**, dispatched after the last merge with
   `references/retro.md` plus this run's evidence, to draft the skill edits and
