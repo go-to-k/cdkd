@@ -448,7 +448,9 @@ describe('CodeCommit rename-retry probe verifies against the RECORDED Repository
     expect(err.message).toContain('Changing RepositoryName does not clear this');
     expect(err.message).not.toContain('Choose a RepositoryName');
     expect(err.message.endsWith(`\ncdkd orphan '<constructPath>'`)).toBe(true);
-    expect(err.message).not.toContain('cdkd import');
+    // No pasteable import line: re-adoption is prose for the renamed case only.
+    expect(err.message.split('\n').some((l) => l.startsWith('cdkd import'))).toBe(false);
+    expect(err.message).toContain('If the recorded repository was renamed and you can find it');
     expect(err.message).not.toContain(OLD);
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(sentNames()).toEqual(['GetRepositoryCommand']);

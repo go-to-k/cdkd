@@ -919,8 +919,10 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           `(it was deleted or renamed outside cdkd), and the repository now holding that name ` +
           `is not this resource's (its repository id is not the one cdkd holds) — nothing was ` +
           `sent to that repository. Changing RepositoryName does not clear this. Leave that ` +
-          `repository alone, and drop this resource's record so the next deploy creates a new ` +
-          `repository (fill in the resource's construct path):\n` +
+          `repository alone. If the recorded repository was renamed and you can find it, ` +
+          `re-adopt it under its new name with cdkd import (--resource, --force) instead; ` +
+          `otherwise drop this resource's record so the next deploy creates a new repository ` +
+          `(fill in the resource's construct path):\n` +
           pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command;
     return markNonRetryable(
       new ProvisioningError(
