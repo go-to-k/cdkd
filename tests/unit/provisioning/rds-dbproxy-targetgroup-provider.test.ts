@@ -111,10 +111,15 @@ describe('RDSDBProxyTargetGroupProvider', () => {
     });
 
     it.each([
-      ['a non-list', 'team=db', /must be a list/],
-      ['an entry without Key', [{ Value: 'x' }], /entry 0 needs a non-empty string Key/],
-      ['a non-string Value', [{ Key: 'n', Value: 7 }], /entry 0 \(n\) has a non-string Value/],
-    ])('create refuses %s before any call', async (_label, tags, message) => {
+      ['a non-list', 'team=db', /Tags of AWS::RDS::DBProxyTargetGroup TG is not a list of tags/],
+      ['an entry without Key', [{ Value: 'x' }], /is not a list of tags/],
+      ['a null Value', [{ Key: 'n', Value: null }], /is not a list of tags/],
+      [
+        'a secret-derived Key',
+        [{ Key: '{{resolve:secretsmanager:k}}', Value: 'x' }],
+        /holds a dynamic reference or its mask where a tag key belongs/,
+      ],
+    ])('create refuses %s before any call (issue #4122)', async (_label, tags, message) => {
       await expect(
         provider.create('TG', RESOURCE_TYPE, {
           DBProxyName: 'AuroraProxy',
@@ -123,6 +128,21 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         })
       ).rejects.toThrow(message);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('create sends a scalar Value as a string, as CloudFormation coerces it (issue #4122)', async () => {
+      mockSend.mockResolvedValueOnce(describeOk).mockResolvedValueOnce({});
+      await provider.create('TG', RESOURCE_TYPE, {
+        DBProxyName: 'AuroraProxy',
+        Tags: [
+          { Key: 'n', Value: 7 },
+          { Key: 'b', Value: true },
+        ],
+      });
+      expect(mockSend.mock.calls[1]![0].input.Tags).toEqual([
+        { Key: 'n', Value: '7' },
+        { Key: 'b', Value: 'true' },
+      ]);
     });
 
     it('a state replay warns, skips tagging and records the bag without Tags', async () => {
@@ -213,33 +233,105 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       ]);
     });
 
-    it('routes the tag-refusal warnings through the caller masker', async () => {
+    it('update never untags a recorded secret-derived key, and says so without naming it (issue #4122)', async () => {
       const { getLogger } = await import('../../../src/utils/logger.js');
       const warn = getLogger().child('x').warn as ReturnType<typeof vi.fn>;
       warn.mockClear();
-      const maskSecrets = (t: string) => t.replaceAll('SECRETKEY', '***');
-      mockSend.mockResolvedValueOnce(describeOk);
-      await provider.create(
-        'TG',
-        RESOURCE_TYPE,
-        { DBProxyName: 'AuroraProxy', Tags: [{ Key: 'SECRETKEY', Value: 1 }] },
-        { replayingState: true, maskSecrets }
-      );
-      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({}); // RemoveTags (the plain key only)
       await provider.update(
         'TG',
         TARGET_GROUP_ARN,
         RESOURCE_TYPE,
-        { DBProxyName: 'AuroraProxy', Tags: [{ Key: 'a', Value: '1' }] },
-        { DBProxyName: 'AuroraProxy', Tags: [{ Key: 'SECRETKEY', Value: 1 }] },
-        { maskSecrets }
+        { DBProxyName: 'AuroraProxy' },
+        {
+          DBProxyName: 'AuroraProxy',
+          Tags: [
+            { Key: '{{resolve:ssm:SECRETKEY}}', Value: 'v' },
+            { Key: 'plain', Value: 'v' },
+          ],
+        }
+      );
+      expect(names()).toEqual(['RemoveTagsFromResourceCommand']);
+      expect(mockSend.mock.calls[0]![0].input.TagKeys).toEqual(['plain']);
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('cannot name');
+      expect(lines[0]).not.toContain('SECRETKEY');
+    });
+
+    it('the replay warning names no tag content', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = getLogger().child('x').warn as ReturnType<typeof vi.fn>;
+      warn.mockClear();
+      mockSend.mockResolvedValueOnce(describeOk);
+      await provider.create(
+        'TG',
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy', Tags: [{ Key: 'SECRETKEY', Value: null }] },
+        { replayingState: true }
       );
       const lines = warn.mock.calls.map((c) => String(c[0]));
-      expect(lines).toHaveLength(2);
-      for (const line of lines) {
-        expect(line).toContain('***');
-        expect(line).not.toContain('SECRETKEY');
-      }
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toContain('SECRETKEY');
+      expect(lines[0]).toContain('is not a list of tags');
+    });
+
+    it('the replay warning gives the secret-derived-key reason without the key', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = getLogger().child('x').warn as ReturnType<typeof vi.fn>;
+      warn.mockClear();
+      mockSend.mockResolvedValueOnce(describeOk);
+      await provider.create(
+        'TG',
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy', Tags: [{ Key: '{{resolve:ssm:SECRETKEY}}', Value: 'v' }] },
+        { replayingState: true }
+      );
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('holds a dynamic reference or its mask');
+      expect(lines[0]).not.toContain('SECRETKEY');
+    });
+
+    it('update refuses a wrong-region client before reading a secret-derived target list from the proxy', async () => {
+      await expect(
+        provider.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: ['c1'] },
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: '{{resolve:ssm:targets}}' },
+          { expectedRegion: 'us-west-2' }
+        )
+      ).rejects.toThrow(/Refusing to update TG .*does not match stack state region/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('update refuses a malformed desired Tags before reading a secret-derived target list', async () => {
+      await expect(
+        provider.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: ['c1'], Tags: 'team=db' },
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: '{{resolve:ssm:targets}}' }
+        )
+      ).rejects.toThrow(/desired Tags of AWS::RDS::DBProxyTargetGroup TG is not a list of tags/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('update refuses a wrong-region client before any call', async () => {
+      await expect(
+        provider.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'AuroraProxy' },
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: ['c-gone'] },
+          { expectedRegion: 'us-west-2' }
+        )
+      ).rejects.toThrow(/Refusing to update TG .*does not match stack state region/);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('a failed tag call with no registered targets has nothing to retire', async () => {
@@ -324,7 +416,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
           },
           { DBProxyName: 'AuroraProxy', Tags: [{ Key: 'team', Value: 'db' }] }
         )
-      ).rejects.toThrow(/Tags must be a list/);
+      ).rejects.toThrow(/desired Tags of AWS::RDS::DBProxyTargetGroup TG is not a list of tags/);
       expect(mockSend).not.toHaveBeenCalled();
     });
 

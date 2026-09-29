@@ -11,7 +11,6 @@ import {
   DBProxyNotFoundFault,
   DBProxyTargetGroupNotFoundFault,
   DBProxyTargetNotFoundFault,
-  type Tag,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -33,6 +32,14 @@ import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { holdsSecretDerivedEntry, recordedPrincipalsRepair } from '../iam-policy-targets.js';
+import {
+  DBPROXY_TAG_OPTIONS,
+  DBPROXY_TAGS_WHAT,
+  planTagDiff,
+  readTagList,
+  refuseMalformedDesiredTags,
+  tagPlanWarning,
+} from '../tag-list.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -262,18 +269,27 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     // only after the targets are registered. A state replay cannot fix its
     // record from the template, so there it warns and skips tagging, and the
     // key is dropped from what gets recorded.
-    const tagRefusal = tagListRefusal(properties['Tags']);
-    const skipTags = tagRefusal !== undefined && context?.replayingState === true;
+    const desiredRead = readTagList(properties['Tags'], 'desired', DBPROXY_TAG_OPTIONS);
+    const skipTags = context?.replayingState === true && desiredRead.kind === 'malformed';
     if (skipTags) {
+      const reason = desiredRead.secretDerived
+        ? 'holds a dynamic reference or its mask where a tag key belongs'
+        : `is not ${DBPROXY_TAGS_WHAT}`;
       this.logger.warn(
-        mask(
-          safeMsg`${logicalId}: the recorded Tags ${tagRefusal}; re-creating the target group without tags.`
-        )
+        safeMsg`${logicalId}: the recorded Tags ${reason}; re-creating the target group without tags.`
       );
     }
     const tags = skipTags
       ? []
-      : readTagList(properties['Tags'], resourceType, logicalId, undefined);
+      : refuseMalformedDesiredTags(
+          properties['Tags'],
+          resourceType,
+          logicalId,
+          undefined,
+          'Tags',
+          DBPROXY_TAGS_WHAT,
+          DBPROXY_TAG_OPTIONS
+        );
 
     const client = this.getClient();
 
@@ -461,6 +477,36 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       }
     }
 
+    // Refused on every path, before any call: a malformed desired list read as
+    // empty would untag every live key (tag-list.ts).
+    refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      physicalId,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
+
+    // Every AWS call below -- the live target read, the pool, deregister and
+    // register calls -- addresses the proxy by NAME, which another region can
+    // also hold, and the deregister arm reads NotFound as success: refuse a
+    // wrong-region client before any of them goes out.
+    // The client region is resolved only when there is a recorded region to
+    // hold it to: without one the check is a no-op, and resolving it can fail
+    // on a client with no region configured.
+    if (context?.expectedRegion) {
+      assertRegionMatch(
+        await this.getClient().config.region(),
+        context.expectedRegion,
+        resourceType,
+        logicalId,
+        physicalId,
+        'pre-update'
+      );
+    }
+
     // go-to-k/cdkd#3945: both sides are read as target lists before ANY call,
     // the pool config included. The previous side is the state record, and a
     // rollback revert or `drift --revert` replays this method with a recorded
@@ -535,14 +581,13 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       );
     }
 
-    // Tags removals are the gap between the two lists, so a malformed DESIRED
-    // list read as empty would strip every live tag: refused on every path,
-    // before any call (issue #3948). A malformed RECORDED list only hides
-    // removals, and every add is idempotent, so it degrades to adds alone.
-    const desiredTags = readTagList(properties['Tags'], resourceType, logicalId, physicalId);
-    const recordedTags = readRecordedTagList(previousProperties['Tags'], (message) =>
-      this.logger.warn(mask(safeMsg`${logicalId}: ${message}`))
+    const tagPlan = planTagDiff(
+      previousProperties['Tags'],
+      properties['Tags'],
+      DBPROXY_TAG_OPTIONS
     );
+    const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
+    if (tagWarning !== undefined) this.logger.warn(tagWarning);
 
     const client = this.getClient();
 
@@ -609,8 +654,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        // Idempotent: a target that's already gone is fine — same shape
-        // as delete()'s NotFound handling.
+        // Idempotent: a target that's already gone is fine. The region was
+        // checked before the first call, so this NotFound is this region's.
         if (!(error instanceof DBProxyTargetNotFoundFault)) {
           throw this.wrapError(error, 'UPDATE (deregister)', resourceType, logicalId, physicalId);
         }
@@ -640,15 +685,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     }
 
     // 3. Tags diff, addressed by the physicalId (the TargetGroupArn).
-    const desiredByKey = new Map(desiredTags.map((t) => [t.Key!, t.Value ?? '']));
-    const tagsToRemove =
-      recordedTags === undefined
-        ? []
-        : recordedTags.filter((t) => !desiredByKey.has(t.Key!)).map((t) => t.Key!);
-    const recordedByKey = new Map((recordedTags ?? []).map((t) => [t.Key!, t.Value ?? '']));
-    const tagsToAdd = desiredTags.filter(
-      (t) => recordedTags === undefined || recordedByKey.get(t.Key!) !== (t.Value ?? '')
-    );
+    const tagsToRemove = tagPlan.remove;
+    const tagsToAdd = [...tagPlan.set].map(([Key, Value]) => ({ Key, Value }));
     if (tagsToRemove.length > 0) {
       try {
         await client.send(
@@ -1166,72 +1204,6 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       cause
     );
   }
-}
-
-/**
- * Why a CFn `Tags` value cannot be sent, or `undefined` when it can. Absent
- * (`undefined` / `null`) is an empty list; anything else must be an array of
- * `{ Key: <non-empty string>, Value?: <string> }`.
- */
-function tagListRefusal(value: unknown): string | undefined {
-  if (value == null) return undefined;
-  if (!Array.isArray(value)) return `must be a list of { Key, Value } (got ${typeof value})`;
-  for (const [index, entry] of value.entries()) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      return `entry ${index} must be a { Key, Value } object`;
-    }
-    const { Key: key, Value: tagValue } = entry as Record<string, unknown>;
-    if (typeof key !== 'string' || key.length === 0) {
-      return `entry ${index} needs a non-empty string Key`;
-    }
-    if (tagValue != null && typeof tagValue !== 'string') {
-      return `entry ${index} (${key}) has a non-string Value`;
-    }
-  }
-  return undefined;
-}
-
-function toSdkTags(value: unknown): Tag[] {
-  if (!Array.isArray(value)) return [];
-  return (value as Array<{ Key: string; Value?: string | null }>).map((t) => ({
-    Key: t.Key,
-    Value: t.Value ?? '',
-  }));
-}
-
-/** The DESIRED `Tags`, refused before any call when malformed. */
-function readTagList(
-  value: unknown,
-  resourceType: string,
-  logicalId: string,
-  physicalId: string | undefined
-): Tag[] {
-  const refusal = tagListRefusal(value);
-  if (refusal !== undefined) {
-    throw new ProvisioningError(
-      safeMsg`${resourceType} ${logicalId}: Tags ${refusal}. Nothing was changed.`,
-      resourceType,
-      logicalId,
-      physicalId
-    );
-  }
-  return toSdkTags(value);
-}
-
-/**
- * The RECORDED `Tags`: `undefined` when malformed, which the caller reads as
- * "removals unknown" and answers with adds alone.
- */
-function readRecordedTagList(value: unknown, warn: (message: string) => void): Tag[] | undefined {
-  const refusal = tagListRefusal(value);
-  if (refusal !== undefined) {
-    warn(
-      `the recorded Tags ${refusal}; applying the desired tags without removing any, ` +
-        `so a tag the template dropped may remain on the target group.`
-    );
-    return undefined;
-  }
-  return toSdkTags(value);
 }
 
 function withoutKey(bag: Record<string, unknown>, key: string): Record<string, unknown> {
