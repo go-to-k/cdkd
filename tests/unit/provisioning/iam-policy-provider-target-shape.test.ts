@@ -179,16 +179,18 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('sends a secret-derived DESIRED side back to the template', async () => {
-    // Only a deploy reaches this (a rollback replay re-resolves references and
-    // refuses a masked bag first), so the value is the template's own.
+  it('sends a secret-derived DESIRED side back to its source', async () => {
+    // A rollback replay re-resolves references and refuses a masked bag first,
+    // so the value is unresolved at its source: the template, or a NoEcho
+    // custom resource whose masked Data a dependent resolved.
     const error = await new IAMPolicyProvider()
       .update('P', 'pol', TYPE, { ...valid, Groups: ['***'] }, valid)
       .catch((e: unknown) => e);
     expect((error as Error).message).toBe(
       'desired Groups of IAM policy P is not a list of IAM names — no inline policy was ' +
         `attached or detached ${DESIRED_SIDE_NOTE}: the desired Groups holds a dynamic ` +
-        "reference or cdkd's mask that resolved to no names; fix that value in the template"
+        "reference or cdkd's mask that resolved to no names; fix that value at its source (the " +
+        'template, or the custom resource that supplied it)'
     );
     expect((error as Error).message).not.toContain('re-run');
     expect(mockSend).not.toHaveBeenCalled();
@@ -200,11 +202,43 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
       .catch((e: unknown) => e);
     expect((error as Error).message).toBe(
       'desired Groups / recorded Roles of IAM policy P is not a list of IAM names — no inline ' +
-        `policy was attached or detached ${DESIRED_SIDE_NOTE}: repair the recorded Roles in ` +
-        'state.json to a list of role / group / user names and re-run; fix the desired side ' +
-        'first, or the next deploy is refused the same way'
+        `policy was attached or detached ${DESIRED_SIDE_NOTE}: fix the desired side first, ` +
+        'since the repair below re-applies it; then repair the recorded Roles in state.json to ' +
+        'a list of role / group / user names and re-run'
     );
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('orders a malformed desired side BEFORE the orphan route of a secret-derived record', async () => {
+    const error = await new IAMPolicyProvider()
+      .update('P', 'pol', TYPE, { ...valid, Groups: {} }, {
+        ...valid,
+        Roles: ['{{resolve:secretsmanager:roles}}'],
+      })
+      .catch((e: unknown) => e);
+    const msg = (error as Error).message;
+    expect(msg).toBe(
+      'desired Groups / recorded Roles of IAM policy P is not a list of IAM names — no inline ' +
+        `policy was attached or detached ${DESIRED_SIDE_NOTE}: fix the desired side first, ` +
+        `since the repair below re-applies it; then the recorded Roles ${SECRET_DERIVED_NOTE}; ` +
+        orphanRoute(false)
+    );
+    expect(msg.split('refused the same way').length - 1).toBe(1);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('asks for a secret-derived desired side to be fixed at its source first', async () => {
+    const error = await new IAMPolicyProvider()
+      .update('P', 'pol', TYPE, { ...valid, Groups: ['***'] }, { ...valid, Roles: 'AdminRole' })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe(
+      'desired Groups / recorded Roles of IAM policy P is not a list of IAM names — no inline ' +
+        `policy was attached or detached ${DESIRED_SIDE_NOTE}: the desired Groups holds a ` +
+        "dynamic reference or cdkd's mask that resolved to no names; fix that value at its " +
+        'source (the template, or the custom resource that supplied it) first, since the ' +
+        'repair below re-applies it; then repair the recorded Roles in state.json to a list ' +
+        'of role / group / user names and re-run'
+    );
   });
 
   it.each(MALFORMED)('%s on the DESIRED side: throws with no AWS call', async (_what, lists) => {

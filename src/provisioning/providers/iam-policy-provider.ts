@@ -174,6 +174,43 @@ function recordedSideRepair(targets: MalformedPolicyTargets, renamed: boolean): 
 }
 
 /**
+ * The repair clauses of an `update()` refused over a malformed side, in the
+ * order they must be done (go-to-k/cdkd#3907). The desired side comes FIRST:
+ * both the state.json repair and the orphan route re-apply it.
+ *
+ * A desired side reaches this holding a dynamic reference or cdkd's mask only
+ * when that value is unresolved at its SOURCE: a rollback replay re-resolves
+ * every reference and refuses a masked bag first, and `drift --revert` never
+ * gets here. The source is the template, or a `NoEcho` custom resource whose
+ * masked `Data` a dependent resolved (see `rollback-executor.ts`).
+ */
+function refusalRepair(
+  desired: PolicyTargetLists | MalformedPolicyTargets,
+  recorded: PolicyTargetLists | MalformedPolicyTargets,
+  renamed: boolean
+): string {
+  const clauses: string[] = [];
+  const recordedMalformed = 'malformed' in recorded;
+  if ('malformed' in desired) {
+    if (desired.secretDerived.length > 0) {
+      clauses.push(
+        `the desired ${desired.secretDerived.join(' / ')} holds a dynamic reference or cdkd's ` +
+          `mask that resolved to no names; fix that value at its source (the template, or the ` +
+          `custom resource that supplied it)` +
+          (recordedMalformed ? ' first, since the repair below re-applies it' : '')
+      );
+    } else if (recordedMalformed) {
+      clauses.push('fix the desired side first, since the repair below re-applies it');
+    }
+  }
+  if (recordedMalformed) {
+    const repair = recordedSideRepair(recorded, renamed);
+    clauses.push('malformed' in desired ? `then ${repair}` : repair);
+  }
+  return clauses.length > 0 ? `: ${clauses.join('; ')}` : '';
+}
+
+/**
  * AWS IAM Policy Provider
  *
  * Implements resource provisioning for AWS::IAM::Policy using the IAM SDK.
@@ -367,26 +404,9 @@ export class IAMPolicyProvider implements ResourceProvider {
           `inline policy was attached or detached` +
           ('malformed' in newTargets
             ? ` (the desired side is the template's value on a deploy, and the recorded value ` +
-              `being restored on a rollback revert or 'cdkd drift --revert')` +
-              // Only a deploy reaches this with a dynamic reference or mask on
-              // the desired side: a rollback replay re-resolves every reference
-              // and refuses a masked bag first, and drift --revert never gets
-              // here. So the value is the template's own, and is fixed there.
-              (newTargets.secretDerived.length > 0
-                ? `: the desired ${newTargets.secretDerived.join(' / ')} holds a dynamic ` +
-                  `reference or cdkd's mask that resolved to no names; fix that value in the ` +
-                  `template`
-                : '')
+              `being restored on a rollback revert or 'cdkd drift --revert')`
             : '') +
-          ('malformed' in oldTargets
-            ? `${'malformed' in newTargets && newTargets.secretDerived.length > 0 ? '; ' : ': '}` +
-              recordedSideRepair(oldTargets, newPolicyName !== oldPolicyName) +
-              // The route re-attaches from the desired side, so it must be
-              // well-formed first.
-              ('malformed' in newTargets
-                ? `; fix the desired side first, or the next deploy is refused the same way`
-                : '')
-            : ''),
+          refusalRepair(newTargets, oldTargets, newPolicyName !== oldPolicyName),
         resourceType,
         logicalId,
         physicalId
