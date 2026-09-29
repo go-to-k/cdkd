@@ -69,7 +69,7 @@ custom-resource-noecho-nested	2026-09-29T09:59:00Z	PASS	1243	verify.sh	rc ok, or
 custom-resource-provider	2026-09-28T18:18:03Z	PASS	712	verify.sh	rc ok, orph clean (#4012)
 custom-resource-noecho-nested	2026-09-26T03:05:30Z	PASS	852	verify.sh	rc ok, orph clean (#3803 PR #3818 final)
 custom-resource-noecho-nested	2026-09-29T08:16:56Z	FAIL	426	verify.sh	Phase 4 child redeployed with nothing changed; same FAIL on an origin/main baseline (2fb8c65bf), pre-existing: #4070; orph clean
-custom-resource-provider	2026-09-29T10:00:43Z	PASS	667	verify.sh	rc ok, orph clean; #2122 exit-2 wording (pre-fix run red at it)
+custom-resource-provider	2026-09-29T11:06:39Z	PASS	541	verify.sh	rc ok, orph clean; #2122 rebased head (pre-fix run red at the exit-2 wording)
 custom-resource-resolved-secret	2026-09-28T23:14:51Z	PASS	316	verify.sh	rc ok, orph clean; 8-d: guard reverted -> A/B/U leak RED, new-side-only -> U replay leak RED
 data-analytics	2026-09-28T10:21:55Z	PASS	105	verify.sh	#3939 PR #3947 rebased head 06245f7f7, stdin /dev/null; phase 2 Changes 0/3/0 + Updated: 3 printed, rc 0, no lock.json left, no stall-guard line; orph clean
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
@@ -261,7 +261,7 @@ recreate-via-cc-api	2026-09-29T03:32:02Z	PASS	120	verify.sh	rc ok, orph clean (#
 recreate-via-sdk-provider	2026-09-25T09:51:57Z	PASS	95	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-29T10:56:22Z	PASS	1323	verify.sh	rc ok, orph clean (#2122)
+remove-protection	2026-09-29T11:29:04Z	PASS	1343	verify.sh	rc ok, orph clean (#2122 rebased head)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-09-29T02:36:16Z	PASS	70	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, phase C refused naming the sent name (N + squatter untouched), phase D same-name delete-first ok, orph clean
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
