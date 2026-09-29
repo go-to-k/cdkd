@@ -64,7 +64,7 @@ import {
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { createMaskedRetryLogger, maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
+import { createMaskedRetryLogger, maskerOrIdentity } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -78,6 +78,9 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 
 /**
  * Test seam for the capacity-reservation stabilize poll (mirrors
@@ -94,6 +97,118 @@ interface CfnTargetDescription {
   Port?: number | string;
   AvailabilityZone?: string;
 }
+
+// ─── Targets reads (go-to-k/cdkd#3989) ──────────────────────────────
+//
+// The TargetGroup update derives its DeregisterTargets set from the gap
+// between the desired and the recorded `Targets`. Reading a present-but-
+// malformed value (or dropping a malformed entry) as empty therefore
+// deregistered every target the other side holds: on a rollback or
+// `drift --revert`, where the desired side is a recorded bag, `Targets: {}`
+// emptied the target group. So `undefined` / `null` is ABSENT (an empty list),
+// and anything else that is not a list of well-formed entries is MALFORMED.
+// A malformed DESIRED side is refused before any call; a malformed RECORDED
+// side is read from the live group ADD-only (see `readUpdateTargets`).
+
+/** Which side of an update a `Targets` value came from. */
+type TargetsSide = 'desired' | 'recorded';
+
+type TargetsRead =
+  | { kind: 'list'; items: CfnTargetDescription[] }
+  // `onlySecret`: well-shaped, and malformed ONLY because an `Id` holds a
+  // dynamic reference or its mask.
+  | { kind: 'malformed'; onlySecret: boolean };
+
+/** An integer port, as a number or a digit string (CFn coerces scalars). */
+function isTargetPort(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isInteger(value);
+  return typeof value === 'string' && /^\d+$/.test(value);
+}
+
+/**
+ * `side` matters for the `Id` only. A DESIRED `Id` holding a dynamic reference
+ * or its mask names nothing Elastic Load Balancing holds, so it is malformed. A
+ * RECORDED one is what cdkd writes for an `Id` that came from a secret (cdkd
+ * keeps the reference in state): it is read, and `removableRecordedTargets`
+ * keeps it out of the deregister set.
+ */
+function isWellFormedTarget(entry: unknown, side: TargetsSide, ignoreSecrets = false): boolean {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+  const e = entry as Record<string, unknown>;
+  const id = e['Id'];
+  if (typeof id !== 'string' || id.length === 0) return false;
+  if (side === 'desired' && !ignoreSecrets && holdsSecretDerivedEntry(id)) return false;
+  if (e['Port'] != null && !isTargetPort(e['Port'])) return false;
+  const az = e['AvailabilityZone'];
+  return az == null || (typeof az === 'string' && az.length > 0);
+}
+
+/** Read one `Targets` value; ABSENT (`undefined` / `null`) reads as the empty list. */
+function readTargets(value: unknown, side: TargetsSide): TargetsRead {
+  if (value === undefined || value === null) return { kind: 'list', items: [] };
+  if (Array.isArray(value) && value.every((entry) => isWellFormedTarget(entry, side))) {
+    return { kind: 'list', items: value as CfnTargetDescription[] };
+  }
+  return {
+    kind: 'malformed',
+    onlySecret:
+      Array.isArray(value) && value.every((entry) => isWellFormedTarget(entry, side, true)),
+  };
+}
+
+/**
+ * A recorded `Targets` list minus every entry whose `Id` is secret-derived: the
+ * diff would otherwise deregister a literal `{{resolve:...}}` id. Dropping it
+ * only misses that one removal, the safe direction.
+ */
+function removableRecordedTargets(items: CfnTargetDescription[]): CfnTargetDescription[] {
+  return items.filter((e) => !holdsSecretDerivedEntry(e.Id));
+}
+
+/**
+ * Map well-formed CFn `Targets` entries (see {@link readTargets}) to the SDK's
+ * `TargetDescription[]`; `Port` is numeric-coerced.
+ *
+ * `groupPort` defaults an OMITTED `Port` to the target group's own port,
+ * which is what AWS substitutes when a target is registered without one.
+ * This is load-bearing for the update diff, not cosmetic: `targetKey` in
+ * `updateTargetGroup` keys on `Port ?? null`, so without the default a
+ * template-shaped `[{Id}]` and an AWS-readback-shaped `[{Id, Port: 80}]`
+ * describe the SAME live target under two different keys — and the diff then
+ * registers the "new" one (a no-op, it lands on the group port) and
+ * DEREGISTERS the live one. `cdkd drift --revert` hits exactly that, since it
+ * hands `update()` the AWS snapshot as the previous side and a template-shaped
+ * desired side. Absent for a `lambda` target group (no port), where both sides
+ * stay undefined and therefore still key identically.
+ */
+function toTargetDescriptions(
+  items: CfnTargetDescription[],
+  groupPort?: unknown
+): TargetDescription[] {
+  const defaultPort =
+    groupPort === undefined || groupPort === null || Number.isNaN(Number(groupPort))
+      ? undefined
+      : Number(groupPort);
+  return items.map((e) => {
+    const port = e.Port != null ? Number(e.Port) : defaultPort;
+    return {
+      Id: e.Id as string,
+      ...(port !== undefined && { Port: port }),
+      ...(e.AvailabilityZone != null && { AvailabilityZone: e.AvailabilityZone }),
+    };
+  });
+}
+
+/** The refusal's cause clause for a desired list refused only for a dynamic reference. */
+function targetsSecretCause(read: TargetsRead): string {
+  return read.kind === 'malformed' && read.onlySecret
+    ? ' (an Id holds a dynamic reference or its mask, which names no target Elastic Load ' +
+        'Balancing accepts)'
+    : '';
+}
+
+const TARGETS_WHAT =
+  'targets, each with a string Id and, where given, an integer Port and a string AvailabilityZone';
 
 /**
  * Documented AWS defaults for TargetGroup attributes, used to reset a
@@ -1198,6 +1313,20 @@ export class ELBv2Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating TargetGroup ${logicalId}`);
 
+    // go-to-k/cdkd#3989: refused before CreateTargetGroup, so a malformed list
+    // neither strands a half-wired group nor registers a subset of it.
+    const desiredTargets = readTargets(properties['Targets'], 'desired');
+    if (desiredTargets.kind === 'malformed') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Targets of TargetGroup ${logicalId} is not a list of ${TARGETS_WHAT}` +
+            `${targetsSecretCause(desiredTargets)} — the target group was not created`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
+
     try {
       const tags = this.extractTags(properties);
       const matcher = properties['Matcher'] as { HttpCode?: string; GrpcCode?: string } | undefined;
@@ -1277,7 +1406,7 @@ export class ELBv2Provider implements ResourceProvider {
           );
         }
 
-        const targets = this.convertTargets(properties['Targets'], undefined, maskSecrets);
+        const targets = toTargetDescriptions(desiredTargets.items);
         if (targets.length > 0) {
           await this.getClient().send(
             new RegisterTargetsCommand({ TargetGroupArn: tgArn, Targets: targets })
@@ -1364,6 +1493,17 @@ export class ELBv2Provider implements ResourceProvider {
         );
       }
     }
+
+    // Before ModifyTargetGroup: a malformed desired `Targets` is refused with
+    // nothing sent (go-to-k/cdkd#3989).
+    const { newTargets, oldTargets } = await this.readUpdateTargets(
+      logicalId,
+      physicalId,
+      resourceType,
+      properties['Targets'],
+      previousProperties['Targets'],
+      properties['Port']
+    );
 
     try {
       // Class 2 sanitize at the wire layer: `readCurrentState` always-emits
@@ -1493,18 +1633,9 @@ export class ELBv2Provider implements ResourceProvider {
       // tuple and deregisters the old one. Register first so a target whose
       // spelling changed never has a window with zero registrations.
       // BOTH sides are normalized against the SAME group port so the keys are
-      // comparable — see convertTargets' note on why the omitted-Port case is
-      // a destructive diff rather than a cosmetic one.
-      const newTargets = this.convertTargets(
-        properties['Targets'],
-        properties['Port'],
-        maskSecrets
-      );
-      const oldTargets = this.convertTargets(
-        previousProperties['Targets'],
-        properties['Port'],
-        maskSecrets
-      );
+      // comparable — see toTargetDescriptions' note on why the omitted-Port
+      // case is a destructive diff rather than a cosmetic one. Both were read
+      // by `readUpdateTargets` above.
       const targetKey = (t: TargetDescription) =>
         JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
       const oldTargetKeys = new Set(oldTargets.map(targetKey));
@@ -2055,89 +2186,88 @@ export class ELBv2Provider implements ResourceProvider {
   }
 
   /**
-   * Normalize a CFn `Targets` value (an array of `{ Id, Port?,
-   * AvailabilityZone? }` objects) into the SDK's `TargetDescription[]` shape.
-   * Entries missing an `Id` are dropped (Id is the only required member);
-   * `Port` is numeric-coerced (CFn templates may carry it as a string).
-   * Returns `[]` for an absent / non-array value so callers can branch on
-   * `.length`.
+   * Read both sides of a TargetGroup update's `Targets` (go-to-k/cdkd#3989),
+   * mapped to the SDK shape against the SAME group port.
    *
-   * `groupPort` defaults an OMITTED `Port` to the target group's own port,
-   * which is what AWS substitutes when a target is registered without one.
-   * This is load-bearing for the update diff, not cosmetic: `targetKey` below
-   * keys on `Port ?? null`, so without the default a template-shaped
-   * `[{Id}]` and an AWS-readback-shaped `[{Id, Port: 80}]` describe the SAME
-   * live target under two different keys — and the diff then registers the
-   * "new" one (a no-op, it lands on the group port) and DEREGISTERS the live
-   * one. `cdkd drift --revert` hits exactly that, since it hands `update()`
-   * the AWS snapshot as the previous side and a template-shaped desired side.
-   * Absent for a `lambda` target group (no port), where both sides stay
-   * undefined and therefore still key identically.
-   */
-  /**
-   * `maskSecrets` (issue #2050) exists for the drop-warning below, which
-   * stringifies a whole REJECTED `Targets` element at DEFAULT verbosity. That
-   * element came out of the resolved `properties` bag, so a
-   * `{{resolve:secretsmanager:...}}` scalar anywhere inside it — an `Id` built
-   * by `Fn::Sub` from a secret, say — is already plaintext by the time this
-   * runs.
+   * A malformed DESIRED side is refused before any call, on every path (a
+   * rollback replay and `drift --revert` included): read as empty it would
+   * deregister every target the record holds.
    *
-   * OPTIONAL, but all three call sites supply it today (`createTargetGroup` and
-   * both `updateTargetGroup` sides). It stays optional because that is the
-   * `SecretMaskingContext` contract — absent means unmasked — not because some
-   * caller is known to omit it. An earlier revision of this comment claimed it
-   * protected "the `readCurrentState` / diff callers that have no masker";
-   * there are no such callers, and describing a defence by a consumer that does
-   * not exist is how the next author concludes the parameter is dead.
+   * A malformed RECORDED side is read from the live group instead
+   * (`DescribeTargetHealth`), ADD-only: the old side becomes the desired
+   * targets the group already holds, so nothing is deregistered on the strength
+   * of a record cdkd could not read, and a registered target the desired side
+   * omits stays registered, with a warning. `cdkd import` can record an
+   * unresolved intrinsic there, which a refusal would wedge forever. A
+   * draining target counts as not held, so a desired one is registered again.
    */
-  private convertTargets(
-    raw: unknown,
-    groupPort?: unknown,
-    maskSecrets?: SecretMasker
-  ): TargetDescription[] {
-    const defaultPort =
-      groupPort === undefined || groupPort === null || Number.isNaN(Number(groupPort))
-        ? undefined
-        : Number(groupPort);
-    if (!Array.isArray(raw)) return [];
-    const out: TargetDescription[] = [];
-    for (const entry of raw) {
-      if (
-        entry === null ||
-        typeof entry !== 'object' ||
-        typeof (entry as CfnTargetDescription).Id !== 'string' ||
-        ((entry as CfnTargetDescription).Id as string).length === 0
-      ) {
-        // Mask BEFORE stringifying, and mask NOTHING after. Both halves are
-        // load-bearing, and the first revision of this line got both wrong:
-        //
-        //  - BEFORE, because `JSON.stringify` escapes `"`, `\` and newlines. A
-        //    Secrets Manager JSON document — the commonest real secret shape —
-        //    therefore no longer OCCURS in the stringified text, and a masker
-        //    matching by literal occurrence passes it through verbatim. This is
-        //    the first of the three documented gaps in `secret-redaction.ts`
-        //    ("Mask before you stringify"), measured rather than theorised.
-        //  - NOTHING AFTER, because a second pass over the finished sentence
-        //    provably cannot change it: every string leaf and key is already
-        //    masked, and the only text the walk did not produce is this fixed
-        //    prefix. A call that cannot alter its input is not belt-and-braces,
-        //    it is a claim that misleads the next reader into thinking the
-        //    ordering above does not matter.
-        this.logger.warn(
-          `Dropping malformed TargetGroup Targets entry (missing string Id): ` +
-            `${JSON.stringify(maskDeep(entry, maskerOrIdentity(maskSecrets)))}`
-        );
-        continue;
-      }
-      const e = entry as CfnTargetDescription;
-      const port = e.Port !== undefined ? Number(e.Port) : defaultPort;
-      out.push({
-        Id: e.Id as string,
-        ...(port !== undefined && { Port: port }),
-        ...(e.AvailabilityZone !== undefined && { AvailabilityZone: e.AvailabilityZone }),
-      });
+  private async readUpdateTargets(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    desiredRaw: unknown,
+    recordedRaw: unknown,
+    groupPort: unknown
+  ): Promise<{ newTargets: TargetDescription[]; oldTargets: TargetDescription[] }> {
+    const desired = readTargets(desiredRaw, 'desired');
+    if (desired.kind === 'malformed') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `desired Targets of TargetGroup ${logicalId} is not a list of ${TARGETS_WHAT}` +
+            `${targetsSecretCause(desired)} — the target group was not updated`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
     }
-    return out;
+    const newTargets = toTargetDescriptions(desired.items, groupPort);
+
+    const recorded = readTargets(recordedRaw, 'recorded');
+    if (recorded.kind === 'list') {
+      return {
+        newTargets,
+        oldTargets: toTargetDescriptions(removableRecordedTargets(recorded.items), groupPort),
+      };
+    }
+
+    let live: TargetDescription[];
+    try {
+      const resp = await this.getClient().send(
+        new DescribeTargetHealthCommand({ TargetGroupArn: physicalId })
+      );
+      live = (resp.TargetHealthDescriptions ?? [])
+        .filter((d) => d.TargetHealth?.State !== 'draining')
+        .map((d) => d.Target)
+        .filter((t): t is TargetDescription => typeof t?.Id === 'string' && t.Id.length > 0);
+    } catch (error) {
+      // Not marked non-retryable: a throttled read is worth the retry, which
+      // classifies through `cause`.
+      throw new ProvisioningError(
+        `the recorded Targets of TargetGroup ${logicalId} is not a list cdkd can read, and the ` +
+          `registered targets could not be read from Elastic Load Balancing instead — the ` +
+          `target group was not updated`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
+    // A desired entry naming no AvailabilityZone matches a live one in any zone.
+    const holds = (want: TargetDescription, have: TargetDescription): boolean =>
+      want.Id === have.Id &&
+      (want.Port ?? null) === (have.Port ?? null) &&
+      (want.AvailabilityZone === undefined || want.AvailabilityZone === have.AvailabilityZone);
+    const retained = live.filter((have) => !newTargets.some((want) => holds(want, have)));
+    if (retained.length > 0) {
+      this.logger.warn(
+        safeMsg`The recorded Targets of TargetGroup ${logicalId} is not a list cdkd can read, so cdkd read the registered targets from Elastic Load Balancing; the target group holds ${retained.length} target(s) the desired Targets does not name, and cdkd left them registered. Deregister them yourself if they are no longer wanted.`
+      );
+    }
+    return {
+      newTargets,
+      oldTargets: newTargets.filter((want) => live.some((have) => holds(want, have))),
+    };
   }
 
   /**
@@ -2432,7 +2562,7 @@ export class ELBv2Provider implements ResourceProvider {
    * one and `--revert` deregisters it.
    *
    *  - `Port` when it equals the target group's own port — what AWS
-   *    substitutes for a target registered without one. (`convertTargets`
+   *    substitutes for a target registered without one. (`toTargetDescriptions`
    *    closes the same gap from the other direction, so a template that DOES
    *    spell the port out still keys identically.)
    *  - `AvailabilityZone` unless the group is `ip`-typed and AWS reported

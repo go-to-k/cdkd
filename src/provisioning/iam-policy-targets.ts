@@ -91,19 +91,32 @@ export function readPrincipalLists<K extends string>(
   return malformed.length > 0 ? { lists, malformed, secretDerived } : { lists };
 }
 
+/** cdkd's mask (`SECRET_MASK` in `src/deployment/secret-redaction.ts`); this file is a LEAF. */
+const SECRET_MASK = '***';
+
 /**
- * A value holding a dynamic reference or cdkd's mask at ANY depth: a bare
- * string, a list entry, or a nested object or list. Also read by the Auto
- * Scaling group and Firehose list reads (go-to-k/cdkd#3948).
+ * A value holding a dynamic reference or cdkd's mask, up to 64 levels deep (a
+ * deeper value reads as NOT secret-derived; no CloudFormation list property
+ * nests near that): a bare string, a list entry, or a nested object or list
+ * (keys included). Also read
+ * by the Auto Scaling group, Firehose, ELBv2 `Targets`, Budgets and CodeCommit
+ * list reads (go-to-k/cdkd#3948, go-to-k/cdkd#3989).
+ *
+ * A reference is spotted anywhere in a string (`{{resolve:` cannot occur in a
+ * name AWS holds). The mask is matched only as a WHOLE string, which is how
+ * cdkd writes it into a record (`SECRET_MASK` replaces a leaf, it is never
+ * spliced into one): a legitimate `a***b` tag key is not secret-derived.
  */
 export function holdsSecretDerivedEntry(value: unknown): boolean {
-  let text: string | undefined;
-  try {
-    text = JSON.stringify(value);
-  } catch {
-    return false;
-  }
-  return text !== undefined && (text.includes('{{resolve:') || text.includes('***'));
+  const seen = new Set<object>();
+  const walk = (v: unknown, depth: number): boolean => {
+    if (typeof v === 'string') return v === SECRET_MASK || v.includes('{{resolve:');
+    if (typeof v !== 'object' || v === null || depth > 64 || seen.has(v)) return false;
+    seen.add(v);
+    if (Array.isArray(v)) return v.some((e) => walk(e, depth + 1));
+    return Object.entries(v).some(([k, e]) => walk(k, depth + 1) || walk(e, depth + 1));
+  };
+  return walk(value, 0);
 }
 
 /**

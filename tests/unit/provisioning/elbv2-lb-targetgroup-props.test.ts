@@ -1036,16 +1036,16 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       ]);
     });
 
-    it('drops malformed Targets entries (missing / empty / non-string Id) and keeps valid ones', async () => {
-      await provider.update(
-        'MyTg',
-        TG_ARN,
-        TG_TYPE,
-        { Targets: [null, { Port: 80 }, { Id: '' }, { Id: 42 }, { Id: '10.0.0.5' }] },
-        {}
-      );
-      const [regCall] = callsOf('RegisterTargetsCommand');
-      expect(regCall[0].input.Targets).toEqual([{ Id: '10.0.0.5' }]);
+    it.each([
+      ['a null entry', [null, { Id: '10.0.0.5' }]],
+      ['an entry with no Id', [{ Port: 80 }, { Id: '10.0.0.5' }]],
+      ['an empty Id', [{ Id: '' }, { Id: '10.0.0.5' }]],
+      ['a numeric Id', [{ Id: 42 }, { Id: '10.0.0.5' }]],
+    ])('refuses a desired Targets holding %s instead of dropping it (#3989)', async (_l, targets) => {
+      await expect(
+        provider.update('MyTg', TG_ARN, TG_TYPE, { Targets: targets }, { Targets: [{ Id: '10.0.0.5' }] })
+      ).rejects.toThrow(/desired Targets of TargetGroup MyTg is not a list of targets/);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('does not call Register/DeregisterTargets when the target set is unchanged', async () => {

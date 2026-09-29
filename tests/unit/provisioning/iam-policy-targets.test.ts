@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  holdsSecretDerivedEntry,
   IAM_PRINCIPAL_NAME,
   onlySecretDerived,
   readPrincipalLists,
@@ -68,6 +69,34 @@ describe('readPrincipalLists (go-to-k/cdkd#3906, go-to-k/cdkd#3888)', () => {
     ['a nested list', [['***']]],
   ])('finds a dynamic reference or mask in %s', (_what, value) => {
     expect(readPrincipalLists({ Roles: value })).toMatchObject({ secretDerived: ['Roles'] });
+  });
+});
+
+describe('holdsSecretDerivedEntry (go-to-k/cdkd#3989 review)', () => {
+  it.each([
+    ['a whole-value mask', '***'],
+    ['a reference inside a string', 'arn:{{resolve:secretsmanager:s}}'],
+    ['a mask as a list entry', ['x', '***']],
+    ['a mask as a nested member', { a: [{ b: '***' }] }],
+    ['a mask as a key', { '***': 'v' }],
+  ])('finds %s', (_what, value) => {
+    expect(holdsSecretDerivedEntry(value)).toBe(true);
+  });
+
+  it.each([
+    ['a legitimate a***b tag key', 'a***b'],
+    ['a longer run of stars', '****'],
+    ['a mask spliced into a string', 'prefix-***'],
+    ['a plain nested value', { Key: 'team', Value: ['a', 1, null] }],
+    ['a non-string scalar', 42],
+  ])('does not flag %s', (_what, value) => {
+    expect(holdsSecretDerivedEntry(value)).toBe(false);
+  });
+
+  it('terminates on a cyclic value', () => {
+    const cyclic: Record<string, unknown> = { a: 'x' };
+    cyclic['self'] = cyclic;
+    expect(holdsSecretDerivedEntry(cyclic)).toBe(false);
   });
 });
 

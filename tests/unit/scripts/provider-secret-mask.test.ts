@@ -649,7 +649,10 @@ describe('provider secret-mask critic — the real tree', () => {
     // of hiding behind an identity masker inside the masked total.
     expect(report.sites).toBeGreaterThanOrEqual(41);
     expect(report.masked).toBeGreaterThanOrEqual(37);
-    expect(report.filesWithSites).toBeGreaterThanOrEqual(18);
+    // 17 rather than 18 since #3989: the ELBv2 `Targets` drop warning, that
+    // file's only site, went with the drop (a malformed list is now refused
+    // by name, rendering no entry content).
+    expect(report.filesWithSites).toBeGreaterThanOrEqual(17);
     expect(report.filesScanned).toBeGreaterThanOrEqual(80);
     expect(report.masked + report.exempt).toBe(report.sites);
   });

@@ -18,6 +18,9 @@ import * as budgets from 'aws-cdk-lib/aws-budgets';
  *     notification and creates the new one — notifications are addressed by
  *     value, there is no notification id)
  *   - a second email subscriber appears on the notification set
+ *   - ResourceTags env=dev, team=platform -> env=prod with team REMOVED
+ *     (the tag diff: UntagResource for the dropped key, TagResource for the
+ *     changed one; issue #3989)
  */
 export class BudgetsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -54,6 +57,12 @@ export class BudgetsStack extends cdk.Stack {
           subscribers,
         },
       ],
+      resourceTags: isUpdate
+        ? [{ key: 'env', value: 'prod' }]
+        : [
+            { key: 'env', value: 'dev' },
+            { key: 'team', value: 'platform' },
+          ],
     });
 
     new cdk.CfnOutput(this, 'BudgetName', {
