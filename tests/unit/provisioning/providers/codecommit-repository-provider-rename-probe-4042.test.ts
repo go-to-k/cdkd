@@ -183,11 +183,33 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
 
     expect(err.message).toMatch(/^CodeCommit Repository Repo no longer exists under the name cdkd recorded/);
     expect(err.message).toContain('this run started no rename of this resource');
-    expect(err.message).toContain('cdkd import --resource');
-    expect(err.message).not.toContain(NEW);
+    expect(err.message).toContain('first compare its repository id with the RepositoryId');
+    // The recovery command, unwrapped, on its own line, last; the recorded
+    // (old) name never appears.
+    expect(err.message.endsWith(
+      `\nRe-adopt with:\ncdkd import '<stack>' --resource 'Repo=${NEW}' --force`
+    )).toBe(true);
     expect(err.message).not.toContain(OLD);
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(sentNames()).toEqual(['GetRepositoryCommand', 'GetRepositoryCommand']);
+  });
+
+  it('a desired RepositoryName the pasteable gate refuses prints as a hole in the command', async () => {
+    const odd = 'issue4042\u0007new';
+    mockSend.mockImplementation((cmd: { constructor: { name: string }; input: Record<string, unknown> }) =>
+      cmd.constructor.name === 'GetRepositoryCommand' && cmd.input['repositoryName'] === odd
+        ? Promise.resolve({ repositoryMetadata: { repositoryId: 'id-x', Arn: ARN } })
+        : gone()
+    );
+
+    const err = await rejection(
+      provider.update('Repo', OLD, TYPE, { ...DESIRED, RepositoryName: odd }, RECORDED)
+    );
+
+    expect(err.message.endsWith(
+      `\ncdkd import '<stack>' --resource '<logicalId=repositoryName>' --force`
+    )).toBe(true);
+    expect(err.message).not.toContain('\u0007');
   });
 
   it('a rename call that finds the old name gone (after the id read) is verified the same way', async () => {

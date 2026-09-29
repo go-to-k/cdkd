@@ -37,6 +37,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
@@ -817,10 +818,21 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             ? `(this run started no rename of this resource)`
             : `(its repository id is not the one this run renamed)`) +
           ` — nothing was sent to that repository. If it is this resource's repository (an ` +
-          `earlier deploy renamed it and stopped before recording the new name), compare its ` +
-          `repository id with the RepositoryId cdkd state records for this resource and re-adopt ` +
-          `it with \`cdkd import --resource\` naming this resource and that repository, with ` +
-          `--force; otherwise choose a RepositoryName no other repository holds.`,
+          `earlier deploy renamed it and stopped before recording the new name), first compare ` +
+          `its repository id with the RepositoryId cdkd state records for this resource, and ` +
+          `re-adopt it only if they match; otherwise choose a RepositoryName no other ` +
+          `repository holds.\nRe-adopt with:\n` +
+          // Unwrapped, on its own line, last; every value through the shared
+          // gate (a hole when it cannot be printed exactly).
+          pasteableCommand('cdkd import', [
+            { hole: 'stack' },
+            {
+              flag: '--resource',
+              value: `${logicalId}=${newName}`,
+              hole: 'logicalId=repositoryName',
+            },
+            { literal: '--force' },
+          ]).command,
         resourceType,
         logicalId,
         oldName

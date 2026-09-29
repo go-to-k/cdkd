@@ -419,7 +419,8 @@ describe('Repository update — a malformed RECORDED list is applied ADD-only (#
       )
     );
     expect(err.message).toContain('not one cdkd can verify');
-    expect(err.message).not.toContain('issue3989-renamed');
+    // The new name appears only in the gated recovery command on the last line.
+    expect(err.message.split('\n').slice(0, -1).join('\n')).not.toContain('issue3989-renamed');
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(sentNames()).toEqual(['GetRepositoryTriggersCommand', 'GetRepositoryCommand']);
   });
