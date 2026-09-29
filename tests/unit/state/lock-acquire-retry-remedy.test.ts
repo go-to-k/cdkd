@@ -81,10 +81,10 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
   });
 
   it('gives the recovery command even when the lock body could not be read', async () => {
-    // Pre-fix this arm ended at "Lock exists but could not read lock info."
-    // with no remedy at all.
+    // Pre-#2610 this arm ended with no remedy at all; pre-#4055 it also said
+    // "Lock exists" about a read that found none.
     const message = await failureMessage('MyStack', 'us-east-1', null);
-    expect(message).toContain('Lock exists but could not read lock info.');
+    expect(message).toContain('No lock could be read after the last failed attempt');
     expect(message).toContain('cdkd force-unlock MyStack --stack-region us-east-1');
   });
 

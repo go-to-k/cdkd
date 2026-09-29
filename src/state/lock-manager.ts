@@ -10,7 +10,12 @@ import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
-import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  safeMsg,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { purgeNoncurrentKeyVersions } from './s3-noncurrent-version-purge.js';
@@ -61,6 +66,14 @@ const RENEWAL_TTL_FRACTION = 4;
 
 /** Floor, so a pathologically small TTL cannot spin the event loop. */
 const MIN_RENEWAL_INTERVAL_MS = 1000;
+
+/**
+ * How many times one `acquireLockWithRetry` call re-attempts at once, without
+ * spending a retry, after a failed acquire is followed by an empty lock read
+ * (issue #4055). The bound is what keeps a flapping lock -- or a lock.json
+ * that reads as absent but is never replaceable -- from looping forever.
+ */
+export const RELEASED_LOCK_REACQUIRE_LIMIT = 3;
 
 /**
  * Which kind of path landed the delete marker the purge is cleaning up after
@@ -1458,6 +1471,14 @@ export class LockManager {
    * If lock is expired, cleans it up automatically.
    * On failure, provides helpful message with lock owner and expiry information.
    *
+   * A failed acquire followed by a read that finds NO lock means the holder
+   * released it in between (issue #4055), so that read re-attempts at once
+   * without spending a retry -- up to `RELEASED_LOCK_REACQUIRE_LIMIT` times per
+   * call, so a lock that keeps flapping cannot loop forever. `getLockInfo`
+   * also returns null for a lock.json whose body is not an object, which
+   * `acquireLock` can never replace; the limit is what ends that case too, and
+   * after it an empty read waits `retryDelay` like a held lock.
+   *
    * @param stackName Stack name
    * @param owner Lock owner identifier
    * @param operation Operation being performed
@@ -1472,38 +1493,56 @@ export class LockManager {
     maxRetries = 3,
     retryDelay = 2000
   ): Promise<void> {
+    let attempts = 0;
+    let releasedReacquires = 0;
+    // The read taken right after the LAST failed acquire. The refusal below
+    // renders THIS rather than re-reading: a second read is one more window for
+    // the holder to release, and a release there is exactly how the pre-#4055
+    // message came to claim a lock that no longer existed.
+    let lockInfo: LockInfo | null = null;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      attempts++;
       const acquired = await this.acquireLock(stackName, region, owner, operation);
 
       if (acquired) {
         return;
       }
 
-      // Lock exists and is not expired - show info and possibly retry
-      const lockInfo = await this.getLockInfo(stackName, region);
+      lockInfo = await this.getLockInfo(stackName, region);
 
-      if (lockInfo) {
-        if (attempt < maxRetries) {
-          // The retry line is the SIBLING of the throw below and renders the
-          // same two values, so it takes the same sanitization -- as does every
-          // other stack-name render in this module since issue #3027.
-          // `owner` / `operation` need nothing anywhere, being sanitized at
-          // their single source, `getLockRecord`.
-          this.logger.info(
-            `Stack ${safeSegment(stackName)} ` +
-              `(${safeSegment(region)}) is locked by ${lockInfo.owner}` +
-              `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
-              `. Lock ${formatLockExpiry(lockInfo.expiresAt)}.` +
-              ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
-          );
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
-          continue;
-        }
+      if (!lockInfo && releasedReacquires < RELEASED_LOCK_REACQUIRE_LIMIT) {
+        // Released between the failed PUT and this read: try again NOW, and do
+        // not count it as a retry -- on the final attempt this is the whole
+        // fix, since the loop would otherwise end on a lock that is gone.
+        releasedReacquires++;
+        this.logger.debug(
+          safeMsg`Lock for stack ${stackRef(stackName, region)} could not be acquired, yet no readable lock was found -- most likely released in between; re-attempting (${releasedReacquires}/${RELEASED_LOCK_REACQUIRE_LIMIT})`
+        );
+        attempt--;
+        continue;
+      }
+
+      if (attempt < maxRetries) {
+        // The retry line is the SIBLING of the throw below and renders the
+        // same two values, so it takes the same sanitization -- as does every
+        // other stack-name render in this module since issue #3027.
+        // `owner` / `operation` need nothing anywhere, being sanitized at
+        // their single source, `getLockRecord`.
+        const holder = lockInfo
+          ? `is locked by ${lockInfo.owner}` +
+            `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
+            `. Lock ${formatLockExpiry(lockInfo.expiresAt)}.`
+          : `could not be locked, and no readable lock was found.`;
+        this.logger.info(
+          `Stack ${safeSegment(stackName)} ` +
+            `(${safeSegment(region)}) ${holder}` +
+            ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
+        );
+        await new Promise((resolve) => setTimeout(resolve, retryDelay));
       }
     }
 
     // Failed to acquire lock after all retries
-    const lockInfo = await this.getLockInfo(stackName, region);
     const expiry = lockInfo ? formatLockExpiry(lockInfo.expiresAt) : undefined;
 
     // Issue [#2610] site 14. This used to read "Use --force-unlock to manually
@@ -1549,14 +1588,22 @@ export class LockManager {
     // suppression half of that precedent.
     const safeStack = safeSegment(stackName);
     const safeRegion = safeSegment(region);
+    // The no-lock arm must not claim a lock exists (issue #4055): the last read
+    // found none. It is either a lock released and re-taken faster than the
+    // re-attempts above, or a lock.json that is not a readable lock -- only the
+    // second needs `force-unlock`, so the command is conditioned on a repeat.
+    // No apostrophe anywhere before the command: one flips the quote parity of
+    // a pasted sentence (lock-contention-message.md).
     throw new LockError(
-      `Failed to acquire lock for stack ${safeStack} (${safeRegion}) after ${maxRetries + 1} attempts. ` +
+      `Failed to acquire lock for stack ${safeStack} (${safeRegion}) after ${attempts} attempt${attempts === 1 ? '' : 's'}. ` +
         (lockInfo
           ? `Locked by: ${lockInfo.owner}` +
             `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
             `, ${expiry}. ` +
             recovery
-          : `Lock exists but could not read lock info. ${recovery}`)
+          : `No lock could be read after the last failed attempt, so it was most likely released ` +
+            `just now: re-run the command. If this repeats, lock.json may hold a body that is not ` +
+            `a readable lock. ${recovery}`)
     );
   }
 }

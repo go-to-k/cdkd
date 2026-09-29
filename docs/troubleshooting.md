@@ -105,9 +105,14 @@ LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts
 
 > **Note:** The message above is what `cdkd deploy` prints — it **retries** a
 > held lock 3 times at 2-second intervals (4 attempts, about 6 seconds) before
-> giving up. The 2-second wait only happens when cdkd could read the lock to
-> report who holds it; when it cannot, the 4 attempts fire back to back and the
-> command fails at once. `cdkd rollback` and `cdkd scrub` retry on the same
+> giving up. When an attempt fails but cdkd then finds no lock, the holder
+> released it in between, so cdkd tries again at once without counting that
+> as a retry — up to 3 extra attempts per command. Past those, an attempt that
+> finds no readable lock waits the same 2 seconds, and if the last one still
+> fails the message says `No lock could be read after the last failed attempt`
+> rather than naming a holder: re-run the command, and reach for
+> `force-unlock` only if it repeats, since a `lock.json` that is not a readable
+> lock also fails this way. `cdkd rollback` and `cdkd scrub` retry on the same
 > schedule. The
 > commands that WRITE state without deploying — `cdkd destroy`,
 > `cdkd state destroy`, `cdkd import`, `cdkd export`, `cdkd orphan`,
