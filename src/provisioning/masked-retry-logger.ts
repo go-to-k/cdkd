@@ -144,6 +144,20 @@ export function createMaskedLogSinks(
 }
 
 /**
+ * Is `raw` secret-derived, in the sense {@link withDerivedNameMasks} documents:
+ * the masker changes it, it still spells a `{{resolve:` reference, or it IS the
+ * whole redaction mask. Exported for a caller that needs the same answer
+ * without building sinks.
+ */
+export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is string {
+  return (
+    typeof raw === 'string' &&
+    raw !== '' &&
+    (mask(raw) !== raw || raw.includes('{{resolve:') || raw === MASK_WALK_DEPTH_CAP_MARKER)
+  );
+}
+
+/**
  * Extend `sinks` so a name DERIVED from a secret-bearing template value is
  * masked too (issue [#2177](https://github.com/go-to-k/cdkd/issues/2177)
  * security review).
@@ -166,7 +180,13 @@ export function createMaskedLogSinks(
  *    bag read from state carries: redaction persists a secret leaf as its
  *    reference, while a public ssm value is stored resolved, so a surviving
  *    reference IS a secret — and its plaintext need not be in THIS deploy's
- *    bag at all (a rotated or re-pointed secret), so the masker cannot say so.
+ *    bag at all (a rotated or re-pointed secret), so the masker cannot say so;
+ *  - it IS the whole redaction mask (`***`). Redaction persists a leaf it can
+ *    only mask, such as a NoEcho custom-resource `GetAtt`, as that mask, so a
+ *    previous value of exactly `***` was a secret too.
+ *
+ * {@link isSecretDerivedValue} is that predicate, exported for a caller that
+ * needs the same answer without building sinks.
  *
  * NO length floor, unlike `maskSecretsInText`'s substring arm, and on purpose:
  * that floor trades a leak for fewer incidental matches, and a derived name
@@ -189,7 +209,7 @@ export function withDerivedNameMasks(
         pair[0] !== '' &&
         typeof pair[1] === 'string' &&
         pair[1] !== '' &&
-        (sinks.mask(pair[0]) !== pair[0] || pair[0].includes('{{resolve:'))
+        isSecretDerivedValue(pair[0], sinks.mask)
     )
     .map(([, derived]) => derived)
     // Longest first, so a needle that contains another is replaced whole.

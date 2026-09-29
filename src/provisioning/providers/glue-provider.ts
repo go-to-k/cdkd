@@ -91,6 +91,14 @@ import {
   type CompositeIdFormat,
 } from '../composite-id.js';
 import { carriesSecretMask } from '../../deployment/secret-redaction.js';
+import {
+  createMaskedLogSinks,
+  isSecretDerivedValue,
+  MASK_WALK_DEPTH_CAP_MARKER,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import {
   replayWarn,
@@ -161,9 +169,12 @@ function tableIdDecodeFailure(
   logicalId: string,
   physicalId: string,
   bags: readonly (Record<string, unknown> | undefined)[],
-  options?: { readonly skipping?: boolean }
+  options?: { readonly skipping?: boolean; readonly mask?: MaskerFn }
 ): string {
-  const head = compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId, options);
+  // The id is masked RAW before it joins the sentence (issue #2177): an update
+  // passes its operation's masker, and the delete path has none (#2007).
+  const shownId = options?.mask ? options.mask(physicalId) : physicalId;
+  const head = compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, shownId, options);
   const longId = physicalId.indexOf('|') !== physicalId.lastIndexOf('|');
   // A MASKED string is no anchor either: it prefixes nothing.
   const anchorless = bags.every((bag) => {
@@ -350,11 +361,15 @@ function deleteCatalogId(properties: Record<string, unknown> | undefined): Catal
   };
 }
 
-/** Human-readable name for the catalog a call addressed, for log messages. */
-function describeCatalog(catalogId: string | undefined): string {
+/**
+ * Human-readable name for the catalog a call addressed, for log messages. A
+ * create / update passes its operation's masker, which sees the id RAW
+ * (issue #2177); the delete path has none (#2007).
+ */
+function describeCatalog(catalogId: string | undefined, mask: MaskerFn = (text) => text): string {
   return catalogId === undefined
     ? "this account's default Data Catalog"
-    : `Data Catalog ${catalogId}`;
+    : `Data Catalog ${mask(String(catalogId))}`;
 }
 
 /**
@@ -583,10 +598,14 @@ function resolveTableIdentity(input: {
  * secrets, and the engine's masker matches a secret's full plaintext, which a
  * JSON rendering (escaping) or a cut (a fragment) would defeat.
  */
-function describeUnresolvedName(value: unknown): string {
+function describeUnresolvedName(value: unknown, mask: MaskerFn = (text) => text): string {
   if (Array.isArray(value)) return 'an array';
   if (typeof value === 'object' && value !== null) {
-    const keys = Object.keys(value).slice(0, 5);
+    // Each key RAW through the operation's masker (issue #2177): a resolved
+    // secret used as a map key would otherwise print here.
+    const keys = Object.keys(value)
+      .slice(0, 5)
+      .map((key) => mask(key));
     return keys.length === 0 ? 'an empty object' : `an object with keys [${keys.join(', ')}]`;
   }
   if (typeof value === 'number') return 'a number that is not a safe integer';
@@ -635,10 +654,17 @@ function refuseNestedRename(args: {
   recordedName: string;
   desiredName: unknown;
   foldCase: boolean;
-  consequence: (desiredName: string) => string;
+  /** Receives the desired name already masked through {@link mask}. */
+  consequence: (shownDesiredName: string) => string;
   stateful: boolean;
+  /**
+   * The update's masker (issue #2177). Both names are masked RAW before they
+   * join the sentence, the only arm a secret shorter than the substring floor
+   * reaches.
+   */
+  mask: MaskerFn;
 }): void {
-  const { desiredName: raw, recordedName } = args;
+  const { desiredName: raw, recordedName, mask } = args;
   if (raw == null) return;
   const comparable =
     typeof raw === 'string' || (typeof raw === 'number' && Number.isSafeInteger(raw));
@@ -648,10 +674,10 @@ function refuseNestedRename(args: {
     // same unaddressable value.
     throw markNonRetryable(
       new ProvisioningError(
-        `${args.field} is not a resolved name (${describeUnresolvedName(raw)}), so cdkd cannot ` +
-          `tell which Glue ${args.noun} the update of ${args.logicalId} would address and will ` +
-          `not send it. Declare ${args.field} as a string ('${recordedName}' keeps the ` +
-          `recorded ${args.noun})`,
+        `${args.field} is not a resolved name (${describeUnresolvedName(raw, mask)}), so cdkd ` +
+          `cannot tell which Glue ${args.noun} the update of ${args.logicalId} would address ` +
+          `and will not send it. Declare ${args.field} as a string ('${mask(recordedName)}' ` +
+          `keeps the recorded ${args.noun})`,
         args.resourceType,
         args.logicalId
       )
@@ -662,18 +688,119 @@ function refuseNestedRename(args: {
     args.foldCase ? name.replace(/[A-Z]/g, (c) => c.toLowerCase()) : name;
   if (fold(desiredName) === fold(recordedName)) return;
   const remedyFlags = args.stateful ? '--replace --force-stateful-recreation' : '--replace';
+  const shownRecorded = mask(recordedName);
+  const shownDesired = mask(desiredName);
   throw new ResourceUpdateNotSupportedError(
     args.resourceType,
     args.logicalId,
-    `${args.field} changed from '${recordedName}' to '${desiredName}', and cdkd cannot rename ` +
-      `a Glue ${args.noun} in place — ${args.consequence(desiredName)}. To rename it, re-deploy ` +
-      `with ${remedyFlags}, which DELETEs the ${args.noun} '${recordedName}' and then CREATEs ` +
-      `'${desiredName}' (under UpdateReplacePolicy: Retain the old one is kept instead); the ` +
-      `CREATE fails if a ${args.noun} named '${desiredName}' already exists, after the DELETE. ` +
+    `${args.field} changed from '${shownRecorded}' to '${shownDesired}', and cdkd cannot rename ` +
+      `a Glue ${args.noun} in place — ${args.consequence(shownDesired)}. To rename it, re-deploy ` +
+      `with ${remedyFlags}, which DELETEs the ${args.noun} '${shownRecorded}' and then CREATEs ` +
+      `'${shownDesired}' (under UpdateReplacePolicy: Retain the old one is kept instead); the ` +
+      `CREATE fails if a ${args.noun} named '${shownDesired}' already exists, after the DELETE. ` +
       `If the template did not change this name, the state record was left by an earlier ` +
-      `deploy that wrote to '${desiredName}' (issue #3724): check that ${args.noun} before ` +
-      `re-deploying. Otherwise keep the name '${recordedName}'`
+      `deploy that wrote to '${shownDesired}' (issue #3724): check that ${args.noun} before ` +
+      `re-deploying. Otherwise keep the name '${shownRecorded}'`
   );
+}
+
+/** A `[raw value, name to mask]` pair for {@link glueOperationSinks}. */
+type NamePair = readonly [unknown, string | undefined];
+
+/**
+ * `[name, name]` pairs for {@link glueOperationSinks} (issue #2177): a name that
+ * IS a secret of this deploy is masked as a needle, so it is hidden even inside
+ * text cdkd did not write, such as an AWS error quoting it back, where the
+ * masker's substring arm skips a secret shorter than `MIN_NEEDLE_LENGTH`. A
+ * non-secret name is left alone.
+ */
+function secretNamePairs(values: readonly unknown[]): NamePair[] {
+  return values.map((value) => [value, typeof value === 'string' ? value : undefined] as const);
+}
+
+/**
+ * Shortest name {@link glueOperationSinks} makes a SUBSTRING needle. A needle is
+ * replaced wherever it occurs, cdkd's own fixed wording included, so a very
+ * short secret would mask letters of `Creating Glue Database` and the masked
+ * positions would hint at it. It narrows that rather than closing it (a
+ * 3-character one such as `lue` still can).
+ *
+ * Below the floor a secret name is still hidden at every site cdkd interpolates
+ * it: those sites mask the value RAW, and the sinks render a secret-derived name
+ * as `***` by whole-value equality -- including a ROTATED recorded name, whose
+ * old plaintext is in no bag of this deploy. Only an AWS echo of a 1-2
+ * character name goes unmasked; a secret that short has almost no
+ * confidentiality either way.
+ */
+const SELF_NEEDLE_MIN_LENGTH = 3;
+
+/**
+ * {@link secretNamePairs} for a recorded name, plus a `[previous raw value,
+ * recorded name]` pair per property the recorded name can have come from.
+ *
+ * A Glue physical id IS the name the template declared, so on a plain deploy
+ * the masker already knows it. What it cannot know is a name recorded from a
+ * PREVIOUS secret: state persists that value as its `{{resolve:` reference (or
+ * as `***`), and after a rotation the old plaintext is in no bag of this
+ * deploy. The recorded name is then masked too.
+ */
+function previousNamePairs(
+  recordedName: string | undefined,
+  previousValues: readonly unknown[]
+): NamePair[] {
+  return [
+    ...secretNamePairs([recordedName]),
+    ...previousValues.map((raw) => [raw, recordedName] as const),
+  ];
+}
+
+/**
+ * The masked sinks ONE Glue `create()` / `update()` logs through (issue #2177):
+ * `createMaskedLogSinks` over the context's masker, extended by `pairs` (see
+ * {@link secretNamePairs}, {@link previousNamePairs}). Each name whose raw value
+ * is secret-derived (`isSecretDerivedValue`) is:
+ *
+ *  - rendered as `***` wherever a sink masks it as a WHOLE value -- every site
+ *    cdkd interpolates a name through `value` / `mask`, at any length;
+ *  - and, at {@link SELF_NEEDLE_MIN_LENGTH} or longer, a substring needle, so
+ *    it is also masked where it OCCURS inside other text (an AWS echo).
+ *
+ * Built per call; never cached on the provider, which serves concurrent
+ * resources.
+ */
+function glueOperationSinks(
+  logger: { debug(message: string): void; warn(message: string): void },
+  maskSecrets: MaskerFn | undefined,
+  pairs: readonly NamePair[]
+): MaskedLogSinks {
+  const base = createMaskedLogSinks(logger, maskSecrets);
+  const secretNames = new Set<string>();
+  for (const [raw, name] of pairs) {
+    if (typeof name === 'string' && name !== '' && isSecretDerivedValue(raw, base.mask)) {
+      secretNames.add(name);
+    }
+  }
+  // The ORIGINAL pairs, not `[name, name]`: a ROTATED recorded name qualifies
+  // only through its PREVIOUS raw value (`{{resolve:` / `***`) -- the old
+  // plaintext itself is in no bag of this deploy, so the name alone would fail
+  // the predicate and an AWS error quoting it would print it.
+  const needled = withDerivedNameMasks(
+    logger,
+    base,
+    pairs.filter(
+      (pair): pair is readonly [unknown, string] =>
+        typeof pair[1] === 'string' && pair[1].length >= SELF_NEEDLE_MIN_LENGTH
+    )
+  );
+  if (secretNames.size === 0) return needled;
+  const mask: MaskerFn = (text: string) =>
+    secretNames.has(text) ? MASK_WALK_DEPTH_CAP_MARKER : needled.mask(text);
+  return {
+    mask,
+    value: (value: unknown) => mask(String(value)),
+    debug: (message: string) => logger.debug(mask(message)),
+    warn: (message: string) => logger.warn(mask(message)),
+  };
 }
 
 /**
@@ -752,16 +879,24 @@ async function refuseCatalogMove(args: {
   stateful: boolean;
   callerAccountId: () => Promise<string>;
   warn: (message: string) => void;
+  /**
+   * The update's masker (issue #2177): the entity name, every literal catalog
+   * id and the STS failure text are masked RAW before they join a sentence.
+   */
+  mask: MaskerFn;
 }): Promise<void> {
+  const { mask } = args;
   const recorded = classifyCatalog(args.recorded);
   const desired = classifyCatalog(args.desired);
+  const describe = (side: CatalogSide): string =>
+    describeCatalog(side.kind === 'literal' ? side.id : undefined, mask);
   if (desired.kind === 'unusable') return;
   if (recorded.kind === 'unusable') {
     args.warn(
       `Glue ${args.noun} ${args.logicalId}: the recorded CatalogId is not a usable value ` +
         `(likely an unresolved intrinsic an import recorded), so cdkd cannot confirm the update ` +
         `addresses the Data Catalog the ${args.noun} was deployed to; it proceeds against ` +
-        `${desired.kind === 'literal' ? `Data Catalog ${desired.id}` : "this account's default Data Catalog"}.`
+        `${describe(desired)}.`
     );
     return;
   }
@@ -776,8 +911,9 @@ async function refuseCatalogMove(args: {
     } catch (error) {
       throw new ProvisioningError(
         `Could not resolve the caller's account id (sts:GetCallerIdentity) to tell whether ` +
-          `CatalogId ${literal} is this account's default Data Catalog, so cdkd did not update ` +
-          `Glue ${args.noun} ${args.logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+          `CatalogId ${mask(literal)} is this account's default Data Catalog, so cdkd did not ` +
+          `update Glue ${args.noun} ${args.logicalId}: ` +
+          `${mask(error instanceof Error ? error.message : String(error))}`,
         args.resourceType,
         args.logicalId,
         undefined,
@@ -786,13 +922,11 @@ async function refuseCatalogMove(args: {
     }
     if (literal === callerAccount) return;
   }
-  const describe = (side: CatalogSide): string =>
-    side.kind === 'literal' ? `Data Catalog ${side.id}` : "this account's default Data Catalog";
   const remedyFlags = args.stateful ? '--replace --force-stateful-recreation' : '--replace';
   throw new ResourceUpdateNotSupportedError(
     args.resourceType,
     args.logicalId,
-    `CatalogId moves the ${args.noun} '${args.entityName}' from ${describe(recorded)} to ` +
+    `CatalogId moves the ${args.noun} '${mask(args.entityName)}' from ${describe(recorded)} to ` +
       `${describe(desired)}, and an in-place update would address the same-named ${args.noun} ` +
       `in the NEW catalog while the state record kept the old one. To move it, re-deploy with ` +
       `${remedyFlags}, which DELETEs the ${args.noun} from ${describe(recorded)} and then ` +
@@ -874,10 +1008,11 @@ export class GlueProvider implements ResourceProvider {
   }
 
   /**
-   * `context` is read for the ORIGIN of the desired bag only
+   * `context` is read for the ORIGIN of the desired bag
    * (`replayingState` / `desiredFromAwsReadback`), which decides whether a
    * malformed `DatabaseInput` block refuses (a template-path update) or warns
-   * (a rollback revert or `cdkd drift --revert`) — issue #3740.
+   * (a rollback revert or `cdkd drift --revert`) — issue #3740 — and for its
+   * masker (issue #2177).
    */
   async update(
     logicalId: string,
@@ -903,7 +1038,8 @@ export class GlueProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       default:
         throw new ProvisioningError(
@@ -945,7 +1081,19 @@ export class GlueProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Glue Database ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation, and every bag-derived value
+    // masked RAW as well. Absent context means identity.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([
+        asRecord(properties['DatabaseInput'])?.['Name'],
+        properties['DatabaseName'],
+        properties['CatalogId'],
+      ])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Database ${logicalId}`);
 
     const databaseInput = properties['DatabaseInput'] as Record<string, unknown> | undefined;
     if (!databaseInput) {
@@ -982,12 +1130,12 @@ export class GlueProvider implements ResourceProvider {
           // reverse-replacement replay downgrades it to a warning, because the
           // desired bag is then a STATE record (issue #1463).
           DatabaseInput: this.buildDatabaseInput(databaseInput, databaseName, {
-            ...replayWarn(this.logger, context),
+            ...replayWarn(log, context),
           }),
         })
       );
 
-      this.logger.debug(`Successfully created Glue Database ${logicalId}: ${databaseName}`);
+      log.debug(`Successfully created Glue Database ${logicalId}: ${v(databaseName)}`);
 
       return {
         physicalId: databaseName,
@@ -996,7 +1144,7 @@ export class GlueProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Glue Database ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Glue Database ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -1013,7 +1161,20 @@ export class GlueProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Glue Database ${logicalId}: ${physicalId}`);
+    // Issue #2177 -- see `createDatabase()`. The recorded name is ALSO a needle
+    // when the PREVIOUS value it came from is secret-derived: after a rotated or
+    // re-pointed secret, that value is the `{{resolve:` reference state holds
+    // and the OLD plaintext is in no masker bag of this deploy.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [
+        asRecord(previousProperties?.['DatabaseInput'])?.['Name'],
+        previousProperties?.['DatabaseName'],
+      ])
+    );
+    const { value: v } = log;
+    log.debug(`Updating Glue Database ${logicalId}: ${v(physicalId)}`);
 
     const databaseInput = properties['DatabaseInput'] as Record<string, unknown> | undefined;
     if (!databaseInput) {
@@ -1034,9 +1195,10 @@ export class GlueProvider implements ResourceProvider {
       desiredName: databaseInput['Name'],
       foldCase: true,
       consequence: () =>
-        `UpdateDatabase would address '${physicalId}' with a different name inside its ` +
-        `definition, and the state record would keep '${physicalId}' whatever AWS did with it`,
+        `UpdateDatabase would address '${v(physicalId)}' with a different name inside its ` +
+        `definition, and the state record would keep '${v(physicalId)}' whatever AWS did with it`,
       stateful: true,
+      mask: log.mask,
     });
     await refuseCatalogMove({
       resourceType,
@@ -1047,7 +1209,8 @@ export class GlueProvider implements ResourceProvider {
       desired: properties['CatalogId'],
       stateful: true,
       callerAccountId: this.callerAccountId,
-      warn: (message) => this.logger.warn(message),
+      warn: log.warn,
+      mask: log.mask,
     });
 
     const catalogId = updateCatalogId(properties['CatalogId']);
@@ -1077,7 +1240,7 @@ export class GlueProvider implements ResourceProvider {
     try {
       builtDatabaseInput = this.buildDatabaseInput(databaseInput, physicalId, {
         ...(stateBorneDesired && {
-          onUnusable: (message: string) => this.logger.warn(message),
+          onUnusable: log.warn,
         }),
         previousDatabaseInput,
       });
@@ -1086,7 +1249,7 @@ export class GlueProvider implements ResourceProvider {
       // update failure. Only the template path reaches here: given the warn
       // callback, every arm of the builder warns instead of throwing.
       throw new ProvisioningError(
-        `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
+        `${v(error instanceof Error ? error.message : String(error))}. Nothing was applied to ` +
           `Glue Database ${logicalId}; fix the template value`,
         resourceType,
         logicalId,
@@ -1103,7 +1266,8 @@ export class GlueProvider implements ResourceProvider {
       logicalId,
       resourceType,
       physicalId,
-      catalogId
+      catalogId,
+      log.mask
     );
 
     try {
@@ -1122,7 +1286,7 @@ export class GlueProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully updated Glue Database ${logicalId}`);
+      log.debug(`Successfully updated Glue Database ${logicalId}`);
 
       return {
         physicalId,
@@ -1131,7 +1295,7 @@ export class GlueProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Glue Database ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Glue Database ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1206,7 +1370,19 @@ export class GlueProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Glue Table ${logicalId}`);
+    // Issue #2177 -- see `createDatabase()`.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([
+        properties['DatabaseName'],
+        asRecord(properties['TableInput'])?.['Name'],
+        properties['Name'],
+        properties['CatalogId'],
+      ])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Table ${logicalId}`);
 
     const databaseName = properties['DatabaseName'] as string | undefined;
     if (!databaseName) {
@@ -1243,7 +1419,7 @@ export class GlueProvider implements ResourceProvider {
     const catalogId = properties['CatalogId'] as string | undefined;
 
     enforceIcebergTableInputAbsent(logicalId, resourceType, properties, {
-      warn: (message) => this.logger.warn(message),
+      warn: log.warn,
       replayingState: context?.replayingState === true,
     });
 
@@ -1297,7 +1473,7 @@ export class GlueProvider implements ResourceProvider {
       if (typeof value !== 'string') {
         throw new ProvisioningError(
           `Glue Table ${logicalId}: ${field} must be a string, got ` +
-            `${describeUnresolvedName(value)}. Set it to the ${field === 'DatabaseName' ? 'database' : 'table'} name.`,
+            `${describeUnresolvedName(value, log.mask)}. Set it to the ${field === 'DatabaseName' ? 'database' : 'table'} name.`,
           resourceType,
           logicalId
         );
@@ -1317,7 +1493,7 @@ export class GlueProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully created Glue Table ${logicalId}: ${physicalId}`);
+      log.debug(`Successfully created Glue Table ${logicalId}: ${v(databaseName)}|${v(tableName)}`);
 
       return {
         physicalId,
@@ -1341,8 +1517,8 @@ export class GlueProvider implements ResourceProvider {
       if (error instanceof AlreadyExistsException) {
         throw markNonRetryable(
           new ProvisioningError(
-            `Failed to create Glue Table ${logicalId}: a table named '${tableName}' is ` +
-              `present in database '${databaseName}' (${describeCatalog(catalogId)}), so ` +
+            `Failed to create Glue Table ${logicalId}: a table named '${v(tableName)}' is ` +
+              `present in database '${v(databaseName)}' (${describeCatalog(catalogId, log.mask)}), so ` +
               `cdkd did not create it and left that table untouched. Choose a TableInput.Name ` +
               `no table holds, or remove that table yourself if it is unwanted. If it is the ` +
               `table this resource already manages, the planned replacement keeps its address: ` +
@@ -1356,7 +1532,7 @@ export class GlueProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Glue Table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Glue Table ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -1370,14 +1546,42 @@ export class GlueProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Glue Table ${logicalId}: ${physicalId}`);
-
     const decoded = decodeTableId(physicalId, previousProperties, properties);
+    // Issue #2177 -- see `updateDatabase()`. Both halves of the recorded id are
+    // needles when the previous value each came from is secret-derived.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      decoded
+        ? [
+            ...previousNamePairs(decoded.databaseName, [previousProperties?.['DatabaseName']]),
+            ...previousNamePairs(decoded.tableName, [
+              asRecord(previousProperties?.['TableInput'])?.['Name'],
+              previousProperties?.['Name'],
+            ]),
+          ]
+        : // No halves to place: the WHOLE recorded id is the needle when any
+          // name it can have come from is secret-derived.
+          previousNamePairs(physicalId, [
+            previousProperties?.['DatabaseName'],
+            asRecord(previousProperties?.['TableInput'])?.['Name'],
+            previousProperties?.['Name'],
+          ])
+    );
+    const { value: v } = log;
+    // Each half RAW when the id decodes: the joined id is longer than either
+    // secret, so only a per-half mask reaches one below the substring floor.
+    const shownId = decoded ? `${v(decoded.databaseName)}|${v(decoded.tableName)}` : v(physicalId);
+    log.debug(`Updating Glue Table ${logicalId}: ${shownId}`);
+
     if (!decoded) {
       throw new ProvisioningError(
-        tableIdDecodeFailure(logicalId, physicalId, [previousProperties, properties]),
+        tableIdDecodeFailure(logicalId, physicalId, [previousProperties, properties], {
+          mask: log.mask,
+        }),
         resourceType,
         logicalId,
         physicalId
@@ -1407,20 +1611,23 @@ export class GlueProvider implements ResourceProvider {
       foldCase: true,
       consequence: (desired) =>
         `UpdateTable addresses the table by TableInput.Name, so it would write to the table ` +
-        `named '${desired}' in database '${databaseName}' (possibly one cdkd ` +
-        `does not manage) while the state record kept '${tableName}'`,
+        `named '${desired}' in database '${v(databaseName)}' (possibly one cdkd ` +
+        `does not manage) while the state record kept '${v(tableName)}'`,
       stateful: true,
+      mask: log.mask,
     });
     await refuseCatalogMove({
       resourceType,
       logicalId,
       noun: 'table',
-      entityName: `${databaseName}.${tableName}`,
+      // Each half masked RAW: the joined name is longer than either secret.
+      entityName: `${v(databaseName)}.${v(tableName)}`,
       recorded: previousProperties?.['CatalogId'],
       desired: properties['CatalogId'],
       stateful: true,
       callerAccountId: this.callerAccountId,
-      warn: (message) => this.logger.warn(message),
+      warn: log.warn,
+      mask: log.mask,
     });
 
     const catalogId = updateCatalogId(properties['CatalogId']);
@@ -1455,7 +1662,7 @@ export class GlueProvider implements ResourceProvider {
     // to the same warning instead of failing that rollback operation.
     const updateIcebergKey = findIcebergTableInputKey(properties);
     if (updateIcebergKey !== undefined) {
-      this.logger.warn(icebergTableInputRefusalMessage(logicalId, updateIcebergKey, 'update'));
+      log.warn(icebergTableInputRefusalMessage(logicalId, updateIcebergKey, 'update'));
     }
 
     // Read-merge-write for AWS-authored `TableInput.Parameters` — see
@@ -1470,7 +1677,8 @@ export class GlueProvider implements ResourceProvider {
       physicalId,
       databaseName,
       tableName,
-      catalogId
+      catalogId,
+      log.mask
     );
 
     try {
@@ -1500,7 +1708,7 @@ export class GlueProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully updated Glue Table ${logicalId}`);
+      log.debug(`Successfully updated Glue Table ${logicalId}`);
 
       return {
         physicalId,
@@ -1508,7 +1716,7 @@ export class GlueProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = v(error instanceof Error ? error.message : String(error));
       // A `ConcurrentModificationException` means someone else changed the
       // table under us. Say so explicitly — the generic wrap would leave the
       // user staring at a bare SDK error with no hint that a concurrent
@@ -1876,7 +2084,8 @@ export class GlueProvider implements ResourceProvider {
     physicalId: string,
     databaseName: string,
     tableName: string,
-    catalogId: string | undefined
+    catalogId: string | undefined,
+    mask: MaskerFn
   ): Promise<{
     parameters: Record<string, string> | undefined;
     storageDescriptor: StorageDescriptor | undefined;
@@ -1900,7 +2109,7 @@ export class GlueProvider implements ResourceProvider {
         return { parameters: undefined, storageDescriptor: undefined, versionId: undefined };
       }
       throw new ProvisioningError(
-        preUpdateReadFailureMessage('Table', 'glue:GetTable', logicalId, error),
+        preUpdateReadFailureMessage('Table', 'glue:GetTable', logicalId, error, mask),
         resourceType,
         logicalId,
         physicalId,
@@ -1925,7 +2134,8 @@ export class GlueProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    catalogId: string | undefined
+    catalogId: string | undefined,
+    mask: MaskerFn
   ): Promise<Record<string, string> | undefined> {
     try {
       const resp = await this.getClient().send(
@@ -1938,7 +2148,7 @@ export class GlueProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof EntityNotFoundException) return undefined;
       throw new ProvisioningError(
-        preUpdateReadFailureMessage('Database', 'glue:GetDatabase', logicalId, error),
+        preUpdateReadFailureMessage('Database', 'glue:GetDatabase', logicalId, error, mask),
         resourceType,
         logicalId,
         physicalId,
@@ -2884,9 +3094,17 @@ export class GlueWorkflowProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Glue Workflow ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Workflow ${logicalId}`);
 
     const name = properties['Name'] as string | undefined;
     if (!name) {
@@ -2919,12 +3137,12 @@ export class GlueWorkflowProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully created Glue Workflow ${logicalId}: ${name}`);
+      log.debug(`Successfully created Glue Workflow ${logicalId}: ${v(name)}`);
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Glue Workflow ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Glue Workflow ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -2938,9 +3156,17 @@ export class GlueWorkflowProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Glue Workflow ${logicalId}: ${physicalId}`);
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [previousProperties?.['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Updating Glue Workflow ${logicalId}: ${v(physicalId)}`);
 
     try {
       await this.getClient().send(
@@ -2958,12 +3184,12 @@ export class GlueWorkflowProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully updated Glue Workflow ${logicalId}`);
+      log.debug(`Successfully updated Glue Workflow ${logicalId}`);
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Glue Workflow ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Glue Workflow ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3186,9 +3412,17 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Glue SecurityConfiguration ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue SecurityConfiguration ${logicalId}`);
 
     const name = properties['Name'] as string | undefined;
     if (!name) {
@@ -3218,12 +3452,12 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully created Glue SecurityConfiguration ${logicalId}: ${name}`);
+      log.debug(`Successfully created Glue SecurityConfiguration ${logicalId}: ${v(name)}`);
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Glue SecurityConfiguration ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Glue SecurityConfiguration ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -3814,9 +4048,17 @@ export class GlueJobProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Glue Job ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Job ${logicalId}`);
     const name = (properties['Name'] as string | undefined) ?? logicalId;
     const role = properties['Role'] as string | undefined;
     const command = properties['Command'] as Record<string, unknown> | undefined;
@@ -3845,12 +4087,12 @@ export class GlueJobProvider implements ResourceProvider {
           ...(tags && { Tags: tags }),
         })
       );
-      this.logger.debug(`Successfully created Glue Job ${logicalId}: ${name}`);
+      log.debug(`Successfully created Glue Job ${logicalId}: ${v(name)}`);
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Glue Job ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Glue Job ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -3864,9 +4106,17 @@ export class GlueJobProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Glue Job ${logicalId}: ${physicalId}`);
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [previousProperties?.['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Updating Glue Job ${logicalId}: ${v(physicalId)}`);
     try {
       const command = properties['Command'] as Record<string, unknown> | undefined;
       const update: JobUpdate = {
@@ -3886,7 +4136,7 @@ export class GlueJobProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Glue Job ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Glue Job ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -4233,9 +4483,11 @@ function preUpdateReadFailureMessage(
   kind: 'Table' | 'Database',
   iamAction: string,
   logicalId: string,
-  error: unknown
+  error: unknown,
+  mask: MaskerFn
 ): string {
-  const detail = error instanceof Error ? error.message : String(error);
+  // AWS quotes the request back; masked through the update's masker (#2177).
+  const detail = mask(error instanceof Error ? error.message : String(error));
   return (
     `Failed to read the current Glue ${kind} ${logicalId} before update: ${detail}. ` +
     `cdkd reads the live ${kind.toLowerCase()} so AWS-managed Parameters (Apache Iceberg's ` +
@@ -4370,9 +4622,17 @@ export class GlueCrawlerProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Glue Crawler ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Crawler ${logicalId}`);
     const name = (properties['Name'] as string | undefined) ?? logicalId;
     const role = properties['Role'] as string | undefined;
     const targets = properties['Targets'] as Record<string, unknown> | undefined;
@@ -4401,12 +4661,12 @@ export class GlueCrawlerProvider implements ResourceProvider {
           ...(tags && { Tags: tags }),
         })
       );
-      this.logger.debug(`Successfully created Glue Crawler ${logicalId}: ${name}`);
+      log.debug(`Successfully created Glue Crawler ${logicalId}: ${v(name)}`);
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Glue Crawler ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -4420,9 +4680,17 @@ export class GlueCrawlerProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Glue Crawler ${logicalId}: ${physicalId}`);
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [previousProperties?.['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Updating Glue Crawler ${logicalId}: ${v(physicalId)}`);
     try {
       const updateInput = {
         Name: physicalId,
@@ -4438,10 +4706,10 @@ export class GlueCrawlerProvider implements ResourceProvider {
         // UpdateCrawler rejects a mid-run crawler with CrawlerRunningException.
         // Stop it, wait for it to settle, then retry the update.
         if (err instanceof CrawlerRunningException) {
-          this.logger.debug(
-            `Glue Crawler ${physicalId} is running; stopping before update and retrying`
+          log.debug(
+            `Glue Crawler ${v(physicalId)} is running; stopping before update and retrying`
           );
-          await this.stopCrawlerAndWait(physicalId);
+          await this.stopCrawlerAndWait(physicalId, log);
           await this.getClient().send(new UpdateCrawlerCommand(updateInput));
         } else {
           throw err;
@@ -4456,7 +4724,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Glue Crawler ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -4517,14 +4785,22 @@ export class GlueCrawlerProvider implements ResourceProvider {
    * finished on its own) so callers can unconditionally retry their delete /
    * update afterwards.
    */
-  private async stopCrawlerAndWait(physicalId: string): Promise<void> {
+  private async stopCrawlerAndWait(
+    physicalId: string,
+    // An update passes its masked sink (issue #2177); `delete()` has no masker
+    // to thread (#2007), so it logs through the plain logger.
+    log: Pick<MaskedLogSinks, 'debug' | 'value'> = {
+      debug: (message) => this.logger.debug(message),
+      value: (value) => String(value),
+    }
+  ): Promise<void> {
     try {
       await this.getClient().send(new StopCrawlerCommand({ Name: physicalId }));
     } catch (err) {
       // CrawlerNotRunningException / CrawlerStoppingException etc. mean the
       // crawler is already stopping or stopped — nothing to do but wait it out.
-      this.logger.debug(
-        `StopCrawler for ${physicalId} returned ${
+      log.debug(
+        `StopCrawler for ${log.value(physicalId)} returned ${
           err instanceof Error ? err.name : safeStringify(err)
         }; continuing to wait`
       );
@@ -4857,9 +5133,17 @@ export class GlueConnectionProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Glue Connection ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([asRecord(properties['ConnectionInput'])?.['Name'], properties['CatalogId']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Connection ${logicalId}`);
     const connectionInput = properties['ConnectionInput'] as Record<string, unknown> | undefined;
     if (!connectionInput) {
       throw new ProvisioningError(
@@ -4877,12 +5161,12 @@ export class GlueConnectionProvider implements ResourceProvider {
           ConnectionInput: buildConnectionInput(connectionInput, name),
         })
       );
-      this.logger.debug(`Successfully created Glue Connection ${logicalId}: ${name}`);
+      log.debug(`Successfully created Glue Connection ${logicalId}: ${v(name)}`);
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Glue Connection ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Glue Connection ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -4896,9 +5180,17 @@ export class GlueConnectionProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Glue Connection ${logicalId}: ${physicalId}`);
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [asRecord(previousProperties?.['ConnectionInput'])?.['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Updating Glue Connection ${logicalId}: ${v(physicalId)}`);
     const connectionInput = properties['ConnectionInput'] as Record<string, unknown> | undefined;
     if (!connectionInput) {
       throw new ProvisioningError(
@@ -4918,9 +5210,10 @@ export class GlueConnectionProvider implements ResourceProvider {
       desiredName: connectionInput['Name'],
       foldCase: false,
       consequence: () =>
-        `UpdateConnection would address '${physicalId}' with a different name inside its ` +
-        `definition, and the state record would keep '${physicalId}' whatever AWS did with it`,
+        `UpdateConnection would address '${v(physicalId)}' with a different name inside its ` +
+        `definition, and the state record would keep '${v(physicalId)}' whatever AWS did with it`,
       stateful: false,
+      mask: log.mask,
     });
     await refuseCatalogMove({
       resourceType,
@@ -4931,7 +5224,8 @@ export class GlueConnectionProvider implements ResourceProvider {
       desired: properties['CatalogId'],
       stateful: false,
       callerAccountId: this.callerAccountId,
-      warn: (message) => this.logger.warn(message),
+      warn: log.warn,
+      mask: log.mask,
     });
     const catalogId = updateCatalogId(properties['CatalogId']);
     try {
@@ -4949,7 +5243,7 @@ export class GlueConnectionProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Glue Connection ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Glue Connection ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -5200,9 +5494,17 @@ export class GlueTriggerProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Glue Trigger ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Trigger ${logicalId}`);
     const name = (properties['Name'] as string | undefined) ?? logicalId;
     const type = properties['Type'] as string | undefined;
     const actions = properties['Actions'] as TriggerAction[] | undefined;
@@ -5248,12 +5550,12 @@ export class GlueTriggerProvider implements ResourceProvider {
           ...(tags && { Tags: tags }),
         })
       );
-      this.logger.debug(`Successfully created Glue Trigger ${logicalId}: ${name}`);
+      log.debug(`Successfully created Glue Trigger ${logicalId}: ${v(name)}`);
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Glue Trigger ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Glue Trigger ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -5267,9 +5569,17 @@ export class GlueTriggerProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Glue Trigger ${logicalId}: ${physicalId}`);
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [previousProperties?.['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Updating Glue Trigger ${logicalId}: ${v(physicalId)}`);
     try {
       // Glue requires the trigger be DEACTIVATED before UpdateTrigger. Read the
       // current state to decide whether we need to stop+restart.
@@ -5287,8 +5597,8 @@ export class GlueTriggerProvider implements ResourceProvider {
         // If GetTrigger fails for any reason other than NotFound, fall
         // through and let UpdateTrigger surface a clear AWS error.
         if (!(err instanceof EntityNotFoundException)) {
-          this.logger.debug(
-            `GetTrigger pre-check failed for ${physicalId}; continuing anyway: ${
+          log.debug(
+            `GetTrigger pre-check failed for ${v(physicalId)}; continuing anyway: ${
               describeAwsFailure(err).detail
             }`
           );
@@ -5333,9 +5643,9 @@ export class GlueTriggerProvider implements ResourceProvider {
           await this.getClient().send(new StartTriggerCommand({ Name: physicalId }));
         } catch (restartError) {
           if (updateError === undefined) throw restartError;
-          this.logger.warn(
-            `Failed to re-activate Glue Trigger ${physicalId} after a failed update: ${
-              (restartError as Error).message
+          log.warn(
+            `Failed to re-activate Glue Trigger ${v(physicalId)} after a failed update: ${
+              describeAwsFailure(restartError).detail
             }`
           );
         }
@@ -5350,7 +5660,7 @@ export class GlueTriggerProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Glue Trigger ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Glue Trigger ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,

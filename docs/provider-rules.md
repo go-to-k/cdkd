@@ -384,7 +384,11 @@ implementation. Three details are worth copying:
     masked `debug` / `warn` sinks. A physical name derived from a secret by
     `generateResourceNameWithFallback` (stack prefix, folded characters,
     truncation) no longer OCCURS literally, so `withDerivedNameMasks` adds the
-    derived spelling as a needle when its raw value is a secret.
+    derived spelling as a needle when its raw value is a secret. The same
+    helper covers a rotated secret on `update()`: pair the PREVIOUS value with
+    the recorded name, and a previous value still spelling `{{resolve:`, or
+    persisted as exactly the redaction mask `***`, makes that name a needle
+    although its old plaintext is in no bag of this deploy.
     **Use `maskDeep` from
     [src/provisioning/masked-retry-logger.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/masked-retry-logger.ts)
     for the leaf pass — do NOT hand-roll one.** Issue
