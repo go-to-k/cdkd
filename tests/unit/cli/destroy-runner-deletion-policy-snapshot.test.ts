@@ -208,10 +208,17 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
   });
 
-  it('issue #3993: an absent recorded policy stays absent in the DeleteContext', async () => {
-    const state = makeState({ Db: res() });
-    await runDestroyForStack('TestStack', state, makeCtx());
-    expect(deleteContextArg()).not.toHaveProperty('deletionPolicy');
+  it.each([
+    // A standalone RDS instance: CloudFormation's absent default is Snapshot.
+    ['AWS::RDS::DBInstance', 'Snapshot'],
+    // Issue #4029: every other type's absent default is Delete, which lets a
+    // Cloud Control-routed Neptune cluster avoid its handler's snapshot.
+    ['AWS::Neptune::DBCluster', 'Delete'],
+    ['AWS::SQS::Queue', 'Delete'],
+  ])('an absent recorded policy on %s reaches the provider as %s', async (resourceType, expected) => {
+    const state = makeState({ Db: res({ resourceType }) });
+    await runDestroyForStack('TestStack', state, makeCtx({ skipFinalSnapshot: true }));
+    expect(deleteContextArg()['deletionPolicy']).toBe(expected);
   });
 
   it('AWS::EC2::Volume: pre-delete snapshot dispatcher runs before the plain delete', async () => {

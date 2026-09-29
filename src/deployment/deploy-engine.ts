@@ -9262,11 +9262,16 @@ export class DeployEngine {
         // prepareFinalSnapshotForDelete for the mechanism matrix.
         // Issue #4030: an absent policy is CloudFormation's default, which is
         // `Snapshot` for an RDS cluster or standalone instance.
+        const governingPolicy = effectiveDeletionPolicy(
+          resourceType,
+          deletionPolicy,
+          currentResource.properties
+        );
         const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
           logicalId,
           resourceType,
           currentResource,
-          effectiveDeletionPolicy(resourceType, deletionPolicy, currentResource.properties)
+          governingPolicy
         );
 
         // Schema v7+: route DELETE through the layer recorded on state
@@ -9293,7 +9298,8 @@ export class DeployEngine {
                 {
                   expectedRegion: this.stackRegion,
                   ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-                  ...(deletionPolicy !== undefined && { deletionPolicy }),
+                  // Issue #4029: absent is CloudFormation's `Delete` here.
+                  deletionPolicy: governingPolicy ?? 'Delete',
                   ...(this.options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
                 }
               ),

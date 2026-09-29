@@ -1152,6 +1152,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -1212,6 +1213,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "cc-protection-flip-eks": [
@@ -1360,6 +1364,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -1417,6 +1422,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "cc-protection-flip-eks": [
@@ -1583,6 +1591,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -1643,6 +1652,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "cc-protection-flip-eks": [
@@ -1793,6 +1805,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -1853,6 +1866,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "cc-protection-flip-eks": [
@@ -2001,6 +2017,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -2046,6 +2063,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2180,6 +2200,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2241,6 +2262,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "cc-protection-flip-eks": [
@@ -2404,6 +2428,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2461,6 +2486,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "cc-protection-flip-eks": [
@@ -2600,6 +2628,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2664,6 +2693,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "cc-protection-flip-eks": [
@@ -2835,6 +2867,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2895,6 +2928,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l2"
         ],
         "cc-protection-flip-eks": [
@@ -3380,12 +3416,18 @@
     {
       "resourceType": "AWS::ElastiCache::CacheCluster",
       "integs": [
-        "cache-streaming"
+        "cache-streaming",
+        "cc-final-snapshot-handlers"
       ],
       "signals": {
         "cache-streaming": [
           "l1",
           "l2"
+        ],
+        "cc-final-snapshot-handlers": [
+          "l1",
+          "l2",
+          "literal"
         ]
       }
     },
@@ -3393,10 +3435,15 @@
       "resourceType": "AWS::ElastiCache::SubnetGroup",
       "integs": [
         "cache-streaming",
+        "cc-final-snapshot-handlers",
         "elasticache-replicationgroup-getatt"
       ],
       "signals": {
         "cache-streaming": [
+          "l1",
+          "l2"
+        ],
+        "cc-final-snapshot-handlers": [
           "l1",
           "l2"
         ],
@@ -5161,9 +5208,14 @@
     {
       "resourceType": "AWS::Neptune::DBCluster",
       "integs": [
+        "cc-final-snapshot-handlers",
         "docdb-neptune"
       ],
       "signals": {
+        "cc-final-snapshot-handlers": [
+          "l1",
+          "literal"
+        ],
         "docdb-neptune": [
           "l1"
         ]
@@ -5183,9 +5235,13 @@
     {
       "resourceType": "AWS::Neptune::DBSubnetGroup",
       "integs": [
+        "cc-final-snapshot-handlers",
         "docdb-neptune"
       ],
       "signals": {
+        "cc-final-snapshot-handlers": [
+          "l1"
+        ],
         "docdb-neptune": [
           "l1"
         ]
@@ -5194,10 +5250,15 @@
     {
       "resourceType": "AWS::RDS::DBCluster",
       "integs": [
+        "cc-final-snapshot-handlers",
         "import-attribute-readback-final",
         "rds-aurora"
       ],
       "signals": {
+        "cc-final-snapshot-handlers": [
+          "l1",
+          "literal"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],
@@ -5240,6 +5301,7 @@
     {
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
+        "cc-final-snapshot-handlers",
         "import-attribute-readback-final",
         "list-parameters",
         "rds-aurora",
@@ -5247,6 +5309,9 @@
         "rds-full-stack"
       ],
       "signals": {
+        "cc-final-snapshot-handlers": [
+          "l1"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],
@@ -6524,6 +6589,7 @@
     {
       "resourceType": "AWS::SecretsManager::Secret",
       "integs": [
+        "cc-final-snapshot-handlers",
         "composite-stack",
         "cross-stack-secret-import",
         "event-driven",
@@ -6540,6 +6606,9 @@
         "secretsmanager-update-value-source"
       ],
       "signals": {
+        "cc-final-snapshot-handlers": [
+          "l2"
+        ],
         "composite-stack": [
           "l2",
           "literal"

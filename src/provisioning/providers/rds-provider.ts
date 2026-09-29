@@ -4,6 +4,8 @@ import {
   DeleteDBClusterCommand,
   ModifyDBClusterCommand,
   DescribeDBClustersCommand,
+  DescribeGlobalClustersCommand,
+  RemoveFromGlobalClusterCommand,
   CreateDBInstanceCommand,
   DeleteDBInstanceCommand,
   ModifyDBInstanceCommand,
@@ -17,7 +19,9 @@ import {
   RemoveTagsFromResourceCommand,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -71,6 +75,48 @@ function deleteAutomatedBackupsInput(properties: Record<string, unknown> | undef
   if (value === true || value === 'true') return { DeleteAutomatedBackups: true };
   if (value === false || value === 'false') return { DeleteAutomatedBackups: false };
   return {};
+}
+
+/**
+ * The recorded `GlobalClusterIdentifier` of a cluster, when it names one
+ * (issue #4029). Only a non-blank string does; anything else means the record
+ * does not show the cluster in a global cluster.
+ */
+function recordedGlobalClusterIdentifier(
+  properties: Record<string, unknown> | undefined
+): string | undefined {
+  const value = properties?.['GlobalClusterIdentifier'];
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+/**
+ * Faults a detach waits through rather than failing on: the cluster or the
+ * global cluster is busy (`backing-up`, `modifying`), or the call was
+ * throttled past the SDK's own retries (issue #4029).
+ */
+const TRANSIENT_DETACH_FAULTS: ReadonlySet<string> = new Set([
+  'InvalidDBClusterStateFault',
+  'InvalidGlobalClusterStateFault',
+  'ThrottlingException',
+  'Throttling',
+  'RequestLimitExceeded',
+]);
+
+function awsErrorName(error: unknown): string {
+  return (error as { name?: string } | undefined)?.name ?? '';
+}
+
+/**
+ * A failure DETACHING a cluster from its global cluster (issue #4029). Its own
+ * class so `deleteDBClusterOnce`'s catch rethrows it before the not-found
+ * check: an AWS message about the GLOBAL cluster or the membership can read
+ * "not found", and that arm would report the live cluster deleted.
+ */
+class GlobalClusterDetachError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GlobalClusterDetachError';
+  }
 }
 
 /**
@@ -917,6 +963,9 @@ export class RDSProvider implements ResourceProvider {
     flip: ProtectionFlipRecord
   ): Promise<void> {
     this.logger.debug(`Deleting DBCluster ${logicalId}: ${physicalId}`);
+    // Issue #4029: set once a global-cluster detach was issued, so a delete
+    // failing after it says the cluster is already standalone.
+    let detachedFrom: string | undefined;
 
     try {
       // `--remove-protection`: flip DeletionProtection off in-place
@@ -954,6 +1003,21 @@ export class RDSProvider implements ResourceProvider {
         }
       }
 
+      // Issue #4029: a global-cluster member cannot be deleted until it is
+      // detached, which is what the Cloud Control handler did before its own
+      // (unwanted) final snapshot.
+      const globalClusterId = recordedGlobalClusterIdentifier(properties);
+      if (globalClusterId !== undefined) {
+        detachedFrom = (await this.detachFromGlobalCluster(
+          logicalId,
+          physicalId,
+          globalClusterId,
+          context?.removeProtection === true
+        ))
+          ? globalClusterId
+          : undefined;
+      }
+
       // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
@@ -980,6 +1044,20 @@ export class RDSProvider implements ResourceProvider {
       // Wait for cluster to be fully deleted
       await this.waitForClusterDeleted(physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
+      if (error instanceof GlobalClusterDetachError) {
+        // Non-retryable so the destroy / deploy classifiers never read an AWS
+        // "not found" in the detail as the cluster being gone; a re-run of the
+        // destroy repeats the detach.
+        throw markNonRetryable(
+          new ProvisioningError(
+            `Failed to delete DBCluster ${logicalId}: ${error.message}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error
+          )
+        );
+      }
       if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
@@ -994,7 +1072,10 @@ export class RDSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}` +
+          (detachedFrom !== undefined
+            ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
+            : ''),
         resourceType,
         logicalId,
         physicalId,
@@ -1485,6 +1566,118 @@ export class RDSProvider implements ResourceProvider {
     return (
       name === faultName || message.includes('not found') || message.includes('does not exist')
     );
+  }
+
+  /**
+   * Detach cluster `physicalId` from global cluster `globalClusterId` and wait
+   * until it is out of the member list and `available` again, as the
+   * CloudFormation handler does before its delete (issue #4029). Returns
+   * whether a detach was issued, for the caller's failure message.
+   *
+   * The detach is IRREVERSIBLE (a secondary becomes a standalone writer), so a
+   * cluster whose deletion protection is still on is refused BEFORE it: the
+   * delete could only fail after it. Under `--remove-protection` the flip just
+   * made gets a short grace to show.
+   *
+   * A cluster that is gone surfaces as the describe's `DBClusterNotFoundFault`
+   * or an empty answer, both left to the caller's region-checked not-found
+   * arm. A global cluster that is gone, or a cluster that is not (or no
+   * longer) a member, needs no detach. A busy cluster or global cluster, or a
+   * throttle, is waited through within the delete budget. Every other failure
+   * is a {@link GlobalClusterDetachError}.
+   */
+  private async detachFromGlobalCluster(
+    logicalId: string,
+    physicalId: string,
+    globalClusterId: string,
+    removeProtection: boolean
+  ): Promise<boolean> {
+    let cluster = await this.describeDBCluster(physicalId);
+    for (let i = 0; removeProtection && cluster?.DeletionProtection === true && i < 6; i++) {
+      await this.sleep(5_000);
+      cluster = await this.describeDBCluster(physicalId);
+    }
+    if (cluster === undefined) return false;
+    if (cluster.DeletionProtection === true) {
+      throw new GlobalClusterDetachError(
+        safeMsg`${physicalId} has deletion protection on, so cdkd did not detach it from global cluster ${globalClusterId}; turn it off (cdkd destroy --remove-protection does) and re-run`
+      );
+    }
+    const clusterArn = cluster.DBClusterArn;
+    if (typeof clusterArn !== 'string' || clusterArn === '') {
+      throw new GlobalClusterDetachError(
+        safeMsg`could not read the ARN of ${physicalId} to detach it from global cluster ${globalClusterId}`
+      );
+    }
+
+    const startTime = Date.now();
+    let delay = 5_000;
+    const backOff = async (): Promise<void> => {
+      if (Date.now() - startTime >= RDS_DELETE_WAIT_MS) {
+        throw new GlobalClusterDetachError(
+          safeMsg`timed out waiting for ${physicalId} to leave global cluster ${globalClusterId}`
+        );
+      }
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    };
+
+    for (;;) {
+      try {
+        await this.getClient().send(
+          new RemoveFromGlobalClusterCommand({
+            GlobalClusterIdentifier: globalClusterId,
+            DbClusterIdentifier: clusterArn,
+          })
+        );
+        this.logger.info(
+          safeMsg`Detaching DBCluster ${logicalId} from global cluster ${globalClusterId} before the delete`
+        );
+        break;
+      } catch (error) {
+        const name = awsErrorName(error);
+        if (name === 'GlobalClusterNotFoundFault') return false;
+        // Not (or no longer) a member: nothing to detach, and the delete that
+        // follows reports the cluster's real state.
+        if (name === 'DBClusterNotFoundFault') break;
+        if (!TRANSIENT_DETACH_FAULTS.has(name)) {
+          throw new GlobalClusterDetachError(
+            safeMsg`detaching ${physicalId} from global cluster ${globalClusterId} failed (${describeAwsFailure(error).detail})`
+          );
+        }
+        await backOff();
+      }
+    }
+
+    for (;;) {
+      let stillMember: boolean | undefined;
+      try {
+        const response = await this.getClient().send(
+          new DescribeGlobalClustersCommand({ GlobalClusterIdentifier: globalClusterId })
+        );
+        stillMember = (response.GlobalClusters?.[0]?.GlobalClusterMembers ?? []).some(
+          (member) => member.DBClusterArn === clusterArn
+        );
+      } catch (error) {
+        const name = awsErrorName(error);
+        if (name === 'GlobalClusterNotFoundFault') {
+          stillMember = false;
+        } else if (!TRANSIENT_DETACH_FAULTS.has(name)) {
+          throw new GlobalClusterDetachError(
+            safeMsg`could not confirm ${physicalId} left global cluster ${globalClusterId} (${describeAwsFailure(error).detail})`
+          );
+        }
+      }
+      if (stillMember === false) {
+        const after = await this.describeDBCluster(physicalId);
+        if (after === undefined) return true;
+        this.logger.debug(
+          safeMsg`DBCluster ${physicalId} status after the detach: ${after.Status}`
+        );
+        if (after.Status === 'available') return true;
+      }
+      await backOff();
+    }
   }
 
   private async describeDBCluster(dbClusterIdentifier: string) {

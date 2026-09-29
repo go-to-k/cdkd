@@ -548,6 +548,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-final-snapshot-handlers",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-getatt-readback",
       "annotated": true,
       "scenarios": []
@@ -3084,6 +3089,7 @@
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "cc-final-snapshot-handlers",
     "cc-to-sdk-reroute",
     "cloudtrail-trail",
     "codebuild-project",

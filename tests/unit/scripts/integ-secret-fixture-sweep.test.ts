@@ -361,6 +361,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
     expect(seeding.map((f) => f.name).sort()).toEqual([
       'apigw-usage-plan-key',
       'appsync',
+      // Issue #4029: a generated Aurora master password, resolved through a
+      // dynamic reference into the cluster; the fixture sweeps state versions.
+      'cc-final-snapshot-handlers',
       'cognito-resource-server',
       'cross-stack-secret-import',
       'deletion-policy-snapshot-heavy',

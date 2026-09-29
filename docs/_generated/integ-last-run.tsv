@@ -32,9 +32,10 @@ bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run 
 bootstrap-free-region	2026-09-01T14:50:59Z	PASS	240	verify.sh	PR#2398 arm 2/6: bootstrap.ts three-client path + region resolution, rc 0, 0 orphans
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
 budgets	2026-09-29T04:12:45Z	PASS	55	verify.sh	PR #4032 merge-gate run; rc ok, orph clean
-cache-streaming	2026-09-27T15:53:36Z	PASS	536	verify.sh	rc ok, orph clean (log-group sweep added)
+cache-streaming	2026-09-29T15:04:16Z	PASS	652	verify.sh	rc ok, orph clean (#4029 PR #4080: ElastiCache delete wait)
 cc-api-fallback	2026-09-29T03:32:02Z	PASS	60	verify.sh	rc ok, orph clean (#3993 PR #4031)
 cc-api-fallback-transitions	2026-09-29T03:32:02Z	PASS	126	verify.sh	rc ok, orph clean (#3993 PR #4031)
+cc-final-snapshot-handlers	2026-09-29T17:01:10Z	PASS	1263	verify.sh	rc ok, orph clean, 0 state versions (#4029 PR #4080, final head after #4128)
 cc-getatt-readback	2026-09-19T20:26:58Z	PASS	110	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, CC protection flip over 5 types, 5 deleted 0 errors; orphan scan clean (state/RDS+DocDB global/NeptuneGraph/VerifiedPermissions)
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
@@ -80,7 +81,7 @@ destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded
 destroy-interrupt	2026-09-29T03:31:30Z	PASS	397	verify.sh	rc ok, orph clean (pre-existing HandlerFn log group swept); No state found for stack(s) remedy on own line (PR #4004)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-29T11:21:00Z	PASS	110	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-docdb-neptune	2026-09-29T13:45:16Z	PASS	5215	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+docdb-neptune	2026-09-29T15:04:16Z	PASS	5194	verify.sh	rc ok, orph clean (#4029 PR #4080)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-09-29T14:17:35Z	PASS	246	verify.sh	rc ok, orph clean (#4084 @cb30f8feb)
 drift-revert-arrays	2026-09-29T11:12:57Z	PASS	185	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
@@ -168,7 +169,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
 kinesis-stream-mode-switch	2026-09-27T18:06:09Z	PASS	110	verify.sh	rc ok, orph clean; #3881 follow-up
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-29T14:23:20Z	PASS	145	verify.sh	rc ok, orph clean (#4084 @cb30f8feb)
+lambda	2026-09-29T16:14:14Z	PASS	146	verify.sh	rc ok, orph clean (#4029 PR #4080, final rebased head)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -249,9 +250,9 @@ outputs-only-export	2026-09-28T07:22:06Z	PASS	115	verify.sh	#3885 log-group swee
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-09-29T13:40:32Z	PASS	4734	verify.sh	rc ok, orph clean; #4087 tag + cc-api flip + cc-api destroy arms
+rds-aurora	2026-09-29T15:04:16Z	PASS	4793	verify.sh	rc ok, orph clean (#4029 PR #4080, rebased head)
 rds-dbinstance-backfill	2026-09-29T06:54:20Z	PASS	801	verify.sh	rc ok, orph clean (#4030 PR #4040: policy-less L1 instance took its final snapshot, deleted; fix-reverted run RED at the assertion)
-rds-full-stack	2026-09-29T12:18:09Z	PASS	1132	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+rds-full-stack	2026-09-29T16:14:14Z	PASS	1047	verify.sh	rc ok, orph clean (#4029 PR #4080, final rebased head)
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc ok, orph clean; PR #3668 head
 recreate-via-cc-api	2026-09-29T03:32:02Z	PASS	120	verify.sh	rc ok, orph clean (#3993 PR #4031)

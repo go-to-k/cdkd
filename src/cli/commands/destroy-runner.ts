@@ -1805,9 +1805,10 @@ export async function runDestroyForStack(
                       ...(state.region !== undefined && { expectedRegion: state.region }),
                       ...(ctx.removeProtection === true && { removeProtection: true }),
                       ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-                      ...(resource.deletionPolicy !== undefined && {
-                        deletionPolicy: resource.deletionPolicy,
-                      }),
+                      // Issue #4029: the EFFECTIVE policy, absent read as
+                      // CloudFormation's `Delete` (RDS's `Snapshot` default is
+                      // already in `policy`).
+                      deletionPolicy: policy ?? 'Delete',
                       ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
                     }
                   );
