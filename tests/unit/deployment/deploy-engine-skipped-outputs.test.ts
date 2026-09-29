@@ -839,6 +839,25 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
     expect(isMarkedNonRetryable(error)).toBe(true);
   });
 
+  // Issue #4077: CloudFormation rejects this template before creating
+  // anything, so the deploy refuses it before provisioning — with or without
+  // the flag — instead of publishing nothing afterwards.
+  it.each([false, true])(
+    'an output whose Value is AWS::NoValue is refused BEFORE provisioning (strictGetAtt: %s, issue #4077)',
+    async (strictGetAtt) => {
+      const { engine, provider, stateBackend } = buildEngine({ creates: ['BucketB'], strictGetAtt });
+      // This file's `evaluateConditions` mock returns `{}`, so the Fn::If
+      // shapes are pinned in `output-value-preflight.test.ts`; this case pins
+      // the WIRING — the refusal fires before any create or save.
+      const tpl = withBad({ Value: { Ref: 'AWS::NoValue' } });
+      await expect(engine.deploy(stackName, tpl)).rejects.toThrow(
+        /^Output Bad evaluates to AWS::NoValue, and CloudFormation rejects the template/
+      );
+      expect(provider['create']).not.toHaveBeenCalled();
+      expect(stateBackend.saveState).not.toHaveBeenCalled();
+    }
+  );
+
   it('--strict-getatt: an output that resolves to a value is not refused (the refusal keys on `undefined`, not on the flag alone)', async () => {
     const { engine, stateBackend } = buildEngine({
       creates: ['BucketA'],

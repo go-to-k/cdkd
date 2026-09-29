@@ -247,11 +247,11 @@ describe('one case per arm that reads the id: refused before the arm, with no AW
       (o) => expect(o).toEqual({ value: [] }),
     ],
     [
-      'Fn::GetAtt ServiceDiscovery HostedZoneId (warn-and-degrade after a failed read)',
+      'Fn::GetAtt ServiceDiscovery HostedZoneId (refused after a failed read, issue #4077)',
       { 'Fn::GetAtt': ['Thing', 'HostedZoneId'] },
       'AWS::ServiceDiscovery::PrivateDnsNamespace',
       'ns-0abc',
-      (o) => expect(o).toEqual({ value: undefined }),
+      (o) => expect(errorMessage(o)).toContain('GetNamespace failed'),
     ],
     [
       'Fn::GetAtt LaunchTemplate LatestVersionNumber (falls back after a failed read)',

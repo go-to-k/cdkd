@@ -4,6 +4,7 @@ import {
   type ResolverContext,
   resetAccountInfoCache,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { StaleAttributeHealOutcome } from '../../../src/deployment/stale-attribute-heal.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -26,9 +27,12 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
  * Issue #3627: these arms ANSWERED without the record — `undefined` for
  * DynamoDB `StreamArn` / IAM `RoleId`, a path-less ARN for IAM — so a record
  * lacking the attribute (one `cdkd import` wrote before its read-back fixes)
- * never reached the #1852 heal. Each now heals first, and falls back to its
- * old answer when the heal finds nothing or no healer is wired.
+ * never reached the #1852 heal. Each now heals first. When the heal finds
+ * nothing or no healer is wired, an IAM arm falls back to its path-less ARN,
+ * and an arm that answered `undefined` REFUSES instead (issue #4077: a
+ * `Fn::Join` rendered that `undefined` as the text "undefined").
  */
+const REFUSED = Symbol('refused');
 const CASES: ReadonlyArray<{
   type: string;
   physicalId: string;
@@ -41,21 +45,21 @@ const CASES: ReadonlyArray<{
     physicalId: 'orders',
     attribute: 'StreamArn',
     healed: 'arn:aws:dynamodb:us-east-1:123456789012:table/orders/stream/2026',
-    fallback: undefined,
+    fallback: REFUSED,
   },
   {
     type: 'AWS::DynamoDB::GlobalTable',
     physicalId: 'orders',
     attribute: 'StreamArn',
     healed: 'arn:aws:dynamodb:us-east-1:123456789012:table/orders/stream/2026',
-    fallback: undefined,
+    fallback: REFUSED,
   },
   {
     type: 'AWS::IAM::Role',
     physicalId: 'app-role',
     attribute: 'RoleId',
     healed: 'AROAEXAMPLE',
-    fallback: undefined,
+    fallback: REFUSED,
   },
   {
     type: 'AWS::IAM::Role',
@@ -124,10 +128,26 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
     expect(healer).toHaveBeenCalledTimes(1);
   });
 
-  it.each(CASES)('$type $attribute keeps its old answer when the heal reads nothing', async (c) => {
+  it.each(CASES)('$type $attribute falls back, or refuses, when the heal reads nothing', async (c) => {
     const healer = vi.fn(
       async (): Promise<StaleAttributeHealOutcome> => ({ kind: 'read', attributes: {} })
     );
+    if (c.fallback === REFUSED) {
+      // Worded from the heal's outcome: the read completed and reported none.
+      // For StreamArn the likelier cause is a table with no stream (#4077).
+      const error = await resolveWith(c, healer).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect((error as Error).message).toMatch(
+        c.attribute === 'StreamArn'
+          ? /the state record holds no value for it .*add a StreamSpecification to the table/
+          : /the state record holds no value for it .*nothing to heal the record with/
+      );
+      // Terminal: the heal's outcome is memoized per deploy (#1874 hazard).
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      return;
+    }
     await expect(resolveWith(c, healer)).resolves.toBe(c.fallback);
   });
 
@@ -153,7 +173,25 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
     expect(healer).not.toHaveBeenCalled();
   });
 
-  it.each(CASES)('$type $attribute keeps its old answer with no healer wired', async (c) => {
+  it.each(CASES.filter((c) => c.attribute === 'StreamArn'))(
+    '$type StreamArn on a record this deploy wrote (heal not attempted) names the StreamSpecification',
+    async (c) => {
+      const healer = vi.fn(
+        async (): Promise<StaleAttributeHealOutcome> => ({ kind: 'not-attempted' })
+      );
+      await expect(resolveWith(c, healer)).rejects.toThrow(
+        /add a StreamSpecification to the table/
+      );
+    }
+  );
+
+  it.each(CASES)('$type $attribute falls back, or refuses, with no healer wired', async (c) => {
+    if (c.fallback === REFUSED) {
+      // No heal ran (`cdkd diff`, `cdkd drift`, ...): `cdkd deploy` is the
+      // remedy, since the record may only predate the read-back.
+      await expect(resolveWith(c)).rejects.toThrow(/Run 'cdkd deploy': it re-reads/);
+      return;
+    }
     await expect(resolveWith(c)).resolves.toBe(c.fallback);
   });
 });

@@ -1169,7 +1169,7 @@ export class IAMRoleProvider implements ResourceProvider {
       try {
         const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: explicit }));
         // Issue #3627: the same map `create()` records. The resolver's
-        // `RoleId` arm returns `undefined` without it, and its `Arn` arm
+        // `RoleId` arm refuses the reference without it (issue #4077), and its `Arn` arm
         // ignores a non-`/` `Path`.
         return {
           physicalId: explicit,

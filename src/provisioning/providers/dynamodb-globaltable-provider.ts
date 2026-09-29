@@ -6160,7 +6160,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           new DescribeTableCommand({ TableName: explicit })
         );
         // Issue #3627: the same map `create()` records. The resolver's
-        // `StreamArn` arm returns `undefined` without it.
+        // `StreamArn` arm refuses the reference without it (issue #4077).
         return {
           physicalId: explicit,
           attributes: definedAttributes({

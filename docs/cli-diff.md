@@ -240,9 +240,10 @@ as an `ADD` either. Two things get skipped, and only the first is announced:
 - the resolver **threw** — a lookup failed inside it, such as a
   `{{resolve:secretsmanager:...}}` naming a JSON key the secret does not
   hold. The deploy warns per output (`--strict-getatt` aborts instead).
-- the resolver **returned nothing** — an `Fn::GetAtt` whose attribute could
-  not be constructed. No per-output warning (`--strict-getatt` aborts here
-  too).
+- the resolver **returned nothing** — a malformed value, such as an `Fn::If`
+  with no third argument. No per-output warning (`--strict-getatt` aborts here
+  too). An `Fn::GetAtt` cdkd cannot build is the first kind: it is refused,
+  and warned about.
 
 Either way the deploy still persists every other output that did resolve, so
 an output you add beside a broken one lands on the next deploy. A broken

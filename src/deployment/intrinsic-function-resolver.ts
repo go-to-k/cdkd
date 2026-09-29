@@ -49,6 +49,7 @@ import {
   MalformedProducerRecordRefusalError,
 } from '../utils/error-handler.js';
 import { drainDeadlines, withSharedDrainBudget } from './drain-budget.js';
+import { recordAssumedConditions } from './assumed-conditions.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
 import { isListParameterType, ssmResolvedValueType } from '../utils/parameter-types.js';
 import { classifyReplaySecretRegion } from './secret-region-classification.js';
@@ -3834,6 +3835,11 @@ export class IntrinsicFunctionResolver {
     // `Object.keys` -- so the null prototype costs nothing here.
     const conditions: Record<string, boolean> = Object.create(null) as Record<string, boolean>;
     const templateConditions = context.template.Conditions;
+    // See `assumedConditionNames`. `inProgress` holds the evaluation path, so
+    // marking it whenever a guess is made or read taints every condition whose
+    // value that guess fed.
+    const assumed = new Set<string>();
+    recordAssumedConditions(conditions, assumed);
 
     if (!templateConditions || typeof templateConditions !== 'object') {
       return conditions;
@@ -3931,6 +3937,7 @@ export class IntrinsicFunctionResolver {
       // memo decides whether a definition is evaluated at all, so it should not
       // depend on a property of a line 50 above it.
       if (Object.hasOwn(conditions, name)) {
+        if (assumed.has(name)) for (const dependent of inProgress) assumed.add(dependent);
         return conditions[name]!;
       }
       if (inProgress.has(name)) {
@@ -3952,6 +3959,8 @@ export class IntrinsicFunctionResolver {
           `Condition ${this.displayMasked(name, maskingContext)} not found in template, assuming false`
         );
         conditions[name] = false;
+        assumed.add(name);
+        for (const dependent of inProgress) assumed.add(dependent);
         return false;
       }
 
@@ -4058,6 +4067,7 @@ export class IntrinsicFunctionResolver {
           )
         );
         conditions[name] = false;
+        assumed.add(name);
         inProgress.delete(name);
       }
     }
@@ -6035,7 +6045,9 @@ export class IntrinsicFunctionResolver {
    * the attribute, such as one `cdkd import` wrote before issue #3627's
    * read-backs. Under the probe phase this raises the signal; in the settled
    * phase (the read found nothing) or with no healer it returns, and the arm
-   * answers as it always did.
+   * answers: the IAM arms with their path-less ARN, the `StreamArn` / `RoleId`
+   * arms with a refusal worded from the heal's outcome (issue #4077,
+   * {@link refuseUnconstructibleAttribute}).
    */
   private healBeforeConstructing(context: ResolverContext): void {
     if (context.staleAttributeHeal?.phase === 'probe') throw new StaleAttributeMissSignal();
@@ -6125,7 +6137,20 @@ export class IntrinsicFunctionResolver {
           // record imported before `import()` read it back lacks it, and
           // answering here never reached the #1852 re-read.
           this.healBeforeConstructing(context);
-          return undefined;
+          this.refuseUnconstructibleAttribute({
+            logicalId,
+            attributeName,
+            resourceType,
+            context,
+            why: 'cdkd cannot build it from the table name',
+            // The commonest way here is a table with no StreamSpecification:
+            // it has no stream, so no re-read or re-import can produce one.
+            remedyWhenHealCompleted:
+              'A table with no StreamSpecification has no stream, and CloudFormation cannot ' +
+              'return a StreamArn for it either: add a StreamSpecification to the table. If ' +
+              'it already has one, change any property of the table so its next update ' +
+              're-records the attributes.',
+          });
         default:
           return this.guardedPhysicalIdFallback(
             logicalId,
@@ -6173,7 +6198,13 @@ export class IntrinsicFunctionResolver {
         case 'RoleId':
           // Not buildable from the role name: heal first (issue #3627).
           this.healBeforeConstructing(context);
-          return undefined;
+          this.refuseUnconstructibleAttribute({
+            logicalId,
+            attributeName,
+            resourceType,
+            context,
+            why: 'cdkd cannot build it from the role name',
+          });
         default:
           return this.guardedPhysicalIdFallback(
             logicalId,
@@ -6356,8 +6387,16 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:iam::${accountId}:policy/${physicalId}`;
         case 'PolicyId':
-          // Policy ID would need to be fetched from API
-          return undefined;
+          // Not an attribute of this type: the CloudFormation schema's only
+          // read-only property is `Id`, so CloudFormation rejects this
+          // Fn::GetAtt at template validation.
+          this.refuseUndefinedAttribute({
+            logicalId,
+            attributeName,
+            resourceType,
+            context,
+            defined: 'Id',
+          });
         default:
           return this.guardedPhysicalIdFallback(
             logicalId,
@@ -6663,9 +6702,11 @@ export class IntrinsicFunctionResolver {
     // ServiceDiscovery namespaces (physicalId is the namespace id). All
     // three kinds share the ARN shape; the DNS kinds additionally expose
     // `HostedZoneId` (the Route 53 hosted zone AWS creates alongside the
-    // namespace), which is NOT constructible — fetch it live and return
-    // `undefined` on a miss rather than falling back to the namespace id
-    // (a silently wrong value baked into dependent resources).
+    // namespace), which is NOT constructible — fetch it live and REFUSE on a
+    // miss rather than falling back to the namespace id (a silently wrong
+    // value baked into dependent resources) or answering `undefined` (which a
+    // `Fn::Join` / `Fn::Sub` rendered as the text `undefined`, issue #4077).
+    // `HttpNamespace` has no `HostedZoneId` in the CloudFormation schema.
     if (
       resourceType === 'AWS::ServiceDiscovery::PrivateDnsNamespace' ||
       resourceType === 'AWS::ServiceDiscovery::HttpNamespace' ||
@@ -6677,6 +6718,16 @@ export class IntrinsicFunctionResolver {
         case 'Id':
           return physicalId;
         case 'HostedZoneId': {
+          if (resourceType === 'AWS::ServiceDiscovery::HttpNamespace') {
+            this.refuseUndefinedAttribute({
+              logicalId,
+              attributeName,
+              resourceType,
+              context,
+              defined: 'Arn, Id',
+            });
+          }
+          let hostedZoneId: string | undefined;
           try {
             const { GetNamespaceCommand } = await import('@aws-sdk/client-servicediscovery');
             // Region-sensitive: a namespace id only resolves in its own region
@@ -6684,16 +6735,33 @@ export class IntrinsicFunctionResolver {
             // one service is built here instead of read off the bag.
             const sd = await this.serviceDiscoveryClient();
             const resp = await sd.send(new GetNamespaceCommand({ Id: physicalId }));
-            return resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
-          } catch (error) {
-            // Both through the builder (issue #3479), for the reasons the VPC
-            // `Ipv6CidrBlocks` arm gives: a state-record id is not always
-            // AWS-assigned, and `NamespaceNotFound` can echo it.
-            this.logger.warn(
-              `Failed to fetch HostedZoneId for namespace ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
-            );
-            return undefined;
+            hostedZoneId = resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
+          } catch (err) {
+            // Unmarked (time-dependent): a throttled or denied read can
+            // succeed on a later attempt. AWS's text stays behind --verbose
+            // (`describeFailureObserved`), since `NamespaceNotFound` can echo
+            // a state-record id (issue #3479).
+            this.refuseUnservedAttribute({
+              logicalId,
+              attributeName,
+              resourceType,
+              physicalId,
+              context,
+              observed: this.describeFailureObserved('GetNamespace', err, context),
+              remedy:
+                'Fix the read (the servicediscovery:GetNamespace permission, or the region) and deploy again.',
+            });
           }
+          if (hostedZoneId) return hostedZoneId;
+          this.refuseUnservedAttribute({
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: 'GetNamespace reported no DnsProperties.HostedZoneId for the namespace',
+            remedy: 'Check the namespace in the Cloud Map console, and deploy again.',
+          });
         }
         default:
           return this.guardedPhysicalIdFallback(
@@ -7435,7 +7503,9 @@ export class IntrinsicFunctionResolver {
    * interpolated hole happens to carry a pattern — the `logicalId` (the #1838
    * hazard: `DependencyViolation` and two other bare words), or the error
    * CLASS name `describeFailureObserved` puts in `observed`, which none of
-   * these four reads raises — and then re-describes and can heal.
+   * the EC2 describes raises (the Cloud Map `GetNamespace` read, issue #4077,
+   * can: its throttle `RequestLimitExceeded` is a retryable name, and a retry
+   * is what a throttled read wants) — and then re-describes and can heal.
    * Measured, not designed: the fabricated-account guard sits in exactly the
    * same place. Threading a sanitized SDK error as `cause` so a throttled
    * describe classifies as transient was considered and left out — a
@@ -7475,6 +7545,86 @@ export class IntrinsicFunctionResolver {
       `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
         `${observed}. The physical id "${this.displayMasked(physicalId, context)}" is not a usable ` +
         `${this.displayMasked(attributeName, context)}, so cdkd refuses to substitute it. ${remedy}`
+    );
+  }
+
+  /**
+   * Refuse a CloudFormation attribute cdkd cannot BUILD and the state record
+   * does not hold (issue [#4077](https://github.com/go-to-k/cdkd/issues/4077)).
+   *
+   * These arms used to answer `undefined`. CloudFormation answers the real
+   * value, so no value cdkd could substitute is correct, and `undefined` was
+   * the worst of them: a resource property dropped the key silently, a
+   * `Fn::Join` / `Fn::Sub` rendered the text `undefined` into the value it
+   * sent to AWS, and a stack Output was skipped without a warning. A refusal
+   * takes the per-site outcome every other refusal gets (resource fails,
+   * Output warns and skips or fails under `--strict-getatt`, `Fn::Sub`
+   * re-raises, `Conditions` absorb it).
+   *
+   * Reached only after the #1852 heal settled (every caller runs
+   * {@link healBeforeConstructing} first), so the remedy is worded from its
+   * outcome. Marked non-retryable: the verdict is the record plus the heal's
+   * memoized outcome, which a retry cannot change, and the message
+   * interpolates the template's logical id.
+   */
+  private refuseUnconstructibleAttribute(site: {
+    logicalId: string;
+    attributeName: string;
+    resourceType: string;
+    context: ResolverContext;
+    why: string;
+    /**
+     * Replaces the stale-record remedy when the heal COMPLETED without the
+     * value (`read`, or `not-attempted` for a record this deploy wrote): the
+     * arm then knows the likelier cause better than "re-record it" does.
+     */
+    remedyWhenHealCompleted?: string;
+  }): never {
+    const { logicalId, attributeName, resourceType, context, why, remedyWhenHealCompleted } = site;
+    const healOutcome =
+      context.staleAttributeHeal?.phase === 'settled'
+        ? context.staleAttributeHeal.outcome
+        : undefined;
+    const healCompleted =
+      (healOutcome?.kind === 'read' && (healOutcome.withheldKeys?.length ?? 0) === 0) ||
+      healOutcome?.kind === 'not-attempted';
+    const remedy =
+      remedyWhenHealCompleted !== undefined && healCompleted
+        ? remedyWhenHealCompleted
+        : this.staleRecordRemedy(healOutcome, context);
+    // not-in-class(why): a cdkd-authored literal chosen by the calling arm.
+    // not-in-class(remedy): a cdkd-authored literal, or `staleRecordRemedy`'s cdkd-authored sentence.
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
+          `the state record holds no value for it and ${why}, so cdkd refuses to substitute ` +
+          `one. ${remedy}`
+      )
+    );
+  }
+
+  /**
+   * Refuse an `Fn::GetAtt` naming an attribute the CloudFormation schema does
+   * not define for the type (issue
+   * [#4077](https://github.com/go-to-k/cdkd/issues/4077)). CloudFormation
+   * rejects such a template at validation, before anything is created; cdkd
+   * refuses the reference. Marked non-retryable: the verdict is the template.
+   */
+  private refuseUndefinedAttribute(site: {
+    logicalId: string;
+    attributeName: string;
+    resourceType: string;
+    context: ResolverContext;
+    defined: string;
+  }): never {
+    const { logicalId, attributeName, resourceType, context, defined } = site;
+    // not-in-class(defined): a cdkd-authored list of the type's schema attributes, a literal at every call site.
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
+          `CloudFormation defines no such attribute for this type (its attributes: ${defined}), ` +
+          `and rejects the template. Reference one of those attributes instead.`
+      )
     );
   }
 
