@@ -63,6 +63,7 @@ import {
   maskSecretsInError,
   carryLogOnlyValues,
   hasMaskableValues,
+  printingCorpusOf,
   shareLogOnlyValues,
   maskSecretsInText,
   TEMPLATE_SOURCED_RULES,
@@ -5594,6 +5595,20 @@ export interface ScrubStackResult {
 }
 
 /**
+ * The `exportNameDisplay` closure over a stack's outputs bag
+ * (go-to-k/cdkd#4049): names are tested against the PRINTING corpus, so a
+ * `NoEcho` parameter's value (a log-only needle) is masked in the index-repair
+ * lines. Built once per result, after resolution has finished recording into
+ * the bag. Printing only: the secret-bearing KEY scan reads the map alone.
+ */
+function exportNameDisplayOver(
+  outputSecrets: RecordedSecretValues
+): (exportName: string) => SecretSafeKeyDisplay {
+  const corpus = printingCorpusOf(outputSecrets);
+  return (exportName) => secretSafeKeyDisplay(exportName, corpus);
+}
+
+/**
  * Scrub one stack's state. Re-resolves the template's per-resource properties to
  * learn the resolved secret VALUES, then replaces those values in the state
  * record with their `{{resolve:...}}` expressions. Returns counts. It mutates no
@@ -5820,7 +5835,7 @@ export async function scrubStack(
         // No record, so nothing was resolved and the bag is empty — every name
         // tests as 'safe'. Bound to the same map the other two sites use so
         // the shape cannot drift.
-        exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+        exportNameDisplay: exportNameDisplayOver(outputSecrets),
         resolveRecordedExpressions: (value) => value,
         holdsRecordedPlaintext: () => false,
         nestedChildren: [],
@@ -7152,7 +7167,7 @@ export async function scrubStack(
         // is what this run leaves — including on a RE-RUN over already-scrubbed
         // state, which is the case the index step exists to finish.
         outputs: state.outputs,
-        exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+        exportNameDisplay: exportNameDisplayOver(outputSecrets),
         resolveRecordedExpressions,
         holdsRecordedPlaintext,
         nestedChildren,
@@ -7521,7 +7536,7 @@ export async function scrubStack(
       ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
       ...(malformedResourceRows ? { malformedResourceRows } : {}),
       outputs: newOutputs,
-      exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+      exportNameDisplay: exportNameDisplayOver(outputSecrets),
       resolveRecordedExpressions,
       holdsRecordedPlaintext,
       nestedChildren,

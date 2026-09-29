@@ -5,18 +5,26 @@
 # records the value as a LOG-ONLY needle: the deploy's provider, error, event
 # and resolver surfaces mask it (the resolver's --verbose lines, the provider's
 # masker, the engine's error text, the deployments/*.jsonl events), and what
-# cdkd PERSISTS is unchanged. `cdkd diff` and the other surfaces that never
-# read the bag are go-to-k/cdkd#4049.
+# cdkd PERSISTS is unchanged. So do the diff's `requires replacement` line and
+# the export-alias collision warning (go-to-k/cdkd#4049). `cdkd diff` and the
+# other surfaces that never read the bag are go-to-k/cdkd#4049's other rows.
 #
 # Phases:
 #   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: token=...` line
 #      prints the value masked, AWS holds the REAL value, and state.json holds
 #      it in the clear -- the persistence half of the #1998 decision, asserted
-#      so a change to it is a visible decision, not a silent one.
+#      so a change to it is a visible decision, not a silent one. The
+#      export-alias collision warning names a second NoEcho value, masked.
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
-#   3. Destroy, gone-probes, and the S3 version sweep (state.json holds the
+#   3. Redeploy with CDKD_TEST_NOECHO_RENAME=true: NoEchoRenamed's create-only
+#      TopicName now embeds the value, and the `requires replacement` line
+#      prints it masked while AWS holds the real name (#4049). After Phase 2,
+#      whose events scan would read the new topic's ARN.
+#   4. Redeploy without it: the replacement back prints the old, value-bearing
+#      name masked.
+#   5. Destroy, gone-probes, and the S3 version sweep (state.json holds the
 #      value in the clear by design, so every version of it is purged).
 #
 # The value is generated per run and never printed.
@@ -72,6 +80,7 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 CONSUMER_NAME="cdkd-test-noecho-consumer-${ACCOUNT_ID}"
 REJECT_NAME="cdkd-test-noecho-reject-${ACCOUNT_ID}"
+RENAME_TOPIC_PREFIX="arn:aws:sns:${REGION}:${ACCOUNT_ID}:cdkd-test-noecho-rename-${ACCOUNT_ID}"
 
 # Per run, so a value left in some sink by an earlier run cannot satisfy or
 # confuse this one. Letters, digits and dashes: never one of SSM's `Tier`
@@ -82,6 +91,17 @@ if [ "${#TOKEN}" -lt 20 ]; then
   exit 1
 fi
 export CDKD_TEST_NOECHO_TOKEN="${TOKEN}"
+# The export-alias collision's value (#4049): it is also the owner OUTPUT's
+# logical id, so letters and digits only. It is template text as that id, so
+# only the collision warning is asserted not to carry it.
+ALIAS_TOKEN="CdkdNoEchoAlias$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+if [ "${#ALIAS_TOKEN}" -lt 20 ]; then
+  echo "FAIL: premise: could not generate the NoEcho alias value (got ${#ALIAS_TOKEN} characters)" >&2
+  exit 1
+fi
+export CDKD_TEST_NOECHO_ALIAS_TOKEN="${ALIAS_TOKEN}"
+RENAME_OLD_ARN="${RENAME_TOPIC_PREFIX}-a"
+RENAME_NEW_ARN="${RENAME_TOPIC_PREFIX}-${TOKEN}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -115,6 +135,8 @@ cleanup() {
   # if AWS stopped rejecting the value.
   aws ssm delete-parameter --name "${CONSUMER_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${REJECT_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws sns delete-topic --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws sns delete-topic --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     if [ "${destroy_rc}" -eq 0 ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -160,7 +182,7 @@ fi
 
 # --- Phase 1: deploy ---------------------------------------------------------
 echo "==> Phase 1: deploy with --verbose"
-if ! DEPLOY_OUT_P1=$(env -u CDKD_TEST_NOECHO_REJECT node "${LOCAL_DIST}" deploy "${STACK}" \
+if ! DEPLOY_OUT_P1=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --verbose \
@@ -212,13 +234,37 @@ if [ "${P1_PERSISTED}" != "token=${TOKEN}" ]; then
   exit 1
 fi
 echo "    OK: state.json holds the value as before (persistence unchanged)"
+# EXPORT-ALIAS COLLISION (#4049): NoEchoAliasProbe's Export.Name is the second
+# NoEcho value, which is also the owner output's key, so the alias is skipped
+# and the warning names it -- masked. The SENTINEL is the warning's fixed
+# wording: present with no masked name means the name printed.
+ALIAS_WARNING_TEXT='which is also the name of another output in this stack'
+P1_ALIAS_LINE=$(grep -m1 -F -- "${ALIAS_WARNING_TEXT}" <<< "${DEPLOY_OUT_P1}" || true)
+if [ -z "${P1_ALIAS_LINE}" ]; then
+  echo "FAIL: premise: the Phase 1 deploy printed no export-alias collision warning -- this arm did not run (issue #4049)" >&2
+  exit 1
+fi
+if [[ "${P1_ALIAS_LINE}" == *"${ALIAS_TOKEN}"* ]]; then
+  echo "FAIL: the export-alias collision warning carries the NoEcho alias value in plaintext (issue #4049)" >&2
+  exit 1
+fi
+if [[ "${P1_ALIAS_LINE}" != *'Output NoEchoAliasProbe exports as "***"'* ]]; then
+  echo "FAIL: the export-alias collision warning does not name the export masked (issue #4049): ${P1_ALIAS_LINE}" >&2
+  exit 1
+fi
+P1_OWNER_VALUE=$(jq -r --arg key "${ALIAS_TOKEN}" '.outputs[$key] // "<absent>"' "${P1_STATE}")
+if [ "${P1_OWNER_VALUE}" != "alias-owner-value" ]; then
+  echo "FAIL: state.json does not hold the owner output under its own key -- the collision's skip changed (issue #4049)" >&2
+  exit 1
+fi
+echo "    OK: the export-alias collision warning masks the NoEcho alias value"
 
 # --- Phase 2: the provider rejection quotes the value ------------------------
 echo "==> Phase 2: probe deploy whose SSM Tier is the NoEcho value, which SSM rejects quoting it"
 assert_gone "premise: ${REJECT_NAME} already exists before its probe deploy" \
   aws ssm get-parameter --name "${REJECT_NAME}" --region "${REGION}"
 set +e
-DEPLOY_OUT_P2=$(CDKD_TEST_NOECHO_REJECT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+DEPLOY_OUT_P2=$(CDKD_TEST_NOECHO_REJECT=true env -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --verbose \
@@ -296,8 +342,93 @@ if [ "${EVENTS_REJECTION}" -lt 1 ]; then
 fi
 echo "    OK: no deployment-events object carries the value (${EVENTS_SCANNED} objects, ${EVENTS_REJECTION} with the rejection)"
 
-# --- Phase 3: destroy --------------------------------------------------------
-echo "==> Phase 3: destroy"
+# --- Phase 3: a create-only property now embeds the value --------------------
+# AFTER Phase 2's events scan: this deploy records the new topic's ARN, which
+# embeds the value, as a physical id in its run stream, and that scan reads
+# every stream under the prefix.
+echo "==> Phase 3: redeploy with NoEchoRenamed's TopicName embedding the NoEcho value"
+if ! DEPLOY_OUT_P3=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_REJECT \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 3 deploy exited non-zero" >&2
+  diag_output "${DEPLOY_OUT_P3}"
+  exit 1
+fi
+# The REPLACEMENT lines only, not the whole log: the new topic's PHYSICAL id
+# (its ARN) embeds the value, and a physical id is printed as an identity, as
+# CloudFormation's events print it -- not a surface #4049 masks.
+P3_REPLACE_LINES=$(grep -F 'requires replacement' <<< "${DEPLOY_OUT_P3}" || true)
+if [[ "${P3_REPLACE_LINES}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 3 'requires replacement' line carries the NoEcho value in plaintext (issue #4049)" >&2
+  exit 1
+fi
+# The masked line, whole: the new name masked, the old side withheld. The
+# SENTINEL is the engine's own replacement line, which carries no value.
+REPLACE_LINE="Property TopicName of AWS::SNS::Topic requires replacement (*** -> \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\")"
+if [[ "${DEPLOY_OUT_P3}" != *"${REPLACE_LINE}"* ]]; then
+  if [[ "${DEPLOY_OUT_P3}" == *"Replacing NoEchoRenamed (AWS::SNS::Topic)"* ]]; then
+    echo "FAIL: NoEchoRenamed was replaced but the --verbose log carries no masked 'requires replacement' line for it (issue #4049)" >&2
+  else
+    echo "FAIL: premise: the Phase 3 deploy did not replace NoEchoRenamed -- this arm did not run" >&2
+  fi
+  # The replacement lines only: the whole log carries the new topic's ARN,
+  # which diag_output would always withhold.
+  diag_output "${P3_REPLACE_LINES}"
+  exit 1
+fi
+echo "    OK: the replacement line masks the NoEcho value"
+# AWS holds the REAL name, and the old topic is gone.
+if gone_probe aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"; then
+  echo "FAIL: the replacement topic named with the real NoEcho value does not exist -- the name AWS received was altered (issue #4049)" >&2
+  exit 1
+fi
+assert_gone "the replaced topic still exists after Phase 3" \
+  aws sns get-topic-attributes --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}"
+echo "    OK: AWS holds the real name and the old topic is gone"
+
+# --- Phase 4: back to the literal name ---------------------------------------
+# The OLD side is now the state's value-bearing name. The deploy's masker
+# holds every NoEcho parameter's value before the diff starts, so it is masked
+# whichever resource the diff reaches first.
+echo "==> Phase 4: redeploy with NoEchoRenamed's literal TopicName"
+if ! DEPLOY_OUT_P4=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 4 deploy exited non-zero" >&2
+  diag_output "${DEPLOY_OUT_P4}"
+  exit 1
+fi
+P4_REPLACE_LINES=$(grep -F 'requires replacement' <<< "${DEPLOY_OUT_P4}" || true)
+if [[ "${P4_REPLACE_LINES}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 4 'requires replacement' line carries the NoEcho value in plaintext (issue #4049)" >&2
+  exit 1
+fi
+REVERT_LINE="Property TopicName of AWS::SNS::Topic requires replacement (\"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\" -> \"cdkd-test-noecho-rename-${ACCOUNT_ID}-a\")"
+if [[ "${DEPLOY_OUT_P4}" != *"${REVERT_LINE}"* ]]; then
+  if [[ "${DEPLOY_OUT_P4}" == *"Replacing NoEchoRenamed (AWS::SNS::Topic)"* ]]; then
+    echo "FAIL: NoEchoRenamed was replaced back but its 'requires replacement' line does not mask the old name (issue #4049)" >&2
+  else
+    echo "FAIL: premise: the Phase 4 deploy did not replace NoEchoRenamed back -- this arm did not run" >&2
+  fi
+  diag_output "${P4_REPLACE_LINES}"
+  exit 1
+fi
+if gone_probe aws sns get-topic-attributes --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}"; then
+  echo "FAIL: premise: the literal-named topic does not exist after Phase 4" >&2
+  exit 1
+fi
+assert_gone "the value-named topic still exists after Phase 4" \
+  aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"
+echo "    OK: the replacement back masks the old, value-bearing name"
+
+# --- Phase 5: destroy --------------------------------------------------------
+echo "==> Phase 5: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -306,6 +437,10 @@ assert_gone "SSM parameter '${CONSUMER_NAME}' still exists after destroy" \
   aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}"
 assert_gone "SSM parameter '${REJECT_NAME}' exists after destroy" \
   aws ssm get-parameter --name "${REJECT_NAME}" --region "${REGION}"
+assert_gone "SNS topic NoEchoRenamed still exists after destroy" \
+  aws sns get-topic-attributes --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}"
+assert_gone "the value-named SNS topic exists after destroy" \
+  aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: resources and state are gone"
@@ -319,4 +454,4 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "noecho-parameter-masking state teardown"
 
-echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event and resolver surfaces, and persistence is unchanged"
+echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event, resolver, replacement-line and export-alias surfaces, and persistence is unchanged"

@@ -307,3 +307,59 @@ describe('a nested child carries the parent log-only needles (go-to-k/cdkd#1998)
     expect(logs).not.toContain(NOECHO);
   });
 });
+
+describe('the resolver masks its two bags in ONE pass (go-to-k/cdkd#4049)', () => {
+  // The inherited bag holds a SHORTER needle, the pass bag a longer one that
+  // embeds it: masked bag by bag (inherited first), the short needle cut the
+  // long one and the rest of it printed.
+  const SHORT = 'abcd1234';
+  const LONG = `XXsecretYY-${SHORT}-ZZtail`;
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resolver = new IntrinsicFunctionResolver();
+  });
+
+  function ctx(logOnly: boolean): ResolverContext {
+    const inherited: RecordedSecretValues = new Map();
+    const bag: RecordedSecretValues = new Map();
+    if (logOnly) {
+      recordLogOnlyValue(inherited, SHORT);
+      recordLogOnlyValue(bag, LONG);
+    } else {
+      inherited.set(SHORT, '{{resolve:ssm-secure:/short}}');
+      bag.set(LONG, '{{resolve:ssm-secure:/long}}');
+    }
+    return {
+      template: template(false),
+      resources: {},
+      parameters: { Secret: NOECHO, Plain: LONG },
+      recordedSecretValues: bag,
+      inheritedSecrets: inherited,
+    };
+  }
+
+  it.each([
+    ['recorded needles (maskNeedlesForLog)', false],
+    ['log-only needles (maskPrintedNeedlesForLog)', true],
+  ])('masks a longer value whole in a debug line: %s', async (_label, logOnly) => {
+    expect(await resolver.resolve({ Ref: 'Plain' }, ctx(logOnly))).toBe(LONG);
+    const lines = logLines();
+    expect(lines).toContain('Resolved Ref to parameter: Plain -> ');
+    expect(lines).not.toContain('XXsecretYY');
+    expect(lines).not.toContain('ZZtail');
+  });
+
+  it.each([
+    ['recorded needles', false],
+    ['log-only needles', true],
+  ])('masks a longer value whole in a thrown error: %s', (_label, logOnly) => {
+    const masked = (
+      resolver as unknown as {
+        maskNamedError: (e: unknown, x: undefined, c: ResolverContext) => unknown;
+      }
+    ).maskNamedError(new Error(`could not read ${LONG} here`), undefined, ctx(logOnly));
+    expect((masked as Error).message).toBe(`could not read ${SECRET_MASK} here`);
+  });
+});

@@ -293,3 +293,36 @@ describe('cdkd scrub - log-only needles change nothing scrub WRITES (go-to-k/cdk
     expect(JSON.stringify(state)).toBe(before);
   });
 });
+
+describe("cdkd scrub - the export-index repair lines' name display masks a log-only needle (go-to-k/cdkd#4049)", () => {
+  // `exportNameDisplay` feeds only the printed index-repair lines; the
+  // secret-bearing KEY scan (`--dry-run --fail`) is a separate, map-only call.
+  it.each([
+    ['with a recorded map entry', { Value: RECORD_OK, Tier: DYN_EXPR }],
+    ['with log-only needles only', { Value: RECORD_OK }],
+  ])('masks a NoEcho-bearing export name %s', async (_label, props) => {
+    const template = {
+      Resources: { P: { Type: 'AWS::SSM::Parameter', Properties: props } },
+      Outputs: { Out: { Value: RECORD_OK } },
+    } as unknown as CloudFormationTemplate;
+    const state = stateOf(
+      { P: { physicalId: 'p', resourceType: 'AWS::SSM::Parameter', properties: { ...props } } },
+      // A KEY carrying the value: the map-only key scan must still not count it.
+      { Out: NOECHO, [`exp-${NOECHO}`]: 'v' }
+    );
+    const { stateBackend, lockManager } = backends(state);
+    const result = (await scrubStack(
+      { stackName: 'MyStack', template } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: true, logger }
+    )) as { exportNameDisplay: (name: string) => unknown; secretBearingKeys: number };
+    expect(result.exportNameDisplay(`exp-${NOECHO}`)).toEqual({
+      kind: 'masked',
+      text: 'exp-***',
+    });
+    expect(result.exportNameDisplay('plain-export')).toEqual({ kind: 'safe', text: 'plain-export' });
+    expect(result.secretBearingKeys).toBe(0);
+  });
+});

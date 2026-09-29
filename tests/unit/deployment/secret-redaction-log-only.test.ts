@@ -5,6 +5,8 @@ import {
   carryLogOnlyValues,
   carryLogOnlyValuesCarriedBy,
   createSecretMasker,
+  createUnionSecretMasker,
+  unionOfSecretBags,
   hasMaskableValues,
   maskRecordedSecretsInText,
   maskSecretsInError,
@@ -168,5 +170,38 @@ describe('the side set survives the bag copies that mask (go-to-k/cdkd#1998)', (
     const to: RecordedSecretValues = new Map();
     mergeResolvedPairs(from, to);
     expect(hasMaskableValues(to)).toBe(false);
+  });
+});
+
+describe('createUnionSecretMasker / unionOfSecretBags (go-to-k/cdkd#4049)', () => {
+  const SHORT = 'abcd1234';
+  const LONG = `XXsecretYY-${SHORT}-ZZtail`;
+
+  it('masks a longer needle whole across bags (one pass, longest first)', () => {
+    const a: RecordedSecretValues = new Map();
+    recordLogOnlyValue(a, SHORT);
+    const b: RecordedSecretValues = new Map([[LONG, '{{resolve:x}}']]);
+    expect(createUnionSecretMasker([a, undefined, b])(`v=${LONG}`)).toBe(`v=${SECRET_MASK}`);
+    expect(maskSecretsInText(`v=${LONG}`, unionOfSecretBags([a, b]))).toBe(`v=${SECRET_MASK}`);
+  });
+
+  it('sees needles recorded after it was built and after its first call', () => {
+    const bag: RecordedSecretValues = new Map();
+    const mask = createUnionSecretMasker([bag]);
+    expect(mask(`v=${LONG}`)).toBe(`v=${LONG}`);
+    recordLogOnlyValue(bag, LONG);
+    expect(mask(`v=${LONG}`)).toBe(`v=${SECRET_MASK}`);
+    bag.set('another-recorded-secret', '{{resolve:y}}');
+    expect(mask('x another-recorded-secret')).toBe(`x ${SECRET_MASK}`);
+  });
+
+  it('masks a whole text equal to a short needle, and leaves the bags untouched', () => {
+    const bag: RecordedSecretValues = new Map();
+    recordLogOnlyValue(bag, 'ab1');
+    expect(createUnionSecretMasker([bag])('ab1')).toBe(SECRET_MASK);
+    expect(createUnionSecretMasker([bag])('x-ab1')).toBe('x-ab1');
+    const union = unionOfSecretBags([bag]);
+    expect(union).not.toBe(bag);
+    expect(bag.size).toBe(0);
   });
 });

@@ -24,7 +24,8 @@ import {
   refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourceProperties,
 } from '../state/malformed-resources-bag.js';
-import { splitGetAttStringForm } from '../deployment/secret-redaction.js';
+import { SECRET_MASK, splitGetAttStringForm } from '../deployment/secret-redaction.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../utils/display-safe.js';
 
 /**
@@ -153,6 +154,52 @@ function containsIntrinsic(value: unknown, seen: Set<object> = new Set()): boole
 }
 
 /**
+ * One side of the replacement debug line, masked BEFORE it is stringified
+ * (go-to-k/cdkd#4049): `JSON.stringify` escapes `"`, `\` and newlines, so a
+ * needle carrying one no longer occurs in the finished line. `maskDeep` masks
+ * every string leaf and key; the replacer masks a number or boolean leaf
+ * whose printed form is a needle, the spelling `recordNoEchoParameterValue`
+ * records for a `Number` parameter.
+ */
+function maskedJsonForLog(value: unknown, mask: MaskerFn): string {
+  // `?? 'undefined'`: `JSON.stringify(undefined)` is `undefined`, which
+  // `safeMsg` renders as nothing, so an added or removed property would print
+  // an empty side.
+  return (
+    JSON.stringify(maskDeep(value, mask), (_key, leaf: unknown) =>
+      (typeof leaf === 'number' || typeof leaf === 'boolean') && mask(String(leaf)) !== String(leaf)
+        ? SECRET_MASK
+        : leaf
+    ) ?? 'undefined'
+  );
+}
+
+/**
+ * Both sides of the replacement debug line (go-to-k/cdkd#4049).
+ *
+ * The OLD side is read from state, which persists a `NoEcho` value in the
+ * clear, and only the CURRENT value is a needle (the deploy's masker holds
+ * every `NoEcho` parameter's current value from the start, so this does not
+ * depend on which resource the diff reaches first): a rotated value's
+ * previous plaintext masks nothing. So when the new side carries a needle, the old side
+ * is withheld whole — the old value of the property now served by a secret is
+ * taken to have been served by it too. Over-masking a debug line is the safe
+ * direction; a property that stops being served by one still prints its old
+ * value.
+ */
+function replacementSidesForLog(
+  oldValue: unknown,
+  newValue: unknown,
+  mask: MaskerFn
+): [string, string] {
+  const newText = maskedJsonForLog(newValue, mask);
+  // Against the SAME walk unmasked, so a shape the walk itself reshapes is
+  // never read as a needle.
+  if (newText !== maskedJsonForLog(newValue, (text) => text)) return [SECRET_MASK, newText];
+  return [maskedJsonForLog(oldValue, mask), newText];
+}
+
+/**
  * Diff calculator for comparing desired state (template) with current state
  */
 export class DiffCalculator {
@@ -200,7 +247,17 @@ export class DiffCalculator {
      * reading the parameter diffs NO_CHANGE however the value moved; each one
      * is promoted instead, and the engine decides from the resolved value.
      */
-    freshParameters?: ReadonlySet<string>
+    freshParameters?: ReadonlySet<string>,
+    /**
+     * The PRINTING masker over the bag `resolveFn` records into
+     * (go-to-k/cdkd#4049): the deploy's diff resolver resolves a `Ref` to a
+     * `NoEcho` parameter to its plaintext and records it there as a log-only
+     * needle, and the replacement debug line below prints resolved values.
+     * It masks the LOG LINE only; the returned changes carry the values
+     * unmasked, since the engine compares and provisions from them. Absent
+     * prints unmasked, as before.
+     */
+    maskForLog?: MaskerFn
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -488,7 +545,8 @@ export class DiffCalculator {
         const propertyChanges = await this.compareProperties(
           desiredResource.Type,
           currentPropsForCompare,
-          desiredPropsForCompare
+          desiredPropsForCompare,
+          maskForLog
         );
 
         // Schema v5+ template-attribute diff: `DeletionPolicy` /
@@ -1273,7 +1331,8 @@ export class DiffCalculator {
   private async compareProperties(
     resourceType: string,
     currentProperties: Record<string, unknown>,
-    desiredProperties: Record<string, unknown>
+    desiredProperties: Record<string, unknown>,
+    maskForLog?: MaskerFn
   ): Promise<PropertyChange[]> {
     const changes: PropertyChange[] = [];
 
@@ -1345,8 +1404,14 @@ export class DiffCalculator {
         });
 
         if (requiresReplacement) {
+          const mask = maskerOrIdentity(maskForLog);
+          const [oldText, newText] = replacementSidesForLog(oldValue, newValue, mask);
           this.logger.debug(
-            `Property ${key} of ${resourceType} requires replacement (${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)})`
+            mask(
+              // The key and type are masked BEFORE `safeMsg`, which strips
+              // control characters and could split a needle out of reach.
+              safeMsg`Property ${mask(key)} of ${mask(resourceType)} requires replacement (${oldText} -> ${newText})`
+            )
           );
         }
       }
