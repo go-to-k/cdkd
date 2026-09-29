@@ -72,10 +72,13 @@ in CI. THREE signals, each concluding something different:
    and EXONERATED when any stored value is itself a secret expression. This arm
    withholds PER KEY, because it claims only that one key is undecidable.
 
-"Secret-bearing" is only the spellings that are secret regardless of target:
-`{{resolve:secretsmanager:` and `{{resolve:ssm-secure:`. A plain
-`{{resolve:ssm:` is EXCLUDED — a `String` parameter is public and legitimately
-persisted resolved, and the verdict is record-wide.
+On RAW template or STORED text, "secret-bearing" is only the spellings that are
+secret regardless of target: `{{resolve:secretsmanager:` and
+`{{resolve:ssm-secure:`. A plain `{{resolve:ssm:` is EXCLUDED there — a `String`
+parameter is public and legitimately persisted resolved, and the verdict is
+record-wide. On RESOLVED text (the desired side of signal 1, its stored-side
+veto, and an intrinsic `Export.Name`'s alias refusal) a surviving plain `ssm`
+token counts too: the skip pass keeps one only for a `SecureString` (#4056).
 
 Outputs ROW names print only `secretSafeKeyDisplay`'s verdict (#4015): an
 older binary could store an `Export.Name` holding a secret. The diff fetches
