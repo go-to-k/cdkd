@@ -488,7 +488,7 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
    * text, and still parses back to the stored value.
    */
   it('--json escapes a planted CSI in a stored value and round-trips it', async () => {
-    const planted = 'Enabled\u009b[2J FAKE';
+    const planted = 'Enabled\u009b[2J\u2028FAKE';
     mockGetState.mockResolvedValue(
       makeState({
         Bucket1: resource(BUCKET, { VersioningConfiguration: { Status: planted } }),
@@ -499,7 +499,7 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     const { stdout } = await runDrift([...ARGS, '--json']);
 
     expect(stdout).not.toContain('\u009b');
-    expect(stdout).not.toContain(' ');
+    expect(stdout).not.toContain('\u2028');
     expect(stdout).toContain('\\u009b');
     expect(stdout).toContain('\\u2028');
     const payload = JSON.parse(stdout) as Array<{

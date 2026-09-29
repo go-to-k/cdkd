@@ -184,8 +184,8 @@ const JSON_PAYLOAD_ESCAPED = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
  * follows a dangling backslash.
  *
  * POLICY: every `--json` payload cdkd writes to stdout goes through this rather
- * than calling `JSON.stringify` itself. `cdkd state` is the first adopter; the
- * other commands' payloads are go-to-k/cdkd#4045.
+ * than calling `JSON.stringify` itself -- `cdkd state`, `events`, `diff`,
+ * `drift` and `list` (go-to-k/cdkd#4045).
  */
 export function stringifyJsonPayload(value: object): string {
   return JSON.stringify(value, null, 2).replace(JSON_PAYLOAD_ESCAPED, (match) => {

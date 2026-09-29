@@ -218,7 +218,7 @@ describe('events --json keeps stdout to the payload (issue #2280)', () => {
    * text, and the payload must still parse back to the stored value.
    */
   it('--run <id> --json escapes a planted CSI in a stored reason and round-trips it', async () => {
-    const reason = 'bucket \u009b[2J wiped FAKE line';
+    const reason = 'bucket \u009b[2J wiped\u2028FAKE line';
     mockGetRawObject.mockImplementation(async (key: string) => {
       if (key === INDEX_KEY) return JSON.stringify({ runs: [RUN_SUMMARY] });
       if (key === RUN_KEY) {
@@ -237,7 +237,7 @@ describe('events --json keeps stdout to the payload (issue #2280)', () => {
 
     expect(error).toBeUndefined();
     expect(stdout).not.toContain('\u009b');
-    expect(stdout).not.toContain(' ');
+    expect(stdout).not.toContain('\u2028');
     expect(stdout).toContain('\\u009b');
     expect(stdout).toContain('\\u2028');
     const events = JSON.parse(stdout) as Array<{ reason?: string }>;
@@ -245,7 +245,7 @@ describe('events --json keeps stdout to the payload (issue #2280)', () => {
   });
 
   it('--json run listing escapes a planted CSI in a stored run field and round-trips it', async () => {
-    const command = 'deploy\u009b[2J';
+    const command = 'deploy\u009b[2J\u2028FAKE';
     mockGetRawObject.mockImplementation(async (key: string) => {
       if (key === INDEX_KEY) return JSON.stringify({ runs: [{ ...RUN_SUMMARY, command }] });
       return null;
@@ -255,7 +255,9 @@ describe('events --json keeps stdout to the payload (issue #2280)', () => {
 
     expect(error).toBeUndefined();
     expect(stdout).not.toContain('\u009b');
+    expect(stdout).not.toContain('\u2028');
     expect(stdout).toContain('\\u009b');
+    expect(stdout).toContain('\\u2028');
     const payload = JSON.parse(stdout) as { runs: Array<{ command: string }> };
     expect(payload.runs.map((r) => r.command)).toEqual([command]);
   });
