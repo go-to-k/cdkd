@@ -268,7 +268,7 @@ retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; 
 rollback-command	2026-09-29T04:29:59Z	PASS	150	verify.sh	PR #4035 (#4024) @1e939cd1 on 11c8d52d; rc ok, orph clean
 rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph clean (#3595 lane)
 rollback-deletion-policy-snapshot	2026-09-29T08:18:12Z	PASS	120	verify.sh	rc ok, orph clean (#4029 PR #4072)
-rollback-explicit-name-rewrite	2026-09-29T16:51:57Z	PASS	211	verify.sh	rc ok, orph clean (PR #4099 rollback derived-name mask)
+rollback-explicit-name-rewrite	2026-09-29T17:23:00Z	PASS	211	verify.sh	rc ok, orph clean (PR #4137 mid-ARN name)
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replacement-retain	2026-09-29T04:29:59Z	PASS	70	verify.sh	PR #4035 (#4024) @1e939cd1 on 11c8d52d; rc ok, orph clean
 rollback-replay-cc-generated-name	2026-09-28T22:10:42Z	PASS	155	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, IAM Role replacement reversed to generated name (no collision, guard not reached), no name-holder refusal, orph clean
