@@ -2410,11 +2410,19 @@ describe('reportDriftBaselineGaps', () => {
         expect(optionRegion, region).not.toMatch(/cdkd state refresh-observed S/);
         expect(optionRegion, region).not.toContain("'<region>'");
         // The sentence names the VALUE the gate refused, rendered from its
-        // reason (M3 of the go-to-k/cdkd#3764 review).
+        // reason (M3 of the go-to-k/cdkd#3764 review) — and does not say the
+        // CLI would read it as an option, which `--stack-region`'s value never
+        // is (go-to-k/cdkd#4036).
         expect(optionRegion, region).toContain(
-          "this stack's region starts with '-', which cdkd refuses rather than risk"
+          "this stack's region starts with '-', which no AWS region does, so cdkd does not put it"
         );
+        expect(optionRegion, region).not.toContain('reading it as an option');
       }
+      // A STACK NAME beginning with `-` keeps the option sentence: it is the
+      // positional Commander would read as the option.
+      expect(render('--all', 'us-east-1', false).join('\n')).toContain(
+        "this stack's name starts with '-', which cdkd refuses rather than risk the CLI reading it as an option"
+      );
       // The READ line keeps its hole and explains it BEFORE the command, so
       // the command stays last and pasteable -- for an option-shaped region
       // and for a capped one alike (the explanation keys on `inspect.exact`,
@@ -2431,13 +2439,6 @@ describe('reportDriftBaselineGaps', () => {
       expect(stackHole).toMatch(
         /hole in the command after the list below stands for [^\n]*after the list below\.\n(?: {2}[^\n]*\n)+Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/m
       );
-      // The listing it points at is the RAW one: `--long` trims through
-      // `displayIdent`, so it would hand back the spelling the gate refused
-      // (go-to-k/cdkd#3420).
-      expect(stackHole).toContain(
-        "fill it from 'cdkd state list --json', replacing the hole, quotes included, with the shell-quoted value."
-      );
-      expect(stackHole).not.toContain('--long');
       // ...and for a NON-PLAIN stack name, which `plainIdent` holes where
       // exactness alone would have named it shell-quoted (M2 of the
       // go-to-k/cdkd#3764 review).
@@ -2445,6 +2446,40 @@ describe('reportDriftBaselineGaps', () => {
       expect(plainHole).toMatch(
         /hole in the command after the list below stands for [^\n]*after the list below\.\n(?: {2}[^\n]*\n)+Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/m
       );
+      // The listing it points at is the RAW one: `--long` trims through
+      // `displayIdent`, so it would hand back the spelling the gate refused
+      // (go-to-k/cdkd#3420).
+      const FILL =
+        "fill it from 'cdkd state list --json', replacing the hole, quotes included, with the shell-quoted value.";
+      const NO_FILL =
+        "This stack name begins with '-', which the CLI could read as an option however it is " +
+        'quoted, so do not fill the stack hole with it: repair or remove the record by hand.';
+      expect(plainHole).toContain(FILL);
+      expect(plainHole).not.toContain(NO_FILL);
+      expect(plainHole).not.toContain('--long');
+      // A stack name beginning with `-` gets NO fill-in: Commander would read
+      // the pasted value in `cdkd state show`'s positional as an option
+      // (go-to-k/cdkd#4036). Keyed on the RAW `-`, so an altered `--all ` and
+      // an over-cap `--…` name, which the gate reports `altered` / `too-long`
+      // rather than `option-shaped`, get it too — as does a withheld region
+      // beside it, since the stack hole is still unfillable.
+      for (const [stack, region] of [
+        ['--all', 'us-east-1'],
+        ['-x', 'us-east-1'],
+        ['-', 'us-east-1'],
+        ['--all ', 'us-east-1'],
+        [`--${'q'.repeat(1200)}`, 'us-east-1'],
+        ['--all', 'r'.repeat(129)],
+      ] as const) {
+        const text = render(stack, region, true).join('\n');
+        expect(text, stack.slice(0, 8)).toContain(NO_FILL);
+        expect(text, stack.slice(0, 8)).not.toContain(FILL);
+        expect(text, stack.slice(0, 8)).toMatch(/Inspect it with: cdkd state show '<stack>' [^\n]*--json$/m);
+      }
+      // A withheld REGION beside an ordinary name keeps the fill-in: the
+      // region is `--stack-region`'s value, which Commander takes as given.
+      expect(render('S', '--all', true).join('\n')).toContain(FILL);
+      expect(render('S', '--all', true).join('\n')).not.toContain(NO_FILL);
       expect(render('S', 'us-east-1', true).join('\n')).not.toContain('hole in the command after the list');
       // A NAMED command is on its own line too — not only a holed one — with
       // or without a region (go-to-k/cdkd#3436).

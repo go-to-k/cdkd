@@ -6475,11 +6475,15 @@ function refreshWithheldReason(built: PasteableCommand): string {
   const reason = first?.reason;
   switch (reason) {
     case 'option-shaped':
-      return (
-        `${what} starts with '-', which cdkd refuses rather than risk the CLI reading it as ` +
-        `an option however it is quoted ('--all' would rewrite every record in the region ` +
-        `rather than this one).`
-      );
+      // Only the stack name is a positional Commander could read as the
+      // option; the region is `--stack-region`'s value, taken as given, so its
+      // sentence says only that cdkd refuses it (go-to-k/cdkd#4036).
+      return first?.hole === 'region'
+        ? `${what} starts with '-', which no AWS region does, so cdkd does not put it in a ` +
+            `command that rewrites a record.`
+        : `${what} starts with '-', which cdkd refuses rather than risk the CLI reading it as ` +
+            `an option however it is quoted ('--all' would rewrite every record in the region ` +
+            `rather than this one).`;
     case 'not-plain':
       return (
         `${what} is not a plain identifier (a letter or digit, then letters, digits, '~', ` +
@@ -6704,11 +6708,21 @@ export function reportDriftBaselineGaps(
         // the command so the command stays last and pasteable: an operator
         // handed `'<region>'` with no reason fills it from whatever is
         // nearest, and prose after the command is what a paste picks up.
+        // A stack name beginning with `-` is never to be filled back in, keyed
+        // on the RAW `-` as `inspectClause` in malformed-resources-bag.ts is:
+        // the gate may report `altered` / `too-long` first, and Commander
+        // reads a shell-quoted `'--all'` in `cdkd state show`'s positional as
+        // the option (go-to-k/cdkd#4036). A region hole stays fillable — it is
+        // `--stack-region`'s value, which Commander takes as given.
         (inspect.exact
           ? ''
           : `A quoted '<...>' hole in the command after the list below stands for a value cdkd could not ` +
-            `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
-            `included, with the shell-quoted value. `) +
+            (stackName.startsWith('-')
+              ? `print safely. This stack name begins with '-', which the CLI could read as an ` +
+                `option however it is quoted, so do not fill the stack hole with it: repair or ` +
+                `remove the record by hand. `
+              : `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
+                `included, with the shell-quoted value. `)) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own
