@@ -1307,13 +1307,23 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       'Target group *** is in use by a listener',
     ],
     [
-      // #4135: the function name before an alias qualifier. The qualifier is
-      // not a needle, so the alias name in the message stays readable.
+      // #4135: the function name before an alias qualifier. The alias is a
+      // needle too (#4141 review: it may be the secret-derived name), so its
+      // word is over-masked.
       'AWS::Lambda::Alias',
       { FunctionName: OTHER_EXPR, Name: 'production' },
       'arn:aws:lambda:us-east-1:123456789012:function:bob-private-fn:production',
-      'Alias production of bob-private-fn serves production traffic',
-      'Alias production of *** serves production traffic',
+      'Alias production of bob-private-fn is busy',
+      'Alias *** of *** is busy',
+    ],
+    [
+      // #4141 review: the ALIAS name is the secret-derived one.
+      'AWS::Lambda::Alias',
+      { FunctionName: 'plainfn', Name: OTHER_EXPR },
+      'arn:aws:lambda:us-east-1:123456789012:function:plainfn:bob-private-alias',
+      // The function's segment is taken too: it may be the name (over-masks).
+      'alias bob-private-alias of plainfn not found',
+      'alias *** of *** not found',
     ],
     [
       // The layer name before its version: a Lambda ARN other than a function's.
@@ -1390,8 +1400,23 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       'Nodegroup *** is DELETING',
     ],
     [
-      // Every composite segment looks generated (a pool-id-shaped Username):
-      // all are taken rather than none.
+      // #4141 review: exclusions are POSITIONAL, so a scope-word or pool-id
+      // shaped name elsewhere is still a needle.
+      'AWS::EKS::Nodegroup',
+      { ClusterName: 'c1-plain', NodegroupName: OTHER_EXPR },
+      'arn:aws:eks:us-east-1:123456789012:nodegroup/c1-plain/us-east-1_Abc123/4ac4bf66-2bd0-6ab1-4b92-bfa7f2d1c4a2',
+      'Nodegroup us-east-1_Abc123 is busy',
+      'Nodegroup *** is busy',
+    ],
+    [
+      'AWS::WAFv2::WebACL',
+      { Name: OTHER_EXPR, Scope: 'REGIONAL' },
+      'CLOUDFRONT|a1b2c3d4-e5f6-7890-abcd-ef1234567890|REGIONAL',
+      'WebACL CLOUDFRONT is busy in REGIONAL scope',
+      'WebACL *** is busy in REGIONAL scope',
+    ],
+    [
+      // A pool-id-shaped Username in the Username position is still taken.
       'AWS::Cognito::UserPoolUser',
       { UserPoolId: 'us-east-1_x', Username: OTHER_EXPR },
       'us-east-1_x|eu-west-1_Secret9',

@@ -918,64 +918,58 @@ const OTHER_SPELLED_NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * A segment that is certainly not a template-chosen name, so it is never a
- * needle: a WAF scope word (upper case, as
- * AWS spells it), or a Cognito user pool id (`<region>_<id>`). Deliberately
- * NOT a UUID or hex shape: a secret-derived name is often exactly that shape
- * (#4141 review), and masking an AWS-generated one only over-masks. Case
- * sensitive for the same reason.
+ * The two POSITIONS in a `|` composite that are certainly not a chosen name,
+ * each tested only there (#4141 review): a Cloud Control WAF id ends in its
+ * upper-case scope word (`<Name>|<Id>|REGIONAL`), and a Cognito id starts with
+ * its user pool id (`<region>_<id>|<Username>`). No shape is excluded anywhere
+ * else: a secret-derived name is often a UUID or hex token, and masking an
+ * AWS-generated segment only over-masks.
  */
-const GENERATED_ID_SEGMENT =
-  /^(?:REGIONAL|CLOUDFRONT|GLOBAL)$|^[a-z]{2}(?:-gov)?-[a-z]+-\d+_[A-Za-z0-9]+$/;
+const COMPOSITE_SCOPE_LAST = /^(?:REGIONAL|CLOUDFRONT|GLOBAL)$/;
+const COMPOSITE_POOL_FIRST = /^[a-z]{2}(?:-gov)?-[a-z]+-\d+_[A-Za-z0-9]+$/;
 
 /**
  * The NAME parts of an id an AWS message may quote on their own (#4099,
- * #4135, #4138), for a record whose name is secret-derived:
+ * #4135, #4138), for a record whose name is secret-derived. Every choice errs
+ * toward over-masking, never toward skipping a segment that may be the name:
  *
- * - every segment of an ARN's resource part (split on `/` and `:`) except the
- *   leading resource-type word when there is more than one, and every segment
- *   of a `|` composite, minus {@link GENERATED_ID_SEGMENT} (a lone segment is
- *   taken as it is, and an all-excluded list still yields its last segment). So the name is
- *   taken wherever the service puts it: last (SNS `...:<topic>`), before a hash
+ * - every segment of an ARN's resource part (split on `/` and `:`), except the
+ *   leading resource-type word when there is more than one and a TRAILING
+ *   number (a version or revision) when another is left. So the name is taken
+ *   wherever the service puts it: last (SNS `...:<topic>`), before a hash
  *   (ELBv2 `loadbalancer/app/<name>/<hash>`, AppRunner, MSK), mid-path (EKS
- *   `nodegroup/<cluster>/<name>/<uuid>`) or first (WAFv2 `<Name>|<Id>|<Scope>`).
- *   A sibling non-generated segment (EKS's cluster name) is masked too, which
- *   only over-masks;
- * - Lambda's segment after `function:` / `layer:` ONLY: a `:<alias>` qualifier
- *   is a chosen word too, and taking it masked prose (`production`) while
- *   adding nothing;
+ *   `nodegroup/<cluster>/<name>/<uuid>`). A sibling segment (EKS's cluster
+ *   name, an IAM path word, a hash) is masked too;
+ * - Lambda's segment after `function:` / `layer:` AND a non-numeric qualifier
+ *   after it: an alias name may be the secret-derived one (#4141 review), so a
+ *   word like `production` is masked when the function's name is;
  * - Secrets Manager's name without its random `-XXXXXX` suffix;
  * - any id's last `/` segment, with and without a `:<revision>` (ECS's
- *   `task-definition/<Family>:<rev>` is quoted whole), whatever its shape.
+ *   `task-definition/<Family>:<rev>` is quoted whole);
+ * - every segment of a `|` composite but {@link COMPOSITE_SCOPE_LAST} /
+ *   {@link COMPOSITE_POOL_FIRST} in their own positions (WAFv2's name is
+ *   FIRST).
  *
  * Derived spellings, so each clears the literal masker's substring floor (4)
  * and differs from the id itself.
  */
 function idNameSegments(id: string): string[] {
   const segments = new Set<string>();
-  // Never empty when a segment exists: if every segment looks generated, all
-  // are taken, since one of them may be the name (over-masking, not a leak).
-  const chosen = (parts: readonly string[]): string[] => {
-    const present = parts.filter((part) => part !== '');
-    const kept = present.filter((part) => !GENERATED_ID_SEGMENT.test(part));
-    return kept.length > 0 ? kept : present;
-  };
   const arn = /^arn:[^:]*:([^:]*):[^:]*:[^:]*:(.+)$/.exec(id);
   if (arn !== null) {
     const service = arn[1]!;
     const resource = arn[2]!;
-    const lambda = service === 'lambda' ? /^(?:function|layer):([^:]+)/.exec(resource) : null;
+    const lambda =
+      service === 'lambda' ? /^(?:function|layer):([^:]+)(?::([^:]+))?/.exec(resource) : null;
     if (lambda !== null) {
       segments.add(lambda[1]!);
+      const qualifier = lambda[2];
+      if (qualifier !== undefined && !/^\d+$/.test(qualifier)) segments.add(qualifier);
     } else {
       const parts = resource.split(/[/:]/).filter((part) => part !== '');
-      // A lone segment is the name itself (SNS `...:<topic>`), whatever its
-      // shape. Otherwise drop the resource-type word, and a TRAILING number
-      // (a version or revision) when a segment is left; a number elsewhere
-      // may be the name.
       let body = parts.length > 1 ? parts.slice(1) : parts;
       if (body.length > 1 && /^\d+$/.test(body[body.length - 1]!)) body = body.slice(0, -1);
-      for (const part of parts.length > 1 ? chosen(body) : parts) {
+      for (const part of body) {
         segments.add(part);
         if (service === 'secretsmanager') segments.add(part.replace(/-[A-Za-z0-9]{6}$/, ''));
       }
@@ -986,7 +980,15 @@ function idNameSegments(id: string): string[] {
     segments.add(afterSlash);
     segments.add(afterSlash.replace(/:\d+$/, ''));
   }
-  if (id.includes('|')) for (const part of chosen(id.split('|'))) segments.add(part);
+  if (id.includes('|')) {
+    const parts = id.split('|');
+    parts.forEach((part, index) => {
+      if (part === '') return;
+      if (index === parts.length - 1 && parts.length > 1 && COMPOSITE_SCOPE_LAST.test(part)) return;
+      if (index === 0 && parts.length > 1 && COMPOSITE_POOL_FIRST.test(part)) return;
+      segments.add(part);
+    });
+  }
   return [...segments].filter((segment) => segment.length >= 4 && segment !== id);
 }
 
