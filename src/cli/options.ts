@@ -1372,8 +1372,10 @@ export function parseAssumeRoleToken(
 }
 
 /**
- * An `--assume-role` operand for its refusal: `"value"` when `displayIdent`
- * renders it unchanged, which prints it exactly as before, and otherwise
+ * An `--assume-role` operand for its refusal: `"value"` when it has no
+ * whitespace and `displayIdent` renders it unchanged, which prints the parse
+ * refusals' operands exactly as before (the auto-resolve refusal's global ARN,
+ * bare before, is now quoted), and otherwise
  * `shellBoundedDisplay` over that render (go-to-k/cdkd#3950). The operator
  * needs the value to correct it, so it is shown shell-quoted rather than
  * described, the way the resolver shows a refused `Fn::GetStackOutput`
@@ -1382,7 +1384,9 @@ export function parseAssumeRoleToken(
  */
 function quotedArgv(value: string, maxCodePoints?: number): string {
   const shown = displayIdent(value, maxCodePoints === undefined ? undefined : { maxCodePoints });
-  return shown === value ? `"${value}"` : shellBoundedDisplay(shown);
+  // Whitespace FIRST: the round-trip alone admits a value ending in
+  // `displayIdent`'s own cut marker, which renders as itself.
+  return !/\s/.test(value) && shown === value ? `"${value}"` : shellBoundedDisplay(shown);
 }
 
 /**
@@ -1417,11 +1421,12 @@ export function normalizeStartApiAssumeRole(
   if (autoResolve && raw.globalArn) {
     throw new Error(
       // `globalArn` CLEARED `isIamRoleArn` (issue #2348), which bounds it to
-      // printable ASCII of at most 2048 characters — still argv, and still
-      // longer than a line should carry, so it is rendered through the same
-      // capped helper as the refusals above (issue go-to-k/cdkd#3397).
+      // printable ASCII of at most 2048 characters, yet `role/[!-~]+` still
+      // admits `$`, `(`, a backtick and `"`. So it goes through `quotedArgv`,
+      // like the refusals above (go-to-k/cdkd#3950): a JSON render beside
+      // `--assume-role` would let a pasted `$( )` run.
       `--assume-role-auto auto-resolves EACH routed Lambda's own execution role, ` +
-        `but --assume-role ${displayIdent(raw.globalArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} also names a single global default. ` +
+        `but --assume-role ${quotedArgv(raw.globalArn, ROLE_ARN_MAX_CODE_POINTS)} also names a single global default. ` +
         `These are mutually exclusive on the global slot. Either drop the global ARN ` +
         `to keep --assume-role-auto for every Lambda, or drop --assume-role-auto to keep the global default. ` +
         `Per-Lambda overrides (--assume-role <LogicalId>=<arn>) are compatible with either side.`
