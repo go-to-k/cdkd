@@ -1,11 +1,12 @@
 {
   "resourceType": "AWS::RDS::DBProxyTargetGroup",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-29",
   "properties": [
     "ConnectionPoolConfigurationInfo",
     "DBClusterIdentifiers",
     "DBInstanceIdentifiers",
     "DBProxyName",
+    "Tags",
     "TargetGroupArn",
     "TargetGroupName"
   ],
@@ -34,6 +35,10 @@
       "MaxConnectionsPercent",
       "MaxIdleConnectionsPercent",
       "SessionPinningFilters"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
     ]
   },
   "nestedPropertyPaths": {
@@ -43,6 +48,10 @@
       "MaxConnectionsPercent",
       "MaxIdleConnectionsPercent",
       "SessionPinningFilters"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
     ]
   },
   "definitionShapes": {
@@ -52,7 +61,8 @@
       "TargetGroupName": "scalar",
       "ConnectionPoolConfigurationInfo": "object",
       "DBInstanceIdentifiers": "array",
-      "DBClusterIdentifiers": "array"
+      "DBClusterIdentifiers": "array",
+      "Tags": "array"
     },
     "ConnectionPoolConfigurationInfoFormat": {
       "MaxConnectionsPercent": "scalar",
@@ -60,12 +70,24 @@
       "ConnectionBorrowTimeout": "scalar",
       "SessionPinningFilters": "array",
       "InitQuery": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
     }
   },
   "definitionRequired": {
     "#top": [
       "DBProxyName",
       "TargetGroupName"
+    ],
+    "Tag": [
+      "Key"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
+      "Key"
     ]
   }
 }

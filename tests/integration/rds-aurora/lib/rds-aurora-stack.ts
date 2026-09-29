@@ -103,6 +103,26 @@ export class RdsAuroraStack extends cdk.Stack {
       requireTLS: false,
     });
 
+    // Issue #4087: Tags on the proxy's DBProxyTargetGroup, keyed by
+    // CDKD_TEST_TG_TAGS (v1 / v2; unset = no Tags). aws-cdk-lib does not expose
+    // `tags` on CfnDBProxyTargetGroup yet, hence the override.
+    const tgTags: Record<string, Array<{ Key: string; Value: string }>> = {
+      v1: [
+        { Key: 'cdkd-team', Value: 'db' },
+        { Key: 'cdkd-drop', Value: 'me' },
+      ],
+      v2: [{ Key: 'cdkd-team', Value: 'platform' }],
+    };
+    const tgTagMode = process.env.CDKD_TEST_TG_TAGS;
+    if (tgTagMode !== undefined && tgTagMode !== '') {
+      const tagList = tgTags[tgTagMode];
+      if (!tagList) throw new Error(`unknown CDKD_TEST_TG_TAGS mode: ${tgTagMode}`);
+      (proxy.node.findChild('ProxyTargetGroup') as rds.CfnDBProxyTargetGroup).addPropertyOverride(
+        'Tags',
+        tagList
+      );
+    }
+
     // Add a READ_ONLY DBProxyEndpoint to exercise the
     // AWS::RDS::DBProxyEndpoint SDK provider end-to-end. Reuses the
     // cluster's VPC subnets + security group.

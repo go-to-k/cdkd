@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 85,
-    "declaredProperties": 1142,
-    "wiredProperties": 1140,
+    "declaredProperties": 1143,
+    "wiredProperties": 1141,
     "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 26
+    "classesWithBlindSpots": 27
   },
   "classes": [
     {
@@ -15680,7 +15680,7 @@
       "file": "rds-dbproxy-targetgroup-provider.ts",
       "className": "RDSDBProxyTargetGroupProvider",
       "bucket": "wired",
-      "declaredCount": 5,
+      "declaredCount": 6,
       "properties": [
         {
           "name": "ConnectionPoolConfigurationInfo",
@@ -15741,6 +15741,20 @@
           ]
         },
         {
+          "name": "Tags",
+          "status": "wired",
+          "types": [
+            "AWS::RDS::DBProxyTargetGroup"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "TargetGroupName",
           "status": "wired",
           "types": [
@@ -15758,7 +15772,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "rest-destructure in withoutKey()"
+      ]
     },
     {
       "file": "rds-provider.ts",

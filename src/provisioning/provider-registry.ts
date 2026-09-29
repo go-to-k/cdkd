@@ -227,6 +227,22 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
     },
   ],
   [
+    'AWS::RDS::DBProxyTargetGroup',
+    {
+      // CC READ and DELETE always fail: the handlers cannot derive DBProxyName
+      // from the TargetGroupArn identifier and send it null (issue #385;
+      // re-measured for issue #4087). A record pinned to cc-api could never be
+      // read back or destroyed.
+      mode: 'cc-broken' as const,
+      physicalIdForm:
+        'both layers store the TargetGroupArn: the schema primaryIdentifier is ' +
+        'TargetGroupArn and RDSDBProxyTargetGroupProvider.create records the ' +
+        'DescribeDBProxyTargetGroups TargetGroupArn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/4087',
+      integFixture: 'rds-aurora',
+    },
+  ],
+  [
     'AWS::SNS::Topic',
     {
       // The first 'sdk-coverage' member (issue #2719). CC manages topics
