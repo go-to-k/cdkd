@@ -1261,6 +1261,82 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     ]);
   });
 
+  it('two SIBLING drains throwing one error object: a LATER capture written first does not stand (issue #2805)', async () => {
+    // The mirror of the case above: `[[slowB, sharedLater], other, [slow,
+    // sharedEarly]]`. The FIRST list captures the shared object last, so when
+    // both lists are released in one turn the later capture reaches the
+    // join's map first. Keeping whichever order was written first reports
+    // `other`.
+    const shared = new Error(`refused ${FAIL_DEEP_ID}`);
+    const deepB = 'cdkd-drain-inner-b';
+    const slowB = 'cdkd-drain-slow-b';
+    control.reusedErrors.set(FAIL_DEEP_ID, shared);
+    control.reusedErrors.set(deepB, shared);
+    for (const id of [FAIL_DEEP_ID, deepB, FAIL_ID]) control.fails.add(id);
+    const held = gate();
+    const otherGate = gate();
+    const deepBGate = gate();
+    control.holds.set(SLOW_ID, held.promise);
+    control.holds.set(slowB, held.promise);
+    control.holds.set(FAIL_ID, otherGate.promise);
+    control.holds.set(deepB, deepBGate.promise);
+
+    const pending = new IntrinsicFunctionResolver('us-east-1').resolve(
+      {
+        'Fn::Join': [
+          '-',
+          [[ref(slowB), ref(deepB)], ref(FAIL_ID), [ref(SLOW_ID), ref(FAIL_DEEP_ID)]],
+        ],
+      },
+      makeContext()
+    );
+    const seen = watch(pending);
+    await settleTurn();
+    otherGate.open();
+    await settleTurn();
+    deepBGate.open();
+    await settleTurn();
+    expect(seen.state()).toBe('pending');
+    held.open();
+
+    await expect(pending, 'the earlier capture of the shared object').rejects.toBe(shared);
+    expect(control.events.slice(0, 3)).toEqual([
+      `reject:${FAIL_DEEP_ID}`,
+      `reject:${FAIL_ID}`,
+      `reject:${deepB}`,
+    ]);
+  });
+
+  it("the issue's own shape with NO gate on the failures: two failures in one turn are ranked by when they reach a drain (issue #2805)", async () => {
+    // `['-', [[SLOW_held, FAIL_deep], FAIL_shallow]]`, only the slow sibling
+    // held, exactly as the issue measured it. The deeper lookup rejects FIRST
+    // (the event log), but it crosses more async layers than the shallower
+    // one before a drain captures it, so it is captured SECOND and the
+    // shallower failure is reported. This pins the documented bound — the
+    // same-turn order is scheduling, not time — rather than a guarantee: a
+    // change in how many layers either path crosses may flip it.
+    const held = gate();
+    control.holds.set(SLOW_ID, held.promise);
+    control.fails.add(FAIL_DEEP_ID);
+    control.fails.add(FAIL_ID);
+
+    const pending = new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::Join': ['-', [[ref(SLOW_ID), ref(FAIL_DEEP_ID)], ref(FAIL_ID)]] },
+      makeContext()
+    );
+    const seen = watch(pending);
+    await settleTurn();
+    expect(seen.state()).toBe('pending');
+    held.open();
+
+    await expect(pending).rejects.toThrow(`refused ${FAIL_ID}`);
+    expect(control.events, 'the deeper lookup really does reject first').toEqual([
+      `reject:${FAIL_DEEP_ID}`,
+      `reject:${FAIL_ID}`,
+      `record:${SLOW_ID}`,
+    ]);
+  });
+
   it('an order a CONCURRENT resolution recorded for the same error object is not imported (issue #2805)', async () => {
     // Recency is not nesting. The second resolution is OPEN when the first
     // one's nested drain captures the shared object and throws it, so an order
