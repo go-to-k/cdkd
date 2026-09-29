@@ -45,9 +45,10 @@ fi
 # stack owns it, so destroy leaves it behind (#3885).
 . ../cr-log-groups.sh
 
-# Set to 1 only when step 2's deploy was refused on another process's lock: this
-# run then created no stack resources, the stack under ${STACK} is that PEER's,
-# and a destroy from `cleanup` would delete it once the peer releases its lock.
+# Set to 1 only when step 2's deploy failed acquiring the lock (a peer's, or an
+# S3 error on it): this run then created no stack resources, the stack under
+# ${STACK} may be a PEER's, and a destroy from `cleanup` would delete it once
+# the peer releases its lock.
 PEER_HOLDS_STACK=0
 
 cleanup() {
@@ -69,16 +70,17 @@ trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy"
-# The lock is the FIRST thing deploy takes (deploy-engine.ts), so a refusal on it
-# means this run created no stack resources (assets and event logs are not
-# destroy's to remove); any other deploy failure may have created resources, and
-# `cleanup` still destroys them. `tee -i`: a Ctrl-C must not kill tee first, or
-# deploy's interrupt notice hits a closed pipe and it exits without saving state. The head is the parsed marker;
-# the recovery clause, built separately and printed on the same line, is the
+# The lock is the FIRST thing deploy takes (deploy-engine.ts), so a refusal on
+# it means this run created no stack resources (assets and event logs are not
+# destroy's to remove); any other deploy failure may have created resources,
+# and `cleanup` still destroys them. The head is the parsed marker; the
+# recovery clause, built separately and printed on the same line, is the
 # sentinel: seen without the head, the wording drifted, and the destroy is
 # skipped too rather than risk a peer's stack.
 DEPLOY_LOG="$(mktemp)"
 set +e
+# `tee -i`: a Ctrl-C must not kill tee first, or deploy's interrupt notice hits
+# a closed pipe and it exits without saving state.
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee -i "${DEPLOY_LOG}"
 deploy_rc=${PIPESTATUS[0]}
 set -e
