@@ -95,6 +95,7 @@ import { createStateCommand } from '../../../src/cli/commands/state.js';
 import { StateError } from '../../../src/utils/error-handler.js';
 import { malformedOrphanResourcePropertiesRefusalMessage } from '../../../src/state/malformed-resources-bag.js';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { displayIdent, IDENT_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 
 /**
  * Split a POSIX shell command line into words: whitespace separates, `'...'`
@@ -541,6 +542,36 @@ describe('cdkd state orphan', () => {
         expect(warned, field).toContain(expected);
         expect(warned, field).not.toContain('Destroy with:');
         expect(warned, field).not.toContain('--all --force');
+      }
+    });
+
+    it("describes an owner or operation that is displayIdent's own cut output, which renders unchanged (go-to-k/cdkd#4109)", async () => {
+      const suffix = ' [cut: 35 more characters withheld]';
+      const forged = 'a'.repeat(IDENT_MAX_CODE_POINTS) + suffix;
+      expect(displayIdent(forged)).toBe(forged);
+      for (const [field, lock, expected] of [
+        [
+          'owner',
+          { owner: forged, operation: 'deploy' },
+          'held by a lock owner that is not a plain identifier, operation: deploy.',
+        ],
+        [
+          'operation',
+          { owner: 'alice@host:1', operation: forged },
+          'held by alice@host:1, operation: a lock operation that is not a plain identifier.',
+        ],
+      ] as const) {
+        warnSpy.mockClear();
+        mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+        mockIsLocked.mockResolvedValue(false);
+        mockGetLockInfo.mockResolvedValue({ ...lock, expiresAt: Date.now() + 60_000 });
+
+        // eslint-disable-next-line no-await-in-loop
+        await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+        const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned, field).toContain(expected);
+        expect(warned, field).not.toContain(suffix);
       }
     });
 

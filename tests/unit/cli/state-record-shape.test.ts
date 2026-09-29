@@ -453,7 +453,10 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     const { out, error } = await runState(['show', 'MyStack']);
 
     expectRendered(error);
-    expect(out).toContain('locked by [object Object] (operation: [object Object])');
+    // Coerced to `[object Object]`, which is not a plain identifier.
+    expect(out).toContain(
+      'locked by a lock owner that is not a plain identifier (operation: a lock operation that is not a plain identifier)'
+    );
   });
 
   it('state show --json renders that lock too — the read threw before any renderer ran', async () => {
