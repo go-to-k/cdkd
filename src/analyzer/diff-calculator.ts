@@ -205,6 +205,7 @@ function replacementSidesForLog(
 export class DiffCalculator {
   private logger = getLogger().child('DiffCalculator');
   private replacementRules = new ReplacementRulesRegistry();
+  private parser = new TemplateParser();
 
   /**
    * {@link ReplacementRulesRegistry.conditionalReplacementVerdict}, for the
@@ -223,7 +224,6 @@ export class DiffCalculator {
       newValue
     );
   }
-  private parser = new TemplateParser();
 
   /**
    * Calculate changes needed to reach desired state

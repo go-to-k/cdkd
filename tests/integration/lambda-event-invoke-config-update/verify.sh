@@ -286,20 +286,28 @@ esac
 echo "    OK: the re-spelled FunctionName updated in place and the config survived (#4118)"
 
 # --- Phase 2c/2d: a PROPAGATED ceiling on a same-function move (issue #4134)
-# 2c introduces a custom resource that returns the function's NAME and feeds
-# FunctionName from it. 2d flips the CR to return the ARN: the CR updates in
-# place, the diff raises a replacement ceiling on the config, and the resolved
-# FunctionName moves name -> ARN of the SAME function. The engine must lower
-# the ceiling to an in-place update; a replacement would Put the config and
+# 2c0 adds a custom resource that returns the function's NAME, unwired (the
+# config keeps 2b's ARN spelling). 2c wires FunctionName to it: the value the
+# diff resolves from state is the name, the same function as the recorded
+# ARN, so an in-place update. 2d flips the CR to return the ARN: the CR updates
+# in place, the diff raises a replacement ceiling on the config, and the
+# resolved FunctionName moves name -> ARN of the SAME function. The engine
+# must lower the ceiling to in place; a replacement would Put the config and
 # then delete it from the same function.
-echo "==> Phase 2c: feed FunctionName from a custom resource returning the NAME"
-CDKD_TEST_UPDATE=true CDKD_TEST_FN_VIA_CR=name node "${LOCAL_DIST}" deploy "${STACK}" \
+echo "==> Phase 2c0: add the custom resource (returns the NAME), not yet wired"
+CDKD_TEST_UPDATE=true CDKD_TEST_FN_ARN=true CDKD_TEST_FN_VIA_CR=name node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+echo "==> Phase 2c: feed FunctionName from the custom resource (the NAME)"
+CDKD_TEST_UPDATE=true CDKD_TEST_FN_ARN=true CDKD_TEST_FN_VIA_CR=name CDKD_TEST_FN_WIRE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 RECORDED_2C=$(eic_record .properties.FunctionName)
 [ "${RECORDED_2C}" = "${FN_NAME}" ] || { echo "FAIL: #4134 premise: after 2c the record's FunctionName is '${RECORDED_2C}', expected '${FN_NAME}'" >&2; exit 1; }
+MAXAGE_2C="$(eic_field 'MaximumEventAgeInSeconds')"
+[ "${MAXAGE_2C}" = "300" ] || { echo "FAIL: #4134 premise: after 2c the async-invoke config is MaxAge=${MAXAGE_2C}, expected 300" >&2; exit 1; }
 echo "==> Phase 2d: flip the custom resource to return the ARN (propagated ceiling)"
 DEPLOY_2D_LOG="$(mktemp)"
-if ! CDKD_TEST_UPDATE=true CDKD_TEST_FN_VIA_CR=arn node "${LOCAL_DIST}" deploy "${STACK}" \
+if ! CDKD_TEST_UPDATE=true CDKD_TEST_FN_ARN=true CDKD_TEST_FN_VIA_CR=arn CDKD_TEST_FN_WIRE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${DEPLOY_2D_LOG}" 2>&1; then
   cat "${DEPLOY_2D_LOG}" >&2
   rm -f "${DEPLOY_2D_LOG}"

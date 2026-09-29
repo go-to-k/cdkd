@@ -59,11 +59,11 @@ export class LambdaEventInvokeConfigUpdateStack extends cdk.Stack {
       eic.addPropertyOverride('FunctionName', fn.functionArn);
     }
 
-    // Issue #4134: CDKD_TEST_FN_VIA_CR=name|arn feeds FunctionName from a
-    // custom resource's Data, spelled as the function's name or ARN. Flipping
-    // it updates the CR in place, which the diff propagates to the config as a
-    // replacement CEILING; the moved value is the same function, so the engine
-    // must lower it to an in-place update.
+    // Issue #4134: CDKD_TEST_FN_VIA_CR=name|arn adds a custom resource whose
+    // Data returns the function's name or ARN; CDKD_TEST_FN_WIRE=true feeds
+    // FunctionName from it. Flipping name -> arn updates the CR in place, which
+    // the diff propagates to the config as a replacement CEILING; the moved
+    // value is the same function, so the engine must lower it to in place.
     const fnViaCr = process.env.CDKD_TEST_FN_VIA_CR;
     if (fnViaCr !== undefined && fnViaCr !== '') {
       const handler = new lambda.Function(this, 'FnSpellHandler', {
@@ -88,7 +88,9 @@ exports.handler = async (event) => {
         serviceToken: handler.functionArn,
         properties: { FnName: fn.functionName, FnArn: fn.functionArn, Spell: fnViaCr },
       });
-      eic.addPropertyOverride('FunctionName', spell.getAttString('Fn'));
+      if (process.env.CDKD_TEST_FN_WIRE === 'true') {
+        eic.addPropertyOverride('FunctionName', spell.getAttString('Fn'));
+      }
     }
 
     new cdk.CfnOutput(this, 'FnName', { value: fn.functionName });
