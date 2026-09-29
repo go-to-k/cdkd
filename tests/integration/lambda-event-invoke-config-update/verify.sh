@@ -20,6 +20,13 @@
 #      pre-fix) and AWS now reports MaxAge 300 / Retries 2 / the same DLQ.
 #   3. Destroy + assert the function is gone and the cdkd state file is removed.
 #
+# Issue #4091 (EventInvokeConfig is a cc-broken sticky exemption): before
+# phase 2 the record is rewritten to provisionedBy=cc-api -- what a binary
+# before the SDK provider recorded -- after asserting Cloud Control addresses
+# the resource by the SAME id cdkd stored (the parity the exemption requires).
+# Phase 2's UPDATE then must go through the SDK provider (Cloud Control's
+# UPDATE fails on this type), flip the record to sdk in place and keep the id.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -70,10 +77,13 @@ DLQ_NAME="cdkd-event-invoke-config-update-test-dlq"
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+# Phase 2's captured deploy output (issue #4091), removed by cleanup too.
+DEPLOY_P2_LOG=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  [ -n "${DEPLOY_P2_LOG}" ] && rm -f "${DEPLOY_P2_LOG}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -156,10 +166,54 @@ if printf '%s' "${DRIFT_OUT}" | grep -q 'AWS::Lambda::EventInvokeConfig'; then
 fi
 echo "    EventInvokeConfig is drift-clean"
 
+# --- Phase 1.6: seed a cc-api record (issue #4091) ---------------------
+EIC_TYPE="AWS::Lambda::EventInvokeConfig"
+eic_record() { # usage: eic_record <jq path under the resource>; prints "" when absent
+  local state
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  echo "${state}" | jq -r --arg t "${EIC_TYPE}" "[.resources | to_entries[] | select(.value.resourceType == \$t) | .value${1}] | first // \"\""
+}
+EIC_ID=$(eic_record .physicalId)
+EIC_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${EIC_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
+[ "${EIC_ID}" = "${FN_NAME}|\$LATEST" ] || { echo "FAIL: #4091 premise: EventInvokeConfig physicalId is '${EIC_ID}', expected '${FN_NAME}|\$LATEST'" >&2; exit 1; }
+[ "$(eic_record .provisionedBy)" = "sdk" ] || { echo "FAIL: #4091 premise: the EventInvokeConfig is not SDK-provisioned before seeding" >&2; exit 1; }
+# Parity, observed: Cloud Control reads the resource by the id cdkd stored.
+CC_FN=$(aws cloudcontrol get-resource --type-name "${EIC_TYPE}" --identifier "${EIC_ID}" \
+  --region "${REGION}" --query 'ResourceDescription.Identifier' --output text)
+[ "${CC_FN}" = "${EIC_ID}" ] || { echo "FAIL: #4091: Cloud Control's identifier '${CC_FN}' differs from cdkd's physicalId '${EIC_ID}'" >&2; exit 1; }
+echo "    OK: Cloud Control addresses the EventInvokeConfig by cdkd's physicalId (${EIC_ID})"
+echo "==> Phase 1.6: seed the EventInvokeConfig record to provisionedBy=cc-api"
+SEED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+printf '%s\n' "$(echo "${SEED_STATE}" | jq --arg t "${EIC_TYPE}" '.resources |= with_entries(if .value.resourceType == $t then .value.provisionedBy = "cc-api" else . end)')" \
+  | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+[ "$(eic_record .provisionedBy)" = "cc-api" ] || { echo "FAIL: #4091: seeding the record to cc-api did not stick" >&2; exit 1; }
+
 # --- Phase 2: UPDATE (MaxAge 300 / Retries 2) — undeployable pre-fix ---
 echo "==> Phase 2: re-deploy with maxEventAge 5 min / retryAttempts 2 (UPDATE)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+DEPLOY_P2_LOG="$(mktemp)"
+if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${DEPLOY_P2_LOG}" 2>&1; then
+  cat "${DEPLOY_P2_LOG}" >&2
+  rm -f "${DEPLOY_P2_LOG}"
+  echo "FAIL: the phase 2 UPDATE over a cc-api EventInvokeConfig record failed (#4091)" >&2
+  exit 1
+fi
+DEPLOY_P2_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_P2_LOG}")"
+rm -f "${DEPLOY_P2_LOG}"
+DEPLOY_P2_LOG=""
+printf '%s\n' "${DEPLOY_P2_PLAIN}"
+[ "$(eic_record .provisionedBy)" = "sdk" ] || { echo "FAIL: #4091: the cc-api record did not flip back to sdk" >&2; exit 1; }
+[ "$(eic_record .physicalId)" = "${EIC_ID}" ] || { echo "FAIL: #4091: the flip changed the physicalId" >&2; exit 1; }
+if grep -qE "Replacing ${EIC_LOGICAL} " <<<"${DEPLOY_P2_PLAIN}"; then
+  echo "FAIL: #4091: the flip REPLACED ${EIC_LOGICAL} instead of updating it in place" >&2
+  exit 1
+fi
+# Sentinel: the flipped record above -- a flip with no line means the wording drifted.
+if ! grep -qF "${EIC_LOGICAL} (${EIC_TYPE}): moving to the SDK provider" <<<"${DEPLOY_P2_PLAIN}"; then
+  echo "FAIL: #4091: the record flipped, but no 'moving to the SDK provider' line names ${EIC_LOGICAL} -- the wording drifted" >&2
+  exit 1
+fi
+echo "    OK: the cc-api record returned to the SDK provider in place (#4091)"
 
 MAXAGE_P2="$(eic_field 'MaximumEventAgeInSeconds')"
 RETRIES_P2="$(eic_field 'MaximumRetryAttempts')"

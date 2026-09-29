@@ -23,8 +23,9 @@ import type {
 /**
  * SDK Provider for AWS::CloudFront::CloudFrontOriginAccessIdentity
  *
- * CC API DELETE fails with "Invalid request provided" for this resource type.
- * Using CloudFront SDK directly for reliable CRUD operations.
+ * A direct SDK provider. Cloud Control manages this type correctly (create and
+ * delete re-measured for issue #4091), so it is NOT a `'cc-broken'` sticky
+ * exemption; an earlier "CC DELETE fails" note here no longer held.
  */
 export class CloudFrontOAIProvider implements ResourceProvider {
   private cloudFrontClient: CloudFrontClient;
