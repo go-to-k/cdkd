@@ -6,7 +6,9 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
 
 - **VPC** - 1 AZ, no NAT gateways, isolated subnets only
 - **Security Group** - Allows MySQL (3306) access from within the VPC
-- **Aurora Serverless v2 Cluster** - MySQL 3.08.0, 0.5-1 ACU capacity
+- **Aurora Serverless v2 Cluster** - MySQL 3.08.0, 0.5-1 ACU capacity. Routed
+  via Cloud Control; verify.sh asserts that route and that destroying it left no
+  manual snapshot (issue #3993)
 - **Secrets Manager Secret** - Auto-generated database credentials (created by CDK)
 
 - **SecurityCluster** (L1 `CfnDBCluster`, aurora-postgresql, no instance) - the

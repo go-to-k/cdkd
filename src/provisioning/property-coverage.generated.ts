@@ -2591,7 +2591,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DBSystemId', 'not yet implemented by cdkd'],
         [
           'DeleteAutomatedBackups',
-          'delete-time lifecycle flag not threaded through cdkd destroy; final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
+          'delete-time flag, sent on the delete when the record carries it (issue #3993); kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
         ],
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainIAMRoleName', 'not yet implemented by cdkd'],
@@ -2703,7 +2703,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DedicatedLogVolume', 'not yet implemented by cdkd'],
         [
           'DeleteAutomatedBackups',
-          'delete-time lifecycle flag not threaded through cdkd destroy; final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
+          'delete-time flag, sent on the delete when the record carries it (issue #3993); kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
         ],
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainAuthSecretArn', 'not yet implemented by cdkd'],

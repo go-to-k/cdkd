@@ -22,6 +22,12 @@
 # would make the destroy fail. Phase 2 asserts both reset to their CFn
 # defaults (false / false) via DescribeDBClusters.
 #
+# #3993 (no Cloud Control final snapshot): the L2 AuroraCluster is routed via
+# Cloud Control (asserted, so the arm cannot pass vacuously), whose registry
+# delete handler took an untagged `rds-snapshot-<random>` on every delete. The
+# run fails if any manual snapshot of that cluster was created after it began;
+# cleanup deletes any such snapshot either way.
+#
 # #2204 (--remove-protection compensation): phase 2b turns DeletionProtection
 # back ON out of band, adds an out-of-band member instance to the
 # SecurityCluster so DeleteDBCluster refuses TERMINALLY, runs
@@ -95,6 +101,24 @@ OOB_INSTANCE_ID=""
 # Phase 2b's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the phase's own `rm`.
 DESTROY_2B_LOG=""
+# Issue #3993: the L2 cluster's identifier, and when this run began (UTC,
+# second precision, the prefix AWS's SnapshotCreateTime is compared on).
+AURORA_CLUSTER_ID=""
+RUN_START=""
+
+# Print the manual snapshots of cluster $1 created at or after RUN_START, one
+# id per line. Fails (rc 1) when the listing or a timestamp is unreadable, so
+# a caller cannot read an error as "none".
+this_run_cluster_snapshots() { # usage: this_run_cluster_snapshots <cluster id>
+  local out
+  out=$(aws rds describe-db-cluster-snapshots --db-cluster-identifier "$1" \
+    --snapshot-type manual --region "${REGION}" --output json) || return 1
+  echo "${out}" | jq -r --arg start "${RUN_START}" '
+    .DBClusterSnapshots
+    | if all(.[]; (.SnapshotCreateTime // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(\\+00:00|Z)$"))
+      then .[] | select(.SnapshotCreateTime[0:19] >= $start) | .DBClusterSnapshotIdentifier
+      else error("unreadable SnapshotCreateTime") end'
+}
 
 # Delete the out-of-band member and wait for it to be gone. One still
 # `creating` refuses the delete, so wait for `available` first.
@@ -140,6 +164,19 @@ cleanup() {
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
   fi
+  # Issue #3993: a manual snapshot of the L2 cluster this run created (the
+  # leak, or the reverted-fix proof). Older ones are not this run's to delete.
+  if [ -n "${AURORA_CLUSTER_ID}" ] && [ -n "${RUN_START}" ]; then
+    if ! SNAPS_TO_CLEAN=$(this_run_cluster_snapshots "${AURORA_CLUSTER_ID}"); then
+      echo "    WARN: cleanup could not list the manual snapshots of ${AURORA_CLUSTER_ID}; check for a leftover rds-snapshot-* by hand" >&2
+      SNAPS_TO_CLEAN=""
+    fi
+    for snap in ${SNAPS_TO_CLEAN}; do
+      aws rds wait db-cluster-snapshot-available --db-cluster-snapshot-identifier "${snap}" --region "${REGION}"
+      aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
+        && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+    done
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -170,7 +207,8 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
-echo "==> Phase 1: deploy with the local binary"
+RUN_START=$(date -u +%Y-%m-%dT%H:%M:%S)
+echo "==> Phase 1: deploy with the local binary (run start ${RUN_START}Z)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -193,6 +231,28 @@ if [ -z "${DB_CLUSTER_ID}" ] || [ "${DB_CLUSTER_ID}" = "null" ]; then
   exit 1
 fi
 echo "    resolved SecurityCluster identifier: ${DB_CLUSTER_ID}"
+
+# Issue #3993 premise: the L2 AuroraCluster must be Cloud Control-routed, or
+# the no-snapshot assertion (after phase 3; phase 2b's destroy is the one that
+# deletes this cluster) tests the SDK path it always passed.
+AURORA_CLUSTER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.physicalId] | first // ""')
+AURORA_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.provisionedBy // "sdk"] | first // ""')
+if [ -z "${AURORA_CLUSTER_ID}" ] || [ "${AURORA_CLUSTER_ID}" = "null" ]; then
+  echo "FAIL: could not resolve the L2 AuroraCluster identifier from state" >&2
+  exit 1
+fi
+if [ "${AURORA_PROVISIONED_BY}" != "cc-api" ]; then
+  echo "FAIL: #3993 premise: the L2 AuroraCluster is routed via '${AURORA_PROVISIONED_BY}', expected 'cc-api'" >&2
+  exit 1
+fi
+echo "    OK: L2 AuroraCluster ${AURORA_CLUSTER_ID} is provisionedBy=cc-api (#3993 premise)"
+# The fix applies to a RECORDED `DeletionPolicy: Delete` only; an absent one
+# keeps the Cloud Control handler's snapshot on purpose.
+AURORA_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.deletionPolicy // "absent"] | first // ""')
+if [ "${AURORA_DELETION_POLICY}" != "Delete" ]; then
+  echo "FAIL: #3993 premise: the L2 AuroraCluster records DeletionPolicy '${AURORA_DELETION_POLICY}', expected 'Delete'" >&2
+  exit 1
+fi
 
 # --- Routing guard: the SecurityCluster must be SDK-provisioned -------
 # If any set prop were still a silent-drop, #614 routing would flip the
@@ -463,6 +523,18 @@ else
   echo "FAIL: SecurityCluster still in unexpected state after destroy: ${CLUSTER_STATUS}" >&2
   exit 1
 fi
+
+# Issue #3993: phase 2b's destroy deleted the Cloud Control-routed L2 cluster.
+# Before the fix its registry handler left a manual final snapshot there.
+if ! LEAKED_SNAPSHOTS=$(this_run_cluster_snapshots "${AURORA_CLUSTER_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${AURORA_CLUSTER_ID}" >&2
+  exit 1
+fi
+if [ -n "${LEAKED_SNAPSHOTS}" ]; then
+  echo "FAIL: destroying the Cloud Control-routed ${AURORA_CLUSTER_ID} (DeletionPolicy: Delete) left manual snapshot(s): $(printf '%s ' ${LEAKED_SNAPSHOTS})(issue #3993)" >&2
+  exit 1
+fi
+echo "    OK: no manual snapshot of ${AURORA_CLUSTER_ID} since ${RUN_START}Z (#3993)"
 
 echo ""
 echo "=== PASS: RDS Aurora integ + #609 DBCluster security backfill + #1160 reset-on-removal ==="
