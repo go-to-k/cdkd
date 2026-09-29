@@ -60,6 +60,34 @@ export function durableConfigPresenceToggled(oldValue: unknown, newValue: unknow
   return (oldValue == null) !== (newValue == null);
 }
 
+/**
+ * Conditional-replacement predicate for `AWS::Lambda::EventInvokeConfig.FunctionName`
+ * (issue [#4118](https://github.com/go-to-k/cdkd/issues/4118)).
+ *
+ * Lambda accepts the function as a name, a full ARN or a partial ARN
+ * (`<account>:function:<name>`), so a template can re-spell the SAME function.
+ * Treating that as a replacement is destructive: the create-first half Puts the
+ * config onto the function, then the old half's delete removes it from the
+ * same function, leaving none. Only a change of the function NAME replaces.
+ *
+ * A QUALIFIED ARN (`...:function:<name>:<qualifier>`) is compared verbatim, as
+ * is anything that is not a string (an unresolved intrinsic): the conservative
+ * direction, which can over-report a replacement but never skip one. An ARN of
+ * another account or region with the same name reads as the same function;
+ * Lambda refuses such a Put, so that case fails loudly instead of replacing.
+ */
+export function eventInvokeConfigFunctionChanged(oldValue: unknown, newValue: unknown): boolean {
+  const canonical = (value: unknown): unknown => {
+    if (typeof value !== 'string') return JSON.stringify(value);
+    const full = /^arn:[^:]+:lambda:[^:]+:\d{12}:function:([^:]+)$/.exec(value);
+    if (full) return full[1];
+    const partial = /^\d{12}:function:([^:]+)$/.exec(value);
+    if (partial) return partial[1];
+    return value;
+  };
+  return canonical(oldValue) !== canonical(newValue);
+}
+
 export function attributeTypeChangedForSharedAttribute(
   oldValue: unknown,
   newValue: unknown
@@ -345,8 +373,12 @@ export class ReplacementRulesRegistry {
     // (a full-replace write). Without this rule the registry defaults the type
     // to fully-updateable, which is correct for the three mutable props but
     // would silently in-place-update an immutable FunctionName/Qualifier change.
+    // FunctionName replaces only when the function NAME changes: a re-spelling
+    // (name <-> ARN) is the same function, and a replacement there would Put
+    // the config and then delete it again (issue #4118).
     this.rules.set('AWS::Lambda::EventInvokeConfig', {
-      replacementProperties: new Set(['FunctionName', 'Qualifier']),
+      replacementProperties: new Set(['Qualifier']),
+      conditionalReplacements: new Map([['FunctionName', eventInvokeConfigFunctionChanged]]),
       updateableProperties: new Set([
         'MaximumEventAgeInSeconds',
         'MaximumRetryAttempts',
