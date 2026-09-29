@@ -4708,10 +4708,64 @@ describe('cdkd drift over a malformed state record (issue #3018)', () => {
         logicalId: '(resources map)',
         type: 'unreadable record',
         referencesUnresolved: false,
-        cause: 'unreadableRecord',
+        // Its own cause (go-to-k/cdkd#3339): the name alone is a spelling an
+        // entry key can hold, so the cause is what says the MAP is gone.
+        cause: 'unreadableMap',
       },
     ]);
     expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  // go-to-k/cdkd#3339. A readable map holding an unreadable entry KEYED
+  // `(resources map)` used to produce the byte-identical row the unreadable map
+  // does, in `--json` and in the human report: a mis-identified container, and
+  // the two differ in remedy.
+  // A FACTORY: the read-only repair deletes the dropped key from the bag it is
+  // handed, so a shared object would reach the next case already empty.
+  const planted = (): Record<string, unknown> => ({ [UNREADABLE_RESOURCES_MAP_ROW]: null });
+
+  it('--json: an entry keyed like the map row is reported as an ENTRY, not as the map', async () => {
+    const rows: Array<Array<Record<string, unknown>> | undefined> = [];
+    for (const bag of ['abcdef', planted()]) {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(malformedState(bag));
+      exitSpy.mockClear();
+      const { output } = await runDrift(['TestStack', '--json']);
+      rows.push((JSON.parse(output) as Array<{ notCompared?: Array<Record<string, unknown>> }>)[0]!.notCompared);
+      // Both still exit 2: each is a record cdkd could not fully read.
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    }
+    const [mapRows, plantedRows] = rows;
+    expect(mapRows).toEqual([expect.objectContaining({ cause: 'unreadableMap' })]);
+    expect(plantedRows).toEqual([
+      {
+        logicalId: '(resources map)',
+        type: 'unreadable record',
+        referencesUnresolved: false,
+        cause: 'unreadableRecord',
+      },
+    ]);
+    expect(plantedRows).not.toEqual(mapRows);
+  });
+
+  it('human report: the two rows carry different reasons, rendered from the cause', async () => {
+    const reports: string[] = [];
+    for (const bag of ['abcdef', planted()]) {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(malformedState(bag));
+      const { output } = await runDrift(['TestStack']);
+      reports.push(output);
+    }
+    const [map, entry] = reports as [string, string];
+    const MAP_REASON = "the record's whole 'resources' map is not a JSON object";
+    const ENTRY_REASON = 'its state record is not readable as a resource';
+    expect(map).toContain(`! ${UNREADABLE_RESOURCES_MAP_ROW} (unreadable record) — ${MAP_REASON}`);
+    expect(map).not.toContain(ENTRY_REASON);
+    expect(entry).toContain(`(unreadable record) — ${ENTRY_REASON}`);
+    expect(entry).not.toContain(MAP_REASON);
+    // The heading's cause list is per cause too.
+    expect(map).toContain("the record's whole 'resources' map is not readable");
+    expect(entry).not.toContain("the record's whole 'resources' map is not readable");
   });
 
   it('plain drift DROPS an unreadable entry by name and still reports its healthy sibling', async () => {

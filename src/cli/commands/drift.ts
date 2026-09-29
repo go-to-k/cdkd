@@ -212,7 +212,18 @@ export type NotComparedCause =
    * threw, which is non-zero — turning a loud failure into a silent clean
    * verdict is the one direction a fix here must not take.
    */
-  | 'unreadableRecord';
+  | 'unreadableRecord'
+  /**
+   * The record's WHOLE `resources` map is not an object, so nothing in it was
+   * read or compared. Reported as ONE outcome named
+   * `UNREADABLE_RESOURCES_MAP_ROW`, and a cause of its own rather than
+   * `unreadableRecord` (go-to-k/cdkd#3339): under that cause the row was
+   * identical to a dropped ENTRY whose key is spelled `(resources map)`, and the
+   * two differ in remedy — this one means the whole inventory is gone from the
+   * record. A consumer detecting that keys on this cause, never on the name.
+   * Exit 2, like every cause but `unresolvedToken`.
+   */
+  | 'unreadableMap';
 
 /**
  * The schema version at which `ResourceState.observedBaselineRefused` arrived.
@@ -738,6 +749,11 @@ const UNCOMPARED_REASONS: Record<UncomparedReason, { kind: UncomparedKind; phras
     kind: 'unknown',
     phrase: 'not compared AT ALL: their state record is not readable as a resource',
   },
+  // Beside `unreadableRecord`, for the same reason that one says nothing here.
+  unreadableMap: {
+    kind: 'unknown',
+    phrase: "not compared AT ALL: the record's whole 'resources' map is not readable",
+  },
   // `unknown`, beside `readFailed`, because NONE of the resource's properties
   // were compared — it is not "partially" anything (issue #2952).
   baselineRefused: {
@@ -803,6 +819,7 @@ const ANY_OF_IT_COMPARED: Record<NotComparedCause, boolean> = {
   readFailed: false,
   baselineRefused: false,
   unreadableRecord: false,
+  unreadableMap: false,
 };
 
 /**
@@ -1675,6 +1692,9 @@ function notComparedReason(cause: NotComparedCause): string {
       'its state record is not readable as a resource — not an object, carrying no ' +
       "resource type, or holding a 'properties' map that is not an object — so there was " +
       'nothing to compare (repair or re-import the record)',
+    unreadableMap:
+      "the record's whole 'resources' map is not a JSON object, so no resource in it could " +
+      'be read or compared (repair or re-import the record)',
     baselineRefused:
       'a `cdkd import` run refused to capture its observed baseline, so the only ' +
       'baseline available is the recorded properties that refusal already found ' +
@@ -2535,11 +2555,13 @@ async function runDriftForStack(
         // read at all, where before the repair existed the same record crashed
         // non-zero. There is no logical id to name, so the row names the
         // container instead; `outcomeExitSignal` routes the cause to exit 2.
+        // The CAUSE says it is the map, not the name (go-to-k/cdkd#3339): a
+        // dropped entry below can be keyed with the same text.
         outcomes.push({
           kind: 'notCompared',
           logicalId: UNREADABLE_RESOURCES_MAP_ROW,
           resourceType: 'unreadable record',
-          notComparedCause: 'unreadableRecord',
+          notComparedCause: 'unreadableMap',
         });
       }
       const dropped = repairMalformedResourceEntriesForReadOnly(state);
@@ -7171,9 +7193,10 @@ function writeJsonReport(reports: StackDriftReport[]): void {
         // Read off `ANY_OF_IT_COMPARED` rather than a third hand-written cause
         // list: the two partitions are the same one. A row is PARTIALLY
         // compared exactly when a dynamic reference is what stopped it, and
-        // `readFailed` / `baselineRefused` / `unreadableRecord` are about no
-        // reference at all (issue #2952; go-to-k/cdkd#3018, whose new cause an
-        // exclusion list here would have reported as `true`).
+        // `readFailed` / `baselineRefused` / `unreadableRecord` /
+        // `unreadableMap` are about no reference at all (issue #2952;
+        // go-to-k/cdkd#3018, whose new cause an exclusion list here would have
+        // reported as `true`).
         referencesUnresolved: ANY_OF_IT_COMPARED[cause],
         cause,
       })

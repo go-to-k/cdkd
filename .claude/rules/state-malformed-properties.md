@@ -51,7 +51,7 @@ die on a `null` row, so only the load reaches the user.
 SECOND time after splicing adopted rollback orphans in, since those come from
 `state.orphans[].state`, which it never walks. The ENTRY guard on that
 container runs BEFORE the adoption preview, which throws on a `null` / absent
-`state` or a `null` record; dropped records join the node's `unreadable`, so
+`state` or a `null` record; dropped records join the node's `unreadableOrphans`, so
 `--fail` counts them, and add a top-level blocking reason, since the deploy
 refuses them (go-to-k/cdkd#3512).
 

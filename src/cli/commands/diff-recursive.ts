@@ -222,21 +222,36 @@ export interface DiffTreeNode {
    */
   blocking: string[];
   /**
-   * Rows this node's state record holds that the diff could NOT read
-   * (go-to-k/cdkd#3018): each unreadable entry's logical id,
-   * `UNREADABLE_RESOURCES_MAP_ROW` when the whole `resources` map is not an
-   * object, and each rollback-orphan record (`orphans[]`) the adoption preview
-   * could not read as a resource — `''` for one with no string `logicalId`,
-   * which renders as the `<unrenderable>` stand-in. The load drops the first
-   * two so the rest of the stack can be diffed; `computeStackDiff` drops the
-   * third before the preview, which throws on a `null` or `undefined` `state`
-   * or a `null` record and silently keeps the other shapes. A
-   * dropped row the template still declares then previews as a CREATE, but one
-   * the TEMPLATE no longer declares reaches no change at all — it would lose its
-   * DELETE row and let `--fail` exit 0 over a record that used to crash. Counted by {@link nodeHasChanges} for that
-   * reason, rendered as its own block, and always present in `--json`.
+   * What this node's state record holds that the diff could NOT read
+   * (go-to-k/cdkd#3018), in THREE fields, one per kind of thing dropped:
+   * this one holds the logical id of each unreadable `resources` entry,
+   * {@link unreadableContainers} each container that is unreadable as a whole,
+   * and {@link unreadableOrphans} each rollback-orphan record (`orphans[]`) the
+   * adoption preview could not read as a resource.
+   *
+   * Three fields rather than one string list because a container carried as a
+   * stand-in string is a spelling an entry can imitate (go-to-k/cdkd#3339): an
+   * entry keyed `(resources map)` read exactly like an unreadable map, and an
+   * orphan record with no id exactly like an entry keyed `''`. Every string
+   * here is a key the record itself holds.
+   *
+   * The load drops the entries and containers so the rest of the stack can be
+   * diffed; `computeStackDiff` drops the orphan records before the preview,
+   * which throws on a `null` or `undefined` `state` or a `null` record and
+   * silently keeps the other shapes. A dropped row the template still declares
+   * then previews as a CREATE, but one the TEMPLATE no longer declares reaches
+   * no change at all — it would lose its DELETE row and let `--fail` exit 0
+   * over a record that used to crash. Counted by {@link nodeHasChanges} for
+   * that reason, rendered as one block, and always present in `--json`.
    */
   unreadable: string[];
+  /** The containers of this node's record that are unreadable as a whole — see {@link unreadable}. */
+  unreadableContainers: UnreadableContainer[];
+  /**
+   * The rollback-orphan records the adoption preview dropped, by `logicalId`,
+   * `null` for one with no string `logicalId` — see {@link unreadable}.
+   */
+  unreadableOrphans: Array<string | null>;
   /** Direct nested-stack children, DFS order. Empty for leaves and for non-recursive runs. */
   children: DiffTreeNode[];
 }
@@ -299,16 +314,16 @@ const DEPLOY_REFUSES_OUTPUTS_REASON =
 /*
  * The reasons for the containers this command DROPS rather than repairs in
  * place (go-to-k/cdkd#3512): the `resources` bag, a `resources` entry, the
- * `orphans` container and an `orphans` row. Each already puts a row in the
- * node's `unreadable`, which `--fail` counts; `cdkd deploy` refuses the record
- * over every one of them, so each ALSO carries a blocking reason and exit 3
- * says so. The rule is the one go-to-k/cdkd#3335 set for the two containers
- * above: a container the deploy refuses is a reason, and whatever `unreadable`
- * row it had stays — `--json`'s `unreadable` still means "dropped from the
- * diff", and exit 3 outranks `--fail` where both fire.
+ * `orphans` container and an `orphans` row. Each already puts an entry in one
+ * of the node's three unreadable fields, which `--fail` counts; `cdkd deploy`
+ * refuses the record over every one of them, so each ALSO carries a blocking
+ * reason and exit 3 says so. The rule is the one go-to-k/cdkd#3335 set for the
+ * two containers above: a container the deploy refuses is a reason, and
+ * whatever unreadable entry it had stays — those fields still mean "dropped
+ * from the diff", and exit 3 outranks `--fail` where both fire.
  *
  * Count-only, like {@link deployRefusesPropertiesReason}: the rows are named in
- * `unreadable` and in the warning printed beside this.
+ * those fields and in the warning printed beside this.
  */
 const DEPLOY_REFUSES_RESOURCES_BAG_REASON =
   `The 'resources' map cannot be read. This preview read it as empty; 'cdkd deploy' ` +
@@ -326,13 +341,26 @@ const DEPLOY_REFUSES_ORPHANS_CONTAINER_REASON =
   `The 'orphans' field is not a list. This preview read it as empty; 'cdkd deploy' ` +
   `refuses the record instead, so the deploy this previews will not start.`;
 
-function deployRefusesDroppedOrphanRowsReason(logicalIds: readonly string[]): string {
+function deployRefusesDroppedOrphanRowsReason(logicalIds: ReadonlyArray<string | null>): string {
   return (
     `${logicalIds.length} rollback-orphan record(s) in 'orphans' cannot be read as resources. ` +
     `This preview dropped them; 'cdkd deploy' refuses the record instead, so the deploy ` +
     `this previews will not start.`
   );
 }
+
+/**
+ * A state-record container `cdkd diff` could not read at all and read as empty
+ * (go-to-k/cdkd#3339): the `resources` map, or the `orphans` list. Listed in
+ * the order the load checks them, which is the order the preview names them.
+ */
+export type UnreadableContainer = 'resources' | 'orphans';
+
+/** The name the human preview prints for each {@link UnreadableContainer}. */
+const UNREADABLE_CONTAINER_NAMES: Record<UnreadableContainer, string> = {
+  resources: UNREADABLE_RESOURCES_MAP_ROW,
+  orphans: UNREADABLE_ORPHANS_CONTAINER_ROW,
+};
 
 /** How many unreadable row names the human preview lists before summarizing. */
 const UNREADABLE_PREVIEW_NAMES = 10;
@@ -443,18 +471,26 @@ async function loadStateOrEmpty(
   stackName: string,
   region: string,
   stateBackend: S3StateBackend
-): Promise<{ state: StackState; unreadable: string[]; deployRefusals: string[] }> {
+): Promise<{
+  state: StackState;
+  unreadable: string[];
+  unreadableContainers: UnreadableContainer[];
+  deployRefusals: string[];
+}> {
   const result = await stateBackend.getState(stackName, region);
   if (result) {
     // What the repairs below take OUT of the record, returned beside it so the
-    // node can report it (see `DiffTreeNode.unreadable`).
+    // node can report it (see `DiffTreeNode.unreadable`): the dropped entries'
+    // logical ids, and apart from them the containers read as empty.
     const unreadable: string[] = [];
+    const unreadableContainers: UnreadableContainer[] = [];
     // REPAIRED containers whose damage `cdkd deploy` REFUSES (go-to-k/cdkd#3335).
-    // Separate from `unreadable`, which means "dropped from the diff": the
-    // reader's question is different — not "did the diff read everything" but
-    // "will the deploy this previews start at all" — so a DROPPED container
-    // lands in both lists (go-to-k/cdkd#3512), and a repaired one previewed in
-    // place in this one alone. They reach the node's `blocking`, so
+    // Separate from `unreadable` / `unreadableContainers`, which mean "dropped
+    // from the diff": the reader's question is different — not "did the diff
+    // read everything" but "will the deploy this previews start at all" — so a
+    // DROPPED entry or container lands in its own list AND in this one
+    // (go-to-k/cdkd#3512), and a repaired one previewed in place in this one
+    // alone. They reach the node's `blocking`, so
     // `countBlocking` raises the exit-3 `DeployRefusalPreviewError` that
     // `cdkd diff` already spends on a refused adoption, ahead of `--fail`.
     //
@@ -464,12 +500,12 @@ async function loadStateOrEmpty(
     const deployRefusals: string[] = [];
     if (repairMalformedResourcesForReadOnly(result.state)) {
       logger.warn(malformedResourcesWarning(stackName, region));
-      // BOTH lists (go-to-k/cdkd#3512): the row says the diff dropped the bag,
+      // BOTH lists (go-to-k/cdkd#3512): the container entry says the diff dropped the bag,
       // which `--fail` counts, and the reason says the deploy refuses the
       // record (`refuseMalformedResourcesForDeploy`), which exit 3 reports —
       // including when the template declares nothing, where the empty bag
       // yields no change row at all.
-      unreadable.push(UNREADABLE_RESOURCES_MAP_ROW);
+      unreadableContainers.push('resources');
       deployRefusals.push(DEPLOY_REFUSES_RESOURCES_BAG_REASON);
     }
     // go-to-k/cdkd#3018. The bag repair above is not the whole rule, and the
@@ -552,7 +588,7 @@ async function loadStateOrEmpty(
     // adoption row per character.
     if (repairMalformedOrphansForReadOnly(result.state)) {
       logger.warn(malformedOrphansWarning(stackName, region));
-      unreadable.push(UNREADABLE_ORPHANS_CONTAINER_ROW);
+      unreadableContainers.push('orphans');
       // `refuseMalformedOrphans` refuses the deploy over it (go-to-k/cdkd#3512).
       deployRefusals.push(DEPLOY_REFUSES_ORPHANS_CONTAINER_REASON);
     }
@@ -579,7 +615,7 @@ async function loadStateOrEmpty(
     if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
       logger.warn(malformedExportNamesWarning(stackName, region));
     }
-    return { state: result.state, unreadable, deployRefusals };
+    return { state: result.state, unreadable, unreadableContainers, deployRefusals };
   }
   return {
     state: {
@@ -591,6 +627,7 @@ async function loadStateOrEmpty(
       lastModified: Date.now(),
     },
     unreadable: [],
+    unreadableContainers: [],
     deployRefusals: [],
   };
 }
@@ -645,11 +682,11 @@ export interface StackDiffResult {
   /**
    * Rollback-orphan records (`orphans[]`) the adoption preview could not read
    * as a resource, dropped BEFORE the preview because it throws on one, and
-   * carried here so `buildDiffTree` can append them to the node's
-   * `unreadable` — `''` for a record with no string `logicalId`. Empty when the
-   * stack holds no orphan records or no preview was supplied.
+   * carried here so `buildDiffTree` can put them on the node's
+   * `unreadableOrphans` — `null` for a record with no string `logicalId`. Empty
+   * when the stack holds no orphan records or no preview was supplied.
    */
-  unreadableOrphans: string[];
+  unreadableOrphans: Array<string | null>;
   /**
    * The template this diff ran against: condition-false rows pruned, as the
    * deploy engine prunes them. A caller walking this node's resources after
@@ -1034,11 +1071,11 @@ export async function computeStackDiff(
   // `blocking` so the caller can apply the top-level gate to them.
   const deployRefusals: string[] = [];
   let stateForDiff = currentState;
-  // Joins the node's `unreadable` beside the load's dropped rows, for the
-  // reason `DiffTreeNode.unreadable` gives: a torn orphan record used to ABORT
-  // this command, and a run that now warns and exits 0 under `--fail` would
-  // read as clean over exactly the record that used to crash it.
-  const unreadableOrphans: string[] = [];
+  // Becomes the node's `unreadableOrphans`, beside the load's dropped rows, for
+  // the reason `DiffTreeNode.unreadable` gives: a torn orphan record used to
+  // ABORT this command, and a run that now warns and exits 0 under `--fail`
+  // would read as clean over exactly the record that used to crash it.
+  const unreadableOrphans: Array<string | null> = [];
   if (currentState.orphans?.length && options.previewOrphanAdoption) {
     // The ENTRY half of the second pass below, and unlike that one it must run
     // BEFORE the preview rather than after it. `planOrphanAdoption` destructures
@@ -1053,9 +1090,9 @@ export async function computeStackDiff(
     //
     // `orphans` is its own container and `parseStateBody` does not validate it,
     // so neither the load's bag repair nor its entry repair has ever seen these
-    // records. A record whose `logicalId` is not a string renders through
-    // `displayLogicalId`'s existing `<unrenderable>` stand-in rather than a new
-    // literal, which would re-open go-to-k/cdkd#3339's ambiguity.
+    // records. A record whose `logicalId` is not a string is carried as `null`,
+    // not as a stand-in string an entry key could also spell
+    // (go-to-k/cdkd#3339).
     // The verdict comes from the module rather than a local re-spelling
     // (go-to-k/cdkd#3500). The local test asked only about `state`, so a row with
     // a healthy `state` and a non-string `logicalId` previewed as an adoption
@@ -1077,7 +1114,7 @@ export async function computeStackDiff(
     // the per-row predicate cannot make. Dropped rather than kept-and-warned so
     // the preview never hands `planOrphanAdoption` two rows it would key onto one
     // adoption, and so `--fail` still predicts the deploy: a dropped row joins the
-    // node's `unreadable`, which `--fail` counts, and the deploy refuses the
+    // node's `unreadableOrphans`, which `--fail` counts, and the deploy refuses the
     // record over the same rows. Keeping them would preview one adoption for two
     // resources, which is the collapse the writers refuse.
     for (const id of unpreviewableOrphanRecords(currentState)) unreadableOrphans.push(id);
@@ -1085,10 +1122,19 @@ export async function computeStackDiff(
     if (unreadableOrphans.length > 0) {
       // `false`: this command took the PREVIEWABLE predicate, so the diagnosis
       // must not name a torn map as a reason a row was dropped here.
-      logger.warn(malformedOrphanRecordsWarning(stackName, region, unreadableOrphans, false));
+      // The warning's own convention names a row with no id `''`, which it
+      // renders as the `<unrenderable>` stand-in.
+      logger.warn(
+        malformedOrphanRecordsWarning(
+          stackName,
+          region,
+          unreadableOrphans.map((id) => id ?? ''),
+          false
+        )
+      );
       // Every row dropped here is one `refuseMalformedOrphanRecords` refuses
       // the deploy over — the previewable predicate is the NARROWER half of
-      // that one — so it is a reason as well as an `unreadable` row
+      // that one — so it is a reason as well as an `unreadableOrphans` entry
       // (go-to-k/cdkd#3512). Disjoint from the kept-row reason below: that arm
       // walks `readableOrphans`, which excludes every row named here.
       deployRefusals.push(deployRefusesDroppedOrphanRowsReason(unreadableOrphans));
@@ -1724,7 +1770,7 @@ export async function buildDiffTree(args: {
     isNestedChild,
   } = args;
 
-  const { state, unreadable, deployRefusals } = await loadStateOrEmpty(
+  const { state, unreadable, unreadableContainers, deployRefusals } = await loadStateOrEmpty(
     stackName,
     region,
     stateBackend
@@ -1812,10 +1858,14 @@ export async function buildDiffTree(args: {
     outputChanges,
     adoptedOrphans,
     blocking: isNestedChild ? blocking : [...deployRefusals, ...adoptedDeployRefusals, ...blocking],
-    // The load's dropped rows first, then the orphan records the adoption
-    // preview could not read — one list, because the reader of `--json` and
-    // `--fail` asks one question of it: did the diff read everything?
-    unreadable: [...unreadable, ...unreadableOrphans],
+    // The load's dropped entries and containers, and the orphan records the
+    // adoption preview could not read — each in its own field, so the report
+    // says WHICH container is broken without a stand-in string an entry key
+    // could spell (go-to-k/cdkd#3339). `--fail` asks one question of all three:
+    // did the diff read everything?
+    unreadable,
+    unreadableContainers,
+    unreadableOrphans,
     children: [],
   };
   if (!recursive) return node;
@@ -1988,7 +2038,11 @@ async function buildDeletedSubtree(
   diffCalculator: DiffCalculator,
   parentHasSecretReference: boolean
 ): Promise<DiffTreeNode> {
-  const { state, unreadable } = await loadStateOrEmpty(stackName, region, stateBackend);
+  const { state, unreadable, unreadableContainers } = await loadStateOrEmpty(
+    stackName,
+    region,
+    stateBackend
+  );
   const { changes, outputChanges } = await computeStackDiff(
     state,
     EMPTY_TEMPLATE,
@@ -2016,6 +2070,10 @@ async function buildDeletedSubtree(
     adoptedOrphans: [],
     blocking: [],
     unreadable,
+    unreadableContainers,
+    // No adoption preview runs here (see `adoptedOrphans`), so no orphan record
+    // is dropped by one.
+    unreadableOrphans: [],
     // The empty template carries no `Outputs`, so every persisted key diffs as
     // REMOVE — which is accurate: destroying the child drops its whole state
     // record, and any export it published stops resolving for consumers.
@@ -2207,8 +2265,18 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
   // no DELETE row. Without this arm `--fail` exits 0 over a record that used to
   // crash non-zero, which is the one direction this change must not take.
   return (
-    node.outputChanges.length > 0 || node.adoptedOrphans.length > 0 || node.unreadable.length > 0
+    node.outputChanges.length > 0 || node.adoptedOrphans.length > 0 || unreadableCount(node) > 0
   );
+}
+
+/**
+ * How many things this node's record holds that the diff could not read, over
+ * all three of {@link DiffTreeNode.unreadable}'s fields — the one number both
+ * {@link nodeHasChanges} and the preview's count read, so the two cannot
+ * disagree about whether a container counts.
+ */
+function unreadableCount(node: DiffTreeNode): number {
+  return node.unreadable.length + node.unreadableContainers.length + node.unreadableOrphans.length;
 }
 
 /** True when this node OR any descendant has a real change (tree-wide drift detector for `--fail`). */
@@ -2351,11 +2419,25 @@ export interface DiffNodeJson {
    */
   blocking: string[];
   /**
-   * Rows of the state record the diff could not read (go-to-k/cdkd#3018).
-   * Always present; non-empty means `changes` is NOT the whole picture — a
-   * record the template no longer declares has no DELETE row here.
+   * Logical ids of the `resources` entries the diff could not read
+   * (go-to-k/cdkd#3018). Always present, like the two fields below; any of the
+   * three non-empty means `changes` is NOT the whole picture — a record the
+   * template no longer declares has no DELETE row here.
    */
   unreadable: string[];
+  /**
+   * The containers the diff could not read at all and read as empty
+   * (go-to-k/cdkd#3339): `'resources'` (the whole resource inventory is
+   * missing from what was diffed) and `'orphans'`. A field of its own, so no
+   * key an entry can hold reads as one.
+   */
+  unreadableContainers: UnreadableContainer[];
+  /**
+   * The rollback-orphan records the adoption preview could not read, by
+   * `logicalId` — `null` for one with no string `logicalId`, which no key can
+   * spell (go-to-k/cdkd#3339).
+   */
+  unreadableOrphans: Array<string | null>;
   children: DiffNodeJson[];
 }
 
@@ -2410,6 +2492,8 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
     adoptedOrphans: node.adoptedOrphans,
     blocking: node.blocking,
     unreadable: node.unreadable,
+    unreadableContainers: node.unreadableContainers,
+    unreadableOrphans: node.unreadableOrphans,
     children: node.children.map(diffTreeToJson),
   };
 }
@@ -2757,6 +2841,42 @@ export function renderOutputChangeLines(
 }
 
 /**
+ * The first `limit` names the preview's unreadable-row line prints, in the
+ * order the record is read: the `resources` container, the dropped entries,
+ * the `orphans` container, the dropped orphan records. (A container and its
+ * own rows never occur together: an unreadable container has none.)
+ *
+ * A container prints its fixed name BARE, from the node's
+ * {@link DiffTreeNode.unreadableContainers} field. Everything else is a name the
+ * record holds and takes `displayLogicalId`, whose quoting keeps an id padded
+ * to look like a healthy sibling — or spelled like a container's name
+ * (go-to-k/cdkd#3339) — visibly distinct. An orphan record with no id renders
+ * as its `<unrenderable>` stand-in, as the warning beside this names it.
+ *
+ * Stops at `limit` rather than rendering every row and slicing: a record can
+ * hold thousands of dropped rows. The `resources` container needs no check: it
+ * can only come first, and `limit` is the preview's fixed cap of ten.
+ */
+function unreadableRowNames(node: DiffTreeNode, limit: number): string[] {
+  const names: string[] = [];
+  if (node.unreadableContainers.includes('resources')) {
+    names.push(UNREADABLE_CONTAINER_NAMES.resources);
+  }
+  for (const id of node.unreadable) {
+    if (names.length >= limit) break;
+    names.push(displayLogicalId(id));
+  }
+  if (node.unreadableContainers.includes('orphans') && names.length < limit) {
+    names.push(UNREADABLE_CONTAINER_NAMES.orphans);
+  }
+  for (const id of node.unreadableOrphans) {
+    if (names.length >= limit) break;
+    names.push(displayLogicalId(id ?? ''));
+  }
+  return names;
+}
+
+/**
  * Render a diff tree (root + nested children, DFS) via `logFn`. Only nodes
  * that actually have changes get a block — unchanged nested children are
  * walked silently so the output shows only what the next deploy would do
@@ -2830,33 +2950,18 @@ export function renderDiffTree(
     // baseline report, the drift warnings): the count leads the line and
     // `--json` keeps every id, so a record with thousands of broken rows cannot
     // print one megabyte-long line. The create clause is for logical ids only:
-    // the map row is not one, so a lone map row gets no such sentence.
-    if (node.unreadable.length > 0) {
-      // The map row is cdkd's own literal and renders bare. A logical id takes
-      // `displayLogicalId`, whose quoting keeps an id padded to look like a
-      // healthy sibling visibly distinct. Stated rather than solved: a planted
-      // entry whose id IS the map-row literal is still indistinguishable from
-      // it here and in `--json`, since the node records only strings.
-      const named = node.unreadable
-        .slice(0, UNREADABLE_PREVIEW_NAMES)
-        .map((id) =>
-          id === UNREADABLE_RESOURCES_MAP_ROW || id === UNREADABLE_ORPHANS_CONTAINER_ROW
-            ? id
-            : displayLogicalId(id)
-        );
-      const rest = node.unreadable.length - named.length;
-      // The sentence below is about LOGICAL IDS, so it is suppressed when every
-      // row is a container stand-in rather than only when the one row is the
-      // resources map: a node whose sole row is `(orphans container)` would
-      // otherwise claim the template declares one of them
-      // (go-to-k/cdkd#3379). Stated rather than solved, and the same bound the
-      // mapping above carries: two planted ids spelled exactly like the two
-      // stand-in rows suppress it too, since the node records only strings.
-      const onlyContainerRows = node.unreadable.every(
-        (id) => id === UNREADABLE_RESOURCES_MAP_ROW || id === UNREADABLE_ORPHANS_CONTAINER_ROW
-      );
+    // a container is not one, so a node whose only rows are containers gets no
+    // such sentence.
+    const unreadableTotal = unreadableCount(node);
+    if (unreadableTotal > 0) {
+      const named = unreadableRowNames(node, UNREADABLE_PREVIEW_NAMES);
+      const rest = unreadableTotal - named.length;
+      // Decided from the node's FIELDS, not from how a row is spelled
+      // (go-to-k/cdkd#3339): an entry keyed `(resources map)` is a logical id,
+      // keeps this sentence, and renders quoted above.
+      const onlyContainerRows = node.unreadable.length === 0 && node.unreadableOrphans.length === 0;
       logFn(
-        `${node.unreadable.length} state record row(s) could not be read: ` +
+        `${unreadableTotal} state record row(s) could not be read: ` +
           `${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}.` +
           (onlyContainerRows
             ? ''
