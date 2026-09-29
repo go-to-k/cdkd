@@ -11085,7 +11085,11 @@ export class IntrinsicFunctionResolver {
       // sentence (go-to-k/cdkd#3950).
       // not-in-class(displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })): the RoleArn argument, refused unless it is a literal template string.
       const shownRoleArn = displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
-      const plain = shownRoleArn === roleArn;
+      // Whitespace FIRST: the round-trip alone admits a value that is
+      // `displayIdent`'s own cut output (the cap's worth of plain characters,
+      // then ` [cut: N more characters withheld]`), which then sits inside
+      // cdkd's `'...'` with `: ` in it.
+      const plain = !/\s/.test(roleArn) && shownRoleArn === roleArn;
       const bounded = plain ? `'${shownRoleArn}'` : shellBoundedDisplay(shownRoleArn);
       // A described value reads as a noun phrase, not as the ARN itself.
       const subject =

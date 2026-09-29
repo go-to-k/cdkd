@@ -7,6 +7,8 @@ import {
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { ROLE_ARN_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
+import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 /**
@@ -266,6 +268,20 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
       'Unsupported CloudFormation intrinsic function whose name is not a plain identifier:'
     );
     expect(message).not.toContain(`"${forged}"`);
+  });
+
+  it("describes a refused RoleArn that is displayIdent's own cut output", async () => {
+    // The role-ARN cap's worth of plain characters, then exactly the suffix
+    // `displayIdent` appends when it cuts 35: it round-trips unchanged, fails
+    // `parseIamRoleArn` (the space), and reaches the RoleArn refusal.
+    const prefix = 'arn:aws:iam::123456789012:role/';
+    const forged = `${prefix}${'a'.repeat(ROLE_ARN_MAX_CODE_POINTS - prefix.length)} [cut: 35 more characters withheld]`;
+    expect(forged.length - ROLE_ARN_MAX_CODE_POINTS).toBe(35);
+    const message = await refusal({
+      'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Out', RoleArn: forged },
+    });
+    expect(message).toContain(`the RoleArn argument (${UNSHOWABLE_VALUE}) is not a valid IAM role ARN.`);
+    expect(message).not.toContain('[cut:');
   });
 
   it('keeps an empty mapping name visible as an empty quote', async () => {
