@@ -687,7 +687,7 @@ describe('#2827 — Fn::FindInMap masks all three of its resolved keys', () => {
 
     expect(message).not.toContain(PASSWORD);
     expect(message).toContain("second-level key '***'");
-    expect(message).toContain("'RealMap' -> 'RealTop'");
+    expect(message).toContain("'RealMap' under top-level key 'RealTop'");
   });
 
   it('CONTROL: UNRECORDED keys are reported verbatim', async () => {

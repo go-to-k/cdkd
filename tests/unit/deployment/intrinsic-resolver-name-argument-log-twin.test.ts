@@ -467,7 +467,7 @@ describe('issue #3150: Fn::FindInMap keys', () => {
       makeContext({ template: template as CloudFormationTemplate })
     );
     expect(message).toBe(
-      "Fn::FindInMap: second-level key 'size-***' not found in mapping 'map-***' -> 'env-***'"
+      "Fn::FindInMap: second-level key 'size-***' not found in mapping 'map-***' under top-level key 'env-***'"
     );
   });
 

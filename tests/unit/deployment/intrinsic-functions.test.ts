@@ -201,7 +201,7 @@ describe('IntrinsicFunctionResolver - Fn::FindInMap', () => {
     await expect(
       resolver.resolve({ 'Fn::FindInMap': ['RegionMap', 'us-east-1', 'VPC'] }, context)
     ).rejects.toThrow(
-      "Fn::FindInMap: second-level key 'VPC' not found in mapping 'RegionMap' -> 'us-east-1'"
+      "Fn::FindInMap: second-level key 'VPC' not found in mapping 'RegionMap' under top-level key 'us-east-1'"
     );
   });
 

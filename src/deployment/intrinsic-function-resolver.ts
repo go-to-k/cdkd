@@ -11238,8 +11238,11 @@ export class IntrinsicFunctionResolver {
       }
       throw new Error(
         `Fn::FindInMap: second-level key ${quotedRender(this.displayMasked(secondLevelKey, context), "'")} ` +
-          `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")} -> ` +
-          `${quotedRender(this.displayMasked(topLevelKey, context), "'")}`
+          `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")} under ` +
+          // `under`, not `->`: pasted, `->` is `-` plus a `>` redirect onto the
+          // quoted top-level key, which `QUOTABLE_RENDER` admits as a path
+          // (`../x`, go-to-k/cdkd#4100 review M1).
+          `top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")}`
       );
     }
 

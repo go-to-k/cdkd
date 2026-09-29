@@ -107,15 +107,15 @@ async function familiesFor(
     {
       family: 'Fn::FindInMap second-level key',
       message: await refusal({ 'Fn::FindInMap': ['M', 'k', value] }, MAPPINGS('M', 'k')),
-      quoted: `second-level key '${value}' not found in mapping 'M' -> 'k'`,
-      described: `second-level key ${NOT_SHOWN} not found in mapping 'M' -> 'k'`,
+      quoted: `second-level key '${value}' not found in mapping 'M' under top-level key 'k'`,
+      described: `second-level key ${NOT_SHOWN} not found in mapping 'M' under top-level key 'k'`,
     },
     {
-      // The key is PRESENT, so the refusal names it at the end, after `->`.
+      // The key is PRESENT, so the refusal names it at the end, after `under top-level key`.
       family: 'Fn::FindInMap second-level refusal naming the top-level key',
       message: await refusal({ 'Fn::FindInMap': ['M', value, 'absent'] }, MAPPINGS('M', value)),
-      quoted: `not found in mapping 'M' -> '${value}'`,
-      described: `not found in mapping 'M' -> ${NOT_SHOWN}`,
+      quoted: `not found in mapping 'M' under top-level key '${value}'`,
+      described: `not found in mapping 'M' under top-level key ${NOT_SHOWN}`,
     },
     {
       // The mapping EXISTS under the payload's name, so the key refusals name it.
@@ -127,8 +127,8 @@ async function familiesFor(
     {
       family: 'Fn::FindInMap second-level refusal naming the mapping',
       message: await refusal({ 'Fn::FindInMap': [value, 'k', 'absent'] }, MAPPINGS(value, 'k')),
-      quoted: `not found in mapping '${value}' -> 'k'`,
-      described: `second-level key 'absent' not found in mapping ${NOT_SHOWN} -> 'k'`,
+      quoted: `not found in mapping '${value}' under top-level key 'k'`,
+      described: `second-level key 'absent' not found in mapping ${NOT_SHOWN} under top-level key 'k'`,
     },
     {
       // A pre-#1681 placeholder ARN read off the STATE record.
@@ -282,6 +282,22 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
     });
     expect(message).toContain(`the RoleArn argument (${UNSHOWABLE_VALUE}) is not a valid IAM role ARN.`);
     expect(message).not.toContain('[cut:');
+  });
+
+  it('pastes nothing from the second-level refusal whose quoted top-level key is a plain path', async () => {
+    // A top-level key `QUOTABLE_RENDER` admits, so it is QUOTED: the old
+    // `-> 'victim'` pasted as `-` plus a `>` redirect onto it, creating `victim`
+    // (go-to-k/cdkd#4100 review M1). The payload cases never reached this,
+    // since every payload is described.
+    const message = await refusal(
+      { 'Fn::FindInMap': ['M', 'victim', 'absent'] },
+      MAPPINGS('M', 'victim')
+    );
+    expect(message).toContain("not found in mapping 'M' under top-level key 'victim'");
+    expect(message).not.toContain('->');
+    withPasteDir((dir) => {
+      expect(spansThatRun(message, dir)).toEqual([]);
+    });
   });
 
   it('keeps an empty mapping name visible as an empty quote', async () => {

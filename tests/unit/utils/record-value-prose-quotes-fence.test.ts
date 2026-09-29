@@ -11,7 +11,10 @@
  * BOUND: the pattern sees a sanitizer CALLED inside the quote, or a hoisted
  * sanitized value whose variable is named `safe*` (`'${safeId}'`,
  * `'${safeId || UNRENDERABLE}'`) or `logged*` (the resolver's bindings of a
- * `displayMasked` render, `'${loggedExportName}'`). A hoisted value under any other name is
+ * `displayMasked` render, `'${loggedExportName}'`). The hoisted arm sees only
+ * `'${x}'` and `'${x || …}'`: not `??`, not `.slice(…)`, and not text inside
+ * the quote before the value (the pre-fix `'Type: ${loggedType}'`). A hoisted
+ * value under any other name is
  * invisible to it, and so is a site split across a continuation line. Those
  * are covered per site by paste cases, not here.
  *
