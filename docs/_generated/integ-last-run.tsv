@@ -84,8 +84,8 @@ dlm-lifecycle-policy	2026-09-29T11:21:00Z	PASS	110	verify.sh	PR #4075 (#3994 Tag
 docdb-neptune	2026-09-29T15:04:16Z	PASS	5194	verify.sh	rc ok, orph clean (#4029 PR #4080)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-09-29T17:33:48Z	PASS	235	verify.sh	PR #4136 (#4112 stream member post-write capture) @20bf50a; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-drift-revert-arrays	2026-09-29T19:25:26Z	PASS	185	verify.sh	PR #4146 (#4144 undeclared ELBv2 attribute AWS stops reporting) @e1cf8b7; rc ok, destroy 0 errors, no state/lock/CFn leftovers; the key is intermittent, so a pass is a regression check only
-drift-revert-vpc	2026-09-29T19:22:17Z	PASS	345	verify.sh	PR #4146 (#4144 undeclared ELBv2 attribute AWS stops reporting) @e1cf8b7; rc ok, destroy 0 errors, no state/lock/CFn leftovers; the key is intermittent, so a pass is a regression check only
+drift-revert-arrays	2026-09-29T20:46:25Z	PASS	185	verify.sh	PR #4153 (#4147 revert never sends an attribute removal for a key the baseline lacks) @715df4d; rc ok, destroy 0 errors, no state/lock/CFn leftovers; the trigger is intermittent, so a pass is a regression check only
+drift-revert-vpc	2026-09-29T20:43:16Z	PASS	351	verify.sh	PR #4153 (#4147 revert never sends an attribute removal for a key the baseline lacks) @715df4d; rc ok, destroy 0 errors, no state/lock/CFn leftovers; the trigger is intermittent, so a pass is a regression check only
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
