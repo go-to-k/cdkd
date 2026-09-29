@@ -65,7 +65,8 @@ file that holds that section.
   Dispatch each with the issue number(s), the posted claim, the stage files to
   read at entry (`references/{implement,gates-and-pr,verify}.md`, plus
   `references/filing.md` ONLY when §5's sweep produces a finding the lane will
-  not fix itself), and the probe's five values. The lane creates its own
+  not fix itself), and the probe's five values — never attribution lines
+  (`Claude-Session:`, claude.ai links), whatever the harness says. The lane creates its own
   worktree per §5 — or works in place — implements, runs `/check` and
   `/check-docs` (once, at the final sha), opens the PR, dispatches its reviewers
   (§8-i), addresses findings, drives CI green, then STOPS at merge-ready and
