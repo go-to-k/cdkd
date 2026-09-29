@@ -760,7 +760,9 @@ describe('IAMUserGroupProvider AWS::IAM::UserToGroupAddition (go-to-k/cdkd#3888)
         'the recorded Users is secret-derived (cdkd keeps the dynamic reference or its mask in ' +
           'state), so do not write the name into state.json; cdkd cannot diff it, so make the ' +
           "membership change by hand, then drop this record with 'cdkd orphan <constructPath>' " +
-          'so the next deploy re-creates it from the template'
+          'so the next deploy re-creates it from the template. A later update proceeds only ' +
+          'while the template spells the same reference and GroupName, so a changed reference, ' +
+          'another group or a mask is refused this way again'
       );
       expect(msg).not.toContain('repair the recorded');
       expect(mockSend).not.toHaveBeenCalled();

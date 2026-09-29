@@ -63,8 +63,8 @@ const orphanRoute = (renamed: boolean): string =>
     : '') +
   ", then drop this record with 'cdkd orphan <constructPath>' so the next deploy re-attaches " +
   'it from the template (an attachment left in place across the orphan is no longer tracked ' +
-  'by cdkd). The new record keeps the reference (or its mask) again, so a later change to ' +
-  'this policy is refused the same way';
+  'by cdkd). A later update proceeds only while the template spells the same reference and ' +
+  'PolicyName, so a changed reference, a rename or a mask is refused this way again';
 
 const SECRET_DERIVED_REPAIR = `${SECRET_DERIVED_NOTE}; ${orphanRoute(false)}`;
 
@@ -222,7 +222,7 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
         `since the repair below re-applies it; then the recorded Roles ${SECRET_DERIVED_NOTE}; ` +
         orphanRoute(false)
     );
-    expect(msg.split('refused the same way').length - 1).toBe(1);
+    expect(msg.split('refused this way again').length - 1).toBe(1);
     expect(mockSend).not.toHaveBeenCalled();
   });
 

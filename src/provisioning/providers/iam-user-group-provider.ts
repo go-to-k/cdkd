@@ -110,11 +110,14 @@ export const MEMBERSHIP_MALFORMED_USERS_SKIP_REASON =
  * members, not which of them this resource added), so cdkd cannot diff it, and
  * editing state is not the repair. `cdkd orphan` drops just this record, and
  * the next deploy re-creates it from the template (`AddUserToGroup` is
- * idempotent).
+ * idempotent). An unchanged reference never reaches this: the engine drops
+ * it from the previous side (go-to-k/cdkd#4064).
  */
 const MEMBERSHIP_SECRET_DERIVED_REPAIR =
   'cdkd cannot diff it, so make the membership change by hand, then drop this record with ' +
-  "'cdkd orphan <constructPath>' so the next deploy re-creates it from the template";
+  "'cdkd orphan <constructPath>' so the next deploy re-creates it from the template. A " +
+  'later update proceeds only while the template spells the same reference and GroupName, so ' +
+  'a changed reference, another group or a mask is refused this way again';
 
 /**
  * Read a desired and a recorded principal list, refusing either when it is not

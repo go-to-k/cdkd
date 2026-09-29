@@ -132,6 +132,9 @@ const SECRET_DERIVED_NOTE =
  * `cdkd orphan` drops just this record, and the next deploy re-attaches the
  * policy from the template (`Put*Policy` is idempotent) under the DESIRED
  * name only, so a rename (`renamed`) also leaves the old-named policy behind.
+ * A record whose reference the template still spells the same way never
+ * reaches this: the engine drops it from the previous side
+ * (go-to-k/cdkd#4064, `withUnchangedSecretPrincipalLists`).
  */
 function policySecretDerivedRepair(renamed: boolean): string {
   return (
@@ -144,8 +147,9 @@ function policySecretDerivedRepair(renamed: boolean): string {
       : '') +
     ", then drop this record with 'cdkd orphan <constructPath>' so the next deploy " +
     're-attaches it from the template (an attachment left in place across the orphan is no ' +
-    'longer tracked by cdkd). The new record keeps the reference (or its mask) again, so a ' +
-    'later change to this policy is refused the same way'
+    'longer tracked by cdkd). A later update proceeds only while the template spells the ' +
+    'same reference and PolicyName, so a changed reference, a rename or a mask is refused ' +
+    'this way again'
   );
 }
 
