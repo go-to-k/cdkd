@@ -7,7 +7,11 @@ import {
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
-import { templateIdentity } from '../../utils/nested-template-cycle.js';
+import {
+  findNestedTemplateTreeDefect,
+  renderNestedTemplateTreeDefect,
+  templateIdentity,
+} from '../../utils/nested-template-cycle.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
@@ -1922,6 +1926,17 @@ export async function buildDiffTree(args: {
         parentHasSecretReference: secretBearingAbove,
       })
     );
+  }
+
+  // The walk above follows CONDITION-PRUNED rows, so a cycle closing through a
+  // condition-false row never reaches its ancestor check — while `cdkd deploy`
+  // walks the RAW rows and refuses it (`refuseMalformedNestedTemplateTrees`).
+  // One raw walk from the root keeps the two commands agreeing.
+  // After the loop, not before it: an unpruned cycle is still refused by the
+  // per-row check above, which names the row the way this command diffs it.
+  if (!isNestedChild) {
+    const defect = findNestedTemplateTreeDefect(nestedTemplates);
+    if (defect) throw new Error(renderNestedTemplateTreeDefect(defect, stackName, 'diff'));
   }
 
   // State-only children (removed from the template, or condition-false →

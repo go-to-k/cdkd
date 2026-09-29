@@ -1748,7 +1748,55 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       const child = root.children[0]!;
       expect(child.changes.get('NewRes')!.changeType).toBe('CREATE');
       expect(child.blocking).toHaveLength(1);
+      expect(child.blocking[0]).toContain('ChildRes');
+      expect(child.blocking[0]).toContain(NESTED);
       expect(countBlocking(root)).toBe(1);
+    });
+
+    it('refuses a cycle closed through a condition-false row, as the deploy does', async () => {
+      // The pruned walk never visits `Again`, so only the raw-tree walk the
+      // deploy runs (`findNestedTemplateTreeDefect`) can see the cycle.
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Parameters: { Enabled: { Type: 'String', Default: 'no' } },
+          Conditions: { Recurse: { 'Fn::Equals': [{ Ref: 'Enabled' }, 'yes'] } },
+          Resources: {
+            ChildRes: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'c' } },
+            Again: {
+              Type: NESTED,
+              Condition: 'Recurse',
+              Metadata: { 'aws:asset:path': 'child.json' },
+              Properties: {},
+            },
+          },
+        })
+      );
+      const parentTemplate: CloudFormationTemplate = {
+        Resources: {
+          Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+        },
+      };
+
+      const message = await buildDiffTree({
+        stackName: 'Parent',
+        displayName: 'Parent',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: indexNestedChildTemplates(parentTemplate, join(dir, 'parent.json')),
+        recursive: true,
+        stateBackend: fakeBackend({}),
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      }).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+
+      expect(message).toContain('The nested template tree under stack Parent contains a cycle');
+      expect(message).toContain('Nested stack Again (declared in stack Parent~Child)');
+      expect(message).toContain('Refusing to diff.');
     });
   });
 

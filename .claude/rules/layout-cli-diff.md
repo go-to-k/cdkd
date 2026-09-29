@@ -22,7 +22,10 @@ of CONDITION-PRUNED template nested rows (CREATE/UPDATE) and state-only rows
 **It refuses a nested template already on the root-to-node path** — a REFUSAL,
 not a depth cap, since a cyclic assembly has no correct diff; keyed on the
 ANCESTOR CHAIN, not a global visited set, since two siblings may name one child
-([#3239](https://github.com/go-to-k/cdkd/issues/3239)).
+([#3239](https://github.com/go-to-k/cdkd/issues/3239)). That check sees only
+PRUNED rows, so the root also runs `findNestedTemplateTreeDefect` over the RAW
+tree after its template loop — the walk `cdkd deploy` refuses on, which must
+agree ([#3815](https://github.com/go-to-k/cdkd/issues/3815)).
 
 `loadStateOrEmpty` holds the read-only container repairs
 ([state-malformed-properties.md](state-malformed-properties.md)). Every
