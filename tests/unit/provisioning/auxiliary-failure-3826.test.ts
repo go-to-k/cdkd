@@ -70,6 +70,7 @@ import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtra
 import { CodeCommitRepositoryProvider } from '../../../src/provisioning/providers/codecommit-repository-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
+import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js';
@@ -799,6 +800,47 @@ const CASES: Case[] = [
       // The two stream members act on the STREAM arn (#3458).
       'TagResourceCommand',
       'PutResourcePolicyCommand',
+    ],
+    responses: {
+      DescribeTableCommand: {
+        Table: {
+          TableStatus: 'ACTIVE',
+          TableArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/table',
+          TableId: 't1',
+          LatestStreamArn:
+            'arn:aws:dynamodb:us-east-1:123456789012:table/table/stream/2026-01-01T00:00:00.000',
+        },
+      },
+    },
+  },
+  {
+    // One site, in the catch that already retires a partial table (#3877).
+    // AWS's measured replica refusal ("...already existed as tables", #3569)
+    // does not read as a collision, so the replica add uses the stand-in.
+    name: 'dynamodb-globaltable AWS::DynamoDB::GlobalTable',
+    provider: () => new DynamoDBGlobalTableProvider(),
+    resourceType: 'AWS::DynamoDB::GlobalTable',
+    properties: {
+      TableName: 'table',
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+      BillingMode: 'PAY_PER_REQUEST',
+      StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+      Replicas: [{ Region: 'us-east-1' }, { Region: 'us-west-2' }],
+      TimeToLiveSpecification: { AttributeName: 'ttl', Enabled: true },
+    },
+    clients: [DynamoDBClient],
+    main: 'CreateTableCommand',
+    mainAwsError: { name: 'ResourceInUseException', message: 'Table already exists: table' },
+    // `addReplica`'s UpdateTable, for the non-local replica.
+    aux: 'UpdateTableCommand',
+    alsoAux: [
+      {
+        // Local replica only, so no replica add runs ahead of it and the
+        // partial-create cleanup has no replica to wait out.
+        command: 'UpdateTimeToLiveCommand',
+        patch: { Replicas: [{ Region: 'us-east-1' }] },
+      },
     ],
     responses: {
       DescribeTableCommand: {

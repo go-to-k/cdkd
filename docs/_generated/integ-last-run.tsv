@@ -88,7 +88,7 @@ drift-revert-vpc	2026-09-29T04:05:50Z	PASS	371	verify.sh	maintainer merge-gate r
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-dynamodb-globaltable	2026-09-29T04:02:19Z	PASS	1626	verify.sh	rc ok, orph clean (maintainer merge-gate rerun of PR #3914)
+dynamodb-globaltable	2026-09-29T05:27:26Z	PASS	1497	verify.sh	PR #4048 (#3877 GlobalTable aux-failure mark) @d9a61bd; rc ok, 12 deleted 0 errors, orph clean
 dynamodb-gsi-update	2026-09-27T20:52:47Z	PASS	1358	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean; Phase 2f (#3777) 3/3
 dynamodb-ondemand	2026-09-27T21:02:28Z	PASS	291	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-sse	2026-09-27T21:03:18Z	PASS	50	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
