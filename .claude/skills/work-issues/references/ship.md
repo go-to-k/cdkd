@@ -9,7 +9,8 @@ LANE'S WORKTREE. While that tree is busy with a follow-up branch, ship from a
 SECOND sibling on the PR's branch
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
 running BOTH the integ and the merge there (the marker is per tree); Cleanup
-removes it like any other. Never two lanes' integs or merges at once.
+removes it like any other. Never two lanes' integs or merges at once; when a
+turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
@@ -49,7 +50,7 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. Keep both, then run
   `vp run integ-ledger-normalize` before `git rebase --continue` and commit it —
-  after a CLEAN rebase touching the ledger too, before the push (#3981 did not).
+  after a CLEAN rebase touching the ledger too, before the push.
 
 ### Merge
 
@@ -66,7 +67,7 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
-  as it blocks even after re-runs pass (#3664, #3748, #3767).
+  as it blocks even after re-runs pass (#3664).
 - **`-R` is not optional in a multi-repo run**: `gh` infers it from the CWD,
   and `Could not resolve to a PullRequest` reads as a permissions problem.
 - **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
