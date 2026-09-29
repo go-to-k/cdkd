@@ -8,6 +8,8 @@
 #   2. `cdkd deploy` the parent + nested child via cdkd itself (NOT
 #      upstream cdk deploy — PR B2 tests the cdkd → CFn direction).
 #   3. Assert state files exist at v6 keys.
+#   (steps 2b/9c/14) go-to-k/cdkd#3915: the parent's SSM-typed Parameter is
+#       passed to the child; the imported child holds the stored VALUE.
 #   (steps 5b/5c/9b) go-to-k/cdkd#3916: plant a parent state record named
 #       like the parent Parameter `Stage`; a redeploy keeps the child value
 #       `prod`, and the export (planted again) imports the child with
@@ -87,6 +89,17 @@ CHILD_STATE_KEY="cdkd/${CHILD_CDKD_STACK}/${REGION}/state.json"
 # path's naming scheme by hand (it has silently rotted twice; see #583/#588).
 PARENT_PARAM_NAME=""
 CHILD_PARAM_NAME=""
+
+# go-to-k/cdkd#3915: the SSM parameter the parent's SSM-typed `SsmStage`
+# Parameter names. The name is PER RUN and reaches the synth through
+# CDKD_TEST_SSM_STAGE_NAME (lib/parent-stack.ts's Default), so a concurrent
+# run or a pre-existing parameter is never overwritten or deleted. Created
+# with `put-parameter` WITHOUT --overwrite, and deleted by `cleanup` only once
+# this run created it.
+SSM_STAGE_NAME="/cdkd-export-nested-stack/stage-3915-$(date +%s)-$$"
+SSM_STAGE_VALUE="ssm-resolved-3915"
+SSM_STAGE_CREATED=""
+export CDKD_TEST_SSM_STAGE_NAME="${SSM_STAGE_NAME}"
 # Scratch for the go-to-k/cdkd#3916 state plant (copies of parent state);
 # Created only once the EXIT trap is armed; `cleanup` removes it on every exit path.
 PLANT_TMP=""
@@ -160,6 +173,9 @@ cleanup() {
   aws s3 rm "s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" --region "${REGION}" 2>/dev/null || true
   aws s3 rm "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" --region "${REGION}" 2>/dev/null || true
   [ -n "${PLANT_TMP}" ] && rm -rf "${PLANT_TMP}"
+  if [ -n "${SSM_STAGE_CREATED}" ]; then
+    aws ssm delete-parameter --name "${SSM_STAGE_NAME}" --region "${REGION}" 2>/dev/null || true
+  fi
   exit "${rc}"
 }
 trap cleanup EXIT
@@ -193,6 +209,12 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" -
   echo "[verify]       run: aws s3 rm s3://${STATE_BUCKET}/${CHILD_STATE_KEY}"
   exit 1
 fi
+
+echo "[verify] step 2b: create the SSM parameter the parent's SSM-typed Parameter names (go-to-k/cdkd#3915)"
+aws ssm put-parameter --name "${SSM_STAGE_NAME}" --value "${SSM_STAGE_VALUE}" --type String \
+  --region "${REGION}" >/dev/null
+SSM_STAGE_CREATED=1
+echo "[verify] step 2b ok: ${SSM_STAGE_NAME}"
 
 echo "[verify] step 3: cdkd deploy ${PARENT_STACK} (parent + nested child via cdkd)"
 (cd "${TEST_DIR}" && ${CLI} deploy "${PARENT_STACK}" \
@@ -349,6 +371,15 @@ if [ "${CHILD_STAGE}" != "prod" ]; then
 fi
 echo "[verify] step 9b ok: child StageParam=prod"
 
+echo "[verify] step 9c: the child was imported with the parent SSM parameter's VALUE, not its name (go-to-k/cdkd#3915)"
+CHILD_SSM_STAGE=$(echo "${CHILD_DESC}" | python3 -c \
+  'import sys, json; p = json.load(sys.stdin)["Stacks"][0].get("Parameters", []); print(",".join(x["ParameterValue"] for x in p if x["ParameterKey"] == "SsmStageParam"))')
+if [ "${CHILD_SSM_STAGE}" != "${SSM_STAGE_VALUE}" ]; then
+  echo "[verify] FAIL: child CFn stack SsmStageParam='${CHILD_SSM_STAGE}', expected the stored value '${SSM_STAGE_VALUE}' (not the name '${SSM_STAGE_NAME}')"
+  exit 1
+fi
+echo "[verify] step 9c ok: child SsmStageParam=${SSM_STAGE_VALUE}"
+
 echo "[verify] step 10: assert AWS resources survived the migration (export = no AWS change)"
 aws ssm get-parameter --name "${PARENT_PARAM_NAME}" --region "${REGION}" >/dev/null
 aws ssm get-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}" >/dev/null
@@ -379,6 +410,12 @@ echo "[verify] step 13: assert AWS resources are GONE post-delete"
 assert_gone "parent SSM parameter ${PARENT_PARAM_NAME} still exists after CFn delete-stack" aws ssm get-parameter --name "${PARENT_PARAM_NAME}" --region "${REGION}"
 assert_gone "child SSM parameter ${CHILD_PARAM_NAME} still exists after CFn delete-stack" aws ssm get-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}"
 echo "[verify] step 13 ok: both SSM parameters gone"
+
+echo "[verify] step 14: delete the #3915 SSM parameter"
+aws ssm delete-parameter --name "${SSM_STAGE_NAME}" --region "${REGION}" >/dev/null
+SSM_STAGE_CREATED=""
+assert_gone "SSM parameter ${SSM_STAGE_NAME} still exists" aws ssm get-parameter --name "${SSM_STAGE_NAME}" --region "${REGION}"
+echo "[verify] step 14 ok"
 
 trap - EXIT INT TERM
 rm -rf "${PLANT_TMP}"

@@ -9,6 +9,7 @@ import {
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
+import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import {
   STACK_REF_MAX_CODE_POINTS,
   displayAwsMessage,
@@ -3038,6 +3039,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           deps: {
             cfnClient: awsClients.cloudFormation,
             ec2Client: awsClients.ec2,
+            ssmClient: awsClients.ssm,
             stateBackend,
             lockManager,
             uploadOpts: {
@@ -5952,6 +5954,13 @@ function isSsmParameterType(type: unknown): boolean {
   return typeof type === 'string' && type.startsWith('AWS::SSM::Parameter::Value<');
 }
 
+/** `AWS::SSM::Parameter::Value<List<...>>` / `<CommaDelimitedList>`: the stored value is a list. */
+function isSsmListParameterType(type: unknown): boolean {
+  if (!isSsmParameterType(type)) return false;
+  const inner = (type as string).slice('AWS::SSM::Parameter::Value<'.length);
+  return inner.startsWith('List<') || inner.startsWith('CommaDelimitedList>');
+}
+
 /**
  * Mutates `template['Resources']` so every entry has a `DeletionPolicy`
  * attribute. Resources already carrying any `DeletionPolicy` value
@@ -7554,6 +7563,138 @@ export async function resolveChildImportParameters(
   return { params: resolvedParams, intrinsicSkipped: stillSkipped };
 }
 
+/**
+ * Reads one SSM parameter for {@link buildResolvedParametersPerStack}
+ * (go-to-k/cdkd#3915). Returns the stored value and the parameter's `Type`;
+ * throws the SDK error as is.
+ */
+export type SsmParameterReader = (name: string) => Promise<{ value: string; type?: string }>;
+
+/**
+ * An {@link SsmParameterReader} over `ssm:GetParameter`. `WithDecryption` is
+ * never set: a `SecureString` is refused by the caller (CloudFormation does
+ * not accept one for an SSM-typed Parameter), so no decrypted value is read.
+ */
+export function ssmParameterReader(client: AwsClients['ssm']): SsmParameterReader {
+  return async (name) => {
+    const resp = await client.send(new GetParameterCommand({ Name: name, WithDecryption: false }));
+    const value = resp.Parameter?.Value;
+    if (typeof value !== 'string') {
+      throw Object.assign(new Error('GetParameter returned no value'), { name: 'NoValue' });
+    }
+    return { value, ...(resp.Parameter?.Type !== undefined && { type: resp.Parameter.Type }) };
+  };
+}
+
+/**
+ * Does the parent's `Properties.Parameters` block of `childLogicalId` mention
+ * `name` — a string leaf equal to it (`{Ref: name}`) or one holding `${name}`
+ * / `${name.` (`Fn::Sub`)? An over-approximation on purpose: a parameter it
+ * wrongly includes costs one SSM read, one it missed would reach the child as
+ * the SSM parameter's NAME. A false positive fails CLOSED: if that extra read
+ * is refused (no permission, not found, a SecureString), the export refuses
+ * although the child never needed the value.
+ */
+function childRowMentionsParameter(
+  parentTemplate: Record<string, unknown>,
+  childLogicalId: string,
+  name: string
+): boolean {
+  const resources = parentTemplate['Resources'];
+  if (!resources || typeof resources !== 'object' || Array.isArray(resources)) return false;
+  if (!Object.hasOwn(resources, childLogicalId)) return false;
+  const row = (resources as Record<string, unknown>)[childLogicalId];
+  const props =
+    row && typeof row === 'object' ? (row as { Properties?: unknown }).Properties : undefined;
+  const rawParams =
+    props && typeof props === 'object' ? (props as { Parameters?: unknown }).Parameters : undefined;
+  const walk = (v: unknown): boolean => {
+    if (typeof v === 'string')
+      return v === name || v.includes(`\${${name}}`) || v.includes(`\${${name}.`);
+    if (Array.isArray(v)) return v.some(walk);
+    if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).some(walk);
+    return false;
+  };
+  return walk(rawParams);
+}
+
+/**
+ * {@link resolveSsmParameterForChild}'s refusal. Its own class so a `--dry-run`
+ * can warn and plan without the nested stacks' values, as it does for the
+ * pre-pass's structural refusals, while a real run refuses.
+ */
+export class SsmChildParameterRefusalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SsmChildParameterRefusalError';
+  }
+}
+
+/**
+ * The value a parent's SSM-typed Parameter (`AWS::SSM::Parameter::Value<...>`)
+ * hands a nested child (go-to-k/cdkd#3915). The parent's own changeset submits
+ * the SSM parameter's NAME, which CloudFormation resolves; a nested stack is
+ * handed the RESOLVED value, and after the export the child is a standalone
+ * stack, so cdkd reads it here. Refuses when the parameter cannot be read, and
+ * for a `SecureString`, which CloudFormation does not accept for an SSM-typed
+ * Parameter, so only a `String` / `StringList` value (public configuration)
+ * is ever read, and no refusal renders it.
+ */
+async function resolveSsmParameterForChild(args: {
+  parentStackName: string;
+  /** The parent is the root, whose Parameters `--parameter` binds. */
+  parentIsRoot: boolean;
+  childStackName: string;
+  parameterKey: string;
+  ssmName: string;
+  read: SsmParameterReader | undefined;
+  cache: Map<string, Promise<{ value: string; type?: string }>>;
+}): Promise<string> {
+  const { parentStackName, childStackName, parameterKey, ssmName } = args;
+  const context =
+    `Stack '${safeSegment(parentStackName)}' passes its SSM-typed Parameter ` +
+    `${displayIdent(parameterKey)} (SSM parameter ${showRecordValue(ssmName)}) to nested stack ` +
+    `'${safeSegment(childStackName)}'. CloudFormation hands a nested stack the parameter's VALUE, ` +
+    `and after the export that stack is a standalone CloudFormation stack, so cdkd export reads ` +
+    `the value with ssm:GetParameter before migrating anything.`;
+  if (args.read === undefined) {
+    throw new SsmChildParameterRefusalError(`${context} No SSM client was available to read it.`);
+  }
+  const read = args.read;
+  let got: { value: string; type?: string };
+  try {
+    let pending = args.cache.get(ssmName);
+    if (pending === undefined) {
+      // Inside the `try`: a reader that throws synchronously is refused the same way.
+      pending = read(ssmName);
+      args.cache.set(ssmName, pending);
+    }
+    got = await pending;
+  } catch (err) {
+    // The error's NAME only: its message can quote the parameter name back.
+    const errName = err instanceof Error ? displayIdent(err.name) : 'an unknown error';
+    // `--parameter` binds only the ROOT template's Parameters.
+    const remedy = args.parentIsRoot
+      ? `Grant ssm:GetParameter on that parameter, or pass a readable one with --parameter ` +
+        `${displayIdent(parameterKey)}=<name>, and re-run.`
+      : `Grant ssm:GetParameter on that parameter, or change the name the parent row passes to ` +
+        `${displayIdent(parameterKey)}, and re-run.`;
+    throw new SsmChildParameterRefusalError(`${context} The read failed (${errName}). ${remedy}`);
+  }
+  // Fails CLOSED: only the two types CloudFormation accepts for an SSM-typed
+  // Parameter are handed on. A SecureString arrives undecrypted and is refused.
+  if (got.type !== 'String' && got.type !== 'StringList') {
+    const what =
+      got.type === 'SecureString'
+        ? 'It is a SecureString, which CloudFormation does not accept for an SSM-typed Parameter'
+        : `Its type is ${got.type === undefined ? 'not reported' : displayIdent(got.type)}, not String or StringList`;
+    throw new SsmChildParameterRefusalError(
+      `${context} ${what}; pass a String or StringList parameter instead.`
+    );
+  }
+  return got.value;
+}
+
 /** Minimal per-stack shape {@link buildResolvedParametersPerStack} reads. */
 export interface ResolvedParamsStackNode {
   cdkdName: string;
@@ -7593,10 +7734,13 @@ export async function buildResolvedParametersPerStack(args: {
   tree: CdkdStateStackTree;
   resolver: IntrinsicFunctionResolver;
   stateBackend?: S3StateBackend;
+  /** Reads a parent's SSM-typed Parameter for a child row (go-to-k/cdkd#3915). */
+  readSsmParameter?: SsmParameterReader;
 }): Promise<{
   paramsByCdkdName: Map<string, Parameter[]>;
   intrinsicSkippedByCdkdName: Map<string, string[]>;
 }> {
+  const ssmCache = new Map<string, Promise<{ value: string; type?: string }>>();
   const paramsByCdkdName = new Map<string, Parameter[]>();
   const intrinsicSkippedByCdkdName = new Map<string, string[]>();
   // Root submits the caller-resolved Parameters (CLI overrides / defaults).
@@ -7633,8 +7777,43 @@ export async function buildResolvedParametersPerStack(args: {
     // Null prototype: a parameter key is template text, and on a `{}` an
     // assignment to `__proto__` would set the prototype, not an own key.
     const parentParamValues = Object.create(null) as Record<string, unknown>;
+    const declaredParentParameters = parentNode.template['Parameters'];
     for (const p of paramsByCdkdName.get(parentStackName) ?? []) {
-      if (p.ParameterKey !== undefined) parentParamValues[p.ParameterKey] = p.ParameterValue;
+      if (p.ParameterKey === undefined) continue;
+      const type =
+        declaredParentParameters &&
+        typeof declaredParentParameters === 'object' &&
+        Object.hasOwn(declaredParentParameters, p.ParameterKey)
+          ? (declaredParentParameters as Record<string, { Type?: unknown } | undefined>)[
+              p.ParameterKey
+            ]?.Type
+          : undefined;
+      // An SSM-typed Parameter holds an SSM parameter NAME; the child is handed
+      // the value stored under it, as CloudFormation does (go-to-k/cdkd#3915).
+      // Only one this child's row mentions is read.
+      if (
+        !isSsmParameterType(type) ||
+        typeof p.ParameterValue !== 'string' ||
+        !childRowMentionsParameter(parentNode.template, parentLogicalId, p.ParameterKey)
+      ) {
+        parentParamValues[p.ParameterKey] = p.ParameterValue;
+        continue;
+      }
+      const stored = await resolveSsmParameterForChild({
+        parentStackName,
+        parentIsRoot: parentStackName === args.rootStackName,
+        childStackName: node.cdkdName,
+        parameterKey: p.ParameterKey,
+        ssmName: p.ParameterValue,
+        read: args.readSsmParameter,
+        cache: ssmCache,
+      });
+      // A list-typed SSM Parameter is a LIST to a `Ref`, as CloudFormation
+      // gives it, so `Fn::Join` / `Fn::Select` over it resolve; a bare `Ref`
+      // is joined back with commas on the way to the child.
+      parentParamValues[p.ParameterKey] = isSsmListParameterType(type)
+        ? stored.split(',').map((v) => v.trim())
+        : stored;
     }
     const parentResolverContext: ResolverContext = {
       // The runtime value is always a real CFn template (it has Resources);
@@ -7702,6 +7881,12 @@ export interface RunPerStackImportLoopDeps {
    * state-only refusal.
    */
   ec2Client?: AwsClients['ec2'];
+  /**
+   * Reads a parent's SSM-typed Parameter that a nested child is passed
+   * (go-to-k/cdkd#3915). REQUIRED, so a caller cannot drop it and leave such
+   * a row to refuse; it is only called when a child row needs one.
+   */
+  ssmClient: AwsClients['ssm'];
   stateBackend: S3StateBackend;
   lockManager: LockManager;
   uploadOpts: ChangeSetUploadOpts;
@@ -7895,6 +8080,7 @@ export async function runPerStackImportLoop(args: {
         tree,
         resolver: paramResolver,
         stateBackend: deps.stateBackend,
+        readSsmParameter: ssmParameterReader(deps.ssmClient),
       })
     );
   let resolved: Awaited<ReturnType<typeof resolveAll>>;
@@ -7905,9 +8091,13 @@ export async function runPerStackImportLoop(args: {
     // parent outside the tree) would otherwise end a dry run before its plan,
     // which it produced before the pre-pass moved ahead of planning. A dry run
     // warns and plans with no child values, so their principals read as
-    // unconfirmed; a real run still refuses, since it would submit them.
+    // unconfirmed; a real run still refuses, since it would submit them. An
+    // unreadable SSM-typed parent Parameter (go-to-k/cdkd#3915) takes the same arm.
     const message = err instanceof Error ? err.message : String(err);
-    if (!options.dryRun || !message.startsWith('buildResolvedParametersPerStack:')) throw err;
+    const plannable =
+      message.startsWith('buildResolvedParametersPerStack:') ||
+      err instanceof SsmChildParameterRefusalError;
+    if (!options.dryRun || !plannable) throw err;
     logger.warn(
       safeMsg`${message} --dry-run plans without the nested stacks' Parameter values; a real run ` +
         `refuses here.`

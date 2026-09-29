@@ -166,6 +166,11 @@ import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
 
+/** No case here reads SSM (go-to-k/cdkd#3915); a read would fail the case by name. */
+const UNUSED_SSM = {
+  send: () => Promise.reject(new Error('unexpected SSM read')),
+} as unknown as AwsClients['ssm'];
+
 interface SendCall {
   name: string;
   input: Record<string, unknown>;
@@ -444,6 +449,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -531,6 +537,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -612,6 +619,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -669,6 +677,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -731,6 +740,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -870,6 +880,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -1052,6 +1063,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -1125,6 +1137,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: true,
@@ -1181,6 +1194,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
           lockManager,
           uploadOpts: { stateBucket: STATE_BUCKET },
           lockOwner: 'tester@host:1234',
+          ssmClient: UNUSED_SSM,
         },
         options: {
           dryRun: false,
@@ -1228,6 +1242,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
           lockManager,
           uploadOpts: { stateBucket: STATE_BUCKET },
           lockOwner: 'tester@host:1234',
+          ssmClient: UNUSED_SSM,
         },
         options: {
           dryRun: false,
@@ -1316,6 +1331,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
             lockManager,
             uploadOpts: { stateBucket: STATE_BUCKET },
             lockOwner: 'tester@host:1234',
+            ssmClient: UNUSED_SSM,
           },
           options: {
             dryRun: false,
@@ -1418,6 +1434,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
             lockManager,
             uploadOpts: { stateBucket: STATE_BUCKET },
             lockOwner: 'tester@host:1234',
+            ssmClient: UNUSED_SSM,
           },
           options: {
             dryRun: false,
@@ -1537,6 +1554,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
             lockManager,
             uploadOpts: { stateBucket: STATE_BUCKET },
             lockOwner: 'tester@host:1234',
+            ssmClient: UNUSED_SSM,
           },
           options: {
             dryRun: false,
@@ -1701,6 +1719,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — 3-level tree (post-Phase-
           lockManager,
           uploadOpts: { stateBucket: STATE_BUCKET },
           lockOwner: 'tester@host:1234',
+          ssmClient: UNUSED_SSM,
         },
         options: {
           dryRun: false,
@@ -1862,6 +1881,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — Phase 2 UPDATE per stack'
           lockManager,
           uploadOpts: { stateBucket: STATE_BUCKET },
           lockOwner: 'tester@host:1234',
+          ssmClient: UNUSED_SSM,
         },
         options: {
           dryRun: false,
@@ -2073,6 +2093,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -2171,6 +2192,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -2234,6 +2256,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
           lockManager,
           uploadOpts: { stateBucket: STATE_BUCKET },
           lockOwner: 'tester@host:1234',
+          ssmClient: UNUSED_SSM,
         },
         options: {
           dryRun: false,
@@ -2280,6 +2303,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -2339,6 +2363,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -2464,6 +2489,7 @@ describe('runPerStackImportLoop (issue #1791) — deps.ec2Client hand-off', () =
         lockManager,
         uploadOpts: { stateBucket: STATE_BUCKET },
         lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: false,
@@ -2508,6 +2534,7 @@ describe('runPerStackImportLoop (issue #1791) — deps.ec2Client hand-off', () =
           lockManager,
           uploadOpts: { stateBucket: STATE_BUCKET },
           lockOwner: 'tester@host:1234',
+          ssmClient: UNUSED_SSM,
         },
         options: {
           dryRun: false,

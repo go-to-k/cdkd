@@ -107,6 +107,11 @@ import type { LockManager } from '../../../src/state/lock-manager.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
 import { uploadCfnTemplate } from '../../../src/cli/upload-cfn-template.js';
 
+/** No case here reads SSM (go-to-k/cdkd#3915); a read would fail the case by name. */
+const UNUSED_SSM = {
+  send: () => Promise.reject(new Error('unexpected SSM read')),
+} as unknown as AwsClients['ssm'];
+
 /** Every `logger.info` line since the last {@link clearInfo}. */
 function infoLines(): string[] {
   return (getLogger().info as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
@@ -218,6 +223,7 @@ function deps(client: AwsClients['cloudFormation']) {
     } as unknown as LockManager,
     uploadOpts: { stateBucket: 'b' },
     lockOwner: 'test',
+    ssmClient: UNUSED_SSM,
   };
 }
 
@@ -1329,6 +1335,7 @@ describe('nested parameter values: the check reads what the changeset submits (g
       yes?: boolean;
       dryRun?: boolean;
       rootParameters?: Array<{ ParameterKey: string; ParameterValue: string }>;
+      ssmSend?: (cmd: unknown) => Promise<unknown>;
     } = {}
   ) {
     return runPerStackImportLoop({
@@ -1341,7 +1348,12 @@ describe('nested parameter values: the check reads what the changeset submits (g
       rootTemplate: t.rootTemplate,
       cfnStackNameOverrides: { childMap: new Map() },
       rootParameters: opts.rootParameters ?? [],
-      deps: deps(cfnClient()),
+      deps: {
+        ...deps(cfnClient()),
+        ...(opts.ssmSend && {
+          ssmClient: { send: opts.ssmSend } as unknown as AwsClients['ssm'],
+        }),
+      },
       options: { ...OPTIONS, dryRun: opts.dryRun ?? true, yes: opts.yes ?? true },
     }).then(
       (r) => r,
@@ -1411,15 +1423,85 @@ describe('nested parameter values: the check reads what the changeset submits (g
     expect(infoLines().some((l) => l.includes('role RealRole: the template names its principals'))).toBe(true);
   });
 
-  it('blocks when an SSM-typed parent parameter is passed through: the child is submitted the SSM name', async () => {
-    const t = childTree(tmp, childTemplate(), childRecord(['RealRole']), {
+  // go-to-k/cdkd#3915: the child is handed the VALUE stored under an SSM-typed
+  // parent Parameter, as CloudFormation hands a nested stack, and the check
+  // reads that value.
+  const ssmTree = (childRoles: string[]) =>
+    childTree(tmp, childTemplate(), childRecord(childRoles), {
       rootParameters: { RootRole: { Type: 'AWS::SSM::Parameter::Value<String>' } },
       rowParameters: { RoleParam: { Ref: 'RootRole' } },
     });
-    const err = (await run(t, {
-      rootParameters: [{ ParameterKey: 'RootRole', ParameterValue: '/app/role-name' }],
+  const ssmRootParameters = [{ ParameterKey: 'RootRole', ParameterValue: '/app/role-name' }];
+  const ssmAnswering = (value: string) =>
+    vi.fn(async (_cmd: unknown) => ({ Parameter: { Value: value, Type: 'String' } }));
+
+  it('confirms a principal an SSM-typed parent parameter passes through, from its stored value', async () => {
+    const send = ssmAnswering('RealRole');
+    expect(await run(ssmTree(['RealRole']), { rootParameters: ssmRootParameters, ssmSend: send })).toEqual(
+      DRY
+    );
+    expect(marked()).toBe(false);
+    expect((send.mock.calls[0]![0] as { input: unknown }).input).toEqual({
+      Name: '/app/role-name',
+      WithDecryption: false,
+    });
+  });
+
+  it('blocks a recorded principal the stored value of an SSM-typed parent parameter does not name', async () => {
+    const err = (await run(ssmTree(['RealRole']), {
+      rootParameters: ssmRootParameters,
+      ssmSend: ssmAnswering('OtherRole'),
     })) as Error;
     expect(err.message).toContain('role RealRole, which the template does not name');
+  });
+
+  it('on --dry-run, warns and plans without the child values when the SSM-typed parent parameter cannot be read', async () => {
+    const warn = getLogger().warn as unknown as {
+      mockClear: () => void;
+      mock: { calls: unknown[][] };
+    };
+    warn.mockClear();
+    const send = vi.fn(async () => {
+      throw Object.assign(new Error('x'), { name: 'AccessDeniedException' });
+    });
+    expect(await run(ssmTree(['RealRole']), { rootParameters: ssmRootParameters, ssmSend: send })).toEqual(
+      DRY
+    );
+    const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('read failed (AccessDeniedException)');
+    expect(warned).toContain("--dry-run plans without the nested stacks' Parameter values");
+    // With no child value the principal cannot be confirmed, so it is marked.
+    expect(marked()).toBe(true);
+  });
+
+  it('refuses before any changeset or nested lock when the SSM-typed parent parameter cannot be read', async () => {
+    const lock = vi.fn(async () => {});
+    const t = ssmTree(['RealRole']);
+    const err = (await runPerStackImportLoop({
+      lockRecovery: {},
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: { Child: t.childPath },
+      rootTemplateFormat: 'json',
+      tree: t.tree,
+      rootTemplate: t.rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: ssmRootParameters,
+      deps: {
+        ...deps(cfnClient()),
+        lockManager: { acquireLockWithRetry: lock, releaseLock: vi.fn() } as unknown as LockManager,
+        ssmClient: {
+          send: vi.fn(async () => {
+            throw Object.assign(new Error('User is not authorized'), { name: 'AccessDeniedException' });
+          }),
+        } as unknown as AwsClients['ssm'],
+      },
+      options: { ...OPTIONS, dryRun: false, yes: true },
+    }).catch((e: unknown) => e)) as Error;
+    expect(err.message).toContain('read failed (AccessDeniedException)');
+    expect(err.message).toContain('ssm:GetParameter');
+    expect(lock).not.toHaveBeenCalled();
+    expect(waitChangeSetCreate).not.toHaveBeenCalled();
   });
 
   it('marks a principal the row the child record names does not pass', async () => {
