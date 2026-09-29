@@ -4692,6 +4692,18 @@ export function parseCfnChildStackNameOverrides(values: string[] | undefined): M
 }
 
 /**
+ * A read failure's cause for a sentence: the fs error code when it is one
+ * (`ENOENT`, `EACCES`), else a fixed phrase. Never the error's message, which
+ * quotes the path back (go-to-k/cdkd#3950). Exported for unit testing.
+ */
+export function fsReadErrorCause(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code)
+    ? code
+    : 'the file could not be read';
+}
+
+/**
  * Read + parse a nested-stack child template from the synth cloud assembly.
  * The path is the absolute filesystem path AssemblyReader populated from
  * the parent template's `Metadata['aws:asset:path']` on each
@@ -4707,18 +4719,6 @@ export function parseCfnChildStackNameOverrides(values: string[] | undefined): M
  * `executeImportChangeSet` / `executeUpdateChangeSet` consume. Consolidate
  * into a shared `nested-template-fs.ts` module if a third caller appears.
  */
-/**
- * A read failure's cause for a sentence: the fs error code when it is one
- * (`ENOENT`, `EACCES`), else a fixed phrase. Never the error's message, which
- * quotes the path back (go-to-k/cdkd#3950). Exported for unit testing.
- */
-export function fsReadErrorCause(err: unknown): string {
-  const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code)
-    ? code
-    : 'the file could not be read';
-}
-
 function readNestedChildTemplateFile(
   templatePath: string,
   childLogicalId: string

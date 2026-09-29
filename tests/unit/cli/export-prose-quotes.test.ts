@@ -51,7 +51,8 @@ const ALLOWED_HAND_QUOTES: Readonly<Record<string, { count: number; reason: stri
   f: { count: 1, reason: "a primaryIdentifier field AWS's DescribeType schema declares" },
   resourceType: {
     count: 2,
-    reason: "matched against CloudFormation's own error text, never printed",
+    reason:
+      "printed in a blocked-resource reason, and safe there: one site runs only on a CFN_IMPORT_REFUSED_DESPITE_REGISTRY hit, so the type is one of that table's cdkd literals; the other only after DescribeType answered, so it is a registry type name AWS accepted",
   },
   stackArg: { count: 1, reason: 'the stack name the operator typed' },
   flag: { count: 1, reason: 'the --stack-region the operator typed' },
@@ -462,6 +463,9 @@ describe('cdkd export puts no state or template value inside its own quotes (go-
       for (const err of [
         Object.assign(new Error("open 'x'"), { code: "x'$(touch OWNED)" }),
         Object.assign(new Error('x'), { code: 42 }),
+        // A non-string whose string form passes the pattern: only the type
+        // check refuses it.
+        Object.assign(new Error('x'), { code: { toString: () => 'ENOENT' } }),
         Object.assign(new Error('x'), { code: 'enoent' }),
         // Each anchor on its own: a valid prefix, then a valid suffix.
         Object.assign(new Error('x'), { code: "ENOENT'$(touch OWNED) #" }),
