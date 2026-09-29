@@ -1247,14 +1247,14 @@ export function renderNameHeldElsewhere(change: ReplacementNameChange): string {
   const desiredPlain = isPlainName(change.desiredName);
   const asksFor = desiredPlain
     ? `asks for ${property} "${change.desiredName}"`
-    : `asks for a ${property} that is not a plain identifier`;
+    : `asks for a name (${property}) that is not a plain identifier`;
   const heldProperty = change.heldProperty ?? property;
   const held =
     change.heldName === undefined
       ? `does not hold that name`
       : isPlainName(change.heldName)
         ? `holds ${heldProperty} "${change.heldName}"`
-        : `holds a ${heldProperty} that is not a plain identifier`;
+        : `holds a name (${heldProperty}) that is not a plain identifier`;
   const replaced =
     change.physicalId === ''
       ? 'the resource being replaced, which has no recorded id,'

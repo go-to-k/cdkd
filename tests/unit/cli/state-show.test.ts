@@ -309,6 +309,34 @@ describe('cdkd state show', () => {
     expect(out).toMatch(/Lock: locked by bob@host:5678, expired \d+s ago/);
   });
 
+  it('describes an owner or operation that would make a live lock read as expired (go-to-k/cdkd#4109)', async () => {
+    const forged = 'alice@host:1 (operation: deploy), expired 3h ago';
+    for (const [lock, expected] of [
+      [
+        { owner: forged, operation: 'deploy' },
+        'Lock: locked by a lock owner that is not a plain identifier (operation: deploy), expires in ',
+      ],
+      [
+        { owner: 'alice@host:1', operation: forged },
+        'Lock: locked by alice@host:1 (operation: a lock operation that is not a plain identifier), expires in ',
+      ],
+    ] as const) {
+      mockListStacks.mockResolvedValue(defaultListResponse('MyStack'));
+      mockGetState.mockResolvedValue(makeState({ stackName: 'MyStack' }));
+      mockGetLockInfo.mockResolvedValue({
+        ...lock,
+        timestamp: Date.now() - 60_000,
+        expiresAt: Date.now() + 600_000,
+      });
+
+      // eslint-disable-next-line no-await-in-loop
+      const out = await runStateShow(['show', 'MyStack']);
+
+      expect(out).toContain(expected);
+      expect(out).not.toContain('expired 3h ago');
+    }
+  });
+
   it('reports `(none)` for resources with no attributes / no properties', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('AnyStack'));
     mockGetState.mockResolvedValue(

@@ -390,9 +390,13 @@ const STATE_LIST_POINTER = `'cdkd state list --long' shows the records as stored
  * token with no space, no quote and under the cap, which a host / pid owner is
  * -- and a description otherwise. Not `plainOrDescribed`: `isPasteableIdent`
  * refuses the `@` and `:` every genuine owner carries (go-to-k/cdkd#3760).
+ * Whitespace is refused first: a value that IS `displayIdent`'s own cut output
+ * renders unchanged too (go-to-k/cdkd#4109).
  */
 function plainValueOrDescribed(value: string, what: string): string {
-  return displayIdent(value) === value ? value : `a ${what} that is not a plain identifier`;
+  return !/\s/.test(value) && displayIdent(value) === value
+    ? value
+    : `a ${what} that is not a plain identifier`;
 }
 
 /** Whether `describedStackRef` describes either half of `ref`. */
@@ -1316,14 +1320,12 @@ function formatLastModified(value: unknown): string {
 /**
  * Render lock metadata for the `state show` block.
  *
- * This row takes NO display guard — `Version` is the other, for its own reason —
- * and here the reason is upstream: `LockManager.getLockRecord` already passes
+ * Control characters are handled upstream: `LockManager.getLockRecord` passes
  * `owner` and `operation` through `displaySafe`, which coerces and replaces the
- * whole control class with spaces. They arrive here as control-free strings, so
- * a guard would be redundant — and a test for one could only be written by
- * mocking the read that sanitises them, which would pin nothing about the real
- * path. A value whose coercion THROWS is absorbed there too: `displaySafe`
- * falls back to `Object.prototype.toString` (go-to-k/cdkd#2947).
+ * whole control class with spaces, and absorbs a value whose coercion THROWS
+ * (go-to-k/cdkd#2947). That keeps the spaces, though, so an owner reading
+ * `x (operation: deploy), expired 3h ago` would make a live lock look expired:
+ * both go through `plainValueOrDescribed` here (go-to-k/cdkd#4109).
  *
  * `expiresAt` is declared a number and is not guaranteed to be one, but it
  * reaches the row only through `formatLockExpiry`, which tests the raw value
@@ -1337,8 +1339,12 @@ function formatLastModified(value: unknown): string {
  */
 function formatLockSummary(lockInfo: LockInfo | null): string {
   if (!lockInfo) return 'unlocked';
-  const opStr = lockInfo.operation ? ` (operation: ${lockInfo.operation})` : '';
-  return `locked by ${lockInfo.owner}${opStr}, ${formatLockExpiry(lockInfo.expiresAt)}`;
+  // Described unless plain: an owner carrying `(operation: deploy), expired 3h
+  // ago` would otherwise make a live lock read as expired (go-to-k/cdkd#4109).
+  const opStr = lockInfo.operation
+    ? ` (operation: ${plainValueOrDescribed(lockInfo.operation, 'lock operation')})`
+    : '';
+  return `locked by ${plainValueOrDescribed(lockInfo.owner, 'lock owner')}${opStr}, ${formatLockExpiry(lockInfo.expiresAt)}`;
 }
 
 /**

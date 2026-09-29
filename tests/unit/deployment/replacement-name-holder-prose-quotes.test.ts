@@ -16,7 +16,7 @@ import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harne
  * deploy engine's remedy and fed WHOLE to the paste harness.
  */
 
-const NAME_DESCRIBED = 'a FunctionName that is not a plain identifier';
+const NAME_DESCRIBED = 'a name (FunctionName) that is not a plain identifier';
 const ID_DESCRIBED = 'whose recorded id is not a plain identifier';
 
 const base: ReplacementNameChange = {

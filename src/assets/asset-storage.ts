@@ -478,8 +478,26 @@ function quotedIfPlain(value: string, description: string): string {
   return isPlainName(value) ? `'${value}'` : description;
 }
 
+/**
+ * Whitespace is refused before the round-trip: a value that IS `displayIdent`'s
+ * own cut output (`<cap chars> [cut: N more characters withheld]`) renders
+ * unchanged too (go-to-k/cdkd#4109).
+ */
 function isPlainName(value: string): boolean {
-  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value;
+  return (
+    !/\s/.test(value) && displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value
+  );
+}
+
+/**
+ * An asset bucket / repository name printed UNQUOTED in a progress line. With
+ * no `--asset-bucket` / `--container-repo`, `ensureAssetStorage` takes the
+ * name from the marker's body, so it goes through `displayIdent`: a real name
+ * reads as itself, and any other is JSON-quoted rather than printed raw
+ * (go-to-k/cdkd#4109).
+ */
+function shownName(value: string): string {
+  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
 }
 
 /**
@@ -815,7 +833,7 @@ export async function ensureAssetStorage(
       new HeadBucketCommand({ Bucket: assetBucket, ExpectedBucketOwner: accountId })
     );
     bucketExists = true;
-    logger.info(`Asset bucket ${assetBucket} already exists`);
+    logger.info(`Asset bucket ${shownName(assetBucket)} already exists`);
   } catch (error) {
     const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
     if (err.name === 'NotFound' || err.name === 'NoSuchBucket') {
@@ -843,7 +861,7 @@ export async function ensureAssetStorage(
   }
 
   if (!bucketExists) {
-    logger.info(`Creating asset bucket: ${assetBucket} in region ${region}`);
+    logger.info(`Creating asset bucket: ${shownName(assetBucket)} in region ${region}`);
     try {
       await s3Client.send(
         new CreateBucketCommand({
@@ -856,7 +874,7 @@ export async function ensureAssetStorage(
           }),
         })
       );
-      logger.info(`✓ Created asset bucket: ${assetBucket}`);
+      logger.info(`✓ Created asset bucket: ${shownName(assetBucket)}`);
     } catch (error) {
       const err = error as { name?: string };
       if (err.name === 'BucketAlreadyOwnedByYou') {
@@ -874,7 +892,7 @@ export async function ensureAssetStorage(
         // here as a 409 and it is the region comparison, not the error name,
         // that lets it proceed.
         await assertAssetBucketRegion(s3Client, assetBucket, region, accountId, error as Error);
-        logger.info(`Asset bucket ${assetBucket} already exists`);
+        logger.info(`Asset bucket ${shownName(assetBucket)} already exists`);
       } else if (err.name === 'BucketAlreadyExists') {
         throw new CdkdError(
           `${bucketNameSubject(assetBucket)} is already taken by another AWS account. ` +
@@ -952,7 +970,7 @@ export async function ensureAssetStorage(
   try {
     await ecrClient.send(new DescribeRepositoriesCommand({ repositoryNames: [containerRepo] }));
     repoExists = true;
-    logger.info(`Container-asset repository ${containerRepo} already exists`);
+    logger.info(`Container-asset repository ${shownName(containerRepo)} already exists`);
   } catch (error) {
     const err = error as { name?: string };
     if (err.name !== 'RepositoryNotFoundException') {
@@ -961,7 +979,7 @@ export async function ensureAssetStorage(
   }
 
   if (!repoExists) {
-    logger.info(`Creating container-asset ECR repository: ${containerRepo}`);
+    logger.info(`Creating container-asset ECR repository: ${shownName(containerRepo)}`);
     try {
       await ecrClient.send(
         new CreateRepositoryCommand({
@@ -970,11 +988,11 @@ export async function ensureAssetStorage(
           imageTagMutability: 'IMMUTABLE',
         })
       );
-      logger.info(`✓ Created container-asset ECR repository: ${containerRepo}`);
+      logger.info(`✓ Created container-asset ECR repository: ${shownName(containerRepo)}`);
     } catch (error) {
       const err = error as { name?: string };
       if (err.name === 'RepositoryAlreadyExistsException') {
-        logger.info(`Container-asset repository ${containerRepo} already exists`);
+        logger.info(`Container-asset repository ${shownName(containerRepo)} already exists`);
       } else {
         throw error;
       }

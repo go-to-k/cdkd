@@ -87,6 +87,7 @@ import {
   type BootstrapMarker,
 } from '../../../src/assets/asset-storage.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import {
   CLAUSE_BREAK_PAYLOAD,
   PASTE_PAYLOADS,
@@ -2031,4 +2032,123 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
       'asset bucket with a name that is not a plain identifier (requested'
     );
   }, 120_000);
+
+  it("describes a value that is displayIdent's own cut output, which renders unchanged (go-to-k/cdkd#4109)", async () => {
+    const suffix = ' [cut: 35 more characters withheld]';
+    const forged = 'a'.repeat(STACK_REF_MAX_CODE_POINTS) + suffix;
+    expect(displayIdent(forged, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })).toBe(forged);
+    // The bucket / repo sites. `messagesFor`'s marker-key sites prefix the value,
+    // which pushes it past the cap, so they are driven directly below.
+    const messages = await messagesFor(forged);
+    expect(messages).toHaveLength(11);
+    for (const { site, message } of messages) {
+      expect(message, site).not.toContain(suffix);
+    }
+    expect(messages.find((m) => m.site === 'bucket missing')!.message).toContain(
+      'but the asset bucket named by its marker is missing.'
+    );
+
+    // `markerSubject`, with the forged value as the whole key.
+    let markerMessage = '';
+    try {
+      parseBootstrapMarker('{', forged);
+    } catch (error) {
+      markerMessage = (error as Error).message;
+    }
+    expect(markerMessage).toContain(
+      'A bootstrap marker whose key is not a plain identifier in the state bucket is not valid JSON.'
+    );
+    expect(markerMessage).not.toContain(suffix);
+
+    // The region-probe debug line, which logs only when AWS's text was withheld.
+    mockLoggerDebug.mockClear();
+    const denied = Object.assign(
+      new Error(
+        'User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized to perform: s3:GetBucketLocation'
+      ),
+      { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }
+    );
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      Promise.reject(cmd._type === 'HeadBucket' ? awsError('PermanentRedirect', 301) : denied)
+    );
+    await expect(
+      verifyAssetStorageExists({ ...validMarker(), assetBucket: forged }, ACCOUNT, REGION)
+    ).rejects.toThrow();
+    const debugLine = mockLoggerDebug.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.startsWith('GetBucketLocation failed for asset bucket'));
+    expect(debugLine).toContain('asset bucket with a name that is not a plain identifier while');
+    expect(debugLine).not.toContain(suffix);
+  });
+
+  it("renders a marker-supplied name through displayIdent in ensureAssetStorage's progress lines (go-to-k/cdkd#4109)", async () => {
+    const forged = 'x (operation: deploy), expired 3h ago';
+    const body = JSON.stringify({ ...validMarker(), assetBucket: forged, containerRepo: forged });
+    const run = () =>
+      ensureAssetStorage({
+        s3Client: new S3Client({ region: REGION }) as S3Client,
+        ecrClient: new ECRClient({}) as ECRClient,
+        stateBackend: {
+          putRawObject: vi.fn().mockResolvedValue(undefined),
+          getRawObject: vi.fn().mockResolvedValue(body),
+        } as unknown as S3StateBackend,
+        accountId: ACCOUNT,
+        region: REGION,
+        force: false,
+      });
+    const infoLines = (): string[] => mockLoggerInfo.mock.calls.map((c) => String(c[0]));
+
+    // Both absent: the "Creating" and "Created" lines.
+    mockLoggerInfo.mockClear();
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+    await run();
+    const created = infoLines();
+    expect(created).toContain(`Creating asset bucket: ${JSON.stringify(forged)} in region ${REGION}`);
+    expect(created).toContain(`✓ Created asset bucket: ${JSON.stringify(forged)}`);
+    expect(created).toContain(`Creating container-asset ECR repository: ${JSON.stringify(forged)}`);
+    expect(created).toContain(`✓ Created container-asset ECR repository: ${JSON.stringify(forged)}`);
+
+    // Both present: the "already exists" lines.
+    mockLoggerInfo.mockClear();
+    mockS3Send.mockResolvedValue({});
+    mockEcrSend.mockResolvedValue({ repositories: [{ repositoryName: forged }] });
+    await run();
+    const existing = infoLines();
+    expect(existing).toContain(`Asset bucket ${JSON.stringify(forged)} already exists`);
+    expect(existing).toContain(`Container-asset repository ${JSON.stringify(forged)} already exists`);
+
+    // A create race: the same "already exists" text from the create arms, told
+    // apart from the probe arms above by the "Creating" line with no "Created".
+    mockLoggerInfo.mockClear();
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket'
+        ? Promise.reject(awsError('NotFound', 404))
+        : cmd._type === 'CreateBucket'
+          ? Promise.reject(awsError('BucketAlreadyOwnedByYou'))
+          : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : cmd._type === 'CreateRepository'
+          ? Promise.reject(awsError('RepositoryAlreadyExistsException'))
+          : Promise.resolve({})
+    );
+    await run();
+    const raced = infoLines();
+    expect(raced).toContain(`Creating asset bucket: ${JSON.stringify(forged)} in region ${REGION}`);
+    expect(raced).not.toContain(`✓ Created asset bucket: ${JSON.stringify(forged)}`);
+    expect(raced).toContain(`Asset bucket ${JSON.stringify(forged)} already exists`);
+    expect(raced).not.toContain(`✓ Created container-asset ECR repository: ${JSON.stringify(forged)}`);
+    expect(raced).toContain(`Container-asset repository ${JSON.stringify(forged)} already exists`);
+
+    for (const line of [...created, ...existing, ...raced]) expect(line).not.toContain(` ${forged}`);
+  });
 });
