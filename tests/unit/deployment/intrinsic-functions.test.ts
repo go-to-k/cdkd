@@ -201,7 +201,7 @@ describe('IntrinsicFunctionResolver - Fn::FindInMap', () => {
     await expect(
       resolver.resolve({ 'Fn::FindInMap': ['RegionMap', 'us-east-1', 'VPC'] }, context)
     ).rejects.toThrow(
-      "Fn::FindInMap: second-level key 'VPC' not found in mapping 'RegionMap' -> 'us-east-1'"
+      "Fn::FindInMap: second-level key 'VPC' not found in mapping 'RegionMap' under top-level key 'us-east-1'"
     );
   });
 
@@ -3300,7 +3300,7 @@ describe('IntrinsicFunctionResolver - AWS::EC2::Instance Fn::GetAtt (live Descri
     expect(mockEc2Send).toHaveBeenCalledTimes(2);
   });
 
-  it('renders a physical id carrying U+2028 without the separator (the refusal message is one log line)', async () => {
+  it('keeps a physical id carrying U+2028 out of the refusal (the message stays one log line)', async () => {
     mockEc2Send.mockResolvedValue({
       Reservations: [{ Instances: [{ InstanceId: 'i-0123', State: { Name: 'pending' } }] }],
     });
@@ -3325,7 +3325,11 @@ describe('IntrinsicFunctionResolver - AWS::EC2::Instance Fn::GetAtt (live Descri
       );
     expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
     expect((refusal as Error).message).not.toContain('\u2028');
-    expect((refusal as Error).message).toContain('i-0123');
+    // Described rather than quoted by hand since go-to-k/cdkd#3950: the
+    // display builder altered it, so the id is not shown.
+    expect((refusal as Error).message).toContain(
+      'The physical id (not shown: it is not a plain identifier) is not a usable PublicIp'
+    );
   });
 
   it('names the class `Error` when the live read throws an error whose name has no ASCII in it', async () => {

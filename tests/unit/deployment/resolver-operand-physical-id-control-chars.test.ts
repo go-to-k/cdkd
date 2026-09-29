@@ -204,22 +204,26 @@ describe('the Fn::Select index and Fn::Split delimiter are sanitized (#3479)', (
     expect(control).toContain('Fn::Select: index 9 out of bounds (array length: 2)');
   });
 
-  it('sanitizes the index REFUSAL, reached by an index that is not a number (#3574)', async () => {
+  it('keeps a hostile index out of the index REFUSAL, reached by an index that is not a number (#3574)', async () => {
     const error = await selectRefusal(EVIL);
-    expectSanitized(error, 'the index refusal');
-    expect(renders(error)).toBe(1);
+    expectClean(error, 'the index refusal');
+    // A value the display builder altered is described rather than quoted by
+    // hand (go-to-k/cdkd#3950), so it is not rendered at all.
+    expect(error).toContain('got string (not shown: it is not a plain identifier).');
+    expect(renders(error)).toBe(0);
 
     const control = await resolveValue({ 'Fn::Select': [1, ['a', 'b']] });
     expect(control).toContain('Resolved Fn::Select: index 1 -> "b"');
   });
 
-  it('sanitizes the Fn::Split delimiter on its DEBUG line', async () => {
+  it('keeps a hostile Fn::Split delimiter out of its DEBUG line', async () => {
     const got = await resolveValue({ 'Fn::Split': [EVIL, `a${EVIL}b`] });
-    const debug = line(got, 'Resolved Fn::Split: split by "');
+    // Described rather than quoted by hand since go-to-k/cdkd#3950.
+    const debug = line(
+      got,
+      'Resolved Fn::Split: split by a delimiter (not shown: it is not a plain identifier) -> '
+    );
     expectClean(debug, 'the Fn::Split debug line');
-    // The delimiter render itself, between the quotes, carries the skeleton.
-    const rendered = debug.slice('Resolved Fn::Split: split by "'.length).split('" -> ')[0] ?? '';
-    expectSanitized(rendered, 'the rendered delimiter');
 
     const control = await resolveValue({ 'Fn::Split': [',', 'a,b'] });
     expect(control).toContain('Resolved Fn::Split: split by "," -> ["a","b"]');
@@ -310,7 +314,7 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
     });
   });
 
-  it("sanitizes ServiceDiscovery HostedZoneId's failed-read REFUSAL and its --verbose echo", async () => {
+  it("keeps a hostile ServiceDiscovery HostedZoneId out of its failed-read REFUSAL, and sanitizes its --verbose echo", async () => {
     // Since issue #4077 a failed read refuses instead of warning and answering
     // `undefined`: the id renders in the refusal, AWS's echo of it on the
     // debug line `describeFailureObserved` writes.
@@ -339,7 +343,13 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
     };
 
     const got = await refused(`ns-${EVIL}`);
-    expectSanitized(got.message, 'the HostedZoneId refusal');
+    // The refusal describes an altered id rather than quoting it by hand
+    // (go-to-k/cdkd#3950), so it pins the id's absence; the debug line below
+    // still renders AWS's echo of it, sanitized.
+    expectClean(got.message, 'the HostedZoneId refusal');
+    expect(got.message).toContain(
+      'The physical id (not shown: it is not a plain identifier) is not a usable HostedZoneId'
+    );
     const debug = line(got.lines, 'GetNamespace failed (Error): ');
     expectSanitized(debug, 'the GetNamespace debug line');
 

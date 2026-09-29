@@ -281,7 +281,7 @@ describe('template-controlled bag reads do not walk the prototype chain (#2767)'
       [
         'the second-level key',
         { 'Fn::FindInMap': ['Sizes', 'small', 'constructor'] },
-        "Fn::FindInMap: second-level key 'constructor' not found in mapping 'Sizes' -> 'small'",
+        "Fn::FindInMap: second-level key 'constructor' not found in mapping 'Sizes' under top-level key 'small'",
       ],
     ])('refuses an Object.prototype member in %s', async (_label, value, message) => {
       const resolver = new IntrinsicFunctionResolver();

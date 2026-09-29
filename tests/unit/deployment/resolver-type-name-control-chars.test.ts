@@ -77,10 +77,14 @@ const FORBIDDEN: ReadonlyArray<readonly [string, string]> = [
   [RLO, 'U+202E'],
 ];
 
-function expectSanitized(text: string, what: string): void {
+function expectClean(text: string, what: string): void {
   for (const [ch, name] of FORBIDDEN) {
     expect(text.includes(ch), `${what} still carries ${name}: ${JSON.stringify(text)}`).toBe(false);
   }
+}
+
+function expectSanitized(text: string, what: string): void {
+  expectClean(text, what);
   // Pin the surviving skeleton too: a render that dropped the type entirely
   // would satisfy every negative above.
   expect(text, `${what} lost the type's printable head`).toContain('Prod');
@@ -313,7 +317,7 @@ describe('a malformed string-form Fn::GetAtt operand is sanitized (#3441)', () =
   });
 });
 
-describe('a hostile PARAMETER type is sanitized on the nested-stack secret-coercion refusal (#3441)', () => {
+describe('a hostile PARAMETER type cannot reach the nested-stack secret-coercion refusal (#3441, go-to-k/cdkd#3950)', () => {
   // Same exclusion note, one declaration over: `Parameters.X.Type`. The arm is
   // reached by any type `coerceParameterValue` SPLITS, and `isListParameterType`
   // accepts every `List<...>` spelling, so the inner text is arbitrary.
@@ -333,13 +337,17 @@ describe('a hostile PARAMETER type is sanitized on the nested-stack secret-coerc
     );
   }
 
-  it('renders the declared type sanitized at BOTH places it appears', async () => {
+  it('keeps a hostile declared type out of the refusal at BOTH places it appeared', async () => {
     const got = await refuse(`List<${EVIL}>`);
     expect(got.error, `did not reach the arm: ${JSON.stringify(got)}`).toContain(
       'but the parent stack resolved a SECRET dynamic reference into it'
     );
-    expectSanitized(got.error ?? '', 'the coercion refusal');
-    expect(renders(got.error ?? '')).toBe(2);
+    // Described at both places rather than quoted by hand (go-to-k/cdkd#3950):
+    // the render keeps `'`, which would close cdkd's quote.
+    expectClean(got.error ?? '', 'the coercion refusal');
+    expect(got.error).toContain('is declared with a Type that is not a plain identifier, but the');
+    expect(got.error).toContain('coercing this value to that Type destroys');
+    expect(renders(got.error ?? '')).toBe(0);
     // The refusal must still never quote the secret itself.
     expect(got.error).not.toContain('hunter2');
 
@@ -349,10 +357,12 @@ describe('a hostile PARAMETER type is sanitized on the nested-stack secret-coerc
   });
 });
 
-describe('an SSM-reported Type is sanitized on the unrecognized-Type WARN (#3441)', () => {
-  it('sanitizes the reported type, and a hostile one cannot reach the String/StringList refusal', async () => {
-    // TWO sites in one drive. The warn quotes whatever `Type` the response
-    // carried, which cdkd does not control. The ssm-secure refusal beside it
+describe('a hostile SSM-reported Type cannot reach the unrecognized-Type WARN (#3441, go-to-k/cdkd#3950)', () => {
+  it('keeps a hostile reported type out of the warn, and it cannot reach the String/StringList refusal', async () => {
+    // TWO sites in one drive. The warn names whatever `Type` the response
+    // carried, which cdkd does not control; since go-to-k/cdkd#3950 a Type
+    // that is not a plain identifier is described there rather than quoted,
+    // so this case pins its ABSENCE, not how it would be sanitized. The ssm-secure refusal beside it
     // renders `param.type` raw, and that one is CONSTRAINED: `secure` is false
     // only for the exact strings `String` / `StringList`, so a near-miss
     // spelling is classified secret and never reaches that throw.
@@ -370,7 +380,9 @@ describe('an SSM-reported Type is sanitized on the unrecognized-Type WARN (#3441
     expect(got.error, `the near-miss type reached a refusal: ${JSON.stringify(got)}`).toBeUndefined();
     const warn = got.lines.find((l) => l.includes('reported an unrecognized Type'));
     expect(warn, `no unrecognized-Type warn: ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(warn ?? '', 'the unrecognized-Type warn');
+    // Described rather than quoted by hand since go-to-k/cdkd#3950.
+    expectClean(warn ?? '', 'the unrecognized-Type warn');
+    expect(warn).toContain('unrecognized Type (not shown: it is not a plain identifier) — treating');
 
     // CONTROL for both: a real public type DOES reach the constrained refusal
     // and renders there verbatim; a plain unknown type renders verbatim in the

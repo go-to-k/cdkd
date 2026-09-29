@@ -149,10 +149,10 @@ describe('Fn::ImportValue renders its export name through the display builder (g
     expect(warned, 'the index-lookup warn never fired, so this case proves nothing').toContain(
       'Exports index lookup failed'
     );
-    // Still IDENTIFIES the export — a sanitizer that emptied the name would
-    // satisfy every byte assertion below while making the warn useless.
-    expect(warned).toContain('Prod');
-    expect(warned).toContain('Evil');
+    // A name the display builder had to alter is DESCRIBED, not quoted by
+    // hand (go-to-k/cdkd#3950): its render keeps `'`, so inside cdkd's quote a
+    // pasted warn could run.
+    expect(warned).toContain('lookup failed for an export whose name is not a plain identifier:');
     expect(warned, 'a raw ESC reached the index-lookup warn').not.toContain(ESC);
     expect(warned, 'a raw CR reached the index-lookup warn').not.toContain('\r');
   });
@@ -171,8 +171,7 @@ describe('Fn::ImportValue renders its export name through the display builder (g
     expect(err, 'the resolve was expected to REFUSE; a resolved value proves nothing').toBeDefined();
     const message = String(err?.message ?? '');
     expect(message).toContain('not found in any stack');
-    expect(message).toContain('Prod');
-    expect(message).toContain('Evil');
+    expect(message).toContain('export (not shown: it is not a plain identifier) not found');
     expect(message, 'a raw ESC reached the throw').not.toContain(ESC);
     expect(message, 'a raw CR reached the throw').not.toContain('\r');
   });
@@ -182,22 +181,23 @@ describe('Fn::ImportValue renders its export name through the display builder (g
     // reached only `maskThenStripThenMask` passes both cases above and fails
     // this one, which is exactly the near-miss the builder exists to prevent:
     // a JSON log viewer reads U+2028 as a line terminator.
-    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
-
-    const err = await resolver
-      .resolve({ 'Fn::ImportValue': `Prod${LS}Evil` }, buildContext())
-      .then(
-        () => undefined,
-        (e: unknown) => e as Error
-      );
-
-    expect(err).toBeDefined();
-    const message = String(err?.message ?? '');
-    expect(message).toContain('Prod');
+    //
+    // Read off the DEBUG line, which still renders the binding: since
+    // go-to-k/cdkd#3950 the throw describes an altered name instead of quoting
+    // it, so the throw alone could no longer tell the two halves apart.
+    const debugged = await captureLog('debug', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+      await resolver
+        .resolve({ 'Fn::ImportValue': `Prod${LS}Evil` }, buildContext())
+        .catch(() => undefined);
+    });
+    const line = debugged.split('\n').find((l) => l.startsWith('Resolving Fn::ImportValue: '));
+    expect(line, 'the binding debug line never fired, so this case proves nothing').toBeDefined();
+    expect(line).toContain('Prod');
     // Anchored PAST the character: a sanitizer that TRUNCATED there would
-    // satisfy the assertions around this one.
-    expect(message).toContain('Evil');
-    expect(message, 'U+2028 reached the message').not.toContain(LS);
+    // satisfy the assertion after this one.
+    expect(line).toContain('Evil');
+    expect(line, 'U+2028 reached the binding').not.toContain(LS);
   });
 
   it('leaves an ORDINARY export name byte-identical', async () => {
@@ -300,7 +300,7 @@ describe('the parameter-value debug lines sanitize too (go-to-k/cdkd#3426 sweep)
 });
 
 describe('the dynamic-reference bindings sanitize too (go-to-k/cdkd#3426 sweep)', () => {
-  it('an SSM parameter name reaches its refusal stripped', async () => {
+  it('a hostile SSM parameter name is kept out of its refusal', async () => {
     // `loggedParameterName` is the same shape as `loggedExportName` — bound
     // from the bare masker, read by four sites — and its value is
     // TOKEN-DERIVED, so no charset gate stands in front of it. Reached with no
@@ -322,8 +322,8 @@ describe('the dynamic-reference bindings sanitize too (go-to-k/cdkd#3426 sweep)'
     expect(message, 'a different SSM failure fired, so this case proves nothing').toContain(
       'SSM parameter'
     );
-    expect(message).toContain('Prod');
-    expect(message).toContain('Evil');
+    // Described since go-to-k/cdkd#3950: the altered name is not quoted by hand.
+    expect(message).toContain('SSM parameter (not shown: it is not a plain identifier)');
     expect(message, 'a raw ESC reached the SSM refusal').not.toContain(ESC);
     expect(message, 'a raw CR reached the SSM refusal').not.toContain('\r');
   });

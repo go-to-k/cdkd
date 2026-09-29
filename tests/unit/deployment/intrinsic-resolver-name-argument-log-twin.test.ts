@@ -50,6 +50,7 @@ import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const SECRET_ID = 'cdkd-name-argument-log-twin-probe';
 
@@ -168,6 +169,10 @@ const lookupBehaviour = vi.hoisted(() => ({
    * sibling's client hits).
    */
   endpointFailure: false,
+  /** go-to-k/cdkd#3950: when set, every `GetParameter` answers this `Type` (value `v`). */
+  ssmType: undefined as string | undefined,
+  /** go-to-k/cdkd#3950: when set, every `GetSecretValue` for another id answers this. */
+  secretAnswer: undefined as Record<string, unknown> | undefined,
 }));
 /** STS: the real account, or an answer with no account (a FABRICATED id). */
 const stsBehaviour = vi.hoisted(() => ({ fabricated: false }));
@@ -207,6 +212,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
           throw new Error(
             `getaddrinfo ENOTFOUND ssm.${command.input.Name.split(':')[3]}.amazonaws.com`
           );
+        }
+        if (lookupBehaviour.ssmType !== undefined) {
+          return { Parameter: { Value: 'v', Type: lookupBehaviour.ssmType } };
         }
         if (lookupBehaviour.ssmThrottles > 0) {
           lookupBehaviour.ssmThrottles--;
@@ -253,6 +261,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
             }),
           };
         }
+        if (lookupBehaviour.secretAnswer !== undefined) return lookupBehaviour.secretAnswer;
         const requested = (command.input as { SecretId?: string }).SecretId ?? '';
         if (lookupBehaviour.endpointFailure && requested.startsWith('arn:')) {
           const unreachable = new Error(
@@ -424,6 +433,8 @@ beforeEach(() => {
   lookupBehaviour.ssmThrottles = 0;
   lookupBehaviour.endpointFailure = false;
   lookupBehaviour.secretsQuote = false;
+  lookupBehaviour.ssmType = undefined;
+  lookupBehaviour.secretAnswer = undefined;
   stsBehaviour.fabricated = false;
   resetAccountInfoCache();
 });
@@ -456,7 +467,7 @@ describe('issue #3150: Fn::FindInMap keys', () => {
       makeContext({ template: template as CloudFormationTemplate })
     );
     expect(message).toBe(
-      "Fn::FindInMap: second-level key 'size-***' not found in mapping 'map-***' -> 'env-***'"
+      "Fn::FindInMap: second-level key 'size-***' not found in mapping 'map-***' under top-level key 'env-***'"
     );
   });
 
@@ -859,13 +870,13 @@ describe('issue #3150: Fn::GetAZs region, transformed by canonicalizeRegion', ()
 
   it('an invalid region carrying a twin prints as ***', async () => {
     const message = await messageOf({ 'Fn::GetAZs': sub('BAD_${P}') }, makeContext());
-    expect(message).toMatch(/^Fn::GetAZs: '\*\*\*' is not a valid AWS region name/);
+    expect(message).toMatch(/^Fn::GetAZs: the value '\*\*\*' is not a valid AWS region name/);
   });
 
   it('CONTROL: an invalid unrecorded region prints verbatim', async () => {
     const message = await messageOf({ 'Fn::GetAZs': plain('BAD_${P}') }, makeContext());
     expect(message).toMatch(
-      new RegExp(`^Fn::GetAZs: 'BAD_${UNRECORDED}' is not a valid AWS region name`)
+      new RegExp(`^Fn::GetAZs: the value 'BAD_${UNRECORDED}' is not a valid AWS region name`)
     );
   });
 });
@@ -2819,4 +2830,334 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
       );
     });
   });
+});
+
+/**
+ * go-to-k/cdkd#3950: the families this file's mocks can reach, driven with
+ * every `PASTE_PAYLOADS` value where cdkd hand-quoted the render. Each is
+ * described now, never quoted, and its message is fed WHOLE to the paste
+ * harness (`resolver-prose-quotes.test.ts` holds the families that need no
+ * mocks, and the per-character invariant).
+ *
+ * Three families also print the SAME value BARE elsewhere in the message: the
+ * nested-output refusal's `Fn::GetAtt [Child, <attribute>]` head, the
+ * condition warn's `Failed to evaluate condition <name>:` prefix, and the
+ * secret region refusal's `Refusing to resolve the secret reference <token>`,
+ * whose token carries the secret id. An unquoted
+ * render is a different class from this issue's, left as it is, so for those
+ * the assertion is that every span that runs carries the value bare, i.e. the
+ * rewritten site contributes none. Every other family must run nothing.
+ */
+describe('go-to-k/cdkd#3950: the hand-quoted renders these mocks reach are described', () => {
+  const NOT_SHOWN = '(not shown: it is not a plain identifier)';
+  const NESTED = (attributes: Record<string, unknown>): Record<string, ResourceState> => ({
+    Child: {
+      physicalId: NESTED_ARN,
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: {},
+      attributes,
+    },
+  });
+  const JSON_SECRET = '{"user":"root","pass":"hunter2"}';
+
+  async function lineOf(prefix: string, run: () => Promise<unknown>): Promise<string> {
+    await run();
+    const line = everyLine().find((l) => l.startsWith(prefix));
+    expect(line, `no line starting ${JSON.stringify(prefix)}: ${JSON.stringify(everyLine())}`).toBeDefined();
+    return line!;
+  }
+
+  async function familiesFor(value: string): Promise<
+    Array<{ family: string; message: string; described: string; bare: boolean }>
+  > {
+    const out: Array<{ family: string; message: string; described: string; bare: boolean }> = [];
+    out.push({
+      family: 'nested-stack output refusal',
+      message: await messageOf(
+        { 'Fn::GetAtt': ['Child', `Outputs.${value}`] },
+        makeContext({ resources: NESTED({ 'Outputs.Real': 'x' }) })
+      ),
+      described: `declares no output named ${NOT_SHOWN}. Its outputs are Real.`,
+      bare: true,
+    });
+    out.push({
+      family: 'Fn::GetAZs invalid region',
+      message: await messageOf({ 'Fn::GetAZs': value }, makeContext()),
+      described: `Fn::GetAZs: the value ${NOT_SHOWN} is not a valid AWS region name`,
+      bare: false,
+    });
+    out.push({
+      family: 'Secrets Manager JSON key refusal',
+      message: await messageOf(
+        `{{resolve:secretsmanager:${SECRET_ID}:SecretString:${value}}}`,
+        makeContext()
+      ),
+      described: `Dynamic reference: key ${NOT_SHOWN} not found in secret '${SECRET_ID}'`,
+      bare: false,
+    });
+    logSpies.debug.mockClear();
+    out.push({
+      family: 'Fn::ImportValue re-resolution origin',
+      message: await lineOf('Re-resolving dynamic reference(s) in Fn::ImportValue', () =>
+        new IntrinsicFunctionResolver('us-east-1').resolve(
+          { 'Fn::ImportValue': value },
+          makeContext({
+            stateBackend: backendWith('Producer', { [value]: '{{resolve:ssm:host}}' }),
+          }) as never
+        )
+      ),
+      described: `Fn::ImportValue ${NOT_SHOWN} (producer Producer / us-east-1)`,
+      bare: false,
+    });
+    logSpies.debug.mockClear();
+    out.push({
+      family: 'Fn::ImportValue re-resolution origin, exports-index arm',
+      message: await lineOf('Re-resolving dynamic reference(s) in Fn::ImportValue', () =>
+        new IntrinsicFunctionResolver('us-east-1').resolve(
+          { 'Fn::ImportValue': value },
+          makeContext({
+            stateBackend: emptyBackend(),
+            exportIndex: {
+              lookup: vi.fn(async () => ({
+                value: '{{resolve:ssm:host}}',
+                producerStack: 'Producer',
+                producerRegion: 'us-east-1',
+              })),
+            } as unknown as ExportIndexStore,
+          }) as never
+        )
+      ),
+      described: `Fn::ImportValue ${NOT_SHOWN} (producer Producer / us-east-1)`,
+      bare: false,
+    });
+    logSpies.warn.mockClear();
+    out.push({
+      family: 'exports-index lookup failure warn',
+      message: await lineOf('Exports index lookup failed for', () =>
+        new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false })
+          .resolve(
+            { 'Fn::ImportValue': value },
+            makeContext({
+              stateBackend: emptyBackend(),
+              exportIndex: {
+                lookup: vi.fn(async () => {
+                  throw new Error('index read refused');
+                }),
+              } as unknown as ExportIndexStore,
+            }) as never
+          )
+          .catch(() => undefined)
+      ),
+      described: 'Exports index lookup failed for an export whose name is not a plain identifier:',
+      bare: false,
+    });
+    logSpies.warn.mockClear();
+    await new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::ImportValue': value },
+      makeContext({
+        stateBackend: backendWith('Producer', { [value]: 'v' }),
+        exportIndex: {
+          lookup: vi.fn(async () => undefined),
+          patchEntry: vi.fn(async () => {
+            throw new Error('index write refused');
+          }),
+        } as unknown as ExportIndexStore,
+      }) as never
+    );
+    let patched: string | undefined;
+    await vi.waitFor(() => {
+      patched = everyLine().find((l) => l.startsWith('Failed to patch exports index for '));
+      expect(patched).toBeDefined();
+    });
+    out.push({
+      family: 'exports-index patch failure',
+      message: patched!,
+      described: 'Failed to patch exports index for an export whose name is not a plain identifier:',
+      bare: false,
+    });
+    cfnBehaviour.mode = 'throw';
+    logSpies.warn.mockClear();
+    await new IntrinsicFunctionResolver('us-east-1')
+      .resolve({ 'Fn::ImportValue': value }, makeContext({ stateBackend: emptyBackend() }) as never)
+      .catch(() => undefined);
+    cfnBehaviour.mode = 'empty';
+    const fallback = everyLine().find((l) => l.includes('ListExports fallback failed for export'));
+    expect(fallback, `no ListExports fallback warn for ${value}`).toBeDefined();
+    out.push({
+      family: 'CloudFormation ListExports fallback warn',
+      message: fallback!,
+      described: `ListExports fallback failed for export ${NOT_SHOWN}`,
+      bare: false,
+    });
+    out.push({
+      family: 'EC2 instance PublicIp refusal',
+      message: await messageOf(
+        { 'Fn::GetAtt': ['Inst', 'PublicIp'] },
+        makeContext({
+          resources: {
+            Inst: {
+              physicalId: value,
+              resourceType: 'AWS::EC2::Instance',
+              properties: {},
+              attributes: {},
+            },
+          } as never,
+        })
+      ),
+      described: `The physical id ${NOT_SHOWN} is not a usable PublicIp`,
+      bare: false,
+    });
+    lookupBehaviour.secretAnswer = {};
+    out.push({
+      family: 'Secrets Manager no-SecretString refusal',
+      message: await messageOf(`{{resolve:secretsmanager:${value}:SecretString:::}}`, makeContext()),
+      described: `Dynamic reference: secret ${NOT_SHOWN} does not contain a SecretString value`,
+      bare: false,
+    });
+    lookupBehaviour.secretAnswer = { SecretString: '{"a":"b"}' };
+    out.push({
+      family: 'Secrets Manager key refusal naming the secret',
+      message: await messageOf(`{{resolve:secretsmanager:${value}:SecretString:k}}`, makeContext()),
+      described: `Dynamic reference: key 'k' not found in secret ${NOT_SHOWN}`,
+      bare: false,
+    });
+    lookupBehaviour.secretAnswer = { SecretString: 'not json' };
+    out.push({
+      family: 'Secrets Manager invalid-JSON refusal (secret id)',
+      message: await messageOf(`{{resolve:secretsmanager:${value}:SecretString:k}}`, makeContext()),
+      described: `Dynamic reference: secret ${NOT_SHOWN} is not valid JSON but JSON_KEY 'k' was specified`,
+      bare: false,
+    });
+    out.push({
+      family: 'Secrets Manager invalid-JSON refusal (JSON key)',
+      message: await messageOf(`{{resolve:secretsmanager:${SECRET_ID}x:SecretString:${value}}}`, makeContext()),
+      described: `is not valid JSON but JSON_KEY ${NOT_SHOWN} was specified`,
+      bare: false,
+    });
+    lookupBehaviour.secretAnswer = undefined;
+    out.push({
+      family: 'secret region-ambiguity refusal',
+      message: await messageOf(
+        `{{resolve:secretsmanager:${value}:SecretString:k}}`,
+        makeContext({ producerRegions: ['us-west-2'] })
+      ),
+      described: `it names a secret whose name is not a plain identifier without a region`,
+      bare: true,
+    });
+    for (const [field, name, type] of [
+      ['type', 'typed-param', `Future${value}`],
+      ['name', value, 'FutureSecretType'],
+    ] as const) {
+      lookupBehaviour.ssmType = type;
+      logSpies.warn.mockClear();
+      await new IntrinsicFunctionResolver('us-east-1')
+        .resolve(`{{resolve:ssm-secure:${name}}}`, makeContext() as never)
+        .catch(() => undefined);
+      lookupBehaviour.ssmType = undefined;
+      const warn = everyLine().find((l) => l.includes('reported an unrecognized Type'));
+      expect(warn, `no unrecognized-Type warn for the ${field} ${value}`).toBeDefined();
+      out.push({
+        family: `SSM unrecognized-Type warn (${field})`,
+        message: warn!,
+        described:
+          field === 'type'
+            ? `reported an unrecognized Type ${NOT_SHOWN} — treating`
+            : `SSM parameter ${NOT_SHOWN} reported an unrecognized Type 'FutureSecretType'`,
+        bare: false,
+      });
+    }
+    const reads: Array<{ display: string }> = [];
+    await new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: value } },
+      makeContext({
+        stateBackend: backendWith('Producer', { [value]: '***' }),
+        redactedAttributeReads: reads,
+      }) as never
+    );
+    expect(reads, `no deferred read for ${value}`).toHaveLength(1);
+    out.push({
+      family: 'Fn::GetStackOutput origin label',
+      message: reads[0]!.display,
+      described: `Fn::GetStackOutput ${NOT_SHOWN} (producer Producer / us-east-1)`,
+      bare: false,
+    });
+    logSpies.warn.mockClear();
+    await new IntrinsicFunctionResolver('us-east-1').evaluateConditions({
+      template: { Resources: {}, Conditions: { [value]: { Condition: value } } },
+      resources: {},
+      parameters: {},
+    } as never);
+    const circular = everyLine().find((l) => l.includes('Circular condition reference'));
+    expect(circular, `no circular-condition warn for ${value}`).toBeDefined();
+    out.push({
+      family: 'circular condition',
+      message: circular!,
+      described: `involving condition ${NOT_SHOWN}`,
+      bare: true,
+    });
+    for (const [field, template, supplied] of [
+      // A LIST type takes the coercion arm; `List<...>` keeps the value inside.
+      ['type', { Parameters: { Stage: { Type: `List<${value}>` } }, Resources: {} }, { Stage: JSON_SECRET }],
+      [
+        'name',
+        { Parameters: { [value]: { Type: 'CommaDelimitedList' } }, Resources: {} },
+        { [value]: JSON_SECRET },
+      ],
+    ] as const) {
+      const err = await new IntrinsicFunctionResolver('us-east-1')
+        .resolveParameters(template as unknown as CloudFormationTemplate, supplied, {
+          inheritedSecrets: new Map([[JSON_SECRET, '{{resolve:secretsmanager:prod/db:SecretString:::}}']]),
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+      expect(err, `no coercion refusal for the parameter ${field} ${value}`).toBeDefined();
+      out.push({
+        family: `nested-stack parameter coercion refusal (${field})`,
+        message: err!.message,
+        described:
+          field === 'type'
+            ? "is declared with a Type that is not a plain identifier, but the parent stack"
+            : `Nested-stack parameter ${NOT_SHOWN} is declared 'Type: CommaDelimitedList'`,
+        bare: false,
+      });
+    }
+    return out;
+  }
+
+  it('keeps a plain value quoted, byte-identical to before', async () => {
+    const families = await familiesFor('Plain-1');
+    expect(families).toHaveLength(20);
+    for (const { family, message } of families) {
+      expect(message, family).not.toContain(NOT_SHOWN);
+      expect(message, family).not.toContain('not a plain identifier');
+      // Case-insensitive: `Plain-1` is region-shaped, so `Fn::GetAZs` lowercases
+      // it and reaches its no-zones refusal, which quotes the same way.
+      expect(message, family).toMatch(/['"](future)?plain-1['"]|'Type: List<Plain-1>'/i);
+    }
+  });
+
+  it('describes every payload, and no pasted span runs through the rewritten site', async () => {
+    const rendered: Array<{ label: string; value: string; message: string; described: string; bare: boolean }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const f of await familiesFor(value)) {
+        rendered.push({ label: `${f.family}: ${value}`, value, ...f });
+      }
+    }
+    expect(rendered).toHaveLength(PASTE_PAYLOADS.length * 20);
+    withPasteDir((dir) => {
+      for (const { label, value, message, described, bare } of rendered) {
+        expect(message, label).toContain(described);
+        expect(message, label).not.toContain(JSON.stringify(value));
+        const ran = spansThatRun(message, dir);
+        if (bare) {
+          for (const span of ran) expect(span, `${label}: a span ran without the bare render`).toContain(value);
+        } else {
+          expect(message, label).not.toContain(value);
+          expect(ran, label).toEqual([]);
+        }
+      }
+    });
+  }, 240_000);
 });

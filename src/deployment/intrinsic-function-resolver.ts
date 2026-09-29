@@ -939,7 +939,13 @@ function buildUnknownIntrinsicError(key: string): Error {
   // and none of those can start a substitution without a `$` or a backtick. (Percent-encoding
   // is itself a mask-evading transform, so if `key` were ever in the SECRET
   // class this would be too -- it is not, being a structural operand.)
-  const shown = displayIdent(key) === key ? `"${key}"` : 'whose name is not a plain identifier';
+  // Whitespace FIRST: the round-trip alone admits a key ending in
+  // `displayIdent`'s own cut marker (255 plain characters then
+  // ` [cut: 35 more characters withheld]` renders as itself).
+  const shown =
+    !/\s/.test(key) && displayIdent(key) === key
+      ? `"${key}"`
+      : 'whose name is not a plain identifier';
   return new Error(
     `Unsupported CloudFormation intrinsic function ${shown}: ` +
       `cdkd does not support resolving it yet. ` +
@@ -3043,6 +3049,35 @@ function boundAltered(original: string, shown: string, maxCodePoints?: number): 
 }
 
 /**
+ * A render that may sit inside a quote of cdkd's own: the characters of
+ * `displayIdent`'s plain identifier, plus `|` and `*` (a masked value prints
+ * `***`) and `<` / `>` (a parameter type such as `List<Number>`). All are
+ * literal inside either quote, and none is whitespace, so no pasted line,
+ * sentence or clause can start or end inside the quoted render. Empty is
+ * admitted, so an empty value still prints as `''`.
+ */
+const QUOTABLE_RENDER = /^[A-Za-z0-9:_@./+=,~|*<>-]*$/;
+
+/**
+ * The render inside `quote` when {@link QUOTABLE_RENDER} admits it, otherwise
+ * `described` (go-to-k/cdkd#3950).
+ *
+ * The render is `displayMasked` / `displayLeaf` output, which keeps `'`, `"`,
+ * `$`, `(`, a backtick and a space: inside cdkd's hand-written quote, a quote
+ * in the value closed it, `$( )` runs inside double quotes anyway, and the
+ * rest of a pasted sentence ran as shell. The test is on the RENDER, the text
+ * that is printed, so the mask is kept: a masked `***` still prints quoted,
+ * and nothing here reads the unmasked value.
+ */
+function quotedRender(
+  rendered: string,
+  quote: "'" | '"',
+  described = '(not shown: it is not a plain identifier)'
+): string {
+  return QUOTABLE_RENDER.test(rendered) ? `${quote}${rendered}${quote}` : described;
+}
+
+/**
  * Behavior knobs for {@link IntrinsicFunctionResolver}.
  */
 export interface IntrinsicFunctionResolverOptions {
@@ -3994,7 +4029,7 @@ export class IntrinsicFunctionResolver {
       }
       if (inProgress.has(name)) {
         throw new Error(
-          `Circular condition reference detected involving condition "${this.displayMasked(name, maskingContext)}"`
+          `Circular condition reference detected involving condition ${quotedRender(this.displayMasked(name, maskingContext), '"')}`
         );
       }
       // The TEMPLATE's own `Conditions` object comes from `JSON.parse`, so this
@@ -4692,13 +4727,13 @@ export class IntrinsicFunctionResolver {
     const loggedType = this.displayMasked(paramDef.Type);
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
-        `Nested-stack parameter '${loggedName}' is declared 'Type: ${loggedType}', but the ` +
+        `Nested-stack parameter ${quotedRender(loggedName, "'")} is declared ${QUOTABLE_RENDER.test(loggedType) ? `'Type: ${loggedType}'` : 'with a Type that is not a plain identifier'}, but the ` +
           `parent stack resolved a SECRET dynamic reference into it. cdkd keeps a resolved ` +
           `secret out of persisted state by rewriting STRING leaves back to their ` +
-          `{{resolve:...}} expression; coercing this value to '${loggedType}' destroys the ` +
+          `{{resolve:...}} expression; coercing this value to ${quotedRender(loggedType, "'", 'that Type')} destroys the ` +
           `plaintext cdkd would have matched on, so the DECRYPTED secret would be left in the ` +
           `child stack's state.json with nothing to redact it back ` +
-          `to. Declare '${loggedName}' as 'Type: String' in the nested stack's template (CDK does ` +
+          `to. Declare ${quotedRender(loggedName, "'", 'the parameter')} as 'Type: String' in the nested stack's template (CDK does ` +
           `this by default for cross-stack references), or stop passing a secret reference ` +
           `into it.`,
         undefined,
@@ -5532,8 +5567,8 @@ export class IntrinsicFunctionResolver {
           // `markNonRetryable(new IntrinsicResolutionRefusalError(...))` and
           // the fabricated-account refusal below.
           `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${this.displayMasked(attributeName, context)}]: the nested stack ` +
-            `'${loggedLogicalId}' declares no output named ` +
-            `'${this.displayMasked(this.outputNameLogText(attributeName, context), context)}'. ` +
+            `${quotedRender(loggedLogicalId, "'")} declares no output named ` +
+            `${quotedRender(this.displayMasked(this.outputNameLogText(attributeName, context), context), "'")}. ` +
             `Its outputs are ${this.displayMasked(declaredText, context)}. ` +
             `Check the output name in the nested stack's template, and deploy the child ` +
             `stack again if you have just added it.`
@@ -5767,7 +5802,7 @@ export class IntrinsicFunctionResolver {
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ` +
-          `${resource.resourceType}: the recorded value "${stringifyValue(this.maskValueLeaves(value, context))}" is a placeholder ` +
+          `${resource.resourceType}: the recorded value ${quotedRender(stringifyValue(this.maskValueLeaves(value, context)), '"')} is a placeholder ` +
           `written by a cdkd version older than issue #1681 — its region and account ` +
           `fields are literal wildcards, so it is not a usable ARN. ` +
           this.staleRecordRemedy(healOutcome, context)
@@ -6367,7 +6402,7 @@ export class IntrinsicFunctionResolver {
             throw markNonRetryable(
               new IntrinsicResolutionRefusalError(
                 `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
-                  `state record's physical id "${this.displayMasked(physicalId, context).slice(0, 64)}" ` +
+                  `state record's physical id ${quotedRender(this.displayMasked(physicalId, context).slice(0, 64), '"')} ` +
                   `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
                   `record (cdkd import, or re-create the VPC) and deploy again.`
               )
@@ -7140,7 +7175,7 @@ export class IntrinsicFunctionResolver {
             throw markNonRetryable(
               new IntrinsicResolutionRefusalError(
                 `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, VpcId] for AWS::EC2::SecurityGroup: the ` +
-                  `state record's physical id "${this.displayMasked(physicalId, context).slice(0, 64)}" ` +
+                  `state record's physical id ${quotedRender(this.displayMasked(physicalId, context).slice(0, 64), '"')} ` +
                   `is not a security group id (sg-<hex>), so cdkd will not look it up. Repair the ` +
                   `record (cdkd import, or re-create the security group) and deploy again.`
               )
@@ -7407,7 +7442,7 @@ export class IntrinsicFunctionResolver {
             throw markNonRetryable(
               new IntrinsicResolutionRefusalError(
                 `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, DomainName] for AWS::CloudFront::Distribution: the ` +
-                  `state record's physical id "${this.displayMasked(physicalId, context).slice(0, 64)}" ` +
+                  `state record's physical id ${quotedRender(this.displayMasked(physicalId, context).slice(0, 64), '"')} ` +
                   `is not a distribution id (upper-case alphanumerics), so cdkd will not look it up. Repair the ` +
                   `record (cdkd import, or re-create the distribution) and deploy again.`
               )
@@ -7486,7 +7521,7 @@ export class IntrinsicFunctionResolver {
           new IntrinsicResolutionRefusalError(
             `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
               `the state record holds no VpcId for it (the read-back that would have recorded it reported none), ` +
-              `and the physical id "${this.displayMasked(physicalId, context)}" is a name, not a VPC id, so cdkd ` +
+              `and the physical id ${quotedRender(this.displayMasked(physicalId, context), '"')} is a name, not a VPC id, so cdkd ` +
               `refuses to substitute it. ` +
               `${this.staleRecordRemedy(vpcIdHealOutcome, context)} Referencing the VPC directly also works.`
           )
@@ -7586,7 +7621,7 @@ export class IntrinsicFunctionResolver {
     // every future caller.
     throw new IntrinsicResolutionRefusalError(
       `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
-        `${observed}. The physical id "${this.displayMasked(physicalId, context)}" is not a usable ` +
+        `${observed}. The physical id ${quotedRender(this.displayMasked(physicalId, context), '"')} is not a usable ` +
         `${this.displayMasked(attributeName, context)}, so cdkd refuses to substitute it. ${remedy}`
     );
   }
@@ -7779,7 +7814,7 @@ export class IntrinsicFunctionResolver {
             (recordMayBeStale
               ? `the state record holds no value for it, and the physical ID `
               : `attributes are not enriched for this resource type, and the physical ID `) +
-            `fallback "${this.displayMasked(physicalId, context)}" is not ${expectedShape}. CloudFormation would return ` +
+            `fallback ${quotedRender(this.displayMasked(physicalId, context), '"')} is not ${expectedShape}. CloudFormation would return ` +
             `a different value here, so falling back to the physical ID would silently ` +
             `produce a wrong value (e.g. in stack Outputs). ` +
             (recordMayBeStale
@@ -7798,7 +7833,7 @@ export class IntrinsicFunctionResolver {
             (recordMayBeStale
               ? `the state record holds no value for it, and --strict-getatt `
               : `attributes are not enriched for this resource type, and --strict-getatt `) +
-            `rejects the physical ID fallback "${this.displayMasked(physicalId, context)}" (which may not be the value ` +
+            `rejects the physical ID fallback ${quotedRender(this.displayMasked(physicalId, context), '"')} (which may not be the value ` +
             `CloudFormation would return). Drop --strict-getatt to fall back with a warning. ` +
             (recordMayBeStale
               ? this.staleRecordRemedy(healOutcome, context)
@@ -8620,7 +8655,8 @@ export class IntrinsicFunctionResolver {
   private describeOperandShape(value: unknown, context: ResolverContext): string {
     if (value === null) return 'null';
     if (Array.isArray(value)) return `an array of ${value.length}`;
-    if (typeof value === 'string') return `string "${this.displayMasked(value, context)}"`;
+    if (typeof value === 'string')
+      return `string ${quotedRender(this.displayMasked(value, context), '"')}`;
     if (typeof value === 'number' || typeof value === 'boolean') {
       return `${typeof value} ${this.displayMasked(String(value), context)}`;
     }
@@ -8842,7 +8878,7 @@ export class IntrinsicFunctionResolver {
       // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)). The
       // delimiter through the builder (issue #3479): it is raw template text,
       // and a structural operand is still arbitrary JSON.
-      `Resolved Fn::Split: split by "${this.displayMasked(String(delimiter), context)}" -> ${JSON.stringify(this.maskValueLeaves(pieceTwins, context))}`
+      `Resolved Fn::Split: split by ${quotedRender(this.displayMasked(String(delimiter), context), '"', 'a delimiter (not shown: it is not a plain identifier)')} -> ${JSON.stringify(this.maskValueLeaves(pieceTwins, context))}`
     );
     return result;
   }
@@ -9568,7 +9604,7 @@ export class IntrinsicFunctionResolver {
           // idempotent call, against re-deciding per future AWS error text.
           // What IS a closed leak is `loggedExportName` beside it (issue
           // #2133), and that is what the test for this site pins.
-          `Exports index lookup failed for '${loggedExportName}': ` +
+          `Exports index lookup failed for ${quotedRender(loggedExportName, "'", 'an export whose name is not a plain identifier')}: ` +
             `${this.displayMasked(err instanceof Error ? err.message : String(err), context)}` +
             `; falling back to state.json scan`
         );
@@ -9598,7 +9634,7 @@ export class IntrinsicFunctionResolver {
           entry.value,
           entry.producerRegion,
           context,
-          `Fn::ImportValue '${this.displayLeaf(exportName, context)}' (producer ${this.displayLeaf(entry.producerStack, context)} / ${this.displayLeaf(entry.producerRegion, context)})`,
+          `Fn::ImportValue ${quotedRender(this.displayLeaf(exportName, context), "'")} (producer ${this.displayLeaf(entry.producerStack, context)} / ${this.displayLeaf(entry.producerRegion, context)})`,
           sourceKey,
           // Issue #2274: the coordinate the value was READ from, so an in-run
           // producer's masked output can be recovered rather than refused. The
@@ -9639,7 +9675,7 @@ export class IntrinsicFunctionResolver {
         const lookupRegion = refRegion ?? this.resolverRegion ?? '';
         if (!lookupRegion) {
           this.logger.debug(
-            `No region available for stack '${this.displayMasked(refStack, context)}' — skipping (cdkd cannot read state without a region)`
+            `No region available for stack ${quotedRender(this.displayMasked(refStack, context), "'")} — skipping (cdkd cannot read state without a region)`
           );
           continue;
         }
@@ -9693,7 +9729,7 @@ export class IntrinsicFunctionResolver {
                   // quieter. An index write failure quotes the KEY it could
                   // not write, which is built from the export name.
                   `Failed to patch exports index for ` +
-                    `'${this.displayMasked(exportName, context)}': ` +
+                    `${quotedRender(this.displayMasked(exportName, context), "'", 'an export whose name is not a plain identifier')}: ` +
                     `${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
                 );
               });
@@ -9725,7 +9761,7 @@ export class IntrinsicFunctionResolver {
         found.value,
         found.lookupRegion,
         context,
-        `Fn::ImportValue '${this.displayLeaf(exportName, context)}' (producer ${this.displayLeaf(found.refStack, context)} / ${this.displayLeaf(found.lookupRegion, context)})`,
+        `Fn::ImportValue ${quotedRender(this.displayLeaf(exportName, context), "'")} (producer ${this.displayLeaf(found.refStack, context)} / ${this.displayLeaf(found.lookupRegion, context)})`,
         sourceKey,
         // Issue #2274 — see the index arm above. Same bag, reached by scanning
         // state instead of the index, so the same coordinate applies.
@@ -9776,7 +9812,7 @@ export class IntrinsicFunctionResolver {
     // the RESOLVED argument, so an `Fn::Sub`-assembled name IS a decrypted
     // secret — and the throw is the copy that travels to every caller.
     throw new Error(
-      `Fn::ImportValue: export '${loggedExportName}' not found in any stack. ` +
+      `Fn::ImportValue: export ${quotedRender(loggedExportName, "'")} not found in any stack. ` +
         `Searched ${allStacks.length} cdkd state record(s)` +
         `${this.cfnFallback ? ' and CloudFormation exports' : ''}. ` +
         `Make sure the exporting stack has been deployed and the Output has an Export.Name property.`
@@ -9832,7 +9868,7 @@ export class IntrinsicFunctionResolver {
         // MASKED for the reason `resolveImportValue`'s own lines are (issue
         // #2133 review), and this one prints at DEFAULT verbosity.
         `Fn::ImportValue: CloudFormation ListExports fallback failed for export ` +
-          `'${this.displayMasked(exportName, context)}' ` +
+          `${quotedRender(this.displayMasked(exportName, context), "'")} ` +
           // The caught message is masked too since issue #2827, and this is
           // the one site of the five where that half is DEFENCE IN DEPTH
           // rather than a closed leak — recorded rather than left for the next
@@ -10655,7 +10691,7 @@ export class IntrinsicFunctionResolver {
       // not write a glob in a comment in this file; the fence in
       // `tests/unit/deployment/resolver-display-masked-population.test.ts`
       // will refuse it, and its message will say so.)
-      `Fn::GetStackOutput '${this.displayLeaf(outputName, context)}' (producer ${this.displayLeaf(stackName, context)} / ${this.displayLeaf(loggedRegionText, context)})`,
+      `Fn::GetStackOutput ${quotedRender(this.displayLeaf(outputName, context), "'")} (producer ${this.displayLeaf(stackName, context)} / ${this.displayLeaf(loggedRegionText, context)})`,
       sourceKey,
       // Issue #2274: this read is `outputs[outputName]` of that producer's
       // state, so the coordinate is exact — see the ImportValue arms. A
@@ -11049,7 +11085,11 @@ export class IntrinsicFunctionResolver {
       // sentence (go-to-k/cdkd#3950).
       // not-in-class(displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })): the RoleArn argument, refused unless it is a literal template string.
       const shownRoleArn = displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
-      const plain = shownRoleArn === roleArn;
+      // Whitespace FIRST: the round-trip alone admits a value that is
+      // `displayIdent`'s own cut output (the cap's worth of plain characters,
+      // then ` [cut: N more characters withheld]`), which then sits inside
+      // cdkd's `'...'` with `: ` in it.
+      const plain = !/\s/.test(roleArn) && shownRoleArn === roleArn;
       const bounded = plain ? `'${shownRoleArn}'` : shellBoundedDisplay(shownRoleArn);
       // A described value reads as a noun phrase, not as the ARN itself.
       const subject =
@@ -11177,7 +11217,7 @@ export class IntrinsicFunctionResolver {
       // them can be a decrypted secret an `Fn::Sub` assembled. Masked per RAW
       // value, which is what reaches the floorless whole-value arm.
       throw new Error(
-        `Fn::FindInMap: mapping '${this.displayMasked(mapName, context)}' not found in Mappings section`
+        `Fn::FindInMap: mapping ${quotedRender(this.displayMasked(mapName, context), "'")} not found in Mappings section`
       );
     }
 
@@ -11187,8 +11227,8 @@ export class IntrinsicFunctionResolver {
         return await resolveDefault();
       }
       throw new Error(
-        `Fn::FindInMap: top-level key '${this.displayMasked(topLevelKey, context)}' ` +
-          `not found in mapping '${this.displayMasked(mapName, context)}'`
+        `Fn::FindInMap: top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")} ` +
+          `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")}`
       );
     }
 
@@ -11197,9 +11237,12 @@ export class IntrinsicFunctionResolver {
         return await resolveDefault();
       }
       throw new Error(
-        `Fn::FindInMap: second-level key '${this.displayMasked(secondLevelKey, context)}' ` +
-          `not found in mapping '${this.displayMasked(mapName, context)}' -> ` +
-          `'${this.displayMasked(topLevelKey, context)}'`
+        `Fn::FindInMap: second-level key ${quotedRender(this.displayMasked(secondLevelKey, context), "'")} ` +
+          `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")} under ` +
+          // `under`, not `->`: pasted, `->` is `-` plus a `>` redirect onto the
+          // quoted top-level key, which `QUOTABLE_RENDER` admits as a path
+          // (`../x`, go-to-k/cdkd#4100 review M1).
+          `top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")}`
       );
     }
 
@@ -11389,7 +11432,10 @@ export class IntrinsicFunctionResolver {
         // applied. Masking the RAW value also reaches the whole-value arm,
         // which has no {@link MIN_NEEDLE_LENGTH} floor.
         throw new Error(
-          `Fn::GetAZs: '${this.displayMasked(this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64)}' is not a valid AWS ` +
+          // `the value` LEADS the clause: after `: ` a quoted value would be
+          // the pasted clause's COMMAND, and `QUOTABLE_RENDER` admits a path
+          // (`'/usr/bin/touch' is not …` runs touch; go-to-k/cdkd#4100 M2).
+          `Fn::GetAZs: the value ${quotedRender(this.displayMasked(this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
             `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
             `not build a client from it.`
         );
@@ -11466,7 +11512,7 @@ export class IntrinsicFunctionResolver {
       const masks = this.namedRequestMasks([[region, loggedRegion]], context);
       throw new Error(
         `Fn::GetAZs: failed to describe availability zones for region ` +
-          `'${loggedRegion}': ` +
+          `${quotedRender(loggedRegion, "'")}: ` +
           `${masks.text(error instanceof Error ? error.message : String(error))}`
       );
     }
@@ -11483,7 +11529,7 @@ export class IntrinsicFunctionResolver {
     if (azNames.length === 0) {
       throw new Error(
         `Fn::GetAZs: no availability zones returned for region ` +
-          `'${this.displayMasked(loggedRegionText ?? region, context)}'. Either the region ` +
+          `${quotedRender(this.displayMasked(loggedRegionText ?? region, context), "'")}. Either the region ` +
           `is not enabled on this account (opt-in regions must be enabled before use), or the ` +
           `request was answered by a different region's endpoint.`
       );
@@ -12608,7 +12654,7 @@ export class IntrinsicFunctionResolver {
               // plaintext here — the same plaintext the sibling throws mask after
               // parsing it out of this very token (issue #2827 review round 2).
               `Refusing to resolve the secret reference ${this.displayMasked(tokenLogText, context)}: it names ` +
-                `'${this.displayMasked(nameLogText(regionVerdict.secretName), context)}' without a region, and this stack reads from ` +
+                `${quotedRender(this.displayMasked(nameLogText(regionVerdict.secretName), context), "'", 'a secret whose name is not a plain identifier')} without a region, and this stack reads from ` +
                 `${this.displayMasked(regionVerdict.foreignProducerRegions.map((r) => this.displayMasked(r, context)).join(', '), context)} as well as its own ` +
                 `region. cdkd cannot tell which one must answer, and resolving against ` +
                 `the wrong one yields a different secret. Spell the reference as a full ARN ` +
@@ -13175,7 +13221,7 @@ export class IntrinsicFunctionResolver {
 
     if (!secretString) {
       throw new Error(
-        `Dynamic reference: secret '${loggedSecretId}' does not contain a SecretString value`
+        `Dynamic reference: secret ${quotedRender(loggedSecretId, "'")} does not contain a SecretString value`
       );
     }
 
@@ -13192,7 +13238,7 @@ export class IntrinsicFunctionResolver {
         const keyValue = Object.hasOwn(parsed, jsonKey) ? parsed[jsonKey] : undefined;
         if (keyValue === undefined) {
           throw new Error(
-            `Dynamic reference: key '${loggedJsonKey}' not found in secret '${loggedSecretId}'`
+            `Dynamic reference: key ${quotedRender(loggedJsonKey, "'")} not found in secret ${quotedRender(loggedSecretId, "'")}`
           );
         }
         // NOT part of the `stringifyValue` escaping class (issue #2759): the
@@ -13203,7 +13249,7 @@ export class IntrinsicFunctionResolver {
       } catch (error) {
         if (error instanceof SyntaxError) {
           throw new Error(
-            `Dynamic reference: secret '${loggedSecretId}' is not valid JSON but JSON_KEY '${loggedJsonKey}' was specified`
+            `Dynamic reference: secret ${quotedRender(loggedSecretId, "'")} is not valid JSON but JSON_KEY ${quotedRender(loggedJsonKey, "'")} was specified`
           );
         }
         throw error;
@@ -13493,7 +13539,7 @@ export class IntrinsicFunctionResolver {
 
     if (paramValue === undefined || paramValue === null) {
       throw new Error(
-        `Dynamic reference: SSM parameter '${loggedParameterName}' not found or has no value`
+        `Dynamic reference: SSM parameter ${quotedRender(loggedParameterName, "'")} not found or has no value`
       );
     }
 
@@ -13544,13 +13590,13 @@ export class IntrinsicFunctionResolver {
       const reported =
         paramType === undefined
           ? '(absent)'
-          : `'${this.displayMasked(String(paramType), context)}'`;
+          : quotedRender(this.displayMasked(String(paramType), context), "'");
       // Masked like the debug echo above (issue #2728), and per RAW VALUE
       // since issue #2827: the name may have been assembled from a value this
       // pass resolved out of a secret.
       // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
       this.logger.warn(
-        `SSM parameter '${loggedParameterName}' reported an unrecognized Type ${reported} — treating ` +
+        `SSM parameter ${quotedRender(loggedParameterName, "'")} reported an unrecognized Type ${reported} — treating ` +
           `its value as a secret, so cdkd will persist the {{resolve:${service}:...}} expression rather ` +
           `than the resolved value. Declare the parameter as String / StringList if it is ` +
           `public config.`
