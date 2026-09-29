@@ -4530,7 +4530,10 @@ describe('every repair the module exports is classified and has its read-only ca
     const exported = await repairExports();
     // A LITERAL, not a length read from a list below: a count derived from the
     // pool it guards cannot fail.
-    expect(exported.length, 'a repair was added or removed; classify it below').toBe(6);
+    expect(
+      exported.length,
+      `a repair was added or removed; classify it below. Exported: ${exported.join(', ')}`
+    ).toBe(6);
 
     // The same predicates the refusal partition uses, so one export cannot sit
     // in different classes on the two sides.
