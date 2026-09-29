@@ -32,6 +32,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
   UNRENDERABLE,
   displayStackName,
+  safeMsg,
 } from '../utils/display-safe.js';
 import {
   s3BucketArn,
@@ -75,7 +76,7 @@ import {
   isSingleDynamicReferenceToken,
   inheritedParameterExpression,
   clearRecoverableMaskedOutputs,
-  recordMaskOnlyValue,
+  recordDerivedMaskOnlyValue,
   recordFreshNoEchoValuesIn,
   embedsFreshNoEchoValue,
   carryFreshNoEchoMark,
@@ -100,6 +101,7 @@ import { hasReadableOutputs } from '../state/malformed-resources-bag.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 import { isSettledInstanceState } from '../provisioning/ec2-instance-state.js';
+import { COMPOSITE_ID_SEPARATOR, segmentAfterAnchor } from '../provisioning/composite-id.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import {
@@ -138,8 +140,10 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *    `ResourceProvider`'s read-side methods receive a single string. Here the
  *    extraction is load-bearing on the ORDINARY deploy path and there is no
  *    pipe-free variant to fall through. `AWS::S3Tables::Namespace` /
- *    `::Table` (whose per-routing split is spelled out at their entry) and
- *    `AWS::Glue::Table` (issue #1667) are these.
+ *    `::Table` (whose per-routing split is spelled out at their entry) are
+ *    these. `AWS::Glue::Table` was too (issue #1667) until its table name was
+ *    allowed to contain `|` (issue #1672); it now takes
+ *    {@link glueTableRefFromPhysicalId}.
  *
  * The per-type map:
  *   - AWS::ApiGateway::Model            `<restApiId>|<modelName>`     -> model name
@@ -164,7 +168,6 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   - AWS::AppConfig::ConfigurationProfile   `<appId>|<profileId>`           -> profile id
  *   - AWS::AppConfig::HostedConfigurationVersion `<appId>|<profileId>|<ver>` -> version number
  *   - AWS::AppConfig::Deployment             `<appId>|<envId>|<deployNum>`   -> deployment number
- *   - AWS::Glue::Table                       `<databaseName>|<tableName>`    -> table name
  *
  * The extraction takes the segment after the LAST pipe (see
  * {@link IntrinsicFunctionResolver.resolveRefValue}) so it is correct for both
@@ -208,8 +211,9 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * AUDIT RECORD (2026-08-12, issue #1667) — every type in the composite-id table
  * of `docs/state-management.md` was re-checked against its docs-verified `Ref`,
  * plus the two types that table lists as ACCEPTING a composite without
- * producing one. `AWS::Glue::Table` was the one this Set could fix and is added
- * below. The types deliberately NOT in either Set, with the reason:
+ * producing one. `AWS::Glue::Table` was the one this Set could fix and was
+ * added here; it has since moved to {@link glueTableRefFromPhysicalId} (issue
+ * #1672), because its table name may contain `|`. The types deliberately NOT in either Set, with the reason:
  *   - correct to exclude, `Ref` is a synthetic / AWS-generated id no segment
  *     reconstructs: ApiGateway::Method, EC2::NetworkAclEntry ("the ID of the
  *     network ACL entry"), EC2::Route, EC2::VPCGatewayAttachment,
@@ -274,34 +278,10 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   // namespace name; Table `Ref` returns the table name.
   'AWS::S3Tables::Namespace',
   'AWS::S3Tables::Table',
-  // AWS::Glue::Table (issue #1667). Like the S3Tables children this is an
-  // SDK-provisioned compound: `GlueProvider.createTable` / `importTable` store
-  // `<databaseName>|<tableName>` because `GetTable` / `UpdateTable` /
-  // `DeleteTable` all need both segments while `ResourceProvider`'s read-side
-  // methods receive a single string. CloudFormation's `Ref` for the type
-  // returns the TABLE NAME (docs-verified) — the segment after the pipe — so
-  // without this entry a `{Ref: <Table>}` consumer (a Glue crawler's
-  // `Targets.CatalogTargets[].Tables`, a `CfnOutput`, a Lake Formation
-  // permission) received `mydb|my_table` and pushed it to AWS.
-  //
-  // The after-LAST-pipe extraction is correct for every id cdkd can now write
-  // on either path: `resolveTableIdentity` (IMPORT) refuses a segment
-  // containing `|`, and since issue #1672 `createTable` (DEPLOY) packs through
-  // `packCompositeId`, which refuses one too — so the recorded id has exactly
-  // two segments and the extraction cannot mis-target. The one route left to a
-  // mis-arity'd id is the rollback executor's reverse-replacement REPLAY, where
-  // that refusal deliberately downgrades to a warning (a state record cannot be
-  // edited from the template, so refusing would leave the resource
-  // unrestorable — see `.claude/rules/providers.md`). For such an id this
-  // extraction returns the last segment, while `deleteTable` / `updateTable` /
-  // `readTable` decode it correctly by anchoring on the recorded
-  // `DatabaseName`. This mismatch is why `createTable` still refuses a `|`
-  // (issue #1672).
-  //
-  // Pre-#1651 the Ref path was unreachable for `cdk deploy`-managed stacks
-  // (they could not be imported at all); making them adoptable is what widened
-  // its reach and is why the fix is worth making now.
-  'AWS::Glue::Table',
+  // AWS::Glue::Table is NOT here, though its id is `<databaseName>|<tableName>`
+  // and its `Ref` is the table name: a table name may itself contain `|`, so
+  // after-LAST-pipe would return only its tail. It takes
+  // {@link glueTableRefFromPhysicalId} instead (issue #1672).
 ]);
 
 /**
@@ -459,7 +439,23 @@ export function isStalePlaceholderArnAttribute(
  * create time (`TableName`) or an enriched attribute is reachable. Returns the
  * stringified value for the first key present, or `undefined` when none match.
  */
-export type RefStateLookup = (keys: readonly string[]) => string | undefined;
+export type RefStateLookup = (
+  keys: readonly string[],
+  options?: RefStateLookupOptions
+) => string | undefined;
+
+/** Per-call options for a {@link RefStateLookup}. */
+export interface RefStateLookupOptions {
+  /**
+   * For a caller with NO redaction bag: keep scanning past a masked leaf and
+   * return a clean value from a later bag when one exists, the mask only when
+   * none does. Without it such a caller gets the first mask it meets, even
+   * beside a clean `attributes` value. Only {@link glueTableRefFromPhysicalId}
+   * passes it, for the `DatabaseName` anchor `cdkd import` records in both
+   * bags (issue #3892). A caller WITH a bag already skips masks; unchanged.
+   */
+  readonly preferCleanValue?: boolean;
+}
 
 /**
  * Build a {@link RefStateLookup} from a resource's stored state maps, checking
@@ -553,7 +549,10 @@ export function refStateLookupFromResource(
   },
   onMaskedValue?: (key: string) => void
 ): RefStateLookup {
-  return (keys) => {
+  return (keys, options) => {
+    // Only for a caller with no bag that asked for it: the first mask seen,
+    // returned if no clean value follows.
+    let deferredMask: string | undefined;
     // THE KEY AND ITS NOTIFIER ARE RECORDED TOGETHER, so the invariant is
     // type-level rather than a comment: a skipped mask exists only where there
     // is a callback to report it to. An earlier revision kept a bare
@@ -573,7 +572,11 @@ export function refStateLookupFromResource(
             // A caller that passed no `onMaskedValue` gets `main`'s behaviour
             // byte for byte: the mask is RETURNED, four readers recognise it,
             // and this function has changed nothing for them.
-            if (onMaskedValue === undefined) return value;
+            if (onMaskedValue === undefined) {
+              if (options?.preferCleanValue !== true) return value;
+              deferredMask ??= value;
+              continue;
+            }
             masked ??= { key, notify: onMaskedValue };
             continue;
           }
@@ -581,9 +584,70 @@ export function refStateLookupFromResource(
         }
       }
     }
+    if (deferredMask !== undefined) return deferredMask;
     if (masked !== undefined) masked.notify(masked.key);
     return undefined;
   };
+}
+
+/**
+ * The `Ref` value of an `AWS::Glue::Table` — its table name — from cdkd's
+ * `<databaseName>|<tableName>` physical id, or `undefined` for a pipe-free id
+ * (which the caller passes through unchanged).
+ *
+ * EITHER name may contain `|` (a table name since issue #1672, a database name
+ * since #3892; AWS accepts both and CloudFormation manages such tables), so
+ * neither after-LAST-pipe nor a bare split can find it: `mydb|a|b` is table
+ * `a|b`, `x|y|t` in database `x|y` is table `t`. The id is read the way
+ * `GlueProvider`'s decode sites read it (`decodeTableId`), so a `{Ref}` names
+ * the table they address:
+ *
+ * 1. With more than one `|`, anchor on the `DatabaseName` recorded in state
+ *    (`properties`, then `attributes`) — the table name is everything after
+ *    `<DatabaseName>|`. Every current writer records it: `createTable` in
+ *    `properties`, resolved; `importTable` also in `attributes`, for a record
+ *    whose `properties` keep an unresolved intrinsic.
+ * 2. Otherwise everything after the FIRST `|`. For a two-segment id that is
+ *    exact, and a two-segment id never consults state, so an ordinary table's
+ *    `Ref` reads nothing but its id, as it always has. For a longer id it is a
+ *    guess, reached only by a record no current writer produces (an older
+ *    binary's import or replay, or a hand edit) — where the decode sites SKIP
+ *    the same record loudly, so the stack is already flagged.
+ *
+ * A MASKED `DatabaseName` in step 1 is handled as for every state-recovered
+ * `Ref`: with database names allowed to carry `|`, the step 2 fallback can no
+ * longer be trusted for a longer id. A caller with a redaction bag gets a
+ * redacted read reported (the deploy or output refuses); a caller without one
+ * gets the MASK itself back, which its downstream readers recognise — never
+ * the guess, which they would not.
+ *
+ * The lookup returns the first string `DatabaseName` it meets (`properties`,
+ * then `attributes`), so an anchor that does not prefix the id ends the search
+ * there; the decode sites try each bag instead. A `DatabaseName` that does not
+ * prefix the id is recorded by `cdkd import`'s two-segment composite reading
+ * (`a|b` beside a template `DatabaseName` of `x`); such an id has one `|`, so
+ * step 1 never runs for it and both readers take `b`.
+ */
+export function glueTableRefFromPhysicalId(
+  physicalId: string,
+  stateLookup?: RefStateLookup
+): string | undefined {
+  const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
+  if (firstPipe < 0) return undefined;
+  if (physicalId.includes(COMPOSITE_ID_SEPARATOR, firstPipe + 1) && stateLookup) {
+    // `preferCleanValue`: an imported record can carry a masked property beside
+    // a clean `attributes.DatabaseName` (issue #3892); the clean one anchors.
+    const anchor = stateLookup(['DatabaseName'], { preferCleanValue: true });
+    // A caller with no redaction bag gets the MASK back from the lookup (the
+    // lookup's opt-in). Serve it rather than the first-`|` guess: the mask is
+    // what `refuseMaskedReplayBaseline`, `cdkd export`'s blocker and drift
+    // recognise, while a guess — wrong for a database name carrying `|` —
+    // passes all of them.
+    if (anchor !== undefined && carriesSecretMask(anchor)) return anchor;
+    const tableName = segmentAfterAnchor(physicalId, anchor);
+    if (tableName !== undefined) return tableName;
+  }
+  return physicalId.substring(firstPipe + 1);
 }
 
 /**
@@ -599,7 +663,9 @@ export function refStateLookupFromResource(
  * in a UUID (not the table name CFn `Ref` returns), so the name is read from
  * the stored `TableName` property/attribute instead (issue #974) — and, since
  * issue #1681, the {@link REF_RETURNS_ARN_FROM_STATE} types, whose `Ref` is an
- * ARN that is no segment of their compound id.
+ * ARN that is no segment of their compound id — and, since issue #1672,
+ * `AWS::Glue::Table`, whose recorded `DatabaseName` places a table name that
+ * contains `|` ({@link glueTableRefFromPhysicalId}).
  */
 export function cfnRefValueFromPhysicalId(
   resourceType: string,
@@ -621,6 +687,14 @@ export function cfnRefValueFromPhysicalId(
   if (resourceType === 'AWS::S3Tables::Table' && !physicalId.includes('|') && stateLookup) {
     const tableName = stateLookup(['TableName', 'Name']);
     if (tableName) {
+      return tableName;
+    }
+  }
+  // AWS::Glue::Table: the table name, which may itself contain `|` (issue
+  // #1672) — see the helper for why no generic Set can extract it.
+  if (resourceType === 'AWS::Glue::Table') {
+    const tableName = glueTableRefFromPhysicalId(physicalId, stateLookup);
+    if (tableName !== undefined) {
       return tableName;
     }
   }
@@ -4536,6 +4610,42 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Is `logicalId` a name CloudFormation never resolves to a resource (issue
+   * #3916)? A template cannot declare one logical id as both a Parameter and a
+   * Resource, and `Ref` to a declared Parameter always yields its value. So a
+   * state record keyed by such a name is planted or stale, and answering from
+   * it let state pick a parameter's value: the value deploy sends to AWS, and
+   * the one nested `cdkd export` both submits and checks IAM principals with.
+   *
+   * - A parameter is one the TEMPLATE declares, or one the caller BOUND that
+   *   the template does not declare as a Resource. Value-applying callers
+   *   (deploy, import, scrub, export) bind declared names only; `cdkd diff
+   *   --recursive` also keeps a parent's raw nested inputs for names the child
+   *   does not declare, and such an input must not hide a child resource.
+   * - A pseudo-parameter name (`AWS::` prefix, which no logical id can carry)
+   *   is kept away from state for the same reason.
+   * - Deliberately NOT "only names `template.Resources` declares": several
+   *   callers pass state records for a template that does not list them (an
+   *   empty `Resources` beside a populated bag), and that is covered behaviour.
+   */
+  private nameIsNeverAResource(logicalId: string, context: ResolverContext): boolean {
+    if (logicalId.startsWith('AWS::')) return true;
+    // `!= null` and `typeof`: a YAML `Parameters:` with an empty body parses
+    // to `null`, and `Object.hasOwn(null, k)` throws.
+    const declared: unknown = context.template?.Parameters;
+    if (declared != null && typeof declared === 'object' && Object.hasOwn(declared, logicalId)) {
+      return true;
+    }
+    if (context.parameters == null || !Object.hasOwn(context.parameters, logicalId)) return false;
+    const resources: unknown = context.template?.Resources;
+    return !(
+      resources != null &&
+      typeof resources === 'object' &&
+      Object.hasOwn(resources, logicalId)
+    );
+  }
+
+  /**
    * The ONE read of a state record by logical id, shared by `Ref` and
    * `Fn::GetAtt` (the only two arms that take a record out of
    * `context.resources`; every other method receives it from them).
@@ -4550,12 +4660,22 @@ export class IntrinsicFunctionResolver {
    *   a record, so no answer derived from it is honest. `markNonRetryable`:
    *   the verdict is a function of the persisted record, and the message
    *   carries a template-controlled id. A NULL record keeps missing as before.
+   * - A PARAMETER or pseudo-parameter name is never answered from state
+   *   (issue #3916): see {@link nameIsNeverAResource}.
    */
   private lookupResourceRecord(
     logicalId: string,
     via: 'Ref' | 'Fn::GetAtt',
     context: ResolverContext
   ): ResourceState | undefined {
+    if (this.nameIsNeverAResource(logicalId, context)) {
+      if (Object.hasOwn(context.resources, logicalId)) {
+        this.logger.debug(
+          safeMsg`Ignoring the state record named ${this.displayMasked(logicalId, context)}: that name is a parameter, not a resource`
+        );
+      }
+      return undefined;
+    }
     const resource = Object.hasOwn(context.resources, logicalId)
       ? context.resources[logicalId]
       : undefined;
@@ -4592,6 +4712,9 @@ export class IntrinsicFunctionResolver {
    * 1. Resources (returns physical ID)
    * 2. Parameters (returns parameter value)
    * 3. Pseudo parameters (AWS::Region, AWS::AccountId, etc.)
+   *
+   * A parameter or pseudo-parameter name never reaches arm 1, whatever state
+   * holds under that name (issue #3916, `nameIsNeverAResource`).
    */
   private async resolveRef(logicalId: string, context: ResolverContext): Promise<unknown> {
     // `Object.hasOwn`, not a bare property read (issue #2767). `logicalId` is
@@ -4764,9 +4887,10 @@ export class IntrinsicFunctionResolver {
    * segment. Most are compound because Cloud Control provisions them (either
    * they have no SDK provider, or the #614 silent-drop routing sent an
    * SDK-backed type through CC) and its primaryIdentifier is compound; the rest
-   * — `AWS::S3Tables::Namespace` / `::Table` and `AWS::Glue::Table` — are
-   * compound because their own SDK provider packs the segments. The Set's
-   * header records the split per type; examples:
+   * — `AWS::S3Tables::Namespace` / `::Table` — are compound because their own
+   * SDK provider packs the segments. (`AWS::Glue::Table` builds one too, but
+   * takes {@link glueTableRefFromPhysicalId}: either of its segments may
+   * contain `|`.) The Set's header records the split per type; examples:
    *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
    *     `<restApiId>|<modelName>`. A method wiring
    *     `RequestModels: { "application/json": { "Ref": <Model> } }` would
@@ -4888,8 +5012,8 @@ export class IntrinsicFunctionResolver {
    *
    * `key` is never masked before interpolation because it is not template text:
    * it comes from the fixed key lists `cfnRefValueFromPhysicalId` passes
-   * (`TableName` / `Name` / `SelectionId` / `RepositoryId` / the AppSync ARN
-   * attributes), all cdkd literals.
+   * (`TableName` / `Name` / `DatabaseName` / `SelectionId` / `RepositoryId` /
+   * the AppSync ARN attributes), all cdkd literals.
    */
   private noteRefStateMask(logicalId: string, key: string, context: ResolverContext): void {
     this.pushRedactedAttributeRead(context, {
@@ -5327,6 +5451,45 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Values state already holds in the clear that a `NoEcho` handler can echo
+   * back (go-to-k/cdkd#2453): the region, the stack name, and — for a named
+   * producer — its `ServiceToken` plus each `:`-separated segment of it (the
+   * account id, the function name) and every literal string of its template
+   * `Properties`. {@link recordFreshNoEchoValuesIn} keeps a
+   * value EQUAL to one of them out of the containment arm, so an echoed region
+   * or account id does not flatten every ARN of the reading resource.
+   */
+  private publicNoEchoTokens(context: ResolverContext, producer?: string): ReadonlySet<string> {
+    const tokens = new Set<string>([this.resolverRegion]);
+    if (context.stackName !== undefined) tokens.add(context.stackName);
+    const serviceToken =
+      producer === undefined || !Object.hasOwn(context.resources, producer)
+        ? undefined
+        : context.resources[producer]?.properties?.['ServiceToken'];
+    if (typeof serviceToken === 'string') {
+      tokens.add(serviceToken);
+      for (const segment of serviceToken.split(':')) tokens.add(segment);
+    }
+    // The producer's LITERAL template inputs: a handler echoing
+    // `event.ResourceProperties` returns them verbatim, and the template is
+    // public. A literal carrying a `{{resolve:` is skipped: what the handler
+    // saw was its resolved secret, not this text.
+    const resources = context.template.Resources ?? {};
+    if (producer !== undefined && Object.hasOwn(resources, producer)) {
+      const walk = (node: unknown): void => {
+        if (typeof node === 'string') {
+          if (!node.includes('{{resolve:')) tokens.add(node);
+          return;
+        }
+        if (node === null || typeof node !== 'object') return;
+        for (const child of Object.values(node as Record<string, unknown>)) walk(child);
+      };
+      walk(resources[producer]?.Properties);
+    }
+    return tokens;
+  }
+
+  /**
    * Note what SECRECY the attribute just read carries, then hand it back
    * UNCHANGED (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
    *
@@ -5388,7 +5551,12 @@ export class IntrinsicFunctionResolver {
       declared === true || (declared !== undefined && declared.has(attributeName));
     if (attributeIsDeclared && context.recordedSecretValues) {
       // FRESH (go-to-k/cdkd#3662): declared by a provider in THIS deploy.
-      recordFreshNoEchoValuesIn(value, context.recordedSecretValues);
+      recordFreshNoEchoValuesIn(
+        value,
+        context.recordedSecretValues,
+        undefined,
+        this.publicNoEchoTokens(context, logicalId)
+      );
     }
     // The bag test stays HERE as well as inside `pushRedactedAttributeRead`:
     // a bagless context (the diff / no-op resolver, `cdkd scrub`, `cdkd
@@ -7650,7 +7818,11 @@ export class IntrinsicFunctionResolver {
     const firstDot = varName.indexOf('.');
     const head = firstDot >= 0 ? varName.slice(0, firstDot) : varName;
     if (head === '') return false;
-    if (Object.hasOwn(context.resources, head)) return true;
+    // Not for a parameter or pseudo-parameter name (issue #3916): a record
+    // planted under it must not decide refuse-vs-warn either.
+    if (!this.nameIsNeverAResource(head, context) && Object.hasOwn(context.resources, head)) {
+      return true;
+    }
     const declared = context.template?.Resources;
     if (declared !== undefined && declared !== null && typeof declared === 'object') {
       if (Object.hasOwn(declared, head)) return true;
@@ -8784,7 +8956,19 @@ export class IntrinsicFunctionResolver {
       if (recovered !== undefined) {
         if (context.recordedSecretValues) {
           // FRESH (go-to-k/cdkd#3662): a value this process masked this run.
-          recordFreshNoEchoValuesIn(recovered, context.recordedSecretValues);
+          // No producer record here, so only the regions and the stack names:
+          // an echoed account id still flattens (fail-closed).
+          const publicTokens = new Set(this.publicNoEchoTokens(context));
+          if (producerOutput !== undefined) {
+            publicTokens.add(producerOutput.stackName);
+            publicTokens.add(producerOutput.region);
+          }
+          recordFreshNoEchoValuesIn(
+            recovered,
+            context.recordedSecretValues,
+            undefined,
+            publicTokens
+          );
         }
         return recovered;
       }
@@ -10846,7 +11030,9 @@ export class IntrinsicFunctionResolver {
       (inputLogText !== resolvedValue ||
         this.maskNeedlesForLog(resolvedValue, context) !== resolvedValue)
     ) {
-      recordMaskOnlyValue(context.recordedSecretValues, result);
+      // DERIVED, so a leaf EMBEDDING the encoding is masked whole too
+      // (go-to-k/cdkd#2453).
+      recordDerivedMaskOnlyValue(context.recordedSecretValues, result);
       // The encoding of a FRESH `NoEcho` value is fresh too (go-to-k/cdkd#3662),
       // or a Base64 consumer of a re-minted token would be skipped as
       // `***` == `***`. The encoding of an ordinary secret is NOT: its record

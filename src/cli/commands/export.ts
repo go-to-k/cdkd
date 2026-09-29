@@ -4,6 +4,7 @@ import {
   pasteableCommand,
   type CommandArg,
   type PasteableCommand,
+  type WithholdReason,
 } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -14,6 +15,7 @@ import {
   displayIdent,
   displaySafe,
   isPasteableIdent,
+  safeMsg,
   truncateCodePoints,
 } from '../../utils/display-safe.js';
 import {
@@ -21,7 +23,7 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
-import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
+import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 import {
   hasReadableResources,
   isReadableResourceEntry,
@@ -66,7 +68,10 @@ import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.js';
-import { readRecordedPrincipals } from '../../provisioning/iam-policy-targets.js';
+import {
+  IAM_PRINCIPAL_NAME,
+  readRecordedPrincipals,
+} from '../../provisioning/iam-policy-targets.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -2281,6 +2286,37 @@ function importRepairCommand(logicalId: string): string {
 }
 
 /**
+ * The `Repair with:` command for a record that differs from the template the
+ * way an undeployed template change leaves it (go-to-k/cdkd#3910): a deploy
+ * converges AWS AND the record to the template, which a re-import cannot — it
+ * rewrites the record only, leaving the old attachment in AWS unmanaged.
+ * The stack is a quoted hole, never a record-derived name.
+ */
+function deployRepairCommand(stackName?: string): string {
+  return pasteableCommand('cdkd deploy', [repairStackArg(stackName)]).command;
+}
+
+/**
+ * The read-only diff that goes FIRST, ahead of {@link deployRepairCommand}
+ * (go-to-k/cdkd#3910): it shows the detach the deploy would perform.
+ */
+function diffCheckCommand(stackName?: string): string {
+  return pasteableCommand('cdkd diff', [repairStackArg(stackName)]).command;
+}
+
+/**
+ * The stack argument of a repair command: the ROOT stack the operator named
+ * or synthesized, since `cdkd deploy` / `cdkd diff` take an app stack, never a
+ * nested child's minted `Root~Child` name. Gated as a plain identifier; a
+ * value the gate refuses prints as the quoted hole.
+ */
+function repairStackArg(stackName: string | undefined): CommandArg {
+  return stackName === undefined
+    ? { hole: 'stack' }
+    : { value: stackName, hole: 'stack', opts: { plainIdent: true } };
+}
+
+/**
  * Build the {@link CompositePhysicalIdIdentifier} for a type whose CFn
  * identifier is an ARN cdkd records in `attributes` under the SAME name as the
  * `primaryIdentifier` field.
@@ -2467,6 +2503,20 @@ export interface RecreateBeforePhase2Entry {
   physicalId: string;
   /** cdkd state's recorded properties — supplies parent identifiers (ApiId, etc.) to the SDK delete call. */
   properties: Record<string, unknown>;
+  /**
+   * For an `AWS::IAM::Policy`: the recorded principals the pre-delete detaches
+   * that the template names only through a value cdkd cannot resolve, so it
+   * cannot confirm phase 2 re-attaches them (go-to-k/cdkd#3910). Every other
+   * recorded principal IS a template principal: `buildImportPlan` blocks one
+   * that is not.
+   */
+  unconfirmedPrincipals?: Array<{ kind: 'role' | 'user' | 'group'; name: string }>;
+  /**
+   * For an `AWS::IAM::Policy`: the template's `PolicyName` is not a literal,
+   * so cdkd cannot confirm phase 2 re-creates the policy under the recorded
+   * name (go-to-k/cdkd#3910).
+   */
+  policyNameUnconfirmed?: boolean;
 }
 
 /**
@@ -2841,6 +2891,10 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       await buildImportPlan(state, template, awsClients.cloudFormation, resolvedStackName, {
         recreateImportUnsupported: options.recreateImportUnsupported,
         skipImportSupportPreflight: options.skipImportSupportPreflight,
+        rootStackName: resolvedStackName,
+        // The same resolution the changeset's parameters come from below.
+        parameterValues: rootParameterValues(template, options.parameter),
+        parametersFromCli: true,
         // Consulted only for a row cdkd state cannot answer for (issue #1791).
         // Same client family as `awsClients.cloudFormation` above, so the
         // region assumption is the one the whole command already makes.
@@ -2859,9 +2913,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       }
       throw new Error(
         `${new Set(blocked.map((b) => b.logicalId)).size} resource(s) block migration. ` +
-          `Either destroy them first ` +
-          `(cdkd destroy / cdkd state destroy cherry-picked), or remove them from the ` +
-          `CDK app and re-synthesize.`
+          blockedMigrationTail(blocked)
       );
     }
 
@@ -3063,9 +3115,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         logger.info(
           '  Brief unavailability window per type (~10s for Stage; HttpApi endpoint URL ' +
             'is unchanged because it embeds ApiId, not StageName. IAM::Policy: the inline ' +
-            'policy attachment is dropped from each Role/User/Group between phases — any ' +
+            'policy is removed from each listed Role/User/Group between phases — any ' +
             'in-flight AWS API call that depends on the granted permission will fail until ' +
-            'CFn re-CREATEs in phase 2). Pass --no-recreate-import-unsupported to block instead.'
+            'CFn re-CREATEs it in phase 2 from the template, whose principals cdkd has checked ' +
+            'against the listed ones; a principal it could not confirm is marked). Pass ' +
+            '--no-recreate-import-unsupported to block instead.'
         );
         logger.info('');
       }
@@ -3279,6 +3333,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             logger.info(`  ${preDeletedLine(entry.physicalId)}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
+            const orphan = orphanCommandFor(resolvedStackName, targetRegion);
             throw new Error(
               `Phase 1 (IMPORT) succeeded; pre-delete of ${entry.logicalId} ` +
                 `(${entry.resourceType}, physicalId: ${showRecordValue(entry.physicalId)}) failed: ` +
@@ -3289,16 +3344,19 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                 `\`cdkd export\` does NOT work — the existing-stack check rejects it. ` +
                 `To recover manually:\n` +
                 `  1. Fix the failure cause (typically IAM permissions for the underlying ` +
-                `     AWS API — e.g. apigatewayv2:DeleteStage for AWS::ApiGatewayV2::Stage).\n` +
+                `AWS API — apigatewayv2:DeleteStage for a Stage, iam:Delete{Role,User,Group}Policy ` +
+                `for an inline policy).\n` +
                 `  2. Delete the remaining AWS-side IMPORT-unsupported resources by hand:\n` +
-                `       aws apigatewayv2 delete-stage --api-id <ApiId> --stage-name <StageName>\n` +
+                preDeleteManualCommands(recreateBeforePhase2)
+                  .map((line) => `       ${line}\n`)
+                  .join('') +
                 `     (one per entry in the pre-delete list logged above).\n` +
                 `  3. Run the phase-2 UPDATE manually with the full synth template:\n` +
                 `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
                 `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
                 `         --template-body file://<full-template.json>\n` +
-                `  4. Once phase 2 succeeds, run: ${orphanCommandFor(resolvedStackName, targetRegion)}\n` +
-                `     to clean up cdkd's stale state record.`
+                `  4. Once phase 2 succeeds, clean up cdkd's stale state record.${orphan.note}\n` +
+                `     Run: ${orphan.command}`
             );
           }
         }
@@ -3346,8 +3404,9 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                 `phase 2 (Stage etc.). They are gone in AWS but absent from the CFn stack. ` +
                 `Running phase 2 UPDATE manually will CFn-CREATE them fresh.\n`
               : '';
+          const orphan = orphanCommandFor(resolvedStackName, targetRegion);
           throw new Error(
-            `Phase 1 (IMPORT) succeeded; phase 2 (UPDATE) failed: ${msg}\n\n` +
+            `Phase 1 (IMPORT) succeeded; phase 2 (UPDATE) failed: ${displayAwsMessage(msg)}\n\n` +
               `The CloudFormation stack '${cfnStackName}' now contains the imported ` +
               `resources but is missing ${phase2Count} resource(s) (${phase2Creates.length} ` +
               `Custom Resource(s) + ${recreateBeforePhase2.length} IMPORT-unsupported). ` +
@@ -3360,8 +3419,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
               `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
               `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
               `         --template-body file://<full-template.json>\n` +
-              `  3. Once phase 2 succeeds, run: ${orphanCommandFor(resolvedStackName, targetRegion)}\n` +
-              `     to clean up cdkd's stale state record.`
+              `  3. Once phase 2 succeeds, clean up cdkd's stale state record.${orphan.note}\n` +
+              `     Run: ${orphan.command}`
           );
         }
       }
@@ -3506,13 +3565,28 @@ interface BlockedResource {
   reason: string;
   /**
    * The gated command a `Repair with:` line runs, built only by
-   * `importRepairCommand`. It travels OUTSIDE `reason` because
+   * `importRepairCommand` or `deployRepairCommand`. It travels OUTSIDE `reason` because
    * `groupBlockedReasons` folds every control character out of a reason, so
    * no NEWLINE in an interpolated value can start a line; the one labelled
    * line a row may carry is the renderer's own (go-to-k/cdkd#3736). Padding
    * that wraps on screen inside a reason is go-to-k/cdkd#3760's.
    */
   repair?: string;
+  /**
+   * The reason names its own check and NO command is safe to suggest: the
+   * generic "destroy them first, or remove them from the CDK app" must not be
+   * said of this row either, since a destroy or a removal deploy performs the
+   * very operation the row refuses (go-to-k/cdkd#3910). Rendered by
+   * {@link blockedMigrationTail}.
+   */
+  manual?: true;
+  /**
+   * A read-only command to run BEFORE `repair`, rendered as its own labelled
+   * `Check first with:` line ahead of `Repair with:` (go-to-k/cdkd#3910): the
+   * deploy repair performs the same detach the row refuses, so the diff that
+   * shows it comes first.
+   */
+  checkFirst?: string;
 }
 
 /**
@@ -3759,9 +3833,6 @@ export function preDeletedLine(physicalId: unknown): string {
   return `✓ deleted ${showRecordValue(physicalId)}`;
 }
 
-/** The most detach targets {@link preDeleteListingLines} names per kind. */
-const DETACH_TARGETS_SHOWN = 20;
-
 /** What {@link policyDetachTargets} returns for a policy it will act on. */
 interface PolicyDetachTargets {
   policyName: string;
@@ -3779,7 +3850,10 @@ interface PolicyDetachTargets {
  *
  * The physicalId is the bare policy name (SDK provider format) or the legacy
  * `policyName:roleName` (Cloud Control, pre-SDK-provider state); the SDK
- * provider's own delete takes the first segment, and so does this.
+ * provider's own delete takes the first segment, and so does this. When the
+ * record carries NO principal list at all, the legacy id's second segment is
+ * the role, exactly as `IAMPolicyProvider.delete` reads it, provided it is an
+ * IAM name (go-to-k/cdkd#3910).
  *
  * Each of `Roles` / `Users` / `Groups` is read by `readRecordedPrincipals`
  * (`src/provisioning/iam-policy-targets.ts`), the reader
@@ -3794,9 +3868,11 @@ function policyDetachTargets(
   if (!policyName) {
     return { refusal: 'its physicalId names no policy' };
   }
+  let allAbsent = true;
   const read = (key: 'Roles' | 'Users' | 'Groups'): string[] | { refusal: string } => {
     const recorded = readRecordedPrincipals(entry.properties[key]);
     if (recorded.kind === 'absent') return [];
+    allAbsent = false;
     if (recorded.kind === 'malformed') {
       return {
         refusal:
@@ -3812,30 +3888,270 @@ function policyDetachTargets(
   if ('refusal' in users) return users;
   const groups = read('Groups');
   if ('refusal' in groups) return groups;
+  const legacyRole = physicalId.includes(':') ? physicalId.split(':')[1] : undefined;
+  if (allAbsent && legacyRole !== undefined && IAM_PRINCIPAL_NAME.test(legacyRole)) {
+    return { policyName, roles: [legacyRole], users: [], groups: [] };
+  }
   if (roles.length + users.length + groups.length === 0) {
     return {
       refusal:
         // Not 'cdkd state refresh-observed': that command rewrites only
         // `observedProperties`, never the `properties` this reads.
-        'no Roles/Users/Groups attachment is recorded. State may be from a pre-v0.74 cdkd ' +
-        "binary; record the policy's Roles, Users or Groups in its cdkd state record, then " +
-        're-run cdkd export',
+        'no Roles/Users/Groups attachment is recorded (state may be from a pre-v0.74 cdkd ' +
+        'binary), so there is nothing to remove it from; re-import the policy so its record ' +
+        'carries the principals the template names',
     };
   }
   return { policyName, roles, users, groups };
 }
 
+const PRINCIPAL_KINDS = [
+  {
+    key: 'Roles',
+    label: 'role',
+    type: 'AWS::IAM::Role',
+    pick: (t: PolicyDetachTargets) => t.roles,
+  },
+  {
+    key: 'Users',
+    label: 'user',
+    type: 'AWS::IAM::User',
+    pick: (t: PolicyDetachTargets) => t.users,
+  },
+  {
+    key: 'Groups',
+    label: 'group',
+    type: 'AWS::IAM::Group',
+    pick: (t: PolicyDetachTargets) => t.groups,
+  },
+] as const;
+
+/**
+ * The most principals one `AWS::IAM::Policy` pre-delete may name before the
+ * plan refuses to list them (go-to-k/cdkd#3910). Every name is printed — none
+ * is summarised as a count — so a record listing thousands would push the
+ * rest of the plan off screen; such a record is blocked instead. Far above
+ * what a CDK grant produces (one principal).
+ */
+const MAX_DETACH_PRINCIPALS = 100;
+
+/** How {@link policyTemplateCheck} says a policy may not be exported as it stands. */
+interface PolicyTemplateBlock {
+  blocked: string;
+  /**
+   * `deploy`: the record differs from the template, which is what an
+   * undeployed template change leaves, and a deploy converges AWS and the
+   * record — a re-import would rewrite only the record and leave the old
+   * attachment in AWS, unmanaged. `import`: the record's shape, not AWS, is
+   * wrong.
+   */
+  remedy: 'deploy' | 'import' | 'manual';
+  /** The template value compared came from a Parameter. */
+  throughParameter?: boolean;
+}
+
+/** What {@link policyTemplateCheck} returns for a policy that may proceed. */
+interface PolicyTemplatePass {
+  unconfirmed: Array<{ kind: 'role' | 'user' | 'group'; name: string }>;
+  /** The template's `PolicyName` is not a literal, so the name cannot be compared. */
+  nameUnconfirmed: boolean;
+}
+
+/**
+ * Compare an `AWS::IAM::Policy`'s pre-delete against what phase 2 puts back
+ * (go-to-k/cdkd#3910). The pre-delete removes the policy from the RECORDED
+ * principals; phase 2 re-CREATEs it from the TEMPLATE. A recorded principal
+ * the template does not name therefore loses the policy for good, and a
+ * recorded policy name the template does not carry is removed while phase 2
+ * attaches a differently named one — neither is the brief window the plan
+ * describes, so both block the export.
+ *
+ * A template principal is a literal name, or a `Ref` to a logical id that is
+ * a RESOURCE of the matching type in this template AND that this stack's
+ * cdkd state records (its physical id IS the name). Requiring the template
+ * resource matters: a record can carry an entry whose key is a template
+ * PARAMETER's name, and resolving a parameter `Ref` from state would confirm
+ * a principal the parameter does not name. Anything else (`Fn::ImportValue`,
+ * `Fn::GetAtt`, a parameter `Ref`, a non-list value) cannot be resolved here:
+ * a recorded principal of that kind is returned as UNCONFIRMED and marked in
+ * the plan rather than blocked, since refusing every such template would
+ * refuse legitimate ones. A non-literal `PolicyName` is marked the same way.
+ */
+function policyTemplateCheck(
+  targets: PolicyDetachTargets,
+  templateProperties: unknown,
+  recordedProperties: Record<string, unknown>,
+  templateResources: Record<string, unknown>,
+  stateResources: StackState['resources'],
+  templateParameters: unknown,
+  parameterValues: Record<string, string>
+): PolicyTemplateBlock | PolicyTemplatePass {
+  const declaredParameters =
+    templateParameters &&
+    typeof templateParameters === 'object' &&
+    !Array.isArray(templateParameters)
+      ? (templateParameters as Record<string, unknown>)
+      : {};
+  // A `Ref` to one of THIS template's Parameters, read from the values this
+  // stack's changeset submits. Only a DECLARED parameter counts: a submitted
+  // key the template does not declare is not what the `Ref` names. A
+  // list-typed parameter is split on commas, as CloudFormation does.
+  const parameterRef = (el: unknown): string[] | undefined => {
+    const ref =
+      el && typeof el === 'object' && !Array.isArray(el)
+        ? (el as Record<string, unknown>)['Ref']
+        : undefined;
+    if (typeof ref !== 'string' || !Object.hasOwn(declaredParameters, ref)) return undefined;
+    if (!Object.hasOwn(parameterValues, ref)) return undefined;
+    const value = parameterValues[ref]!;
+    const type = (declaredParameters[ref] as { Type?: unknown } | undefined)?.Type;
+    // An SSM-typed parameter's value is the SSM parameter's NAME; CloudFormation
+    // substitutes the stored value, which cdkd does not read here.
+    if (isSsmParameterType(type)) return undefined;
+    const isList =
+      typeof type === 'string' && (type === 'CommaDelimitedList' || type.startsWith('List<'));
+    return isList ? value.split(',').map((v) => v.trim()) : [value];
+  };
+  const total = targets.roles.length + targets.users.length + targets.groups.length;
+  if (total > MAX_DETACH_PRINCIPALS) {
+    return {
+      blocked:
+        `its record removes the policy from ${total} principals, more than the plan lists ` +
+        `(${MAX_DETACH_PRINCIPALS}); check the record and the template against AWS before ` +
+        'exporting',
+      // No command: a re-import records the template's list, which may be as
+      // long; a deploy, a destroy or removing the resource all detach the
+      // policy from every recorded principal, unreviewed — what this refuses.
+      remedy: 'manual',
+    };
+  }
+  const props =
+    templateProperties &&
+    typeof templateProperties === 'object' &&
+    !Array.isArray(templateProperties)
+      ? (templateProperties as Record<string, unknown>)
+      : {};
+  const namedByParameter = parameterRef(props['PolicyName']);
+  const templateName =
+    namedByParameter !== undefined && namedByParameter.length === 1
+      ? namedByParameter[0]
+      : props['PolicyName'];
+  if (typeof templateName === 'string' && templateName !== targets.policyName) {
+    // A record whose physical id is not the policy's name but whose recorded
+    // PolicyName is the template's (a record adopted from CloudFormation can
+    // carry CloudFormation's own id): the RECORD is wrong, not AWS.
+    if (recordedProperties['PolicyName'] === templateName) {
+      return {
+        blocked:
+          `its physical id ${showRecordValue(targets.policyName)} is not the policy's name, ` +
+          `which the record and the template both give as ${showRecordValue(templateName)}; ` +
+          'the pre-delete would target a policy that does not exist and leave the real one ' +
+          'attached',
+        remedy: 'import',
+      };
+    }
+    return {
+      blocked:
+        `its recorded policy name ${showRecordValue(targets.policyName)} is not the template's ` +
+        `PolicyName ${showRecordValue(templateName)}, so phase 2 would create a differently ` +
+        'named policy and the recorded one would be removed for good. This is typically a ' +
+        'template change not yet deployed, and the deploy below removes the recorded policy ' +
+        "too: run the 'Check first with:' diff and confirm it is a policy this app attached " +
+        'before running the deploy',
+      remedy: 'deploy',
+      throughParameter: namedByParameter !== undefined,
+    };
+  }
+  const unconfirmed: Array<{ kind: 'role' | 'user' | 'group'; name: string }> = [];
+  const permanent: string[] = [];
+  let permanentThroughParameter = false;
+  for (const kind of PRINCIPAL_KINDS) {
+    const declared = props[kind.key];
+    const names = new Set<string>();
+    let resolved = true;
+    let usedParameter = false;
+    if (declared !== undefined) {
+      const wholeList = Array.isArray(declared) ? undefined : parameterRef(declared);
+      if (wholeList !== undefined) {
+        // The whole list is one list-typed Parameter cdkd knows.
+        usedParameter = true;
+        for (const n of wholeList) names.add(n);
+      } else if (!Array.isArray(declared)) {
+        resolved = false;
+      } else {
+        for (const el of declared) {
+          if (typeof el === 'string') {
+            names.add(el);
+            continue;
+          }
+          const fromParameter = parameterRef(el);
+          if (fromParameter !== undefined) {
+            usedParameter = true;
+            for (const n of fromParameter) names.add(n);
+            continue;
+          }
+          const ref =
+            el && typeof el === 'object' && !Array.isArray(el)
+              ? (el as Record<string, unknown>)['Ref']
+              : undefined;
+          const templateTarget =
+            typeof ref === 'string' && Object.hasOwn(templateResources, ref)
+              ? (templateResources[ref] as { Type?: unknown } | undefined)
+              : undefined;
+          const recorded =
+            templateTarget?.Type === kind.type &&
+            typeof ref === 'string' &&
+            Object.hasOwn(stateResources, ref)
+              ? stateResources[ref]
+              : undefined;
+          if (recorded?.resourceType === kind.type && typeof recorded.physicalId === 'string') {
+            names.add(recorded.physicalId);
+          } else {
+            resolved = false;
+          }
+        }
+      }
+    }
+    for (const name of kind.pick(targets)) {
+      if (names.has(name)) continue;
+      if (resolved) {
+        permanent.push(`${kind.label} ${showRecordValue(name)}`);
+        if (usedParameter) permanentThroughParameter = true;
+      } else unconfirmed.push({ kind: kind.label, name });
+    }
+  }
+  if (permanent.length > 0) {
+    return {
+      blocked:
+        `its record removes the policy from ${permanent.join(', ')}, which the template does ` +
+        'not name, so phase 2 would not re-attach it there and the pre-delete would remove it ' +
+        'for good. This is typically a template change not yet deployed, and the deploy below ' +
+        "removes the policy from them too: run the 'Check first with:' diff and confirm they " +
+        'are principals this app attached it to before running the deploy',
+      remedy: 'deploy',
+      throughParameter: permanentThroughParameter,
+    };
+  }
+  return {
+    unconfirmed,
+    // No `PolicyName` at all is unconfirmed too: CloudFormation would name the
+    // policy itself, never the recorded name.
+    nameUnconfirmed: typeof templateName !== 'string',
+  };
+}
+
 /**
  * The plan lines for one `recreateBeforePhase2` entry: the resource, and for
- * an `AWS::IAM::Policy` the inline policy and the roles, users and groups its
- * pre-delete removes it from — or why that pre-delete will refuse — from
- * {@link policyDetachTargets}, the handler's own decision (go-to-k/cdkd#3857).
- * The confirmation printed after the plan says to "see plan above" for what
- * cdkd deletes between phases, and these targets come from the state RECORD.
- * Every recorded value goes through {@link showRecordValue}; each kind is
- * capped at {@link DETACH_TARGETS_SHOWN} names with the rest counted. Shared
- * by the single-stack plan and the nested-tree summary. Exported for the unit
- * cases.
+ * an `AWS::IAM::Policy` the inline policy and EVERY role, user and group its
+ * pre-delete removes it from, from {@link policyDetachTargets}, the handler's
+ * own decision (go-to-k/cdkd#3857). The confirmation printed after the plan
+ * says to "see plan above" for what cdkd deletes between phases, and these
+ * targets come from the state RECORD, so none is summarised as a count
+ * (go-to-k/cdkd#3910): each is an IAM name of at most 128 characters, so the
+ * line stays bounded by the record's own list. A principal phase 2 cannot be
+ * confirmed to re-attach gets its own line. Every recorded value goes through
+ * {@link showRecordValue}. Shared by the single-stack plan and the nested-tree
+ * summary. Exported for the unit cases.
  */
 export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[] {
   const head =
@@ -3843,6 +4159,9 @@ export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[
     showRecordValue(entry.physicalId);
   if (entry.resourceType !== 'AWS::IAM::Policy') return [head];
   const targets = policyDetachTargets(entry);
+  // UNREACHABLE from both callers: `buildImportPlan` blocks a refusing policy
+  // instead of queuing it, so neither plan ever reaches this arm. Kept so the
+  // helper stays total for a direct caller and its unit cases.
   if ('refusal' in targets) return [head, `  the pre-delete will refuse: ${targets.refusal}`];
   const parts: string[] = [];
   for (const [label, names] of [
@@ -3851,14 +4170,27 @@ export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[
     ['groups', targets.groups],
   ] as const) {
     if (names.length === 0) continue;
-    const shown = names.slice(0, DETACH_TARGETS_SHOWN).map((v) => showRecordValue(v));
-    const more = names.length - shown.length;
-    parts.push(`${label}: ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}`);
+    parts.push(`${label}: ${names.map((v) => showRecordValue(v)).join(', ')}`);
   }
-  return [
+  const lines = [
     head,
     `  removes inline policy ${showRecordValue(targets.policyName)} from ${parts.join('; ')}`,
   ];
+  if (entry.policyNameUnconfirmed) {
+    lines.push(
+      `  phase 2 cannot be confirmed to re-create it as ${showRecordValue(targets.policyName)}: ` +
+        "the template's PolicyName is not a literal, so a differently named policy may replace " +
+        'it and this one would be removed for good'
+    );
+  }
+  if (entry.unconfirmedPrincipals && entry.unconfirmedPrincipals.length > 0) {
+    lines.push(
+      '  phase 2 cannot be confirmed to re-attach it to ' +
+        entry.unconfirmedPrincipals.map((p) => `${p.kind} ${showRecordValue(p.name)}`).join(', ') +
+        ': the template names its principals through a value cdkd cannot resolve'
+    );
+  }
+  return lines;
 }
 
 /**
@@ -3878,44 +4210,136 @@ export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[
  * sanitize THEN shell-quote, and gate the substituted form on the identity
  * rendering exactly — `displaySafe` TRIMS, so a name ending in a space renders
  * byte-identically to a healthy sibling, and `state orphan` DELETES a record.
- * Every caller emits the result LAST and unwrapped so the quoting composes; that
- * is an instruction to the CALLER and must not leak into the message it builds.
+ * Every caller emits the command unwrapped on a line of its own so the quoting
+ * composes (the layout is spelled out below); that is an instruction to the
+ * CALLER and must not leak into the message it builds.
  *
  * `region` is REQUIRED even though the flag is optional on the command: omitting
  * `--stack-region` makes `state orphan` drop the record for that name in EVERY
  * region, which is wider than any of these messages describes. A helper whose
  * job is to make a destructive suggestion safe should not have an arm that
  * widens one.
+ *
+ * Built through the shared `pasteableCommand` gate (go-to-k/cdkd#3436), which
+ * this function used to copy by hand — sanitize-and-compare against the raw
+ * value, the stack-ref cap, and the leading-`-` refusal a record named
+ * `--state-bucket=attacker` needs, since the shell strips `shellQuote`'s quotes
+ * and Commander parses that argv entry as the FLAG.
+ *
+ * A withheld value names NO target, both holes rather than one: the identity
+ * the message printed above may not be this record's. `note` says why, from
+ * the gate's own reasons, and each caller puts it on the line ABOVE the
+ * command, which is unwrapped on a line of its own — labelled and last in the
+ * single-command messages, one per line in the nested-export tail's list. On
+ * the same line as a sentence, an apostrophe in that sentence (`the parent's
+ * record`) flips the shell quote so a pasted `'x; touch OWNED; #'` runs
+ * (go-to-k/cdkd#3436's shape C, measured by this change's paste case).
  */
-function orphanCommandFor(stackName: unknown, region: unknown): string {
-  const shownStack = safeSegment(stackName);
-  // Compared against the RAW values, and `typeof`-guarded first so a non-string
-  // — which `safeSegment` renders but no comparison can match — fails CLOSED.
-  const exact =
-    typeof stackName === 'string' &&
-    shownStack === stackName &&
-    // A record named `--state-bucket=attacker` renders EXACTLY, so the raw
-    // compare admits it — and the shell strips the quotes `shellQuote` adds,
-    // handing Commander an argv entry it parses as that FLAG. A
-    // record-DELETING command would then be pointed at an attacker-named
-    // bucket. The same rule `pasteableCommand`'s `printable()` applies
-    // (M4 of the go-to-k/cdkd#3499 review).
-    !stackName.startsWith('-') &&
-    typeof region === 'string' &&
-    safeSegment(region) === region &&
-    !region.startsWith('-');
-  if (!exact) {
-    // Names no target: the identity above it may not be this record's. List the
-    // records AS STORED and act on the one whose key matches.
-    return (
-      `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')} — ` +
-      `spelled out because this record's ` +
-      `name or region does NOT render exactly, so another record may render identically; ` +
-      `list them as stored with 'cdkd state list --json' and act on the one whose key matches, ` +
-      `replacing each quoted hole, quotes included, with the shell-quoted value`
-    );
+function orphanCommandFor(stackName: unknown, region: unknown): OrphanCommand {
+  // `unknown`, and handed to the gate UNCONVERTED (go-to-k/cdkd#3369): a
+  // non-string is withheld as `altered`, since `displaySafe` renders it as a
+  // different value. Never `String(x)` — that would make `123` exact and name
+  // it.
+  const built = pasteableCommand('cdkd state orphan', [
+    // `plainIdent` (go-to-k/cdkd#3997): the command sits on a labelled line
+    // or in a list, the shape go-to-k/cdkd#3328 / #3696 gate that way, since
+    // a name that renders exactly can still spell a second line when a
+    // terminal wraps its padding.
+    { value: stackName as string, hole: 'stack', opts: { plainIdent: true } },
+    { flag: '--stack-region', value: region as string, hole: 'region', opts: { plainIdent: true } },
+  ]);
+  if (built.exact) return { command: built.command, note: '' };
+  const reasons = [
+    orphanWithheldPart('stack name', stackName, built, 'stack'),
+    orphanWithheldPart('region', region, built, 'region'),
+  ].filter((part) => part !== '');
+  // A STACK NAME beginning with `-` must NOT be filled back in: quoted or
+  // not, Commander reads `'--all'` in the positional as the option (a bare `-`
+  // it takes positionally, but the gate refuses every leading `-`), so the
+  // fill-in instruction would rebuild the command the gate refused. The
+  // region is a flag's value, which Commander takes as given, so filling that
+  // hole is safe; the other reasons are about a SPELLING the listing hands
+  // back. Keyed on the RAW name's leading `-`, not on the reason: the gate
+  // reports `altered` / `too-long` FIRST, so `'--' + 'x'.repeat(1153)` is
+  // withheld as too long and would otherwise be handed the fill-in
+  // instruction. `typeof` first, or a non-string record throws here — inside
+  // the state-deletion warn's `catch`, where it would abort the cleanup loop.
+  const dashName = typeof stackName === 'string' && stackName.startsWith('-');
+  return {
+    command: `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')}`,
+    // Addressed to "the next line's command", not "this record": a caller
+    // listing several records prints one note line above each command line.
+    note:
+      ` The next line's command names neither value, because its record's ` +
+      `${reasons.join('; and its ')}. List the records as stored with ` +
+      `'cdkd state list --json' and ` +
+      (dashName
+        ? `repair or remove the one whose stackName and region match by hand — this stack ` +
+          `name begins with a '-' and could parse as an option in that position, so do not ` +
+          `fill a hole with it.`
+        : `act on the one whose stackName and region match, replacing each quoted hole, ` +
+          `quotes included, with the shell-quoted value.`),
+  };
+}
+
+/** What {@link orphanCommandFor} returns. */
+interface OrphanCommand {
+  /** The command, on a line of its own after the note, unwrapped. */
+  readonly command: string;
+  /** `''` when the command names the record, else a sentence with a leading space. */
+  readonly note: string;
+}
+
+/**
+ * One value's half of {@link orphanCommandFor}'s note, from the gate's REASON
+ * rather than from a predicate of this site's own, so the sentence cannot
+ * disagree with the hole (M11 of the go-to-k/cdkd#3499 review). `''` when the
+ * gate named the value.
+ */
+function orphanWithheldPart(
+  what: string,
+  raw: unknown,
+  built: PasteableCommand,
+  hole: string
+): string {
+  const reason = built.withheld.find((w) => w.hole === hole)?.reason;
+  if (reason === undefined) return '';
+  if (typeof raw !== 'string') return `${what} is not a string`;
+  return `${what} ${orphanWithholdWhy(reason, hole === 'stack')}`;
+}
+
+/** Exported for unit testing: its `pattern-shaped` arm is unreachable through {@link orphanCommandFor}. */
+export function orphanWithholdWhy(reason: WithholdReason, positional: boolean): string {
+  switch (reason) {
+    case 'altered':
+      return 'does NOT render exactly (another record may render identically)';
+    case 'empty':
+      return 'is empty';
+    case 'too-long':
+      return 'is too long to print';
+    // Only the POSITIONAL parses as a flag: Commander takes the word after
+    // `--stack-region` as its value even when it begins with `-` (measured).
+    // The gate refuses both anyway, conservatively, and the region's sentence
+    // says that rather than claiming a parse that does not happen.
+    case 'option-shaped':
+      return positional
+        ? `begins with a '-', which 'cdkd state orphan' could parse as a flag`
+        : `begins with a '-', which cdkd refuses to print as an argument`;
+    case 'not-plain':
+      return (
+        `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd does not ` +
+        `print on a command line`
+      );
+    // Unreachable (this site does not pass `patternMatched`), and answered
+    // with a TRUE sentence rather than a throw, as `refreshWithheldReason`
+    // does: a throw here would escape the state-deletion warn's `catch`.
+    case 'pattern-shaped':
+      return `cannot be printed as an argument to 'cdkd state orphan'`;
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error(`orphanWithholdWhy: unhandled WithholdReason ${String(_exhaustive)}`);
+    }
   }
-  return `cdkd state orphan ${shellQuote(shownStack)} --stack-region ${shellQuote(safeSegment(region))}`;
 }
 
 /**
@@ -4038,13 +4462,14 @@ async function walkCdkdStateStackTree(
     const childStackName = `${stackName}~${logicalId}`;
     const childResult = await stateBackend.getState(childStackName, region);
     if (!childResult) {
+      const orphan = orphanCommandFor(stackName, region);
       throw new Error(
         `cdkd state is missing nested-child '${safeSegment(childStackName)}' (${safeSegment(region)}). ` +
           `Parent stack '${safeSegment(stackName)}' lists '${safeSegment(logicalId)}' as an ` +
           `${NESTED_STACK_RESOURCE_TYPE} row but no child state file exists at ` +
           `'cdkd/${safeSegment(childStackName)}/${safeSegment(region)}/state.json'. The cdkd state tree is ` +
           `inconsistent — re-deploy the parent stack to refresh, or drop the parent's record ` +
-          `and re-import with: ${orphanCommandFor(stackName, region)}`
+          `and re-import.${orphan.note}\nDrop it with: ${orphan.command}`
       );
     }
     // Sanity-check the child's recorded region against the walker's
@@ -4404,13 +4829,14 @@ export function buildPerStackImportNodes(
     for (const [childLogicalId, childNode] of node.nestedChildren) {
       const childTemplatePath = nodeNestedTemplatePaths[childLogicalId];
       if (!childTemplatePath) {
+        const orphan = orphanCommandFor(childNode.stackName, childNode.region);
         throw new Error(
           `cdkd export: nested-stack child '${safeSegment(childLogicalId)}' under parent ` +
             `'${safeSegment(node.stackName)}' has cdkd state but no Metadata['aws:asset:path'] ` +
             `in the parent template's '${safeSegment(childLogicalId)}' row. The synth output ` +
             `and the cdkd state tree are out of sync — re-deploy the parent stack ` +
-            `to refresh, or remove the cdkd state for the orphaned child with ` +
-            `${orphanCommandFor(childNode.stackName, childNode.region)}`
+            `to refresh, or remove the cdkd state for the orphaned child.${orphan.note}\n` +
+            `Remove it with: ${orphan.command}`
         );
       }
       const { template: childTemplate, format: childFormat } = readNestedChildTemplateFile(
@@ -4493,6 +4919,21 @@ export async function buildImportPlan(
      * {@link resolveIdentifierValue}.
      */
     ec2Client?: EC2Client;
+    /** The app stack a `cdkd diff` / `cdkd deploy` repair names (the ROOT on the nested path). */
+    rootStackName?: string;
+    /**
+     * The Parameter values this stack's changeset SUBMITS — the same values,
+     * from the same resolution, never a second copy of it: `--parameter` / a
+     * `Default` for the root, `buildResolvedParametersPerStack`'s for a nested
+     * child. Lets a principal passed in as a parameter be CHECKED against what
+     * phase 2 will actually use (go-to-k/cdkd#3910).
+     */
+    parameterValues?: Record<string, string>;
+    /**
+     * `parameterValues` come from `--parameter` / `Default` (the root), so a
+     * mismatch through a Parameter can also be a wrong `--parameter` value.
+     */
+    parametersFromCli?: boolean;
   } = {
     recreateImportUnsupported: true,
   }
@@ -4674,8 +5115,46 @@ export async function buildImportPlan(
             logicalId,
             resourceType,
             reason: `the pre-delete of this inline policy would refuse: ${targets.refusal}`,
+            // Re-importing records the template's resolved properties.
+            repair: importRepairCommand(logicalId),
           });
           continue;
+        }
+        // What the pre-delete removes must be what phase 2 puts back
+        // (go-to-k/cdkd#3910).
+        if (targets) {
+          const check = policyTemplateCheck(
+            targets,
+            (raw as { Properties?: unknown }).Properties,
+            entry.properties,
+            templateResources as Record<string, unknown>,
+            state.resources,
+            template['Parameters'],
+            options.parameterValues ?? {}
+          );
+          if ('blocked' in check) {
+            blocked.push({
+              logicalId,
+              resourceType,
+              reason:
+                check.blocked +
+                (check.throughParameter && options.parametersFromCli
+                  ? '; or, if the stack was deployed with other values, re-run the export with ' +
+                    'the --parameter values the stack was deployed with'
+                  : ''),
+              ...(check.remedy === 'deploy'
+                ? {
+                    checkFirst: diffCheckCommand(options.rootStackName),
+                    repair: deployRepairCommand(options.rootStackName),
+                  }
+                : check.remedy === 'import'
+                  ? { repair: importRepairCommand(logicalId) }
+                  : { manual: true as const }),
+            });
+            continue;
+          }
+          if (check.unconfirmed.length > 0) entry.unconfirmedPrincipals = check.unconfirmed;
+          if (check.nameUnconfirmed) entry.policyNameUnconfirmed = true;
         }
         recreateBeforePhase2.push(entry);
       } else {
@@ -4857,6 +5336,113 @@ export async function buildImportPlan(
 }
 
 /**
+ * What a blocked-resource refusal says after its rows, scoped to the rows'
+ * own remedies (go-to-k/cdkd#3910): a row carrying a `Repair with:` command
+ * is fixed by that command, so the generic "destroy them first, or remove them
+ * from the CDK app" is said only of the rows without one — telling the
+ * operator to destroy a record the row just said to re-import contradicts it.
+ */
+export function blockedMigrationTail(blocked: readonly BlockedResource[]): string {
+  const generic =
+    'destroy them first (cdkd destroy / cdkd state destroy cherry-picked), or remove them ' +
+    'from the CDK app and re-synthesize.';
+  // Per RESOURCE, as the rows are grouped. A resource with ANY manual reason
+  // is manual — no command, the generic one included, is safe for it. Of the
+  // rest, one with ANY reason carrying neither a repair nor its own check is
+  // one the generic remedy is said of, even if another of its reasons does
+  // carry a repair.
+  const manualIds = new Set(blocked.filter((b) => b.manual).map((b) => b.logicalId));
+  const genericIds = new Set(
+    blocked
+      .filter((b) => b.repair === undefined && !b.manual && !manualIds.has(b.logicalId))
+      .map((b) => b.logicalId)
+  );
+  const hasRepair = blocked.some(
+    (b) => b.repair !== undefined && !genericIds.has(b.logicalId) && !manualIds.has(b.logicalId)
+  );
+  const hasManual = manualIds.size > 0;
+  if (genericIds.size === 0 && !hasManual) {
+    return "Run each row's 'Repair with:' command, then re-run cdkd export.";
+  }
+  if (!hasRepair && !hasManual) return `Either ${generic}`;
+  const steps: string[] = [];
+  if (hasRepair) steps.push("run each 'Repair with:' command given");
+  if (hasManual) {
+    steps.push(
+      'resolve each row that names its own check as it says — destroying or removing that ' +
+        'resource is not a remedy, since it would perform the very removal the row refuses'
+    );
+  }
+  if (genericIds.size > 0) {
+    steps.push(`for the resources with a reason that has neither, either ${generic}`);
+  }
+  const text = steps.join('; ');
+  return text.charAt(0).toUpperCase() + text.slice(1) + (genericIds.size > 0 ? '' : '.');
+}
+
+/**
+ * The by-hand deletes for the pre-delete types a failed run may have left
+ * behind, one line per TYPE present (go-to-k/cdkd#3910): the recovery used to
+ * print the API Gateway command even when an IAM::Policy pre-delete failed.
+ * Every value is a quoted `commandHole`, never a bare `<placeholder>`, which a
+ * shell reads as a redirection.
+ */
+export function preDeleteManualCommands(
+  entries: readonly {
+    resourceType: string;
+    physicalId?: string;
+    properties?: Record<string, unknown>;
+  }[]
+): string[] {
+  const types = new Set(entries.map((e) => e.resourceType));
+  const lines: string[] = [];
+  if (types.has('AWS::ApiGatewayV2::Stage')) {
+    lines.push(
+      `aws apigatewayv2 delete-stage --api-id ${commandHole('ApiId')} ` +
+        `--stage-name ${commandHole('StageName')}`
+    );
+  }
+  // One command per principal KIND a policy records, each alone on its line
+  // so it pastes; the explanation is a line of its own after them.
+  const kinds = new Set<'role' | 'user' | 'group'>();
+  for (const e of entries) {
+    if (e.resourceType !== 'AWS::IAM::Policy') continue;
+    const targets = policyDetachTargets({
+      logicalId: '',
+      resourceType: e.resourceType,
+      physicalId: e.physicalId ?? '',
+      properties: e.properties ?? {},
+    });
+    if ('refusal' in targets) {
+      // Nothing readable: name every kind rather than none.
+      kinds.add('role').add('user').add('group');
+      continue;
+    }
+    if (targets.roles.length > 0) kinds.add('role');
+    if (targets.users.length > 0) kinds.add('user');
+    if (targets.groups.length > 0) kinds.add('group');
+  }
+  const iam = [
+    ['role', 'delete-role-policy', '--role-name', 'RoleName'],
+    ['user', 'delete-user-policy', '--user-name', 'UserName'],
+    ['group', 'delete-group-policy', '--group-name', 'GroupName'],
+  ] as const;
+  for (const [kind, verb, flag, hole] of iam) {
+    if (!kinds.has(kind)) continue;
+    lines.push(
+      `aws iam ${verb} ${flag} ${commandHole(hole)} --policy-name ${commandHole('PolicyName')}`
+    );
+  }
+  if (kinds.size > 0) {
+    lines.push(
+      '# run each iam line once per listed principal still attached: a partial pre-delete ' +
+        'may already have removed some'
+    );
+  }
+  return lines;
+}
+
+/**
  * Render the `blocked` list one bullet per RESOURCE, folding a resource's
  * several reasons into it.
  *
@@ -4878,7 +5464,12 @@ export function groupBlockedReasons(blocked: readonly BlockedResource[]): string
     // quote a record's values back, and a planted multi-kilobyte one would
     // otherwise push the rest of the refusal off screen (go-to-k/cdkd#3375).
     const text = displayAwsMessage(b.reason);
-    entry.reasons.push(b.repair === undefined ? text : `${text}\nRepair with: ${b.repair}`);
+    // Labelled command lines follow the reason, each on its own line, the
+    // read-only check before the repair it guards.
+    const checkLine = b.checkFirst === undefined ? '' : `\nCheck first with: ${b.checkFirst}`;
+    entry.reasons.push(
+      b.repair === undefined ? text : `${text}${checkLine}\nRepair with: ${b.repair}`
+    );
     byResource.set(b.logicalId, entry);
   }
   return [...byResource].map(([logicalId, { resourceType, reasons }]) => {
@@ -5323,6 +5914,42 @@ export function resolveTemplateParameters(
   }
 
   return { parameters, missing };
+}
+
+/**
+ * The root template's Parameter values as `--parameter` / `Default` give them,
+ * for the IAM::Policy template check (go-to-k/cdkd#3910). An override the
+ * template does not declare throws later, where the export resolves the
+ * changeset's parameters; here it simply yields nothing to resolve with.
+ */
+function rootParameterValues(
+  template: Record<string, unknown>,
+  parameterFlags: string[] | undefined
+): Record<string, string> {
+  try {
+    const { parameters } = resolveTemplateParameters(
+      template,
+      parseParameterOverrides(parameterFlags)
+    );
+    return parameterValuesOf(parameters);
+  } catch {
+    return {};
+  }
+}
+
+function parameterValuesOf(parameters: readonly Parameter[]): Record<string, string> {
+  const out = nullPrototypeRecord<string>();
+  for (const p of parameters) {
+    if (typeof p.ParameterKey === 'string' && typeof p.ParameterValue === 'string') {
+      out[p.ParameterKey] = p.ParameterValue;
+    }
+  }
+  return out;
+}
+
+/** `AWS::SSM::Parameter::Value<...>`: the parameter's value is an SSM NAME CloudFormation resolves. */
+function isSsmParameterType(type: unknown): boolean {
+  return typeof type === 'string' && type.startsWith('AWS::SSM::Parameter::Value<');
 }
 
 /**
@@ -6982,7 +7609,9 @@ export async function buildResolvedParametersPerStack(args: {
     // The parent's resolved Parameter VALUES are the lookup table for any
     // `Ref: <ParentParam>` in the child's Parameters block. Root-first order
     // guarantees the parent was already processed.
-    const parentParamValues: Record<string, unknown> = {};
+    // Null prototype: a parameter key is template text, and on a `{}` an
+    // assignment to `__proto__` would set the prototype, not an own key.
+    const parentParamValues = Object.create(null) as Record<string, unknown>;
     for (const p of paramsByCdkdName.get(parentStackName) ?? []) {
       if (p.ParameterKey !== undefined) parentParamValues[p.ParameterKey] = p.ParameterValue;
     }
@@ -7214,6 +7843,68 @@ export async function runPerStackImportLoop(args: {
     nestedStackRows: NestedStackRow[];
   }
   const perStackPlans: PerStackPlan[] = [];
+  // Resolve every stack's IMPORT Parameters up front, ROOT-FIRST: a child's
+  // intrinsic-valued Parameters (`{Ref: ParentParam}` /
+  // `{Fn::GetAtt: [ParentResource, Attr]}`) resolve against its PARENT's
+  // already-resolved Parameters + cdkd state — the opposite direction from the
+  // leaf-first IMPORT order, so a separate top-down pre-pass is required (see
+  // `buildResolvedParametersPerStack`). It runs BEFORE planning so the
+  // IAM::Policy template check reads the very values each changeset submits,
+  // from the one resolution (go-to-k/cdkd#3910): a second copy of it would
+  // disagree with the resolver's lookup order and confirm a principal phase 2
+  // does not use. `sessionIntrinsicSkipped` collects the Parameters that STILL
+  // could not be resolved (resolver threw / unsupported shape), for the
+  // per-stack warn + the aggregate summary at the end of the success path.
+  // The root submits `rootParameters` verbatim.
+  const paramResolver = new IntrinsicFunctionResolver(rootRegion);
+  const resolveAll = (): Promise<{
+    paramsByCdkdName: Map<string, Parameter[]>;
+    intrinsicSkippedByCdkdName: Map<string, string[]>;
+  }> =>
+    // ONE drain budget for the resolve LOOP inside it (issue #2563): each
+    // `resolve` in that loop can WAIT on a rejection.
+    withSharedDrainBudget(() =>
+      buildResolvedParametersPerStack({
+        rootStackName,
+        rootParameters,
+        perStackNodes: leafFirst.map((n) => {
+          const meta = nodesByCdkdName.get(n.stackName)!;
+          return { cdkdName: meta.cdkdStackName, template: meta.template, state: meta.state };
+        }),
+        tree,
+        resolver: paramResolver,
+        stateBackend: deps.stateBackend,
+      })
+    );
+  let resolved: Awaited<ReturnType<typeof resolveAll>>;
+  try {
+    resolved = await resolveAll();
+  } catch (err) {
+    // The pre-pass's STRUCTURAL refusals (a pre-v6 child record, one naming a
+    // parent outside the tree) would otherwise end a dry run before its plan,
+    // which it produced before the pre-pass moved ahead of planning. A dry run
+    // warns and plans with no child values, so their principals read as
+    // unconfirmed; a real run still refuses, since it would submit them.
+    const message = err instanceof Error ? err.message : String(err);
+    if (!options.dryRun || !message.startsWith('buildResolvedParametersPerStack:')) throw err;
+    logger.warn(
+      safeMsg`${message} --dry-run plans without the nested stacks' Parameter values; a real run ` +
+        `refuses here.`
+    );
+    resolved = {
+      paramsByCdkdName: new Map([[rootStackName, rootParameters]]),
+      intrinsicSkippedByCdkdName: new Map(),
+    };
+  }
+  const { paramsByCdkdName, intrinsicSkippedByCdkdName: sessionIntrinsicSkipped } = resolved;
+  for (const [cdkdName, skipped] of sessionIntrinsicSkipped) {
+    logger.warn(
+      `  Child '${safeSegment(cdkdName)}': could not resolve intrinsic-valued Parameter(s) ` +
+        `${skipped.join(', ')} at IMPORT time. The child template's Parameter Default ` +
+        `values must cover these — otherwise CFn will reject the IMPORT.`
+    );
+  }
+
   for (const node of leafFirst) {
     const meta = nodesByCdkdName.get(node.stackName)!;
     const plan = await buildImportPlan(
@@ -7229,6 +7920,11 @@ export async function runPerStackImportLoop(args: {
         skipImportSupportPreflight: options.skipImportSupportPreflight === true,
         // Same reason for the conditional spread (issue #1791).
         ...(deps.ec2Client && { ec2Client: deps.ec2Client }),
+        // `cdkd deploy` / `cdkd diff` take the app stack, never a child's
+        // minted `Root~Child` name.
+        rootStackName,
+        parameterValues: parameterValuesOf(paramsByCdkdName.get(meta.cdkdStackName) ?? []),
+        parametersFromCli: meta.cdkdStackName === rootStackName,
       }
     );
     if (plan.blocked.length > 0) {
@@ -7242,7 +7938,7 @@ export async function runPerStackImportLoop(args: {
         // (go-to-k/cdkd#3328 round 6).
         `Stack '${safeSegment(meta.cdkdStackName)}' has ` +
           `${new Set(plan.blocked.map((b) => b.logicalId)).size} resource(s) that block ` +
-          `migration:\n${lines.join('\n')}`
+          `migration:\n${lines.join('\n')}\n${blockedMigrationTail(plan.blocked)}`
       );
     }
     perStackPlans.push({
@@ -7326,10 +8022,14 @@ export async function runPerStackImportLoop(args: {
       totalPhase2Creates > 0
         ? ` Phase 2 will CREATE ${totalPhase2Creates} non-importable resource(s) across the tree.`
         : '';
+    // As the single-stack prompt says it (go-to-k/cdkd#3910): the pre-deletes
+    // are named in the plan above, and "AWS resources are unchanged" is not
+    // true of them.
     const recreateNote =
       totalRecreate > 0
-        ? ` cdkd will also pre-DELETE + re-CREATE ${totalRecreate} IMPORT-unsupported resource(s) ` +
-          `(brief unavailability window per resource).`
+        ? ` cdkd will also DELETE ${totalRecreate} AWS resource(s) between phases so CFn can ` +
+          `re-CREATE them in phase 2 (brief unavailability window — see the plan above for the ` +
+          `affected resources, and for any marked as not confirmed to be re-created).`
         : '';
     const ok = await confirmPrompt(
       `Create ${perStackPlans.length} CloudFormation stack(s) by importing the cdkd ` +
@@ -7337,8 +8037,10 @@ export async function runPerStackImportLoop(args: {
         `leaf-first, per-stack IMPORT loop (#464 design §4.3).` +
         phase2Note +
         recreateNote +
-        ` AWS resources are unchanged. cdkd state for every adopted stack will be ` +
-        `deleted on success.`
+        (totalRecreate > 0
+          ? ` All other AWS resources are unchanged.`
+          : ` AWS resources are unchanged.`) +
+        ` cdkd state for every adopted stack will be deleted on success.`
     );
     if (!ok) {
       logger.info('Migration cancelled. cdkd state and CloudFormation are unchanged.');
@@ -7389,42 +8091,137 @@ export async function runPerStackImportLoop(args: {
     const uploadCleanups: Array<() => Promise<void>> = [];
     const importedStacks: ImportedStackRecord[] = [];
 
-    // Resolve every stack's child-IMPORT Parameters up front, ROOT-FIRST: a
-    // child's intrinsic-valued Parameters (`{Ref: ParentParam}` /
-    // `{Fn::GetAtt: [ParentResource, Attr]}`) resolve against its PARENT's
-    // already-resolved Parameters + cdkd state — the opposite direction from
-    // the leaf-first IMPORT order below, so a separate top-down pre-pass is
-    // required (see `buildResolvedParametersPerStack`). `sessionIntrinsicSkipped`
-    // collects the Parameters that STILL could not be resolved after the
-    // resolver pass (resolver threw / unsupported shape), for the per-stack
-    // warn + the aggregate summary at the end of the success path. The root
-    // submits `rootParameters` verbatim.
-    const paramResolver = new IntrinsicFunctionResolver(rootRegion);
-    const { paramsByCdkdName, intrinsicSkippedByCdkdName: sessionIntrinsicSkipped } =
-      // ONE drain budget for the resolve LOOP inside it (issue #2563): the
-      // child locks are acquired above, and each `resolve` in that loop can
-      // now WAIT on a rejection.
-      await withSharedDrainBudget(() =>
-        buildResolvedParametersPerStack({
-          rootStackName,
-          rootParameters,
-          perStackNodes: perStackPlans.map((p) => ({
-            cdkdName: p.cdkdName,
-            template: p.template,
-            state: p.state,
-          })),
-          tree,
-          resolver: paramResolver,
-          stateBackend: deps.stateBackend,
-        })
+    // What a failure of stack i leaves to do (go-to-k/cdkd#3910), shared by
+    // every failure after the loop starts. `phase1`: stack i's own IMPORT
+    // failed, so its CloudFormation stack may or may not exist; `imported`: it
+    // exists, and its nested-child adoption has not happened
+    // (go-to-k/cdkd#3967); `adopted`: it exists and needs only phase 2
+    // (go-to-k/cdkd#3988); `phase2`: its pre-delete or phase 2 failed. A re-run
+    // does not resume in any case; the stacks after i are untouched; and stack
+    // i's cdkd record is cleaned up once it is finished by hand — never before,
+    // since before its phase 2 that record is the only one of what phase 2
+    // would create.
+    const nestedResumeTail = (
+      i: number,
+      failed: 'phase1' | 'imported' | 'adopted' | 'phase2'
+    ): string => {
+      const plan = perStackPlans[i]!;
+      const completed = perStackPlans.slice(0, i);
+      const notYetImported = perStackPlans
+        .slice(i + 1)
+        .map((p) => safeSegment(p.cdkdName))
+        .join(', ');
+      // One command per line of its own, and a withheld plan's note on the line
+      // ABOVE its command (go-to-k/cdkd#3436): printing `.command` alone would
+      // drop the note, and with it the "do not fill a leading-`-` name" rule.
+      // In a LIST of both-hole lines "the next line's command" does not say
+      // WHICH record, so the note names it by its CloudFormation stack name,
+      // never by the withheld cdkd name. Only when that name is a PLAIN
+      // identifier (it always is unless an override bypassed the CFn check):
+      // `displayIdent`'s JSON quotes would still let a `$(...)` override run
+      // in a pasted clause, so any other name is described, not printed —
+      // `plainOrDescribed`'s rule, spelled out for this sentence's grammar.
+      const orphanLines = (plans: readonly PerStackPlan[]): string =>
+        plans
+          .map((p) => {
+            const orphan = orphanCommandFor(p.cdkdName, p.region);
+            const target = isPasteableIdent(p.cfnName)
+              ? `CloudFormation stack ${p.cfnName}`
+              : 'a CloudFormation stack whose name is not a plain identifier';
+            const note = orphan.note ? `\n  For the record targeting ${target}:${orphan.note}` : '';
+            return `${note}\n  ${orphan.command}`;
+          })
+          .join('');
+      // The WHOLE tree is refused on a re-run: `assertCfnStackAbsent` checks
+      // every stack's CloudFormation name up front. No backticks: pasted, they
+      // would run the command they quote (go-to-k/cdkd#3988).
+      const refusal =
+        failed !== 'phase1'
+          ? `Re-running cdkd export is refused for the whole tree: CloudFormation stacks now ` +
+            `exist for this stack and every one IMPORTed before it. `
+          : completed.length > 0
+            ? `Re-running cdkd export is refused for the whole tree: CloudFormation stacks now ` +
+              `exist for every stack IMPORTed before this one, and this stack's may exist too ` +
+              `(a failed IMPORT can leave it behind). `
+            : // Nothing was imported: only this stack's own CloudFormation stack, if
+              // the failed IMPORT left one, stands in the way of a re-run.
+              // A stack left mid-IMPORT can hold imported resources, and the
+              // IMPORT template carries `DeletionPolicy: Delete`: deleting it
+              // would delete them, so the check is printed, not just named.
+              `No stack was imported. A failed IMPORT can leave CloudFormation stack ` +
+              `'${safeSegment(plan.cfnName)}' behind, and a re-run is refused while ` +
+              `it exists. Check that it holds no resources:\n  ${
+                pasteableCommand('aws cloudformation list-stack-resources', [
+                  { flag: '--stack-name', value: plan.cfnName, hole: 'stack-name' },
+                ]).command
+              }\nthen delete it, and re-run with: ${
+                pasteableCommand('cdkd export', [{ value: rootStackName, hole: 'stack' }]).command
+              }\n`;
+      if (failed === 'phase1' && completed.length === 0) return refusal.trimEnd();
+      // Only the steps stack i still needs (go-to-k/cdkd#3988): a stack with
+      // no phase-2 work is not told to run one.
+      const hasPhase2 = plan.phase2Creates.length + plan.recreateBeforePhase2.length > 0;
+      const steps = [
+        ...(failed === 'phase1' ? ['IMPORT'] : []),
+        ...(failed === 'imported' && plan.nestedStackRows.length > 0
+          ? ['nested-child adoption']
+          : []),
+        ...(failed === 'phase2' || hasPhase2 ? ['phase 2'] : []),
+        // A non-root stack must leave IMPORT_COMPLETE before its parent can
+        // adopt it. A phase-2 UPDATE does that on its own; without one, every
+        // IMPORT (its own, or its adoption of its children) leaves it there,
+        // so the no-op tag update the loop would have run comes LAST.
+        ...(plan.cdkdName !== rootStackName && failed !== 'phase2' && !hasPhase2
+          ? [
+              'closing no-op tag update (which moves it out of IMPORT_COMPLETE, for the adoption by its parent)',
+            ]
+          : []),
+      ];
+      // Phase 2 re-CREATEs the IMPORT-unsupported resources, which only a
+      // delete makes room for: the pre-delete failure prints these deletes in
+      // its head, and every earlier failure must print them here, before the
+      // step that needs them (go-to-k/cdkd#3988).
+      const preDeletes =
+        failed !== 'phase2' && plan.recreateBeforePhase2.length > 0
+          ? `Before this stack's phase 2, delete its IMPORT-unsupported resources by hand, ` +
+            `which phase 2 re-CREATEs:\n` +
+            preDeleteManualCommands(plan.recreateBeforePhase2)
+              .map((line) => `  ${line}\n`)
+              .join('')
+          : '';
+      return (
+        refusal +
+        // Stacks that finished phase 2 keep their cdkd state until the loop's
+        // end, so both cdkd and CloudFormation now manage them; a later
+        // `cdkd destroy` of the tree would delete live, CloudFormation-managed
+        // resources.
+        (completed.length > 0
+          ? `These stacks finished phase 2 but still have cdkd state, which the export deletes ` +
+            `only at its end — clean each up now, so a later cdkd destroy does not delete ` +
+            `CloudFormation-managed resources:${orphanLines(completed)}\n`
+          : '') +
+        preDeletes +
+        (steps.length === 0
+          ? `This stack needs no further IMPORT, adoption or phase 2; clean up its record the same way:`
+          : `Once this stack's ${steps.join(' and ')} ` +
+            `${steps.length > 1 ? 'succeed' : 'succeeds'} by hand, clean up its record the ` +
+            `same way` +
+            // Its children finished as standalone stacks and wait for this
+            // stack's Phase 1B adoption, which the by-hand IMPORT must do too.
+            (failed === 'phase1' && plan.nestedStackRows.length > 0
+              ? ` (its IMPORT must also adopt its already-imported nested children, per the AWS ` +
+                `docs "Nest an existing stack" procedure)`
+              : '') +
+            `:`) +
+        `${orphanLines([plan])}\n` +
+        `Stacks not yet imported (still cdkd-managed): ${notYetImported || '(none)'}. ` +
+        (notYetImported
+          ? `cdkd export cannot migrate them now; do it by hand with CloudFormation IMPORT, ` +
+            `adopting their nested children per the AWS docs "Nest an existing stack" ` +
+            `procedure.`
+          : '')
       );
-    for (const [cdkdName, skipped] of sessionIntrinsicSkipped) {
-      logger.warn(
-        `  Child '${safeSegment(cdkdName)}': could not resolve intrinsic-valued Parameter(s) ` +
-          `${skipped.join(', ')} at IMPORT time. The child template's Parameter Default ` +
-          `values must cover these — otherwise CFn will reject the IMPORT.`
-      );
-    }
+    };
 
     try {
       for (let i = 0; i < perStackPlans.length; i++) {
@@ -7440,6 +8237,28 @@ export async function runPerStackImportLoop(args: {
         // child's intrinsic-valued Parameters were resolved against its
         // parent's state, with any unresolvable ones already warned about).
         const stackParameters = paramsByCdkdName.get(plan.cdkdName) ?? [];
+
+        // A step between this stack's Phase 1A and its phase 2 that has no
+        // failure message of its own: its CloudFormation stack exists by then,
+        // so a bare SDK error would leave a refused re-run with no recovery
+        // (go-to-k/cdkd#3988). `stage` is how far the stack got.
+        const afterImport = async <T>(
+          what: string,
+          stage: 'imported' | 'adopted',
+          step: () => Promise<T>
+        ): Promise<T> => {
+          try {
+            return await step();
+          } catch (err) {
+            throw new Error(
+              `${what} failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
+                `'${safeSegment(plan.cfnName)}'), after its Phase 1A IMPORT succeeded. ` +
+                `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
+                nestedResumeTail(i, stage),
+              { cause: err instanceof Error ? err : undefined }
+            );
+          }
+        };
 
         // ---- Phase 1A: leaves-only CREATE-via-IMPORT ----
         // Why 2 phases for non-leaf parents (vs. one combined CREATE-via-IMPORT
@@ -7483,29 +8302,14 @@ export async function runPerStackImportLoop(args: {
             deps.uploadOpts
           );
         } catch (err) {
-          const importedSummary =
-            importedStacks.length > 0
-              ? importedStacks
-                  .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
-                  .join(', ')
-              : '(none)';
-          const remainingSummary = perStackPlans
-            .slice(i)
-            // SANITIZED per element, before the join: the summary is
-            // interpolated into a throw and every element is a minted,
-            // record-derived name (go-to-k/cdkd#3328 round 7).
-            .map((p) => safeSegment(p.cdkdName))
-            .join(', ');
           throw new Error(
             `Phase 1A IMPORT changeset failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
-              `'${plan.cfnName}'). Stacks imported successfully so far: ${importedSummary}. ` +
-              `Stacks not yet imported (cdkd state preserved): ${remainingSummary}. ` +
-              `After resolving the underlying cause, re-run the export — already-imported ` +
-              `children will be adopted as nested references on retry. ` +
-              `Cause: ${err instanceof Error ? err.message : String(err)}` +
-              `\nRe-run with: ${
-                pasteableCommand('cdkd export', [{ value: rootStackName, hole: 'stack' }]).command
-              }`,
+              `'${safeSegment(plan.cfnName)}'). ` +
+              // Bounded and folded: the waiter's bare rethrow and a
+              // DescribeChangeSet failure carry AWS's text, which can quote a
+              // recorded value back (go-to-k/cdkd#3910).
+              `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
+              nestedResumeTail(i, 'phase1'),
             { cause: err instanceof Error ? err : undefined }
           );
         }
@@ -7513,16 +8317,23 @@ export async function runPerStackImportLoop(args: {
         // Capture the just-created CFn stack's ARN for the next parent
         // iteration's `ResourceIdentifier.StackId` reference AND for
         // Phase 1B below (UPDATE-IMPORT against this same stack).
-        const desc = await deps.cfnClient.send(
-          new DescribeStacksCommand({ StackName: plan.cfnName })
+        const cfnArn = await afterImport(
+          'Reading its CloudFormation stack',
+          'imported',
+          async () => {
+            const desc = await deps.cfnClient.send(
+              new DescribeStacksCommand({ StackName: plan.cfnName })
+            );
+            const arn = desc.Stacks?.[0]?.StackId;
+            if (!arn) {
+              throw new Error(
+                `DescribeStacks returned no StackId immediately after the Phase 1A IMPORT — AWS ` +
+                  `may be in an unexpected state.`
+              );
+            }
+            return arn;
+          }
         );
-        const cfnArn = desc.Stacks?.[0]?.StackId;
-        if (!cfnArn) {
-          throw new Error(
-            `runPerStackImportLoop: DescribeStacks returned no StackId for '${plan.cfnName}' ` +
-              `immediately after Phase 1A IMPORT — AWS may be in an unexpected state.`
-          );
-        }
         cfnArnByCdkdName.set(plan.cdkdName, cfnArn);
         importedStacks.push({
           cdkdStackName: plan.cdkdName,
@@ -7545,7 +8356,11 @@ export async function runPerStackImportLoop(args: {
             `  Flipping '${plan.cfnName}' to UPDATE_COMPLETE so it can be adopted as a ` +
               `nested member by its parent's Phase 1B...`
           );
-          await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters);
+          await afterImport(
+            'The no-op tag update moving its CloudFormation stack out of IMPORT_COMPLETE',
+            'imported',
+            () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters)
+          );
         }
 
         // ---- Phase 1B: UPDATE-via-IMPORT to adopt nested children ----
@@ -7609,16 +8424,21 @@ export async function runPerStackImportLoop(args: {
             // parent's nested-stack row's `TemplateURL` points at the
             // template AWS actually has on file for the child stack — the
             // AWS-docs "Nest an existing stack" template-match requirement.
-            const childTemplateBody = await fetchCfnStackTemplate(deps.cfnClient, childCfnName);
-            const uploaded = await uploadCfnTemplate({
-              bucket: deps.uploadOpts.stateBucket,
-              body: childTemplateBody,
-              stackName: `${plan.cdkdName}__nested__${row.logicalId}`,
-              // GetTemplate(Processed) always returns JSON regardless of
-              // the original synth format; the codec accepts either.
-              format: 'json',
-              ...(deps.uploadOpts.s3ClientOpts && { s3ClientOpts: deps.uploadOpts.s3ClientOpts }),
-            });
+            const preparing = `Preparing the adoption of nested child ${displayIdent(row.logicalId)}`;
+            const childTemplateBody = await afterImport(preparing, 'imported', () =>
+              fetchCfnStackTemplate(deps.cfnClient, childCfnName)
+            );
+            const uploaded = await afterImport(preparing, 'imported', () =>
+              uploadCfnTemplate({
+                bucket: deps.uploadOpts.stateBucket,
+                body: childTemplateBody,
+                stackName: `${plan.cdkdName}__nested__${row.logicalId}`,
+                // GetTemplate(Processed) always returns JSON regardless of
+                // the original synth format; the codec accepts either.
+                format: 'json',
+                ...(deps.uploadOpts.s3ClientOpts && { s3ClientOpts: deps.uploadOpts.s3ClientOpts }),
+              })
+            );
             uploadCleanups.push(uploaded.cleanup);
 
             // Fetch the child stack's CURRENT tags — the parent's
@@ -7630,8 +8450,8 @@ export async function runPerStackImportLoop(args: {
             // tag added by `flipStackToUpdateComplete`; forwarding them
             // verbatim ensures the parent template's row matches the
             // AWS-side reality at adoption time.
-            const childTagsDesc = await deps.cfnClient.send(
-              new DescribeStacksCommand({ StackName: childCfnName })
+            const childTagsDesc = await afterImport(preparing, 'imported', () =>
+              deps.cfnClient.send(new DescribeStacksCommand({ StackName: childCfnName }))
             );
             const childActualTags = childTagsDesc.Stacks?.[0]?.Tags ?? [];
 
@@ -7684,9 +8504,9 @@ export async function runPerStackImportLoop(args: {
           } catch (err) {
             // Phase 1A already succeeded — the parent CFn stack exists with
             // its leaf resources. Phase 1B (nested adoption) failed. The
-            // child stack(s) are also standalone CFn stacks at this point
-            // (from prior iterations). cdkd state is preserved across the
-            // tree so the user can recover.
+            // stacks before it are CFn stacks too, standalone or already
+            // adopted by their own parents. cdkd state is preserved across
+            // the tree so the user can recover.
             const importedSummary =
               importedStacks.length > 0
                 ? importedStacks
@@ -7698,14 +8518,20 @@ export async function runPerStackImportLoop(args: {
                 `'${safeSegment(plan.cdkdName)}' (CFn name '${safeSegment(plan.cfnName)}'). The parent CFn stack ` +
                 `exists with its ${plan.phase1Imports.length} leaf resource(s); ` +
                 `${plan.nestedStackRows.length} nested-child adoption(s) did NOT complete. ` +
-                `Stacks IMPORTed so far (each is a standalone CFn stack): ${importedSummary}. ` +
-                `cdkd state for every stack in the tree is preserved. To recover: (1) fix the ` +
+                `Stacks IMPORTed so far (each a CFn stack): ${importedSummary}. ` +
+                `cdkd state for every stack in the tree is preserved. To recover, fix the ` +
                 `underlying cause (typically a template-match validation error per AWS-docs ` +
-                `"Nested stack import validation"); (2) clear cdkd state for the migrated stacks ` +
-                `via 'cdkd state orphan <stack>' (do NOT 'cdkd destroy' — that would tear down ` +
-                `the live AWS resources); (3) re-attempt the parent-side nested adoption ` +
-                `manually via the AWS console or CLI per the AWS docs procedure. ` +
-                `Cause: ${err instanceof Error ? err.message : String(err)}`,
+                `"Nested stack import validation"), then re-attempt the parent-side nested ` +
+                `adoption by hand via the AWS console or CLI, per the AWS docs "Nest an existing ` +
+                `stack" procedure. Do NOT run cdkd destroy on the tree: that would tear down the ` +
+                `live AWS resources. ` +
+                // Bounded and folded, as at Phase 1A (go-to-k/cdkd#3910).
+                `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
+                // Which records to clean up, and when, go through the same gated,
+                // region-bearing tail as the other nested failures — never a
+                // bare `cdkd state orphan <stack>`, which drops that name's
+                // record in EVERY region (go-to-k/cdkd#3967).
+                nestedResumeTail(i, 'imported'),
               { cause: err instanceof Error ? err : undefined }
             );
           }
@@ -7724,7 +8550,12 @@ export async function runPerStackImportLoop(args: {
               `  Flipping '${plan.cfnName}' back to UPDATE_COMPLETE so its own parent's ` +
                 `Phase 1B can adopt it...`
             );
-            await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters);
+            await afterImport(
+              'The no-op tag update moving its CloudFormation stack back out of IMPORT_COMPLETE ' +
+                'after its nested-child adoption',
+              'adopted',
+              () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters)
+            );
           }
         }
 
@@ -7734,17 +8565,48 @@ export async function runPerStackImportLoop(args: {
             const handler = PRE_DELETE_HANDLERS[entry.resourceType];
             if (!handler) {
               throw new Error(
-                `No pre-delete handler registered for ${entry.resourceType} ` +
-                  `(${entry.logicalId}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
+                `No pre-delete handler registered for ${displayIdent(entry.resourceType)} ` +
+                  `(${displayIdent(entry.logicalId)}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
                   `resource is in IMPORT_UNSUPPORTED_RECREATABLE_TYPES but lacks a ` +
-                  `PRE_DELETE_HANDLERS entry.`
+                  `PRE_DELETE_HANDLERS entry.\n` +
+                  // Its CloudFormation stack exists by now, so even a cdkd bug
+                  // gives the recovery (go-to-k/cdkd#3988). An earlier entry may
+                  // already be deleted; the by-hand deletes allow for that.
+                  nestedResumeTail(i, 'adopted')
               );
             }
             logger.info(
               `  Pre-deleting AWS resource for ${entry.logicalId} (${entry.resourceType}) ` +
                 `so CFn can re-CREATE in phase 2...`
             );
-            await handler(entry);
+            try {
+              await handler(entry);
+            } catch (err) {
+              // The single-stack path's wrapper, for the nested path
+              // (go-to-k/cdkd#3910): AWS's text can quote a recorded Stage id,
+              // policy name or ApiId back, and nothing above this renders it.
+              const msg = err instanceof Error ? err.message : String(err);
+              const importedSummary = importedStacks
+                .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
+                .join(', ');
+              throw new Error(
+                `Phase 1 (IMPORT) succeeded for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn ` +
+                  `name '${safeSegment(plan.cfnName)}'); pre-delete of ${displayIdent(entry.logicalId)} ` +
+                  `(${displayIdent(entry.resourceType)}, physicalId: ` +
+                  `${showRecordValue(entry.physicalId)}) failed: ${displayAwsMessage(msg)}\n\n` +
+                  `Stacks IMPORTed so far (each CFn-managed): ${importedSummary}. cdkd state ` +
+                  `for every stack in the tree is preserved. This stack's IMPORT-unsupported ` +
+                  `resources may still exist in AWS unmanaged. To recover: fix the failure ` +
+                  `cause, delete the remaining pre-delete resources of this stack by hand:\n` +
+                  preDeleteManualCommands(plan.recreateBeforePhase2)
+                    .map((line) => `  ${line}\n`)
+                    .join('') +
+                  `then run the phase-2 UPDATE for '${safeSegment(plan.cfnName)}' by hand with ` +
+                  `its full synth template. ` +
+                  nestedResumeTail(i, 'phase2'),
+                { cause: err instanceof Error ? err : undefined }
+              );
+            }
             logger.info(`    ${preDeletedLine(entry.physicalId)}`);
           }
         }
@@ -7768,14 +8630,29 @@ export async function runPerStackImportLoop(args: {
               overlaidResources[row.logicalId] = rewrittenRow;
             }
           }
-          await executeUpdateChangeSet(
-            deps.cfnClient,
-            plan.cfnName,
-            phase2Template,
-            stackParameters,
-            plan.templateFormat,
-            deps.uploadOpts
-          );
+          try {
+            await executeUpdateChangeSet(
+              deps.cfnClient,
+              plan.cfnName,
+              phase2Template,
+              stackParameters,
+              plan.templateFormat,
+              deps.uploadOpts
+            );
+          } catch (err) {
+            // `executeUpdateChangeSet` rethrows the waiter's and
+            // ExecuteChangeSet's errors bare, so this is the one place that
+            // renders them on the nested path (go-to-k/cdkd#3910).
+            throw new Error(
+              `Phase 2 (UPDATE) failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
+                `'${safeSegment(plan.cfnName)}'): ` +
+                `${displayAwsMessage(err instanceof Error ? err.message : String(err))}. Its ` +
+                `phase-1 IMPORT succeeded and cdkd state is preserved; fix the cause and run the ` +
+                `phase-2 UPDATE by hand with its full synth template. ` +
+                nestedResumeTail(i, 'phase2'),
+              { cause: err instanceof Error ? err : undefined }
+            );
+          }
           logger.info(
             `  ✓ Phase 2: stack '${plan.cfnName}' updated ` +
               `(${plan.phase2Creates.length} non-importable CREATE, ` +
@@ -7811,6 +8688,7 @@ export async function runPerStackImportLoop(args: {
             region: node.region,
             reason: err instanceof Error ? err.message : String(err),
           });
+          const orphan = orphanCommandFor(node.stackName, node.region);
           logger.warn(
             `Failed to delete cdkd state for '${safeSegment(node.stackName)}' ` +
               `(${safeSegment(node.region)}): ` +
@@ -7819,8 +8697,8 @@ export async function runPerStackImportLoop(args: {
               // (the identifier helper's contract is a record field or a key
               // segment).
               `${safeDetail(err)}. ` +
-              `The stack IS CFn-managed; clean up with: ` +
-              `${orphanCommandFor(node.stackName, node.region)}`
+              `The stack IS CFn-managed; clean up its state record.${orphan.note}\n` +
+              `Clean up with: ${orphan.command}`
           );
         }
       }

@@ -147,8 +147,15 @@ export function recordResolvedPair(
  *
  * Deliberately NOT a general "copy the map" helper: every other new map is a
  * different PASS, and starting it without evidence is the safe direction.
+ *
+ * It also carries the two mask-only side sets ({@link freshNoEchoValuesOf},
+ * {@link containmentValuesOf}) for every plaintext `to` holds as mask-only
+ * (go-to-k/cdkd#2453). The outputs bag is the caller that needs them: an
+ * output EMBEDDING a `NoEcho` value is masked only through the containment
+ * arm, which reads the mark off the map the bag is redacted with.
  */
 export function mergeResolvedPairs(from: RecordedSecretValues, to: RecordedSecretValues): void {
+  carryMaskOnlyMarks(from, to);
   const pairs = resolvedPairsOf.get(from);
   if (pairs === undefined) return;
   for (const [expression, plaintext] of pairs) {
@@ -604,7 +611,9 @@ export function clearRecordedSecretExpressions(): void {
  * plaintext is excluded from the persist path's needle regex and reaches only
  * the whole-value arm — the same "weaker class, narrower blast radius" shape
  * PR #2415 established for its `inferred` needles, which likewise take a leaf
- * whole or not at all.
+ * whole or not at all. A leaf that merely CONTAINS a `NoEcho` value is
+ * therefore masked WHOLE rather than in place (go-to-k/cdkd#2453); see
+ * {@link containmentNeedlesOf}.
  *
  * {@link maskSecretsInText} is deliberately NOT narrowed the same way: its
  * output is a log line, an error message or an event, which nothing reads back
@@ -707,8 +716,9 @@ type WalkedContainers = Set<object>;
  * `Data` — the shape the CDK `Provider` framework's samples encourage — makes
  * `Data.X` equal to the resource's own `ServiceToken`, and recording THAT as a
  * needle rewrites `properties.ServiceToken` to `***` in the very record
- * `CustomResourceProvider.delete` reads it back from, where `'***'` is a
- * truthy string that passes both of that method's guards. Such a value is not
+ * `CustomResourceProvider.delete` reads it back from, which can then no
+ * longer address the handler and SKIPS the delete, keeping the record
+ * (go-to-k/cdkd#3938). Such a value is not
  * handler-GENERATED at all — it is in the synthesized template already — so
  * excluding it costs no secrecy.
  */
@@ -741,9 +751,11 @@ export function recordMaskOnlyValuesIn(
  * {@link recordMaskOnlyValuesIn} takes, built from the resource's own resolved
  * template properties.
  *
- * WHOLE leaves only, matching the arm the mask class is served on: a mask-only
- * needle never reaches the substring scan, so a plaintext that merely OCCURS
- * inside a property is not something this exclusion has to answer for.
+ * WHOLE leaves only, matching the arm the excluded registration is served on:
+ * a custom resource's own `Data` is registered without the containment mark
+ * ({@link containmentValuesOf}), so it never reaches the containment arm, and
+ * a plaintext that merely OCCURS inside a property is not something this
+ * exclusion has to answer for.
  */
 export function wholeStringLeavesOf(value: unknown): Set<string> {
   const leaves = new Set<string>();
@@ -778,9 +790,9 @@ export function wholeStringLeavesOf(value: unknown): Set<string> {
  *
  * Whole-leaf EQUALITY, never containment: an inline `***` inside a longer
  * string is either a user's own literal or text this module never wrote, and
- * treating it as a mask would refuse ordinary values. The corresponding limit —
- * a NoEcho value EMBEDDED in a larger leaf keeps its plaintext — is the same
- * one the mask-only channel note above states, and is tracked separately.
+ * treating it as a mask would refuse ordinary values. That is why a leaf
+ * EMBEDDING a `NoEcho` value is persisted as the whole mask rather than
+ * with an inline one (go-to-k/cdkd#2453): it stays recognisable here.
  *
  * UNBOUNDED in depth, guarded by {@link WalkedContainers} — see that type for
  * why a depth cap here was a hole rather than a safety measure.
@@ -818,12 +830,49 @@ export function carriesSecretMask(value: unknown): boolean {
 const freshNoEchoValuesOf = new WeakMap<RecordedSecretValues, Set<string>>();
 
 function freshNoEchoSet(secrets: RecordedSecretValues): Set<string> {
-  let set = freshNoEchoValuesOf.get(secrets);
+  return sideSetOf(freshNoEchoValuesOf, secrets);
+}
+
+/**
+ * The mask-only plaintexts of a pass that a persisted leaf may not CONTAIN
+ * (go-to-k/cdkd#2453) — the population {@link containmentNeedlesOf} reads,
+ * keyed by the pass's map like {@link freshNoEchoValuesOf}.
+ *
+ * Only the RESOLVER's writers add to it: a `NoEcho` value registered by
+ * {@link recordFreshNoEchoValuesIn}, and a derived `Fn::Base64` needle
+ * ({@link recordDerivedMaskOnlyValue}). Both are values the resolver
+ * substituted into a leaf, so either can sit inside a longer one. The other
+ * mask-only writers stay whole-leaf: the custom resource's OWN `Data`
+ * registration, whose values (a region, an account id) can be substrings of
+ * its own `ServiceToken`, the ARN `CustomResourceProvider.delete` reads back;
+ * and the `drift` write paths' live-value registrations, which would otherwise
+ * mask unrelated leaves of the baseline they write.
+ */
+const containmentValuesOf = new WeakMap<RecordedSecretValues, Set<string>>();
+
+function sideSetOf(
+  table: WeakMap<RecordedSecretValues, Set<string>>,
+  secrets: RecordedSecretValues
+): Set<string> {
+  let set = table.get(secrets);
   if (set === undefined) {
     set = new Set();
-    freshNoEchoValuesOf.set(secrets, set);
+    table.set(secrets, set);
   }
   return set;
+}
+
+/**
+ * {@link recordMaskOnlyValue} for the `Fn::Base64` encoding of a secret-bearing
+ * input: a DERIVED needle, whole-leaf like every mask-only value and also
+ * matched by CONTAINMENT (go-to-k/cdkd#2453), since `Fn::Join` / `Fn::Sub` can
+ * embed the encoding in a longer leaf, where it decodes straight back to the
+ * secret. Not FRESH (see {@link freshNoEchoValuesOf}).
+ */
+export function recordDerivedMaskOnlyValue(secrets: RecordedSecretValues, plaintext: string): void {
+  recordMaskOnlyValue(secrets, plaintext);
+  if (isMaskOnlyPlaintext(secrets, plaintext))
+    sideSetOf(containmentValuesOf, secrets).add(plaintext);
 }
 
 /**
@@ -833,20 +882,36 @@ function freshNoEchoSet(secrets: RecordedSecretValues): Set<string> {
  * value: the resolver's `Fn::GetAtt` note for a resource whose provider
  * declared `NoEcho` earlier in this run, the cross-stack recovery of an output
  * this process masked, and `Fn::Base64` over an input that embeds one.
+ *
+ * Each such leaf is also a CONTAINMENT needle ({@link containmentValuesOf}),
+ * unless it EQUALS one of `publicTokens` (go-to-k/cdkd#2453): values state
+ * already holds in the clear — the region, the stack name, the producing
+ * custom resource's `ServiceToken` and each of its `:`-separated segments (the
+ * account id, the function name). A handler echoing one under `NoEcho` would
+ * otherwise flatten every ARN of every dependent. Such a value is not
+ * handler-GENERATED, so leaving it out of the containment arm costs no
+ * secrecy; it stays a whole-leaf needle as before. EQUALITY, never
+ * containment: a generated value that merely occurs inside the stack name
+ * (`prod` in `myapp-prod-stack`) is still a secret, and stays a needle.
  */
 export function recordFreshNoEchoValuesIn(
   value: unknown,
   secrets: RecordedSecretValues,
-  excluded?: ReadonlySet<string>
+  excluded?: ReadonlySet<string>,
+  publicTokens?: ReadonlySet<string>
 ): void {
   recordMaskOnlyValuesIn(value, secrets, excluded);
   const fresh = freshNoEchoSet(secrets);
+  const containment = sideSetOf(containmentValuesOf, secrets);
   const seen: WalkedContainers = new Set();
   const walk = (node: unknown): void => {
     if (typeof node === 'string') {
       // Only a leaf the call above really registered: an excluded one, one
       // under the floor, or one carrying an expression stays out.
-      if (excluded?.has(node) !== true && isMaskOnlyPlaintext(secrets, node)) fresh.add(node);
+      if (excluded?.has(node) !== true && isMaskOnlyPlaintext(secrets, node)) {
+        fresh.add(node);
+        if (publicTokens?.has(node) !== true) containment.add(node);
+      }
       return;
     }
     if (node === null || typeof node !== 'object') return;
@@ -870,15 +935,36 @@ export function recordFreshNoEchoValuesIn(
  * records the pair into its OWN bag, a different pass — which is exactly the
  * copy {@link freshNoEchoValuesOf} otherwise starts empty, so without this the
  * child's no-change skip read the new value's `***` as equal to its record.
+ * The CONTAINMENT mark ({@link containmentValuesOf}) travels too, including for
+ * a derived needle that carries no fresh mark (go-to-k/cdkd#2453).
  */
 export function carryFreshNoEchoMark(
   from: RecordedSecretValues,
   to: RecordedSecretValues,
   plaintext: string
 ): void {
-  if (freshNoEchoValuesOf.get(from)?.has(plaintext) !== true) return;
   if (!isMaskOnlyPlaintext(to, plaintext)) return;
-  freshNoEchoSet(to).add(plaintext);
+  // Containment FIRST, and not gated on freshness: a derived `Fn::Base64`
+  // needle is never fresh, and a child leaf embedding it must still be masked.
+  if (containmentValuesOf.get(from)?.has(plaintext) === true) {
+    sideSetOf(containmentValuesOf, to).add(plaintext);
+  }
+  if (freshNoEchoValuesOf.get(from)?.has(plaintext) === true) freshNoEchoSet(to).add(plaintext);
+}
+
+/**
+ * Carry both mask-only side sets of `from` into `to`, for every plaintext `to`
+ * holds as mask-only — the half of {@link mergeResolvedPairs} that is not
+ * about pairs.
+ */
+function carryMaskOnlyMarks(from: RecordedSecretValues, to: RecordedSecretValues): void {
+  for (const table of [freshNoEchoValuesOf, containmentValuesOf]) {
+    const marks = table.get(from);
+    if (marks === undefined) continue;
+    for (const plaintext of marks) {
+      if (isMaskOnlyPlaintext(to, plaintext)) sideSetOf(table, to).add(plaintext);
+    }
+  }
 }
 
 /**
@@ -900,8 +986,13 @@ export function embedsFreshNoEchoValue(text: string, secrets: RecordedSecretValu
  * replace with {@link SECRET_MASK} AND that is a `NoEcho` value supplied in
  * this deploy (go-to-k/cdkd#3662)?
  *
- * A mask-only needle reaches only the whole-value arm, so such a leaf is
- * masked exactly when the WHOLE leaf is the plaintext. What makes the question
+ * Such a leaf EQUALS a fresh value, or CONTAINS one outside every reference
+ * span — the leaf the containment arm masks whole (go-to-k/cdkd#2453). The
+ * containment half is that arm's own predicate
+ * ({@link embedsNeedleOutsideReferences}), applied to the RESOLVED bag rather
+ * than the redacted one: where a fresh value occurs inside a resolved secret's
+ * plaintext, this says fresh while the persisted leaf holds the expression. That
+ * costs a redundant update or readback, never a skipped one. What makes the question
  * worth asking: the mask identifies nothing. Two expression-redacted bags that
  * compare equal hold the same references, which is what a rotated secret
  * behind an unchanged `{{resolve:...}}` means. Two mask-redacted bags that
@@ -913,11 +1004,11 @@ export function embedsFreshNoEchoValue(text: string, secrets: RecordedSecretValu
  * this pass. Neither does a derived needle (see {@link freshNoEchoValuesOf}).
  */
 export function carriesFreshNoEchoValue(value: unknown, secrets: RecordedSecretValues): boolean {
-  const fresh = freshNoEchoValuesOf.get(secrets);
-  if (fresh === undefined || fresh.size === 0) return false;
+  const isFresh = freshNoEchoLeafTest(secrets);
+  if (isFresh === undefined) return false;
   const seen: WalkedContainers = new Set();
   const walk = (node: unknown): boolean => {
-    if (typeof node === 'string') return fresh.has(node) && isMaskOnlyPlaintext(secrets, node);
+    if (typeof node === 'string') return isFresh(node);
     if (node === null || typeof node !== 'object') return false;
     if (seen.has(node)) return false;
     seen.add(node);
@@ -938,11 +1029,13 @@ export interface FreshNoEchoLeaf {
 }
 
 /**
- * Where, inside `value`, the WHOLE string leaves are that
+ * Where, inside `value`, the string leaves are that
  * {@link carriesFreshNoEchoValue} counts (go-to-k/cdkd#3729). The predicate is
- * the same: the fresh side set and a mask-only entry, so a derived needle, a
- * leaf that already IS the mask, an embedded value and an excluded leaf are not
- * positions. A scalar `value` that is one is the position `[]`.
+ * the same, so a derived needle, a leaf that already IS the mask and an
+ * excluded leaf are not positions, while a leaf EMBEDDING a fresh value is
+ * (go-to-k/cdkd#2453), reported with the whole leaf as its `plaintext`: that
+ * is what AWS holds at the position when the value is unchanged. A scalar
+ * `value` that is one is the position `[]`.
  *
  * The engine uses this for a create-only property whose record holds `***`.
  * It asks AWS what the resource holds at each of these positions, because the
@@ -955,13 +1048,13 @@ export function freshNoEchoLeafPositions(
   value: unknown,
   secrets: RecordedSecretValues
 ): FreshNoEchoLeaf[] {
-  const fresh = freshNoEchoValuesOf.get(secrets);
-  if (fresh === undefined || fresh.size === 0) return [];
+  const isFresh = freshNoEchoLeafTest(secrets);
+  if (isFresh === undefined) return [];
   const leaves: FreshNoEchoLeaf[] = [];
   const ancestors: WalkedContainers = new Set();
   const walk = (node: unknown, path: (string | number)[]): void => {
     if (typeof node === 'string') {
-      if (fresh.has(node) && isMaskOnlyPlaintext(secrets, node)) {
+      if (isFresh(node)) {
         leaves.push({ path, plaintext: node });
       }
       return;
@@ -980,6 +1073,159 @@ export function freshNoEchoLeafPositions(
   };
   walk(value, []);
   return leaves;
+}
+
+/**
+ * The shared leaf predicate of {@link carriesFreshNoEchoValue} and
+ * {@link freshNoEchoLeafPositions}, or `undefined` when the pass holds no fresh
+ * value: a leaf EQUAL to a fresh value (the whole-value arm), or one the
+ * containment arm flattens because of a fresh value. A containment needle that
+ * is not fresh (a derived `Fn::Base64` one) does not count.
+ */
+function freshNoEchoLeafTest(
+  secrets: RecordedSecretValues
+): ((leaf: string) => boolean) | undefined {
+  const fresh = freshNoEchoValuesOf.get(secrets);
+  if (fresh === undefined || fresh.size === 0) return undefined;
+  const needles = containmentNeedlesOf(secrets).filter((needle) => fresh.has(needle));
+  return (leaf) =>
+    (fresh.has(leaf) && isMaskOnlyPlaintext(secrets, leaf)) ||
+    (leaf !== SECRET_MASK && embedsNeedleOutsideReferences(leaf, needles, secrets));
+}
+
+/**
+ * The CONTAINMENT arm of the mask-only class (go-to-k/cdkd#2453): the
+ * plaintexts of a pass that a persisted string leaf may not CONTAIN — the
+ * {@link containmentValuesOf} population, still mask-only in the map.
+ *
+ * Why the WHOLE leaf and not the matched span: an inline `***` is not
+ * recognisable (see the mask-only channel note above), while a leaf that IS
+ * {@link SECRET_MASK} is what {@link carriesSecretMask} recognises, so
+ * `drift --revert` / `--accept` and the rollback replay keep refusing it. The
+ * public text around the value is lost in the record; the template still holds
+ * it, and the next deploy resolves it again.
+ *
+ * THE COST, stated rather than hidden: a containment needle is a bare
+ * plaintext, so ANY leaf of the same record containing it is flattened, a
+ * coincidence included — a handler-generated name inside a dependent's `Arn`
+ * attribute, or a needle inside the public literal of a leaf the path pass
+ * positioned. The bound is the per-resource map and
+ * {@link MIN_NEEDLE_LENGTH}; the result is a recognisable mask, which the
+ * readers refuse with the masked-record remedy rather than push. A derived
+ * `Fn::Base64` needle of a three-character input is four characters, at the
+ * floor, so it is the likeliest to coincide.
+ */
+function containmentNeedlesOf(secrets: RecordedSecretValues): string[] {
+  const values = containmentValuesOf.get(secrets);
+  if (values === undefined || values.size === 0) return [];
+  const needles: string[] = [];
+  for (const value of values) {
+    if (value.length >= MIN_NEEDLE_LENGTH && isMaskOnlyPlaintext(secrets, value)) {
+      needles.push(value);
+    }
+  }
+  return needles;
+}
+
+/**
+ * Is the match `[start, end)` STRICTLY inside one of `spans` — contained by a
+ * span and shorter than it? The one partition both the substring arm
+ * ({@link redactSecretsForState}, issue #1935) and the containment arm
+ * ({@link embedsNeedleOutsideReferences}) apply, so the two cannot fork.
+ */
+function isStrictlyInsideASpan(
+  spans: ReadonlyArray<{ start: number; end: number }>,
+  start: number,
+  end: number
+): boolean {
+  return spans.some(
+    (span) => span.start <= start && end <= span.end && (span.start !== start || span.end !== end)
+  );
+}
+
+/**
+ * Does `leaf` contain one of `needles` at an offset that is NOT strictly
+ * inside a resolvable `{{resolve:...}}` span?
+ *
+ * The span exception is the reference guard the maintainer asked for, and it
+ * is the rule {@link redactSecretsForState}'s substring arm applies (issue
+ * #1935): a leaf whose every match lies strictly inside a resolvable
+ * reference's own text keeps the re-resolvable expression. It is an ACCEPTED
+ * DISCLOSURE, not only a coincidence: a template that builds the reference
+ * name out of the value (`{{resolve:secretsmanager:${cr.getAtt('Name')}...}}`)
+ * persists that value inside the expression. A match anywhere else — beside a reference,
+ * straddling one, or inside a token of a service cdkd does not resolve —
+ * flattens the leaf even though it carries a reference: the alternatives are
+ * the plaintext or an unrecognisable inline mask, and the reference could not
+ * be replayed from that record anyway, since the `NoEcho` part of the same
+ * leaf is not recoverable from state under either.
+ */
+function embedsNeedleOutsideReferences(
+  leaf: string,
+  needles: readonly string[],
+  secrets: RecordedSecretValues
+): boolean {
+  let spans: Array<{ start: number; end: number }> | undefined;
+  for (const needle of needles) {
+    for (let at = leaf.indexOf(needle); at >= 0; at = leaf.indexOf(needle, at + 1)) {
+      spans ??= isDynamicReferenceString(leaf)
+        ? resolvableReferenceSpans(leaf, new Set(secrets.values()))
+        : [];
+      if (!isStrictlyInsideASpan(spans, at, at + needle.length)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Replace with {@link SECRET_MASK} every string leaf of an already-redacted
+ * bag that still CONTAINS a containment needle (go-to-k/cdkd#2453).
+ *
+ * Runs over the OUTPUT of every other pass, so it answers for whatever those
+ * passes left, however they positioned it: a match surviving there is exactly
+ * the plaintext that would be persisted. Rebuilds only the containers on a
+ * changed path, and returns `value` by identity when nothing changes. The
+ * inner `redactSecretsForState(bag, derived.certain)` call of the readback
+ * path runs this too, against a map with no side sets, so it is a no-op there;
+ * the outer call is the one that answers.
+ */
+function flattenEmbeddedNoEchoLeaves<T>(value: T, secrets: RecordedSecretValues): T {
+  const needles = containmentNeedlesOf(secrets);
+  if (needles.length === 0) return value;
+  const flattens = (leaf: string): boolean =>
+    leaf !== SECRET_MASK && embedsNeedleOutsideReferences(leaf, needles, secrets);
+  const walk = (node: unknown): unknown => {
+    if (typeof node === 'string') return flattens(node) ? SECRET_MASK : node;
+    if (node === null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) {
+      let changed = false;
+      const out = node.map((item: unknown) => {
+        const next = walk(item);
+        if (next !== item) changed = true;
+        return next;
+      });
+      return changed ? out : node;
+    }
+    // A `Date` persists as its ISO string: the same rule the value walk uses.
+    if (isOrdinaryDate(node)) {
+      const persisted = node.toJSON();
+      return typeof persisted === 'string' && flattens(persisted) ? SECRET_MASK : node;
+    }
+    let out: Record<string, unknown> | undefined;
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      const next = walk(child);
+      if (next === child) continue;
+      // Null-prototype, as the value walk builds it: an own `__proto__` key
+      // must land as DATA.
+      out ??= Object.assign(
+        Object.create(null) as Record<string, unknown>,
+        node as Record<string, unknown>
+      );
+      out[key] = next;
+    }
+    return out ?? node;
+  };
+  return walk(value) as T;
 }
 
 /**
@@ -2094,8 +2340,9 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * (f) A child record persisted BEFORE this carry
  * keeps `port:q7` until the child is next redeployed: the parent's own row
  * already held the frame (the literal or frame arm), so a parent deploy whose child
- * row is unchanged never re-runs the child, and `cdkd scrub` cannot repair
- * it either -- it walks the child's stored bag with no inherited bag.
+ * row is unchanged never re-runs the child. `cdkd scrub` of the parent
+ * repairs it: since go-to-k/cdkd#2252 scrub walks each nested child with the
+ * parent row's bag as its inherited bag, re-running this carry for the row.
  */
 export function recordNestedStackParameterExpressions(
   secrets: RecordedSecretValues,
@@ -6929,12 +7176,29 @@ function refuseUncertifiedReadbackPositions(
  * secret substring replaced in place. Returns the input by identity when there
  * is nothing to redact, so callers can persist the original object unchanged in
  * the common no-secret case.
+ *
+ * A leaf that still CONTAINS a containment needle after every pass is
+ * replaced WHOLE by {@link SECRET_MASK} (go-to-k/cdkd#2453); see
+ * {@link flattenEmbeddedNoEchoLeaves}.
  */
 export function redactSecretsForState<T>(
   bag: T,
   secrets: RecordedSecretValues,
   source?: unknown,
   rules: PathSourceRules = TEMPLATE_DERIVED_RULES
+): T {
+  return flattenEmbeddedNoEchoLeaves(
+    redactSecretsForStatePasses(bag, secrets, source, rules),
+    secrets
+  );
+}
+
+/** {@link redactSecretsForState} without the containment arm. */
+function redactSecretsForStatePasses<T>(
+  bag: T,
+  secrets: RecordedSecretValues,
+  source: unknown,
+  rules: PathSourceRules
 ): T {
   // The PATH pass runs even with no recorded secrets — that is the whole point
   // for an UNCHANGED resource, whose `perResourceSecrets` entry is empty
@@ -7056,7 +7320,8 @@ export function redactSecretsForState<T>(
   }
   // `substringNeedlesOf`, not `secrets.keys()`: the MASK-ONLY class (issue
   // #2274) is withheld from this scan and reaches the whole-value arm below
-  // only. See the mask-only channel note above — an inline `***` cannot be told from
+  // (and, for a fresh `NoEcho` value, the containment arm the exported
+  // wrapper runs afterwards). See the mask-only channel note above — an inline `***` cannot be told from
   // a user's own literal, so nothing downstream could recognise it and
   // `drift --revert` / the rollback replay would push the corrupted string to
   // AWS. Every EXPRESSION-bearing needle is unaffected, so a bag with no
@@ -7173,12 +7438,7 @@ export function redactSecretsForState<T>(
     // sets it to 0 itself for a `/g` pattern. The reset before `.test` at the
     // call site is the one that IS needed.
     return value.replace(needles, (match: string, offset: number) => {
-      const end = offset + match.length;
-      const strictlyInsideASpan = spans.some(
-        (span) =>
-          span.start <= offset && end <= span.end && (span.start !== offset || span.end !== end)
-      );
-      if (strictlyInsideASpan) return match;
+      if (isStrictlyInsideASpan(spans, offset, offset + match.length)) return match;
       // Unreachable today: `needles` is built from {@link substringNeedlesOf},
       // i.e. from `secrets.keys()` minus the mask-only class, so every match is
       // a key. (It was `secrets.keys()` verbatim before issue #2274 narrowed
@@ -7518,8 +7778,9 @@ export function errorCauseChain(root: Error): Error[] {
  * the sink reads the error OBJECT.
  *
  * `formatError` is not the only such sink, and the second one is what makes the
- * CHAIN argument below concrete rather than hypothetical: `src/cli/index.ts`'s
- * top-level `main().catch(...)` does `console.error('Fatal error:', error)`,
+ * CHAIN argument below concrete rather than hypothetical: the CLI's top-level
+ * rejection handler (`runCli` in `src/cli/run-cli.ts`, around `main()` in
+ * `src/cli/index.ts`) does `console.error('Fatal error:', error)`,
  * which renders the whole object through `util.inspect` — every `[cause]` link
  * AND every link's `stack`. Measured: an outer `Error('top')` wrapping
  * `Error("Value 'hunter2' failed")` prints as

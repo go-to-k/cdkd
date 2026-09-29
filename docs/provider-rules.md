@@ -135,6 +135,17 @@ rather than the user's template, so refusing a malformed value recorded there
 by an older binary would make the stack undeployable with no way out short of
 hand-editing the state file.
 
+**A list whose removals are the gap between the two sides is the exception**
+(issue [#3948](https://github.com/go-to-k/cdkd/issues/3948)): Auto Scaling
+group attachment and entry lists (tags, metrics, lifecycle hooks, traffic
+sources, notifications), Firehose tags. There, reading a malformed
+DESIRED side as empty detaches or deletes everything the record holds, so it
+is refused before any call on every path, a state replay included. A malformed
+RECORDED side only misses removals: read it from the live resource ADD-only
+where you can (keep the live entries the desired side names, warn about the
+rest), otherwise refuse it with a repair that never asks for a secret in
+state.json. `undefined` / `null` stays the empty list.
+
 A **top-level** read takes two further decisions, both per site (issue
 [#1513](https://github.com/go-to-k/cdkd/issues/1513)), expressed as options on
 `requireConfigString`:
@@ -238,7 +249,11 @@ implementation. Three details are worth copying:
     on the value having changed wherever an unchanged one sends nothing, and
     do NOT gate it where the value goes out on every update: Glue's
     `UpdateDatabase` replaces `DatabaseInput` wholesale, so its malformed
-    blocks are refused whether or not they changed (#3740).
+    blocks are refused whether or not they changed (#3740). A list whose
+    removals are the gap between the two sides refuses on a replay too (see
+    "A list whose removals are the gap between the two sides is the
+    exception" above, #3948): warning and reading it as empty would remove
+    everything the record holds.
     Separately, a create-only
     value such as `AWS::RDS::DBProxyTargetGroup` `TargetGroupName` or
     `AWS::Lambda::EventInvokeConfig` `Qualifier` keeps the warning on purpose,
@@ -341,7 +356,12 @@ implementation. Three details are worth copying:
     `const mask = context?.maskSecrets ?? ((t: string) => t)` — since `create()`
     / `update()` are also called by `cdkd drift --revert`, by the import path,
     and by tests. It is per-CALL, so never cache it on `this`: providers are
-    registered as singletons and serve concurrent resources.
+    registered as singletons and serve concurrent resources. A provider whose
+    `create()` / `update()` reach many private helpers may instead re-enter
+    itself on a fresh per-call object whose prototype is the singleton and
+    whose logger is masked, so every helper's `this.logger` line is masked by
+    construction (`S3BucketProvider.maskedView`, issue
+    [#2177](https://github.com/go-to-k/cdkd/issues/2177)).
     **Mask the VALUE before it is stringified or interpolated; the finished
     message is a FALLBACK, not an equivalent.** Two independent reasons:
     (1) *escaping* — a masker matches by literal occurrence, and
@@ -889,14 +909,29 @@ above, and — since issue [#1770](https://github.com/go-to-k/cdkd/issues/1770) 
 eight same-class arms outside the composite-id family: both malformed
 `LayerVersionArn` arms in `lambda-layer-provider.ts`, the missing-`FunctionName`
 arm in `lambda-permission-provider.ts`, the no-properties / no-`ServiceToken`
-arms in `custom-resource-provider.ts`, the empty-policy-name arm in
+arms in `custom-resource-provider.ts` (and, since issue
+[#3938](https://github.com/go-to-k/cdkd/issues/3938) and
+[#3960](https://github.com/go-to-k/cdkd/issues/3960), its masked- and
+secret-reference-`ServiceToken` arms), the empty-policy-name arm in
 `iam-policy-provider.ts`, and both `AWS::IAM::UserToGroupAddition` arms in
 `iam-user-group-provider.ts`. Issue
 [#3878](https://github.com/go-to-k/cdkd/issues/3878) added the
 malformed-target-list arm in `iam-policy-provider.ts`: a recorded `Roles` /
-`Groups` / `Users` that is not a list of IAM names. Each exports its `reason` as
+`Groups` / `Users` that is not a list of IAM names. Issue
+[#3888](https://github.com/go-to-k/cdkd/issues/3888) added the same arm for an
+`AWS::IAM::UserToGroupAddition` record's `Users`. Each exports its `reason` as
 a named constant beside the provider, so the wording is pinned by a test instead
 of retyped.
+
+Issue [#3952](https://github.com/go-to-k/cdkd/issues/3952) added one shared
+arm, `redactedDeleteAddressSkip` (`src/provisioning/redacted-delete-address.ts`),
+for a delete whose recorded address property cdkd redacted (the `***` mask or a
+secret `{{resolve:...}}` expression): ApiGateway / ApiGatewayV2 children, ECS
+services, Glue catalog-scoped resources, Scheduler schedules, Route 53 record
+sets, security-group ingress rules, CloudWatch anomaly detectors, DB proxy
+target groups, and the
+fallback-less arms of the Lambda permission, IAM policy, UserToGroupAddition and
+ECS service deletes.
 
 Three lessons from that issue's code review are worth reusing before you add a
 skip arm of your own.
@@ -1000,12 +1035,16 @@ Three rules, each of which has a failure mode behind it:
 - **Check what the API does with a repeat, and for how long.** Most return the
   original resource; Route 53 REFUSES a repeated `CallerReference`
   (`HostedZoneAlreadyExists`), so that provider recovers by looking the zone up
-  by its caller reference and adopting it. EFS is both at once: a
-  `CreateAccessPoint` `ClientToken` either replays, or is refused with
-  `AccessPointAlreadyExists` (which names the surviving `AccessPointId`), so
+  by its caller reference and adopting it. EFS refuses too: a repeated
+  `CreateAccessPoint` `ClientToken` is refused with `AccessPointAlreadyExists`
+  (which names the surviving `AccessPointId`) whether or not the repeat's
+  parameters match (measured in #2442), so
   `EFSProvider.createOrAdoptAccessPoint` reads that access point back, confirms
-  BOTH that its `ClientToken` is the one cdkd minted and that it belongs to the
-  file system cdkd asked for, and adopts it. A stable token that turns every
+  that its `ClientToken` is the one cdkd minted, that it belongs to the file
+  system cdkd asked for, and that its `PosixUser` and `RootDirectory` are the
+  ones this create requested (read through EFS's defaults: an absent or `null`
+  POSIX user, a `/` root), and adopts it. Because the refusal ignores the parameters, the
+  token alone would adopt a mismatched access point. A stable token that turns every
   retry into a hard failure is only half a fix. Note EFS documents no
   retirement period for this token -- the "one minute" in the EFS User Guide's
   "Creation token and idempotency" section is about file-system CREATION

@@ -188,6 +188,10 @@ controls only **what cdkd asks AWS to create**: once a resource exists, its name
 is recorded as the state record's physical ID, and flipping the flag afterwards
 does not rename it. It proposes a replacement instead — see below.
 
+A deploy that fails records the setting in its rollback journal, so
+[`cdkd rollback`](cli-rollback.md) re-creates resources under the names this
+deploy would have used without the flag being passed again.
+
 The old `--no-prefix-user-supplied-names` flag, its
 `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` env var, and its
 `context.cdkd.noPrefixUserSuppliedNames` cdk.json entry are deprecated: they now
@@ -201,7 +205,7 @@ else was always unprefixed and is unchanged by the flag.
 
 | Types | Default | With `--prefix-user-supplied-names` |
 | --- | --- | --- |
-| IAM Role, User, Group, InstanceProfile; ELBv2 LoadBalancer, TargetGroup | `my-role` | `MyStack-my-role` |
+| IAM Role, User, Group, InstanceProfile, ManagedPolicy; ELBv2 LoadBalancer, TargetGroup | `my-role` | `MyStack-my-role` |
 | Lambda Function, S3 Bucket, SNS Topic, SQS Queue, DynamoDB Table, Logs LogGroup, Events Rule, and the rest | `my-bucket` | No effect — already unprefixed |
 | Any type, name not declared in CDK code | `MyStack-LogicalId-<hash>` | No effect — prefix kept for uniqueness |
 

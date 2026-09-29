@@ -40,7 +40,21 @@ against live AWS.
    code **0** (revert succeeds for every drifted resource).
 5. `cdkd drift CdkdDriftRevertVpcExample` again — assert exit code
    **0** (state and AWS are back in sync).
-6. `cdkd destroy CdkdDriftRevertVpcExample --force` — clean up.
+6. Attach `tg2` to the ASG out-of-band, rewrite the recorded ASG
+   `TargetGroupARNs` in `state.json` to an import-style `[{"Ref": ...}]`
+   (what `cdkd import`'s raw-template fallback can record), then
+   `cdkd deploy` — assert `tg1` AND `tg2` are still attached, the
+   retained-entries warning printed, and the record healed to `[tg1.arn]`
+   (issue #3948: a malformed recorded attachment list is read live,
+   ADD-only). `tg2` is then detached before destroy.
+7. Issue #4021: the ASG's `MetricsCollection` is ALL (an entry with no
+   metrics). Right after the first deploy, assert the live `EnabledMetrics`
+   holds every metric cdkd knows ALL enables (a superset: AWS may add more) and
+   the deploy-time observed capture equals the live set; on a legacy record (no
+   `observedProperties`, ALL in `properties`) `cdkd drift` must report no
+   `MetricsCollection` change, and after `GroupMinSize` is disabled out of band
+   it must report one. The planted record is restored, by the trap on failure.
+8. `cdkd destroy CdkdDriftRevertVpcExample --force` — clean up.
 
 ## Run
 

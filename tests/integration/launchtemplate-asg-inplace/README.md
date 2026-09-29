@@ -1,6 +1,6 @@
 # launchtemplate-asg-inplace
 
-Regression integ for two bugs:
+Regression integ for three bugs:
 
 - **Issue #985**: an in-place UPDATE that changes a `Fn::GetAtt`-consumed
   derived attribute must propagate to a dependent that the diff would
@@ -9,6 +9,10 @@ Regression integ for two bugs:
   reset to its CFn default on UPDATE — `UpdateAutoScalingGroup` has merge
   semantics (absent = unchanged), so pre-fix the old live value silently
   survived the removal.
+- **Issue #3995**: `MetricsCollection` and `NotificationConfigurations` are not
+  `CreateAutoScalingGroup` members, and pre-fix `create()` never sent
+  `EnableMetricsCollection` / `PutNotificationConfiguration`, so CDK
+  `groupMetrics` / `notifications` were missing after the FIRST deploy.
 
 The fixture is a VPC + `ec2.LaunchTemplate` + `autoscaling.AutoScalingGroup`.
 CDK renders the ASG's `LaunchTemplate.Version` as
@@ -33,7 +37,10 @@ deploy is cheap and the destroy is fast (no instance teardown wait).
 
 1. Phase 1: the LaunchTemplate is at version 1, the ASG's live
    `LaunchTemplate.Version` (`aws autoscaling describe-auto-scaling-groups`) is
-   "1", and the three non-default ASG properties are live.
+   "1", and the three non-default ASG properties are live. The group metrics
+   (`GroupMinSize`, `GroupMaxSize`) and the SNS notifications
+   (`EC2_INSTANCE_LAUNCH`, `EC2_INSTANCE_TERMINATE`) are live after this first
+   deploy (issue #3995).
 2. UPDATE phase (`CDKD_TEST_UPDATE=true`, changes only `instanceType`): the
    LaunchTemplate advances to version 2 AND the ASG's live
    `LaunchTemplate.Version` is "2" in the same deploy — NOT "1" (the #985
@@ -43,6 +50,18 @@ deploy is cheap and the destroy is fast (no instance teardown wait).
    the live values return to the CFn defaults — `HealthCheckGracePeriod` 0,
    `MaxInstanceLifetime` cleared, `TerminationPolicies` `['Default']` (the
    issue #1160 assertion).
+   Issue #4013: the ASG carries two `GroupMetrics` (all at `1Minute`) and
+   this phase drops `GroupMaxSize` from the FIRST; `EnabledMetrics` must be
+   exactly `GroupDesiredCapacity GroupMinSize`. Then `cdkd drift` must report
+   the ASG clean against its observed baseline, against a template-shaped
+   observed `MetricsCollection`, and on a legacy record with no
+   `observedProperties` (no `MetricsCollection` change). While the
+   template-shaped observed baseline is planted, `GroupMinSize` is disabled out
+   of band, `cdkd drift` must report it, and `cdkd drift --revert` must restore
+   the exact set from that two-entry baseline (pre-fix it keyed to the last
+   entry and sent nothing); drift must then be clean on the original record.
+   Every planted state record is restored, by the cleanup trap on a failure
+   too.
 4. Clean destroy (ASG gone, LaunchTemplate gone, state gone).
 
 ## Run

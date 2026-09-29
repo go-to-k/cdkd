@@ -17,6 +17,7 @@ import { replayWarn, requireConfigString } from '../config-shape.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type { CreateContext, UpdateContext } from '../../types/resource.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 import type {
   ResourceProvider,
@@ -25,6 +26,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 
 /**
  * How far before an attempt's start a key's `CreateDate` may fall and still be
@@ -239,7 +241,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
               `Failed to clean up partially-created IAM access key ${logicalId} (${v(accessKeyId)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
             );
           }
-          throw innerError;
+          // The resource itself was created: an "already exists" from its wiring
+          // is an auxiliary object's, not this resource's name collision (#3826).
+          throw markAuxiliaryFailure(innerError, logicalId);
         }
       }
 
@@ -578,7 +582,13 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     this.logger.debug(`Deleting IAM access key ${logicalId}: ${physicalId}`);
 
     try {
-      let userName = properties?.['UserName'] as string | undefined;
+      // go-to-k/cdkd#3952: a redacted UserName names no user, so it takes the
+      // same GetAccessKeyLastUsed lookup an absent one does.
+      const recordedUserName = properties?.['UserName'];
+      let userName =
+        typeof recordedUserName === 'string' && !isRedactedRecordedValue(recordedUserName)
+          ? recordedUserName
+          : undefined;
       if (!userName) {
         const lastUsed = await this.iamClient.send(
           new GetAccessKeyLastUsedCommand({ AccessKeyId: physicalId })

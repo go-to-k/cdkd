@@ -124,23 +124,6 @@ export interface CommandInterruptWatch {
    */
   interrupted(): boolean;
   /**
-   * Aborted the instant the first signal is RECORDED.
-   *
-   * Recording a flag is enough for anything that polls it — the `--all` loop
-   * checks between stacks — and useless for anything BLOCKED. The command's
-   * own `readline` prompt is the live instance: `await rl.question(...)` is
-   * waiting on the USER, not on AWS, and installing any SIGINT listener
-   * disables Node's default terminate, so a Ctrl-C at the prompt used to end
-   * the process and now would leave it parked there forever. Pass this to
-   * `rl.question(prompt, { signal })` and treat the resulting `AbortError` as
-   * "the user cancelled".
-   *
-   * Only the piped / non-TTY shape reaches that hang at a real terminal —
-   * readline intercepts ^C itself when stdin is a TTY — which is the CI
-   * population issue #1342 exists for, and exactly where nobody is watching.
-   */
-  readonly signal: AbortSignal;
-  /**
    * Bracket one per-stack destroy.
    *
    * While a per-stack destroy is in flight, `runDestroyForStack` has its own
@@ -232,14 +215,11 @@ export interface CommandInterruptWatch {
  */
 export function watchCommandInterrupt(opts: { command: string }): CommandInterruptWatch {
   let interrupted = false;
-  // The push half of the record. `interrupted` serves everything that POLLS;
-  // this serves everything that is BLOCKED and would otherwise never look
-  // again — today, the batch confirm prompt in `state.ts`. Aborting is
-  // idempotent, so every path that records the signal may call it.
-  const promptAbort = new AbortController();
+  // Nothing BLOCKS on this record any more: the one awaited prompt that needed
+  // a push-style abort, `state destroy --all`'s batch confirmation, was removed
+  // with that option (go-to-k/cdkd#3865). Every reader POLLS `interrupted`.
   function markInterrupted(): void {
     interrupted = true;
-    promptAbort.abort();
   }
   // Depth rather than a boolean: `runStack` is not nested today, but a counter
   // cannot be desynchronised by a future caller that does nest it, whereas a
@@ -333,7 +313,7 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
       //
       // The claim is scoped to THIS stack, and both halves of the flat
       // "nothing was deleted and no stack lock is held" this used to print are
-      // false on an `--all` run whose earlier stacks already completed. The
+      // false on a multi-stack run whose earlier stacks already completed. The
       // lock half is hedged for the same reason as the branch above:
       // `destroy-runner.ts` catches a failing `releaseLock` and only WARNS, so
       // a completed stack can leave its lock live for the full TTL, and this
@@ -341,7 +321,7 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
       // how to recover.
       process.stderr.write(
         `\nInterrupted before ${opts.command} armed its per-stack teardown — ` +
-          `quitting now. No delete was issued for this stack; on an --all run, ` +
+          `quitting now. No delete was issued for this stack; on a multi-stack run, ` +
           `stacks processed earlier are already destroyed.\n` +
           `If the next run reports a stack lock, release it with: cdkd force-unlock <stack-name>\n`
       );
@@ -357,7 +337,6 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
 
   return {
     interrupted: (): boolean => interrupted,
-    signal: promptAbort.signal,
     async runStack<T>(fn: () => Promise<T>): Promise<T> {
       stacksInFlight += 1;
       try {
@@ -370,21 +349,4 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
       process.removeListener('SIGINT', handler);
     },
   };
-}
-
-/**
- * Did this rejection come from a prompt aborted through
- * {@link CommandInterruptWatch.signal}?
- *
- * Deliberately duck-typed rather than `instanceof`: what `readline/promises`
- * rejects with is an internal Node error class in some versions and a
- * `DOMException` in others, and neither is importable. Both spellings carry
- * `name === 'AbortError'` / `code === 'ABORT_ERR'`, and the caller pairs this
- * with its own `watch.interrupted()` check, so a same-named error from an
- * unrelated abort cannot be mistaken for the user's Ctrl-C.
- */
-export function isPromptAbortError(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const { name, code } = error as { name?: unknown; code?: unknown };
-  return name === 'AbortError' || code === 'ABORT_ERR';
 }

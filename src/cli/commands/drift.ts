@@ -60,10 +60,15 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
+  IDENT_MAX_CODE_POINTS,
   ROLE_ARN_MAX_CODE_POINTS,
+  SAFE_MSG_ALTERED_CHAR,
+  STACK_REF_MAX_CODE_POINTS,
   displayAwsMessage,
   displayIdent,
   isPasteableIdent,
+  safeMsg,
+  truncateCodePoints,
 } from '../../utils/display-safe.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
 import {
@@ -6522,7 +6527,7 @@ async function runRevert(
  * `stream` by asserting the IDENTITY handed to `createInterface`, not by
  * capturing bytes.
  */
-interface HumanTextSink {
+export interface HumanTextSink {
   /** Write raw text. The caller supplies its own newlines. */
   write(chunk: string): void;
   /** The stream an interactive prompt should be attached to. */
@@ -6550,8 +6555,12 @@ function humanTextSink(json: boolean | undefined): HumanTextSink {
  * line per resource per property path, mirroring the human report's
  * +/- diff format but flipped: the value on disk after this command
  * runs is the `+` side.
+ *
+ * Every record- or readback-derived value goes through the report's row
+ * helpers (issue go-to-k/cdkd#3949), as in `writeHumanReport`. Exported for
+ * unit testing.
  */
-function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void {
+export function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void {
   for (const report of reports) {
     // Issue #2135: the plan asks the same exhaustive question `runAccept` does —
     // a plan that silently omits a variant the real run acts on (or vice versa)
@@ -6585,27 +6594,25 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       // rather than folded into `acceptRefusalReason`, which answers per path.
       if (report.state.resources[o.logicalId]?.observedBaselineRefused === true) {
         lines.push(
-          `  ~ ${o.logicalId} (${o.resourceType})\n` +
+          `  ~ ${reportResource(o)}\n` +
             `    SKIPPED — a 'cdkd import' run refused this resource's observed-properties ` +
             `baseline; accepting would write the AWS readback into properties it already ` +
             `found untrustworthy. Deploy a change to this resource first.\n`
         );
         continue;
       }
-      lines.push(`  ~ ${o.logicalId} (${o.resourceType})\n`);
+      lines.push(`  ~ ${reportResource(o)}\n`);
       for (const change of o.changes) {
         // Issue #1914: a `--dry-run` that promises a write the real run will
         // refuse is worse than either behaviour alone, so the plan asks the
         // same predicate `runAccept` does.
         const refusal = acceptRefusalReason(change, o.maskedPaths);
         if (refusal !== undefined) {
-          lines.push(`    ${change.path}: SKIPPED — ${refusal}\n`);
+          lines.push(`    ${reportPath(change.path)}: SKIPPED — ${refusal}\n`);
           continue;
         }
         plannedWrites++;
-        lines.push(
-          `    ${change.path}: ${formatScalar(change.stateValue)} -> ${formatScalar(change.awsValue)}\n`
-        );
+        lines.push(reportPlanChangeLine(change.path, change.stateValue, change.awsValue));
       }
     }
     // The resources are still LISTED in both cases: the refusal reason on each
@@ -6623,9 +6630,9 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
     out.write(
       plannedWrites === 0
         ? `\nPlan (--accept): no accepted values will be written to cdkd state for ` +
-            `${report.stackName} (${report.region}) — every drifted change below is refused ` +
+            `${reportHeading(report)} — every drifted change below is refused ` +
             `(the run still writes the positioned re-redaction):\n`
-        : `\nPlan (--accept): update cdkd state for ${report.stackName} (${report.region}):\n`
+        : `\nPlan (--accept): update cdkd state for ${reportHeading(report)}:\n`
     );
     for (const line of lines) out.write(line);
   }
@@ -6682,8 +6689,13 @@ function revertCommandLine(stackName: string, region: string): string | undefine
  * Print the planned `provider.update` calls for `--revert` (no AWS calls).
  * One line per resource summarising how many property paths will be
  * overwritten on the AWS side.
+ *
+ * Printed directly above the confirmation prompt, so every record- or
+ * readback-derived value goes through the report's row helpers (issue
+ * go-to-k/cdkd#3949): a forged row here misstates what the operator confirms.
+ * Exported for unit testing.
  */
-function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
+export function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
   for (const report of reports) {
     // Issue #2135: same exhaustive question `runRevert` asks, for the same
     // reason the accept plan asks it.
@@ -6700,7 +6712,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
     );
     if (drifted.length === 0) continue;
     out.write(
-      `\nPlan (--revert): push cdkd state values back into AWS for ${report.stackName} (${report.region}):\n`
+      `\nPlan (--revert): push cdkd state values back into AWS for ${reportHeading(report)}:\n`
     );
     for (const o of drifted) {
       // Issue #2944. `runRevert` declines a marked resource before it reaches
@@ -6709,7 +6721,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       // the user decides on what the plan says.
       if (report.state.resources[o.logicalId]?.observedBaselineRefused === true) {
         out.write(
-          `  ! ${o.logicalId} (${o.resourceType}): NOT reverted — a 'cdkd import' run refused ` +
+          `  ! ${reportResource(o)}: NOT reverted — a 'cdkd import' run refused ` +
             `this resource's observed-properties baseline, so the only baseline available is ` +
             `the one that refusal already found untrustworthy. Deploy a change to this ` +
             `resource first.\n`
@@ -6718,12 +6730,10 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       }
       const word = o.changes.length === 1 ? 'property path' : 'property paths';
       out.write(
-        `  → provider.update on ${o.logicalId} (${o.resourceType}): revert ${o.changes.length} ${word}\n`
+        `  → provider.update on ${reportResource(o)}: revert ${o.changes.length} ${word}\n`
       );
       for (const change of o.changes) {
-        out.write(
-          `    ${change.path}: ${formatScalar(change.awsValue)} -> ${formatScalar(change.stateValue)}\n`
-        );
+        out.write(reportPlanChangeLine(change.path, change.awsValue, change.stateValue));
       }
       // Issue #1478. Printed as part of the PLAN, not at update time, so it
       // is visible before the confirmation prompt AND under `--dry-run` —
@@ -6782,7 +6792,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
             // diff lines. Masked at the point of printing rather than at the
             // point of building, so the callers that use these lists as
             // KEY SETS keep the real keys.
-            out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
+            out.write(`        ${reportPath(maskSecretsInText(path, o.secrets))}\n`);
           }
           // "Every other tag reverts normally" is only true on the
           // observed-capture baseline. Under #1626's raw-TEMPLATE baseline
@@ -6824,7 +6834,7 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
           );
           for (const path of unbaselined) {
             // Masked for the same reason as the preserved-tag list above.
-            out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
+            out.write(`        ${reportPath(maskSecretsInText(path, o.secrets))}\n`);
           }
           // The SENTENCE is gated with its command, not separately. A first
           // cut printed "with the command below" unconditionally, so a
@@ -7091,7 +7101,178 @@ function writeJsonReport(reports: StackDriftReport[]): void {
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
-function writeHumanReport(reports: StackDriftReport[]): void {
+/**
+ * An identifier on a row of the human report — the stack name and region of
+ * a heading, a logical id, a resource type, a property path — CAPPED the way
+ * `malformed-resources-bag.ts`'s `safeIdentifier` caps (issue
+ * go-to-k/cdkd#3232): it bounds how much of the reader's screen a planted
+ * multi-kilobyte state key can take — a bound on length, not a guarantee that
+ * the rows after it stay in view, since a name can still wrap within the cap
+ * (`writeHumanReport`'s doc names that class). The cap is a required parameter for the
+ * reason that helper's doc gives — a defaulted one silently cut every site
+ * that forgot to pass the wider one. `truncateCodePoints` rather than `slice`,
+ * so the cut never lands inside a surrogate pair.
+ *
+ * Sanitizing is deliberately NOT done here: every row of the report is a
+ * `safeMsg` template, which flattens each interpolated value to one line and
+ * strips terminal control from it, identifier and property value alike,
+ * applied where the row is built. Nothing is trimmed either: `displaySafe`
+ * would trim, and a property value's padding is the whole difference between
+ * `" value "` and `"value"` on a real drift — which is why a change line
+ * quotes such a value first (`reportValue`), so its edges show.
+ */
+function reportIdent(value: string, maxCodePoints: number): string {
+  const { text, truncated } = truncateCodePoints(value, maxCodePoints);
+  return truncated ? `${text}...` : text;
+}
+
+/** `<stack> (<region>)`, the identity every heading of the report opens with. */
+function reportHeading(report: StackDriftReport): string {
+  return safeMsg`${reportIdent(report.stackName, STACK_REF_MAX_CODE_POINTS)} (${reportIdent(report.region, IDENT_MAX_CODE_POINTS)})`;
+}
+
+/** `<logicalId> (<resourceType>)`, the identity every per-resource row carries. */
+function reportResource(outcome: { logicalId: string; resourceType: string }): string {
+  return safeMsg`${reportIdent(outcome.logicalId, IDENT_MAX_CODE_POINTS)} (${reportIdent(outcome.resourceType, IDENT_MAX_CODE_POINTS)})`;
+}
+
+/**
+ * The characters `safeMsg` acts on in a value (`SAFE_MSG_ALTERED_CHAR`: C0 —
+ * newline, tab and ESC among them — DEL, C1, U+2028 / U+2029 and the bidi
+ * overrides), plus an UNPAIRED surrogate, which `safeMsg` passes through but
+ * stdout's UTF-8 encoding turns into U+FFFD, so `"a\uD800"` and `"a\uFFFD"`
+ * would print alike. The `u` flag makes `[\uD800-\uDFFF]` match only a lone
+ * surrogate; a paired one is a single code point outside the class.
+ */
+const ALTERED_BY_SAFE_MSG = new RegExp(`${SAFE_MSG_ALTERED_CHAR.source}|[\\uD800-\\uDFFF]`, 'u');
+
+/**
+ * JSON text with every character `SAFE_MSG_ALTERED_CHAR` names written as its
+ * `\uXXXX` escape. `JSON.stringify` escapes only the C0 range (and an unpaired
+ * surrogate, the other half of `ALTERED_BY_SAFE_MSG`); DEL, C1, U+2028 /
+ * U+2029 and the bidi overrides it leaves literal, and `safeMsg` would then
+ * replace each with a space — so `"a\u2028"` and `"a "` would still print
+ * alike. Escaped, the text is still valid JSON for the same value.
+ */
+function escapeJsonLiterals(json: string): string {
+  return json.replace(
+    new RegExp(SAFE_MSG_ALTERED_CHAR.source, 'g'),
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
+  );
+}
+
+/**
+ * A change line's value, as `safeMsg` will be handed it.
+ *
+ * A STRING that carries a character `ALTERED_BY_SAFE_MSG` names (ESC included,
+ * so even a colour code `safeMsg` would keep), whose edges are whitespace, or
+ * that starts with `"`, is printed as its JSON string instead, with every such
+ * character escaped (`escapeJsonLiterals`): flattened, `"abc\n"` and `"abc"`
+ * (or `"a\tb"` and `"a b"`) would print the same `-` and `+` sides, and a
+ * padded value's edges are invisible without the quotes. No character of that
+ * set is then left between the quotes, so two strings that differ in one, or
+ * in whether they have whitespace at an edge, print differently (a zero-width
+ * or look-alike character, or one kind of space for another, is outside that
+ * and prints as itself), and a value's colour code prints as escape text, not
+ * as colour. The leading `"` rule means a value that merely SPELLS a quoted
+ * string cannot pass for one. Any other string renders byte-for-byte as it
+ * always did.
+ *
+ * Every non-string goes through `formatScalar` and the same escaping: a
+ * structured value's JSON, so a control nested in it arrives as escape text
+ * too; a number, boolean, `null` or `undefined`, which has nothing to escape.
+ */
+function reportValue(value: unknown): string {
+  if (typeof value !== 'string') return escapeJsonLiterals(formatScalar(value));
+  if (value === value.trim() && !value.startsWith('"') && !ALTERED_BY_SAFE_MSG.test(value)) {
+    return value;
+  }
+  return escapeJsonLiterals(JSON.stringify(value));
+}
+
+/**
+ * One `-` / `+` line of a drifted resource. The value goes through
+ * `reportValue` and then `safeMsg` — never trimmed, never capped — so an
+ * ordinary value renders byte-for-byte as it always did and a drift that
+ * differs only by a control character, or by whether a value has whitespace
+ * at an edge, still shows two different sides.
+ */
+function reportChangeLine(sign: '-' | '+', path: string, value: unknown): string {
+  return safeMsg`    ${sign} ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportValue(value)}\n`;
+}
+
+/**
+ * A property path on a `--accept` / `--revert` plan line that prints no value
+ * beside it (a `SKIPPED` row, a preserved-tag or unbaselined-value list entry),
+ * capped and sanitized as `reportChangeLine` does its path (issue
+ * go-to-k/cdkd#3949). A caller that masks the path does so FIRST, on the raw
+ * text, so neither the cap nor the sanitizing can split a secret past the
+ * masker.
+ */
+function reportPath(path: string): string {
+  return safeMsg`${reportIdent(path, IDENT_MAX_CODE_POINTS)}`;
+}
+
+/**
+ * One `<path>: <from> -> <to>` line of a `--accept` / `--revert` plan, each
+ * value through `reportPlanValue` and the whole row a `safeMsg` template, as a
+ * `-` / `+` line of the report is (issue go-to-k/cdkd#3949). The revert plan
+ * is printed directly above the confirmation prompt, so a forged row here
+ * misstates what the operator is about to confirm.
+ */
+function reportPlanChangeLine(path: string, from: unknown, to: unknown): string {
+  return safeMsg`    ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportPlanValue(from)} -> ${reportPlanValue(to)}\n`;
+}
+
+/**
+ * `reportValue`, plus one more reason to quote a string: it contains `->`,
+ * the arrow of the plan's own ` -> ` separator. Unquoted, a readback value
+ * `prod -> prod` would print `Env: prod -> prod -> staging`, and the reader
+ * could not tell which value the revert pushes. Matching the ARROW rather
+ * than ` -> ` is what makes that hold: `a ->` / `b` and `a` / `-> b` would
+ * otherwise both print `a -> -> b` (the line supplies the missing space), and
+ * a look-alike space around the arrow would pass. With no unquoted value
+ * containing `->`, the only `->` outside quotes after the path is the
+ * separator (the path itself is unquoted, as on the report's rows). A
+ * structured value needs no rule: JSON has no `->` of its own, so one inside
+ * it sits between JSON's quotes. The quoted form is `reportValue`'s own, so a
+ * string it would quote anyway prints the same either way.
+ */
+function reportPlanValue(value: unknown): string {
+  if (typeof value === 'string' && value.includes('->')) {
+    return escapeJsonLiterals(JSON.stringify(value));
+  }
+  return reportValue(value);
+}
+
+/**
+ * The human rendering of a drift run, to stdout.
+ *
+ * Every value it prints that came out of a state record or an AWS readback —
+ * the stack name and region of a heading, each row's logical id and resource
+ * type, each changed property's path and both of its values — goes through
+ * {@link safeMsg} at the row that prints it (issue go-to-k/cdkd#3232). The
+ * output is line-oriented, and this report is exactly the text a reader trusts
+ * to say whether a stack matches AWS: a newline in a logical id invented a
+ * `✓ ... no drift detected` row, and an escape sequence or a bidi override
+ * could overwrite or reorder what the reader saw. `ConsoleLogger`'s sink does
+ * not reach these writes, which go to `process.stdout` directly, so the guard
+ * is at the call site — where `safeMsg` also closes the line-forging half the
+ * sink cannot tell from cdkd's own newlines. What `safeMsg` keeps, it keeps
+ * here too: an IDENTIFIER spelling one of cdkd's own colour codes
+ * (`terminalSafe`'s SGR allowlist: cdkd's colours, bold, dim and reset) keeps
+ * it, and an unreset one styles the rows after it as well — colour and text
+ * styling are all such a sequence can do; it cannot move the cursor, clear the
+ * screen or plant a link. A property VALUE carrying any control is JSON-quoted
+ * first (`reportValue`), so its ESC prints as escape text instead.
+ *
+ * `--json` is untouched: a consumer of that mode wants the stored value. And
+ * this is the control-character class only — a value that WRAPS into a line
+ * that reads as a row (a padded name spelling `✓ Prod (us-east-1): ...`) is
+ * go-to-k/cdkd#3328's class, which the cap bounds for an identifier, nothing
+ * bounds for an uncapped property value, and neither closes.
+ */
+export function writeHumanReport(reports: StackDriftReport[]): void {
   for (const report of reports) {
     const drifted: DriftedOutcome[] = [];
     const unsupported: Array<Extract<DriftOutcome, { kind: 'unsupported' }>> = [];
@@ -7220,7 +7401,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
         // there was nothing to compare, so "everything was compared" is
         // vacuously true and a ⚠ would be noise no action can clear.
         process.stdout.write(
-          `⚠ ${report.stackName} (${report.region}): no drift detected, but NOTHING was ` +
+          `⚠ ${reportHeading(report)}: no drift detected, but NOTHING was ` +
             `compared — 0 of ${report.outcomes.length} ` +
             `resource${report.outcomes.length === 1 ? '' : 's'} checked ` +
             `(${unsupported.length} unsupported, ${skippedCount} skipped)\n`
@@ -7235,7 +7416,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
           // partially compared, 1 unsupported)`, whose parts sum to 4 against
           // a stated total of 3. Outside the parens the paren still explains
           // exactly the `inspected - checked` gap and the numbers add up.
-          `⚠ ${report.stackName} (${report.region}): no drift detected, but ` +
+          `⚠ ${reportHeading(report)}: no drift detected, but ` +
             `${checked} of ${inspected} resource${inspected === 1 ? '' : 's'} fully checked ` +
             // Issues #2151 / #1945: the parenthetical is conditional for the
             // same reason the block heading below is. `only partially compared`
@@ -7254,20 +7435,20 @@ function writeHumanReport(reports: StackDriftReport[]): void {
         );
       } else {
         process.stdout.write(
-          `✓ ${report.stackName} (${report.region}): no drift detected ` +
+          `✓ ${reportHeading(report)}: no drift detected ` +
             `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
         );
       }
     } else {
       const word = drifted.length === 1 ? 'resource' : 'resources';
       process.stdout.write(
-        `\n⚠ ${report.stackName} (${report.region}): drift detected on ${drifted.length} ${word}\n\n`
+        `\n⚠ ${reportHeading(report)}: drift detected on ${drifted.length} ${word}\n\n`
       );
       for (const o of drifted) {
-        process.stdout.write(`  ~ ${o.logicalId} (${o.resourceType})\n`);
+        process.stdout.write(`  ~ ${reportResource(o)}\n`);
         for (const change of o.changes) {
-          process.stdout.write(`    - ${change.path}: ${formatScalar(change.stateValue)}\n`);
-          process.stdout.write(`    + ${change.path}: ${formatScalar(change.awsValue)}\n`);
+          process.stdout.write(reportChangeLine('-', change.path, change.stateValue));
+          process.stdout.write(reportChangeLine('+', change.path, change.awsValue));
         }
         process.stdout.write('\n');
       }
@@ -7365,9 +7546,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
               `:\n`
       );
       for (const { outcome, cause } of notCompared) {
-        process.stdout.write(
-          `    ! ${outcome.logicalId} (${outcome.resourceType}) — ${notComparedReason(cause)}\n`
-        );
+        process.stdout.write(`    ! ${reportResource(outcome)} — ${notComparedReason(cause)}\n`);
       }
     }
 
@@ -7377,7 +7556,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
           `provider does not yet support drift detection:\n`
       );
       for (const o of unsupported) {
-        process.stdout.write(`    ? ${o.logicalId} (${o.resourceType})\n`);
+        process.stdout.write(`    ? ${reportResource(o)}\n`);
       }
     }
   }

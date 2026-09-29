@@ -105,7 +105,28 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   })),
 }));
 
+// Off by default, so every case sees the real exit-code path. A case that
+// needs the thrown error itself (its `code`) turns it on to receive the
+// rejection instead of a `process.exit`.
+const passErrorsThrough = vi.hoisted(() => ({ on: false }));
+vi.mock('../../../src/utils/error-handler.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/utils/error-handler.js')>();
+  return {
+    ...actual,
+    withErrorHandling:
+      <Args extends unknown[]>(fn: (...args: Args) => Promise<void> | void) =>
+      async (...args: Args): Promise<void> => {
+        if (passErrorsThrough.on) {
+          await fn(...args);
+          return;
+        }
+        await actual.withErrorHandling(fn)(...args);
+      },
+  };
+});
+
 import { createDestroyCommand } from '../../../src/cli/commands/destroy.js';
+import { resolveApp } from '../../../src/cli/config-loader.js';
 
 function makeStackState(stackName: string, region = 'us-east-1'): StackState {
   return {
@@ -212,7 +233,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({ state: makeStackState('Protected'), etag: '"x"' });
 
-    await expect(runDestroy(['destroy', 'Protected', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['Protected', '--yes'])).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
 
     // Per-stack guard fires BEFORE the runner is invoked.
@@ -239,7 +260,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       { stackName: 'Multi', region: forged },
     ]);
 
-    await expect(runDestroy(['destroy', 'Multi', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['Multi', '--yes'])).rejects.toThrow();
     const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     // Positive control: the multi-region refusal fired, naming the plain region.
     expect(messages).toContain('has state in multiple regions: us-east-1, a region that is not a plain identifier');
@@ -252,7 +273,9 @@ describe('cdkd destroy: terminationProtection guard', () => {
 
   it('withholds a non-plain state-listed STACK from `Remove one record with:` and explains the hole (go-to-k/cdkd#3759)', async () => {
     // No synth, so `candidateStacks` comes from `listStacks()` — the stack
-    // name itself is an S3 key segment here.
+    // name itself is an S3 key segment here. Named exactly (after `--`, so
+    // `-Multi` is not read as an option): with no synthesized app, `--all` is
+    // refused before the state fallback (go-to-k/cdkd#3839).
     for (const [name, clauseText] of [
       // Refused by `plainIdent` alone: the clause points at the listing.
       [
@@ -274,7 +297,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
         { stackName: name, region: 'eu-west-1' },
       ]);
 
-      await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+      await expect(runDestroy(['--yes', '--', name])).rejects.toThrow();
       const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
       // Positive control: the multi-region refusal fired.
       expect(messages, name).toContain(
@@ -296,7 +319,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       { stackName: 'Multi', region: 'us-east-1' },
       { stackName: 'Multi', region: 'eu-west-1' },
     ]);
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['Multi', '--yes'])).rejects.toThrow();
     const plain = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     expect(plain).toContain("Stack 'Multi' has state in multiple regions: us-east-1, eu-west-1");
     expect(plain).toMatch(/^Remove one record with: cdkd state orphan Multi --stack-region '<region>'$/m);
@@ -312,7 +335,8 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
     mockGetState.mockResolvedValue(null);
 
-    await runDestroy(['destroy', '--all', '--yes']).catch(() => undefined);
+    // Named exactly: with no synthesized app, `--all` is refused (go-to-k/cdkd#3839).
+    await runDestroy(['--yes', '--', name]).catch(() => undefined);
     const infos = infoSpy.mock.calls.map((c) => String(c[0] ?? ''));
     const preparing = infos.filter((l) => l.includes('Preparing to destroy stack:'));
     const skipped = warnSpy.mock.calls
@@ -338,7 +362,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
     mockGetState.mockResolvedValue(null);
 
-    await runDestroy(['destroy', '--all', '--yes', '--remove-protection']).catch(() => undefined);
+    await runDestroy(['--all', '--yes', '--remove-protection']).catch(() => undefined);
     const warned = warnSpy.mock.calls.map((c) => String(c[0] ?? ''));
     // Positive control: the bypass fired, naming the folded stack.
     expect(warned.filter((l) => l.includes('terminationProtection'))).toEqual([
@@ -367,7 +391,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       etag: '"x"',
     }));
 
-    await runDestroy(['destroy', '--all', '--yes']);
+    await runDestroy(['--all', '--yes']);
 
     // Both stacks flow through the runner — guard does not fire.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
@@ -377,6 +401,34 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(dispatched).toEqual(new Set(['Plain', 'Unguarded']));
     // No partial-failure exit on the happy path.
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('names a region-scoped state orphan when resources failed (go-to-k/cdkd#3996)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Failer', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Failer', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Failer'), etag: '"x"' });
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: 'Failer',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 1,
+      retainedCount: 0,
+      skippedCount: 0,
+      errorCount: 1,
+      interrupted: false,
+    });
+
+    await expect(runDestroy(['Failer', '--yes'])).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('Destroy completed with 1 resource error(s)');
+    expect(message).toContain(
+      "'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record)"
+    );
   });
 
   it('exits 2 when the runner SKIPPED a resource, even with zero errors (issue #1752)', async () => {
@@ -401,7 +453,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       interrupted: false,
     });
 
-    await expect(runDestroy(['destroy', 'Skipper', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['Skipper', '--yes'])).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toContain('skipped 1 entry');
@@ -412,6 +464,11 @@ describe('cdkd destroy: terminationProtection guard', () => {
     // nested case (issue #1752 review).
     expect(message).not.toContain('resource(s) cdkd could not address');
     expect(message).toContain('counts as ONE entry');
+    // Region-scoped: a bare `cdkd state orphan <stack>` drops that name's
+    // record in EVERY region (go-to-k/cdkd#3996).
+    expect(message).toContain(
+      "drop the records with 'cdkd state orphan <stack> --stack-region <region>'."
+    );
 
     // The run-level record must agree with the exit code — a skip-only run is
     // FAILED, which is also what suppresses `--purge-events` (the post-mortem
@@ -444,7 +501,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       interrupted: false,
     });
 
-    await runDestroy(['destroy', 'Clean', '--yes']);
+    await runDestroy(['Clean', '--yes']);
 
     expect(exitSpy).not.toHaveBeenCalled();
     const finished = recordedRunEvents.find((e) => e['eventType'] === 'RUN_FINISHED')!;
@@ -480,7 +537,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({ state: makeStackState('Protected'), etag: '"x"' });
 
-    await runDestroy(['destroy', 'Protected', '--yes', '--remove-protection']);
+    await runDestroy(['Protected', '--yes', '--remove-protection']);
 
     // The runner runs (bypass) and the runner gets removeProtection=true.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
@@ -513,7 +570,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       etag: '"x"',
     }));
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow();
 
     // Unprotected stack went through the runner; protected one did not.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
@@ -612,7 +669,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     });
 
     await expect(
-      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+      runDestroy(['NestedStackExample~Child', '--yes'])
     ).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
 
@@ -650,17 +707,17 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     // tolerates pre-v6 states (parentStack is undefined on them).
     mockGetState.mockResolvedValue({ state: makeStackState('Plain'), etag: '"x"' });
 
-    await runDestroy(['destroy', 'Plain', '--yes']);
+    await runDestroy(['Plain', '--yes']);
 
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
     expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('Plain');
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
-  it('--all with a parent + a nested child surfaced from state: parent destroys, child counts as failure (exit 2)', async () => {
-    // Synth fails so the fallback path includes the nested child in
-    // candidateStacks. The parent has no parentStack and proceeds; the
-    // child is refused.
+  it('naming a parent + its nested child from state: parent destroys, child counts as failure (exit 2)', async () => {
+    // Synth fails so the fallback path resolves both exact names from state.
+    // The parent has no parentStack and proceeds; the child is refused. (This
+    // used `--all`, which a failed synth now refuses outright, go-to-k/cdkd#3839.)
     mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
     mockListStacks.mockResolvedValue([
       { stackName: 'NestedStackExample', region: 'us-east-1' },
@@ -676,7 +733,9 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
       return { state: makeStackState(name), etag: '"x"' };
     });
 
-    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+    await expect(
+      runDestroy(['NestedStackExample', 'NestedStackExample~Child', '--yes'])
+    ).rejects.toThrow();
 
     // Parent destroyed; child refused.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
@@ -715,7 +774,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
       return { state: makeStackState(name), etag: '"x"' };
     });
 
-    await runDestroy(['destroy', '--all', '--yes']);
+    await runDestroy(['--all', '--yes']);
 
     // Parent dispatched to runner; child invisible to --all in synth-success.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
@@ -754,7 +813,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     });
 
     await expect(
-      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+      runDestroy(['NestedStackExample~Child', '--yes'])
     ).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
 
@@ -805,7 +864,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     });
 
     // Wildcard miss — falls through to generic "no matching" log, no exit.
-    await runDestroy(['destroy', 'Nope~*', '--yes']);
+    await runDestroy(['Nope~*', '--yes']);
 
     expect(mockRunDestroyForStack).not.toHaveBeenCalled();
     expect(exitSpy).not.toHaveBeenCalled();
@@ -834,7 +893,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     mockGetState.mockResolvedValue({ state: childStateNoLogicalId, etag: '"x"' });
 
     await expect(
-      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+      runDestroy(['NestedStackExample~Child', '--yes'])
     ).rejects.toThrow();
     expect(exitSpy).toHaveBeenCalledWith(2);
 
@@ -842,5 +901,472 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     expect(messages).toMatch(/nested child of 'NestedStackExample'/);
     expect(messages).not.toMatch(/parent's logical id/);
     expect(messages).not.toMatch(/undefined/);
+  });
+});
+
+describe('cdkd destroy: empty selection names a Stage that failed to load (go-to-k/cdkd#3507)', () => {
+  const failedStages = [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }];
+  const note = 'Stage MyStage failed to load, so stacks under it are missing from this list';
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockListStacks.mockReset();
+    mockSynthesize.mockReset();
+    // The previous describe leaves nested-child state behind; a leaked
+    // `parentStack` would refuse a stack before it could ever reach the runner.
+    mockGetState.mockReset();
+    mockGetState.mockImplementation(async (name: string) => ({
+      state: makeStackState(name),
+      etag: '"x"',
+    }));
+    mockRunDestroyForStack.mockReset();
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: '',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 1,
+      retainedCount: 0,
+      skippedCount: 0,
+      errorCount: 0,
+      interrupted: false,
+    });
+    infoSpy.mockReset();
+    errorSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  const infoText = (): string => infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+
+  it('names the Stage a display-path pattern targets when the stack exists in state', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Other', region: 'us-east-1' },
+      { stackName: 'MyStage-MyStack', region: 'us-east-1' },
+    ]);
+
+    await runDestroy(['MyStage/MyStack', '--yes']);
+
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    expect(infoText()).toContain(`No matching stacks found in state. ${note}`);
+  });
+
+  it('hedges the Stage when the pattern does not target it', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['Nope*', '--yes']);
+
+    expect(infoText()).toContain(`No matching stacks found in state. Possibly unrelated: ${note}`);
+  });
+
+  it('keeps the bare message when synth fails, so no Stage can be named', async () => {
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['MyStage/MyStack', '--yes']);
+
+    expect(infoSpy.mock.calls.map((c) => c[0])).toContain('No matching stacks found in state');
+  });
+
+  it('refuses --all or a wildcard over an app that synthesized no stacks instead of taking every stack in state', async () => {
+    // [argv, selector named in the refusal, hedge before the note]. A pattern
+    // without `/` cannot be attributed to a Stage, so its note is hedged.
+    for (const [args, selector, hedge] of [
+      [['--all'], '--all', ''],
+      [['*'], '*', 'Possibly unrelated: '],
+      [['Cdkd*'], 'Cdkd*', 'Possibly unrelated: '],
+      [['--stack', 'Cdkd*'], 'Cdkd*', 'Possibly unrelated: '],
+      [['MyStage/*'], 'MyStage/*', ''],
+      // An exact name beside a wildcard does not rescue the command.
+      [['MyStage-MyStack', 'Cdkd*', 'MyStage/*'], 'Cdkd*, MyStage/*', ''],
+      // `?` is literal to matchStacks and no CFn name contains one; it is
+      // refused anyway, fail-closed, like the nested-child check's wildcard test.
+      [['MyStage-?yStack'], 'MyStage-?yStack', 'Possibly unrelated: '],
+    ] as const) {
+      for (const stages of [failedStages, []]) {
+        errorSpy.mockClear();
+        exitSpy.mockClear();
+        mockGetState.mockClear();
+        mockRunDestroyForStack.mockClear();
+        mockSynthesize.mockResolvedValue({
+          manifest: {},
+          assemblyDir: '/tmp/cdk.out',
+          stacks: [],
+          failedStages: stages,
+        });
+        mockListStacks.mockResolvedValue([
+          { stackName: 'MyStage-MyStack', region: 'us-east-1' },
+          { stackName: 'CdkdOtherApp', region: 'us-east-1' },
+        ]);
+
+        mockListStacks.mockClear();
+        await expect(runDestroy([...args, '--yes']), selector).rejects.toThrow('process.exit-mock');
+        expect(exitSpy, selector).toHaveBeenCalledWith(1);
+        // Refused before the bucket is even listed, let alone destroyed.
+        expect(mockListStacks, selector).not.toHaveBeenCalled();
+        expect(mockGetState, selector).not.toHaveBeenCalled();
+        expect(mockRunDestroyForStack, selector).not.toHaveBeenCalled();
+        const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+        expect(messages, selector).toContain(
+          `${selector} selects among the stacks this app synthesizes, and it synthesized none; refusing to fall back to every stack in state`
+        );
+        if (stages.length > 0) {
+          expect(messages, selector).toContain(`every stack in state. ${hedge}${note}`);
+        } else {
+          expect(messages, selector).toMatch(/every stack in state\.$/m);
+        }
+      }
+    }
+  });
+
+  it('still resolves an exact physical name through the state fallback when the app synthesized no stacks', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'MyStage-MyStack', region: 'us-east-1' },
+      { stackName: 'CdkdOtherApp', region: 'us-east-1' },
+    ]);
+
+    await runDestroy(['MyStage-MyStack', '--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('MyStage-MyStack');
+  });
+
+  it('names the Stage on the no-pattern arm when the only deployed stack sat under it', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('NeverDeployed')],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStage-MyStack', region: 'us-east-1' }]);
+
+    await runDestroy(['--yes']);
+
+    expect(infoText()).toContain(`No stacks found in state. ${note}`);
+  });
+
+  it('names the Stage when the whole app sat under it and no stack was named', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStage-MyStack', region: 'us-east-1' }]);
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toContain(`ensure --app / cdk.json is configured. ${note}`);
+    // --all is refused once synth succeeded, so it is not offered as advice.
+    expect(messages).toContain('Specify stack names explicitly, or ensure --app');
+    expect(messages).not.toContain('use --all');
+  });
+
+  it('no longer advises --all when synth failed and no stack was named, and says why synth failed', async () => {
+    // --all is refused without a synthesized app too (go-to-k/cdkd#3839).
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStage-MyStack', region: 'us-east-1' }]);
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toMatch(
+      /Specify stack names explicitly, or ensure --app \/ cdk\.json is configured\.$/m
+    );
+    expect(messages).not.toContain('use --all');
+    expect(messages).toMatch(/^Caused by: synth unavailable$/m);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+  });
+
+  it('keeps the bare message when no Stage failed', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages: [],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['MyStage/MyStack', '--yes']);
+
+    expect(infoSpy.mock.calls.map((c) => c[0])).toContain('No matching stacks found in state');
+
+    // The refusal keeps its own full stop when there is no note to append.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [],
+      failedStages: [],
+    });
+    await expect(runDestroy(['--yes'])).rejects.toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toMatch(/ensure --app \/ cdk\.json is configured\.$/m);
+  });
+});
+
+describe('cdkd destroy: no synthesized app means no app scope for --all or a wildcard (go-to-k/cdkd#3839)', () => {
+  // Two stacks in state, from two apps. Without a synthesized app there is no
+  // way to tell them apart, so a selector that means "the app's stacks" must
+  // refuse rather than take both.
+  const stateRefs = [
+    { stackName: 'CdkdThisApp', region: 'us-east-1' },
+    { stackName: 'CdkdOtherApp', region: 'us-east-1' },
+  ];
+  // [argv, the selector the refusal names]. Every shape `--all` or a wildcard
+  // can take, including a wildcard beside an exact name (which does not rescue
+  // the command) and a display-path wildcard.
+  const selections = [
+    [['--all'], '--all'],
+    [['*'], '*'],
+    [['Cdkd*'], 'Cdkd*'],
+    [['--stack', 'Cdkd*'], 'Cdkd*'],
+    [['CdkdThisApp', 'Cdkd*'], 'Cdkd*'],
+    [['MyStage/*'], 'MyStage/*'],
+    [['CdkdThisAp?'], 'CdkdThisAp?'],
+  ] as const;
+  // The three ways the command can be told not to prompt, plus none at all:
+  // the refusal must fire before the per-stack prompt in every one.
+  const promptFlags = [['--yes'], ['--force'], ['-f'], []] as const;
+  // Synth failed, and no app configured at all (resolveApp finds nothing).
+  const noApp = [
+    {
+      label: 'synth failed',
+      setup: () => {
+        mockSynthesize.mockRejectedValue(new Error('Cannot find module ./bin/app.js'));
+      },
+      reason: 'the app could not be synthesized',
+      hint: 'Fix the app so it synthesizes',
+      cause: /^Caused by: Cannot find module \.\/bin\/app\.js$/m,
+    },
+    {
+      label: 'no app configured',
+      setup: () => {
+        vi.mocked(resolveApp).mockReturnValue(undefined);
+      },
+      reason: 'no app is configured',
+      hint: 'Configure the app with --app or cdk.json',
+      cause: undefined,
+    },
+  ] as const;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockListStacks.mockReset();
+    mockListStacks.mockResolvedValue(stateRefs);
+    mockSynthesize.mockReset();
+    mockGetState.mockReset();
+    mockGetState.mockImplementation(async (name: string) => ({
+      state: makeStackState(name),
+      etag: '"x"',
+    }));
+    mockRunDestroyForStack.mockReset();
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: '',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 1,
+      retainedCount: 0,
+      skippedCount: 0,
+      errorCount: 0,
+      interrupted: false,
+    });
+    vi.mocked(resolveApp).mockReset();
+    vi.mocked(resolveApp).mockReturnValue('fake-app-cmd');
+    infoSpy.mockReset();
+    errorSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.mocked(resolveApp).mockReset();
+    vi.mocked(resolveApp).mockReturnValue('fake-app-cmd');
+    vi.clearAllMocks();
+  });
+
+  const errorText = (): string => errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+
+  it('refuses --all and every wildcard shape, before any state listing or prompt, naming why', async () => {
+    let cases = 0;
+    for (const arm of noApp) {
+      for (const [args, selector] of selections) {
+        for (const flags of promptFlags) {
+          const label = `${arm.label}: ${[...args, ...flags].join(' ')}`;
+          errorSpy.mockClear();
+          exitSpy.mockClear();
+          mockListStacks.mockClear();
+          mockGetState.mockClear();
+          mockRunDestroyForStack.mockClear();
+          mockSynthesize.mockReset();
+          vi.mocked(resolveApp).mockReturnValue('fake-app-cmd');
+          arm.setup();
+
+          await expect(runDestroy([...args, ...flags]), label).rejects.toThrow('process.exit-mock');
+          expect(exitSpy, label).toHaveBeenCalledWith(1);
+          // Nothing listed, read, locked or destroyed. The per-stack prompt
+          // lives in the (mocked) runner, so an uncalled runner is also a
+          // prompt that was never reached.
+          expect(mockListStacks, label).not.toHaveBeenCalled();
+          expect(mockGetState, label).not.toHaveBeenCalled();
+          expect(mockRunDestroyForStack, label).not.toHaveBeenCalled();
+          const messages = errorText();
+          expect(messages, label).toContain(
+            `${selector} selects among the stacks this app synthesizes, and ${arm.reason}; ` +
+              'refusing to fall back to every stack in state, which spans every app sharing this state bucket. ' +
+              `${arm.hint}, or name each stack exactly: cdkd destroy '<stack>', or cdkd state destroy '<stack>', which needs no app.`
+          );
+          // The synth error is surfaced, and only when there is one.
+          if (arm.cause) {
+            expect(messages, label).toMatch(arm.cause);
+          } else {
+            expect(messages, label).not.toContain('Caused by:');
+          }
+          // No cross-app batch is offered as the way out.
+          expect(messages, label).not.toContain('state destroy --all');
+          expect(messages, label).not.toContain('use --all');
+          cases++;
+        }
+      }
+    }
+    expect(cases).toBe(noApp.length * selections.length * promptFlags.length);
+  });
+
+  it('still resolves an exact physical name from state, positional or --stack, under each confirm flag', async () => {
+    let cases = 0;
+    for (const arm of noApp) {
+      for (const name of [['CdkdOtherApp'], ['--stack', 'CdkdOtherApp']] as const) {
+        for (const flags of [['--yes'], ['--force'], ['-f']] as const) {
+          const label = `${arm.label}: ${[...name, ...flags].join(' ')}`;
+          exitSpy.mockClear();
+          mockRunDestroyForStack.mockClear();
+          mockSynthesize.mockReset();
+          vi.mocked(resolveApp).mockReturnValue('fake-app-cmd');
+          arm.setup();
+
+          await runDestroy([...name, ...flags]);
+
+          expect(exitSpy, label).not.toHaveBeenCalled();
+          expect(mockRunDestroyForStack, label).toHaveBeenCalledTimes(1);
+          expect(mockRunDestroyForStack.mock.calls[0]?.[0], label).toBe('CdkdOtherApp');
+          cases++;
+        }
+      }
+    }
+    expect(cases).toBe(noApp.length * 2 * 3);
+  });
+
+  it('renders a wildcard carrying a newline on one line of the refusal', async () => {
+    mockSynthesize.mockRejectedValue(new Error('Cannot find module ./bin/app.js'));
+
+    await expect(runDestroy(['Cdkd*\nForged: cdkd destroy --all', '--force'])).rejects.toThrow(
+      'process.exit-mock'
+    );
+    const messages = errorText();
+    // Positive control: the refusal fired for this pattern.
+    expect(messages).toContain('selects among the stacks this app synthesizes');
+    expect(messages).toContain('Cdkd*');
+    expect(messages.split('\n').some((l) => l.startsWith('Forged:'))).toBe(false);
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+  });
+
+  it('codes the refusals by what is missing: an app scope, or any stack selection', async () => {
+    passErrorsThrough.on = true;
+    try {
+      const cases: Array<[string, () => void, string[], string]> = [
+        // --all / a wildcard with no synthesized app.
+        ['synth failed, --all', () => mockSynthesize.mockRejectedValue(new Error('boom')), ['--all'], 'DESTROY_NO_APP_SCOPE'],
+        ['no app, wildcard', () => vi.mocked(resolveApp).mockReturnValue(undefined), ['Cdkd*'], 'DESTROY_NO_APP_SCOPE'],
+        // No stack named at all: the selection is what is missing, whether or
+        // not an app synthesized.
+        ['synth failed, nothing named', () => mockSynthesize.mockRejectedValue(new Error('boom')), [], 'DESTROY_NO_STACK_SELECTED'],
+        ['no app, nothing named', () => vi.mocked(resolveApp).mockReturnValue(undefined), [], 'DESTROY_NO_STACK_SELECTED'],
+        [
+          'zero-stack app, nothing named',
+          () =>
+            mockSynthesize.mockResolvedValue({
+              manifest: {},
+              assemblyDir: '/tmp/cdk.out',
+              stacks: [],
+              failedStages: [],
+            }),
+          [],
+          'DESTROY_NO_STACK_SELECTED',
+        ],
+      ];
+      for (const [label, setup, args, code] of cases) {
+        mockSynthesize.mockReset();
+        vi.mocked(resolveApp).mockReturnValue('fake-app-cmd');
+        setup();
+        await expect(runDestroy([...args, '--force']), label).rejects.toMatchObject({ code });
+        expect(mockRunDestroyForStack, label).not.toHaveBeenCalled();
+      }
+    } finally {
+      passErrorsThrough.on = false;
+    }
+  });
+
+  it('still resolves several exact names from state when synth failed', async () => {
+    mockSynthesize.mockRejectedValue(new Error('Cannot find module ./bin/app.js'));
+
+    await runDestroy(['CdkdThisApp', 'CdkdOtherApp', '--force']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0]).sort()).toEqual([
+      'CdkdOtherApp',
+      'CdkdThisApp',
+    ]);
+  });
+
+  it('keeps --all and wildcards scoped to the synthesized app when synth succeeds', async () => {
+    // Positive control for the arm above: the same argv, with an app that
+    // synthesizes CdkdThisApp only, destroys that one stack and never the other
+    // app's.
+    let cases = 0;
+    for (const [args] of [[['--all']], [['*']], [['Cdkd*']], [['--stack', 'Cdkd*']]] as const) {
+      const label = args.join(' ');
+      exitSpy.mockClear();
+      mockRunDestroyForStack.mockClear();
+      mockSynthesize.mockResolvedValue({
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        stacks: [makeStackInfo('CdkdThisApp')],
+        failedStages: [],
+      });
+
+      await runDestroy([...args, '--force']);
+
+      expect(exitSpy, label).not.toHaveBeenCalled();
+      expect(mockRunDestroyForStack.mock.calls.map((c) => c[0]), label).toEqual(['CdkdThisApp']);
+      cases++;
+    }
+    expect(cases).toBe(4);
   });
 });

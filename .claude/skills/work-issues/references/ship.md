@@ -5,7 +5,12 @@
 The PARENT's serialization point: grant one merge-ready lane at a time its turn
 — resume that lane agent (SendMessage) to run its integ fixtures and merge while
 it holds the turn, or run `/run-integ` and `gh pr merge` yourself FROM THAT
-LANE'S WORKTREE. Never two lanes' integs or merges at once.
+LANE'S WORKTREE. While that tree is busy with a follow-up branch, ship from a
+SECOND sibling on the PR's branch
+(`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
+running BOTH the integ and the merge there (the marker is per tree); Cleanup
+removes it like any other. Never two lanes' integs or merges at once; when a
+turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
@@ -44,7 +49,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   commit ITS output. Take upstream whole when it derives the file from the tree.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. Keep both, then run
-  `vp run integ-ledger-normalize` before `git rebase --continue` and commit it.
+  `vp run integ-ledger-normalize` before `git rebase --continue` and commit it —
+  after a CLEAN rebase touching the ledger too, before the push.
 
 ### Merge
 
@@ -61,15 +67,17 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
-  as it blocks even after re-runs pass (#3664, #3748, #3767).
+  as it blocks even after re-runs pass (#3664).
 - **`-R` is not optional in a multi-repo run**: `gh` infers it from the CWD,
   and `Could not resolve to a PullRequest` reads as a permissions problem.
 - **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
   = `MERGED` is**, read in its OWN call before anything presuming the merge (the
   thank-you, the claim release, the pull). It lies both ways: from the PR's own
   worktree `--delete-branch` prints `fatal: 'main' is already used by worktree
-  ...` over a SUCCESS, and a thank-you chained after a FAILED merge ("Base
-  branch was modified") had to be deleted.
+  ...` over a SUCCESS, and a chained thank-you followed a FAILED merge. **Nor
+  is the hand-back of a lane agent resumed to ship**: one returning mid-CI may
+  or may not merge later, so the turn stays held and the PARENT arms its own
+  watch to `MERGED`.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check can equally be a peer's just-merged content your local
   green never saw — fetch, rebase, re-run.
@@ -87,7 +95,7 @@ on updated `main` is all the linked binary needs. MAIN-CHECKOUT (SKILL.md
 
 ```bash
 git checkout main && git pull origin main    # bring the merges local
-vp run build
+pnpm install --frozen-lockfile && vp run build   # a merged dependency bump (#3951)
 ```
 
 IN-PLACE — run THIS block INSTEAD, never both: `main` is checked out in the main
@@ -99,7 +107,7 @@ is its own shell:
 # The main checkout is always the FIRST row of `git worktree list`.
 MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
 git -C "$MAIN" pull origin main
-( cd "$MAIN" && vp run build )
+( cd "$MAIN" && pnpm install --frozen-lockfile && vp run build )
 ```
 
 That pull fails outright if the shared main tree is dirty (§7); do not restore

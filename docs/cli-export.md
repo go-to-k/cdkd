@@ -160,15 +160,48 @@ phases, and lets CloudFormation re-`CREATE` it in phase 2.
 The plan printed before the confirmation lists each of these resources. For
 an `AWS::IAM::Policy` it also lists the roles, users and groups the policy is
 removed from. Those names come from cdkd state, which recorded them at deploy
-time, not from the template. If cdkd state records no such list, or a value
-that is not a list of IAM names, the policy is reported as a resource that
-blocks migration, and the export stops before phase 1, without changing any
-AWS resource.
+time, while phase 2 re-attaches the policy to the principals the template
+names. So cdkd checks the two against each other before anything changes:
+
+- The policy is reported as a resource that blocks migration, and the export
+  stops before phase 1 without changing any AWS resource, in these cases:
+
+  | cdkd state records | `Repair with:` |
+  | --- | --- |
+  | a principal the template does not name, or a policy name that is not the template's `PolicyName` | `cdkd deploy` on the app stack, after `cdkd diff` (printed first, as `Check first with:`): typically a template change not yet deployed, and a deploy moves AWS and the record to the template together. It also removes the policy from those principals, which the diff shows. When the template's value comes from a root Parameter, re-running the export with the `--parameter` values the stack was deployed with is the other fix. |
+  | no principal list, a value that is not a list of IAM names, or a physical id that is not the policy name the record and template share | `cdkd import ... --force`: re-imports the policy so its record matches the template. |
+  | more than 100 principals | none: check the record and the template against AWS. Do not destroy the resource or remove it from the app, which would remove the policy from every recorded principal. |
+
+  A legacy `policyName:roleName` record that records no principal list at all
+  (not even an empty one) uses the id's role, when that role is an IAM name,
+  as `cdkd destroy` does, and is then checked like any other.
+- A template principal is checked directly when it is:
+  - a literal name;
+  - a `Ref` to a role, user or group resource in the same template that cdkd
+    state also records with that type;
+  - a `Ref` to a Parameter the template declares, read from the value the
+    export submits to that stack's changeset. For the root stack that is
+    `--parameter` or a `Default`. For a nested stack it is what the parent
+    row passes, resolved as described under [Child Parameters](#child-parameters),
+    so the check sees the same value phase 2 uses.
+
+  `PolicyName` is checked when it is a literal or such a Parameter `Ref`. An
+  SSM-typed Parameter (`AWS::SSM::Parameter::Value<...>`) is never read as
+  known: its value is the SSM parameter's name, not the name CloudFormation
+  substitutes.
+- Anything else, such as `Fn::ImportValue`, cannot be checked, and neither can
+  a missing `PolicyName`. The plan marks each such principal or policy name,
+  and the export proceeds, with `--yes` and `--dry-run` too. So under `--yes`,
+  a principal that cdkd state records and the template names only through
+  such a value is detached without anyone reading the mark.
 
 Pass `--no-recreate-import-unsupported` to block instead. The pre-delete is
 fatal on failure — phase 2 would otherwise collide with the still-present AWS
-resource — and cdkd state plus the post-phase-1 CloudFormation stack are
-preserved so you can fix the cause and re-run. The cause is usually a missing
+resource. cdkd state and the post-phase-1 CloudFormation stack are preserved,
+but re-running `cdkd export` does not resume: the CloudFormation stack now
+exists, so the export refuses it. The error gives the by-hand steps: delete
+the remaining pre-delete resources, run the phase-2 UPDATE yourself, and clean
+up cdkd state with `cdkd state orphan`. The cause is usually a missing
 permission: the pre-delete issues `apigatewayv2:DeleteStage` for the stage, and
 `iam:DeleteRolePolicy` / `iam:DeleteUserPolicy` / `iam:DeleteGroupPolicy` for an
 inline policy, depending on what it is attached to.
@@ -371,12 +404,30 @@ Parameter `Default` must then cover it.
 ### Failure and re-runs
 
 On a per-stack failure, cdkd state is preserved for the failed stack and every
-stack not yet imported. The error names which stacks moved and which remain, so
-`cdkd export '<parent>'` can be re-run after the cause is fixed — already
-imported children are re-adopted as nested references on the retry.
+stack not yet imported, and the error names which stacks moved and which
+remain. Re-running `cdkd export` does not resume: it refuses the whole tree
+while any of its CloudFormation stacks exists, and every stack imported before
+the failure has one. When any step from a stack's IMPORT (Phase 1A) through its
+phase 2 fails, the error gives the by-hand recovery instead:
+
+- a `cdkd state orphan <stack> --stack-region <region>` for each stack that
+  finished, and for the failed stack once you finish the steps it still needs
+  by hand, which the error names (a failed parent's by-hand IMPORT, or its
+  redone adoption, must adopt its already-imported nested children);
+- when the failed stack's phase 2 re-creates resources CloudFormation cannot
+  import, the by-hand deletes to run before that phase 2;
+- the stacks not yet imported, to migrate with CloudFormation IMPORT by hand,
+  adopting their nested children as AWS's "Nest an existing stack" procedure
+  describes.
+
+When the very first stack's IMPORT fails, nothing was imported: delete that
+stack's CloudFormation stack if the failed IMPORT left one, after checking with
+the printed `aws cloudformation list-stack-resources` that it holds no
+resources, and re-run the export.
 
 `--dry-run` prints the per-stack plan summary without acquiring child locks or
-submitting any changeset.
+submitting any changeset. It still resolves each child's Parameters, which can
+read other stacks' outputs from cdkd state or CloudFormation.
 
 The design rationale is in the
 [nested-stack export/import design note](design/464-nested-stacks-export-import.md).

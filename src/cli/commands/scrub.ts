@@ -1,5 +1,20 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Command } from 'commander';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  findNestedTemplateTreeDefect,
+  isAbsoluteAssetPath,
+  listNestedTemplateRows,
+  renderNestedTemplateTreeDefect,
+} from '../../utils/nested-template-cycle.js';
+import {
+  describeFileReadFailure,
+  displayAssemblyPath,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../../utils/assembly-path.js';
+import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import {
   appOptions,
   commonOptions,
@@ -31,7 +46,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import { matchStacks, describeStack } from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
   IntrinsicFunctionResolver,
   carriesDynamicReference,
@@ -50,6 +65,8 @@ import {
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   MIN_NEEDLE_LENGTH,
+  inheritNestedStackParameterAssociations,
+  recordNestedStackParameterExpressions,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 // Issue #2109: the region split is #2057's, imported rather than re-spelled —
@@ -443,6 +460,403 @@ async function repairExportIndexForStack(
   return { ...plan, unwritten };
 }
 
+/** `AWS::CloudFormation::Stack`, the row a nested child is deployed by. */
+const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
+
+/**
+ * What a nested CHILD's scrub is handed by its parent's (go-to-k/cdkd#2252).
+ *
+ * The child's template spells a parameter consumption as `{Ref: <Param>}`, so
+ * nothing in the child's own resolution can record the `plaintext ->
+ * {{resolve:...}}` pair its stored plaintext is redacted back to. The parent's
+ * resolution of the child's `Parameters` block is where that pair is visible;
+ * this is that resolution's output, in the two shapes
+ * `NestedStackProvider.runChildDeploy` hands the child engine.
+ */
+export interface NestedChildScrubInput {
+  /** The child's `Parameters`, resolved by the parent and coerced as the provider does. */
+  parameters: Record<string, string>;
+  /**
+   * The parent's per-resource bag for the child's `AWS::CloudFormation::Stack`
+   * row — the child resolver's `inheritedSecrets`. Its KEYS are secret
+   * plaintext: passed on, never enumerated or logged.
+   */
+  inheritedSecrets: RecordedSecretValues;
+}
+
+/** One nested child a parent's scrub found, for `scrubCommand` to visit next. */
+export interface NestedChildScrubTarget {
+  /** The child's logical id in the parent's template (and state). */
+  logicalId: string;
+  /** `<parent>~<logicalId>`, the child's state key segment. */
+  stackName: string;
+  /** Present when the child can be scrubbed. */
+  input?: NestedChildScrubInput;
+  /**
+   * Why it cannot, when it cannot. Raised as a refusal only if the child HAS a
+   * state record: a child that was never deployed has nothing to scrub.
+   */
+  refusal?: string;
+}
+
+/** One entry of `scrubCommand`'s work list — a target stack or a nested child. */
+interface ScrubWorkItem {
+  stackName: string;
+  region: string;
+  /**
+   * The `StackInfo` to scrub. Deferred so a child template that cannot be READ
+   * is a per-stack failure inside the loop's boundary, not a run abort.
+   */
+  load: () => { stack: StackInfo; nestedChild?: NestedChildScrubTarget };
+  /**
+   * For a nested child that was scrubbed with its parent's inputs: the parent
+   * and the row, whose `Outputs.<Name>` attributes mirror this child's outputs
+   * (go-to-k/cdkd#3961).
+   */
+  parentRow?: { stackName: string; logicalId: string };
+}
+
+/**
+ * The child template a nested-stack row names, and ITS nested rows indexed for
+ * the next level — the same two reads `NestedStackProvider.readChildTemplate`
+ * makes, in the same order (the index is taken from the raw file). The whole
+ * tree was already walked by `findNestedTemplateTreeDefect` before the
+ * top-level stack was scrubbed; the absolute / escaping-path refusals here are
+ * the per-level backstops the provider keeps too.
+ */
+function readNestedChildTemplate(templatePath: string): {
+  template: CloudFormationTemplate;
+  nestedTemplates: Record<string, string>;
+} {
+  let template: CloudFormationTemplate;
+  try {
+    template = JSON.parse(fs.readFileSync(templatePath, 'utf-8')) as CloudFormationTemplate;
+  } catch (err) {
+    throw new Error(
+      `Failed to read nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
+    );
+  }
+  const dir = path.dirname(templatePath);
+  const nestedTemplates = nullPrototypeRecord<string>();
+  for (const { logicalId, assetPath } of listNestedTemplateRows(template)) {
+    if (isAbsoluteAssetPath(assetPath)) {
+      throw new Error(
+        `Nested stack ${displayIdent(logicalId)} has Metadata['aws:asset:path']=` +
+          `${displayAssemblyPath(assetPath)}, which is absolute. CDK emits relative asset ` +
+          `paths for nested templates. Refusing to load.`
+      );
+    }
+    const resolved = resolveAssemblyPath(dir, assetPath);
+    if (!resolved.contained) {
+      throw new Error(
+        `Nested stack ${displayIdent(logicalId)} has Metadata['aws:asset:path']=` +
+          `${displayAssemblyPath(assetPath)}, which ${renderAssemblyPathEscape(resolved, dir)}`
+      );
+    }
+    nestedTemplates[logicalId] = resolved.path;
+  }
+  return { template, nestedTemplates };
+}
+
+/**
+ * The work item for one nested child of `parent` (go-to-k/cdkd#2252).
+ *
+ * The child is scrubbed in the PARENT's region, which is where
+ * `NestedStackProvider` deploys it. A row whose template file the synth output
+ * does not name becomes a refusal target rather than a failure, so a child
+ * that never had a record is not reported.
+ */
+function nestedChildWorkItem(
+  parent: StackInfo,
+  region: string,
+  child: NestedChildScrubTarget
+): ScrubWorkItem {
+  return {
+    stackName: child.stackName,
+    region,
+    ...(child.input && { parentRow: { stackName: parent.stackName, logicalId: child.logicalId } }),
+    load: () => {
+      const templatePath = parent.nestedTemplates?.[child.logicalId];
+      if (child.refusal !== undefined || templatePath === undefined) {
+        const nestedChild: NestedChildScrubTarget =
+          child.refusal !== undefined
+            ? child
+            : {
+                logicalId: child.logicalId,
+                stackName: child.stackName,
+                refusal: nestedChildRefusal(
+                  child.stackName,
+                  'the synth output names no template file for its row ' +
+                    "(Metadata['aws:asset:path']), so scrub has no template to learn its " +
+                    'secrets from',
+                  'Re-synthesize with a CDK version that emits it, then re-run cdkd scrub.'
+                ),
+              };
+        return {
+          stack: {
+            stackName: child.stackName,
+            displayName: child.stackName,
+            artifactId: parent.artifactId,
+            template: {} as CloudFormationTemplate,
+            dependencyNames: [],
+            region,
+          },
+          nestedChild,
+        };
+      }
+      const { template, nestedTemplates } = readNestedChildTemplate(templatePath);
+      return {
+        stack: {
+          stackName: child.stackName,
+          displayName: child.stackName,
+          artifactId: parent.artifactId,
+          template,
+          dependencyNames: [],
+          region,
+          ...(Object.keys(nestedTemplates).length > 0 && { nestedTemplates }),
+        },
+        nestedChild: child,
+      };
+    },
+  };
+}
+
+/**
+ * Rewrite a parent row's `Outputs.<Name>` attributes that hold this child's
+ * output plaintext (go-to-k/cdkd#3961). Returns how many it changed (under
+ * `dryRun`, would change).
+ *
+ * NON-FABRICATING by construction: an attribute is rewritten only when the
+ * child's scrubbed output under that name, with every expression this run
+ * recorded replaced by the plaintext it resolved to, is EXACTLY the stored
+ * attribute — so the attribute is that output's plaintext, and it is rewritten
+ * to the output itself, the value `buildOutputsAttributes` would copy there on
+ * the child's next deploy. No positioning rule is involved, so a key the
+ * child's own pass positioned (two stages of one secret) or repaired only by
+ * the widened union is recognised alike, and an unrelated value never matches.
+ * An attribute that still holds a recorded plaintext but matches no output is
+ * returned in `unmatched`, for the caller to report.
+ *
+ * Under the PARENT's lock, since it rewrites the parent's record (its own
+ * scrub released that lock before the child ran). An absent record or row is
+ * nothing to do; a record whose resources cannot be read was already reported
+ * by the parent's own scrub.
+ */
+async function repairParentOutputAttributes(
+  parentRow: { stackName: string; logicalId: string },
+  region: string,
+  stateBackend: S3StateBackend,
+  lockManager: LockManager,
+  child: Pick<
+    ScrubStackResult,
+    'outputs' | 'resolveRecordedExpressions' | 'holdsRecordedPlaintext'
+  >,
+  dryRun: boolean,
+  logger: ReturnType<typeof getLogger>
+): Promise<{ changed: number; unmatched: string[] }> {
+  const none = { changed: 0, unmatched: [] as string[] };
+  const childOutputs = child.outputs;
+  if (childOutputs === undefined || !isReadableBag(childOutputs)) return none;
+  // The rewrite this record needs, and the attributes holding a recorded
+  // plaintext that no child output accounts for EXACTLY.
+  const plan = async (): Promise<
+    | {
+        state: StackState;
+        etag: string;
+        attributes: Record<string, unknown>;
+        changed: number;
+        unmatched: string[];
+      }
+    | undefined
+  > => {
+    const loaded = await stateBackend.getState(parentRow.stackName, region);
+    if (!loaded || !hasReadableResources(loaded.state)) return undefined;
+    const row = loaded.state.resources[parentRow.logicalId];
+    const rowAttributes = row?.attributes;
+    if (!row || row.resourceType !== NESTED_STACK_TYPE || !isReadableBag(rowAttributes)) {
+      return undefined;
+    }
+    const attributes: Record<string, unknown> = { ...rowAttributes };
+    let changed = 0;
+    const unmatched: string[] = [];
+    for (const [attributeName, stored] of Object.entries(
+      rowAttributes as Record<string, unknown>
+    )) {
+      if (!attributeName.startsWith('Outputs.')) continue;
+      const outputKey = attributeName.slice('Outputs.'.length);
+      const expected = Object.hasOwn(childOutputs, outputKey) ? childOutputs[outputKey] : undefined;
+      // Already the child's value: nothing to rewrite and nothing to report.
+      // Load-bearing, not tidiness: where this run recorded no pair for the
+      // expression (an unreadable secret, a collapsed stage on a clean record),
+      // resolving it returns it unchanged, and the test below would then
+      // "repair" a clean attribute onto itself — a write and a false claim.
+      if (expected !== undefined && JSON.stringify(stored) === JSON.stringify(expected)) continue;
+      // EXACTLY what the child's output expression resolves to in this run —
+      // then the attribute is that output's plaintext, and the child's next
+      // deploy would copy `expected` over it.
+      if (carriesDynamicReference(expected)) {
+        const resolved = child.resolveRecordedExpressions(expected);
+        if (JSON.stringify(resolved) === JSON.stringify(stored)) {
+          attributes[attributeName] = expected;
+          changed++;
+          continue;
+        }
+      }
+      // Not rewritable, but not clean either: it still holds a plaintext this
+      // run recorded. Reported, so the run is not called clean over it.
+      if (child.holdsRecordedPlaintext(stored)) unmatched.push(attributeName);
+    }
+    return changed > 0 || unmatched.length > 0
+      ? { state: loaded.state, etag: loaded.etag, attributes, changed, unmatched }
+      : undefined;
+  };
+  // Decided WITHOUT the lock first: the common case has nothing to rewrite,
+  // and locking the parent again for that would be a write for nothing.
+  const preview = await plan();
+  if (!preview) return none;
+  if (dryRun || preview.changed === 0) {
+    return { changed: preview.changed, unmatched: preview.unmatched };
+  }
+  await lockManager.acquireLockWithRetry(parentRow.stackName, region, undefined, 'scrub');
+  try {
+    // Re-planned under the lock, so the write is against what the lock guards.
+    const locked = await plan();
+    if (!locked) return none;
+    if (locked.changed > 0) {
+      const row = locked.state.resources[parentRow.logicalId]!;
+      await stateBackend.saveState(
+        parentRow.stackName,
+        region,
+        {
+          ...locked.state,
+          resources: {
+            ...locked.state.resources,
+            [parentRow.logicalId]: { ...row, attributes: locked.attributes },
+          },
+          lastModified: Date.now(),
+        },
+        { expectedEtag: locked.etag }
+      );
+    }
+    return { changed: locked.changed, unmatched: locked.unmatched };
+  } finally {
+    await lockManager.releaseLock(parentRow.stackName, region).catch((err: unknown) => {
+      // Warned like `scrubStack`'s own release: a lock left behind blocks the
+      // next deploy of the parent, and a silent one gives no hint why.
+      logger.warn(
+        safeMsg`Failed to release lock for ${displayStackName(parentRow.stackName)}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    });
+  }
+}
+
+/**
+ * The line that points a pattern spelled like a nested child's state name
+ * (`<parent>~<Child>`) at the parent to name instead (go-to-k/cdkd#2252).
+ */
+function nestedStackPatternHint(patterns: readonly string[]): string {
+  const parents = patterns
+    .map((p) => p.slice(0, p.indexOf('~')))
+    .filter((parent) => parent.length > 0)
+    .map((parent) => displayStackName(parent));
+  return (
+    `A nested stack is scrubbed with its parent: name ` +
+    `${parents.length > 0 ? parents.join(', ') : 'its parent stack'} instead, which also ` +
+    `scrubs every stack nested under it.`
+  );
+}
+
+/**
+ * The `<stack>~...` records in `region` that none of `reached` covers
+ * (go-to-k/cdkd#2252), as refusal targets.
+ *
+ * A record whose FIRST segment after `<stack>~` is a reached child is left to
+ * that child's own pass, which runs this check one level down. Of every other
+ * record, the TOPMOST are returned: the scrub of each refuses it, and its
+ * failure arm runs this check again under it, so a deeper record is named
+ * exactly once even when a record between it and `stackName` is missing.
+ */
+function unreachedNestedRecords(
+  refs: ReadonlyArray<{ stackName: string; region?: string }>,
+  stackName: string,
+  region: string,
+  reached: readonly NestedChildScrubTarget[],
+  /** Why nothing reaches them — the caller knows which case applies. */
+  cause: string,
+  /** What to do about it, which differs by cause as much as the cause does. */
+  remedy: string
+): NestedChildScrubTarget[] {
+  const prefix = `${stackName}~`;
+  const reachedIds = new Set(reached.map((child) => child.logicalId));
+  const out: NestedChildScrubTarget[] = [];
+  for (const ref of refs) {
+    if (ref.region !== region || !ref.stackName.startsWith(prefix)) continue;
+    const rest = ref.stackName.slice(prefix.length);
+    const firstId = rest.split('~')[0] ?? '';
+    if (reachedIds.has(firstId)) continue;
+    out.push({
+      logicalId: rest,
+      stackName: ref.stackName,
+      refusal: nestedChildRefusal(ref.stackName, cause, remedy),
+    });
+  }
+  // The TOPMOST records only: one whose own ancestor record is also listed is
+  // named by that ancestor's pass (a refused record's failure arm lists what
+  // is under it), so returning both would visit it twice.
+  const names = new Set(out.map((t) => t.stackName));
+  return out
+    .filter((t) => {
+      const segments = t.stackName.split('~');
+      for (let n = segments.length - 1; n > stackName.split('~').length; n--) {
+        if (names.has(segments.slice(0, n).join('~'))) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => a.stackName.localeCompare(b.stackName));
+}
+
+/**
+ * The refusal a nested child's record earns when scrub cannot derive its
+ * needles (go-to-k/cdkd#2252). ONE frame for every cause, so each names the
+ * record, says it was NOT examined, and gives a remedy — never a clean verdict
+ * over a record scrub did not read. The remedy is per CAUSE: a parent deploy
+ * re-runs a child only when the child's row changes, so "redeploy the parent"
+ * is offered only where the deploy genuinely creates or removes the row.
+ */
+function nestedChildRefusal(childStackName: string, cause: string, remedy: string): string {
+  return (
+    `Nested stack ${displayStackName(childStackName)} has a state record, but ${cause}. ` +
+    `Its record was NOT examined and may still hold plaintext. ${remedy}`
+  );
+}
+
+/**
+ * The child's `Parameters` as the provider would hand them to the child
+ * engine, or `undefined` when a value is not one the provider accepts.
+ *
+ * The coercion is `NestedStackProvider.extractParameters`'s, down to a
+ * non-object bag reading as none: a string as is, a
+ * number or boolean through `String`, an array of those joined with `,`; any
+ * other value — an unresolved intrinsic left in place by a failed resolution
+ * among them — has no wire form, so scrub cannot reproduce what the child was
+ * deployed with and the caller refuses.
+ */
+function nestedChildParameters(resolved: unknown): Record<string, string> | undefined {
+  // Absent, `null` or an array: the provider reads each as NO parameters, so
+  // scrub does too rather than refusing a child a deploy handled.
+  if (resolved === undefined || resolved === null || Array.isArray(resolved)) return {};
+  if (typeof resolved !== 'object') return {};
+  const scalar = (v: unknown): v is string | number | boolean =>
+    typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+  const out = nullPrototypeRecord<string>();
+  for (const [name, value] of Object.entries(resolved as Record<string, unknown>)) {
+    if (scalar(value)) out[name] = String(value);
+    else if (Array.isArray(value) && value.every(scalar)) out[name] = value.map(String).join(',');
+    else return undefined;
+  }
+  return out;
+}
+
 /**
  * `cdkd scrub` — rewrite persisted state so any resolved secret dynamic
  * reference is stored as its UNRESOLVED expression rather than the plaintext
@@ -496,17 +910,26 @@ async function repairExportIndexForStack(
  * consumer's own AWS call. (`cdkd drift` is NOT one of those readers: it reads
  * `state.resources`, never `state.outputs`.) See `redactUnaccountedOutputs`.
  *
- * A FOURTH re-apply reader exists and is recorded here so the next audit does
- * not have to re-derive it: `NestedStackProvider.buildOutputsAttributes`
- * projects a CHILD record's `state.outputs` into the PARENT's
- * `Fn::GetAtt Outputs.X` attributes, i.e. into a parent resource property. It
- * is OUT of this command's reach, not exempt from the hazard — `scrubCommand`
- * targets synth STACK ARTIFACTS, and a nested child is a `nestedTemplates`
- * entry on its parent's `StackInfo` rather than an `aws:cloudformation:stack`
- * artifact of its own (`src/synthesis/assembly-reader.ts`), so the
- * `{parent}~{Child}` record this walk reads is never a stack scrub writes. If
- * scrub ever gains nested-child targets, this reader joins the list above and
- * the fabrication bound has to be re-argued for it.
+ * NESTED CHILDREN (go-to-k/cdkd#2252). A nested stack is not a synth stack
+ * artifact — it is a `nestedTemplates` entry on its parent's `StackInfo` — so
+ * scrub reaches its `{parent}~{Child}` record THROUGH the parent: scrubbing a
+ * stack scrubs every nested child under it, depth first, right after the
+ * parent. The child's needles come from the parent: the parent's resolution of
+ * the child's `Parameters` block is the only place the `{{resolve:...}}`
+ * expression behind a `{Ref: <Param>}` in the child is visible, so that row's
+ * per-resource bag is handed down as the child resolver's `inheritedSecrets`,
+ * exactly as `NestedStackProvider.runChildDeploy` hands it to the child
+ * engine. A child whose parameters cannot be derived is REFUSED (exit 2) when
+ * its record exists, never reported clean — see `nestedChildRefusal`.
+ *
+ * That makes a FOURTH re-apply reader of `state.outputs` reachable:
+ * `NestedStackProvider.buildOutputsAttributes` projects a CHILD record's
+ * outputs into the PARENT's `Fn::GetAtt Outputs.X` attributes. It carries the
+ * bound of the `Fn::ImportValue` / `Fn::GetStackOutput` readers and no wider
+ * one: the parent's read site (`resolveGetAtt`) hands a value carrying
+ * `{{resolve:` to the same re-resolution helper those two arms use (issue
+ * #2055), so the child's outputs are exposed to exactly the substring residual
+ * `allRecordedSecrets` documents for theirs.
  *
  * ORDERING: scrub matches the CURRENT resolved secret value against what state
  * holds, so run it BEFORE rotating. Once the secret is rotated, the value in
@@ -562,6 +985,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const allStacks = result.stacks;
 
   const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
+  if (allStacks.length === 0) {
+    // Reached before the branch chain below, as in `deploy`: with zero stacks
+    // and no pattern the `else` arm would answer `Multiple stacks found: .`,
+    // and `--all` would answer `No stacks matched.` -- zero stacks being
+    // exactly what an app whose only stacks live in a Stage that failed to
+    // load produces (issue go-to-k/cdkd#3507).
+    throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+  }
   let targetStacks: StackInfo[];
   if (options.all) {
     targetStacks = allStacks;
@@ -576,7 +1007,26 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     );
   }
   if (targetStacks.length === 0) {
-    throw new Error('No stacks matched.');
+    // The shared renderer names the patterns, the available stacks and a
+    // Stage that failed to load (issue go-to-k/cdkd#3507). A pattern spelling
+    // a nested child's state name (`<parent>~<Child>`) earns one more line:
+    // a child is not a synth stack, and it is scrubbed with its parent
+    // (go-to-k/cdkd#2252).
+    const nestedSpellings = stackPatterns.filter((p) => p.includes('~'));
+    const nestedHint =
+      nestedSpellings.length > 0 ? ` ${nestedStackPatternHint(nestedSpellings)}` : '';
+    throw new Error(`${renderNoStackMatch(stackPatterns, allStacks, result)}${nestedHint}`);
+  }
+  // The same hint when OTHER patterns matched (review of go-to-k/cdkd#3958):
+  // `matchStacks` drops a pattern that matches nothing, so `Parent~Child
+  // Other` would scrub `Other` alone, silently leaving the child unvisited.
+  const unmatchedNested = stackPatterns.filter(
+    (p) => p.includes('~') && matchStacks(allStacks, [p]).length === 0
+  );
+  if (unmatchedNested.length > 0) {
+    logger.warn(
+      safeMsg`${unmatchedNested.map((p) => displayStackName(p)).join(', ')} matched no stack and was NOT scrubbed. ${nestedStackPatternHint(unmatchedNested)}`
+    );
   }
 
   // MACROS FIRST, then ordering (issue #2133 review). `expandMacrosForStacks`
@@ -610,6 +1060,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const lockManager = new LockManager(stateS3.s3, stateConfig);
 
   let totalStacksScrubbed = 0;
+  // Stack names already counted in `totalStacksScrubbed`: a parent whose row
+  // attributes are repaired after a child's scrub (go-to-k/cdkd#3961) may have
+  // been counted for its own records already.
+  const rewrittenStacks = new Set<string>();
+  // Parent-row `Outputs.<Name>` attributes holding a recorded plaintext no
+  // child output accounts for (go-to-k/cdkd#3961): a finding, never clean.
+  let totalParentAttributesUnmatched = 0;
   // Counted SEPARATELY from the stacks actually rewritten. A key-holding-
   // plaintext finding is a finding the command cannot remedy (issue #1919), and
   // folding it into the scrubbed count made the summary claim a remediation it
@@ -670,6 +1127,20 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // "never report success over a document it did not scrub" property is kept —
   // it is only the BLAST RADIUS of one refusal that narrows.
   const failures: Array<{ stackName: string }> = [];
+  // ONE state listing per run, shared by every stack's nested-record check
+  // (go-to-k/cdkd#2252): a `--all` run over N stacks would otherwise list the
+  // whole bucket N times. A failed listing is not memoized.
+  // A PREBUILT assembly can name a top-level stack `A~B`; that one is a stack of
+  // this app, never an unreached nested record of `A`.
+  const appStackNames = new Set(allStacks.map((s) => s.stackName));
+  let stateRefs: Promise<Array<{ stackName: string; region?: string }>> | undefined;
+  const listStateRefs = (): Promise<Array<{ stackName: string; region?: string }>> => {
+    stateRefs ??= stateBackend.listStacks().catch((err: unknown) => {
+      stateRefs = undefined;
+      throw err;
+    });
+    return stateRefs;
+  };
 
   // EXPORTS INDEX (issue #2667). One store and one `exports.json` per REGION:
   // the key is `{prefix}/_index/{region}/exports.json`
@@ -704,11 +1175,44 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const indexUnwritten: Array<{ region: string; shown: string }> = [];
   const indexUnreadable: Array<{ region: string; reason: string }> = [];
 
-  for (const stack of targetStacks) {
-    const shownStack = displayStackName(stack.stackName);
-    const stackRegion = stack.region || region;
+  // The WORK LIST: the targets, with each stack's nested children spliced in
+  // directly after it once its own scrub returns (go-to-k/cdkd#2252), so a
+  // child is always visited with the parent bag it needs in hand and every
+  // later step of this loop treats it as one more stack.
+  const work: ScrubWorkItem[] = targetStacks.map((stack) => ({
+    stackName: stack.stackName,
+    region: stack.region || region,
+    load: () => {
+      // The tree is checked BEFORE the parent is scrubbed, as `cdkd deploy`
+      // checks it before deploying (issue go-to-k/cdkd#3449): a cyclic or
+      // escaping tree is a hand-modified assembly, and refusing up front keeps
+      // the stack from being half-visited.
+      const defect = stack.nestedTemplates
+        ? findNestedTemplateTreeDefect(stack.nestedTemplates)
+        : undefined;
+      if (defect) {
+        throw new ScrubRefusalError(
+          renderNestedTemplateTreeDefect(
+            defect,
+            stack.stackName,
+            'scrub it or any stack nested under it; no state was written'
+          ),
+          'SCRUB_NESTED_TEMPLATE_TREE_MALFORMED'
+        );
+      }
+      return { stack };
+    },
+  }));
+  for (let workIndex = 0; workIndex < work.length; workIndex++) {
+    const item = work[workIndex]!;
+    const stackName = item.stackName;
+    const shownStack = displayStackName(stackName);
+    const stackRegion = item.region;
     let scrubbed: Awaited<ReturnType<typeof scrubStack>>;
+    let scrubbedStack: StackInfo;
     try {
+      const { stack, nestedChild } = item.load();
+      scrubbedStack = stack;
       scrubbed = await scrubStack(stack, stackRegion, stateBackend, lockManager, {
         dryRun: options.dryRun ?? false,
         roleArn: options.roleArn,
@@ -716,6 +1220,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         // Every stack of the APP, not just this run's targets: the producer of
         // an import may be one the user did not name (issue #2133 review).
         appStacks: allStacks,
+        ...(nestedChild && { nestedChild }),
       });
     } catch (err) {
       // EVERY error, not only a `CdkdError` refusal. A stack whose state could
@@ -732,14 +1237,89 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // Safe to print because `scrubStack` masks every error that escapes it
       // against everything it recorded; this loop holds no secrets map and
       // could not mask anything itself.
-      failures.push({ stackName: stack.stackName });
+      failures.push({ stackName });
       logger.error(`Scrub of ${shownStack} failed: ${describeFailure(err)}`);
       // Verbose-only, mirroring `handleError`: the trace is what locates a
       // failure that is a cdkd bug rather than an AWS refusal, and `scrubStack`
       // masked it along with the messages.
       if (err instanceof Error && err.stack) logger.debug('Stack trace:', err.stack);
+      // The nested records UNDER a stack that failed are not visited either,
+      // so each existing one is NAMED as a refusal rather than left out of a
+      // run that is already non-zero (review of go-to-k/cdkd#3958). Best
+      // effort: an unreadable listing adds nothing to a failure already raised.
+      try {
+        work.splice(
+          workIndex + 1,
+          0,
+          ...unreachedNestedRecords(
+            (await listStateRefs()).filter((ref) => !appStackNames.has(ref.stackName)),
+            stackName,
+            stackRegion,
+            [],
+            `the scrub of ${shownStack}, which deploys it, failed, so its inputs are unknown`,
+            // A LIVE child in the ordinary case (a throttle, a held lock): the
+            // remedy is the parent's, never a delete.
+            `Fix the failure reported for ${shownStack} and re-run cdkd scrub.`
+          ).map((child) =>
+            nestedChildWorkItem(
+              // A refusal target reads nothing off its parent's StackInfo.
+              {
+                stackName,
+                displayName: stackName,
+                artifactId: stackName,
+                template: {} as CloudFormationTemplate,
+                dependencyNames: [],
+              },
+              stackRegion,
+              child
+            )
+          )
+        );
+      } catch {
+        // Already non-zero; the listing failure itself is reported on the
+        // arm that needs it.
+      }
       continue;
     }
+    // Next in line: this stack's nested children, before any sibling target.
+    // Only on the arm where the scrub RETURNED — a parent that threw handed
+    // down no bag, and its failure already keeps the run non-zero.
+    //
+    // PLUS every `<stack>~...` record in this region no row reaches: a parent
+    // record removed out of band (`cdkd state orphan <parent>` deletes only the
+    // parent's key) or a row both the template and the record dropped. Those
+    // are records scrub cannot learn needles for, so each is a refusal target
+    // rather than a silent clean -- otherwise `--dry-run --fail` would pass
+    // over them while the docs say the gate covers nested stacks.
+    let unreached: NestedChildScrubTarget[];
+    try {
+      unreached = unreachedNestedRecords(
+        (await listStateRefs()).filter((ref) => !appStackNames.has(ref.stackName)),
+        stackName,
+        stackRegion,
+        scrubbed.nestedChildren,
+        scrubbed.noRecord
+          ? `${shownStack} has no state record, so no row records the parameters it was ` +
+              `deployed with`
+          : `no nested-stack row in ${shownStack}'s template or state record reaches it, so ` +
+              `scrub has no template to learn its secrets from`,
+        `Inspect it with cdkd state show; if it is left over, remove it with ` +
+          `cdkd state destroy (resources) or cdkd state orphan (record only).`
+      );
+    } catch (err) {
+      failures.push({ stackName: `${stackName}~*` });
+      logger.error(
+        safeMsg`Scrub of the nested stacks under ${shownStack} failed: their state records could not be listed, so any record no template row reaches was not examined: ${describeFailure(err)}`
+      );
+      unreached = [];
+    }
+    work.splice(
+      workIndex + 1,
+      0,
+      ...[...scrubbed.nestedChildren, ...unreached].map((child) =>
+        nestedChildWorkItem(scrubbedStack, stackRegion, child)
+      )
+    );
     // THE INDEX STEP (issue #2667), and its position is the decision: it runs
     // only on the arm where `scrubStack` RETURNED, which is the arm on which
     // its `saveState` either succeeded or was not needed. A stack that threw
@@ -754,7 +1334,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       const store = exportIndexFor(stackRegion);
       const repair = await repairExportIndexForStack(
         store,
-        stack.stackName,
+        stackName,
         stackRegion,
         scrubbed.outputs,
         { dryRun: options.dryRun ?? false }
@@ -866,12 +1446,57 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         );
       }
     }
+    // THE PARENT ROW (go-to-k/cdkd#3961). A child output sourced from the
+    // CHILD's own `{{resolve:...}}` was copied into the parent row's
+    // `Outputs.<Name>` attribute by `buildOutputsAttributes`; the parent was
+    // scrubbed first, with no needle for it. Repaired here, now that this
+    // child's needles exist, and before the verdict below so a finding counts.
+    if (item.parentRow) {
+      try {
+        const repaired = await repairParentOutputAttributes(
+          item.parentRow,
+          stackRegion,
+          stateBackend,
+          lockManager,
+          scrubbed,
+          options.dryRun ?? false,
+          logger
+        );
+        const parentName = item.parentRow.stackName;
+        const row = `${displayStackName(parentName)} (row ${displayIdent(item.parentRow.logicalId)})`;
+        if (repaired.changed > 0) {
+          if (!rewrittenStacks.has(parentName)) totalStacksScrubbed++;
+          rewrittenStacks.add(parentName);
+          logger.info(
+            safeMsg`${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${repaired.changed} nested-stack output attribute(s) in ${row}, from ${shownStack}'s outputs`
+          );
+        }
+        if (repaired.unmatched.length > 0) {
+          // A FINDING like an unverifiable read: a recorded plaintext is still
+          // there and no child output accounts for it exactly, so nothing was
+          // written and the run is not reported clean.
+          totalParentAttributesUnmatched += repaired.unmatched.length;
+          logger.warn(
+            safeMsg`${repaired.unmatched.length} nested-stack output attribute(s) in ${row} (${repaired.unmatched.map((n) => displayIdent(n)).join(', ')}) hold a plaintext this run recorded but are not exactly any of ${shownStack}'s outputs, so scrub did NOT rewrite them. Deploying ${shownStack} rewrites them from its outputs.`
+          );
+        }
+      } catch (err) {
+        // Labelled apart from the parent's own scrub, which DID run, and once
+        // per parent however many of its children fail here.
+        const label = `${item.parentRow.stackName} (nested-stack output attributes)`;
+        if (!failures.some((f) => f.stackName === label)) failures.push({ stackName: label });
+        logger.error(
+          safeMsg`Scrub of ${displayStackName(item.parentRow.stackName)}'s nested-stack output attributes for ${shownStack} failed: ${describeFailure(err)}`
+        );
+      }
+    }
     // The verdict keys on records-that-CHANGED (state actually held plaintext),
     // NOT on secrets-found: a resource whose reference is already stored as its
     // `{{resolve:...}}` expression resolves the same secret again but needs no
     // rewrite. Only a state record still holding the plaintext counts.
     if (scrubbed.recordsChanged > 0) {
-      totalStacksScrubbed++;
+      if (!rewrittenStacks.has(stackName)) totalStacksScrubbed++;
+      rewrittenStacks.add(stackName);
       logger.info(
         // `resource record(s)` is LOOSE -- this count has included outputs and
         // orphans for some time and now includes cross-stack read entries too
@@ -908,24 +1533,35 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // already prevents for a key holding plaintext. The warning below still
       // fires either way; this only stops the two lines contradicting each
       // other.
-      logger.info(`No plaintext secrets found in ${shownStack}`);
+      // A stack with nested children is not done yet: its row attributes that
+      // mirror a child's outputs are checked after that child (go-to-k/cdkd#3961),
+      // so the line says which records it covers rather than contradicting a
+      // repair line printed a moment later.
+      logger.info(
+        // The SAME test `nestedChildWorkItem` uses to give a child its
+        // `parentRow`, so the wording cannot drift from when the repair runs.
+        scrubbed.nestedChildren.some((child) => Boolean(child.input))
+          ? `No plaintext secrets found in ${shownStack}'s own records; its nested-stack ` +
+              `output attributes are checked after each nested stack`
+          : `No plaintext secrets found in ${shownStack}`
+      );
     }
     // Either shape of `resources` damage lands in ONE list, for the reason the
     // orphan pair below shares one (go-to-k/cdkd#3202): the verdict is one —
     // this stack's resource map could not be fully read, exit 2, repair the
     // record — and the WARNINGS above already distinguish the map from a row.
     if (scrubbed.malformedResources || scrubbed.malformedResourceRows) {
-      malformedRecords.push(stack.stackName);
+      malformedRecords.push(stackName);
     }
     if (scrubbed.malformedOutputs) {
-      malformedOutputRecords.push(stack.stackName);
+      malformedOutputRecords.push(stackName);
     }
     // Either shape of orphan damage lands in ONE list, because the verdict is
     // one: this stack's orphan evidence could not be read, exit 2, repair the
     // record (go-to-k/cdkd#3500). The WARNINGS above already distinguish the
     // container from the rows, which is where the remedy differs.
     if (scrubbed.malformedOrphans || scrubbed.malformedOrphanRows) {
-      malformedOrphanRecords.push(stack.stackName);
+      malformedOrphanRecords.push(stackName);
     }
     if (scrubbed.unverifiableLeaves > 0) {
       totalStacksWithUnverifiableLeaves++;
@@ -940,7 +1576,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       );
     }
     if (scrubbed.unverifiableProducerRecords > 0) {
-      damagedProducerStacks.push(stack.stackName);
+      damagedProducerStacks.push(stackName);
     }
     if (scrubbed.unverifiableReads > 0) {
       totalStacksWithUnverifiableReads++;
@@ -1030,6 +1666,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksWithUnverifiableReads === 0 &&
     totalStacksWithUnverifiableLeaves === 0 &&
     totalStacksWithUnrepairedReadNames === 0 &&
+    totalParentAttributesUnmatched === 0 &&
     totalIndexEntriesConverged === 0 &&
     indexUnwritten.length === 0 &&
     indexUnreadable.length === 0 &&
@@ -1060,7 +1697,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       return;
     }
     logger.info(
-      `\nNo plaintext secrets found in the ${targetStacks.length - failures.length} stack(s) this ` +
+      `\nNo plaintext secrets found in the ${work.length - failures.length} stack(s) this ` +
         `run could examine. ${failures.length} stack(s) could NOT be scrubbed — see the errors above.`
     );
     throw scrubStacksFailedError(failures);
@@ -1107,6 +1744,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `plaintext that scrub could NOT repair, most likely a secret's value from before a ` +
         `rotation — see the warnings above.`
       : '';
+  const parentAttributeNote =
+    totalParentAttributesUnmatched > 0
+      ? ` ${totalParentAttributesUnmatched} nested-stack output attribute(s) in a parent record ` +
+        `hold a plaintext scrub could NOT match to its child's output — see the warnings above.`
+      : '';
   // The exports index half (issue #2667). Three separate statements, because
   // they carry different obligations: an entry this run wrote, an entry it
   // read a name for and wrote nothing, and an entry it never read. Kept out of
@@ -1149,11 +1791,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -1222,11 +1864,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `not purge it. So a value that was ever persisted must be treated as compromised — ` +
         `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
         `rotating); rotation is what makes any surviving version ` +
-        `harmless.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote}`
+        `harmless.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${readNameNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -1271,6 +1913,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     (totalStacksWithUnscrubbableKeys > 0 ||
       totalStacksWithUnverifiableReads > 0 ||
       totalStacksWithUnrepairedReadNames > 0 ||
+      totalParentAttributesUnmatched > 0 ||
       totalStacksWithUnverifiableLeaves > 0)
   ) {
     throw new ScrubNeededError();
@@ -4904,6 +5547,30 @@ export interface ScrubStackResult {
    * handing the bag out as data.
    */
   exportNameDisplay: (exportName: string) => SecretSafeKeyDisplay;
+  /**
+   * The nested children this stack deploys, for `scrubCommand` to visit next
+   * (go-to-k/cdkd#2252). Every `AWS::CloudFormation::Stack` row in the
+   * template OR in state, so a child whose row either side has lost is still
+   * visited — as a refusal target, raised only if its record exists. Empty
+   * when the stack has no state record: a parent that was never deployed
+   * deployed no child either.
+   */
+  nestedChildren: NestedChildScrubTarget[];
+  /**
+   * Replace every `{{resolve:...}}` expression THIS run recorded with the
+   * plaintext it resolved to (go-to-k/cdkd#3961) — what the parent-row repair uses to test that a
+   * parent's `Outputs.<Name>` attribute is exactly the plaintext of this
+   * child's output. A closure, like {@link exportNameDisplay}, so the bags
+   * are never handed out as data.
+   */
+  resolveRecordedExpressions: (value: unknown) => unknown;
+  /** Whether a value holds any plaintext THIS run recorded (go-to-k/cdkd#3961). */
+  holdsRecordedPlaintext: (value: unknown) => boolean;
+  /**
+   * The stack has no state record at all — so a `<stack>~...` record under it
+   * is reached by no row, and the refusal says why in those words.
+   */
+  noRecord?: true;
 }
 
 /**
@@ -4944,10 +5611,57 @@ export async function scrubStack(
      * outcome (no refusal) rather than failing.
      */
     appStacks?: readonly StackInfo[] | undefined;
+    /**
+     * Set when `stack` is a NESTED CHILD (go-to-k/cdkd#2252): what its parent's
+     * scrub derived for it. `input` threads the parent's parameters and bag
+     * into this stack's resolution; `refusal` means none could be derived, and
+     * is raised once the record is known to exist.
+     */
+    nestedChild?: NestedChildScrubTarget | undefined;
   }
 ): Promise<ScrubStackResult> {
   const { logger } = opts;
   const shownStack = displayStackName(stack.stackName);
+  const nestedInput = opts.nestedChild?.input;
+  const inheritedSecrets =
+    nestedInput && nestedInput.inheritedSecrets.size > 0 ? nestedInput.inheritedSecrets : undefined;
+  /**
+   * A FRESH per-context bag, carrying the parent's per-parameter position
+   * associations on a nested child — what `DeployEngine.buildResolverContext`
+   * does for every context it builds (issue #2291). They decide WHICH
+   * expression a `{Ref: <Param>}` leaf is positioned onto, never WHETHER a leaf
+   * is rewritten.
+   */
+  const newBag = (): Map<string, string> => {
+    const bag = new Map<string, string>();
+    if (inheritedSecrets) inheritNestedStackParameterAssociations(bag, inheritedSecrets);
+    return bag;
+  };
+  // A child scrub could not derive needles for is REFUSED when it has a record,
+  // and skipped when it has none. Decided before the lock, and without one:
+  // this arm writes nothing either way. (A child that CAN be scrubbed takes
+  // its lock below like any stack, even when it turns out to have no record —
+  // the same acquire-and-release a never-deployed top-level stack gets.)
+  const refusal = opts.nestedChild?.refusal;
+  if (refusal !== undefined) {
+    const existing = await stateBackend.getState(stack.stackName, region);
+    if (existing) throw new ScrubRefusalError(refusal, 'SCRUB_NESTED_CHILD_UNRESOLVABLE');
+    logger.debug(safeMsg`No state for ${shownStack} (${displayIdent(region)}) — skipping`);
+    return {
+      recordsChanged: 0,
+      secretsFound: 0,
+      secretBearingKeys: 0,
+      unverifiableReads: 0,
+      unverifiableProducerRecords: 0,
+      unverifiableLeaves: 0,
+      unrepairedReadNames: 0,
+      exportNameDisplay: (name) => secretSafeKeyDisplay(name, new Map()),
+      resolveRecordedExpressions: (value) => value,
+      holdsRecordedPlaintext: () => false,
+      nestedChildren: [],
+      noRecord: true,
+    };
+  }
   const acquired = !opts.dryRun;
   if (acquired) {
     await lockManager.acquireLockWithRetry(stack.stackName, region, undefined, 'scrub');
@@ -4961,7 +5675,7 @@ export async function scrubStack(
   // recorded before the throw. Both are filled in place, so hoisting them
   // changes nothing about how the body reads them.
   const perResourceSecrets = new Map<string, Map<string, string>>();
-  const outputSecrets = new Map<string, string>();
+  const outputSecrets = newBag();
   /**
    * Needles derived from each rollback-orphan record's OWN recorded bag
    * (issue go-to-k/cdkd#2943) — per-record for the same reason
@@ -5081,6 +5795,10 @@ export async function scrubStack(
         // tests as 'safe'. Bound to the same map the other two sites use so
         // the shape cannot drift.
         exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+        resolveRecordedExpressions: (value) => value,
+        holdsRecordedPlaintext: () => false,
+        nestedChildren: [],
+        noRecord: true,
       };
     }
     const state = loaded.state;
@@ -5231,8 +5949,32 @@ export async function scrubStack(
     let parameters: Record<string, unknown> = {};
     let conditions: Record<string, boolean> = {};
     try {
-      parameters = await resolver.resolveParameters(stack.template);
+      parameters = await resolver.resolveParameters(
+        stack.template,
+        nestedInput?.parameters,
+        inheritedSecrets && { inheritedSecrets }
+      );
     } catch (err) {
+      // A NESTED CHILD refuses instead (go-to-k/cdkd#2252). A top-level stack
+      // takes no `--parameters` here, so a `Default`-less parameter failing is
+      // the ordinary case and each `Ref` to it is judged per leaf below; a
+      // child's parameters come from its parent, so a failure here means the
+      // values the child was deployed with cannot be reproduced (a declared
+      // `Type` that would coerce an inherited secret, for one), and every
+      // `Ref` to them would record no needle. MASKED against the inherited
+      // bag, the only one that can hold a plaintext at this point.
+      if (opts.nestedChild) {
+        const reason = maskSecretsInText(
+          err instanceof Error ? err.message : String(err),
+          inheritedSecrets ?? outputSecrets
+        );
+        throw new ScrubRefusalError(
+          `Nested stack ${shownStack}: its Parameters could not be resolved against its own ` +
+            `template (${reason}), so its secrets cannot be identified. Its record was NOT ` +
+            `examined and may still hold plaintext.`,
+          'SCRUB_NESTED_CHILD_UNRESOLVABLE'
+        );
+      }
       // MASKED for UNIFORMITY, not for a live leak (issue #2803). This throw IS
       // reachable, unlike the condition catch below — but `resolveParameters`
       // is called here with no context at all, so it threads no
@@ -5333,6 +6075,13 @@ export async function scrubStack(
       // plaintext it still holds -- so failing closed is the point.
       producerRegions,
       bestEffort: true,
+      // A NESTED CHILD's parent bag (go-to-k/cdkd#2252) — the channel
+      // `DeployEngine.buildResolverContext` opens for a child engine. The
+      // resolver copies a pair into THIS context's `recordedSecretValues` only
+      // where a `{Ref: <Param>}` resolves to a value carrying its plaintext, so
+      // the needle lands in the bag of the resource that consumed the
+      // parameter and nowhere else (issue #2087).
+      ...(inheritedSecrets && { inheritedSecrets }),
     });
     const resolveCrossStackReads = makeCrossStackPrePass({
       stackName: stack.stackName,
@@ -5434,11 +6183,19 @@ export async function scrubStack(
     // condition: a failed condition is downgraded and evaluation continues,
     // so one condition's slow parts must not spend the next one's, and that
     // reasoning does not change under a lock.
+    /**
+     * Each nested-stack row's RESOLVED `Parameters`, and whether the resolution
+     * was complete (go-to-k/cdkd#2252) — what the row's child is scrubbed with.
+     * A unit the resolver abandoned is left in place as its unresolved input,
+     * so an incomplete value is never handed to a child: see
+     * `nestedChildRefusal`.
+     */
+    const nestedRowParameters = new Map<string, { value: unknown; complete: boolean }>();
     await withSharedDrainBudget(async () => {
       for (const logicalId of Object.keys(state.resources ?? {})) {
         const templateResource = templateResources[logicalId];
         if (!templateResource?.Properties) continue;
-        const recordedSecretValues = new Map<string, string>();
+        const recordedSecretValues = newBag();
         // REGISTERED BEFORE the pin and the pre-pass, not after them (issue #2133
         // review). The map is filled IN PLACE, so registering it early changes
         // nothing about what the loop below reads — but `maskSecretsInError` at
@@ -5580,6 +6337,24 @@ export async function scrubStack(
           bagKeys && !intrinsicShapedBag
             ? Object.entries(resolveInput as Record<string, unknown>)
             : [['', resolveInput]];
+        // A nested-stack row's `Parameters` are captured from the unit that
+        // resolves them (go-to-k/cdkd#2252). A bag resolved WHOLE (the `''`
+        // unit) is not taken apart for them: that shape is an intrinsic-shaped
+        // `Properties`, which no `cdk.NestedStack` synthesizes, and the child
+        // is refused rather than handed a guess.
+        const isNestedRow = templateResource.Type === NESTED_STACK_TYPE;
+        // The row's resolved properties, whole, for the recorder below — which
+        // the deploy engine hands the full resolved bag, not only `Parameters`.
+        const resolvedRowProps: Record<string, unknown> = nullPrototypeRecord();
+        if (isNestedRow) {
+          // FAIL-CLOSED default (review of go-to-k/cdkd#3958): complete only
+          // when there is no `Parameters` unit at all, so any path that skips
+          // both writes below refuses the child instead of handing it `{}`.
+          nestedRowParameters.set(logicalId, {
+            value: undefined,
+            complete: resolveUnits.every(([name]) => name !== '' && name !== 'Parameters'),
+          });
+        }
 
         for (const [propertyName, propertyValue] of resolveUnits) {
           // OPT IN to per-unit recovery (issues go-to-k/cdkd#3181 /
@@ -5596,10 +6371,17 @@ export async function scrubStack(
           // non-empty bag (see the field's doc).
           const abandoned: AbandonedResolution[] = [];
           try {
-            await resolver.resolve(propertyValue, {
+            const resolvedUnit = await resolver.resolve(propertyValue, {
               ...resourceContext,
               abandonedResolutions: abandoned,
             });
+            if (isNestedRow && propertyName !== '') resolvedRowProps[propertyName] = resolvedUnit;
+            if (isNestedRow && propertyName === 'Parameters') {
+              nestedRowParameters.set(logicalId, {
+                value: resolvedUnit,
+                complete: abandoned.length === 0,
+              });
+            }
             // Recovery means the resolve no longer THROWS for these, so the
             // verdict has to be reached from the bag instead — PER ENTRY, and
             // folded to the most severe.
@@ -5632,6 +6414,9 @@ export async function scrubStack(
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
             if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+            if (isNestedRow && propertyName === 'Parameters') {
+              nestedRowParameters.set(logicalId, { value: undefined, complete: false });
+            }
             // The THROW path, which cannot use `reportAbandonedBag`: it holds
             // only an error, so it must ask `abandonedScanVerdict` about the
             // whole property. Reached when the resolve failed for a reason the
@@ -5674,6 +6459,23 @@ export async function scrubStack(
         // template every run, so a resource with no recorded secret still has a
         // usable source in hand.
         perResourceTemplateProps.set(logicalId, templateResource.Properties);
+        // Issue #2291 / #3062, the deploy engine's CREATE / UPDATE step for this
+        // row: remember which `{{resolve:...}}` expression each child parameter
+        // was resolved FROM, keyed by parameter NAME, on this row's own bag —
+        // the bag the child is handed as `inheritedSecrets`, whose
+        // `inheritNestedStackParameterAssociations` reads the table back. Also
+        // the frame carry for an OBJECT-spelled parameter (`port:{{resolve:..}}`
+        // assembled by `Fn::Join`), which the child's needles need and which,
+        // on a record older than that carry, only this run can supply.
+        const nestedParameters = nestedRowParameters.get(logicalId);
+        if (isNestedRow && nestedParameters?.complete === true) {
+          recordNestedStackParameterExpressions(
+            recordedSecretValues,
+            NESTED_STACK_TYPE,
+            resolvedRowProps,
+            templateResource.Properties
+          );
+        }
       }
 
       // Rollback-orphan records (issue go-to-k/cdkd#2943). `orphans[*].state`
@@ -5697,7 +6499,7 @@ export async function scrubStack(
       // `entries()` for the INDEX, which is the key `orphanSecrets` is declared
       // with — its doc comment carries why an id key lost a row's needles.
       for (const [orphanIndex, record] of (state.orphans ?? []).entries()) {
-        const recordedSecretValues = new Map<string, string>();
+        const recordedSecretValues = newBag();
         // Registered before the pin for the same reason the resource loop
         // registers early: `pinCrossRegionSecrets` can throw AFTER recording a
         // foreign plaintext, and the error boundary at the bottom of this
@@ -6142,6 +6944,138 @@ export async function scrubStack(
       logger.warn(secretBearingStateKeyWarning(stack.stackName, display));
     }
 
+    // The nested children this stack deploys (go-to-k/cdkd#2252): every
+    // `AWS::CloudFormation::Stack` row the template declares OR the record
+    // holds. Each becomes a target carrying the parameters and bag above, or a
+    // refusal naming why none could be derived — raised by the child's own
+    // scrub only if its record exists.
+    const nestedChildren: NestedChildScrubTarget[] = [];
+    const nestedRowIds = new Set<string>();
+    for (const [logicalId, resource] of Object.entries(templateResources)) {
+      if (resource?.Type === NESTED_STACK_TYPE) nestedRowIds.add(logicalId);
+    }
+    for (const [logicalId, record] of Object.entries(state.resources ?? {})) {
+      if (record?.resourceType === NESTED_STACK_TYPE) nestedRowIds.add(logicalId);
+    }
+    for (const logicalId of nestedRowIds) {
+      const childStackName = `${stack.stackName}~${logicalId}`;
+      const refuse = (cause: string, remedy: string): void => {
+        nestedChildren.push({
+          logicalId,
+          stackName: childStackName,
+          refusal: nestedChildRefusal(childStackName, cause, remedy),
+        });
+      };
+      if (templateResources[logicalId]?.Type !== NESTED_STACK_TYPE) {
+        refuse(
+          `${shownStack}'s template no longer declares the nested-stack row it belongs to, so ` +
+            `scrub has no template to learn its secrets from`,
+          `Deploying ${shownStack} destroys a nested stack its template dropped, record included.`
+        );
+        continue;
+      }
+      if (!Object.hasOwn(state.resources ?? {}, logicalId)) {
+        refuse(
+          `${shownStack}'s state has no record of the nested-stack row that deploys it, so the ` +
+            `parameters it was deployed with are unknown`,
+          `Deploy ${shownStack} so it records the row, then re-run cdkd scrub; if its ` +
+            `Condition keeps the row out of the deploy, the child record is left over — ` +
+            `remove it with cdkd state destroy.`
+        );
+        continue;
+      }
+      const resolved = nestedRowParameters.get(logicalId);
+      const parameters =
+        resolved?.complete === true ? nestedChildParameters(resolved.value) : undefined;
+      if (parameters === undefined) {
+        refuse(
+          `the Parameters ${shownStack} passes it could not be resolved to the values a deploy ` +
+            `would hand it, so what it inherited is unknown`,
+          `Re-run cdkd scrub with --verbose to see which value failed to resolve, and fix that.`
+        );
+        continue;
+      }
+      nestedChildren.push({
+        logicalId,
+        stackName: childStackName,
+        input: {
+          parameters,
+          // The row's OWN bag, exactly the one `withCurrentResourceSecrets`
+          // binds around the provider call on a deploy. An empty one is a
+          // child with no secret-fed parameter: its own template still names
+          // its own references.
+          inheritedSecrets: perResourceSecrets.get(logicalId) ?? new Map<string, string>(),
+        },
+      });
+    }
+
+    // The inverse of this run's redaction (go-to-k/cdkd#3961): every
+    // `{{resolve:...}}` expression this run recorded, replaced by the plaintext
+    // it resolved to. The
+    // parent-row repair asks "is the stored attribute exactly what the child's
+    // output expression resolves to", which needs no positioning rule and so
+    // can neither miss a positioned key nor fabricate onto an unrelated value.
+    // Read at CALL time, when every bag it closes over is complete.
+    //
+    // `outputRewrites` adds the pairs the plaintext-keyed bags LOSE: where two
+    // expressions resolve to one plaintext, the bag keeps one of them, while
+    // this run's positioned output pass still rewrote each output from that
+    // plaintext onto its OWN expression. Filled once the output passes have
+    // run (below); empty on the zero-needle return, where nothing was rewritten.
+    // Keyed by EXPRESSION, the one side that does not collapse.
+    const outputRewrites = new Map<string, string>();
+    const resolveRecordedExpressions = (value: unknown): unknown => {
+      // FIRST pair wins for an expression recorded twice. Which one is
+      // immaterial to the caller: it rewrites an attribute only onto the
+      // expression itself, and only when the attribute equals a value that
+      // expression resolved to in this run.
+      const plaintextByExpression = new Map<string, string>();
+      const bags: RecordedSecretValues[] = [
+        outputSecrets,
+        ...perResourceSecrets.values(),
+        ...orphanSecrets.values(),
+      ];
+      const pairs: Array<readonly [string, string]> = [
+        ...bags.flatMap((bag) =>
+          [...bag].map(([plaintext, expression]) => [expression, plaintext] as const)
+        ),
+        ...outputRewrites,
+      ];
+      for (const [expression, plaintext] of pairs) {
+        if (!plaintextByExpression.has(expression))
+          plaintextByExpression.set(expression, plaintext);
+      }
+      const walk = (v: unknown): unknown => {
+        if (typeof v === 'string') {
+          let out = v;
+          for (const [expression, plaintext] of plaintextByExpression) {
+            if (out.includes(expression)) out = out.split(expression).join(plaintext);
+          }
+          return out;
+        }
+        if (Array.isArray(v)) return v.map(walk);
+        if (v !== null && typeof v === 'object') {
+          const out: Record<string, unknown> = nullPrototypeRecord();
+          for (const [k, inner] of Object.entries(v as Record<string, unknown>)) {
+            out[k] = walk(inner);
+          }
+          return out;
+        }
+        return v;
+      };
+      return walk(value);
+    };
+    // Whether a value holds any plaintext this run recorded (go-to-k/cdkd#3961),
+    // for the parent-row repair to REPORT an attribute it could not match
+    // rather than pass over it silently.
+    const holdsRecordedPlaintext = (value: unknown): boolean => {
+      const needles = new Map([
+        ...allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets),
+        ...outputSecrets,
+      ]);
+      return JSON.stringify(redactSecretsForState(value, needles)) !== JSON.stringify(value);
+    };
+
     const totalSecrets =
       outputSecrets.size +
       [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0) +
@@ -6187,6 +7121,9 @@ export async function scrubStack(
         // state, which is the case the index step exists to finish.
         outputs: state.outputs,
         exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+        resolveRecordedExpressions,
+        holdsRecordedPlaintext,
+        nestedChildren,
       };
     }
 
@@ -6471,6 +7408,24 @@ export async function scrubStack(
     );
     emitAbandonedScanNotes();
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
+    // Whole-value rewrites of this record's outputs, as expression -> plaintext
+    // pairs for `resolveRecordedExpressions` (see `outputRewrites`).
+    if (isReadableBag(state.outputs) && isReadableBag(newOutputs)) {
+      const before = state.outputs as Record<string, unknown>;
+      const after = newOutputs as Record<string, unknown>;
+      for (const key of Object.keys(after)) {
+        const was = before[key];
+        const now = after[key];
+        if (
+          typeof was === 'string' &&
+          typeof now === 'string' &&
+          now.includes(DYNAMIC_REFERENCE_OPENING) &&
+          !was.includes(DYNAMIC_REFERENCE_OPENING)
+        ) {
+          outputRewrites.set(now, was);
+        }
+      }
+    }
     if (outputsChanged) recordsChanged++;
 
     if (recordsChanged > 0 && !opts.dryRun) {
@@ -6535,6 +7490,9 @@ export async function scrubStack(
       ...(malformedResourceRows ? { malformedResourceRows } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+      resolveRecordedExpressions,
+      holdsRecordedPlaintext,
+      nestedChildren,
     };
   } catch (err) {
     // THE MASKING BOUNDARY for everything that ESCAPES this function (issue
@@ -6552,10 +7510,19 @@ export async function scrubStack(
     // be a safe needle is not masked, exactly as it is not redacted. Returns
     // the original error by identity when nothing matched, so the ordinary
     // "no state for this stack" failure keeps its identity.
-    throw maskSecretsInError(
-      err,
-      allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
-    );
+    //
+    // A NESTED CHILD also masks against its PARENT's bag (go-to-k/cdkd#2252):
+    // an inherited plaintext enters this function as a parameter VALUE, and it
+    // joins a recorded bag only once a `{Ref}` to it resolves, so an error
+    // raised before then could carry one no bag above holds. Same floor, and
+    // added only where a recorded needle does not already claim the value.
+    const boundaryNeedles = allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets);
+    for (const [value, expression] of inheritedSecrets ?? []) {
+      if (value.length >= MIN_NEEDLE_LENGTH && !boundaryNeedles.has(value)) {
+        boundaryNeedles.set(value, expression);
+      }
+    }
+    throw maskSecretsInError(err, boundaryNeedles);
   } finally {
     if (acquired) {
       await lockManager.releaseLock(stack.stackName, region).catch((err) => {
@@ -6573,7 +7540,10 @@ export function createScrubCommand(): Command {
       'Rewrite persisted state so resolved secret dynamic references are stored ' +
         'as their {{resolve:...}} expression, not the plaintext value (no deploy).'
     )
-    .argument('[stacks...]', 'Stack name(s) to scrub (physical name or display path)')
+    .argument(
+      '[stacks...]',
+      'Stack name(s) to scrub (physical name or display path); the nested stacks under each are scrubbed too'
+    )
     .option('--all', 'Scrub every stack in the synthesized app', false)
     .option('--dry-run', 'Report what would be scrubbed without writing state')
     .option(

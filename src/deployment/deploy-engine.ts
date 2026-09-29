@@ -2,6 +2,7 @@ import { getLogger } from '../utils/logger.js';
 import { commandHole, pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
+  equalIdNamesDifferentResources,
   equalIdNamesSameResource,
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
@@ -41,6 +42,7 @@ import {
   applyDefaultNameForFallback,
   withoutGeneratedFallbackName,
   getCurrentStackName,
+  getCurrentSkipPrefix,
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
@@ -99,6 +101,10 @@ import {
   makeSiblingClaimReader,
 } from './orphan-adoption.js';
 import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
+import {
+  renderNameHeldElsewhere,
+  replacementRequestsDifferentName,
+} from './replacement-name-holder.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   shouldRetainResource,
@@ -2015,7 +2021,8 @@ export class DeployEngine {
    * `Provider` samples encourage — makes `Data.X` equal the resource's own
    * `ServiceToken`, and registering that rewrites `properties.ServiceToken` to
    * `***` in the record `CustomResourceProvider.delete` reads it back from,
-   * where the mask is a truthy string that passes both of that method's guards.
+   * which can then no longer address the handler and skips the delete
+   * (go-to-k/cdkd#3938).
    * A value already present in the template is not handler-GENERATED, so
    * excluding it gives up no secrecy — and where the template value IS a
    * resolved secret it already carries a real EXPRESSION needle, which
@@ -2148,10 +2155,10 @@ export class DeployEngine {
      *
      * TRACED, not assumed. `CustomResourceProvider.import` returns
      * `{ physicalId, attributes: {} }` unconditionally; `import.ts`'s
-     * `rowAttributes` normalises an empty bag to `undefined` and the coalesce
-     * behind it CARRIES FORWARD the prior record's attributes whenever the
-     * physical id matches — which it does, since the command is run with that
-     * very id. So the masked bag is copied back verbatim and the refusal
+     * `reimportedAttributes` CARRIES FORWARD the prior record's attributes
+     * for an empty bag whenever the physical id matches — which it does,
+     * since the command is run with that very id. So the masked bag is copied
+     * back verbatim (the import now warns that it was) and the refusal
      * repeats, forever.
      *
      * This is the NoEcho population — arm (1) of the refusal's own message —
@@ -2450,8 +2457,9 @@ export class DeployEngine {
     // `GetResource` again yields no usable model, `import()` returns
     // `attributes: {}`, and `buildStackState`'s same-physical-id carry-over
     // keeps the PREVIOUS masked bag rather than replacing it — so the refusal
-    // repeats. Tracked as issue
-    // [#2927](https://github.com/go-to-k/cdkd/issues/2927).
+    // repeats. Deliberately: dropping the mask would make the read resolve to
+    // the physical id instead. The import warns naming each kept key (issue
+    // [#2927](https://github.com/go-to-k/cdkd/issues/2927)).
     throw new ProvisioningError(
       `Cannot resolve ${reads.map((read) => read.display).join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
         `redaction mask there, and the value is not recoverable from state. There are two ways a ` +
@@ -5896,6 +5904,9 @@ export class DeployEngine {
         initialDeploy,
         ...(this.options.roleArn && { roleArn: this.options.roleArn }),
         cdkdVersion: getCdkdVersion(),
+        // Issue #4018: the prefix flag this deploy's providers derived names
+        // under, so `cdkd rollback` replays the segment in the same scope.
+        skipPrefix: getCurrentSkipPrefix(),
         operations: redactedCompleted,
         ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
         ...(nestedPending?.previousOutputs && { previousOutputs: nestedPending.previousOutputs }),
@@ -7423,6 +7434,27 @@ export class DeployEngine {
             }
           }
 
+          // Issue #3899: `--recreate-via-cc-api` deletes the old resource FIRST
+          // and then creates through Cloud Control, pinned by `forceCcApi`
+          // below, which the registry honours before it consults whether Cloud
+          // Control can create the type at all. `validateRecreateTargets`
+          // refuses such a type pre-flight (#3887); this is the same verdict
+          // at the delete, so a caller that skips the validator cannot delete
+          // a resource that is then never recreated.
+          if (recreateViaCcApi) {
+            const noCcRoute = this.providerRegistry.ccRouteUnavailableReason(resourceType);
+            if (noCcRoute !== undefined) {
+              throw markNonRetryable(
+                new CdkdError(
+                  `--recreate-via-cc-api cannot recreate ${logicalId} (${resourceType}): Cloud ` +
+                    `Control API cannot create this type (${noCcRoute}). Nothing was deleted. ` +
+                    `Drop ${logicalId} from --recreate-via-cc-api.`,
+                  'RECREATE_TARGETS_INVALID'
+                )
+              );
+            }
+          }
+
           // Resource replacement: DELETE old → CREATE new
           let replacementReason: string;
           if (recreateViaCcApi) {
@@ -7521,6 +7553,11 @@ export class DeployEngine {
             oldType: oldResourceType,
             newType: resourceType,
             createLayer: replaceDecision.provisionedBy,
+            // Issue #3892: a Glue table's id is placed by DatabaseName, so an
+            // equal id can be a genuinely new table in another database.
+            oldProperties: currentResource.properties,
+            newProperties: resolvedProps,
+            physicalId: currentResource.physicalId,
           });
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
@@ -7746,6 +7783,45 @@ export class DeployEngine {
                   `being replaced — then deleting the old resource first cannot free it, and the ` +
                   `fix is a different name.`
                 : '';
+              // Issue #3808: every message below, and the `--replace`
+              // delete-first retry, presume the old resource holds the name.
+              // When the template's explicit name says otherwise, the holder
+              // is another resource: refuse under every flag and policy, since
+              // deleting the old resource first would only destroy it and hit
+              // the same collision. Nothing has been deleted at this point.
+              const nameHeldElsewhere = replacementRequestsDifferentName({
+                oldResourceType,
+                newResourceType: resourceType,
+                desiredProperties: resolvedProps,
+                recorded: currentResource.properties,
+                observed: currentResource.observedProperties,
+                physicalId: currentResource.physicalId,
+              });
+              if (nameHeldElsewhere !== undefined) {
+                // Marked: a template value and a recorded name decide it, and
+                // the message quotes the create's collision text, which the
+                // recreate retry classifier treats as retryable.
+                throw markNonRetryable(
+                  new CdkdError(
+                    `${logicalId} (${resourceType}) requires replacement, but the create-first ` +
+                      `attempt collided: ${createMsg}. ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
+                      (this.options.replace === true
+                        ? ` — so --replace was NOT applied and nothing was deleted.`
+                        : updateReplacePolicy === 'Retain'
+                          ? ` — so removing UpdateReplacePolicy: Retain and re-running with ` +
+                            `\`cdkd deploy --replace\` would delete this resource and still collide.`
+                          : ` — so \`cdkd deploy --replace\` would delete this resource and still ` +
+                            `collide.`) +
+                      ` Choose a name no other resource holds, or delete the resource holding it if ` +
+                      `it is yours.`,
+                    'NAMED_REPLACEMENT_COLLISION',
+                    // Chained like the fallback twin, so the persisted event
+                    // names the AWS rejection; safe because the refusal is
+                    // marked, which the retry classifiers read first.
+                    createError instanceof Error ? createError : undefined
+                  )
+                );
+              }
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but its physical name ` +
@@ -8590,6 +8666,32 @@ export class DeployEngine {
                 // only rewrites the error text — nothing destructive follows
                 // either branch here, because this arm never deletes.
                 if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
+                // Issue #3808, as on the property-driven path: when the
+                // template's explicit name is not the one the retained resource
+                // holds, "remove Retain so cdkd deletes the old resource first"
+                // would destroy it and still collide.
+                const nameHeldElsewhere = replacementRequestsDifferentName({
+                  oldResourceType: resourceType,
+                  newResourceType: resourceType,
+                  desiredProperties: resolvedProps,
+                  recorded: currentResource.properties,
+                  observed: currentResource.observedProperties,
+                  physicalId: currentResource.physicalId,
+                });
+                if (nameHeldElsewhere !== undefined) {
+                  throw markNonRetryable(
+                    new CdkdError(
+                      `${logicalId} (${resourceType}) requires replacement because the ` +
+                        `provisioning layer cannot update it in place, but the create collided. ` +
+                        `${renderNameHeldElsewhere(nameHeldElsewhere)} — so removing ` +
+                        `UpdateReplacePolicy: Retain would delete this resource and still ` +
+                        `collide. Choose a name no other resource holds, or delete the resource ` +
+                        `holding it if it is yours.`,
+                      'NAMED_REPLACEMENT_COLLISION',
+                      createError instanceof Error ? createError : undefined
+                    )
+                  );
+                }
                 const nameOrigin = this.replacementNameOrigin(
                   logicalId,
                   currentResource.physicalId
@@ -8637,7 +8739,16 @@ export class DeployEngine {
                 // without the new properties ever being applied — so fail
                 // before any state bookkeeping runs. The property-driven twin
                 // makes the same call with the same code.
-                if (createResult.physicalId === currentResource.physicalId) {
+                if (
+                  createResult.physicalId === currentResource.physicalId &&
+                  // Issue #3892: an equal id can still be a NEW table (Glue).
+                  !equalIdNamesDifferentResources({
+                    resourceType,
+                    physicalId: currentResource.physicalId,
+                    oldProperties: currentResource.properties,
+                    newProperties: resolvedProps,
+                  })
+                ) {
                   const idempotentNameOrigin = this.replacementNameOrigin(
                     logicalId,
                     currentResource.physicalId
@@ -9961,7 +10072,7 @@ export class DeployEngine {
      * export blocker DO recognise. Firing there would silently change the
      * pre-existing issue #2274 behaviour (an output that published `'***'`
      * would vanish) for no safety gain, and would render this message's
-     * "would publish the resource's raw physical id" over a read for which
+     * "would publish a value cdkd cannot confirm" over a read for which
      * there is no physical-id fall-through — the wrong-advice class this PR
      * has spent three rounds removing.
      *
@@ -9997,8 +10108,9 @@ export class DeployEngine {
       throw markNonRetryable(
         new Error(
           `Cannot resolve ${added.map((read) => read.display).join(', ')} for output ${outputKey}: cdkd's recorded state ` +
-            `holds only the redaction mask there, so this output would publish the resource's ` +
-            `raw physical id instead of the value CloudFormation's Ref returns — a wrong value ` +
+            `holds only the redaction mask there, so this output would publish a value cdkd ` +
+            `cannot confirm (for most such types the resource's raw physical id) instead of the ` +
+            `value CloudFormation's Ref returns — a possibly wrong value ` +
             `that a consuming stack's Fn::ImportValue would accept and send to AWS. The output ` +
             `is not published. ${DeployEngine.maskedRecordRemedyFor(added, context.resources)}`
         )

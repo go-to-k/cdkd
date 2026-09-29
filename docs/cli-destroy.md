@@ -60,7 +60,11 @@ When the app defines a single stack, no name is needed.
 
 `--all` targets every stack in the current CDK app. Whenever more than one stack
 is selected — by `--all` or by naming several — they are ordered so that a
-consumer stack is destroyed before the producers it reads from.
+consumer stack is destroyed before the producers it reads from. When the app
+synthesizes but yields no stacks, for example because every stack sits under a
+Stage that failed to load, `--all` and any wildcard pattern (`'*'`, `'Cdkd*'`)
+are refused: neither falls back to every stack in the state bucket. An exact
+physical stack name still resolves from state.
 
 A nested-stack **child** cannot be destroyed directly: `cdkd destroy '<child>'`
 is refused, because the parent's `AWS::CloudFormation::Stack` row would then
@@ -78,15 +82,13 @@ reference dangling.
 | --- | --- | --- |
 | Per-stack (`Are you sure you want to destroy stack "X" ...`) | `cdkd destroy '<stack>'`, `cdkd destroy --all` | `-y` / `--yes`, `-f` / `--force` |
 | Per-stack, same prompt | `cdkd state destroy '<stack>'` | `-y` / `--yes` only — `cdkd state destroy` does not accept `-f` / `--force` |
-| Batch — one prompt for the whole batch, asked before anything is touched | `cdkd state destroy --all` | `-y` / `--yes` |
 
 Under `--remove-protection` the per-stack prompt names the protected resources
 (`About to destroy N resources from stack "X", REMOVING DELETION PROTECTION on
 K of them. Continue? (y/N)`) and its default flips from `Y/n` to `y/N`.
 
 Nested-stack children are destroyed as part of their parent's cascade and never
-prompt separately. `cdkd state destroy --all`'s per-stack prompts are skipped
-once its batch prompt is answered.
+prompt separately.
 
 ### Non-interactive runs
 
@@ -102,14 +104,9 @@ Refusing rather than auto-confirming is the deliberate choice for a destroy:
 whereas silently answering "yes" for an absent operator here would delete every
 resource in the stack.
 
-What each refusal guarantees:
-
-- **Batch prompt.** Nothing is read, locked or deleted. A signal delivered at
-  that prompt cancels it and exits 130, also without reading, locking or
-  deleting anything.
-- **Per-stack prompt.** Nothing is locked and nothing is deleted, but the
-  refusal is preceded by the strong-reference scan, which READS other stacks'
-  state records. That is a weaker guarantee than the batch prompt's.
+What the refusal guarantees: nothing is locked and nothing is deleted, but the
+refusal is preceded by the strong-reference scan, which READS other stacks'
+state records.
 
 A stack whose state record holds ZERO resources never reaches the per-stack
 refusal at all: that branch returns earlier, having taken the lock and deleted
@@ -127,7 +124,7 @@ too](#every-other-mutating-confirmation-prompt-is-interactive-only-too).
 | `0` | Everything was destroyed. |
 | `1` | Hard error, including a confirmation prompt refused on a non-interactive stdin. |
 | `2` | Partial: resources failed or were skipped, or the run was interrupted with work left. `state.json` is preserved; re-run to finish. |
-| `130` | A signal arrived at the `cdkd state destroy --all` batch prompt. Nothing was read, locked or deleted. |
+| `130` | Force-quit by Ctrl-C: a second one, or one that arrived before the stack's own graceful stop was armed. A stack lock may be left behind; the message names `cdkd force-unlock`. |
 
 The full cross-command table is in the [CLI Reference](cli-reference.md).
 
@@ -373,36 +370,49 @@ AWS exposes a synchronous "flip protection off" API call.
   delete whatever replace flags were passed. Clear the protection flag first:
   [Deploy: safety & compatibility flags](cli-deploy-safety.md#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it).
 
-### Restoring a DynamoDB guard after a failed destroy
+### Restoring a guard after a failed destroy
 
-On `AWS::DynamoDB::Table` and `AWS::DynamoDB::GlobalTable`, a flip followed by
-a **terminal** delete failure — or by a Ctrl-C landing after the flip — is
-compensated: cdkd re-enables `DeletionProtectionEnabled` before reporting the
-failure, so a destroy that did not happen does not leave a live table with its
-guard stripped. Four limits are deliberate:
+On these types a flip followed by a **terminal** delete failure is
+compensated: cdkd turns the guard back on before reporting the failure, so a
+destroy that did not happen does not leave a live resource with its guard
+stripped.
 
-- It only restores a guard **cdkd itself turned off in this run**. A table
+| Type | Guard |
+| --- | --- |
+| `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled` |
+| `AWS::RDS::DBCluster`, `AWS::RDS::DBInstance` | `DeletionProtection` |
+| `AWS::DocDB::DBCluster` | `DeletionProtection` |
+| `AWS::Neptune::DBCluster`, `AWS::Neptune::DBInstance` | `DeletionProtection` |
+
+On the DynamoDB pair a Ctrl-C landing in a wait after the flip is compensated
+too. Four limits are deliberate:
+
+- It only restores a guard **cdkd itself turned off in this run**. A resource
   whose protection was already disabled beforehand, or whose pre-flip read
   failed, is left alone.
 - It keys on how the delete ENDS, not on individual retries, and it does not
-  run once AWS has ACCEPTED the `DeleteTable` — a failure after that point is a
-  wait giving up on a table that is already being deleted.
+  run once AWS has ACCEPTED the delete call — a failure after that point is a
+  wait giving up on a resource that is already being deleted.
 - It does not run when a retryable failure exhausts the destroy loop's attempt
   cap, nor when a per-resource `--resource-timeout` fires. Both leave the guard
   off.
 - It is best-effort. The delete failure stays the reported outcome, and a
   re-enable that itself fails is reported as a separate ERROR line naming the
-  table and the restore command below. A re-enable that fails with
-  `ResourceNotFoundException` is reported at **warn** instead and names a
-  `describe-table` check first, because DynamoDB returns that error both for a
-  table that is gone and for one whose status is merely not `ACTIVE`.
+  resource and its restore command. A re-enable that fails with the service's
+  not-found error is reported at **warn** instead and names a `describe-*`
+  check first, because that error also covers a resource that is still live —
+  in another region, or (DynamoDB) whose status is merely not `ACTIVE`.
 
 To restore the guard by hand:
 
 ```bash
-aws dynamodb describe-table --table-name <table>
 aws dynamodb update-table --table-name <table> --deletion-protection-enabled
+aws rds modify-db-cluster --db-cluster-identifier <id> --deletion-protection --apply-immediately
+aws rds modify-db-instance --db-instance-identifier <id> --deletion-protection --apply-immediately
 ```
+
+DocDB and Neptune take the same `modify-db-cluster` / `modify-db-instance`
+form under `aws docdb` / `aws neptune`.
 
 ## `--purge-events`: also delete deployment-event history on destroy
 
@@ -440,7 +450,7 @@ cdkd destroy MyStack --purge-events -y
 ## Skipped resources on destroy
 
 A **skipped** resource is one cdkd could not address, so it may still exist and
-still be billing. Three causes today:
+still be billing. The causes:
 
 - **A composite `physicalId` that does not decode** (`AWS::Glue::Table`,
   `AWS::AppSync::{DataSource,Resolver,ApiKey}`, `AWS::EC2::NetworkAclEntry`).
@@ -457,6 +467,8 @@ still be billing. Three causes today:
   | `AWS::Lambda::Permission` with neither a `FunctionName` property nor a function ARN in its `physicalId` | The statement stays on the function's resource policy — an invoke grant outliving the stack. |
   | `AWS::Lambda::Permission` whose `physicalId` carries no StatementId | As above. |
   | A Custom Resource with no properties, or no `ServiceToken` | Its handler never receives a `Delete` request, so whatever it manages elsewhere is untouched. |
+  | A Custom Resource whose recorded `ServiceToken` is the redaction mask `***` — it read a `NoEcho` value equal to, or contained in, its own `ServiceToken` | As above. A re-deploy masks it again, so restore the ARN while the handler still exists, or tear the resource down by hand. |
+  | A Custom Resource whose recorded `ServiceToken` holds a `{{resolve:...}}` reference — cdkd keeps a secret (`secretsmanager` / `ssm-secure`) reference's expression, not its value, and does not resolve it on delete | As above. A deploy of that template is refused (CloudFormation does not support secure dynamic references in custom resources), so restore the ARN while the handler still exists, or tear the resource down by hand. |
   | `AWS::IAM::Policy` with neither a policy name in its `physicalId` nor a `PolicyName` property | The policy stays attached wherever it is. |
   | `AWS::IAM::Policy` naming no `Roles` / `Groups` / `Users` | An inline policy exists only as an attachment, so a record naming no principal cannot be deleted. |
   | `AWS::IAM::UserToGroupAddition` missing `GroupName` or `Users` | The users keep every permission the group grants. |
@@ -466,6 +478,35 @@ still be billing. Three causes today:
   group / user — that parent's own delete removes the skipped resource anyway,
   so AWS ends clean and only the cdkd record is stale. The warning says so, and
   `cdkd state orphan '<stack>'` clears it.
+
+- **A state record whose principal list is not a list of IAM names** — a
+  string or object where a list belongs, or an entry that is not an IAM name.
+  cdkd refuses to guess which principals it names, so no AWS call is issued:
+
+  | Record | What survives |
+  | --- | --- |
+  | `AWS::IAM::Policy` whose `Roles` / `Groups` / `Users` is not a list of IAM names | The inline policy stays attached wherever it is. |
+  | `AWS::IAM::UserToGroupAddition` whose `Users` is not a list of IAM user names | The users keep every permission the group grants. |
+
+  A plain malformed list is repaired in `state.json`, after which a re-run
+  deletes it. A list holding a dynamic reference or its mask is
+  secret-derived: cdkd keeps the reference in state by design, so there is
+  nothing to repair and every destroy skips it again. Remove the attachment or
+  the memberships by hand; the rest of the stack is still destroyed, so once
+  this is the stack's last record, `cdkd state orphan '<stack>'` clears it.
+
+- **A state record whose address property cdkd redacted** — a property the
+  delete names the resource by (an API id, a cluster, a group, a Route 53 record
+  value, a security-group rule, an anomaly detector's metric) that is stored as
+  the `***` mask of a `NoEcho` value the resource read, or as a secret
+  `{{resolve:...}}` reference. Neither names anything in AWS, and on several of
+  these APIs an unknown name answers "not found", which used to read as already
+  deleted and drop the record over a live resource. Where a second source holds
+  the value (a Lambda permission's function or an ECS service's cluster in its
+  `physicalId`, an IAM policy's name, an access key's owner looked up from IAM,
+  a Route 53 record's hosted zone in its `physicalId`) it is used instead; otherwise
+  no AWS call is issued. A re-deploy records the same redaction again, so remove
+  the resource by hand and drop the record with `cdkd state orphan '<stack>'`.
 
 - **A nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped a
   resource or was interrupted. Here the child's *other* resources were deleted
@@ -730,8 +771,7 @@ hand-edited or truncated one can hold a string, a list, a number, a boolean or
 
 The destroy therefore refuses before the per-stack confirmation prompt
 (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the record and the region.
-`cdkd state destroy --all` raises its batch prompt first, so there the operator
-confirms the batch and the refusal follows. The refusal sits inside
+The refusal sits inside
 `runDestroyForStack`, so every route into a destroy inherits it — including a
 nested **child** record reached through its parent's destroy.
 Reading the bag as empty — the repair `cdkd diff` and `cdkd state show` apply —
@@ -804,7 +844,7 @@ non-TTY rule as the destroy prompts above:
 
 | Command | Prompt | Flag that avoids it |
 | --- | --- | --- |
-| `cdkd rollback` | `Roll back '<stack>' (<region>)?` | `--force` (or `-y` / `--yes`) |
+| `cdkd rollback` | `Roll back <stack> (<region>)?` | `--force` (or `-y` / `--yes`) |
 | `cdkd state orphan` | `Remove state for <refs> from s3://...?` | `-y` / `--yes`, or `-f` / `--force` |
 | `cdkd state refresh-observed` | `Refresh observedProperties for N stack(s)...?` | `-y` / `--yes` |
 | `cdkd orphan` | `Orphan N resource(s) from cdkd state...?` | `-y` / `--yes`, or `-f` / `--force` |

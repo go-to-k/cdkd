@@ -30,7 +30,8 @@ import {
   withNestedRevertRun,
   type NestedRevertRun,
 } from '../../deployment/nested-child-journal.js';
-import { withStackName } from '../../provisioning/resource-name.js';
+import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
+import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
 import { startRunRecorder } from './deployment-events-run.js';
@@ -209,6 +210,11 @@ function snapshotNote(
  * that is not a plain identifier renders JSON-quoted. Call it for those;
  * `grep safe(` answers the scope and this comment does not.
  *
+ * The caller writes NO quotes around the result, here or around
+ * {@link safeStack}'s (go-to-k/cdkd#3950): the JSON boundary is the value's
+ * own, and a hand-written `'...'` is exactly what a `'`-carrying name closes,
+ * leaving the rest of a pasted sentence as bare shell.
+ *
  * NOT for a value that is about to be USED rather than shown -- the preview
  * indexes `previewState` by the RAW `op.logicalId`, and sanitising a lookup
  * key silently mismatches the record it is meant to find.
@@ -326,7 +332,7 @@ function refuseDivergentRecordRegionForRollback(
       : `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`;
   throw markNonRetryable(
     new CdkdError(
-      `cdkd will not roll back '${safeStack(stackName)}' (${safe(keyRegion)}): the state record ` +
+      `cdkd will not roll back ${safeStack(stackName)} (${safe(keyRegion)}): the state record ` +
         `read from that region's key carries a 'region' of its own ` +
         `(${describeRegionValueKind(divergentBodyRegion)}) that is not the key's, and ${lists} — ` +
         `so cdkd cannot tell which region they are in. cdkd stamps the key's region into every ` +
@@ -658,13 +664,13 @@ export async function rollbackCommand(
       }
       if (!journal || (journal.segments.length === 0 && orphanedPending === 0)) {
         throw new Error(
-          `Nothing to roll back for '${safeStack(stackName)}' (${safe(region)}). ` +
+          `Nothing to roll back for ${safeStack(stackName)} (${safe(region)}). ` +
             "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
         );
       }
       if (!stateData) {
         throw new Error(
-          `Rollback journal exists for '${safeStack(stackName)}' (${safe(region)}) but its state.json is missing ` +
+          `Rollback journal exists for ${safeStack(stackName)} (${safe(region)}) but its state.json is missing ` +
             // Rendered SEGMENT BY SEGMENT, not as one pre-joined string: this
             // key is the operator's only route to the record the sentence says
             // is corrupted, and joining first put the whole path under the
@@ -763,8 +769,39 @@ export async function rollbackCommand(
         );
       }
 
+      // Issue #4018: each segment is replayed under the prefix flag its deploy
+      // ran with, so a re-create asks AWS for the name that deploy (and its
+      // in-process rollback) would. A segment an older cdkd wrote carries no
+      // flag: fall back to the deploy's own resolution minus the CLI flag
+      // (env, the cdk.json in the current directory, the default), resolved
+      // once and only when needed, and say so BEFORE the confirmation.
+      let fallbackSkipPrefix: boolean | undefined;
+      const legacySkipPrefix = (): boolean =>
+        (fallbackSkipPrefix ??= resolveSkipPrefix({ quiet: true }));
+      const legacySegments = journal.segments.filter((s) => s.skipPrefix === undefined).length;
+      if (legacySegments > 0) {
+        logger.warn(
+          safeMsg`${legacySegments} of ${journal.segments.length} rollback journal segment(s) ` +
+            'were recorded by a cdkd that did not record the user-supplied-name prefix ' +
+            'setting; replaying them with the stack-name prefix ' +
+            (legacySkipPrefix() ? 'SKIPPED' : 'KEPT') +
+            ' on user-supplied physical names (CDKD_PREFIX_USER_SUPPLIED_NAMES / ' +
+            'context.cdkd.prefixUserSuppliedNames in ./cdk.json / the default). If the failed ' +
+            'deploy ran with --prefix-user-supplied-names, re-run with ' +
+            'CDKD_PREFIX_USER_SUPPLIED_NAMES=true instead.'
+        );
+      }
+      /** The async scope a segment replays in: its stack name and its prefix flag. */
+      const inSegmentScope = <T>(
+        segment: { skipPrefix?: boolean },
+        fn: () => Promise<T>
+      ): Promise<T> =>
+        withSkipPrefix(segment.skipPrefix ?? legacySkipPrefix(), () =>
+          withStackName(stackName, fn)
+        );
+
       // 5. Plan — newest-first, one block per segment.
-      logger.info(`\nRollback plan for '${safeStack(stackName)}' (${safe(region)}):`);
+      logger.info(`\nRollback plan for ${safeStack(stackName)} (${safe(region)}):`);
       if (orphanedPending > 0) {
         logger.info(
           safeMsg`\n  Discard ${orphanedPending} record(s) of nested deploys whose parent run no longer ` +
@@ -833,7 +870,7 @@ export async function rollbackCommand(
       logger.info('');
 
       if (!skipConfirmation) {
-        const ok = await confirm(`Roll back '${safeStack(stackName)}' (${safe(region)})?`);
+        const ok = await confirm(`Roll back ${safeStack(stackName)} (${safe(region)})?`);
         if (!ok) {
           logger.info('Rollback cancelled');
           return;
@@ -996,7 +1033,7 @@ export async function rollbackCommand(
             () =>
               withNestedRevertRun(segment.runId, (run) => {
                 nestedRun = run;
-                return withStackName(stackName, async () => {
+                return inSegmentScope(segment, async () => {
                   // #1198: revert the segment's FAILED in-flight op(s) first
                   // (opt-in). Their revert is independent of the completed-op
                   // replay (one op per resource per deploy), so a failed-op
@@ -1165,7 +1202,7 @@ export async function rollbackCommand(
       ) {
         await setup.stateBackend.deleteState(stackName, region);
         logger.info(
-          `State for '${safeStack(stackName)}' (${safe(region)}) removed (stack fully rolled back).`
+          `State for ${safeStack(stackName)} (${safe(region)}) removed (stack fully rolled back).`
         );
       }
 
@@ -1196,7 +1233,7 @@ export async function rollbackCommand(
           `Rollback completed with ${totalWarnings} skipped/unrecoverable operation(s) (see warnings above).`
         );
       }
-      logger.info(`\nRollback of '${safeStack(stackName)}' (${safe(region)}) complete.`);
+      logger.info(`\nRollback of ${safeStack(stackName)} (${safe(region)}) complete.`);
     } finally {
       // Release FIRST, unregister LAST (issue #2118). While the release
       // round-trip is in flight the lock is still held, so the handlers must

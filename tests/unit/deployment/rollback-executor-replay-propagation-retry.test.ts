@@ -126,8 +126,27 @@ function reverseReplacementOp(resourceType = 'AWS::Lambda::Function'): Completed
     changeType: 'UPDATE',
     resourceType,
     physicalId: 'new-fn',
-    previousState: res({ physicalId: 'old-fn', resourceType, properties: { Role: 'arn:role' } }),
+    previousState: res({
+      physicalId: 'old-fn',
+      resourceType,
+      properties: { Role: 'arn:role', ...sharedName(resourceType) },
+    }),
   };
+}
+
+/**
+ * The name both halves carry, so a collision proves the NEW resource holds it
+ * and reaches delete-new-first (#3979). Empty for a type with no name key.
+ */
+function sharedName(resourceType: string): Record<string, string> {
+  if (resourceType === 'AWS::Lambda::Function') return { FunctionName: 'fn' };
+  if (resourceType === 'AWS::SQS::Queue') return { QueueName: 'fn' };
+  return {};
+}
+
+/** The live NEW resource's record, holding the op's shared name. */
+function newRecord(resourceType = 'AWS::Lambda::Function'): ResourceState {
+  return res({ physicalId: 'new-fn', resourceType, properties: sharedName(resourceType) });
 }
 
 /**
@@ -272,7 +291,7 @@ describe('reverse-replacement replay-CREATE retries IAM propagation (#2032)', ()
       return undefined;
     });
     const { ctx } = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Fn: res({ physicalId: 'new-fn' }) };
+    const state: Record<string, ResourceState> = { Fn: newRecord() };
 
     const result = await replayRollback([reverseReplacementOp()], state, 'S', ctx);
 
@@ -301,7 +320,7 @@ describe('the inner wrapper must not swallow the name-collision fallback (#2032 
       return undefined;
     });
     const { ctx } = makeCtx({ create, delete: del });
-    const state: Record<string, ResourceState> = { Fn: res({ physicalId: 'new-fn' }) };
+    const state: Record<string, ResourceState> = { Fn: newRecord() };
 
     const result = await replayRollback([reverseReplacementOp()], state, 'S', ctx);
 
@@ -402,7 +421,10 @@ describe('a disableOuterRetry provider is single-shot on BOTH loops (#2032)', ()
       return undefined;
     });
     const { ctx } = optOutCtx({ create, delete: del });
-    const { op, state } = optOutOp();
+    // A named type, so the collision provably names the NEW resource (#3979);
+    // the opt-out is the PROVIDER's flag, not the type's.
+    const op = reverseReplacementOp('AWS::SQS::Queue');
+    const state = { Fn: newRecord('AWS::SQS::Queue') };
 
     const result = await replayRollback([op], state, 'S', ctx);
 

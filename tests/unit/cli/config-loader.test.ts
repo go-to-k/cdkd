@@ -1005,6 +1005,16 @@ describe('config-loader', () => {
       );
     });
 
+    it('quiet: true resolves the same value but emits neither deprecation warning (rollback fallback)', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { noPrefixUserSuppliedNames: true } } })
+      );
+      process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'] = 'true';
+      expect(resolveSkipPrefix({ quiet: true })).toBe(true);
+      expect(loggerMock.warn).not.toHaveBeenCalled();
+    });
+
     it('new --prefix-user-supplied-names overrides deprecated CDKD_NO_PREFIX_USER_SUPPLIED_NAMES env', () => {
       vi.mocked(existsSync).mockReturnValue(false);
       process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'] = 'true';

@@ -94,7 +94,6 @@
   "src/provisioning/providers/custom-resource-provider.ts": 34,
   "src/provisioning/providers/dlm-lifecycle-policy-provider.ts": 10,
   "src/provisioning/providers/docdb-provider.ts": 21,
-  "src/provisioning/providers/dynamodb-delete-budget.ts": 3,
   "src/provisioning/providers/dynamodb-globaltable-provider.ts": 30,
   "src/provisioning/providers/dynamodb-table-provider.ts": 37,
   "src/provisioning/providers/ec2-provider.ts": 151,

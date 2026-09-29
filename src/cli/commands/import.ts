@@ -32,6 +32,7 @@ import {
   isUnboundTemplateParameter,
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
+  carriesSecretMask,
   markSameGenerationBag,
   maskSecretsInText,
   redactSecretsForState,
@@ -69,13 +70,14 @@ import {
   type ParameterNamingVerdict,
   type ParameterTaint,
 } from '../../analyzer/parameter-dependence.js';
-import { displayIdent, displaySafe, displayStackName } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
+import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
   displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
-import { defineOwnKey, nullPrototypeRecord } from '../../utils/own-keys.js';
+import { defineOwnKey, hasOwnKey, nullPrototypeRecord } from '../../utils/own-keys.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import type { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import type {
@@ -292,20 +294,36 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // stack when the assembly carries exactly one. Multi-stack assemblies must
     // disambiguate — imports are per-stack and ambiguity here is
     // worth a clear error rather than guessing.
+    //
+    // Both refusals go through the shared `renderNoStackMatch`, so a stack
+    // dropped with a CDK Stage that failed to load is reported as such rather
+    // than as "not found" (issue go-to-k/cdkd#3507). The zero-stack check sits
+    // BEFORE the chain: with no argument the `else` arm would otherwise answer
+    // `Multiple stacks found: .` -- and zero stacks is exactly what an app
+    // whose only stacks live in a failed Stage synthesizes.
+    const stackPatterns = stackArg ? [stackArg] : [];
+    if (result.stacks.length === 0) {
+      throw new Error(renderNoStackMatch(stackPatterns, result.stacks, result));
+    }
     let stackInfo;
     if (stackArg) {
       stackInfo = result.stacks.find((s) => s.stackName === stackArg || s.displayName === stackArg);
       if (!stackInfo) {
-        throw new Error(
-          `Stack '${stackArg}' not found in synthesized app. ` +
-            `Available: ${result.stacks.map((s) => s.stackName).join(', ')}`
-        );
+        // The shared message says "matching" and attributes a failed Stage by
+        // glob, while import matches EXACTLY: say so when the argument carries
+        // a star, or a Stage wildcard argument reads as contradicting the
+        // list. (Spelled out in words: tests/unit/state lexes this file, and a
+        // slash-star inside a line comment opens a block comment to it.)
+        const exactOnly = stackArg.includes('*')
+          ? ". cdkd import matches a stack name exactly, so '*' is not a wildcard here"
+          : '';
+        throw new Error(renderNoStackMatch(stackPatterns, result.stacks, result) + exactOnly);
       }
     } else if (result.stacks.length === 1) {
       stackInfo = result.stacks[0]!;
     } else {
       throw new Error(
-        `Multiple stacks found: ${result.stacks.map((s) => s.stackName).join(', ')}. ` +
+        `Multiple stacks found: ${result.stacks.map(describeStack).join(', ')}. ` +
           `Specify the stack name as a positional argument.`
       );
     }
@@ -1725,6 +1743,87 @@ export function rebuiltLogicalIdsFrom(
 }
 
 /**
+ * The attributes bag an imported row records, given what the provider's
+ * `import()` returned (`row`) and the stored bag of the SAME physical id
+ * (`prior`; `undefined` when there is none or the id changed — attributes
+ * describe one AWS resource, so a repointed logical id inherits nothing).
+ *
+ * Two rules, and the second is PER KEY by necessity (issue
+ * [#2927](https://github.com/go-to-k/cdkd/issues/2927)):
+ *
+ * 1. **An empty `row` keeps `prior`** (issue #1098). Almost every provider
+ *    spells "no attributes" as an explicit `attributes: {}`, so the test is
+ *    emptiness, not absence — otherwise a provider that reports none would
+ *    wipe a map a deploy recorded. A non-empty `row` otherwise replaces
+ *    `prior`: a key `row` omits is dropped — except under rule 3.
+ * 2. **A masked `row` value never displaces an unmasked `prior` one.**
+ *    `CloudControlProvider.import` masks every model key it cannot certify
+ *    as an attribute, keeping the KEY, so a bag of masks is non-empty and
+ *    rule 1 alone let it overwrite a good deploy-recorded bag — after which
+ *    every dependent's `Fn::GetAtt` was refused. A mask is not a value, so
+ *    replacing a value with one is never a refresh. The test is per
+ *    top-level key because that is the granularity the mask is written at,
+ *    and because a whole-bag test (`carriesSecretMask(row)`) would discard
+ *    the CERTIFIED siblings of one masked key. `keptRecordedKeys` names
+ *    them: the recorded value may be stale, and the caller says so.
+ * 3. **A masked `prior` key the `row` omits is carried, not dropped.** A
+ *    partial `row` (an SDK provider's degraded `{ Id }`) would otherwise turn
+ *    a refused read into a physical-id fallback — the harm the next paragraph
+ *    describes. An unmasked omitted key is still dropped (#1098).
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO: clear a mask `prior` holds when `row`
+ * offers nothing better. Dropping the key looks like a repair and is the
+ * opposite — `resolveGetAtt` then falls through to the physical-id fallback
+ * and ships a wrong value where it used to refuse (measured on the issue).
+ * So a mask survives, and `stillMaskedKeys` names every key a `prior` mask
+ * survived under, for the caller to report.
+ */
+export function reimportedAttributes(
+  row: Record<string, unknown> | undefined,
+  prior: Record<string, unknown> | undefined
+): { attributes: Record<string, unknown>; stillMaskedKeys: string[]; keptRecordedKeys: string[] } {
+  let attributes: Record<string, unknown>;
+  const keptRecordedKeys: string[] = [];
+  if (row === undefined || Object.keys(row).length === 0) {
+    attributes = prior ?? {};
+  } else if (prior === undefined) {
+    attributes = row;
+  } else {
+    // `row`'s own prototype (a Cloud Control bag is null-prototype), and keys
+    // DEFINED rather than assigned: such a bag can carry a legal own
+    // `__proto__` key, and assigning it writes the prototype instead — a DROP.
+    attributes = Object.create(Object.getPrototypeOf(row) as object | null) as Record<
+      string,
+      unknown
+    >;
+    for (const [key, value] of Object.entries(row)) {
+      const keepRecorded =
+        carriesSecretMask(value) && hasOwnKey(prior, key) && !carriesSecretMask(prior[key]);
+      if (keepRecorded) keptRecordedKeys.push(key);
+      defineOwnKey(attributes, key, keepRecorded ? prior[key] : value);
+    }
+    // Rule 3: a masked prior key the row OMITS is carried, not dropped.
+    for (const [key, value] of Object.entries(prior)) {
+      if (!hasOwnKey(attributes, key) && carriesSecretMask(value)) {
+        defineOwnKey(attributes, key, value);
+      }
+    }
+  }
+  const stillMaskedKeys =
+    prior === undefined
+      ? []
+      : Object.keys(prior)
+          .filter(
+            (key) =>
+              carriesSecretMask(prior[key]) &&
+              hasOwnKey(attributes, key) &&
+              carriesSecretMask(attributes[key])
+          )
+          .sort();
+  return { attributes, stillMaskedKeys, keptRecordedKeys: keptRecordedKeys.sort() };
+}
+
+/**
  * Compose a `StackState` from the per-resource import outcomes plus
  * dependency info recovered from the template.
  *
@@ -1783,24 +1882,45 @@ export function buildStackState(
     const prior = existingState?.resources[row.logicalId];
     const priorAttributes =
       prior && prior.physicalId === row.physicalId ? prior.attributes : undefined;
-    // Normalize "no attributes" to `undefined` BEFORE the coalesce below.
-    // Almost no provider omits the field: across src/provisioning/providers
-    // the overwhelming majority of `import()` return sites spell it
-    // `attributes: {}` explicitly (ssm-parameter, s3-bucket,
-    // lambda-function, ...), and `{}` is not `undefined`, so a plain
-    // `row.attributes ?? priorAttributes` would leave the fallback
-    // unreachable in production and still wipe a good stored map.
-    const rowAttributes =
-      row.attributes && Object.keys(row.attributes).length > 0 ? row.attributes : undefined;
+    const { attributes, stillMaskedKeys, keptRecordedKeys } = reimportedAttributes(
+      row.attributes,
+      priorAttributes
+    );
+    if (keptRecordedKeys.length > 0) {
+      // Not silent (issue #2927 review): the kept value is the one the last
+      // deploy recorded, so an out-of-band change to it is not picked up here.
+      getLogger().info(
+        safeMsg`${displayIdent(row.logicalId)}: this import recorded ` +
+          safeMsg`${keptRecordedKeys.map((key) => displayIdent(key)).join(', ')} only as the ` +
+          `redaction mask, so the previously recorded value is kept; a deploy that updates the ` +
+          `resource rewrites it.`
+      );
+    }
+    if (stillMaskedKeys.length > 0) {
+      // Issue #2927: the user most likely ran this re-import BECAUSE a deploy
+      // refused a masked read and told them to, so a record that still holds
+      // the mask must say so here rather than let the next deploy repeat the
+      // identical refusal with nothing explaining why. Both the logical id
+      // (template-controlled) and the keys (the AWS model's) are rendered
+      // display-safe on this default-verbosity line.
+      const keys = stillMaskedKeys.map((key) => displayIdent(key)).join(', ');
+      const pronoun = stillMaskedKeys.length === 1 ? 'it' : 'them';
+      getLogger().warn(
+        safeMsg`${displayIdent(row.logicalId)}: this import produced no value to replace the redaction ` +
+          safeMsg`mask recorded under ${keys}, so the mask is kept and an Fn::GetAtt reading ${pronoun} ` +
+          `is still refused at deploy. It is kept rather than cleared because an attribute missing ` +
+          `from state resolves to the physical id instead of failing.`
+      );
+    }
     resources[row.logicalId] = {
       physicalId: row.physicalId,
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
       // Issue #1098: persist the provider-returned attribute snapshot so an
       // adopted resource can back `Fn::GetAtt` the same way a deployed one
-      // does. A provider that returns no attributes (absent OR `{}`) falls
-      // back to the same-physical-id stored map, then to `{}`.
-      attributes: rowAttributes ?? priorAttributes ?? {},
+      // does. How it combines with the same-physical-id stored map is
+      // `reimportedAttributes`' contract.
+      attributes,
       dependencies: deps,
       // Issue #3645: the template's policies, as `DeployEngine` records them.
       // `cdkd destroy` reads `DeletionPolicy` from STATE only, so a record
@@ -1866,7 +1986,7 @@ export function buildStackState(
     // ...but the skipped-outputs record (issue #2740) is DROPPED, not carried,
     // even though it describes that same bag. It records what the last DEPLOY
     // could not resolve, and an import refreshes `attributes` for every
-    // resource it imports (see the `rowAttributes ?? priorAttributes` above;
+    // resource it imports (see `reimportedAttributes` above;
     // selective mode leaves the rest alone), so a key the deploy skipped for
     // want of an attribute may now resolve — with no template resource change
     // to un-bind the record. Carried forward it would make `cdkd diff` preview
@@ -2352,7 +2472,7 @@ export async function resolveImportedProperties(
       // its grace is zero unconditionally. Do not re-derive it as one.
       logger.warn(
         `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}. ` +
-          `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.` +
+          `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource from state with 'cdkd orphan <StackPath>/<Path/To/Resource>'.` +
           (unboundParameterNames.length > 0
             ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
             : '')

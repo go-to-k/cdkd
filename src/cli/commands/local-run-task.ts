@@ -53,6 +53,7 @@ import {
   type RunEcsTaskOptions,
 } from '../../local/ecs-task-runner.js';
 import { matchStacks } from '../stack-matcher.js';
+import { stackForPathFormTarget } from '../cdk-path.js';
 import { loadBootstrapContainerRepo } from './local-state-loader.js';
 import { createLocalStateProvider } from './local-state-source.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
@@ -296,7 +297,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     // — preserves the single-load behavior from #264 / #454. Disposed
     // in the outer `finally` alongside container cleanup.
     const parsed = parseEcsTarget(target);
-    const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+    const candidate = pickCandidateStack(parsed, target, stacks);
     stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',
@@ -820,10 +821,23 @@ export async function buildEcsImageResolutionContext(
   return { context: ctx, ...(stateRecordRegion !== undefined && { stateRecordRegion }) };
 }
 
-function pickCandidateStack(
-  stackPattern: string | null,
+/**
+ * The stack whose state feeds `--from-state` / `--from-cfn-stack`, chosen by
+ * the SAME rule `resolveEcsTaskTarget` resolves the task with: a path-form
+ * target's longest display-path prefix first, so a Stage stack's target does
+ * not name the Stage id here while the resolver finds the task (which ran the
+ * task with no state source, silently -- go-to-k/cdkd#3953).
+ *
+ * @internal exported for unit tests.
+ */
+export function pickCandidateStack(
+  parsed: { stackPattern: string | null; isPath: boolean; pathOrId: string },
+  target: string,
   stacks: StackInfo[]
 ): StackInfo | undefined {
+  const byPrefix = stackForPathFormTarget(parsed, target, stacks);
+  if (byPrefix) return byPrefix;
+  const { stackPattern } = parsed;
   if (stackPattern === null) {
     if (stacks.length === 1) return stacks[0];
     return undefined;

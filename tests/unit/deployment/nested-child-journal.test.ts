@@ -23,6 +23,7 @@ const replay = vi.hoisted(() => ({
     nestedTemplates: unknown;
     run: unknown;
     stackScope: string | undefined;
+    skipPrefixScope: boolean;
     ctx: Record<string, unknown>;
   }>,
   failuresFor: new Set<string>(),
@@ -35,6 +36,7 @@ const replay = vi.hoisted(() => ({
     | undefined,
   readRun: (() => undefined) as () => unknown,
   readStackName: (() => undefined) as () => string | undefined,
+  readSkipPrefix: (() => false) as () => boolean,
 }));
 
 // The factory must not import the module under test: it imports this mocked
@@ -58,6 +60,7 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
         nestedTemplates: nested?.nestedTemplates,
         run: replay.readRun(),
         stackScope: replay.readStackName(),
+        skipPrefixScope: replay.readSkipPrefix(),
         ctx,
       });
       for (const op of ops) {
@@ -94,11 +97,16 @@ import {
   type SettledNestedRows,
 } from '../../../src/deployment/nested-child-journal.js';
 import { getCurrentNestedStackContext } from '../../../src/provisioning/nested-stack-context.js';
-import { getCurrentStackName } from '../../../src/provisioning/resource-name.js';
+import {
+  getCurrentSkipPrefix,
+  getCurrentStackName,
+  withSkipPrefix,
+} from '../../../src/provisioning/resource-name.js';
 
 replay.readNested = getCurrentNestedStackContext;
 replay.readRun = getNestedRevertRun;
 replay.readStackName = getCurrentStackName;
+replay.readSkipPrefix = getCurrentSkipPrefix;
 
 const REGION = 'us-east-1';
 const CHILD = 'Parent~Child';
@@ -227,6 +235,31 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     // No `cdkd rollback --orphan` reaches this replay, so its refusals must not
     // print one (go-to-k/cdkd#3845).
     expect(replay.calls[0]!.ctx['nestedChildRevert']).toBe(true);
+  });
+
+  // Issue #4018: a re-create derives a user-supplied name under the prefix
+  // flag, so each child segment replays under the flag ITS deploy recorded; a
+  // segment an older cdkd wrote keeps the enclosing (parent replay's) scope.
+  it('replays each segment under its recorded skip-prefix flag, else the enclosing one', async () => {
+    const h = harness({
+      segments: [
+        seg('run-1', ['Legacy']),
+        seg('run-1', ['Kept'], { skipPrefix: false }),
+        seg('run-1', ['Skipped'], { skipPrefix: true }),
+      ],
+    });
+
+    await withSkipPrefix(true, () => h.run('run-1'));
+    await withSkipPrefix(false, () => h.run('run-1'));
+
+    expect(replay.calls.map((c) => [c.ops[0], c.skipPrefixScope])).toEqual([
+      ['Skipped', true],
+      ['Kept', false],
+      ['Legacy', true],
+      ['Skipped', true],
+      ['Kept', false],
+      ['Legacy', false],
+    ]);
   });
 
   it('restores the OLDEST matching segment previous outputs and republishes the exports', async () => {

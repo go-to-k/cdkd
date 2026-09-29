@@ -186,7 +186,11 @@ exports.handler = async (event) => {
 
     const noEchoCr = new cdk.CustomResource(this, 'NoEchoCustomResource', {
       serviceToken: noEchoHandler.functionArn,
-      properties: { Seed: 'integ' },
+      // The seed is overridable so verify.sh can re-run the handler with a NEW
+      // token in a second deploy (issue #2453): the embedded dependent below
+      // must then reach AWS with the new value, although its record holds the
+      // same `***` before and after.
+      properties: { Seed: process.env.CDKD_TEST_NOECHO_SEED ?? 'integ' },
     });
 
     // The dependent. Its Value must be the REAL token on AWS (CloudFormation
@@ -204,6 +208,23 @@ exports.handler = async (event) => {
     new cdk.CfnOutput(this, 'NoEchoValueResolved', {
       value: noEchoCr.getAttString('Token'),
       description: 'The NoEcho CR Token Data attr — masked in cdkd state, real on AWS',
+    });
+
+    // --- The EMBEDDED `NoEcho` arm (issue #2453) ------------------------
+    //
+    // The same token, embedded in a LONGER string: `Fn::Join` around the
+    // `Fn::GetAtt`, the connection-string shape. The leaf is not EQUAL to the
+    // token, so a whole-leaf-only mask left it in the clear in state. The
+    // whole leaf must now persist as `***` while AWS holds the full string.
+    new ssm.StringParameter(this, 'NoEchoEmbeddedParam', {
+      parameterName: `${namePrefix}/noecho-embedded`,
+      stringValue: `postgres://integ-user:${noEchoCr.getAttString('Token')}@db.example.invalid/app`,
+    });
+
+    // The outputs bag takes the same containment rule.
+    new cdk.CfnOutput(this, 'NoEchoEmbeddedResolved', {
+      value: `token=${noEchoCr.getAttString('Token')};`,
+      description: 'The NoEcho CR Token embedded in a longer output — masked whole in cdkd state',
     });
   }
 }

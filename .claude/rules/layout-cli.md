@@ -37,13 +37,14 @@ Index of every area: [code-layout.md](code-layout.md).
   destroy / list / synth; routes a pattern by whether it contains `/` (display
   path) or not (physical name) and returns a deduplicated union.
   `renderNoStackMatch` owns the empty-selection message for deploy / diff /
-  list / publish-assets / synth and
+  list / publish-assets / scrub / import / synth and
   takes the `SynthesisResult` as a REQUIRED argument, so a Stage that failed to
   load is named rather than reported as "no stacks matching"
   ([#3482](https://github.com/go-to-k/cdkd/issues/3482)) — a REQUIRED member,
-  so an ad-hoc `{}` is a compile error; `scrub` and `destroy` still word their
-  own. Each of the first four also throws it on a ZERO-stack assembly BEFORE
-  its branch chain, which otherwise answers `Multiple stacks found: .`.
+  so an ad-hoc `{}` is a compile error; `destroy` words its own
+  state-selection messages but appends `failedStageNote` to them ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
+  Each of the first six also throws it on a ZERO-stack assembly BEFORE its
+  branch chain, which otherwise answers `Multiple stacks found: .`.
   **`synth` reaches the same message by a different route and has no branch
   chain to sit before** ([#3550](https://github.com/go-to-k/cdkd/issues/3550)):
   its selection is unconditional, so a zero-stack assembly and a pattern
@@ -83,6 +84,11 @@ Index of every area: [code-layout.md](code-layout.md).
 - **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on
   EPIPE when a downstream consumer closes the pipe early; non-EPIPE stream
   errors re-throw. Its own module so it stays unit-testable.
+- **src/cli/run-cli.ts** - `runCli(main)`, the ONE top-level runner: a `main()`
+  rejection prints `Fatal error:` and exits 1, and a `beforeExit` with `main()`
+  still PENDING (the event loop drained under an await) exits 70, replacing
+  any code the command set, with a message instead of Node's silent 0
+  ([#3939](https://github.com/go-to-k/cdkd/issues/3939)).
 - **src/cli/commands/events.ts** (+ `src/state/deployment-events-store.ts`,
   `src/types/deployment-events.ts`) - structured deployment events, cdkd's
   `DescribeStackEvents` equivalent. The store is a buffering JSONL recorder with

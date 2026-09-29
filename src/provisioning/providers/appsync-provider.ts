@@ -90,6 +90,7 @@ import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logge
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
 const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
@@ -2715,6 +2716,9 @@ export class AppSyncProvider implements ResourceProvider {
       };
     } catch (error) {
       if (createdApiId) {
+        // The API itself was created: a later "already exists" is an
+        // auxiliary call's, not this API's collision (#3826).
+        markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteGraphqlApiCommand({ apiId: createdApiId }));
           this.logger.debug(`Rolled back partially-created GraphQL API ${createdApiId}`);

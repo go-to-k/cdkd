@@ -42,6 +42,8 @@ const synthStacks = vi.hoisted(() => [] as unknown[]);
 const commandStateBackend = vi.hoisted(() => ({
   getState: vi.fn(),
   saveState: vi.fn().mockResolvedValue('etag-2'),
+  // The nested-record listing (go-to-k/cdkd#2252): no `<stack>~` records here.
+  listStacks: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({

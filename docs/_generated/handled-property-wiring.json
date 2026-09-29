@@ -7,7 +7,7 @@
     "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 25
+    "classesWithBlindSpots": 26
   },
   "classes": [
     {
@@ -3069,10 +3069,12 @@
             "AWS::AutoScaling::AutoScalingGroup"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "retireFailedCreate",
             "update"
           ]
         },
@@ -3228,6 +3230,7 @@
             "element-read"
           ],
           "seededBy": [
+            "create",
             "update"
           ]
         },
@@ -3283,6 +3286,7 @@
             "element-read"
           ],
           "seededBy": [
+            "create",
             "update"
           ]
         },
@@ -3388,7 +3392,10 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "computed key in canonicalizeDriftProperties()",
+        "object spread in canonicalizeDriftProperties()"
+      ]
     },
     {
       "file": "budgets-budget-provider.ts",
@@ -15825,7 +15832,8 @@
             "createDBCluster",
             "createDBInstance",
             "delete",
-            "deleteDBInstance"
+            "deleteDBInstance",
+            "deleteDBInstanceOnce"
           ]
         },
         {
@@ -17095,6 +17103,8 @@
         "S3BucketProvider.applyEffectiveOverrides(...) in create()",
         "S3BucketProvider.applyEffectiveOverrides(...) in update()",
         "S3BucketProvider.versioningOrLoggingRefusal(...) in update()",
+        "this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(...) in create()",
+        "this.maskedView(sinks).update(...) in update()",
         "this.noWriteProbe().applySubConfigDiffs(...) in update()"
       ]
     },

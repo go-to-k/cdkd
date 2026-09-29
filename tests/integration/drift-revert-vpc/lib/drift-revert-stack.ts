@@ -194,6 +194,9 @@ export class DriftRevertVpcStack extends cdk.Stack {
       // post-create snapshot) and the AWS-current read both produce
       // `[{Key, Value}]`. No false drift.
       tags: [{ key: 'Owner', value: 'cdkd-integ', propagateAtLaunch: false }],
+      // Issue #4021: an entry with no `metrics` enables ALL group metrics;
+      // verify.sh asserts the live set and the legacy-baseline drift on it.
+      metricsCollection: [{ granularity: '1Minute' }],
     });
     asg.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 

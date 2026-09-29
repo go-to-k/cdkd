@@ -23,6 +23,10 @@ import {
   findMutuallyExclusiveViolations,
 } from './mutually-exclusive-properties.js';
 import { buildNestedRequiredMessage, findNestedRequiredViolations } from './nested-required.js';
+import {
+  buildSecureReferenceMessage,
+  findSecureReferencePaths,
+} from './custom-resource-secure-references.js';
 
 /**
  * The provisioning layer that owns a particular resource: SDK Provider
@@ -784,6 +788,7 @@ export class ProviderRegistry {
     const materialized = [...resources];
     this.validateMutuallyExclusiveProperties(materialized);
     this.validateNestedRequiredProperties(materialized);
+    this.validateCustomResourceSecureReferences(materialized);
     this.reportSilentDropDecisions(materialized);
   }
 
@@ -857,6 +862,42 @@ export class ProviderRegistry {
         lines.join('\n') +
         `\n\nCloudFormation rejects these blocks too. ` +
         `Declare the missing members; leaving a whole block out is not a violation.`
+    );
+  }
+
+  /**
+   * Reject a custom resource whose properties hold a SECURE dynamic reference
+   * (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm-secure:...}}`), which
+   * CloudFormation does not support in custom resources
+   * (go-to-k/cdkd#3976; the rule lives in `custom-resource-secure-references.ts`).
+   *
+   * Aggregated into ONE error with no `--allow-*` escape hatch, like the two
+   * checks above: CloudFormation documents the shape as unsupported. Fires on a NO_CHANGE
+   * resource as well, so an existing stack holding one must edit its template
+   * before its next deploy; `cdkd destroy` does not run this check.
+   */
+  validateCustomResourceSecureReferences(
+    resources: Iterable<{
+      logicalId: string;
+      resourceType: string;
+      properties: Record<string, unknown> | undefined;
+    }>
+  ): void {
+    const lines: string[] = [];
+    for (const { logicalId, resourceType, properties } of resources) {
+      const paths = findSecureReferencePaths(resourceType, properties);
+      if (paths.length > 0) lines.push(buildSecureReferenceMessage(logicalId, paths));
+    }
+    if (lines.length === 0) return;
+
+    throw new Error(
+      `The following custom resources pass a secure dynamic reference ` +
+        `({{resolve:secretsmanager:...}} / {{resolve:ssm-secure:...}}) in their properties:\n` +
+        lines.join('\n') +
+        `\n\nCloudFormation does not support secure dynamic references in custom resources, ` +
+        `so the template is rejected before anything is resolved. Have the handler read the ` +
+        `secret itself (pass its name or ARN instead), or use a plain {{resolve:ssm:...}} ` +
+        `parameter for a value that is not secret.`
     );
   }
 

@@ -158,7 +158,7 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
     ['with --fail', ['--fail']],
   ] as const) {
     it(`exits 3 ${label}`, async () => {
-      const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b', ...extra]);
+      const { code } = await runDiff(['S', '--state-bucket', 'b', ...extra]);
       // The CODE is the assertion, not that it failed: `DiffDetectedError` is
       // 1 and an ordinary failure is 1 too, and before this change `--fail`
       // exited 0 here.
@@ -189,7 +189,7 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
     // channel the exit carries. The sibling file pins the reason's wording;
     // what is new here is that this container reaches the exit code at all.
     stateForDiff.value = record(healthy(), 'abcdef');
-    const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b']);
+    const { code } = await runDiff(['S', '--state-bucket', 'b']);
     expect(code).toBe(3);
     expect(mockLoggerError.mock.calls.map((c) => String(c[0]))).toContain(
       'DeployRefusalPreviewError: cdkd deploy would refuse to start: 1 blocking condition(s) reported above.'
@@ -203,7 +203,7 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
     // `blockingCount = 0` probe; what was open is only how n > 1 renders, which
     // is also the only way anyone sees the `(s)` this sentence carries.
     stateForDiff.value = record(torn(), 'abcdef');
-    const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b']);
+    const { code } = await runDiff(['S', '--state-bucket', 'b']);
     expect(code).toBe(3);
     expect(mockLoggerError.mock.calls.map((c) => String(c[0]))).toContain(
       'DeployRefusalPreviewError: cdkd deploy would refuse to start: 2 blocking condition(s) reported above.'
@@ -226,7 +226,7 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
         },
       ],
     });
-    const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b', '--fail']);
+    const { code } = await runDiff(['S', '--state-bucket', 'b', '--fail']);
     expect(code, '1 here would be `--fail` winning over the refusal').toBe(3);
   }, 30_000);
 
@@ -255,7 +255,7 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
     for (const extra of [[] as string[], ['--fail']]) {
       it(`exits 3 over ${label} ${extra.length ? 'with' : 'without'} --fail (go-to-k/cdkd#3512)`, async () => {
         stateForDiff.value = make();
-        const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b', ...extra]);
+        const { code } = await runDiff(['S', '--state-bucket', 'b', ...extra]);
         expect(code, '1 here would be `--fail` winning, 0 the pre-fix gap').toBe(3);
         expect(mockLoggerError.mock.calls.map((c) => String(c[0]))).toContain(
           'DeployRefusalPreviewError: cdkd deploy would refuse to start: 1 blocking condition(s) reported above.'
@@ -273,7 +273,7 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
     ] as const) {
       stateForDiff.value = record({});
       stateForDiff.reads = 0;
-      const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b', ...extra]);
+      const { code } = await runDiff(['S', '--state-bucket', 'b', ...extra]);
       expect(code, `extra=${extra.join(' ')}`).toBe(want);
       expect(stateForDiff.reads).toBeGreaterThan(0);
     }
@@ -292,7 +292,7 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
     for (const extra of [[] as string[], ['--fail']]) {
       stateForDiff.value = record(healthy());
       stateForDiff.reads = 0;
-      const { code } = await runDiff(['diff', 'S', '--state-bucket', 'b', ...extra]);
+      const { code } = await runDiff(['S', '--state-bucket', 'b', ...extra]);
       expect(code, `extra=${extra.join(' ')}`).toBeUndefined();
       expect(stateForDiff.reads, 'the walk never read the state record').toBeGreaterThan(0);
     }

@@ -87,7 +87,8 @@ export function describeStack(stack: StackLike): string {
 /**
  * The message a command raises when SELECTION came back empty — shared by
  * `deploy`, `diff`, `list` and `publish-assets`, which all built the identical
- * string by hand.
+ * string by hand, and by `scrub` and `import`, which built their own
+ * ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
  *
  * `assembly` is required AND so is its `failedStages` member, which is the
  * point: a Stage that failed to load dropped every stack under it from

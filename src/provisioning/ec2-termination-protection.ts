@@ -30,13 +30,14 @@ export const TERMINATION_PROTECTION_MAX_ATTEMPTS = 5;
  * call when the attribute is already false. Non-fatal: a NotFound (already
  * gone) or any other error is swallowed at debug so the actual delete still
  * proceeds (it will surface the real failure if the instance truly cannot be
- * deleted).
+ * deleted). Resolves `true` when the flip was accepted and `false` when it was
+ * swallowed, for a caller that retries only the instances not yet flipped.
  */
 export async function disableInstanceApiTermination(
   client: EC2Client,
   instanceId: string,
   logger: DebugLogger
-): Promise<void> {
+): Promise<boolean> {
   try {
     await client.send(
       new ModifyInstanceAttributeCommand({
@@ -45,10 +46,12 @@ export async function disableInstanceApiTermination(
       })
     );
     logger.debug(`Disabled DisableApiTermination on EC2 Instance ${instanceId} before deletion`);
+    return true;
   } catch (flipError) {
     logger.debug(
       `Could not disable DisableApiTermination on ${instanceId}: ${describeAwsFailure(flipError).detail}`
     );
+    return false;
   }
 }
 

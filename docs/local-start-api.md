@@ -92,6 +92,10 @@ down: `new apigw2.HttpApi(stack, 'MyHttpApi')` lands at
 `MyStack/MyHttpApi/Resource`, and `MyStack/MyHttpApi` resolves it without you
 having to type the `/Resource` suffix.
 
+A path form also selects the stack when `--stack` is omitted: the stack whose
+display path is the longest prefix of the target, so a stack inside a CDK
+`Stage` is reached as `MyStage/MyStack/MyHttpApi`.
+
 Routes from templates with no `aws:cdk:path` metadata — hand-rolled `CfnResource`
 definitions, for instance — still match by bare logical id and by
 stack-qualified logical id. Only the two path forms need the metadata.

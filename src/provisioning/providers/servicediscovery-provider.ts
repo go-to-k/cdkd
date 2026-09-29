@@ -59,6 +59,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
@@ -1035,7 +1036,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
               `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
           );
         }
-        throw innerError;
+        // The service itself was created: an "already exists" from its
+        // attributes wiring is not this service's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       return {

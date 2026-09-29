@@ -17,6 +17,13 @@ import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  onlySecretDerived,
+  readPrincipalLists,
+  recordedPrincipalsRepair,
+  SECRET_DERIVED_READ_LIVE,
+} from '../iam-policy-targets.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -73,7 +80,19 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     const { value: v } = log;
     log.debug(`Creating IAM instance profile ${logicalId}`);
     const path = (properties['Path'] as string | undefined) || '/';
-    const roles = properties['Roles'] as string[] | undefined;
+    // Read before any call (go-to-k/cdkd#3906): a string `Roles` was skipped
+    // here but walked by character in `update()`, and a rollback's
+    // reverse-replacement create passes a recorded bag.
+    const principals = readPrincipalLists({ Roles: properties['Roles'] });
+    if ('malformed' in principals) {
+      throw new ProvisioningError(
+        `Roles of IAM instance profile ${logicalId} is not a list of IAM role names — no ` +
+          `instance profile was created`,
+        resourceType,
+        logicalId
+      );
+    }
+    const roles = principals.lists.Roles;
 
     try {
       // Create instance profile
@@ -146,7 +165,9 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             `Failed to clean up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: remove every role (${aws`aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name '<name>'`.render()}) then ${aws`aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       log.debug(
@@ -198,8 +219,59 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     const { value: v } = log;
     log.debug(`Updating IAM instance profile ${logicalId}: ${v(physicalId)}`);
 
-    const newRoles = (properties['Roles'] as string[] | undefined) || [];
-    const oldRoles = (previousProperties['Roles'] as string[] | undefined) || [];
+    // BOTH sides before any call (go-to-k/cdkd#3906). A recorded string was
+    // walked by character: the real role was removed (`.includes` on a string
+    // is a substring test) and a one-letter role ADDED, swapping the
+    // credentials every instance using the profile receives. A rollback revert
+    // or `drift --revert` replays this with a recorded bag as the desired side.
+    const newPrincipals = readPrincipalLists({ Roles: properties['Roles'] });
+    let oldPrincipals = readPrincipalLists({ Roles: previousProperties['Roles'] });
+    // A recorded list cdkd redacted (a dynamic reference or its mask) cannot be
+    // repaired in state, so with a well-formed desired side the old side is
+    // read from IAM, where `delete()` reads it too (go-to-k/cdkd#3906).
+    if (!('malformed' in newPrincipals) && onlySecretDerived(oldPrincipals)) {
+      try {
+        const response = await this.iamClient.send(
+          new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
+        );
+        const live = (response.InstanceProfile?.Roles ?? [])
+          .map((r) => r.RoleName)
+          .filter((n): n is string => !!n);
+        oldPrincipals = { lists: { Roles: live } };
+      } catch (error) {
+        throw new ProvisioningError(
+          `the recorded Roles of IAM instance profile ${logicalId} is secret-derived and the ` +
+            `profile's roles could not be read from IAM — no role was added or removed`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
+    }
+    if ('malformed' in newPrincipals || 'malformed' in oldPrincipals) {
+      const which = [
+        ...('malformed' in newPrincipals ? ['desired Roles'] : []),
+        ...('malformed' in oldPrincipals ? ['recorded Roles'] : []),
+      ];
+      throw new ProvisioningError(
+        `${which.join(' / ')} of IAM instance profile ${logicalId} is not a list of IAM role ` +
+          `names — no role was added or removed` +
+          ('malformed' in oldPrincipals
+            ? `: ${recordedPrincipalsRepair(
+                oldPrincipals.malformed,
+                oldPrincipals.secretDerived,
+                'role names',
+                SECRET_DERIVED_READ_LIVE
+              )}`
+            : ''),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const newRoles = newPrincipals.lists.Roles ?? [];
+    const oldRoles = oldPrincipals.lists.Roles ?? [];
 
     try {
       // Remove old roles that are no longer in the list

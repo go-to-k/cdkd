@@ -12,5 +12,9 @@ exports.handler = async (event) => {
     // upper-cased. Every SDK client a handler builds reads this value, and AWS
     // SDK endpoint resolution is case-SENSITIVE.
     awsRegion: process.env.AWS_REGION ?? 'unset',
+    // Issue #3515: read `__proto__` as an OWN key -- a plain
+    // `process.env.__proto__` could resolve to the inherited accessor instead.
+    // verify.sh tests 3 / 4 pass one through --env-vars; test 1 is the control.
+    protoEnv: Object.getOwnPropertyDescriptor(process.env, '__proto__')?.value ?? 'unset',
   };
 };

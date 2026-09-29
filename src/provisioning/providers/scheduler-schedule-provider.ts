@@ -18,6 +18,7 @@ import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -26,6 +27,10 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
 
 /**
  * SDK Provider for AWS::Scheduler::Schedule.
@@ -352,7 +357,15 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
+    // go-to-k/cdkd#3952: the recorded GroupName addresses the schedule.
+    const skip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      'Schedule',
+      redactedDeleteAddressFields({ GroupName: properties?.['GroupName'] })
+    );
+    if (skip) return skip;
     const groupName = this.groupNameOf(properties);
     if (properties === undefined) {
       // A degraded state record without properties cannot recover the group.

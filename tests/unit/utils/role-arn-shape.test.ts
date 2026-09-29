@@ -3,7 +3,7 @@ import * as path from 'node:path';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { STSClient } from '@aws-sdk/client-sts';
-import { parseSync } from 'vite-plus';
+import { codeLines } from '../_code-lines.js';
 
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
@@ -283,40 +283,6 @@ describe('the role-arn.ts send sites refuse before STS', () => {
  */
 const ASSUME_CONSTRUCT = /\bAssumeRole\w*Command\b|\bfromTemporaryCredentials\b|\.assumeRole\s*\(/;
 const ROLE_ARN_MODULE = path.join('utils', 'role-arn.ts');
-
-/**
- * Code lines only, with every comment REMOVED by a real parser.
- *
- * A mention in a comment is prose, but code after a closed block comment on
- * the same line is still code. The comment spans come from oxc (`parseSync`,
- * re-exported by `vite-plus`), which knows strings, template literals and
- * regular expressions. A hand-rolled stripper read the `/*` inside the string
- * `'MyStage/*'` as a comment opener and dropped the rest of several real files.
- * (TypeScript's own scanner is not available: the repo's `typescript@7` has no
- * JS API.)
- *
- * Each comment is blanked to spaces, keeping its newlines, so line numbers
- * survive. A file oxc cannot parse throws rather than being skipped.
- */
-function codeLines(text: string, file = 'input.ts'): Array<{ line: number; text: string }> {
-  const parsed = parseSync(file, text);
-  if (parsed.errors.length > 0) {
-    throw new Error(`role-arn fence: cannot parse ${file}: ${parsed.errors[0]!.message}`);
-  }
-  // One pass, one join: re-slicing the whole file per comment was quadratic.
-  const chunks: string[] = [];
-  let at = 0;
-  for (const c of [...parsed.comments].sort((x, y) => x.start - y.start)) {
-    chunks.push(text.slice(at, c.start), text.slice(c.start, c.end).replace(/[^\n]/g, ' '));
-    at = c.end;
-  }
-  chunks.push(text.slice(at));
-  return chunks
-    .join('')
-    .split('\n')
-    .map((t, i) => ({ line: i + 1, text: t }))
-    .filter((l) => l.text.trim() !== '');
-}
 
 describe('codeLines strips comments without hiding code behind them', () => {
   it('keeps code after a leading block comment, and drops prose', () => {

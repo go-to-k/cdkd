@@ -546,6 +546,38 @@ describe('rewriteResourceReferences', () => {
     expect(result.unresolvable[0]?.reason).toContain('TableName');
   });
 
+  // Issue #1672 / #3892: for an id with more than one `|` the Glue `Ref` anchors
+  // on the recorded DatabaseName. A masked anchor is the same refusal as any
+  // masked recovery key; an ordinary two-segment id never reads state and
+  // rewrites normally.
+  it.each([
+    ['refuses a masked DatabaseName anchor on a `|`-bearing id', 'mydb|a|b', 1],
+    ['rewrites a two-segment Glue id without reading the masked anchor', 'mydb|orders', 0],
+  ])('%s', async (_n, physicalId, unresolvable) => {
+    const state = baseState({
+      Tbl: {
+        physicalId,
+        resourceType: 'AWS::Glue::Table',
+        properties: { DatabaseName: SECRET_MASK },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
+
+    expect(result.unresolvable).toHaveLength(unresolvable);
+    if (unresolvable === 1) {
+      expect(result.unresolvable[0]?.reason).toContain('DatabaseName');
+      expect(result.state.resources['Other']?.properties).toEqual({ Value: { Ref: 'Tbl' } });
+    } else {
+      expect(result.state.resources['Other']?.properties).toEqual({ Value: 'orders' });
+    }
+  });
+
   it('--force substitutes the MASK, never the physical id, so downstream readers still catch it', async () => {
     // THE ROUND-2 SECURITY FINDING. `--force`'s contract is "use a
     // possibly-wrong value rather than stranding me", so the escape hatch

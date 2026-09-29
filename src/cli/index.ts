@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { installPipeCloseHandler } from './pipe-close-handler.js';
+import { runCli } from './run-cli.js';
 import { getCdkdVersion, isVersionOnlyInvocation } from '../version.js';
 
 const SUBCOMMANDS = new Set([
@@ -72,8 +73,6 @@ async function main(): Promise<void> {
   await program.parseAsync(args);
 }
 
-// Run the CLI
-main().catch((error) => {
-  console.error('Fatal error:', error);
-  process.exit(1);
-});
+// Run the CLI. `runCli` also refuses a silent exit 0 when the event loop
+// drains while `main()` is still pending (issue #3939).
+runCli(main);

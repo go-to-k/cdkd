@@ -1058,7 +1058,11 @@ describe('buildImportPlan — IMPORT read-handler pre-flight (issue #1659)', () 
         properties: { Roles: ['MyRole'] },
       },
     });
-    const template = { Resources: { Policy: { Type: 'AWS::IAM::Policy', Properties: {} } } };
+    // The template names the recorded role, so the go-to-k/cdkd#3910
+    // cross-check passes and the ordering is what this case sees.
+    const template = {
+      Resources: { Policy: { Type: 'AWS::IAM::Policy', Properties: { Roles: ['MyRole'] } } },
+    };
     const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
     expect(plan.blocked).toEqual([]);
     expect(plan.recreateBeforePhase2.map((r) => r.logicalId)).toEqual(['Policy']);

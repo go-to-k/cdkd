@@ -70,7 +70,7 @@
     },
     {
       "tag": "custom-resource-getatt-data",
-      "description": "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency. A second custom resource carries the `NoEcho: true` arm (issue #2274) through the SIMPLE-HANDLER response shape, asserting both directions at once: the dependent's live SSM value is the real token, while the CR's `attributes`, the dependent's `properties`, `state.outputs` and the whole state blob hold none of it -- with the non-`NoEcho` resource above as the in-fixture negative control."
+      "description": "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency. A second custom resource carries the `NoEcho: true` arm (issue #2274) through the SIMPLE-HANDLER response shape, asserting both directions at once: the dependent's live SSM value is the real token, while the CR's `attributes`, the dependent's `properties`, `state.outputs` and the whole state blob hold none of it -- with the non-`NoEcho` resource above as the in-fixture negative control. An embedded arm (issue #2453) adds a parameter and an output that build a longer string around the token, asserted `***` WHOLE in state and the full string on AWS, and a second deploy with a rotated token (`CDKD_TEST_NOECHO_SEED`) that must reach AWS through both dependents while neither token reaches state."
     },
     {
       "tag": "deep-getatt-chain-resolution",
@@ -311,6 +311,10 @@
     {
       "tag": "rollback-replay-effective-properties",
       "description": "Reverse-replacement rollback records the replay-CREATE's `effectiveProperties` (issue #1682). Distinct from `rollback-failure-injection`, which rolls back CREATEs (a delete): here the resource is REPLACED before the failure, so rollback re-creates the OLD one from `previousState.properties` — a cdkd STATE record, which can carry a malformed block an older binary wrote and which the provider WARNS about and SUBSTITUTES (the #1544 replayWarn downgrade) rather than refusing. Pre-fix the engine typed that call's result as `{physicalId, attributes?}` and rebuilt the record from `prev.properties`, discarding the substitution. The vehicle is `AWS::EC2::Route` rather than the `AWS::S3::Bucket` #1682 names, because a bucket's reverse-replacement re-create must re-acquire a just-deleted GLOBALLY unique name whose release is not immediate (flaky for an unrelated reason), while a route's `<RouteTableId>|<Destination>` identity is stack-scoped and deterministic; `createRoute`'s multi-destination warn arm is gated on the same `CreateContext.replayingState` flag, so the engine path is identical. verify.sh deploys v1, injects a second destination key into the state record, flips the create-only destination with a failure wired AFTER the route (so rollback classifies reverse-replacement, asserted via the substitution warning), then asserts the post-rollback record restored the v1 destination and DROPPED the injected key, that two consecutive `cdkd drift` runs converge, and that destroy leaves 0 orphans."
+    },
+    {
+      "tag": "rollback-reverse-replacement-explicit-name-rewrite",
+      "description": "`cdkd rollback` reverse-replacement of an EXPLICITLY named resource whose provider rewrites even a user-supplied name (IAM Role via `generateResourceNameWithFallback`), under the user-supplied-name prefix flag the failed deploy recorded in its journal segment (issue #4018). The re-create must ask AWS for exactly the name the deploy sent (the bare name by default, `<stack>-<name>` for a deploy with --prefix-user-supplied-names, whatever the rollback's own environment says), and a squatter already holding that name must be REFUSED by the rewritten-name holder proof with nothing deleted (issue #4010), then succeed once the squatter is gone; an in-place UPDATE revert of the same role must stay in place (same RoleId, no prefixed role). Pass condition = the journal segment's recorded flag read raw from S3, the refusal naming the sent name, and every restored/deleted role name read back from IAM."
     },
     {
       "tag": "rollback-reverse-replacement-name-cooldown",
@@ -708,6 +712,13 @@
       ]
     },
     {
+      "name": "custom-resource-masked-service-token",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-getatt-data"
+      ]
+    },
+    {
       "name": "custom-resource-noecho-nested",
       "annotated": false,
       "scenarios": []
@@ -718,6 +729,13 @@
       "scenarios": [
         "custom-resource-async-poll",
         "ordinary-create-name-cooldown"
+      ]
+    },
+    {
+      "name": "custom-resource-resolved-secret",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
       ]
     },
     {
@@ -1147,6 +1165,11 @@
       "scenarios": []
     },
     {
+      "name": "iam-secret-derived-principals",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-attribute-readback",
       "annotated": true,
       "scenarios": [
@@ -1223,6 +1246,11 @@
       "scenarios": [
         "nested-stack-migrate-from-cfn"
       ]
+    },
+    {
+      "name": "import-reimport-masked-attrs",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "import-retain-destroy",
@@ -1517,6 +1545,13 @@
     },
     {
       "name": "local-invoke-ruby",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-stage",
       "annotated": true,
       "scenarios": [
         "local-lambda-rie-zip"
@@ -1825,6 +1860,13 @@
       "scenarios": []
     },
     {
+      "name": "redacted-delete-address",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-getatt-data"
+      ]
+    },
+    {
       "name": "redshift-cluster-getatt",
       "annotated": true,
       "scenarios": [
@@ -1883,6 +1925,13 @@
       "annotated": true,
       "scenarios": [
         "rollback-create-deletion-policy-snapshot"
+      ]
+    },
+    {
+      "name": "rollback-explicit-name-rewrite",
+      "annotated": true,
+      "scenarios": [
+        "rollback-reverse-replacement-explicit-name-rewrite"
       ]
     },
     {
@@ -2024,6 +2073,13 @@
       "annotated": true,
       "scenarios": [
         "state-schema-migration"
+      ]
+    },
+    {
+      "name": "scrub-nested-child",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
       ]
     },
     {
@@ -2404,9 +2460,11 @@
     },
     {
       "scenario": "custom-resource-getatt-data",
-      "description": "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency. A second custom resource carries the `NoEcho: true` arm (issue #2274) through the SIMPLE-HANDLER response shape, asserting both directions at once: the dependent's live SSM value is the real token, while the CR's `attributes`, the dependent's `properties`, `state.outputs` and the whole state blob hold none of it -- with the non-`NoEcho` resource above as the in-fixture negative control.",
+      "description": "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency. A second custom resource carries the `NoEcho: true` arm (issue #2274) through the SIMPLE-HANDLER response shape, asserting both directions at once: the dependent's live SSM value is the real token, while the CR's `attributes`, the dependent's `properties`, `state.outputs` and the whole state blob hold none of it -- with the non-`NoEcho` resource above as the in-fixture negative control. An embedded arm (issue #2453) adds a parameter and an output that build a longer string around the token, asserted `***` WHOLE in state and the full string on AWS, and a second deploy with a rotated token (`CDKD_TEST_NOECHO_SEED`) that must reach AWS through both dependents while neither token reaches state.",
       "fixtures": [
-        "custom-resource-getatt-data"
+        "custom-resource-getatt-data",
+        "custom-resource-masked-service-token",
+        "redacted-delete-address"
       ]
     },
     {
@@ -2488,9 +2546,11 @@
       "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` / `{{resolve:ssm-secure:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. `ssm-secure:` is secret by SPELLING (issue #2482): its whole, embedded and `<name>:<version>` forms decrypt to the SecureString value and persist as the expression, with the parameter seeded out of band because CloudFormation cannot create a SecureString.",
       "fixtures": [
         "cross-stack-secret-import",
+        "custom-resource-resolved-secret",
         "dynamic-ref-cross-region",
         "nested-stack-secret",
         "rollback-cross-region-secret",
+        "scrub-nested-child",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "ssm-secure-dynamic-ref"
@@ -2707,7 +2767,8 @@
         "local-invoke-layers",
         "local-invoke-provided",
         "local-invoke-python",
-        "local-invoke-ruby"
+        "local-invoke-ruby",
+        "local-invoke-stage"
       ]
     },
     {
@@ -2880,6 +2941,13 @@
       ]
     },
     {
+      "scenario": "rollback-reverse-replacement-explicit-name-rewrite",
+      "description": "`cdkd rollback` reverse-replacement of an EXPLICITLY named resource whose provider rewrites even a user-supplied name (IAM Role via `generateResourceNameWithFallback`), under the user-supplied-name prefix flag the failed deploy recorded in its journal segment (issue #4018). The re-create must ask AWS for exactly the name the deploy sent (the bare name by default, `<stack>-<name>` for a deploy with --prefix-user-supplied-names, whatever the rollback's own environment says), and a squatter already holding that name must be REFUSED by the rewritten-name holder proof with nothing deleted (issue #4010), then succeed once the squatter is gone; an in-place UPDATE revert of the same role must stay in place (same RoleId, no prefixed role). Pass condition = the journal segment's recorded flag read raw from S3, the refusal naming the sent name, and every restored/deleted role name read back from IAM.",
+      "fixtures": [
+        "rollback-explicit-name-rewrite"
+      ]
+    },
+    {
       "scenario": "rollback-reverse-replacement-name-cooldown",
       "description": "`cdkd rollback` reverse-replacement re-create through the SQS same-name ~60s deletion cooldown (issue #1206): a custom-named queue rename-replacement (create-only QueueName, --force-stateful-recreation) plus an injected failing resource under --no-rollback is reverted immediately — the reverse-replacement's initial re-create must hit `QueueDeletedRecently`, retry through the window (asserted via the --verbose retry lines), restore the old-named queue, delete the new one, and exit 0.",
       "fixtures": [
@@ -3042,6 +3110,8 @@
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
+    "iam-secret-derived-principals",
+    "import-reimport-masked-attrs",
     "import-secret-observed",
     "inplace-attr-propagation",
     "kinesis-esm-filter",

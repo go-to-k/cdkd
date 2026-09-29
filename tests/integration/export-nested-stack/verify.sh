@@ -8,6 +8,10 @@
 #   2. `cdkd deploy` the parent + nested child via cdkd itself (NOT
 #      upstream cdk deploy — PR B2 tests the cdkd → CFn direction).
 #   3. Assert state files exist at v6 keys.
+#   (steps 5b/5c/9b) go-to-k/cdkd#3916: plant a parent state record named
+#       like the parent Parameter `Stage`; a redeploy keeps the child value
+#       `prod`, and the export (planted again) imports the child with
+#       StageParam=prod.
 #   4. Run `cdkd export <Parent> --yes`. The per-stack IMPORT loop should:
 #        - IMPORT the leaf child first as a standalone CFn stack at
 #          `<Parent>-Child` (cdkd2cfnStackName mapping)
@@ -83,6 +87,9 @@ CHILD_STATE_KEY="cdkd/${CHILD_CDKD_STACK}/${REGION}/state.json"
 # path's naming scheme by hand (it has silently rotted twice; see #583/#588).
 PARENT_PARAM_NAME=""
 CHILD_PARAM_NAME=""
+# Scratch for the go-to-k/cdkd#3916 state plant (copies of parent state);
+# Created only once the EXIT trap is armed; `cleanup` removes it on every exit path.
+PLANT_TMP=""
 
 echo "[verify] region=${REGION} parent=${PARENT_STACK} child-cfn=${CHILD_CFN_STACK} state-bucket=${STATE_BUCKET}"
 
@@ -152,11 +159,13 @@ cleanup() {
   done
   aws s3 rm "s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" --region "${REGION}" 2>/dev/null || true
   aws s3 rm "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" --region "${REGION}" 2>/dev/null || true
+  [ -n "${PLANT_TMP}" ] && rm -rf "${PLANT_TMP}"
   exit "${rc}"
 }
 trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
+PLANT_TMP="$(mktemp -d)"
 
 echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && pnpm install)
@@ -214,6 +223,64 @@ PARENT_PARAM_NAME=$(aws s3 cp "s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" - --reg
 CHILD_PARAM_NAME=$(echo "${CHILD_STATE}" | python3 -c \
   'import sys, json; s = json.load(sys.stdin); print(s["resources"]["ChildParam"]["physicalId"])')
 echo "[verify] step 5 ok: parent-param=${PARENT_PARAM_NAME} child-param=${CHILD_PARAM_NAME}"
+
+# go-to-k/cdkd#3916: a parent state record keyed by the parent PARAMETER's name
+# (`Stage`) must not pick the value `{Ref: Stage}` resolves to. The record names
+# an SSM parameter that does not exist, so `Ref` served from it would hand the
+# child that NAME instead of `prod`.
+PLANTED_ID="${PARENT_STACK}-planted-3916"
+child_param_value() {
+  aws ssm get-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}" \
+    --query Parameter.Value --output text
+}
+parent_has_stage_record() {
+  aws s3 cp "s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" - --region "${REGION}" |
+    python3 -c 'import sys, json; print("yes" if "Stage" in json.load(sys.stdin)["resources"] else "no")'
+}
+plant_stage_record() {
+  # Through files, never a pipe into `aws s3 cp -`: a python failure mid-pipe
+  # would upload an EMPTY object over the parent state.
+  local state_in="${PLANT_TMP}/state-in.json" state_out="${PLANT_TMP}/state-out.json"
+  aws s3 cp "s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" "${state_in}" --region "${REGION}" >/dev/null
+  python3 -c '
+import sys, json
+with open(sys.argv[1]) as f:
+    s = json.load(f)
+rec = dict(s["resources"]["ParentParam"])
+rec["physicalId"] = sys.argv[2]
+rec["dependencies"] = []
+s["resources"]["Stage"] = rec
+with open(sys.argv[3], "w") as f:
+    json.dump(s, f)' "${state_in}" "${PLANTED_ID}" "${state_out}"
+  python3 -c 'import sys, json; json.load(open(sys.argv[1]))["resources"]["Stage"]' "${state_out}" ||
+    { echo "[verify] FAIL: the planted state document is not valid JSON with a Stage record"; exit 1; }
+  aws s3 cp "${state_out}" "s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" --region "${REGION}" >/dev/null
+  rm -f "${state_in}" "${state_out}"
+  [ "$(parent_has_stage_record)" = "yes" ] || { echo "[verify] FAIL: planted Stage record did not land"; exit 1; }
+}
+
+echo "[verify] step 5b: a planted parent record named like the parameter does not reach the child on deploy"
+V=$(child_param_value)
+[ "${V}" = "prod" ] || { echo "[verify] FAIL: child SSM value before the plant is '${V}', expected 'prod'"; exit 1; }
+plant_stage_record
+(cd "${TEST_DIR}" && ${CLI} deploy "${PARENT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --verbose)
+V=$(child_param_value)
+if [ "${V}" != "prod" ]; then
+  echo "[verify] FAIL: child SSM value is '${V}' after the redeploy, expected the parameter value 'prod'"
+  exit 1
+fi
+# The redeploy READ the planted record: as a state-only row it deleted it.
+if [ "$(parent_has_stage_record)" != "no" ]; then
+  echo "[verify] FAIL: the redeploy left the planted Stage record in parent state"
+  exit 1
+fi
+echo "[verify] step 5b ok: child value stayed 'prod'"
+
+echo "[verify] step 5c: plant the record again for the export (step 9b asserts the imported child parameter)"
+plant_stage_record
+echo "[verify] step 5c ok"
 
 echo "[verify] step 6: cdkd export ${PARENT_STACK} --yes (per-stack IMPORT loop)"
 (cd "${TEST_DIR}" && ${CLI} export "${PARENT_STACK}" \
@@ -273,6 +340,15 @@ if [ "${CHILD_ROOT_ID}" != "${PARENT_ARN}" ]; then
 fi
 echo "[verify] step 9 ok: nested relationship confirmed (ParentId + RootId)"
 
+echo "[verify] step 9b: the child was imported with the parent PARAMETER value, not the planted record (go-to-k/cdkd#3916)"
+CHILD_STAGE=$(echo "${CHILD_DESC}" | python3 -c \
+  'import sys, json; p = json.load(sys.stdin)["Stacks"][0].get("Parameters", []); print(",".join(x["ParameterValue"] for x in p if x["ParameterKey"] == "StageParam"))')
+if [ "${CHILD_STAGE}" != "prod" ]; then
+  echo "[verify] FAIL: child CFn stack StageParam='${CHILD_STAGE}', expected 'prod'"
+  exit 1
+fi
+echo "[verify] step 9b ok: child StageParam=prod"
+
 echo "[verify] step 10: assert AWS resources survived the migration (export = no AWS change)"
 aws ssm get-parameter --name "${PARENT_PARAM_NAME}" --region "${REGION}" >/dev/null
 aws ssm get-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}" >/dev/null
@@ -305,4 +381,5 @@ assert_gone "child SSM parameter ${CHILD_PARAM_NAME} still exists after CFn dele
 echo "[verify] step 13 ok: both SSM parameters gone"
 
 trap - EXIT INT TERM
+rm -rf "${PLANT_TMP}"
 echo "[verify] PASS"

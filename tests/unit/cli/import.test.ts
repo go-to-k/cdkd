@@ -910,7 +910,9 @@ describe('cdkd import', () => {
     });
 
     await expect(runImport(['import', 'NonExistent', '--app', 'x'])).rejects.toThrow();
-    expect(errorSpy.mock.calls[0]?.[0]).toMatch(/Stack 'NonExistent' not found/);
+    expect(errorSpy.mock.calls[0]?.[0]).toMatch(
+      /No stacks matching NonExistent found in assembly\. Available: A, B/
+    );
   });
 
   it('reports import outcomes per resource and writes state', async () => {
@@ -5368,7 +5370,10 @@ describe('cdkd import', () => {
       );
       // The pre-existing sibling-shaped guidance is NOT replaced -- both
       // causes reach this catch.
-      expect(warned).toContain("remove this resource via 'cdkd state orphan'");
+      // Per-resource: 'cdkd state orphan' would drop the whole stack's record (go-to-k/cdkd#3996).
+      expect(warned).toContain(
+        "remove this resource from state with 'cdkd orphan <StackPath>/<Path/To/Resource>'"
+      );
     });
 
     it("binds a sibling parameter's own Default when another parameter is unbindable, so its Fn::Sub is RESOLVED not persisted verbatim (issue #2321)", async () => {
@@ -5800,5 +5805,142 @@ describe('cdkd import --help text (issue #1664)', () => {
       .options.find((o) => o.long === '--record-resource-mapping');
     expect(opt?.description).toMatch(/auto-resolution/);
     expect(opt?.description).not.toMatch(/tag/i);
+  });
+});
+
+describe('cdkd import: selection names a Stage that failed to load (go-to-k/cdkd#3507)', () => {
+  // A stack under a Stage whose manifest could not be read is dropped from the
+  // synthesized app, so naming it answered `Stack '<arg>' not found in
+  // synthesized app` -- and an app whose only stacks sit under such a Stage
+  // answered `Multiple stacks found: .`. Both now go through the shared
+  // `renderNoStackMatch`, which is called REAL here: this is a wiring test.
+  const failedStages = [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }];
+  const note =
+    'Stage MyStage failed to load, so stacks under it are missing from this list ' +
+    'rather than missing from the app: ENOENT reading assembly-MyStage';
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockVerifyBucketExists.mockReset();
+    mockVerifyBucketExists.mockResolvedValue();
+    mockSynthesize.mockReset();
+    mockGetState.mockReset();
+    mockGetState.mockResolvedValue(null);
+    mockAcquireLock.mockReset();
+    mockAcquireLock.mockResolvedValue(true);
+    mockSaveState.mockReset();
+    mockSaveState.mockResolvedValue('"new-etag"');
+    errorSpy.mockReset();
+    infoSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  // Refused at SELECTION: no lock taken and nothing saved.
+  const expectNoStateTouched = (): void => {
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+    expect(mockSaveState).not.toHaveBeenCalled();
+  };
+
+  const errorText = (): string => errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+  const synthesized = (
+    stacks: ReturnType<typeof stackInfo>[],
+    stages: typeof failedStages
+  ): { stacks: ReturnType<typeof stackInfo>[]; failedStages: typeof failedStages } => ({
+    stacks,
+    failedStages: stages,
+  });
+  const other = (): ReturnType<typeof stackInfo> => stackInfo('Other', template({}));
+
+  it('names the Stage a display-path argument targets, with the available stacks', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
+
+    await expect(runImport(['import', 'MyStage/MyStack'])).rejects.toThrow('process.exit-mock');
+
+    expect(errorText()).toContain(
+      `No stacks matching MyStage/MyStack found in assembly. Available: Other. ${note}`
+    );
+    expectNoStateTouched();
+  });
+
+  it('hedges the Stage for a physical-name argument, which carries no Stage path', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
+
+    await expect(runImport(['import', 'MyStage-MyStack'])).rejects.toThrow('process.exit-mock');
+
+    expect(errorText()).toContain(
+      `No stacks matching MyStage-MyStack found in assembly. Available: Other. ` +
+        `Possibly unrelated: ${note}`
+    );
+  });
+
+  it('names the argument and the available stacks when no Stage failed', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], []));
+
+    await expect(runImport(['import', 'Nope'])).rejects.toThrow('process.exit-mock');
+
+    expect(errorText()).toContain('No stacks matching Nope found in assembly. Available: Other');
+    expect(errorText()).not.toContain('failed to load');
+    expect(errorText()).not.toContain('is not a wildcard');
+  });
+
+  it('refuses a zero-stack app with the Stage named, with and without an argument', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([], failedStages));
+
+    await expect(runImport(['import'])).rejects.toThrow('process.exit-mock');
+    expect(errorText()).toContain(`No stacks found in assembly. ${note}`);
+    expect(errorText()).not.toContain('Multiple stacks found');
+
+    errorSpy.mockClear();
+    await expect(runImport(['import', 'MyStage/MyStack'])).rejects.toThrow('process.exit-mock');
+    expect(errorText()).toContain(
+      `No stacks matching MyStage/MyStack found in assembly. The assembly has no stacks. ${note}`
+    );
+    expectNoStateTouched();
+  });
+
+  it('says import matches exactly when the argument looks like a wildcard', async () => {
+    mockSynthesize.mockResolvedValue(
+      synthesized([{ ...stackInfo('MyStage-Api', template({})), displayName: 'MyStage/Api' }], [])
+    );
+
+    await expect(runImport(['import', 'MyStage/*'])).rejects.toThrow('process.exit-mock');
+
+    expect(errorText()).toContain(
+      'No stacks matching MyStage/* found in assembly. Available: MyStage-Api (MyStage/Api). ' +
+        "cdkd import matches a stack name exactly, so '*' is not a wildcard here"
+    );
+    expectNoStateTouched();
+  });
+
+  it('lists every stack with its display path when several remain and none was named', async () => {
+    mockSynthesize.mockResolvedValue(
+      synthesized(
+        [other(), { ...stackInfo('MyStage-Api', template({})), displayName: 'MyStage/Api' }],
+        []
+      )
+    );
+
+    await expect(runImport(['import'])).rejects.toThrow('process.exit-mock');
+
+    expect(errorText()).toContain(
+      'Multiple stacks found: Other, MyStage-Api (MyStage/Api). ' +
+        'Specify the stack name as a positional argument.'
+    );
+  });
+
+  it('control: an argument naming a surviving stack proceeds past selection', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
+
+    await runImport(['import', 'Other', '--yes']).catch(() => undefined);
+
+    expect(infoSpy.mock.calls.map((c) => String(c[0]))).toContain('Target stack: Other (us-east-1)');
+    expect(errorText()).not.toContain('found in assembly');
   });
 });

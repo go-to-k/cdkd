@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * the PROMPT has to present as interactive; the refusal cases set it back.
  */
 import { setStdinIsTty } from '../../stdin-tty.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -256,8 +257,62 @@ describe('cdkd state orphan', () => {
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-    expect(message).toMatch(/Stack 'LockedStack' \(us-east-1\) is locked/);
+    expect(message).toMatch(/Stack LockedStack \(us-east-1\) is locked/);
     expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
+  it('renders a locked name in the identifier boundary, so pasting the sentence, a line or a clause runs nothing (go-to-k/cdkd#3436)', async () => {
+    // The row used to quote the name by hand, `Stack '${displaySafe(...)}'`.
+    // `asciiOnly` keeps `'`, `$` and `(`, so `x'$(touch OWNED) #` closed that
+    // quote and the substitution ran when the sentence was pasted (measured by
+    // the maintainer). Every payload family, at the harness's granularities
+    // (sentence, line, clause); selecting the NAME ALONE is not one of them,
+    // and for `$(...)` / backtick names that still runs (see the source
+    // comment). The name must `===` the ref the operator typed to get here.
+    const messages: Array<{ value: string; message: string }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      errorSpy.mockClear();
+      mockListStacks.mockResolvedValue([{ stackName: value, region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(true);
+      await expect(runStateOrphan(['orphan', value, '--yes'])).rejects.toThrow();
+      messages.push({ value, message: String(errorSpy.mock.calls[0]?.[0] ?? '') });
+    }
+    withPasteDir((dir) => {
+      for (const { value, message } of messages) {
+        expect(message, value).toContain(`Stack ${JSON.stringify(value)} (us-east-1) is locked`);
+        expect(message, value).not.toContain(`Stack '${value}'`);
+        expect(spansThatRun(message, dir), value).toEqual([]);
+      }
+    });
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  }, 120_000);
+
+  it('renders a locked name whole at the stack-ref cap, not cut at the identifier one (go-to-k/cdkd#3436)', async () => {
+    // `displayStackName`, not `displayIdent`: a nested-child name legitimately
+    // runs past 255 code points, and the force-unlock command below the head
+    // names it whole up to 1152.
+    const long = 'q'.repeat(1152);
+    mockListStacks.mockResolvedValue([{ stackName: long, region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(true);
+
+    await expect(runStateOrphan(['orphan', long, '--yes'])).rejects.toThrow();
+
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain(`Stack ${long} (us-east-1) is locked`);
+  });
+
+  it('cuts a locked name ONE past the stack-ref cap, with the cut marked (go-to-k/cdkd#3436)', async () => {
+    const over = 'q'.repeat(1153);
+    mockListStacks.mockResolvedValue([{ stackName: over, region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(true);
+
+    await expect(runStateOrphan(['orphan', over, '--yes'])).rejects.toThrow();
+
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('is locked');
+    expect(message).not.toContain(over);
+    expect(message).toContain('q'.repeat(1152));
+    expect(message).toContain('more characters withheld]');
   });
 
   it('removes a locked stack when --force is set (and skips lock check)', async () => {
@@ -589,7 +644,7 @@ describe('cdkd state orphan', () => {
       await expect(runStateOrphan(['orphan', 'LegacyStack', '--yes'])).rejects.toThrow();
 
       const msg = String(errorSpy.mock.calls[0]?.[0] ?? '');
-      expect(msg).toContain("Stack 'LegacyStack' (legacy) is locked");
+      expect(msg).toContain('Stack LegacyStack (legacy) is locked');
       // Not '((legacy))': the message template supplies the parentheses.
       expect(msg).not.toContain('((legacy))');
       expect(mockDeleteLegacyState).not.toHaveBeenCalled();

@@ -2,18 +2,22 @@
  * The PASTE harness: feed a rendered cdkd message to a real bash at three
  * granularities and report which spans RAN.
  *
- * Shared by `pasteable-message-paste.test.ts` (the shapes) and by the test
- * file of every site go-to-k/cdkd#3436's fold-in touched, so each site drives
- * ITS OWN renderer through the same bash rather than a synthetic copy of what
- * it prints. What that buys is stated exactly: at every folded-in site but the
- * SSM refusal the pre-fold message was ALREADY inert under paste, because its
- * value was gated before the fold and only the SHAPE around the command
- * changed — so reverting such a site reds its SPELLING pins, not its paste
- * case. The paste case is defence in depth there: it pins that the fold, and
- * any later edit, introduces no running span, and it is the one fence that
- * can see a running DISPLAY (`expectOnlyDisplayResidual`). At the SSM site the
- * paste case alone reds a revert — the bare `displaySafe` prose ran on a plain
- * `;` — which is the one site where the harness is the primary fence.
+ * Shared by `pasteable-message-paste.test.ts` (the shapes) and by per-site
+ * test files of go-to-k/cdkd#3436's fold-in, so a site drives ITS OWN renderer
+ * through the same bash rather than a synthetic copy of what it prints. Not
+ * every touched site has such a case: `grep -rl spansThatRun tests/` answers
+ * which do.
+ *
+ * What a case buys depends on whether the site's pre-fix message RAN. Where it
+ * was already inert — its value was gated before the fold and only the SHAPE
+ * around the command changed — reverting the site reds its SPELLING pins, not
+ * its paste case; the paste case is defence in depth there, pinning that no
+ * later edit introduces a running span, and it is the one fence that can see
+ * a running DISPLAY (`expectOnlyDisplayResidual`). Where the pre-fix message
+ * RAN, the paste case is the primary fence and reds a revert on its own — the
+ * SSM refusal's bare `displaySafe` prose on a plain `;`, for example, or a
+ * value hand-quoted inside cdkd's own `'...'` in prose. Which sites are which
+ * is recorded at each case, not listed here.
  *
  * THREE GRANULARITIES, because the issue measured why all three are needed: on
  * the vulnerable build, pasting whole LINES found 0 instances — the line also

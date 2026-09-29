@@ -1,11 +1,13 @@
 /**
- * How a state record's `AWS::IAM::Policy` principal list (`Roles`, `Users`,
- * `Groups`) is read before cdkd removes the inline policy from each name
- * (go-to-k/cdkd#3878). A LEAF with no imports, shared by every
- * `IAMPolicyProvider` method that addresses a principal by name and by
- * `cdkd export`'s IAM::Policy pre-delete, so they agree on which recorded list
- * values are well-formed. (What each does with a well-formed EMPTY list, or a
- * legacy `<policyName>:<roleName>` id with no list, is still its own call.)
+ * How an IAM principal list (`Roles`, `Users`, `Groups`) is read before cdkd
+ * addresses each name (go-to-k/cdkd#3878). A LEAF with no imports, shared by
+ * every `IAMPolicyProvider` method that addresses a principal by name, by
+ * `cdkd export`'s IAM::Policy pre-delete, and by the `AWS::IAM::ManagedPolicy`,
+ * `AWS::IAM::InstanceProfile`, `AWS::IAM::User` (`Groups`) and
+ * `AWS::IAM::UserToGroupAddition` (`Users`) arms (go-to-k/cdkd#3906,
+ * go-to-k/cdkd#3888), so they agree on which list values are well-formed.
+ * (What each does with a well-formed EMPTY list, or a legacy
+ * `<policyName>:<roleName>` id with no list, is still its own call.)
  *
  * The record is read unvalidated. Both deletes used to cast the value to
  * `string[]` and iterate it, so a string was walked character by character —
@@ -53,3 +55,99 @@ export function readRecordedPrincipals(value: unknown): RecordedPrincipals {
   }
   return { kind: 'names', names: value as string[] };
 }
+
+/** What {@link readPrincipalLists} found: every well-formed kind, and which kinds were not. */
+export type PrincipalLists<K extends string> =
+  | { lists: Record<K, string[] | undefined> }
+  | { lists: Record<K, string[] | undefined>; malformed: K[]; secretDerived: K[] };
+
+/**
+ * Read several principal lists of one bag (go-to-k/cdkd#3906,
+ * go-to-k/cdkd#3888), each passed as the caller's own literal read of the bag
+ * (`{ Roles: properties['Roles'] }`) so the handled-property wiring walk still
+ * sees which property feeds the calls. `lists` holds each well-formed kind as
+ * its names (an absent one as `undefined`); when any kind is `malformed`, the
+ * result also names them, and `secretDerived` names the malformed kinds holding
+ * a dynamic reference or its mask anywhere in the value: cdkd keeps
+ * `{{resolve:...}}` (or `***`) in state by design, so a state edit is not the
+ * repair for those, and a message must not tell the user to write the name.
+ */
+export function readPrincipalLists<K extends string>(
+  values: Record<K, unknown>
+): PrincipalLists<K> {
+  const lists = {} as Record<K, string[] | undefined>;
+  const malformed: K[] = [];
+  const secretDerived: K[] = [];
+  for (const key of Object.keys(values) as K[]) {
+    const value = values[key];
+    const recorded = readRecordedPrincipals(value);
+    if (recorded.kind === 'malformed') {
+      malformed.push(key);
+      if (holdsSecretDerivedEntry(value)) secretDerived.push(key);
+    } else {
+      lists[key] = recorded.kind === 'names' ? recorded.names : undefined;
+    }
+  }
+  return malformed.length > 0 ? { lists, malformed, secretDerived } : { lists };
+}
+
+/**
+ * A value holding a dynamic reference or cdkd's mask at ANY depth: a bare
+ * string, a list entry, or a nested object or list. Also read by the Auto
+ * Scaling group and Firehose list reads (go-to-k/cdkd#3948).
+ */
+export function holdsSecretDerivedEntry(value: unknown): boolean {
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(value);
+  } catch {
+    return false;
+  }
+  return text !== undefined && (text.includes('{{resolve:') || text.includes('***'));
+}
+
+/**
+ * `true` when every malformed kind is secret-derived, i.e. the record is
+ * well-formed apart from values cdkd redacted: a provider with a LIVE source
+ * for the list reads the old side from AWS instead of refusing
+ * (go-to-k/cdkd#3906).
+ */
+export function onlySecretDerived<K extends string>(
+  read: PrincipalLists<K>
+): read is Extract<PrincipalLists<K>, { malformed: K[] }> {
+  return 'malformed' in read && read.malformed.every((k) => read.secretDerived.includes(k));
+}
+
+/**
+ * The repair sentence for a RECORDED (state-side) principal list that is not a
+ * list of IAM names, without echoing any of its content. `what` is the plural
+ * the kinds name, e.g. `role / group / user names`. `secretDerivedRepair` is
+ * what to say about the secret-derived kinds: the provider knows whether it can
+ * read them from AWS instead.
+ */
+export function recordedPrincipalsRepair(
+  malformed: readonly string[],
+  secretDerived: readonly string[],
+  what: string,
+  secretDerivedRepair: string
+): string {
+  const plain = malformed.filter((k) => !secretDerived.includes(k));
+  const parts: string[] = [];
+  if (plain.length > 0) {
+    parts.push(
+      `repair the recorded ${plain.join(' / ')} in state.json to a list of ${what} and re-run`
+    );
+  }
+  if (secretDerived.length > 0) {
+    parts.push(
+      `the recorded ${secretDerived.join(' / ')} is secret-derived (cdkd keeps the dynamic ` +
+        `reference or its mask in state), so do not write the name into state.json; ` +
+        secretDerivedRepair
+    );
+  }
+  return parts.join('; ');
+}
+
+/** For a provider that reads a secret-derived recorded list from AWS instead. */
+export const SECRET_DERIVED_READ_LIVE =
+  'cdkd reads it from IAM instead once every other list is well-formed';

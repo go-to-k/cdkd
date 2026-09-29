@@ -10,6 +10,8 @@ import {
   displayIdent,
   displaySafe,
   IDENT_MAX_CODE_POINTS,
+  SAFE_MSG_ALTERED_CHAR,
+  safeMsg,
   STACK_REF_MAX_CODE_POINTS,
   truncateCodePoints,
   UNRENDERABLE,
@@ -393,5 +395,22 @@ describe('displayIdent cannot be switched off by a hostile toString (issue #3164
     expect(displayIdent(hostile)).toBe(`"${UNRENDERABLE}"`);
     expect(displaySafe(hostile)).toBe(UNRENDERABLE);
     expect(displaySafe(hostile)).not.toBe('');
+  });
+});
+
+describe('SAFE_MSG_ALTERED_CHAR is exactly the set of characters safeMsg changes in a value (issue #3949)', () => {
+  it('matches a BMP code unit if and only if safeMsg does not print it as itself', () => {
+    // Derived rather than listed, so widening `safeMsg`'s denylist without the
+    // export (or the reverse) reds here: `cdkd drift`'s `reportValue` quotes
+    // from this set, and a character safeMsg alters that the set misses would
+    // print a drift's two sides alike again.
+    const mismatches: string[] = [];
+    for (let code = 0; code <= 0xffff; code++) {
+      const ch = String.fromCharCode(code);
+      if (SAFE_MSG_ALTERED_CHAR.test(ch) !== (safeMsg`${ch}` !== ch)) {
+        mismatches.push(code.toString(16));
+      }
+    }
+    expect(mismatches).toEqual([]);
   });
 });

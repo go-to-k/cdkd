@@ -217,9 +217,12 @@ describe('rollback replay - provider calls carry a working secret masker (issue 
     ctx.recordEvent = (e) => {
       if (e.error?.message) errors.push(e.error.message);
     };
+    // Both records name the one IdP, so the #3979 holder guard passes and the
+    // collision reaches the Retain refusal this case is about.
+    const idpName = { UserPoolId: 'us-east-1_pool', ProviderName: 'idp' };
     const prev = res({
       physicalId: 'old-idp',
-      properties: { ProviderDetails: { client_secret: SECRET_EXPR } },
+      properties: { ...idpName, ProviderDetails: { client_secret: SECRET_EXPR } },
     });
     const ops: CompletedOperation[] = [
       {
@@ -233,7 +236,7 @@ describe('rollback replay - provider calls carry a working secret masker (issue 
     const state: Record<string, ResourceState> = {
       Idp: res({
         physicalId: 'new-idp',
-        properties: { ProviderDetails: { client_secret: SECRET_EXPR } },
+        properties: { ...idpName, ProviderDetails: { client_secret: SECRET_EXPR } },
         // Pins the new copy in place, so the collision arm REFUSES instead of
         // deleting it to free the name.
         updateReplacePolicy: 'Retain',
@@ -249,6 +252,7 @@ describe('rollback replay - provider calls carry a working secret masker (issue 
     // The refusal fired rather than a raw rethrow — the discriminator, since
     // "no delete, one failure" is also what a rethrow produces.
     expect(text).toContain('Cannot reverse the replacement of Idp');
+    expect(text).toContain('UpdateReplacePolicy: Retain');
     // The event surface carries no plaintext. True with or without the
     // construction-time masking (see above), so this is a property of the
     // whole path, not of the wrap.

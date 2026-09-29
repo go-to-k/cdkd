@@ -281,6 +281,13 @@ export interface ResolveSkipPrefixOptions {
    * legacy prefixing and {@link resolveSkipPrefix} returns `false`.
    */
   prefixUserSuppliedNames?: boolean;
+  /**
+   * Suppress the deprecation warnings for the legacy
+   * `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` / `noPrefixUserSuppliedNames`
+   * inputs. `cdkd rollback` resolves the setting only as a fallback for
+   * an old journal segment, where a deploy-time deprecation nag is noise.
+   */
+  quiet?: boolean;
 }
 
 /**
@@ -339,14 +346,14 @@ export function resolveSkipPrefix(opts: ResolveSkipPrefixOptions = {}): boolean 
   // no-ops in effect. (The CLI-flag equivalent is detected via
   // warnDeprecatedNoPrefixCliFlag — see the docstring above.)
   const deprecatedEnv = process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'];
-  if (deprecatedEnv === 'true') {
+  if (deprecatedEnv === 'true' && !opts.quiet) {
     logger.warn(
       'CDKD_NO_PREFIX_USER_SUPPLIED_NAMES is deprecated since v0.94.0 — ' +
         'skipping the prefix is now the default. Unset the env var.'
     );
   }
   const deprecatedCdkJson = cdkdContext?.['noPrefixUserSuppliedNames'];
-  if (typeof deprecatedCdkJson === 'boolean' && deprecatedCdkJson === true) {
+  if (typeof deprecatedCdkJson === 'boolean' && deprecatedCdkJson === true && !opts.quiet) {
     logger.warn(
       'cdk.json context.cdkd.noPrefixUserSuppliedNames is deprecated since v0.94.0 — ' +
         'skipping the prefix is now the default. Remove the entry.'

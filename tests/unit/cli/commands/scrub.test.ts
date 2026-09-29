@@ -356,6 +356,13 @@ describe('cdkd scrub - scrubStack', () => {
       // caller can print a raw name by forgetting it — which is why it is
       // present even on the no-state arm, bound to an empty bag.
       exportNameDisplay: expect.any(Function),
+      // No record, so no nested child to visit (go-to-k/cdkd#2252), and the
+      // flag that words the refusal of any `<stack>~` record left under it.
+      nestedChildren: [],
+      noRecord: true,
+      // The parent-row repair's redactor (go-to-k/cdkd#3961), a closure.
+      resolveRecordedExpressions: expect.any(Function),
+      holdsRecordedPlaintext: expect.any(Function),
     });
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });

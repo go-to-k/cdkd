@@ -51,7 +51,12 @@
 import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
-import { displaySafe } from '../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  isPasteableIdent,
+  SECRET_REF_MAX_CODE_POINTS,
+} from '../utils/display-safe.js';
 import { COMPOSITE_ID_SEPARATOR, compositeIdSeparatorRefusal } from './composite-id.js';
 
 /**
@@ -144,15 +149,28 @@ export function toCloudControlIdentifier(input: CcImportIdentifierInput): string
   if (physicalId.split(COMPOSITE_ID_SEPARATOR).length === fields.length) return physicalId;
   if (physicalId.trimStart().startsWith('{')) return physicalId;
 
-  const safeType = displaySafe(resourceType, { asciiOnly: true });
-  const safeLogicalId = displaySafe(logicalId, { asciiOnly: true });
-  const safeId = displaySafe(physicalId, { asciiOnly: true });
+  // Every value below is named in PROSE through `displayIdent`'s boundary, with
+  // no hand-written quotes around it (go-to-k/cdkd#3950): a plain value prints
+  // bare, any other JSON-quoted, where cdkd's own `'...'` was closed by a `'`
+  // in the value and left the rest of a pasted sentence as bare shell. A
+  // physical id or identifier is bounded at AWS's ARN ceiling rather than the
+  // 255 default, so a legitimate long ARN is not cut in the sentence naming it.
+  const safeType = displayIdent(resourceType);
+  const safeLogicalId = displayIdent(logicalId);
+  const showId = (value: string): string =>
+    displayIdent(value, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS });
+  const safeId = showId(physicalId);
   const shape = fields.map((field) => `<${field}>`).join(COMPOSITE_ID_SEPARATOR);
-  const remedy = `Pass the Cloud Control identifier instead: --resource '${safeLogicalId}=${shape}'.`;
+  // The `--resource` fragment is a span the operator PASTES, so the logical id
+  // takes the pasteable rule the SSM provider's twin of this remedy applies:
+  // named only when `isPasteableIdent` admits it, and a `<logicalId>`
+  // placeholder otherwise, which the fragment's own quotes keep literal.
+  const remedyId = isPasteableIdent(logicalId) ? logicalId : '<logicalId>';
+  const remedy = `Pass the Cloud Control identifier instead: --resource '${remedyId}=${shape}'.`;
 
   if (physicalId.includes(COMPOSITE_ID_SEPARATOR)) {
     throw new Error(
-      `${safeType} ${safeLogicalId}: '${safeId}' has ${physicalId.split(COMPOSITE_ID_SEPARATOR).length} ` +
+      `${safeType} ${safeLogicalId}: ${safeId} has ${physicalId.split(COMPOSITE_ID_SEPARATOR).length} ` +
         `'${COMPOSITE_ID_SEPARATOR}'-separated segments, but Cloud Control identifies this type by ` +
         `${fields.length} (${shape}). ${remedy}`
     );
@@ -168,13 +186,13 @@ export function toCloudControlIdentifier(input: CcImportIdentifierInput): string
   if (missing.length > 1) {
     throw new Error(
       `${safeType} ${safeLogicalId}: Cloud Control identifies this type by ${shape}, and the ` +
-        `template supplies no literal value for ${missing.join(' or ')}, so '${safeId}' cannot be ` +
+        `template supplies no literal value for ${missing.join(' or ')}, so ${safeId} cannot be ` +
         `placed. ${remedy}`
     );
   }
   if (missing.length === 1 && values.includes(physicalId)) {
     throw new Error(
-      `${safeType} ${safeLogicalId}: '${safeId}' equals a value the template already gives another ` +
+      `${safeType} ${safeLogicalId}: ${safeId} equals a value the template already gives another ` +
         `field of the identifier ${shape}, so it cannot be told which field it is. ${remedy}`
     );
   }
@@ -200,15 +218,15 @@ export function toCloudControlIdentifier(input: CcImportIdentifierInput): string
       .child('CcImportIdentifier')
       .debug(
         `${safeType} ${safeLogicalId}: the template supplies every field of the Cloud Control ` +
-          `identifier ${shape}, so '${displaySafe(identifier, { asciiOnly: true })}' is looked up ` +
-          `and the supplied id '${safeId}' is not used.`
+          `identifier ${shape}, so ${showId(identifier)} is looked up ` +
+          `and the supplied id ${safeId} is not used.`
       );
   }
   getLogger()
     .child('CcImportIdentifier')
     .debug(
-      `${safeType} ${safeLogicalId}: completed '${safeId}' to the Cloud Control identifier ` +
-        `'${displaySafe(identifier, { asciiOnly: true })}' (${shape}) from the template.`
+      `${safeType} ${safeLogicalId}: completed ${safeId} to the Cloud Control identifier ` +
+        `${showId(identifier)} (${shape}) from the template.`
     );
   return identifier;
 }

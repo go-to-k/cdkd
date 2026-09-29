@@ -472,7 +472,7 @@ ways out.
 
 ## Exit codes
 
-cdkd commands distinguish four outcomes via the process exit code, so CI and
+cdkd commands distinguish these outcomes via the process exit code, so CI and
 bench scripts can react without grepping log output:
 
 | Exit | Meaning |
@@ -481,6 +481,7 @@ bench scripts can react without grepping log output:
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. The default for any thrown error. |
 | `2` | Partial failure — work completed, but one or more resources failed, were skipped, or were only partially compared. State is preserved and re-running typically resolves it. |
 | `3` | The command completed and reported that the operation it previews **cannot start**. Unlike `2`, re-running changes nothing until a person resolves what it named. Used only by `cdkd diff` today. |
+| `70` | The command stopped before finishing — an internal error, most likely a cdkd bug — and printed a message saying so. It replaces any code the command had set. A stack lock may still be held: it expires at its TTL, or release it with `cdkd force-unlock <stack-name>` once nothing else is working on the stack. (`cdkd local run-task` forwards its container's exit code, so a container exiting 70 also yields 70, without that message.) |
 
 Two commands use `1` for a non-crash outcome, because there the operative
 meaning is "non-zero result", not "the command crashed":

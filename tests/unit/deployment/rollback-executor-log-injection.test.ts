@@ -242,10 +242,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
         changeType: 'UPDATE',
         resourceType: 'AWS::SQS::Queue',
         physicalId: 'phys',
-        previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { a: 1 } }),
+        previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { QueueName: 'q', a: 1 } }),
       },
     ];
-    const state = { Child: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { a: 2 } }) };
+    const state = { Child: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys', properties: { QueueName: 'q', a: 2 } }) };
     for (const [label, error] of [
       ["deploy-engine's collision refusal", new CdkdError(planted, 'NAMED_REPLACEMENT_COLLISION')],
       ['the other owned code', new CdkdError(planted, 'ROLLBACK_REPLACEMENT_UNROUTABLE')],
@@ -313,7 +313,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
             changeType: 'UPDATE',
             resourceType: 'AWS::SQS::Queue',
             physicalId: 'phys-new',
-            previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } }),
+            previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
             oldResourceRetained: false,
           },
         ],
@@ -321,7 +321,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
           RealDB: res({
             resourceType: 'AWS::SQS::Queue',
             physicalId: 'phys-new',
-            properties: { a: 2 },
+            properties: { QueueName: 'q', a: 2 },
             updateReplacePolicy: 'Retain',
           }),
         },
@@ -710,12 +710,12 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       changeType: 'UPDATE',
       resourceType: 'AWS::SQS::Queue',
       physicalId: 'phys-new',
-      previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: forgedPhys, properties: { a: 1 } }),
+      previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: forgedPhys, properties: { QueueName: 'q', a: 1 } }),
       oldResourceRetained: false,
     });
     const state = {
-      RealDB: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
-      [hostile]: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }),
+      RealDB: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
+      [hostile]: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
     };
 
     await replayRollback([replacement('RealDB'), replacement(hostile)], state, 'S', ctx, {
@@ -765,11 +765,11 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       changeType: 'UPDATE',
       resourceType: 'AWS::SQS::Queue',
       physicalId: 'phys-new',
-      previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } }),
+      previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
       oldResourceRetained: false,
     }));
     const state = Object.fromEntries(
-      ids.map((id) => [id, res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' })])
+      ids.map((id) => [id, res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' })])
     );
 
     await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
@@ -803,11 +803,11 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
         changeType: 'UPDATE',
         resourceType: 'AWS::SQS::Queue',
         physicalId: 'phys-new',
-        previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } }),
+        previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
         oldResourceRetained: false,
       },
     ];
-    const state = { '123': res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 }, updateReplacePolicy: 'Retain' }) };
+    const state = { '123': res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }) };
 
     await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
 
@@ -877,11 +877,11 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
         changeType: 'UPDATE',
         resourceType: 'AWS::SQS::Queue',
         physicalId: 'phys-new',
-        previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } }),
+        previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
         oldResourceRetained: false,
       },
     ];
-    const state = { [FORGED_ID]: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { a: 2 } }) };
+    const state = { [FORGED_ID]: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }) };
 
     await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
 
@@ -922,11 +922,22 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
         changeType: 'UPDATE',
         resourceType: 'AWS::SQS::Queue',
         physicalId: hostilePhys,
-        previousState: res({ resourceType: 'AWS::SQS::Queue', physicalId: 'phys-old', properties: { a: 1 } }),
+        // Both records name the queue `q`: the new one holds it (#3979).
+        previousState: res({
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'phys-old',
+          properties: { QueueName: 'q', a: 1 },
+        }),
         oldResourceRetained: false,
       },
     ];
-    const state = { [FORGED_ID]: res({ resourceType: 'AWS::SQS::Queue', physicalId: hostilePhys, properties: { a: 2 } }) };
+    const state = {
+      [FORGED_ID]: res({
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: hostilePhys,
+        properties: { QueueName: 'q', a: 2 },
+      }),
+    };
 
     await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
 
@@ -1046,11 +1057,12 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect((src.match(/\$\{rollbackFailureText\((\w+)\)\}/g) ?? []).length).toBe(2);
     expect(src).toContain('return displaySafe(error instanceof Error ? error.message : String(error));');
     expect(src).toContain('.map((line) => displaySafe(line))');
-    // The per-line arm is keyed on IDENTITY, and both of this module's
+    // The per-line arm is keyed on IDENTITY, and all three of this module's
     // refusals register through `ownRemedyError` (M7 of the go-to-k/cdkd#3764
-    // review); no code-keyed trust remains.
+    // review; the unproven-holder refusal is #3979's); no code-keyed trust
+    // remains.
     expect(src).toContain('OWN_REMEDY_ERRORS.has(error)');
-    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(2);
+    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(3);
     expect(src).not.toMatch(/OWN_REMEDY_LINE_CODES|\.has\(error\.code\)/);
     // `msg` used to be classified RAW and rendered wrapped. Since issue #3208
     // it is not classified at all: the collision decision moved to the ERROR
@@ -1109,14 +1121,16 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     await replayRollback([typeChangeOp()], newState(), 'S', ctx);
     assertNoForgery(lines, /Reversing replacement of Victim/);
 
-    // The delete-new-first note, which renders both types.
+    // A collision across the Type change: the unproven-holder refusal (#3979)
+    // renders both types, the forged one included.
     const collide = vi
       .fn()
       .mockRejectedValueOnce(ccAlreadyExistsError('CREATE failed for Victim: Resource already exists.'))
       .mockResolvedValue({ physicalId: 'phys-recreated', attributes: {} });
     const { ctx: ctx2, lines: lines2 } = makeCtx({ create: collide, delete: del });
-    await replayRollback([typeChangeOp()], newState(), 'S', ctx2);
-    assertNoForgery(lines2, /re-create collided with the new resource's name/);
+    const collided = await replayRollback([typeChangeOp()], newState(), 'S', ctx2);
+    expect(collided.failures).toBe(1);
+    assertNoForgery(lines2, /does not know to share a name space/);
 
     // The unroutable refusal's "two different types" reason renders BOTH
     // journal sources.
@@ -1172,8 +1186,8 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // that escaped; a fourth is one of these being sanitized -- both wrong.
     expect(bareCount).toBe(5);
     // The one rendered bare id -- the pasted `--orphan` remedy -- lives in
-    // `orphanRemedy`, which both refusals call (the cases above drive both
-    // arms of both): the guard sits in that helper, on the id itself, and the
+    // `orphanRemedy`, which the three refusals call (the cases above drive
+    // both of its arms): the guard sits in that helper, on the id itself, and the
     // interpolation that names the id is keyed on the guard's verdict. No
     // `--orphan ${` render exists anywhere else in the file, so a refusal
     // spelling its own remedy again would be a second match here.
@@ -1182,7 +1196,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).toContain(
       "const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);"
     );
-    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(2);
+    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(3);
     // The fence sees its input: the wrapped form must be present in numbers.
     expect((src.match(/\$\{safe\(op\.(?:logicalId|resourceType|changeType)\)\}/g) ?? []).length)
       .toBeGreaterThan(40);

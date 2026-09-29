@@ -42,6 +42,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * AWS ECR Repository Provider
@@ -184,6 +185,9 @@ export class ECRProvider implements ResourceProvider {
       (properties['RepositoryName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 256 }).toLowerCase();
 
+    // Set once CreateRepository returns: a later failure is an auxiliary
+    // call's, not this repository's name collision (#3826).
+    let repositoryCreated = false;
     try {
       // Convert CFn Tags format to SDK tags format
       const tags = properties['Tags'] as Tag[] | undefined;
@@ -213,6 +217,7 @@ export class ECRProvider implements ResourceProvider {
         })
       );
 
+      repositoryCreated = true;
       const repo = response.repository;
       if (!repo?.repositoryName) {
         throw new Error('CreateRepository did not return repository name');
@@ -258,6 +263,7 @@ export class ECRProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
+      if (repositoryCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create ECR Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
