@@ -98,7 +98,7 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
     // measured). The caveat must sit OUTSIDE the backticks — prose inside a
     // pasteable span is the same defect class this issue is about.
     expect(message).toContain(
-      'Note UpdateUserPool resets some members a call omits (AutoVerifiedAttributes among them)'
+      'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them)'
     );
     expect(message).toContain('send your complete pool configuration');
     // Every retired spelling, pinned as absent. The first was AWS's own blanket

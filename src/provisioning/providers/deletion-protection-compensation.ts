@@ -500,9 +500,11 @@ export function logGroupProtectionSite(
  * The {@link ProtectionGuardSite} for an `AWS::Cognito::UserPool`.
  *
  * The restore command carries a caveat rather than standing alone: it omits
- * every other `UpdateUserPool` member, and `AutoVerifiedAttributes` is measured
- * to RESET on omission (the ledger at `readLiveMfaConfiguration` in
- * `cognito-provider.ts`).
+ * every other `UpdateUserPool` member, and the Lambda triggers, advanced
+ * security and `AutoVerifiedAttributes` are measured to RESET on omission
+ * (`USER_POOL_ECHO_MEMBERS` in `cognito-provider.ts`). cdkd's own re-enable
+ * echoes the pool back and does not reset them (issue #4066); the pasted
+ * command cannot.
  */
 export function userPoolProtectionSite(
   physicalId: string,
@@ -528,7 +530,7 @@ export function userPoolProtectionSite(
       };
     },
     restoreCaveat:
-      'Note UpdateUserPool resets some members a call omits (AutoVerifiedAttributes among them), ' +
+      'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), ' +
       'so send your complete pool configuration alongside that flag rather than the flag alone.',
   };
 }
@@ -542,8 +544,22 @@ export interface ProtectionFlipCompensationOptions {
   readonly physicalId: string;
   readonly logger: Logger;
   readonly site: ProtectionGuardSite;
-  /** Issues the write that turns the guard back ON. */
-  readonly reEnable: () => Promise<void>;
+  /**
+   * Issues the write that turns the guard back ON.
+   *
+   * A site that reads the resource first may resolve:
+   *  - `'already-on'` -- the read found the guard ON, and the site wrote it
+   *    back anyway (a read can lag a write that landed; re-sending ON is
+   *    idempotent), AWS accepting the write. The narration says so instead of
+   *    claiming the guard had been off.
+   *  - `'read-on-write-failed'` -- the read found the guard ON but the
+   *    write-back failed. The guard was on as of that read, so this is NOT
+   *    the "still off" ERROR (whose pasted restore command could itself
+   *    change the resource); it is a warn naming the check command. The read
+   *    may have lagged, so the flip record is KEPT (`failed`) for a later
+   *    delete of the same resource to retry.
+   */
+  readonly reEnable: () => Promise<void | 'already-on' | 'read-on-write-failed'>;
 }
 
 /**
@@ -590,11 +606,25 @@ export async function compensateProtectionFlip(
 
   const { site } = opts;
   try {
-    await opts.reEnable();
+    const result = await opts.reEnable();
+    if (result === 'read-on-write-failed') {
+      opts.logger.warn(
+        safeMsg`${site.subject} ${opts.logicalId}: the delete failed after ` +
+          safeMsg`--remove-protection tried to turn ${site.guardName} off; ${opts.physicalId} ` +
+          safeMsg`read it on afterwards, but writing it back failed, so cdkd cannot confirm ` +
+          safeMsg`it. Check with: ${site.commands().check}. The delete failure below is the outcome.`
+      );
+      return 'failed';
+    }
     opts.logger.warn(
-      safeMsg`${site.subject} ${opts.logicalId}: the delete failed after ` +
-        safeMsg`--remove-protection had turned ${site.guardName} off, so it was ` +
-        safeMsg`re-enabled on ${opts.physicalId}. The delete failure below is the outcome.`
+      result === 'already-on'
+        ? safeMsg`${site.subject} ${opts.logicalId}: the delete failed after ` +
+            safeMsg`--remove-protection tried to turn ${site.guardName} off; ${opts.physicalId} ` +
+            safeMsg`already read it on, and cdkd wrote it back (AWS accepted the write). The ` +
+            safeMsg`delete failure below is the outcome.`
+        : safeMsg`${site.subject} ${opts.logicalId}: the delete failed after ` +
+            safeMsg`--remove-protection had turned ${site.guardName} off, so it was ` +
+            safeMsg`re-enabled on ${opts.physicalId}. The delete failure below is the outcome.`
     );
     return 'restored';
   } catch (reEnableError) {

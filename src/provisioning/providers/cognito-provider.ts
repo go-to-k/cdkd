@@ -15,6 +15,7 @@ import {
   type AuthFactorType,
   type UserPoolMfaType,
   type DeletionProtectionType,
+  type UserPoolType,
   type SchemaAttributeType,
   type LambdaConfigType,
   type PasswordPolicyType,
@@ -39,7 +40,9 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { isThrottlingError, isTransientServerError } from '../../deployment/retryable-errors.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -71,6 +74,169 @@ import {
   userPoolProtectionSite,
   type ProtectionFlipRecord,
 } from './deletion-protection-compensation.js';
+
+/**
+ * The `UpdateUserPool` members a `DeletionProtection`-only write ECHOES BACK
+ * from the pool's own `DescribeUserPool`, so the `--remove-protection` flip
+ * and its compensating re-enable change the guard and nothing else (issue
+ * #4066).
+ *
+ * `UpdateUserPool` resets members a call omits -- but only SOME of them, and
+ * every echoed member is one more thing AWS can refuse on write. So the echo
+ * carries exactly the members MEASURED to reset, the ones not measured, and
+ * `UserAttributeUpdateSettings` (AWS refuses a write whose
+ * `AttributesRequireVerificationBeforeUpdate` names an attribute missing from
+ * `AutoVerifiedAttributes`, so the two travel together). The measured-KEPT
+ * members are {@link USER_POOL_KEPT_ON_OMISSION}.
+ *
+ * MEASURED us-east-1 2026-09-29 (issue #4066), on pools created with each
+ * member set, by an `UpdateUserPool` omitting it:
+ *
+ * - RESET: `LambdaConfig` (a `PreAuthentication` trigger went to `{}`),
+ *   `UserPoolAddOns` (advanced security `AUDIT` went to absent),
+ *   `AdminCreateUserConfig.AllowAdminCreateUserOnly` (`true` -> `false`: self
+ *   sign-up switched ON), `AutoVerifiedAttributes`,
+ *   `VerificationMessageTemplate` (`CONFIRM_WITH_LINK` -> `CONFIRM_WITH_CODE`),
+ *   `SmsAuthenticationMessage`, `DeviceConfiguration`.
+ * - REFUSED outright on a pool whose `UserAttributeUpdateSettings` requires
+ *   verification of `email`: "All attributes in
+ *   AttributesRequireVerificationBeforeUpdate must exist in
+ *   AutoVerifiedAttributes" -- the bare flip could not turn the guard off.
+ * - Not measured, so echoed: `SmsVerificationMessage`,
+ *   `EmailVerificationMessage`, `EmailVerificationSubject`.
+ *
+ * The echo was ACCEPTED on every pool measured, MFA `ON` with TOTP only and
+ * no `SmsConfiguration` included, and left the pool byte-identical apart from
+ * `DeletionProtection`. A `LambdaConfig` naming a function that does not exist
+ * is accepted too, so a deleted trigger function cannot make the echo refuse.
+ */
+export const USER_POOL_ECHO_MEMBERS = [
+  'LambdaConfig',
+  'UserPoolAddOns',
+  'AdminCreateUserConfig',
+  'AutoVerifiedAttributes',
+  'UserAttributeUpdateSettings',
+  'VerificationMessageTemplate',
+  'SmsAuthenticationMessage',
+  'DeviceConfiguration',
+  'SmsVerificationMessage',
+  'EmailVerificationMessage',
+  'EmailVerificationSubject',
+] as const satisfies ReadonlyArray<keyof UserPoolType & keyof UpdateUserPoolCommandInput>;
+
+/**
+ * The `UpdateUserPool` members MEASURED to survive a call that omits them
+ * (issue #4066, us-east-1 2026-09-29), and therefore NOT echoed: echoing them
+ * buys nothing and adds refusal triggers -- `SmsConfiguration` re-validates
+ * its IAM role and a `DEVELOPER` `EmailConfiguration` its SES identity on
+ * write, and a refused echo is the path to the settings-resetting bare write.
+ * `SmsConfiguration` (with an SNS role), `EmailConfiguration`
+ * (`COGNITO_DEFAULT`) and `MfaConfiguration` (`OFF`, `OPTIONAL` and `ON`, the
+ * factor configuration included) were each measured unchanged. One exception
+ * is ECHOED anyway: a `DEVELOPER` (SES) `EmailConfiguration`, which could not
+ * be measured (see {@link userPoolDeletionProtectionUpdate}).
+ */
+export const USER_POOL_KEPT_ON_OMISSION = [
+  'Policies',
+  'UserPoolTags',
+  'AccountRecoverySetting',
+  'EmailConfiguration',
+  'SmsConfiguration',
+  'MfaConfiguration',
+  'UserPoolTier',
+  'KeyConfiguration',
+  'IssuerConfiguration',
+] as const satisfies ReadonlyArray<keyof UserPoolType & keyof UpdateUserPoolCommandInput>;
+
+/**
+ * An `UpdateUserPool` that sets `DeletionProtection` to `value` and echoes
+ * back every {@link USER_POOL_ECHO_MEMBERS} entry `pool` carries, so the write
+ * leaves the rest of the pool as it was read. `UserPoolId` is the caller's
+ * physical id, never `pool.Id`: the write addresses what cdkd means to act on.
+ */
+export function userPoolDeletionProtectionUpdate(
+  physicalId: string,
+  pool: UserPoolType,
+  value: DeletionProtectionType,
+  opts: { readonly withoutDeveloperEmail?: boolean } = {}
+): UpdateUserPoolCommandInput {
+  const input: UpdateUserPoolCommandInput = { UserPoolId: physicalId };
+  for (const member of USER_POOL_ECHO_MEMBERS) {
+    if (pool[member] !== undefined) Object.assign(input, { [member]: pool[member] });
+  }
+  // A `DEVELOPER` EmailConfiguration (SES) is NOT measured to survive
+  // omission -- only `COGNITO_DEFAULT` is, and no verified SES identity was
+  // available to measure the other. So it is echoed: if AWS re-validates it
+  // and refuses, the flip falls back LOUDLY (a warn, and an ERROR report if
+  // the delete then fails), where a reset on omission would be silent.
+  if (echoesDeveloperEmail(pool) && opts.withoutDeveloperEmail !== true) {
+    input.EmailConfiguration = pool.EmailConfiguration;
+  }
+  input.DeletionProtection = value;
+  return input;
+}
+
+/** Failures of a write sent WITHOUT the pool's SES EmailConfiguration. */
+const sentWithoutEmail = new WeakSet<object>();
+
+/** The report a `preFlipPools` record calls for (see `reportSettingsResetByBareFlip`). */
+function reportKind(record: {
+  readonly ambiguous: boolean;
+  readonly echoedSince?: boolean;
+}): 'reset' | 'earlier' | 'unclear' {
+  if (record.ambiguous) return 'unclear';
+  return record.echoedSince === true ? 'earlier' : 'reset';
+}
+
+/** Whether {@link userPoolDeletionProtectionUpdate} echoes the pool's (SES) `EmailConfiguration`. */
+export function echoesDeveloperEmail(pool: UserPoolType): boolean {
+  return pool.EmailConfiguration?.EmailSendingAccount === 'DEVELOPER';
+}
+
+/**
+ * The `UpdateUserPool` failures that mean AWS VALIDATED the echoed
+ * configuration and refused it -- the only case where the bare write is worth
+ * falling back to (issue #4066). Anything else (a throttle, a timeout that may
+ * even have applied, access denied, not-found) is not a stale member, and a
+ * bare write there would reset self sign-up and the Lambda triggers for
+ * nothing. Keyed on `name` so a second SDK class instance still matches.
+ */
+export const REFUSED_ECHO_ERRORS: ReadonlySet<string> = new Set([
+  'InvalidParameterException',
+  'InvalidSmsRoleAccessPolicyException',
+  'InvalidSmsRoleTrustRelationshipException',
+  'InvalidEmailRoleAccessPolicyException',
+]);
+
+/**
+ * A throttle or a transient server error (5xx) from `DescribeUserPool` or the
+ * flip's `UpdateUserPool`: the delete is abandoned BEFORE any
+ * `DeleteUserPool` and re-thrown retryable, so the destroy loop re-enters and
+ * the next attempt reads and flips properly (issue #4066). Deliberately NOT
+ * `isRetryableTransientError`, whose message patterns include `not authorized
+ * to perform` (for IAM propagation): a real permission refusal must reach the
+ * warn that names the missing permission, not burn the retry budget.
+ */
+export function isTransientCognitoFailure(error: unknown): boolean {
+  return isThrottlingError(error) || isTransientServerError(error);
+}
+
+/**
+ * A write failure that does NOT prove the write was refused: a client-side
+ * one (a timeout, a dropped connection -- no AWS answer at all) or a 5xx,
+ * either of which may have been applied server-side.
+ */
+function isAmbiguousWriteFailure(error: unknown): boolean {
+  return !(error instanceof Error && isAwsAuthoredFailure(error)) || isTransientServerError(error);
+}
+
+export function isRefusedEcho(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    REFUSED_ECHO_ERRORS.has(String((error as { name?: unknown }).name))
+  );
+}
 
 /**
  * The standard (OIDC) Cognito User Pool attribute names. A Schema entry whose
@@ -1315,6 +1481,23 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   private logger = getLogger().child('CognitoUserPoolProvider');
   /** `--remove-protection` flips, keyed so a re-entered delete keeps them (#2204). */
   private readonly protectionFlips = new ProtectionFlipRegistry();
+  /**
+   * The pre-flip read of a pool whose flip went out as the settings-resetting
+   * bare write (#4066), keyed by the flip record so a re-entered attempt --
+   * which reads the already-reset pool -- cannot overwrite it. The
+   * compensation reads it to tell the user what the pool held.
+   *
+   * It is also the ONLY carrier of "the flip went out bare": `ambiguous: false`
+   * means the bare write landed (the settings WERE reset, so a bare re-enable
+   * loses nothing more); `ambiguous: true` means it got no clear answer.
+   * `echoedSince` marks a definite record after which an ECHO flip landed: the
+   * reset still happened and is still reported, but the pool may since hold
+   * settings again, so it no longer licenses a bare re-enable.
+   */
+  private readonly preFlipPools = new WeakMap<
+    ProtectionFlipRecord,
+    { readonly pool: UserPoolType; ambiguous: boolean; echoedSince?: boolean }
+  >();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1973,6 +2156,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *
    * - `AutoVerifiedAttributes` — DOES reset when omitted (2026-08-18).
    * - `MfaConfiguration` — does NOT reset when omitted (2026-08-18, above).
+   * - `LambdaConfig`, `UserPoolAddOns`, `VerificationMessageTemplate`,
+   *   `SmsAuthenticationMessage`, `DeviceConfiguration` and
+   *   `AdminCreateUserConfig.AllowAdminCreateUserOnly` — DO reset when omitted;
+   *   `UserPoolTags`, `AccountRecoverySetting` and `EmailConfiguration` do NOT
+   *   (2026-09-29, issue #4066; the full table is at `USER_POOL_ECHO_MEMBERS`).
    * - `DeletionProtection` — does NOT reset when omitted (2026-09-23, issue
    *   #2675): a pool created `ACTIVE` stayed `ACTIVE` through an
    *   `UpdateUserPool` omitting it, whose co-sent `AutoVerifiedAttributes`
@@ -2782,7 +2970,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
               // widened type by design. That is the cost of moving this fence
               // from a grep to the compiler, and it is worth paying.
               caveat:
-                'Note UpdateUserPool resets some members a call omits (AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
+                'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
             },
           })
         : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
@@ -2838,22 +3026,158 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
+    // The flip record `run` receives. It is the SAME object the compensation
+    // holds for this key (the registry hands one record to both), so the
+    // re-enable reads what the flip latched on it.
+    let flipRecord: ProtectionFlipRecord | undefined;
     await deleteWithProtectionCompensation({
       registry: this.protectionFlips,
       key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
-      run: (flip) => this.deleteOnce(logicalId, physicalId, resourceType, context, flip),
+      run: (flip) => {
+        flipRecord = flip;
+        return this.deleteOnce(logicalId, physicalId, resourceType, context, flip);
+      },
       compensation: {
         logicalId,
         physicalId,
         logger: this.logger,
         site: userPoolProtectionSite(physicalId, context?.expectedRegion),
+        // A FRESH read, echoed back (#4066). The echo is ALWAYS written, even
+        // when the read already says ACTIVE: a read can lag a write that
+        // landed, and an echoed ACTIVE is idempotent and resets nothing.
+        //
+        // A bare `DeletionProtection: 'ACTIVE'` would reset the pool's self
+        // sign-up, Lambda triggers and advanced security, so it is used only
+        // where those are ALREADY reset -- a bare flip known to have landed --
+        // and only when the echo is refused on validation (the same stale
+        // member that refused the flip's echo). That case is also reported at
+        // ERROR first, with what the pool held, since the pool stays LIVE
+        // with its settings reset whatever the re-enable does.
         reEnable: async () => {
-          await this.getClient().send(
-            new UpdateUserPoolCommand({ UserPoolId: physicalId, DeletionProtection: 'ACTIVE' })
-          );
+          const bareFlip = flipRecord ? this.preFlipPools.get(flipRecord) : undefined;
+          let pool: UserPoolType | undefined;
+          try {
+            pool = (
+              await this.getClient().send(new DescribeUserPoolCommand({ UserPoolId: physicalId }))
+            ).UserPool;
+          } catch (readError) {
+            // Cannot tell what landed: report a possible reset as recorded.
+            if (bareFlip)
+              this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+            throw readError;
+          }
+          if (!pool) {
+            if (bareFlip)
+              this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+            throw new Error(`DescribeUserPool returned no pool for ${physicalId}`);
+          }
+          // OFF after a bare attempt: the bare write landed (only a
+          // definitely-REFUSED echo leads to one), so the settings WERE reset.
+          if (bareFlip && pool.DeletionProtection !== 'ACTIVE') bareFlip.ambiguous = false;
+          const resetConfirmed = bareFlip !== undefined && !bareFlip.ambiguous;
+          // Every bare attempt is reported. An unclear one whose pool reads ON
+          // stays "MAY": a read can lag the write it is meant to reflect.
+          if (bareFlip)
+            this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+          // A bare re-enable loses nothing only while the reset is the pool's
+          // latest state: not after an echo flip has landed since.
+          const bareLicensed = resetConfirmed && bareFlip.echoedSince !== true;
+          const readOn = pool.DeletionProtection === 'ACTIVE';
+          try {
+            await this.sendEchoedDeletionProtection(physicalId, pool, 'ACTIVE');
+          } catch (echoError) {
+            let failure: unknown = echoError;
+            if (bareLicensed && isRefusedEcho(echoError)) {
+              try {
+                await this.getClient().send(
+                  new UpdateUserPoolCommand({
+                    UserPoolId: physicalId,
+                    DeletionProtection: 'ACTIVE',
+                  })
+                );
+                return readOn ? 'already-on' : undefined;
+              } catch (bareError) {
+                failure = bareError;
+              }
+            }
+            // The guard read ON: the write-back failing does not make it off,
+            // and the "still off" ERROR (with a bare restore command to paste)
+            // would be false and harmful. Say what is known instead.
+            if (readOn && !(failure instanceof ResourceNotFoundException)) {
+              this.logger.debug(
+                safeMsg`Writing DeletionProtection back on ${physicalId} failed: ${describeAwsFailure(failure).detail}`
+              );
+              return 'read-on-write-failed';
+            }
+            throw failure;
+          }
+          return readOn ? 'already-on' : undefined;
         },
       },
     });
+  }
+
+  /**
+   * The ERROR for a pool that stays LIVE after a failed delete whose flip went
+   * out as the bare write (#4066): its self sign-up, Lambda triggers and
+   * advanced security were reset by that write, and nothing cdkd does
+   * afterwards can bring them back -- a redeploy will not either, because the
+   * recorded properties still match the template, so the diff is empty.
+   * Names what the pool held before the flip (none of it secret: a boolean,
+   * trigger ARNs, a mode) so the user can put it back.
+   */
+  private reportSettingsResetByBareFlip(
+    physicalId: string,
+    before: UserPoolType,
+    /**
+     * `reset` -- the bare write landed and is the pool's latest state;
+     * `earlier` -- it landed, but an echo flip landed since, so the settings
+     * may have been restored; `unclear` -- whether it landed is not known.
+     */
+    kind: 'reset' | 'earlier' | 'unclear'
+  ): void {
+    const held: string[] = [];
+    const adminOnly = before.AdminCreateUserConfig?.AllowAdminCreateUserOnly;
+    if (adminOnly !== undefined) held.push(`AllowAdminCreateUserOnly=${String(adminOnly)}`);
+    const lambdaConfig = (before.LambdaConfig ?? {}) as Record<string, unknown>;
+    for (const [trigger, value] of Object.entries(lambdaConfig)) {
+      // Not triggers of their own: the KMS key, and the legacy spelling of a
+      // trigger whose versioned `*Config` form is also present (one slot).
+      // Every OTHER slot is listed, even one sharing a function with another.
+      if (trigger === 'KMSKeyID') continue;
+      if (lambdaConfig[`${trigger}Config`] !== undefined) continue;
+      const arn =
+        typeof value === 'string'
+          ? value
+          : value && typeof value === 'object' && 'LambdaArn' in value
+            ? String((value as { LambdaArn?: unknown }).LambdaArn)
+            : undefined;
+      if (arn) held.push(`LambdaConfig.${trigger}=${arn}`);
+    }
+    const mode = before.UserPoolAddOns?.AdvancedSecurityMode;
+    if (mode) held.push(`AdvancedSecurityMode=${mode}`);
+    const heldText = held.length > 0 ? held.join(', ') : 'none of these settings';
+    const state =
+      kind === 'unclear'
+        ? safeMsg`is LIVE and its self sign-up, Lambda triggers and advanced security MAY have been reset: ` +
+          safeMsg`--remove-protection sent UpdateUserPool with DeletionProtection alone (the pool's own ` +
+          safeMsg`configuration was refused) and got no clear answer, and the delete then failed. Check it ` +
+          safeMsg`with aws cognito-idp describe-user-pool.`
+        : kind === 'earlier'
+          ? safeMsg`is LIVE; its self sign-up, Lambda triggers and advanced security were reset by an ` +
+            safeMsg`earlier UpdateUserPool that --remove-protection sent with DeletionProtection alone (the ` +
+            safeMsg`pool's own configuration was refused); they may have been restored since. Check it with ` +
+            safeMsg`aws cognito-idp describe-user-pool.`
+          : safeMsg`is LIVE with its self sign-up, Lambda triggers and advanced security reset: ` +
+            safeMsg`--remove-protection had to turn DeletionProtection off with UpdateUserPool alone (the ` +
+            safeMsg`pool's own configuration was refused), and the delete then failed.`;
+    this.logger.error(
+      safeMsg`Cognito User Pool ${physicalId} ` +
+        state +
+        safeMsg` Before that write the pool held: ${heldText}. Put them back with ` +
+        safeMsg`aws cognito-idp update-user-pool, sending the pool's complete configuration -- a ` +
+        safeMsg`cdkd deploy will NOT restore them, because its recorded properties still match the template.`
+    );
   }
 
   private async deleteOnce(
@@ -2871,9 +3195,16 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         // stale (the user could have flipped it via console), and the
         // compensation may only restore a guard this run OBSERVED on and
         // turned off (issue #2204). A pool observed INACTIVE skips the
-        // `UpdateUserPool`, which resets some members it omits; an
-        // unreadable one ("do not know") is flipped anyway, as before.
+        // `UpdateUserPool`. An UNREADABLE one is not flipped at all (#4066):
+        // the only write possible without the read is the bare one, which
+        // resets self sign-up, Lambda triggers and advanced security.
         let observed: string | undefined;
+        let observedPool: UserPoolType | undefined;
+        let observeError: unknown;
+        // A TRANSIENT read failure is re-thrown after the flip block, before
+        // any DeleteUserPool: the outer destroy loop re-enters on it, and the
+        // retry can read the pool and flip it properly.
+        let transientReadError: unknown;
         try {
           await observeThenDisableProtection({
             flip,
@@ -2881,26 +3212,56 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             physicalId,
             guardName: 'DeletionProtection',
             observe: async () => {
-              const describeResponse = await this.getClient().send(
-                new DescribeUserPoolCommand({ UserPoolId: physicalId })
-              );
-              observed = describeResponse.UserPool?.DeletionProtection;
+              const describeResponse = await this.getClient()
+                .send(new DescribeUserPoolCommand({ UserPoolId: physicalId }))
+                .catch((error: unknown) => {
+                  observeError = error;
+                  throw error;
+                });
+              observedPool = describeResponse.UserPool;
+              observed = observedPool?.DeletionProtection;
               return observed === 'ACTIVE';
             },
             disable: async () => {
-              if (observed !== undefined && observed !== 'ACTIVE') return;
+              if (observed !== undefined && observed !== 'ACTIVE') {
+                // Already off: an earlier attempt's bare write that got no
+                // clear answer DID land (its echo was definitely refused, so
+                // only the bare write can have turned the guard off).
+                const earlier = this.preFlipPools.get(flip);
+                if (earlier?.ambiguous) earlier.ambiguous = false;
+                return;
+              }
+              if (!observedPool) {
+                // A missing pool needs no flip: the delete's own not-found
+                // arm reports it gone, after the region check.
+                if (observeError instanceof ResourceNotFoundException) return;
+                if (observeError !== undefined && isTransientCognitoFailure(observeError)) {
+                  transientReadError = observeError;
+                  return;
+                }
+                const reason =
+                  observeError === undefined
+                    ? 'DescribeUserPool returned no pool'
+                    : describeAwsFailure(observeError).summary;
+                this.logger.warn(
+                  safeMsg`Cognito User Pool ${physicalId}: DeletionProtection was left on, because ` +
+                    safeMsg`the pool could not be read first (${reason}) and turning it off without ` +
+                    safeMsg`that read resets the pool's self sign-up, Lambda triggers and advanced ` +
+                    safeMsg`security. The delete will be refused while it is on; re-run once the pool ` +
+                    safeMsg`can be read (cognito-idp:DescribeUserPool is the permission it needs).`
+                );
+                return;
+              }
               this.logger.debug(
                 `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion (--remove-protection)`
               );
-              await this.getClient().send(
-                new UpdateUserPoolCommand({
-                  UserPoolId: physicalId,
-                  DeletionProtection: 'INACTIVE',
-                })
-              );
+              await this.disableUserPoolDeletionProtection(physicalId, observedPool, flip);
             },
           });
         } catch (flipError) {
+          // A transient flip failure retries the whole delete, like a
+          // transient read: re-thrown here, before any DeleteUserPool.
+          if (isTransientCognitoFailure(flipError)) throw flipError;
           // Non-fatal — log and proceed. The actual delete below will
           // surface any real authorization / state error, a missing pool
           // included (its NotFound arm below runs the region check).
@@ -2908,6 +3269,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             `Could not disable DeletionProtection for ${physicalId}: ${describeAwsFailure(flipError).detail}`
           );
         }
+        if (transientReadError !== undefined) throw transientReadError;
       }
 
       await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: physicalId }));
@@ -2936,6 +3298,205 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Send the echoed `DeletionProtection` write. When the echo carried a
+   * `DEVELOPER` (SES) `EmailConfiguration` -- echoed only because it is not
+   * measured to survive omission -- and AWS refuses it on validation, it is
+   * re-sent ONCE without that member before anything falls back to the bare
+   * write: a stale SES identity must not cost the pool its self sign-up,
+   * Lambda triggers and advanced security. That second write may reset the
+   * email configuration (unmeasured), so it says so at warn.
+   */
+  private async sendEchoedDeletionProtection(
+    physicalId: string,
+    pool: UserPoolType,
+    value: DeletionProtectionType
+  ): Promise<void> {
+    try {
+      await this.getClient().send(
+        new UpdateUserPoolCommand(userPoolDeletionProtectionUpdate(physicalId, pool, value))
+      );
+    } catch (echoError) {
+      if (!echoesDeveloperEmail(pool) || !isRefusedEcho(echoError)) throw echoError;
+      // Kept at debug: if the re-send fails too, the caller's warn names only
+      // that second failure.
+      this.logger.debug(
+        safeMsg`UpdateUserPool refused the SES EmailConfiguration of ${physicalId}: ${describeAwsFailure(echoError).summary}`
+      );
+      try {
+        await this.getClient().send(
+          new UpdateUserPoolCommand(
+            userPoolDeletionProtectionUpdate(physicalId, pool, value, {
+              withoutDeveloperEmail: true,
+            })
+          )
+        );
+      } catch (resendError) {
+        // The write that failed OMITTED the SES EmailConfiguration: if it
+        // landed after all, that member may have been reset.
+        if (typeof resendError === 'object' && resendError !== null) {
+          sentWithoutEmail.add(resendError);
+        }
+        throw resendError;
+      }
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the write (possibly the ` +
+          safeMsg`pool's SES EmailConfiguration, ${describeAwsFailure(echoError).summary}), so ` +
+          safeMsg`DeletionProtection was set to ${value} with the pool's other settings but without ` +
+          safeMsg`that EmailConfiguration. Whether that resets the email configuration is not ` +
+          safeMsg`measured; check it with aws cognito-idp describe-user-pool.`
+      );
+    }
+  }
+
+  /**
+   * The `--remove-protection` flip-off as a read-modify-write (issue #4066):
+   * `DeletionProtection: 'INACTIVE'` plus the {@link USER_POOL_ECHO_MEMBERS}
+   * `pool` (the pre-flip `DescribeUserPool`) carries, so a delete that then
+   * fails leaves a live pool with its self sign-up, Lambda triggers and
+   * advanced security intact.
+   *
+   * FALLS BACK to the bare flip only when AWS REFUSED the echo on validation
+   * ({@link isRefusedEcho}), so the delete can still run. The bare flip resets
+   * the members it omits, so that arm says so at warn AFTER the write lands
+   * and keeps the pre-flip read, as definite, for the compensation's report.
+   * Any other failure -- of the echo, or of the bare write -- leaves
+   * the guard ON and says so at warn (the delete is then refused, and the pool
+   * stays whole). A not-found answer is re-thrown silently for the delete's
+   * own not-found arm.
+   */
+  private async disableUserPoolDeletionProtection(
+    physicalId: string,
+    pool: UserPoolType,
+    flip: ProtectionFlipRecord
+  ): Promise<void> {
+    // The guard reads ACTIVE again, so an earlier attempt's bare write that
+    // got no clear answer did NOT land: forget it, or a later INACTIVE read
+    // would be taken as proof it did (a false "reset" report, and a bare
+    // re-enable against a pool whose settings are intact).
+    if (this.preFlipPools.get(flip)?.ambiguous) this.preFlipPools.delete(flip);
+    // Only a guard OBSERVED on may be latched as turned off by this run
+    // (#2204): on a read with no `DeletionProtection` the flip still goes out,
+    // but nothing is owed back.
+    const observedOn = pool.DeletionProtection === 'ACTIVE';
+    try {
+      await this.sendEchoedDeletionProtection(physicalId, pool, 'INACTIVE');
+      // The echo landed and reset nothing. A DEFINITE reset an earlier
+      // attempt or run recorded on this (retained) record still happened and
+      // is still reported, but no longer licenses a bare re-enable: the pool
+      // may hold settings again since.
+      const earlier = this.preFlipPools.get(flip);
+      if (earlier) earlier.echoedSince = true;
+      return;
+    } catch (echoError) {
+      if (echoError instanceof ResourceNotFoundException) throw echoError;
+      // An answer that does not prove the write was REFUSED (a timeout, a
+      // 5xx) may have landed server-side: the guard may be off. Latch it, so
+      // a terminal delete failure still turns it back on (the re-enable
+      // echoes a fresh read, harmless if the write never landed). The echo
+      // resets nothing else either way.
+      if (observedOn && isAmbiguousWriteFailure(echoError)) flip.flippedOffByThisRun = true;
+      // Retried by the caller before any DeleteUserPool; no warn here.
+      if (isTransientCognitoFailure(echoError)) throw echoError;
+      if (!isRefusedEcho(echoError)) {
+        this.warnGuardLeftOn(physicalId, echoError);
+        throw echoError;
+      }
+      try {
+        await this.getClient().send(
+          new UpdateUserPoolCommand({ UserPoolId: physicalId, DeletionProtection: 'INACTIVE' })
+        );
+      } catch (bareError) {
+        if (bareError instanceof ResourceNotFoundException) throw bareError;
+        if (isAmbiguousWriteFailure(bareError)) {
+          // The bare write may have LANDED, resetting the pool's settings.
+          // Keep the pre-flip read, marked ambiguous (which licenses no bare
+          // re-enable), and latch the flip so a terminal delete failure still
+          // reaches the re-enable, whose fresh read settles it. An existing
+          // DEFINITE record is never downgraded.
+          if (observedOn) flip.flippedOffByThisRun = true;
+          if (!this.preFlipPools.has(flip)) this.preFlipPools.set(flip, { pool, ambiguous: true });
+        }
+        if (isTransientCognitoFailure(bareError)) {
+          if (isAmbiguousWriteFailure(bareError)) {
+            this.logger.warn(
+              safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool with DeletionProtection alone ` +
+                safeMsg`(the pool's own configuration was refused) answered ${describeAwsFailure(bareError).summary}; ` +
+                safeMsg`if that write landed, the pool's self sign-up, Lambda triggers and advanced ` +
+                safeMsg`security were reset. Retrying the delete.`
+            );
+          }
+          throw bareError;
+        }
+        this.warnGuardLeftOn(physicalId, bareError, echoError);
+        throw bareError;
+      }
+      const kept = this.preFlipPools.get(flip);
+      if (!kept) this.preFlipPools.set(flip, { pool, ambiguous: false });
+      else {
+        kept.ambiguous = false;
+        // A bare write landed again: the pool's settings are reset NOW, so a
+        // bare re-enable loses nothing whatever echo landed in between.
+        kept.echoedSince = false;
+      }
+      this.logger.debug(
+        safeMsg`UpdateUserPool refused the echoed configuration of ${physicalId}: ${describeAwsFailure(echoError).detail}`
+      );
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the pool's own configuration ` +
+          safeMsg`echoed back (${describeAwsFailure(echoError).summary}), so DeletionProtection was ` +
+          safeMsg`turned off alone. That write resets the settings it omits -- self sign-up, Lambda ` +
+          safeMsg`triggers and advanced security among them -- which stays that way if the delete fails.`
+      );
+    }
+  }
+
+  /**
+   * The flip did not happen, so the guard is still ON and the delete will be
+   * refused: say why at warn, since the flip's own catch logs only at debug.
+   * `echoError` is the refused echo that led to a bare write that failed too.
+   *
+   * Only an AWS-AUTHORED failure proves the write was refused. A client-side
+   * one (a timeout, a dropped connection) may have landed server-side, so the
+   * guard may be OFF with the pool's settings intact; the line says so rather
+   * than claiming the guard is on.
+   */
+  private warnGuardLeftOn(physicalId: string, error: unknown, echoError?: unknown): void {
+    const name =
+      typeof error === 'object' && error !== null ? String((error as { name?: unknown }).name) : '';
+    const accessHint = /AccessDenied|NotAuthorized|Unauthorized/.test(name)
+      ? ' The caller needs cognito-idp:UpdateUserPool.'
+      : '';
+    const echoClause =
+      echoError === undefined
+        ? ''
+        : safeMsg`; the pool's own settings sent back were refused first (${describeAwsFailure(echoError).summary})`;
+    this.logger.debug(
+      safeMsg`UpdateUserPool did not turn DeletionProtection off on ${physicalId}: ${describeAwsFailure(error).detail}`
+    );
+    const refused = error instanceof Error && isAwsAuthoredFailure(error);
+    this.logger.warn(
+      refused
+        ? safeMsg`Cognito User Pool ${physicalId}: DeletionProtection was left on, because UpdateUserPool ` +
+            safeMsg`refused to turn it off (${describeAwsFailure(error).summary})` +
+            echoClause +
+            safeMsg`. The delete will be refused while it is on.${accessHint}`
+        : safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool failed without an answer from AWS ` +
+            safeMsg`(${describeAwsFailure(error).summary})` +
+            echoClause +
+            (echoError === undefined
+              ? typeof error === 'object' && error !== null && sentWithoutEmail.has(error)
+                ? safeMsg`, so whether DeletionProtection was turned off is unknown. Its other settings were ` +
+                  safeMsg`not reset, except possibly the SES EmailConfiguration, which that write omitted.`
+                : safeMsg`, so whether DeletionProtection was turned off is unknown. Its other settings were ` +
+                  safeMsg`not reset.`
+              : safeMsg`, so whether DeletionProtection was turned off ALONE is unknown; if it was, the ` +
+                safeMsg`pool's self sign-up, Lambda triggers and advanced security were reset.`) +
+            safeMsg` If the delete then fails, cdkd turns the guard back on. Check the pool with ` +
+            safeMsg`aws cognito-idp describe-user-pool.`
+    );
   }
 
   /**

@@ -13,8 +13,10 @@
 #      the user pool (DeleteUserPool then refuses TERMINALLY), run
 #      cdkd destroy --remove-protection --force -> expect non-zero, and
 #      assert the pool's DeletionProtection is back to ACTIVE: cdkd turned
-#      it off, the delete failed, so cdkd must put it back. The rest of the
-#      stack is deleted here. Then delete the domain.
+#      it off, the delete failed, so cdkd must put it back. Also assert
+#      AllowAdminCreateUserOnly is still true: the flip and re-enable echo
+#      the pool back instead of resetting what they omit (issue #4066). The
+#      rest of the stack is deleted here. Then delete the domain.
 #   5. POSITIVE: cdkd destroy --remove-protection --force
 #      -> expect exit 0
 #   6. cdkd state list -> stack must be GONE
@@ -243,6 +245,16 @@ if [ "${PRE_DP}" != "ACTIVE" ]; then
   echo "[verify] FAIL: precondition — ${USER_POOL_ID} DeletionProtection is '${PRE_DP}', not ACTIVE"
   exit 1
 fi
+# Issue #4066: a member UpdateUserPool RESETS when a call omits it. The CDK
+# default (self sign-up off) is AllowAdminCreateUserOnly: true, measured to
+# reset to false -- self sign-up switched ON -- under a DeletionProtection-only
+# write. Precondition first, so the assertion after the destroy is not vacuous.
+PRE_ADMIN_ONLY="$(aws cognito-idp describe-user-pool --region "${REGION}" --user-pool-id "${USER_POOL_ID}" \
+  --query 'UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly' --output text)"
+if [ "${PRE_ADMIN_ONLY}" != "True" ]; then
+  echo "[verify] FAIL: precondition — ${USER_POOL_ID} AllowAdminCreateUserOnly is '${PRE_ADMIN_ONLY}', not True"
+  exit 1
+fi
 # A hosted-UI prefix: lowercase letters, digits and hyphens, no "aws" /
 # "amazon" / "cognito", globally unique. Random rather than account-derived:
 # the prefix is a publicly resolvable name while it exists.
@@ -273,6 +285,14 @@ fi
 # it, the flip-off was never undone and this read INACTIVE.
 if [ "${POST_DP}" != "ACTIVE" ]; then
   echo "[verify] FAIL: ${USER_POOL_ID} was left with DeletionProtection '${POST_DP}' after the failed destroy (#2204)"
+  exit 1
+fi
+# ... and the flip and re-enable changed NOTHING else (#4066): both echo the
+# pool's configuration back, so self sign-up is still off.
+POST_ADMIN_ONLY="$(aws cognito-idp describe-user-pool --region "${REGION}" --user-pool-id "${USER_POOL_ID}" \
+  --query 'UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly' --output text)"
+if [ "${POST_ADMIN_ONLY}" != "True" ]; then
+  echo "[verify] FAIL: ${USER_POOL_ID} AllowAdminCreateUserOnly is '${POST_ADMIN_ONLY}' after the failed destroy — the flip or re-enable reset it (#4066)"
   exit 1
 fi
 # The flip really happened in THIS run and was undone by cdkd, not merely never
