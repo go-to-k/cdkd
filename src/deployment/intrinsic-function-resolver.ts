@@ -34,6 +34,7 @@ import {
   displayStackName,
   safeMsg,
 } from '../utils/display-safe.js';
+import { shellBoundedDisplay, UNSHOWABLE_VALUE } from '../utils/pasteable-command.js';
 import {
   s3BucketArn,
   s3BucketDomainName,
@@ -920,27 +921,23 @@ function buildUnknownIntrinsicError(key: string): Error {
   // with no secrets bag, and an intrinsic name IS an identifier, so the
   // identifier renderer rather than the resolver's masking builder.
   //
-  // THE HAND-WRITTEN QUOTES STAY, and a review round asked for them to go
-  // (round 3 nit). `displayIdent` quotes CONDITIONALLY -- bare for a plain
-  // identifier, JSON-quoted for anything it had to alter -- so keeping a pair
-  // here renders an ALTERED key as `""Fn::Ev il""`. The nit's premise is the
-  // one `writeProfileCredentialsFile`'s refusal rests on: "every value that
-  // reaches this throw is non-plain by construction". That is TRUE there and
-  // FALSE here -- almost every value reaching this line is an ordinary
-  // `Fn::Length` / `Fn::ForEach`, which renders BARE.
-  //
-  // MEASURED by applying the change: seven cases in
-  // `intrinsic-functions.test.ts` pin the quoted form for exactly those plain
-  // keys, and all seven went red. Losing the boundary on the common case to
-  // tidy the rare one is the wrong trade; a double pair is ugly and still
-  // unambiguous.
+  // A PLAIN key keeps the hand-written `"..."` it always had: every ordinary
+  // `Fn::Length` / `Fn::ForEach` reaches this line, and a plain identifier
+  // carries nothing a shell acts on inside double quotes. ANY OTHER key is
+  // described, not shown (go-to-k/cdkd#3950): a `"` in it would close the hand
+  // quote, a JSON-quoted `$( )` or backtick still runs when the sentence
+  // naming `cdkd` is pasted, and the pre-filled issue link below already
+  // carries the key percent-encoded.
   //
   // `issueUrl` needs none: it is a constant prefix plus `encodeURIComponent`,
-  // which percent-encodes every character a terminal acts on. (Percent-encoding
+  // which percent-encodes every control character, space, `$`, backtick, `;`,
+  // `"`, `&` and `|`. It leaves `'`, `(`, `)`, `!`, `*` and `~` as they are,
+  // and none of those can start a substitution without a `$` or a backtick. (Percent-encoding
   // is itself a mask-evading transform, so if `key` were ever in the SECRET
   // class this would be too -- it is not, being a structural operand.)
+  const shown = displayIdent(key) === key ? `"${key}"` : 'whose name is not a plain identifier';
   return new Error(
-    `Unsupported CloudFormation intrinsic function "${displayIdent(key)}": ` +
+    `Unsupported CloudFormation intrinsic function ${shown}: ` +
       `cdkd does not support resolving it yet. ` +
       `Deploying this template would produce a broken value. ` +
       `Please request support by opening an issue: ${issueUrl}`
@@ -10848,9 +10845,23 @@ export class IntrinsicFunctionResolver {
       // `writeProfileCredentialsFile` interpolating the name it was refusing.
       // Sanitized at the RENDER rather than by narrowing `parseIamRoleArn`,
       // which must keep returning `undefined` for exactly these inputs.
+      //
+      // A plain value keeps its hand-written `'...'`. Any other is shown, since
+      // the operator needs it to fix the template, as `displayIdent`'s JSON
+      // shell-quoted by `shellBoundedDisplay`: a `'` in the value closed
+      // cdkd's own quote, and bare JSON would let `$( )` run in a pasted
+      // sentence (go-to-k/cdkd#3950).
       // not-in-class(displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })): the RoleArn argument, refused unless it is a literal template string.
+      const shownRoleArn = displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
+      const plain = shownRoleArn === roleArn;
+      const bounded = plain ? `'${shownRoleArn}'` : shellBoundedDisplay(shownRoleArn);
+      // A described value reads as a noun phrase, not as the ARN itself.
+      const subject =
+        bounded === UNSHOWABLE_VALUE
+          ? `the RoleArn argument (${UNSHOWABLE_VALUE})`
+          : `RoleArn ${bounded}`;
       throw new Error(
-        `Fn::GetStackOutput: RoleArn '${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}' is not a valid IAM role ARN. ` +
+        `Fn::GetStackOutput: ${subject} is not a valid IAM role ARN. ` +
           `Expected shape: arn:<partition>:iam::<12-digit-account-id>:role/<role-name>` +
           ` (e.g. arn:aws:iam::123456789012:role/MyRole, arn:aws-us-gov:iam::...).`
       );

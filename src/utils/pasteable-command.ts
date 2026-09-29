@@ -93,6 +93,7 @@ import {
   isPasteableIdent,
   STACK_REF_MAX_CODE_POINTS,
   truncateCodePoints,
+  UNRENDERABLE,
 } from './display-safe.js';
 
 /**
@@ -114,6 +115,42 @@ export function shellQuote(value: string): string {
   // so a quoted `'Root~Child'` pastes fine and the widening bought nothing —
   // while costing tilde expansion on a value an S3 key can carry.
   return /^[A-Za-z0-9._/@:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * A break an operator's selection can start at: `: `, ` -- `, ` — ` and a
+ * sentence end. The same breaks `tests/unit/utils/paste-harness.ts` splits a
+ * message at, so a pasted span can begin right after one.
+ */
+const CLAUSE_BREAK = /: | -- | — |[.!?]\s/;
+
+/** Does `text` hold a {@link CLAUSE_BREAK}, where a pasted selection can start? */
+export function hasClauseBreak(text: string): boolean {
+  return CLAUSE_BREAK.test(text);
+}
+
+/** What {@link shellBoundedDisplay} prints for a render it cannot bound. */
+export const UNSHOWABLE_VALUE = 'a value that cannot be shown safely here';
+
+/**
+ * A `displayIdent` render for a SENTENCE that also names a command or a flag
+ * (go-to-k/cdkd#3950). A plain render is returned unchanged. A JSON-quoted one,
+ * or the bare `UNRENDERABLE` token, is wrapped in {@link shellQuote}: double
+ * quotes alone do not stop `$( )` or a backtick when the sentence is pasted,
+ * `UNRENDERABLE`'s `<` and `>` are two redirections, and `shellQuote` escapes a
+ * `'` in the value. Pass the `displayIdent` OUTPUT, never the raw value: its
+ * non-plain form is exactly the one that starts with `"`.
+ *
+ * Quoting stops a paste that starts BEFORE the value, not one that starts
+ * INSIDE it. So a render holding a {@link CLAUSE_BREAK} is described instead
+ * ({@link UNSHOWABLE_VALUE}): a selection starting after `arn:x: ` would begin
+ * inside the quotes and run the rest. The RENDER is tested, not the raw value,
+ * because `displayIdent` makes breaks of its own (a tab becomes a space, and a
+ * cut appends `[cut: N more characters withheld]`).
+ */
+export function shellBoundedDisplay(shown: string): string {
+  if (hasClauseBreak(shown)) return UNSHOWABLE_VALUE;
+  return shown.startsWith('"') || shown === UNRENDERABLE ? shellQuote(shown) : shown;
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   ROLE_ARN_MAX_CODE_POINTS,
   safeMsg,
 } from '../../utils/display-safe.js';
+import { quotedOrDescribed, shellBoundedDisplay } from '../../utils/pasteable-command.js';
 import {
   displayAssemblyPath,
   renderAssemblyPathEscape,
@@ -1887,8 +1888,10 @@ export function resolveExecutionRoleArnFromState(
  * role from state and say which way it went -- the ARN on success, or a warn
  * and `undefined` (the caller falls back to the developer's shell
  * credentials). Split out of the handler so the lines it emits are testable
- * without synthesis or docker; the logical id is template-supplied text and is
- * rendered through `displayIdent` (issue #2348).
+ * without synthesis or docker; the logical id is template-supplied text, so it
+ * is quoted only when it is a plain identifier and described otherwise: a `'`
+ * in it would close the quote, and a JSON-quoted `$( )` still runs in the
+ * sentence that names `cdkd state` (issues #2348, go-to-k/cdkd#3950).
  */
 export function resolveBareAssumeRoleFromState(
   state: Pick<StackState, 'resources'>,
@@ -1898,12 +1901,12 @@ export function resolveBareAssumeRoleFromState(
   const arn = resolveExecutionRoleArnFromState(state, logicalId);
   if (arn) {
     logger.info(
-      safeMsg`--assume-role: auto-resolved execution role from cdkd state: ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+      safeMsg`--assume-role: auto-resolved execution role from cdkd state: ${shellBoundedDisplay(displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))}`
     );
     return arn;
   }
   logger.warn(
-    safeMsg`--assume-role: could not resolve the execution role ARN from cdkd state for '${displayIdent(logicalId)}'. ` +
+    safeMsg`--assume-role: could not resolve the execution role ARN from cdkd state for ${quotedOrDescribed(logicalId, 'logical id')}. ` +
       "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
   );
   return undefined;
@@ -1942,8 +1945,12 @@ export function classifyExecutionRoleArnFromState(
       return {
         kind: 'malformed',
         description:
-          `Deployed state for '${displayIdent(logicalId)}' carries a ${displayIdent(roleProperty)} that is not ` +
-          `a well-formed IAM role ARN: ${displayIdent(roleRef, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`,
+          // The logical id through `quotedOrDescribed`, never inside a
+          // hand-written `'...'` its own `'` would close, and the ARN through
+          // `shellBoundedDisplay`, since the sentences these descriptions land
+          // in name `--assume-role` (go-to-k/cdkd#3950).
+          `Deployed state for ${quotedOrDescribed(logicalId, 'logical id')} carries a ${displayIdent(roleProperty)} that is not ` +
+          `a well-formed IAM role ARN: ${shellBoundedDisplay(displayIdent(roleRef, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))}`,
       };
     }
     return { kind: 'miss' };
@@ -1958,8 +1965,8 @@ export function classifyExecutionRoleArnFromState(
         return {
           kind: 'malformed',
           description:
-            `The cached Arn attribute of '${displayIdent(refLogicalId)}' is not a well-formed IAM role ARN: ` +
-            `${displayIdent(cached, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`,
+            `The cached Arn attribute of ${quotedOrDescribed(refLogicalId, 'logical id')} is not a well-formed IAM role ARN: ` +
+            `${shellBoundedDisplay(displayIdent(cached, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))}`,
         };
       }
     }

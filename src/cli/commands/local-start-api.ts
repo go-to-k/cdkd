@@ -133,6 +133,11 @@ import { singleFlight } from '../../utils/single-flight.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { isPasteableIdent } from './state-file-keys.js';
 import {
+  plainOrDescribed,
+  quotedOrDescribed,
+  shellBoundedDisplay,
+} from '../../utils/pasteable-command.js';
+import {
   strandedProfileCredentialsNotice,
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -1718,8 +1723,8 @@ export function resolveStartApiAssumeRoleArn(args: {
   if (typeof roleProp === 'string' && roleProp.startsWith('arn:')) {
     throw malformedAutoRoleError(
       logicalId,
-      `the template Role for '${displayIdent(logicalId)}' is not a well-formed IAM role ARN: ` +
-        displayIdent(roleProp, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
+      `the template Role for ${quotedOrDescribed(logicalId, 'logical id')} is not a well-formed IAM role ARN: ` +
+        shellBoundedDisplay(displayIdent(roleProp, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))
     );
   }
   if (stateBundle) {
@@ -1729,7 +1734,7 @@ export function resolveStartApiAssumeRoleArn(args: {
     }
     if (fromState.kind === 'ok') {
       getLogger().info(
-        `--assume-role: auto-resolved execution role for '${displayIdent(logicalId)}' from state: ${displayIdent(fromState.arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+        `--assume-role: auto-resolved execution role for ${quotedOrDescribed(logicalId, 'logical id')} from state: ${shellBoundedDisplay(displayIdent(fromState.arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))}`
       );
       return fromState.arn;
     }
@@ -1740,13 +1745,32 @@ export function resolveStartApiAssumeRoleArn(args: {
   // The same shape `cdkd local invoke --assume-role` produces when state /
   // template ARN can't recover the role.
   getLogger().warn(
-    `--assume-role: could not auto-resolve the execution role ARN for '${displayIdent(logicalId)}'. ` +
+    `--assume-role: could not auto-resolve the execution role ARN for ${quotedOrDescribed(logicalId, 'logical id')}. ` +
       `Pair --assume-role-auto with --from-state or --from-cfn-stack ` +
       `so the deployed Role's ARN can be looked up, OR pin the ARN explicitly with ` +
-      `--assume-role ${displayIdent(logicalId)}=<arn>. ` +
+      `${assumeRolePin(logicalId)}. ` +
       "Falling back to the developer's shell credentials for this Lambda."
   );
   return undefined;
+}
+
+/**
+ * The `--assume-role <logicalId>=<arn>` example the two messages above end on.
+ *
+ * The logical id is template-supplied, so it is NAMED only when
+ * `isPasteableIdent` admits it (go-to-k/cdkd#3950). A `displayIdent` render
+ * would JSON-quote a non-plain one, and `$( )` or a backtick still runs inside
+ * double quotes when the example is pasted. A `<logicalId>` hole is not the
+ * answer either: pasted, its `<` reads a file of that name and the `>=` after
+ * it then truncates a file called `=`. So the example is dropped and the flag
+ * named alone.
+ */
+function assumeRolePin(logicalId: string): string {
+  // `plainOrDescribed` is the value itself on this arm, spelled through the
+  // helper so the render names its own gate.
+  return isPasteableIdent(logicalId)
+    ? `--assume-role ${plainOrDescribed(logicalId, 'logical id')}=<arn>`
+    : "--assume-role, naming this Lambda's logical id";
 }
 
 /**
@@ -1756,12 +1780,12 @@ export function resolveStartApiAssumeRoleArn(args: {
 function malformedAutoRoleError(logicalId: string, detail: string): Error {
   return new Error(
     // cdkd-raw-beside-safe: `detail` is built by this function's two callers
-    // entirely from `displayIdent` renders and fixed prose (the template arm
-    // here, `classifyExecutionRoleArnFromState`'s `description`), so it is
-    // already-sanitized text rather than a raw value.
+    // entirely from `displayIdent` / `quotedOrDescribed` renders and fixed
+    // prose (the template arm here, `classifyExecutionRoleArnFromState`'s
+    // `description`), so it is already-sanitized text rather than a raw value.
     `--assume-role-auto: ${detail}. Refusing to start rather than fall back to your shell ` +
       `credentials for this Lambda. Fix the deployed role ARN, or pin one explicitly with ` +
-      `--assume-role ${displayIdent(logicalId)}=<arn>.`
+      `${assumeRolePin(logicalId)}.`
   );
 }
 

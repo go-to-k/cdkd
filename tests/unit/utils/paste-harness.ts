@@ -83,6 +83,20 @@ export const PASTE_PAYLOADS = [
 ] as const;
 
 /**
+ * A clause break INSIDE the value (go-to-k/cdkd#3950): a selection can start
+ * after its `: `, inside any quote cdkd put around the value, so its control
+ * is that clause on its own. NOT in {@link PASTE_PAYLOADS} yet: on the tree
+ * that added it, quoted displays and `pasteableCommand` arguments in several
+ * other modules still run on it, so only the sites that handle it opt in.
+ */
+export const CLAUSE_BREAK_PAYLOAD = {
+  label: 'clause break',
+  value: 'x: touch OWNED; # : y',
+  flipped: false,
+  control: 'touch OWNED; # : y',
+} as const;
+
+/**
  * The hole names the driven sites print, planted as decoys so a bare `<name>`
  * redirection has a file to read and its `>` a target to truncate. A site
  * printing a hole outside this list gets no decoy for it — add the name here
@@ -100,6 +114,8 @@ const DECOYS = [
   'prefix',
   'name',
   'runId',
+  // `displayIdent`'s fallback token, which a site may print bare.
+  'unrenderable',
 ] as const;
 
 const DECOY_CONTENT = 'decoy\n';
@@ -286,8 +302,10 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
   stubBin = bin;
   try {
     for (const decoy of DECOYS) writeFileSync(join(dir, decoy), DECOY_CONTENT, 'utf8');
-    for (const { label, value, flipped } of PASTE_PAYLOADS) {
-      const control = flipped ? `echo it's ${value}` : `echo ${value}`;
+    for (const payload of [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD]) {
+      const { label, value, flipped } = payload;
+      const control =
+        'control' in payload ? payload.control : flipped ? `echo it's ${value}` : `echo ${value}`;
       expect(filesTouchedBy(control, dir), `the ${label} control did not run`).toContain('OWNED');
     }
     expect(

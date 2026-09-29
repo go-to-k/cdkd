@@ -19,6 +19,7 @@ import {
   ROLE_ARN_MAX_CODE_POINTS,
   safeMsg,
 } from '../../utils/display-safe.js';
+import { quotedOrDescribed, shellBoundedDisplay } from '../../utils/pasteable-command.js';
 import { displayAssemblyPath } from '../../utils/assembly-path.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { foldRegionOption } from '../region-options.js';
@@ -1975,16 +1976,18 @@ function resolveAssumeRoleArnUncached(
   if (options.assumeRole === true) {
     if (resolved.roleArn !== undefined && isIamRoleArn(resolved.roleArn)) return resolved.roleArn;
     if (resolved.roleArn?.startsWith('arn:')) {
+      // The logical id is quoted only when it is a plain identifier: a `'` in
+      // it would close a hand-written quote (go-to-k/cdkd#3950).
       getLogger().warn(
-        safeMsg`--assume-role: the template RoleArn for '${displayIdent(resolved.logicalId)}' is not a well-formed IAM role ARN: ` +
-          safeMsg`${displayIdent(resolved.roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. Ignoring it.`
+        safeMsg`--assume-role: the template RoleArn for ${quotedOrDescribed(resolved.logicalId, 'logical id')} is not a well-formed IAM role ARN: ` +
+          safeMsg`${shellBoundedDisplay(displayIdent(resolved.roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))}. Ignoring it.`
       );
     }
     if (loaded) {
       const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
       if (fromState) {
         getLogger().debug(
-          safeMsg`--assume-role: resolved RoleArn from state: ${displayIdent(fromState, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+          safeMsg`--assume-role: resolved RoleArn from state: ${shellBoundedDisplay(displayIdent(fromState, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))}`
         );
         return fromState;
       }

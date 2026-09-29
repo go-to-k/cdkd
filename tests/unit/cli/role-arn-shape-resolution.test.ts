@@ -140,15 +140,19 @@ describe('resolveExecutionRoleArnFromState', () => {
 });
 
 describe('resolveBareAssumeRoleFromState (`local invoke --assume-role` bare, from state)', () => {
-  it('renders the logical id in the state-miss warning through displayIdent', () => {
+  it('describes a non-plain logical id in the state-miss warning instead of rendering it', () => {
+    // go-to-k/cdkd#3950: the id is quoted only when it is a plain identifier;
+    // `tests/unit/cli/local-assume-role-prose-quotes.test.ts` owns the paste cases.
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
     const logicalId = `Fn${ESC}[2K\rforged`;
     expect(resolveBareAssumeRoleFromState(stateWith({}), logicalId)).toBeUndefined();
     const line = warnings(warn).join('\n');
-    expect(line).toContain('could not resolve the execution role ARN from cdkd state');
+    expect(line).toContain(
+      'could not resolve the execution role ARN from cdkd state for a logical id that is not a plain identifier.'
+    );
     expect(line).not.toContain(ESC);
     expect(line).not.toContain('\r');
-    expect(line).toContain('forged');
+    expect(line).not.toContain('forged');
   });
 
   it('returns the ARN and logs it on a hit (negative control)', () => {
@@ -214,7 +218,7 @@ describe('resolveStartApiAssumeRoleArn (bare auto-resolve) is FAIL-CLOSED on a m
     expect(warnings(warn).join('\n')).toContain('could not auto-resolve');
   });
 
-  it('renders the logical id in the miss warning through displayIdent', () => {
+  it('describes a non-plain logical id in the miss warning', () => {
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
     resolveStartApiAssumeRoleArn({
       logicalId: `Fn${ESC}[2K`,
@@ -223,8 +227,9 @@ describe('resolveStartApiAssumeRoleArn (bare auto-resolve) is FAIL-CLOSED on a m
       stateBundle: undefined,
     });
     const line = warnings(warn).join('\n');
-    expect(line).toContain('could not auto-resolve');
+    expect(line).toContain('could not auto-resolve the execution role ARN for a logical id that is not a plain identifier.');
     expect(line).not.toContain(ESC);
+    expect(line).not.toContain('Fn');
   });
 
   it('still returns a well-formed template literal or state ARN (negative control)', () => {

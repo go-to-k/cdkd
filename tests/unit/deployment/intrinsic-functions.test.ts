@@ -8,6 +8,15 @@ import {
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  CLAUSE_BREAK_PAYLOAD,
+  PASTE_PAYLOADS,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
+
+/** Every family, the opt-in clause break included (go-to-k/cdkd#3950). */
+const PAYLOADS = [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD];
 
 // Mock logger. `debug` is ONE shared spy (issue #3096): the live-read refusal
 // promises the AWS error text at `--verbose`, and a fresh `vi.fn()` per
@@ -2240,6 +2249,37 @@ describe('IntrinsicFunctionResolver - unknown intrinsic detection', () => {
       );
     }
   );
+
+  /**
+   * go-to-k/cdkd#3950: the key used to print as `"${displayIdent(key)}"`, so
+   * a `"` in it closed the hand-written quote. A plain key keeps the quotes
+   * (the cases above); any other is described, since a JSON-quoted `$( )`
+   * would still run in the sentence naming `cdkd`. The whole message is
+   * pasted.
+   */
+  it('describes a non-plain key rather than quoting it, and no pasted span runs', async () => {
+    const messages: Array<{ value: string; message: string }> = [];
+    for (const { value } of PAYLOADS) {
+      const key = `Fn::${value}`;
+      let message = '';
+      try {
+        await resolver.resolve({ [key]: 1 }, context());
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message, value).toContain(
+        'Unsupported CloudFormation intrinsic function whose name is not a plain identifier: '
+      );
+      expect(message, value).not.toContain(key);
+      expect(message, value).toContain(encodeURIComponent(`Support intrinsic ${key}`));
+      messages.push({ value, message });
+    }
+    withPasteDir((dir) => {
+      for (const { value, message } of messages) {
+        expect(spansThatRun(message, dir), value).toEqual([]);
+      }
+    });
+  }, 60_000);
 
   it('embeds the url-encoded intrinsic key in the issue title for an arbitrary unknown key', async () => {
     await expect(

@@ -51,6 +51,16 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { SchedulerScheduleProvider } from '../../../src/provisioning/providers/scheduler-schedule-provider.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
+import {
+  CLAUSE_BREAK_PAYLOAD,
+  PASTE_PAYLOADS,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
+
+/** Every family, the opt-in clause break included (go-to-k/cdkd#3950). */
+const PAYLOADS = [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD];
+import { hasClauseBreak, shellQuote } from '../../../src/utils/pasteable-command.js';
 
 const TYPE = 'AWS::Scheduler::Schedule';
 const GROUP = 'my-custom-group';
@@ -329,17 +339,80 @@ describe('SchedulerScheduleProvider', () => {
       expect(warned).not.toContain('\u000a');
     });
 
-    it('renders <unrenderable> for an id with NOTHING renderable left', async () => {
-      // The `|| UNRENDERABLE` arm, matching `lock-manager.ts` in this same PR.
-      // Without it the line reads `deleting '' from the default group`, which
-      // says a schedule with an EMPTY name rather than one that cannot be
-      // named.
+    it('describes an id with NOTHING renderable left rather than printing it empty', async () => {
+      // Without a description the line would read `deleting '' from the
+      // default group`, which says a schedule with an EMPTY name rather than
+      // one that cannot be named.
       mockSend.mockResolvedValueOnce({});
       await provider.delete('Sched', '\u0000\u0001', TYPE, undefined);
       const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warned).toContain("deleting '<unrenderable>' from the default group");
+      expect(warned).toContain(
+        'deleting a schedule whose recorded name is not a plain identifier from the default group'
+      );
       expect(warned).not.toContain("deleting '' from");
     });
+
+    /**
+     * go-to-k/cdkd#3950: the name used to print as `'${safeId}'`, and
+     * `displaySafe` keeps `'`, `;` and `$( )`, so a `'` in a `state.json` name
+     * closed cdkd's quote. Now a plain name keeps its quotes, a name the
+     * manual hint can print is shown through `shellQuote` exactly as the hint
+     * prints it, and any other is described; a non-plain logical id (a
+     * `state.json` key) is described. The warning is fed WHOLE to the paste
+     * harness, command line included.
+     */
+    it('never puts a recorded name or logical id inside cdkd quotes (go-to-k/cdkd#3950)', async () => {
+      const warnings: Array<{ value: string; message: string }> = [];
+      for (const { value } of PAYLOADS) {
+        for (const [logicalId, physicalId] of [
+          ['Sched', value],
+          [value, 'my-sched'],
+        ] as const) {
+          childLogger.warn.mockClear();
+          mockSend.mockResolvedValueOnce({});
+          await provider.delete(logicalId, physicalId, TYPE, undefined);
+          const message = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+          // Never inside a bare hand-written quote: the name, when shown, is
+          // the hint's own `shellQuote` spelling, and the logical id is
+          // described.
+          // For a value carrying `'`, the bare hand-quoted spelling differs
+          // from `shellQuote`'s and must be gone.
+          if (value.includes("'")) expect(message, value).not.toContain(`'${value}'`);
+          // A name holding a clause break is never printed, in the prose or
+          // in the hint's command: a selection could start inside its quotes.
+          const breaks = hasClauseBreak(value);
+          expect(message, value).toContain(
+            logicalId === value
+              ? 'The state record of a Schedule whose logical id is not a plain identifier carries'
+              : breaks
+                ? 'deleting a schedule whose recorded name is not a plain identifier from the default group.'
+                : `deleting ${shellQuote(value)} from the default group.`
+          );
+          if (physicalId === value) {
+            if (breaks) {
+              expect(message, value).not.toContain('aws scheduler delete-schedule');
+              expect(message, value).not.toContain('touch OWNED');
+            } else {
+              expect(message, value).toContain(`--name ${shellQuote(value)} --group-name`);
+            }
+          }
+          warnings.push({ value, message });
+        }
+      }
+      expect(warnings).toHaveLength(PAYLOADS.length * 2);
+      withPasteDir((dir) => {
+        for (const { value, message } of warnings) {
+          expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+        }
+      });
+      // The plain control is byte-identical to before.
+      childLogger.warn.mockClear();
+      mockSend.mockResolvedValueOnce({});
+      await provider.delete('Sched', 'my-sched', TYPE, undefined);
+      expect(String(childLogger.warn.mock.calls[0]?.[0])).toContain(
+        "State record for Schedule Sched carries no properties — deleting 'my-sched' from the default group."
+      );
+    }, 60_000);
 
     it('wraps a non-NotFound failure in ProvisioningError', async () => {
       mockSend.mockRejectedValueOnce(new Error('throttled'));
