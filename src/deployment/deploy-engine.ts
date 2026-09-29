@@ -1387,7 +1387,8 @@ export class DeployEngine {
   /**
    * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
    * (the resolver threw under the default arm of
-   * `handleOutputResolutionFailure`, or returned `undefined` outright — see
+   * `handleOutputResolutionFailure`, or returned `undefined` outright without
+   * `--strict-getatt` — see
    * `collectSkippedOutputs`), each mapped to the
    * digest `cdkd diff` compares against (issue #2740, `StackState.
    * skippedOutputs`). `undefined` when nothing was skipped, so the saves that
@@ -4270,9 +4271,10 @@ export class DeployEngine {
           // during it must be visible to the save-time check below.
           const observedRefresh = (await this.drainObservedCaptures(currentState.resources)) > 0;
 
-          // resolveOutputs stores `undefined` for any output it could not
-          // resolve (warned about there when the resolver threw, silently when
-          // it returned nothing). In the no-change path every resource is
+          // Without `--strict-getatt`, resolveOutputs stores `undefined` for any
+          // output it could not resolve (warned about there when the resolver
+          // threw, silently when it returned nothing); with the flag it throws
+          // for either instead. In the no-change path every resource is
           // already in state so resolution usually succeeds.
           const resolutionFailed = Object.values(resolvedOutputs).some((v) => v === undefined);
           const currentEffectiveExports = new Set(importableOutputKeys(currentState));
@@ -4366,8 +4368,9 @@ export class DeployEngine {
           // obvious link back to this deploy). The merged arm needs no such
           // line: everything that resolved is persisted, an output whose
           // resolver threw already has its own warning, and one whose resolver
-          // returned nothing is silent here as it is on every path — the #2740
-          // record still names it.
+          // returned nothing is silent here as it is on every path without
+          // `--strict-getatt` (which fails the deploy for it before this
+          // point) — the #2740 record still names it.
           if (merge?.kind === 'kept' && !outputMapsEqual(persistedOutputs, resolvedOutputs)) {
             this.logger.warn(
               'Outputs changed but one or more could not be resolved; keeping the previously ' +
@@ -10081,7 +10084,7 @@ export class DeployEngine {
       throw new Error(
         `Failed to resolve output ${outputKey}: ${detail} ` +
           `(--strict-getatt promotes output resolution failures to deploy errors; ` +
-          `drop the flag to warn and skip the output instead)`,
+          `drop the flag to skip the output instead)`,
         cause instanceof Error || typeof cause === 'string' ? { cause } : {}
       );
     }
@@ -10311,6 +10314,19 @@ export class DeployEngine {
             redactedAttributeReads: ownReads,
           });
           refuseMaskedOutputReads(outputKey, ownReads);
+          // A resolution that RETURNS `undefined` (a `Fn::GetAtt` arm with
+          // nothing to construct, e.g. `RoleId`) is as unresolved as one that
+          // throws, so under `--strict-getatt` it takes the same failure arm
+          // (issue #3168). Marked non-retryable: the error carries no AWS text
+          // (the Cloud Map `HostedZoneId` arm swallows its lookup error), only
+          // the template-controlled output key, which a substring classifier
+          // can misread as transient — a key containing `AlreadyExists` in a
+          // nested child being replaced would re-run the whole child deploy
+          // (the #1874 hazard). `handleOutputResolutionFailure` threads this
+          // as the `cause`, so the marker survives its re-wrap.
+          if (resolved === undefined && this.options.strictGetAtt) {
+            throw markNonRetryable(new Error('the value resolved to nothing'));
+          }
           outputs[outputKey] = resolved;
         } catch (error) {
           this.handleOutputResolutionFailure(

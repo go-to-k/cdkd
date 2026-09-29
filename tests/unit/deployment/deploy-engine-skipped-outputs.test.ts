@@ -34,6 +34,10 @@ import {
 } from '../../../src/analyzer/skipped-outputs.js';
 import { resolveTemplateOutputs, computeOutputsDiff } from '../../../src/analyzer/outputs-diff.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import {
+  isMarkedNonRetryable,
+  isRecreateRetryableError,
+} from '../../../src/deployment/retryable-errors.js';
 
 const warnSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => {
@@ -797,6 +801,53 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
     expect(saved.resources).toHaveProperty('BucketB');
     expect(saved.outputs).toStrictEqual({ Fine: 'fine-value' });
     expect(saved.skippedOutputs).toEqual(stale);
+  });
+
+  it('--strict-getatt: an output the resolver returned `undefined` for fails the deploy like a thrown one (issue #3168)', async () => {
+    const stale = { Old: 'digest-of-a-previous-template' };
+    const { engine, stateBackend } = buildEngine({
+      priorState: makeState({ Fine: 'fine-value' }, { skippedOutputs: stale }),
+      creates: ['BucketB'],
+      strictGetAtt: true,
+    });
+    const quiet = withBad({ Value: '__undefined__' });
+    const rejection = engine.deploy(stackName, quiet);
+    await expect(rejection).rejects.toThrow(
+      /Failed to resolve output Bad: the value resolved to nothing \(--strict-getatt/
+    );
+    // The same failure save as a thrown failure: resources are this run's,
+    // the bag and its record the previous deploy's.
+    const saved = lastSaved(stateBackend);
+    expect(saved.resources).toHaveProperty('BucketB');
+    expect(saved.outputs).toStrictEqual({ Fine: 'fine-value' });
+    expect(saved.skippedOutputs).toEqual(stale);
+  });
+
+  it('--strict-getatt: the refusal is marked non-retryable, so an output key a message classifier reads as a collision cannot re-run the deploy', async () => {
+    const { engine } = buildEngine({ creates: ['BucketA'], strictGetAtt: true });
+    const tpl = template();
+    delete tpl.Outputs!['Bad'];
+    tpl.Outputs!['RoleAlreadyExists'] = { Value: '__undefined__' };
+    const error = await engine.deploy(stackName, tpl).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(Error);
+    // PREMISE: the message alone would read as a name collision, the class
+    // `isRecreateRetryableError` retries on — so the marker is what stops it.
+    expect(isRecreateRetryableError((error as Error).message)).toBe(true);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('--strict-getatt: an output that resolves to a value is not refused (the refusal keys on `undefined`, not on the flag alone)', async () => {
+    const { engine, stateBackend } = buildEngine({
+      creates: ['BucketA'],
+      strictGetAtt: true,
+    });
+    const tpl = template();
+    delete tpl.Outputs!['Bad'];
+    await engine.deploy(stackName, tpl);
+    expect(lastSaved(stateBackend).outputs).toStrictEqual({ Fine: 'fine-value' });
   });
 
   it('the per-resource partial save during a change-path deploy carries the previous record', async () => {

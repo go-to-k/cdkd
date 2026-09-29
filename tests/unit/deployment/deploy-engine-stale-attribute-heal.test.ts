@@ -803,4 +803,81 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
       expect(mockProvider.import).not.toHaveBeenCalled();
     });
   });
+
+  // Issue #3168: `RoleId` is not buildable from the role name, so with no heal
+  // the REAL resolver returns `undefined` without throwing.
+  describe('an Output whose Fn::GetAtt resolves to nothing (issue #3168)', () => {
+    const roleTemplate: CloudFormationTemplate = {
+      Resources: { Role: { Type: 'AWS::IAM::Role', Properties: { RoleName: 'app-role' } } },
+      Outputs: { RoleIdOut: { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } } },
+    };
+
+    beforeEach(() => {
+      mockDiffCalculator.calculateDiff!.mockResolvedValue(noChange({ Role: 'AWS::IAM::Role' }));
+      mockStateBackend.getState!.mockResolvedValue(
+        stateOf({
+          Role: {
+            physicalId: 'app-role',
+            resourceType: 'AWS::IAM::Role',
+            properties: { RoleName: 'app-role' },
+            observedProperties: { RoleName: 'app-role' },
+            attributes: {},
+            dependencies: [],
+          },
+        })
+      );
+      // The heal finds nothing, so the `RoleId` arm has nothing to answer with.
+      mockProvider.import!.mockResolvedValue(null);
+    });
+
+    it('--strict-getatt: the deploy fails naming the output', async () => {
+      await expect(makeEngine({ strictGetAtt: true }).deploy(STACK, roleTemplate)).rejects.toThrow(
+        /Failed to resolve output RoleIdOut: the value resolved to nothing/
+      );
+    });
+
+    // The behaviour flip on the no-change path: before issue #3168 the
+    // no-change merge kept a failed key's STORED value, so a stack that had
+    // published the output once kept publishing the old value under the flag.
+    describe('with a stored value from an earlier deploy', () => {
+      beforeEach(() => {
+        const loaded = stateOf({
+          Role: {
+            physicalId: 'app-role',
+            resourceType: 'AWS::IAM::Role',
+            properties: { RoleName: 'app-role' },
+            observedProperties: { RoleName: 'app-role' },
+            attributes: {},
+            dependencies: [],
+          },
+        });
+        loaded.state.outputs = { RoleIdOut: 'AROASTOREDVALUE' };
+        mockStateBackend.getState!.mockResolvedValue(loaded);
+      });
+
+      it('--strict-getatt: the no-change deploy fails instead of keeping the stored value', async () => {
+        await expect(
+          makeEngine({ strictGetAtt: true }).deploy(STACK, roleTemplate)
+        ).rejects.toThrow(/Failed to resolve output RoleIdOut: the value resolved to nothing/);
+      });
+
+      it('CONTROL, without the flag: the no-change merge keeps the stored value, with no failure warning', async () => {
+        const result = await makeEngine().deploy(STACK, roleTemplate);
+        expect(result.outputs?.['RoleIdOut']).toBe('AROASTOREDVALUE');
+        // The flag is what turns this into a failure: without it the value
+        // RETURNED nothing, so no failure arm ran at all.
+        const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).not.toContain('Failed to resolve output');
+      });
+    });
+
+    it('without the flag: the deploy succeeds and the output is absent, with no failure warning', async () => {
+      const result = await makeEngine().deploy(STACK, roleTemplate);
+      expect(result.outputs).not.toHaveProperty('RoleIdOut');
+      // PREMISE: the resolver RETURNED nothing rather than throwing — a throw
+      // would have reached the default arm's per-output warning.
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).not.toContain('Failed to resolve output RoleIdOut');
+    });
+  });
 });

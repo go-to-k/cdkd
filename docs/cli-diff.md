@@ -241,7 +241,8 @@ as an `ADD` either. Two things get skipped, and only the first is announced:
   `{{resolve:secretsmanager:...}}` naming a JSON key the secret does not
   hold. The deploy warns per output (`--strict-getatt` aborts instead).
 - the resolver **returned nothing** — an `Fn::GetAtt` whose attribute could
-  not be constructed. No per-output warning.
+  not be constructed. No per-output warning (`--strict-getatt` aborts here
+  too).
 
 Either way the deploy still persists every other output that did resolve, so
 an output you add beside a broken one lands on the next deploy. A broken

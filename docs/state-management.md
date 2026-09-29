@@ -797,8 +797,8 @@ holds a refused record. Upgrade the whole fleet together.
 ### `skippedOutputs` (informational, no version bump)
 
 An Output the deploy could NOT resolve is SKIPPED — warned about when the
-resolver threw (under the default arm; `--strict-getatt` aborts the deploy
-instead), silently when the resolver returned nothing — and `cdkd deploy`
+resolver threw, silently when the resolver returned nothing (both under the
+default arm; `--strict-getatt` aborts the deploy instead) — and `cdkd deploy`
 stores nothing for it, so a bag the deploy re-resolved lacks the key (a
 no-change deploy keeps a failed output's stored value, so a key that resolved
 on an earlier deploy can keep that value beside a record — the diff then

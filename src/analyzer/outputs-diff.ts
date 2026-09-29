@@ -106,8 +106,9 @@ export interface ResolvedTemplateOutputs {
   /**
    * The template output NAMES whose VALUE failed in a way the deploy engine's
    * `resolveOutputs` also records as a failure — the resolver threw, or it
-   * returned `undefined` — so the deploy keeps them in its bag as `undefined`
-   * and its no-change merge treats them as failed keys (issue #3101).
+   * returned `undefined` — so the deploy, without `--strict-getatt` (which
+   * fails for either), keeps them in its bag as `undefined` and its no-change
+   * merge treats them as failed keys (issue #3101).
    *
    * Output names only, unlike {@link failedKeys}, which also holds a failed
    * output's literal `Export.Name` alias: the merge derives the alias from the
@@ -145,8 +146,9 @@ export interface ResolvedTemplateOutputs {
    * The bag keys that FAILED to resolve, so they are absent from {@link outputs}
    * rather than present-with-a-bad-value.
    *
-   * The deploy side keeps such a key with the value `undefined`; dropping it
-   * instead means a naive diff reads it as a REMOVE. Callers deciding whether a
+   * The deploy side, without `--strict-getatt`, keeps such a key with the
+   * value `undefined`; dropping it instead means a naive diff reads it as a
+   * REMOVE. Callers deciding whether a
    * suppressed delta is worth WARNING about must exclude these, or the common
    * "references a resource this deploy will create" case warns on every run.
    */
