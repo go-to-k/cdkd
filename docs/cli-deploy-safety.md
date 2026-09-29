@@ -728,7 +728,7 @@ shapes hit this, and both name `--replace` in their error text:
 
 | Failure | What happened | Without `--replace` | With `--replace` |
 | --- | --- | --- | --- |
-| `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name — unless [another resource holds the new name](#when-the-new-name-belongs-to-another-resource) |
+| `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name — only once cdkd [shows the old resource holds that name](#when-cdkd-cannot-show-the-old-resource-holds-the-name) |
 | `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The Create API is name-idempotent, so the create returned the OLD resource's physical id instead of a new one — for example `CreateQueue` with an unchanged `QueueName` | Deploy fails rather than deleting the resource it just reported as created | Same delete-first path |
 
 `cdkd rollback` raises `NAMED_REPLACEMENT_COLLISION` too, and neither column
@@ -758,6 +758,28 @@ cannot free that name, so cdkd does not offer `--replace` there:
   the name is held by another resource. **Even with `--replace`, nothing is
   deleted.**
 - Pick a free name, or delete the resource holding it if it is yours.
+
+#### When cdkd cannot show the old resource holds the name
+
+A collision says a name is taken, not who holds it. An orphan left by an earlier
+failed attempt, a retried create, or a resource made outside the stack collides
+exactly like the old resource does. So before `--replace` deletes anything, cdkd
+checks that the old resource holds the name the create actually sent:
+
+| The create sent | Shown to be the old resource's when |
+| --- | --- |
+| An explicit name from the template | State records that name for the old resource, or its physical id names it |
+| No name (cdkd generates one) | The old resource's physical id names the name cdkd generates for this deploy — for types whose generated name cdkd can predict |
+| A name the provider rewrites (IAM, ELBv2 prefix the stack name) | The old resource's physical id names the rewritten name this deploy sends |
+| A type cdkd has no name property for (Cloud Control only) | Both were created through Cloud Control, the create sent the old physical id itself as a `...Name` / `...Identifier` property, and every such property it sent matches the old resource's |
+
+A name placed inside a parent (an API's stage, a cluster's service) must also
+be in the same parent, and the old resource's state record and its last
+read-back must not name it differently (a resource renamed outside cdkd). When the check fails or cannot decide, the deploy fails
+with `NAMED_REPLACEMENT_COLLISION` and **nothing is deleted** — with or without
+`--replace`, and without advising `--replace`, which would refuse the same way.
+Remove or rename whatever holds the name if it is yours — if that is the
+resource being replaced, delete it by hand — then re-run the deploy.
 
 `UpdateReplacePolicy: Retain` hard-fails in both shapes **regardless of
 `--replace`**: with Retain the old resource keeps the name, so a same-name
@@ -927,7 +949,10 @@ table and deletes the old one through its own record, and a rollback reverses
 it.
 When the new resource's create collides on a name instead, the error says that
 the holder may be an unrelated resource of the new type, which `--replace`
-cannot free.
+cannot free. Under `--replace`, cdkd deletes the old resource first only
+between two types that share one name space (RDS, DocumentDB and Neptune
+clusters, instances and subnet groups; DynamoDB tables and global tables);
+any other pair fails with nothing deleted.
 
 `cdkd rollback` and the automatic rollback reverse such a replacement the same
 way: the old resource is re-created through its own type's provider and the new

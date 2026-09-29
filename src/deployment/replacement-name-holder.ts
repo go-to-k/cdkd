@@ -1,7 +1,9 @@
 /**
- * Who holds a replacement's colliding name. Two questions, one per direction:
- * {@link replacementRequestsDifferentName} (deploy) and
- * {@link reverseReplacementNewHoldsName} (rollback, further down).
+ * Who holds a replacement's colliding name. Three questions:
+ * {@link replacementRequestsDifferentName} (deploy: a KNOWN different explicit
+ * name), and one proof per direction, sharing one rule —
+ * {@link reverseReplacementNewHoldsName} (rollback) and
+ * {@link replacementOldHoldsSentName} (deploy `--replace`), further down.
  *
  * Does a replacement ask for a physical name the resource being replaced does
  * NOT hold? (issue [#3808](https://github.com/go-to-k/cdkd/issues/3808))
@@ -42,6 +44,7 @@
 import type { ProvisionedBy } from '../provisioning/provider-registry.js';
 import {
   explicitNamePropertyFor,
+  generateResourceName,
   generateResourceNameWithFallback,
 } from '../provisioning/resource-name.js';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
@@ -131,6 +134,15 @@ interface NameKey {
 }
 
 const flat = (property: string): NameKey => ({ name: [[property]] });
+
+/**
+ * A per-type table's OWN entry: a resource type is template text, and an
+ * inherited key (`constructor`, `__proto__`, `toString`) must read as absent,
+ * never as an entry.
+ */
+function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
 
 /**
  * The name key of every type whose name is NOT read by the generic
@@ -360,10 +372,11 @@ export function reverseReplacementNameKeyKind(
 
 function nameKeyFor(resourceType: string): NameKey | undefined {
   if (NOT_NAME_KEYED_TYPES.has(resourceType)) return undefined;
-  const own = REVERSE_REPLACEMENT_NAME_KEYS[resourceType];
+  const own = ownEntry(REVERSE_REPLACEMENT_NAME_KEYS, resourceType);
   if (own !== undefined) return own;
   const property = explicitNamePropertyFor(resourceType);
-  return property === undefined ? undefined : flat(property);
+  // That table is read by plain indexing: an inherited member is no name.
+  return typeof property === 'string' ? flat(property) : undefined;
 }
 
 function valueAt(
@@ -480,23 +493,185 @@ function renderer(mask: (value: string) => string): Renderer {
   };
 }
 
+/**
+ * Who the diagnosis talks about. The two directions ask one question — does
+ * the HOLDER hold the name the CREATE sent? — about different resources: the
+ * rollback re-creates the OLD resource and asks about the NEW one, a deploy
+ * `--replace` creates the NEW resource and asks about the OLD one.
+ */
+interface Voice {
+  /** The create whose name collided, e.g. `the re-create`. */
+  readonly create: string;
+  /** The record that create was built from, for the record-set rule. */
+  readonly createdRecord: string;
+  /** The resource that must hold the name, before its physical id. */
+  readonly holder: string;
+  /** The same, for a Route 53 record. */
+  readonly holderRecord: string;
+  /** Whether a type with no name key may be proven by {@link sentIdentifierIs}. */
+  readonly identityFallback: boolean;
+  /** Whether `DERIVED_GENERATED_NAMES` may name what a nameless SDK create sent. */
+  readonly derivedNames: boolean;
+}
+
+const ROLLBACK_VOICE: Voice = {
+  create: 'the re-create',
+  createdRecord: 'the re-created record',
+  holder: 'the new resource',
+  holderRecord: 'the new record',
+  identityFallback: false,
+  derivedNames: false,
+};
+
+const DEPLOY_VOICE: Voice = {
+  create: 'the create',
+  createdRecord: 'the replacement record',
+  holder: 'the resource being replaced',
+  holderRecord: 'the record being replaced',
+  // The deploy's delete is the user's `--replace` opt-in, and without this
+  // every Cloud Control type cdkd has no name key for would lose it.
+  identityFallback: true,
+  // Deploy only, like the identity rule: the rollback keeps refusing a
+  // nameless re-create of these types.
+  derivedNames: true,
+};
+
+/**
+ * For a type cdkd has NO name key for (in practice a Cloud Control type with
+ * no schema fixture), created and held through Cloud Control: did the create
+ * SEND the holder's own physical id as a top-level name-shaped (`...Name` /
+ * `...Identifier`) property, exactly, while EVERY name-shaped property it sent
+ * equals the holder's recorded (then observed) value of it? A Cloud Control
+ * physical id is the primary identifier, so a create sending it asked for the
+ * holder's own identifier; the second half keeps a renamed resource whose
+ * OTHER name-shaped property still spells the old id (a `RoleName` pointing
+ * elsewhere) from passing as unchanged. Exact and case-sensitive: an id that
+ * merely ENDS with the value (a composite `<parent>|<name>`) stays unproven.
+ */
+function sentIdentifierIs(
+  requested: Record<string, unknown>,
+  recorded: Record<string, unknown> | undefined,
+  observed: Record<string, unknown> | undefined,
+  physicalId: string
+): boolean {
+  const isNameKey = (key: string): boolean => /(Name|Identifier)$/.test(key);
+  // `valueAt` never yields `''`, so an empty id matches nothing.
+  if (
+    !Object.keys(requested).some(
+      (key) => isNameKey(key) && valueAt(requested, [key]) === physicalId
+    )
+  ) {
+    return false;
+  }
+  // The union with the keys the holder's TEMPLATE declared (its record): a
+  // name-shaped property the template DROPPED is a change too, not an
+  // absence to skip. Not the observed bag's keys — a read-back can report a
+  // name AWS defaulted that no template declared, which is no change.
+  const nameKeys = new Set(
+    [...Object.keys(requested), ...Object.keys(recorded ?? {})].filter(isNameKey)
+  );
+  return [...nameKeys].every((key) => {
+    const sent = valueAt(requested, [key]);
+    return sent !== undefined && heldAt(recorded, observed, [key]).value === sent;
+  });
+}
+
+/**
+ * Types whose SDK provider mints a nameless create's name with its OWN call to
+ * `generateResourceName` — a wrap or options `applyDefaultNameForFallback` does
+ * not reproduce, so they stay out of `GENERATED_NAME_VERBATIM`. The name is
+ * derived here from the logical id in the create's async scope (stack name),
+ * exactly as the provider does; `source` is the provider's expression, which
+ * the test pins against the provider file. Only the holder's physical id
+ * naming the derived name proves it.
+ */
+const DERIVED_GENERATED_NAMES: Readonly<
+  Record<
+    string,
+    { readonly file: string; readonly source: string; derive(logicalId: string): string }
+  >
+> = {
+  'AWS::AutoScaling::AutoScalingGroup': {
+    file: 'asg-provider.ts',
+    source: 'generateResourceName(logicalId, { maxLength: 255 })',
+    derive: (id) => generateResourceName(id, { maxLength: 255 }),
+  },
+  'AWS::CodeCommit::Repository': {
+    file: 'codecommit-repository-provider.ts',
+    source: 'generateResourceName(logicalId, { maxLength: 100 })',
+    derive: (id) => generateResourceName(id, { maxLength: 100 }),
+  },
+  'AWS::DynamoDB::GlobalTable': {
+    file: 'dynamodb-globaltable-provider.ts',
+    source: 'generateResourceName(logicalId, { maxLength: 255 })',
+    derive: (id) => generateResourceName(id, { maxLength: 255 }),
+  },
+  'AWS::Logs::LogGroup': {
+    file: 'logs-loggroup-provider.ts',
+    source:
+      '`/cdkd/${generateResourceName(logicalId, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`',
+    derive: (id) =>
+      `/cdkd/${generateResourceName(id, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`,
+  },
+  'AWS::RDS::DBProxy': {
+    file: 'rds-dbproxy-provider.ts',
+    source: 'generateResourceName(logicalId, { maxLength: 64 })',
+    derive: (id) => generateResourceName(id, { maxLength: 64 }),
+  },
+  'AWS::RDS::DBProxyEndpoint': {
+    file: 'rds-dbproxy-endpoint-provider.ts',
+    source: 'generateResourceName(logicalId, { maxLength: 64 })',
+    derive: (id) => generateResourceName(id, { maxLength: 64 }),
+  },
+  'AWS::S3::Bucket': {
+    file: 's3-bucket-provider.ts',
+    source:
+      'generateResourceName(logicalId, {\n        maxLength: 63,\n        lowercase: true,\n        allowedPattern: /[^a-z0-9.-]/g,\n      })',
+    derive: (id) =>
+      generateResourceName(id, { maxLength: 63, lowercase: true, allowedPattern: /[^a-z0-9.-]/g }),
+  },
+  'AWS::Scheduler::Schedule': {
+    file: 'scheduler-schedule-provider.ts',
+    source: 'generateResourceName(logicalId, { maxLength: 64 })',
+    derive: (id) => generateResourceName(id, { maxLength: 64 }),
+  },
+  'AWS::SSM::Parameter': {
+    file: 'ssm-parameter-provider.ts',
+    source:
+      '`/${generateResourceName(logicalId, { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`',
+    derive: (id) =>
+      `/${generateResourceName(id, { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`,
+  },
+};
+
+/** The derived-generation table, for the test that pins it to the providers. */
+export function replacementDerivedGeneratedNames(): Readonly<
+  Record<
+    string,
+    { readonly file: string; readonly source: string; derive(logicalId: string): string }
+  >
+> {
+  return DERIVED_GENERATED_NAMES;
+}
+
 /** The Route 53 record-set rule: see {@link reverseReplacementNewHoldsName}. */
 function recordSetHolds(
   requested: Record<string, unknown>,
   recorded: Record<string, unknown> | undefined,
   observed: Record<string, unknown> | undefined,
   newPhysicalId: string,
-  r: Renderer
+  r: Renderer,
+  v: Voice
 ): ReverseReplacementHolderVerdict {
-  const newRecord = `the new record (${r.shown(newPhysicalId)})`;
+  const newRecord = `${v.holderRecord} (${r.shown(newPhysicalId)})`;
   const wantName = valueAt(requested, ['Name']);
   const wantType = valueAt(requested, ['Type']);
   const haveName = heldAt(recorded, observed, ['Name']).value;
   const haveType = heldAt(recorded, observed, ['Type']).value;
   if (wantName === undefined || wantType === undefined) {
-    return unproven(`cdkd cannot read the Name and Type the re-created record asked for`);
+    return unproven(`cdkd cannot read the Name and Type ${v.createdRecord} asked for`);
   }
-  const wanted = `the re-create asked for Name ${r.quoted(wantName)}`;
+  const wanted = `${v.create} asked for Name ${r.quoted(wantName)}`;
   if (haveName === undefined || haveType === undefined) {
     return unproven(`${wanted}, and cdkd cannot read the name ${newRecord} holds`);
   }
@@ -580,14 +755,15 @@ function rewrittenNameHolds(
   viaCloudControl: boolean,
   labels: string,
   newResource: string,
-  r: Renderer
+  r: Renderer,
+  v: Voice
 ): ReverseReplacementHolderVerdict {
   const declared = valueAt(input.requested, [rewrite.property]);
   const logicalId =
     typeof input.logicalId === 'string' && input.logicalId !== '' ? input.logicalId : undefined;
   if (declared === undefined && (viaCloudControl || logicalId === undefined)) {
     return unproven(
-      `the re-create named no ${labels}, and cdkd cannot derive the name its provider generates, ` +
+      `${v.create} named no ${labels}, and cdkd cannot derive the name its provider generates, ` +
         `so it cannot show that ${newResource} holds it`
     );
   }
@@ -598,28 +774,29 @@ function rewrittenNameHolds(
       });
   if (sent === '') {
     return unproven(
-      `the name the re-create sends for ${labels} is empty, so cdkd cannot show that ` +
+      `the name ${v.create} sends for ${labels} is empty, so cdkd cannot show that ` +
         `${newResource} holds it`
     );
   }
   // The provider rewrites the name (prefix, charset, truncation), so a masker
   // matching the declared value may not match what it became: a declared
   // value the mask touches is never followed by its derived spelling.
-  const secretDerived = declared !== undefined && (input.mask ?? ((v) => v))(declared) !== declared;
+  const secretDerived =
+    declared !== undefined && (input.mask ?? ((value) => value))(declared) !== declared;
   const prop = r.shown(rewrite.property);
   const wanted =
     declared === undefined
-      ? `the re-create named no ${labels}, and its provider generates ${prop} ${r.quoted(sent)} here`
+      ? `${v.create} named no ${labels}, and its provider generates ${prop} ${r.quoted(sent)} here`
       : viaCloudControl
-        ? `the re-create asked for ${prop} ${r.quoted(declared)}`
+        ? `${v.create} asked for ${prop} ${r.quoted(declared)}`
         : secretDerived
-          ? `the re-create asked for ${prop} ${r.quoted(declared)}, which its provider rewrites before ` +
+          ? `${v.create} asked for ${prop} ${r.quoted(declared)}, which its provider rewrites before ` +
             `sending it`
-          : `the re-create asked for ${prop} ${r.quoted(declared)}, which its provider sends as ` +
+          : `${v.create} asked for ${prop} ${r.quoted(declared)}, which its provider sends as ` +
             `${r.quoted(sent)} here`;
   const fold = CASE_INSENSITIVE_NAME_TYPES.has(input.oldResourceType)
-    ? (v: string): string => v.toLowerCase()
-    : (v: string): string => v;
+    ? (value: string): string => value.toLowerCase()
+    : (value: string): string => value;
   if (input.physicalId !== '' && holderIdNames(fold(input.physicalId), fold(sent))) return HOLDS;
   return unproven(
     `${wanted}, and cdkd cannot show that ${newResource} holds that name (this type's provider ` +
@@ -675,7 +852,14 @@ function rewrittenNameHolds(
  *   `NOT_NAME_KEYED_TYPES`, or one with no name key at all, never holds.
  * - A redacted value or an unresolved dynamic reference is not a name.
  */
-export function reverseReplacementNewHoldsName(input: {
+export function reverseReplacementNewHoldsName(
+  input: ReverseReplacementHolderInput
+): ReverseReplacementHolderVerdict {
+  return holderVerdict(input, ROLLBACK_VOICE);
+}
+
+/** The input of {@link reverseReplacementNewHoldsName}. */
+export interface ReverseReplacementHolderInput {
   oldResourceType: string;
   newResourceType: string;
   /** The bag the re-create of the OLD resource was built from. */
@@ -695,15 +879,28 @@ export function reverseReplacementNewHoldsName(input: {
    * that REWRITES names — the side that refuses more.
    */
   createdVia?: ProvisionedBy | undefined;
+  /** The route the holder was created through (its record's `provisionedBy`). */
+  holderVia?: ProvisionedBy | undefined;
   /**
    * Masks a value before it is rendered (the replay bag is plaintext). The
    * caller still masks the whole message; this runs first, on the raw value.
    */
   mask?: ((value: string) => string) | undefined;
-}): ReverseReplacementHolderVerdict {
+}
+
+/**
+ * The one rule behind both directions. Named for the rollback's direction:
+ * `oldResourceType` / `requested` / `generated` / `createdVia` describe the
+ * CREATE that collided, `newResourceType` / `recorded` / `observed` /
+ * `physicalId` the HOLDER; `v` says who they are in the diagnosis.
+ */
+function holderVerdict(
+  input: ReverseReplacementHolderInput,
+  v: Voice
+): ReverseReplacementHolderVerdict {
   const { oldResourceType, newResourceType, requested, recorded, observed, physicalId } = input;
   const r = renderer(input.mask ?? ((value) => value));
-  const newResource = `the new resource (${r.shown(physicalId)})`;
+  const newResource = `${v.holder} (${r.shown(physicalId)})`;
   if (
     oldResourceType !== newResourceType &&
     !SHARED_NAME_SPACES.some((s) => s.has(oldResourceType) && s.has(newResourceType))
@@ -714,28 +911,51 @@ export function reverseReplacementNewHoldsName(input: {
     );
   }
   if (oldResourceType === RECORD_SET) {
-    return recordSetHolds(requested, recorded, observed, physicalId, r);
+    return recordSetHolds(requested, recorded, observed, physicalId, r, v);
   }
   const oldKey = nameKeyFor(oldResourceType);
   const newKey = nameKeyFor(newResourceType);
   if (oldKey === undefined || newKey === undefined) {
+    if (
+      // A Type change never reaches here: the check above refuses every pair
+      // outside `SHARED_NAME_SPACES`, whose types all have name keys.
+      v.identityFallback &&
+      input.createdVia === 'cc-api' &&
+      input.holderVia === 'cc-api' &&
+      reverseReplacementNameKeyKind(oldResourceType) === 'unknown' &&
+      sentIdentifierIs(requested, recorded, observed, physicalId)
+    ) {
+      return HOLDS;
+    }
+    // The one shape the identity rule would have proven but for a record
+    // that predates cdkd recording its route: still refused, with the reason.
+    const legacyRecord =
+      v.identityFallback &&
+      input.createdVia === 'cc-api' &&
+      input.holderVia === undefined &&
+      reverseReplacementNameKeyKind(oldResourceType) === 'unknown' &&
+      sentIdentifierIs(requested, recorded, observed, physicalId);
     return unproven(
       `cdkd has no name property to compare for a ${r.shown(oldResourceType)}, so it cannot ` +
-        `show that ${newResource} holds the colliding name`
+        `show that ${newResource} holds the colliding name` +
+        (legacyRecord
+          ? ` (its state record, written by an older cdkd, does not say it was created through ` +
+            `Cloud Control, which is what would let its identifier prove it)`
+          : '')
     );
   }
   const labels = oldKey.name.map((p) => r.shown(p.join('.'))).join(' / ');
   const unreadable = oldKey.name.find((path) => unreadableAt(requested, path));
   if (unreadable !== undefined) {
     return unproven(
-      `the name the re-create asked for is ` +
+      `the name ${v.create} asked for is ` +
         (pathValue(requested, unreadable) === ''
           ? `empty`
           : `redacted, unresolved or not a string`) +
         `, so cdkd cannot compare it with ${newResource}`
     );
   }
-  const rewrite = SENT_NAME_REWRITTEN[oldResourceType];
+  const rewrite = ownEntry(SENT_NAME_REWRITTEN, oldResourceType);
   if (rewrite !== undefined) {
     return rewrittenNameHolds(
       input,
@@ -743,7 +963,8 @@ export function reverseReplacementNewHoldsName(input: {
       input.createdVia === 'cc-api',
       labels,
       newResource,
-      r
+      r,
+      v
     );
   }
   let generatedName = false;
@@ -758,22 +979,56 @@ export function reverseReplacementNewHoldsName(input: {
     wantName = namePath === undefined ? undefined : valueAt(input.generated, namePath);
     generatedName = wantName !== undefined;
   }
+  const derived = ownEntry(DERIVED_GENERATED_NAMES, oldResourceType);
+  const derivedName =
+    namePath === undefined &&
+    v.derivedNames &&
+    derived !== undefined &&
+    input.createdVia !== 'cc-api' &&
+    typeof input.logicalId === 'string' &&
+    input.logicalId !== ''
+      ? derived.derive(input.logicalId)
+      : '';
+  if (derivedName !== '') {
+    namePath = oldKey.name[0];
+    wantName = derivedName;
+    generatedName = true;
+  }
   if (namePath === undefined || wantName === undefined) {
     return unproven(
-      `the re-create named no ${labels} (its provider picks one), so cdkd cannot show that ` +
+      `${v.create} named no ${labels} (its provider picks one), so cdkd cannot show that ` +
         `${newResource} holds it`
     );
   }
   const wanted = generatedName
-    ? `the re-create named no ${labels}, and cdkd's rule generates ` +
+    ? `${v.create} named no ${labels}, and cdkd's rule generates ` +
       `${r.shown(namePath.join('.'))} ${r.quoted(wantName)} for it`
-    : `the re-create asked for ${r.shown(namePath.join('.'))} ${r.quoted(wantName)}`;
+    : `${v.create} asked for ${r.shown(namePath.join('.'))} ${r.quoted(wantName)}`;
   const same = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
     ? (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
     : (a: string, b: string): boolean => a === b;
   const inCase = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
-    ? (v: string): string => v.toLowerCase()
-    : (v: string): string => v;
+    ? (value: string): string => value.toLowerCase()
+    : (value: string): string => value;
+  // A record and a read-back that name the holder DIFFERENTLY (renamed out
+  // of band, or a drifted record) cannot say which name it holds now: the
+  // physical id would still name the recorded one. Undecided, in both
+  // directions.
+  const drifted = newKey.name.find((path) => {
+    const recordedName = valueAt(recorded, path);
+    const observedName = valueAt(observed, path);
+    return (
+      recordedName !== undefined && observedName !== undefined && !same(recordedName, observedName)
+    );
+  });
+  if (drifted !== undefined) {
+    return unproven(
+      `${wanted}, and the records of ${newResource} disagree on its ` +
+        `${r.shown(drifted.join('.'))} (recorded ${r.quoted(valueAt(recorded, drifted) ?? '')}, ` +
+        `read back ${r.quoted(valueAt(observed, drifted) ?? '')}), so cdkd cannot show which name ` +
+        `it holds`
+    );
+  }
   const held = newKey.name.map((path) => heldAt(recorded, observed, path));
   const haveName = held.find((h) => h.value !== undefined)?.value;
   const nameHeld =
@@ -811,6 +1066,63 @@ export function reverseReplacementNewHoldsName(input: {
     );
   }
   return HOLDS;
+}
+
+/**
+ * Does the OLD resource of a replacement hold the name the replacement's
+ * create-first attempt collided on? The deploy-direction twin of
+ * {@link reverseReplacementNewHoldsName} (issue
+ * [#3979](https://github.com/go-to-k/cdkd/issues/3979)), with the same rule,
+ * tables and sent-name derivation, the two resources swapped.
+ *
+ * `cdkd deploy --replace` deletes the old resource first to free that name.
+ * {@link replacementRequestsDifferentName} refuses only a KNOWN different
+ * explicit name, so a template naming no name — or one a `SENT_NAME_REWRITTEN`
+ * provider rewrites under the current stack scope and prefix flag — used to
+ * delete the old resource on the classifier's word alone, though an orphan of
+ * an earlier attempt, a replayed create or a squatter collides identically.
+ * The delete-first runs only on `holds: true`; anything else refuses.
+ *
+ * Call it in the create's own async scope, like the rollback twin.
+ */
+export function replacementOldHoldsSentName(input: {
+  /** The template's type: what the create routed on. */
+  createType: string;
+  /** The state record's type: the old resource's. */
+  holderType: string;
+  /** The bag the create was SENT (the Cloud Control one carries the generated name). */
+  requested: Record<string, unknown>;
+  /** `requested` with the name cdkd generates filled in, for a nameless bag. */
+  generated?: Record<string, unknown> | undefined;
+  /** The OLD resource's recorded properties. */
+  recorded: Record<string, unknown> | undefined;
+  /** The OLD resource's observed properties. */
+  observed: Record<string, unknown> | undefined;
+  /** The OLD resource's physical id. */
+  physicalId: string;
+  logicalId?: unknown;
+  /** The route the create took. */
+  createdVia?: ProvisionedBy | undefined;
+  /** The old resource's recorded `provisionedBy`. */
+  holderVia?: ProvisionedBy | undefined;
+  mask?: ((value: string) => string) | undefined;
+}): ReverseReplacementHolderVerdict {
+  return holderVerdict(
+    {
+      oldResourceType: input.createType,
+      newResourceType: input.holderType,
+      requested: input.requested,
+      generated: input.generated,
+      recorded: input.recorded,
+      observed: input.observed,
+      physicalId: input.physicalId,
+      logicalId: input.logicalId,
+      createdVia: input.createdVia,
+      holderVia: input.holderVia,
+      mask: input.mask,
+    },
+    DEPLOY_VOICE
+  );
 }
 
 /**

@@ -309,11 +309,16 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // assertion is therefore about the two messages staying DISTINCT, which is
     // the property that matters: one says RENAME, which does not recover an
     // orphan.
+    //
+    // A nameless Lambda function, not the file's Pipe: its generated name is
+    // one cdkd predicts, so the #3979 holder proof accepts the old function as
+    // the collider and the rename advice is what this path prints.
+    const REPLACED_TYPE = 'AWS::Lambda::Function';
     const engine = makeEngine();
     const change: ResourceChange = {
       logicalId: LOGICAL,
       changeType: 'UPDATE',
-      resourceType: TYPE,
+      resourceType: REPLACED_TYPE,
       currentProperties: { Source: 'arn:a' },
       desiredProperties: { Source: 'arn:b' },
       propertyChanges: [
@@ -323,7 +328,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const stateResources = {
       [LOGICAL]: {
         physicalId: `${STACK}-${LOGICAL}`,
-        resourceType: TYPE,
+        resourceType: REPLACED_TYPE,
         properties: { Source: 'arn:a' },
         attributes: {},
         dependencies: [],
@@ -331,7 +336,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
       },
     };
     const template: CloudFormationTemplate = {
-      Resources: { [LOGICAL]: { Type: TYPE, Properties: { Source: 'arn:b' } } },
+      Resources: { [LOGICAL]: { Type: REPLACED_TYPE, Properties: { Source: 'arn:b' } } },
     };
     const provisionResource = (
       engine as unknown as {

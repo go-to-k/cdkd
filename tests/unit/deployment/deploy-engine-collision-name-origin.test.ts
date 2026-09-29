@@ -109,7 +109,11 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
   let createFailures: Error[];
   let createdPhysicalId: string;
 
-  const TYPE = 'AWS::Pipes::Pipe'; // non-stateful: the stateful guard stays out of the way
+  // Non-stateful, so the stateful guard stays out of the way; and a type whose
+  // nameless create cdkd names verbatim, so the #3979 holder proof accepts the
+  // old resource as the collider in both arms below (a generated name through
+  // the physical id, a template name through the record).
+  const TYPE = 'AWS::Lambda::Function';
   const STACK = 'MyStack';
 
   const alreadyExists = (name: string) =>
@@ -170,13 +174,16 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
     const engine = makeEngine();
     createdPhysicalId = physicalId;
     createFailures = [alreadyExists(physicalId)];
+    // A template-supplied name is declared on both sides; a generated one on
+    // neither.
+    const named = physicalId === `${STACK}-Pipe` ? {} : { FunctionName: physicalId };
 
     const change: ResourceChange = {
       logicalId: 'Pipe',
       changeType: 'UPDATE',
       resourceType: TYPE,
-      currentProperties: { Source: 'arn:a' },
-      desiredProperties: { Source: 'arn:b' },
+      currentProperties: { ...named, Source: 'arn:a' },
+      desiredProperties: { ...named, Source: 'arn:b' },
       propertyChanges: [
         { path: 'Source', oldValue: 'arn:a', newValue: 'arn:b', requiresReplacement: true },
       ],
@@ -185,14 +192,14 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
       Pipe: {
         physicalId,
         resourceType: TYPE,
-        properties: { Source: 'arn:a' },
+        properties: { ...named, Source: 'arn:a' },
         attributes: {},
         dependencies: [],
         provisionedBy: 'sdk' as const,
       },
     };
     const template: CloudFormationTemplate = {
-      Resources: { Pipe: { Type: TYPE, Properties: { Source: 'arn:b' } } },
+      Resources: { Pipe: { Type: TYPE, Properties: { ...named, Source: 'arn:b' } } },
     };
     const provisionResource = (
       engine as unknown as {

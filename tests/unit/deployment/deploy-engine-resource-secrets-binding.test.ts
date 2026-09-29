@@ -277,11 +277,15 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
    * An UPDATE against an existing record. `requiresReplacement` drives the
    * three replacement arms; without it the engine takes the in-place UPDATE.
    */
-  function primeUpdate(requiresReplacement = false): void {
+  function primeUpdate(requiresReplacement = false, name?: string): void {
     const current: ResourceState = {
       physicalId: 'old-phys',
       resourceType: TYPE,
-      properties: { Type: 'String', Value: 'stale-previous-value' },
+      properties: {
+        Type: 'String',
+        Value: 'stale-previous-value',
+        ...(name !== undefined && { Name: name }),
+      },
       attributes: {},
       dependencies: [],
     };
@@ -304,7 +308,8 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
             logicalId: LOGICAL,
             changeType: 'UPDATE',
             resourceType: TYPE,
-            desiredProperties,
+            desiredProperties:
+              name === undefined ? desiredProperties : { ...desiredProperties, Name: name },
             currentProperties: current.properties,
             ...(requiresReplacement && {
               propertyChanges: [
@@ -383,7 +388,9 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
   });
 
   it('site 4 — the --replace delete-first fallback after a create-first name collision', async () => {
-    primeUpdate(true);
+    // Named, and the record names it too: `--replace` deletes the old
+    // parameter first only once it is proven to hold the name (#3979).
+    primeUpdate(true, 'old-phys');
     let creates = 0;
     mockProvider.create!.mockImplementation(async () => {
       capture(seenCreate);
@@ -394,7 +401,16 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
       return { physicalId: 'new-phys' };
     });
 
-    await engine({ replace: true, forceStatefulRecreation: true }).deploy(STACK, template);
+    const named: CloudFormationTemplate = {
+      ...template,
+      Resources: {
+        [LOGICAL]: {
+          Type: TYPE,
+          Properties: { Type: 'String', Name: 'old-phys', Value: { Ref: PARAM } },
+        },
+      },
+    };
+    await engine({ replace: true, forceStatefulRecreation: true }).deploy(STACK, named);
 
     expect(creates).toBe(2);
     // BOTH attempts, not just the second: the binding lives inside the thunk,

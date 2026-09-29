@@ -3046,6 +3046,7 @@
         "local-run-task-from-state",
         "local-start-service",
         "migrate-from-cfn",
+        "replace-squatter-refusal",
         "stage-assets"
       ],
       "signals": {
@@ -3072,6 +3073,10 @@
         ],
         "migrate-from-cfn": [
           "l2",
+          "literal"
+        ],
+        "replace-squatter-refusal": [
+          "l1",
           "literal"
         ],
         "stage-assets": [

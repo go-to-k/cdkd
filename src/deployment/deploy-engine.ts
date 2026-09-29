@@ -24,7 +24,13 @@ import {
   ResourceUpdateNotSupportedError,
   CdkdError,
 } from '../utils/error-handler.js';
-import { displayIdent, displaySafe, isPasteableIdent, safeMsg } from '../utils/display-safe.js';
+import {
+  displayAwsMessage,
+  displayIdent,
+  displaySafe,
+  isPasteableIdent,
+  safeMsg,
+} from '../utils/display-safe.js';
 import { shellQuote } from '../state/lock-contention-message.js';
 import {
   refuseMalformedOutputs,
@@ -103,6 +109,7 @@ import {
 import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
 import {
   renderNameHeldElsewhere,
+  replacementOldHoldsSentName,
   replacementRequestsDifferentName,
 } from './replacement-name-holder.js';
 import {
@@ -7740,8 +7747,15 @@ export class DeployEngine {
                 replaceProvider
               );
             } catch (createError) {
-              const createMsg =
-                createError instanceof Error ? createError.message : String(createError);
+              // The AWS text every refusal below quotes: masked FIRST (the
+              // create was handed resolved values), then rendered display-safe
+              // and bounded, since an AWS message can echo a template value.
+              const createMsg = displayAwsMessage(
+                maskSecretsInText(
+                  createError instanceof Error ? createError.message : String(createError),
+                  updateSecrets
+                )
+              );
               // A custom-named resource cannot be safely replaced: the
               // create-first attempt collides with the old resource still
               // holding the name. CloudFormation refuses this same shape
@@ -7753,10 +7767,11 @@ export class DeployEngine {
               // NOTE: the detection is a HEURISTIC — an "already
               // exists" raised by something other than the replaced
               // resource's own name (e.g. an externally-owned sibling)
-              // also matches. The blast radius is bounded: delete-first
-              // only fires under the explicit --replace opt-in, targets
-              // only the state-recorded old physicalId, and the stateful
-              // guard has already run.
+              // also matches. So delete-first fires only under the explicit
+              // --replace opt-in, targets only the state-recorded old
+              // physicalId, after the stateful guard, and only once
+              // `replacementOldHoldsSentName` proves that old resource holds
+              // the name the create sent (issue #3979).
               // Reads the ERROR, not the rendered message: ELBv2 states the
               // collision in prose the message matcher cannot see and must not
               // be widened to see, and the name is dropped by the provider wrap
@@ -7769,20 +7784,10 @@ export class DeployEngine {
               // still deleted so the name frees up; the delete-first helper
               // takes its final snapshot first, issue #1354.)
               const nameOrigin = this.replacementNameOrigin(logicalId, currentResource.physicalId);
-              // Issue #2668: both messages below presume the name is held by
-              // the resource being replaced. Across a Type change that is true
-              // only where the two types share a namespace (RDS / Neptune /
-              // DocumentDB cluster identifiers do); otherwise the holder is an
-              // unrelated resource of the NEW type, and deleting the old one
-              // first frees nothing. Say so rather than print a remedy that
-              // ends with the old resource gone and the same collision.
-              const typeChangeCollisionNote = typeChanged
-                ? ` Note: this replacement changes the resource's Type (${oldResourceType} -> ` +
-                  `${resourceType}). Unless those two types share one name space, the name is ` +
-                  `held by an unrelated existing ${resourceType}, not by the ${oldResourceType} ` +
-                  `being replaced — then deleting the old resource first cannot free it, and the ` +
-                  `fix is a different name.`
-                : '';
+              // Issue #2668: across a Type change the old resource can hold the
+              // name only where the two types share a name space; every other
+              // pair is refused by the #3979 holder proof below, whose
+              // diagnosis names both types.
               // Issue #3808: every message below, and the `--replace`
               // delete-first retry, presume the old resource holds the name.
               // When the template's explicit name says otherwise, the holder
@@ -7822,13 +7827,81 @@ export class DeployEngine {
                   )
                 );
               }
+              // Issue #3979: the check above refuses only a KNOWN different
+              // explicit name. With no name in the template, or one a
+              // rewriting provider (IAM, ELBv2) sends under this deploy's
+              // stack scope and prefix flag, the collision may be with an
+              // orphan of an earlier attempt, a replayed create or a
+              // squatter — and deleting the old resource then destroys a live
+              // resource that never held the name, and collides again. So
+              // prove the old resource holds the name the create SENT, here in
+              // the create's own async scope, and refuse when it is not proven.
+              // Ahead of the Retain and no-flag refusals too: both presume
+              // the old resource holds the name, and the no-flag one advises
+              // the `--replace` this check would then refuse.
+              const holder = replacementOldHoldsSentName({
+                createType: resourceType,
+                holderType: oldResourceType,
+                requested: replaceProps,
+                // A nameless SDK create: the name the provider mints, trusted
+                // only for a type audited to mint cdkd's rule verbatim.
+                generated: applyDefaultNameForFallback(logicalId, resourceType, resolvedProps),
+                recorded: currentResource.properties,
+                observed: currentResource.observedProperties,
+                physicalId: currentResource.physicalId,
+                logicalId,
+                createdVia: replaceDecision.provisionedBy,
+                holderVia: currentResource.provisionedBy,
+                mask: (value) => maskSecretsInText(value, updateSecrets),
+              });
+              if (!holder.holds) {
+                const flagClause =
+                  this.options.replace === true
+                    ? ` --replace was NOT applied and nothing was deleted.`
+                    : updateReplacePolicy === 'Retain'
+                      ? ` Nothing was deleted. UpdateReplacePolicy: Retain keeps the resource ` +
+                        `being replaced in place; removing it and re-running with ` +
+                        `\`cdkd deploy --replace\` would refuse the same way rather than delete it.`
+                      : ` Nothing was deleted, and \`cdkd deploy --replace\` would refuse the ` +
+                        `same way rather than delete it.`;
+                throw markNonRetryable(
+                  new CdkdError(
+                    // Masked at construction: the create's collision text can
+                    // echo a resolved value.
+                    maskSecretsInText(
+                      `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires ` +
+                        `replacement, but the create-first attempt collided: ${holder.diagnosis} — ` +
+                        (holder.known
+                          ? `so another resource holds the colliding name (an orphan of an ` +
+                            `earlier attempt, or one made outside this stack), and deleting the ` +
+                            `resource being replaced would destroy it and collide again.` +
+                            flagClause +
+                            ` Remove or rename the resource holding that name if it is yours, ` +
+                            `then re-run the deploy.`
+                          : `so if another resource holds it (an orphan of an ` +
+                            `earlier attempt, or one made outside this stack), deleting the ` +
+                            `resource being replaced would destroy it and collide again.` +
+                            flagClause +
+                            ` Remove or rename whatever holds that name if it is yours — if ` +
+                            `that is the resource being replaced itself, delete it by hand — ` +
+                            `then re-run the deploy.`) +
+                        ` Underlying collision: ${createMsg}`,
+                      updateSecrets
+                    ),
+                    'NAMED_REPLACEMENT_COLLISION',
+                    // Chained like the #3808 refusal above: marked, so the
+                    // retry classifiers never read the collision text.
+                    createError instanceof Error ? createError : undefined
+                  )
+                );
+              }
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but its physical name ` +
                     `is still held by the existing resource AND UpdateReplacePolicy: Retain ` +
                     `pins that resource in place. ${nameOrigin.descriptor}. ` +
                     `${nameOrigin.remedy} — with Retain, the old resource keeps the name, so a ` +
-                    `same-name replacement can never proceed.${typeChangeCollisionNote}`,
+                    `same-name replacement can never proceed.`,
                   'NAMED_REPLACEMENT_COLLISION'
                 );
               }
@@ -7842,13 +7915,14 @@ export class DeployEngine {
                     `stack when a custom-named resource requires replacing". ` +
                     `${nameOrigin.remedy}, or re-run with \`cdkd deploy --replace\` to delete ` +
                     `the old resource FIRST and recreate it under the same name (the resource ` +
-                    `is briefly unavailable while it is recreated).${typeChangeCollisionNote}`,
+                    `is briefly unavailable while it is recreated).`,
                   'NAMED_REPLACEMENT_COLLISION'
                 );
               }
               // --replace opt-in: the user accepts delete-first semantics
               // (the stateful guard for this property-driven replacement
-              // already ran above). Delete the old holder, then re-create.
+              // already ran above). Delete the old holder — proven above —
+              // then re-create.
               // "named" not "custom-named": the name may be cdkd's own
               // derivation, and this line PRINTS the physical id, so a user
               // reading it against a template that declares no such name was

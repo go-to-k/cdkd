@@ -196,7 +196,8 @@ A collision with anything else (a resource an earlier failed attempt left
 behind, or one created outside the stack) fails the operation instead: nothing
 is deleted, the message names the colliding name, and the journal is kept. The
 same refusal applies when cdkd cannot tell. That happens when the re-create
-asked for no name cdkd can derive, the name is redacted or empty, the type has
+asked for no name cdkd can derive, the name is redacted or empty, the new
+resource's state record and its last read-back name it differently, the type has
 no name property cdkd knows, or a `Type` change pairs types cdkd does not know
 to share names. Remove or rename whatever holds the name, then re-run
 `cdkd rollback`. If the holder is the new resource itself, delete it by hand
