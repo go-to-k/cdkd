@@ -250,8 +250,10 @@ three change what releasing the lock means.
 While it is held and being renewed, the lock keeps other cdkd runs out of the
 stack, short of the exceptions below. It does not queue them: a deploy that
 finds it held retries three times at two-second intervals and then fails,
-naming the current holder when it can read the lock — when it cannot, the
-attempts fire back to back and it fails at once.
+naming the current holder when it can read the lock. An attempt that fails
+and then finds no lock at all means the holder released it in between, so
+the deploy tries again at once, up to three extra times, and otherwise waits
+like it would for a held lock.
 
 ### What a second deploy started too early runs into
 

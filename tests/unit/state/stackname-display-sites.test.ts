@@ -375,10 +375,22 @@ describe('LockManager renders a hostile stack name, region and error flattened (
   it('acquireLockWithRetry: the retry line and the final refusal', async () => {
     const c = makeClient();
     c.queue('PutObjectCommand', fail(s3err('PreconditionFailed', 412)), fail(s3err('PreconditionFailed', 412)));
-    c.queue('GetObjectCommand', lockBody(LIVE), lockBody(LIVE), lockBody(LIVE), lockBody(LIVE), lockBody(LIVE));
+    c.queue('GetObjectCommand', lockBody(LIVE), lockBody(LIVE), lockBody(LIVE), lockBody(LIVE));
     const message = await thrownMessage(manager(c).acquireLockWithRetry(STACK, REGION, undefined, undefined, 1, 0));
     expectFlattened(logged(), 'is locked by', SHOWN_STACK, SHOWN_REGION);
     expectFlattened([message], 'Failed to acquire lock for stack', SHOWN_STACK, SHOWN_REGION);
+  });
+
+  it('acquireLockWithRetry: the released re-attempt, the empty-read retry line and its refusal (issue #4055)', async () => {
+    const c = makeClient();
+    const unreadable: Reply = () => ({ Body: { transformToString: () => Promise.resolve('42') }, ETag: '"e0"' });
+    c.queue('PutObjectCommand', ...Array.from({ length: 5 }, () => fail(s3err('PreconditionFailed', 412))));
+    c.queue('GetObjectCommand', ...Array.from({ length: 10 }, () => unreadable));
+    const message = await thrownMessage(manager(c).acquireLockWithRetry(STACK, REGION, undefined, undefined, 1, 0));
+    const texts = logged();
+    expectFlattened(texts, 'most likely released in between', SHOWN_STACK, SHOWN_REGION);
+    expectFlattened(texts, 'no readable lock was found', SHOWN_STACK, SHOWN_REGION);
+    expectFlattened([message], 'No lock could be read after the last failed attempt', SHOWN_STACK, SHOWN_REGION);
   });
 
   describe('renewal', () => {

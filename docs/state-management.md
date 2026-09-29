@@ -1935,21 +1935,35 @@ async acquireLockWithRetry(
   maxRetries = 3,
   retryDelay = 2000  // 2 seconds
 ): Promise<void> {
+  let lockInfo = null;
+  let releasedReacquires = 0;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     // acquireLock reaps an EXPIRED foreign lock itself and retries once, so a
-    // `false` here always means a LIVE lock held by someone else.
+    // `false` here means someone else held the lock at the PUT.
     if (await this.acquireLock(stackName, region, owner, operation)) return;
 
-    const lockInfo = await this.getLockInfo(stackName, region);
-    if (lockInfo && attempt < maxRetries) {
-      // Reports the holder and how long until its deadline, then waits.
+    lockInfo = await this.getLockInfo(stackName, region);
+    if (!lockInfo && releasedReacquires < RELEASED_LOCK_REACQUIRE_LIMIT) {
+      // Released since the PUT: try again now, without spending a retry.
+      releasedReacquires++;
+      attempt--;
+      continue;
+    }
+    if (attempt < maxRetries) {
+      // Reports the holder (or that none could be read), then waits.
       await sleep(retryDelay);
     }
   }
 
-  throw new LockError('Failed to acquire lock after retries');  // names owner + expiry
+  // Renders the read taken after the LAST failed acquire -- the holder, or
+  // "No lock could be read" -- never a second read.
+  throw new LockError('Failed to acquire lock after retries');
 }
 ```
+
+`RELEASED_LOCK_REACQUIRE_LIMIT` is 3. The bound matters because `getLockInfo`
+also reads a `lock.json` whose body is not an object as "no lock", and that
+object never lets the PUT through.
 
 Expiry is decided by the lock's own `expiresAt` field, not by its age: a live
 holder keeps pushing that field forward, so "old" and "abandoned" are different
