@@ -174,6 +174,11 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
     expect(err.message).toContain('nothing was sent to that repository');
     // A holder KNOWN not to be this resource is never offered for re-adoption.
     expect(err.message).not.toContain('cdkd import');
+    // Both exits are named: a new name while ours still exists, `cdkd orphan`
+    // when ours was deleted out of band (a new name alone would then fail).
+    expect(err.message).toContain('choose a RepositoryName no other repository holds');
+    expect(err.message).toContain('If it was deleted outside cdkd, drop');
+    expect(err.message).toMatch(/\ncdkd orphan '<constructPath>'$/);
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(sentNames().filter((n) => WRITES.includes(n))).toEqual([]);
     expect(sentNames()).toEqual(['GetRepositoryCommand', 'GetRepositoryCommand']);
