@@ -1156,7 +1156,8 @@ export function computeOutputsDiff(
     // as an expression too, or a post-#1901 record storing it would be judged
     // pre-GHSA by its own desired side and lose every previous value -- but
     // only in the shape `storedSsmTokenIsExpression` accepts, never on a
-    // substring hit beside text that may be plaintext.
+    // substring hit beside text that may be plaintext. The spelling arm still
+    // vetoes on a substring hit (go-to-k/cdkd#4101).
     if (
       typeof oldValue === 'string' &&
       (isSecretDynamicReference(oldValue) || storedSsmTokenIsExpression(oldValue, desired[name]))
