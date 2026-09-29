@@ -142,7 +142,7 @@ iam-managed-policy	2026-09-28T09:54:14Z	PASS	100	verify.sh	PR #3944 merge-gate r
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 iam-propagation-stress	2026-09-28T14:47:10Z	PASS	81	verify.sh	PR #3983 (#3978) @72a0a271; rc ok, 4 race edges clean, 13 deleted 0 errors, orph clean
 iam-role-policies-drift-clean	2026-09-28T17:37:17Z	PASS	96	verify.sh	rc ok, orph clean (#3996, after merging main)
-iam-role-prefixed-name-update	2026-09-27T14:13:26Z	PASS	70	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
+iam-role-prefixed-name-update	2026-09-29T04:41:47Z	PASS	65	verify.sh	PR #4035 (#4024) @56b33129 on 11c8d52d (gate fix); rc ok, 3 deploys without -y not flagged by the prefix-migration gate; orph clean
 iam-secret-derived-principals	2026-09-28T17:37:17Z	PASS	156	verify.sh	rc ok, orph clean (#3996, after merging main)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
@@ -267,7 +267,7 @@ retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; 
 rollback-command	2026-09-29T04:29:59Z	PASS	150	verify.sh	PR #4035 (#4024) @1e939cd1 on 11c8d52d; rc ok, orph clean
 rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph clean (#3595 lane)
 rollback-deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	106	verify.sh	#3455 fix round 2: rc ok, orph clean
-rollback-explicit-name-rewrite	2026-09-29T04:29:59Z	FAIL	166	verify.sh	PR #4035 (#4024) @1e939cd1 on 11c8d52d; rc=1 at step 8b: no prefix-migration WARNING (pre-existing: findPendingPrefixRenames runs inside withSkipPrefix(true), legacyName==newName, never flags); scratch copy minus that check PASS 200s (8c/8d restore prefixed -a, flag-choice line logged); orph clean
+rollback-explicit-name-rewrite	2026-09-29T04:41:47Z	PASS	200	verify.sh	PR #4035 (#4024) @56b33129 on 11c8d52d (gate fix: findPendingPrefixRenames pins withSkipPrefix(false)); rc ok, 8b prefix-migration WARNING printed, 8c/8d restore prefixed -a with flag-choice line; pre-fix probe red at 8c; orph clean
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replacement-retain	2026-09-29T04:29:59Z	PASS	70	verify.sh	PR #4035 (#4024) @1e939cd1 on 11c8d52d; rc ok, orph clean
 rollback-replay-cc-generated-name	2026-09-28T22:10:42Z	PASS	155	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, IAM Role replacement reversed to generated name (no collision, guard not reached), no name-holder refusal, orph clean
