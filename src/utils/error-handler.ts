@@ -5,7 +5,7 @@ import {
   quotedOrDescribed,
   withheldTargetClause,
 } from './pasteable-command.js';
-import { displayAwsMessage, isPasteableIdent } from './display-safe.js';
+import { displayAwsMessage, displayIdent, isPasteableIdent } from './display-safe.js';
 import { getLogger } from './logger.js';
 
 /**
@@ -712,6 +712,20 @@ export interface ActiveImportConsumer {
 }
 
 /**
+ * `export '<name>'` when the export name is plain, a description otherwise
+ * (go-to-k/cdkd#3950). Plain is `displayIdent`'s set, not `isPasteableIdent`'s:
+ * a CDK-generated export name carries `:` (`Producer:ExportsOutputRef…`), which
+ * the command gate refuses and which is literal inside single quotes. The
+ * whitespace test comes first, because the round-trip alone admits a value
+ * ending in `displayIdent`'s own cut marker.
+ */
+function exportNamePhrase(exportName: string): string {
+  return !/\s/.test(exportName) && displayIdent(exportName) === exportName
+    ? `export '${exportName}'`
+    : 'an export whose name is not a plain identifier';
+}
+
+/**
  * `cdkd destroy <producer>` refused because at least one consumer stack
  * still records an `Fn::ImportValue` reference to one of the producer's
  * outputs. This matches CloudFormation's strong-reference semantics —
@@ -746,11 +760,20 @@ export class StackHasActiveImportsError extends CdkdError {
     consumers: ActiveImportConsumer[],
     cause?: Error
   ) {
+    // Every value here is record-derived: the consumer's name comes from its
+    // state KEY, its region from the key (a legacy record's from its body),
+    // and `exportName` from its `state.json`, all chosen by a state-bucket
+    // writer; the producer may come from the same listing.
+    // A plain value prints as before; any other is described, never put
+    // inside cdkd's own `'...'` where a `'` in it closes the quote
+    // (go-to-k/cdkd#3950, go-to-k/cdkd#4052's convention).
     const lines = consumers.map(
-      (c) => `  - ${c.consumerStack} (${c.consumerRegion}): imports export '${c.exportName}'`
+      (c) =>
+        `  - ${plainOrDescribed(c.consumerStack, 'stack name')} (${plainOrDescribed(c.consumerRegion, 'region')}): ` +
+        `imports ${exportNamePhrase(c.exportName)}`
     );
     super(
-      `Cannot destroy stack '${producerStack}' (${producerRegion}): ` +
+      `Cannot destroy stack ${quotedOrDescribed(producerStack, 'stack name')} (${plainOrDescribed(producerRegion, 'region')}): ` +
         `the following stacks still import its outputs via Fn::ImportValue:\n` +
         `${lines.join('\n')}\n\n` +
         `This matches CloudFormation's strong-reference semantics — exports are\n` +
