@@ -279,4 +279,42 @@ describe('LambdaEventInvokeConfigProvider', () => {
       expect(result).toBeNull();
     });
   });
+  describe('canonicalizeDriftProperties (issue #4091)', () => {
+    const T = 'AWS::Lambda::EventInvokeConfig';
+    const dlq = 'arn:aws:sqs:us-east-1:123456789012:dlq';
+
+    it('strips the empty OnSuccess Cloud Control injects into a CC-captured baseline', () => {
+      const ccBaseline = {
+        FunctionName: 'fn',
+        Qualifier: '$LATEST',
+        MaximumRetryAttempts: 1,
+        DestinationConfig: { OnSuccess: {}, OnFailure: { Destination: dlq } },
+      };
+      const sdkReadback = {
+        FunctionName: 'fn',
+        Qualifier: '$LATEST',
+        MaximumRetryAttempts: 1,
+        DestinationConfig: { OnFailure: { Destination: dlq } },
+      };
+      expect(provider.canonicalizeDriftProperties(T, ccBaseline)).toEqual(sdkReadback);
+      expect(ccBaseline.DestinationConfig.OnSuccess).toEqual({}); // input not mutated
+    });
+
+    it('drops DestinationConfig when both members were empty', () => {
+      const out = provider.canonicalizeDriftProperties(T, {
+        FunctionName: 'fn',
+        DestinationConfig: { OnSuccess: {}, OnFailure: {} },
+      });
+      expect(out).toEqual({ FunctionName: 'fn' });
+    });
+
+    it('returns the input by identity when nothing applies', () => {
+      const withDest = { DestinationConfig: { OnFailure: { Destination: dlq } } };
+      const without = { FunctionName: 'fn' };
+      const malformed = { DestinationConfig: 'x' };
+      expect(provider.canonicalizeDriftProperties(T, withDest)).toBe(withDest);
+      expect(provider.canonicalizeDriftProperties(T, without)).toBe(without);
+      expect(provider.canonicalizeDriftProperties(T, malformed)).toBe(malformed);
+    });
+  });
 });

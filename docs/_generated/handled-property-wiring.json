@@ -13395,6 +13395,7 @@
           ],
           "seededBy": [
             "buildPutInput",
+            "canonicalizeDriftProperties",
             "create",
             "update"
           ]
@@ -13466,7 +13467,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in update()"
+        "computed key in update()",
+        "object spread in canonicalizeDriftProperties()"
       ]
     },
     {

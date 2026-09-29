@@ -58,7 +58,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `FSxFileSystemProvider` (fsx-filesystem-provider.ts) | `computed key in detectVariantConfigKey()`, `computed key in update()` |
 | `IAMUserGroupProvider` (iam-user-group-provider.ts) | `computed key in derivedNamePairs()` |
 | `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
-| `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()` |
+| `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()`, `object spread in canonicalizeDriftProperties()` |
 | `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |

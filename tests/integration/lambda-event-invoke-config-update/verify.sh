@@ -176,17 +176,21 @@ eic_record() { # usage: eic_record <jq path under the resource>; prints "" when 
 EIC_ID=$(eic_record .physicalId)
 EIC_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${EIC_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
 [ "${EIC_ID}" = "${FN_NAME}|\$LATEST" ] || { echo "FAIL: #4091 premise: EventInvokeConfig physicalId is '${EIC_ID}', expected '${FN_NAME}|\$LATEST'" >&2; exit 1; }
-[ "$(eic_record .provisionedBy)" = "sdk" ] || { echo "FAIL: #4091 premise: the EventInvokeConfig is not SDK-provisioned before seeding" >&2; exit 1; }
+PRE_LAYER=$(eic_record .provisionedBy)
+[ "${PRE_LAYER}" = "sdk" ] || { echo "FAIL: #4091 premise: the EventInvokeConfig is provisionedBy '${PRE_LAYER}' before seeding, expected sdk" >&2; exit 1; }
 # Parity, observed: Cloud Control reads the resource by the id cdkd stored.
 CC_FN=$(aws cloudcontrol get-resource --type-name "${EIC_TYPE}" --identifier "${EIC_ID}" \
   --region "${REGION}" --query 'ResourceDescription.Identifier' --output text)
 [ "${CC_FN}" = "${EIC_ID}" ] || { echo "FAIL: #4091: Cloud Control's identifier '${CC_FN}' differs from cdkd's physicalId '${EIC_ID}'" >&2; exit 1; }
 echo "    OK: Cloud Control addresses the EventInvokeConfig by cdkd's physicalId (${EIC_ID})"
 echo "==> Phase 1.6: seed the EventInvokeConfig record to provisionedBy=cc-api"
+# Assignments, not argument substitutions, so a failed read or jq aborts here
+# under `set -e` instead of uploading an empty state file.
 SEED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
-printf '%s\n' "$(echo "${SEED_STATE}" | jq --arg t "${EIC_TYPE}" '.resources |= with_entries(if .value.resourceType == $t then .value.provisionedBy = "cc-api" else . end)')" \
-  | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
-[ "$(eic_record .provisionedBy)" = "cc-api" ] || { echo "FAIL: #4091: seeding the record to cc-api did not stick" >&2; exit 1; }
+SEEDED=$(echo "${SEED_STATE}" | jq --arg t "${EIC_TYPE}" '.resources |= with_entries(if .value.resourceType == $t then .value.provisionedBy = "cc-api" else . end)')
+printf '%s\n' "${SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+SEEDED_LAYER=$(eic_record .provisionedBy)
+[ "${SEEDED_LAYER}" = "cc-api" ] || { echo "FAIL: #4091: seeding the record to cc-api did not stick (got '${SEEDED_LAYER}')" >&2; exit 1; }
 
 # --- Phase 2: UPDATE (MaxAge 300 / Retries 2) — undeployable pre-fix ---
 echo "==> Phase 2: re-deploy with maxEventAge 5 min / retryAttempts 2 (UPDATE)"
@@ -202,10 +206,16 @@ DEPLOY_P2_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_P2_LOG}")"
 rm -f "${DEPLOY_P2_LOG}"
 DEPLOY_P2_LOG=""
 printf '%s\n' "${DEPLOY_P2_PLAIN}"
-[ "$(eic_record .provisionedBy)" = "sdk" ] || { echo "FAIL: #4091: the cc-api record did not flip back to sdk" >&2; exit 1; }
-[ "$(eic_record .physicalId)" = "${EIC_ID}" ] || { echo "FAIL: #4091: the flip changed the physicalId" >&2; exit 1; }
-if grep -qE "Replacing ${EIC_LOGICAL} " <<<"${DEPLOY_P2_PLAIN}"; then
-  echo "FAIL: #4091: the flip REPLACED ${EIC_LOGICAL} instead of updating it in place" >&2
+POST_LAYER=$(eic_record .provisionedBy)
+POST_ID=$(eic_record .physicalId)
+[ "${POST_LAYER}" = "sdk" ] || { echo "FAIL: #4091: the cc-api record did not flip back to sdk (got '${POST_LAYER}')" >&2; exit 1; }
+[ "${POST_ID}" = "${EIC_ID}" ] || { echo "FAIL: #4091: the flip changed the physicalId (${EIC_ID} -> ${POST_ID})" >&2; exit 1; }
+# The id is name-keyed, so a delete + create would keep it: the log is the
+# only replacement witness. Every replacement wording the engine prints names
+# the logical id beside some form of "replac".
+if grep -F "${EIC_LOGICAL}" <<<"${DEPLOY_P2_PLAIN}" | grep -qi 'replac'; then
+  echo "FAIL: #4091: the flip REPLACED ${EIC_LOGICAL} instead of updating it in place:" >&2
+  grep -F "${EIC_LOGICAL}" <<<"${DEPLOY_P2_PLAIN}" | grep -i 'replac' >&2
   exit 1
 fi
 # Sentinel: the flipped record above -- a flip with no line means the wording drifted.
