@@ -293,6 +293,20 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       expect(lines[0]).not.toContain('SECRETKEY');
     });
 
+    it('update refuses a wrong-region client before reading a secret-derived target list from the proxy', async () => {
+      await expect(
+        provider.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: ['c1'] },
+          { DBProxyName: 'AuroraProxy', DBClusterIdentifiers: '{{resolve:ssm:targets}}' },
+          { expectedRegion: 'us-west-2' }
+        )
+      ).rejects.toThrow(/Refusing to update TG .*does not match stack state region/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('update refuses a wrong-region client before any call', async () => {
       await expect(
         provider.update(

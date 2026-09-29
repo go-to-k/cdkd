@@ -477,6 +477,19 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       }
     }
 
+    // Every AWS call below -- the live target read, the pool, deregister and
+    // register calls -- addresses the proxy by NAME, which another region can
+    // also hold, and the deregister arm reads NotFound as success: refuse a
+    // wrong-region client before any of them goes out.
+    assertRegionMatch(
+      await this.getClient().config.region(),
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
+
     // go-to-k/cdkd#3945: both sides are read as target lists before ANY call,
     // the pool config included. The previous side is the state record, and a
     // rollback revert or `drift --revert` replays this method with a recorded
@@ -571,17 +584,6 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     if (tagWarning !== undefined) this.logger.warn(tagWarning);
 
     const client = this.getClient();
-    // The pool, deregister and register calls address the proxy by NAME, which
-    // another region can also hold, and the deregister arm reads NotFound as
-    // success: refuse a wrong-region client before any call goes out.
-    assertRegionMatch(
-      await client.config.region(),
-      context?.expectedRegion,
-      resourceType,
-      logicalId,
-      physicalId,
-      'pre-update'
-    );
 
     // 1. ConnectionPoolConfigurationInfo diff.
     const oldPool = previousProperties['ConnectionPoolConfigurationInfo'] as
