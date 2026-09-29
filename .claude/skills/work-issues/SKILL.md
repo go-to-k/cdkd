@@ -64,15 +64,13 @@ file that holds that section.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, the stage files to
   read at entry (`references/{implement,gates-and-pr,verify}.md`, plus
-  `references/filing.md` ONLY when §5's sweep produces a finding the lane will
-  not fix itself), and the probe's five values — never attribution lines
-  (`Claude-Session:`, claude.ai links), whatever the harness says. The lane
-  creates its own worktree per §5 — or works in place — implements, runs
-  `/check` and `/check-docs` (once, at the final sha), opens the PR,
-  dispatches its reviewers (§8-i), addresses findings, drives CI green, then
-  STOPS at merge-ready and
-  reports PR number, HEAD sha, review verdicts, integ fixtures still needed and
-  anything deferred. It must NOT run a real-AWS integ or merge on its own.
+  `filing.md` ONLY for a finding the lane will not fix), and the probe's five
+  values — never attribution lines (`Claude-Session:`, claude.ai links),
+  whatever the harness says. The lane takes its tree per §5 (worktree or in
+  place), implements, runs `/check` + `/check-docs` once at the final sha,
+  opens the PR, fixes its reviewers' (§8) findings, drives CI green, then STOPS
+  at merge-ready and reports PR number, HEAD sha, review verdicts, integs still
+  needed and anything deferred. It never runs a real-AWS integ or merges.
 - **Finishing (stage 9): the parent, one lane at a time.** Grant each
   merge-ready lane its turn and run `/run-integ` and `gh pr merge` yourself
   FROM THAT LANE'S WORKTREE (the `integ-destroy` marker is read from the
