@@ -442,7 +442,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     const fn = properties['FunctionName'];
     const fnName = typeof fn === 'string' ? canonicalLambdaFunctionName(fn) : fn;
     const base = fnName === fn ? properties : { ...properties, FunctionName: fnName };
-    const dest = base['DestinationConfig'];
+    const dest = properties['DestinationConfig'];
     if (dest === null || typeof dest !== 'object' || Array.isArray(dest)) return base;
     const members = dest as Record<string, unknown>;
     const empty = (key: string): boolean => {
