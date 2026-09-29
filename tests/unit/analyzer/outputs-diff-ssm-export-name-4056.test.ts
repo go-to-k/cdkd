@@ -508,3 +508,52 @@ describe('resolveTemplateOutputs: which surviving tokens refuse an intrinsic ali
     expect([...r.exportNames]).toEqual([literalName]);
   });
 });
+
+describe('a LITERAL Export.Name in a stack whose only recorded secret is not spelled in a value (issue #4143)', () => {
+  const LITERAL = 'prod-lit-endpoint';
+  /** `Sec`'s plain-ssm value resolves to `secSide`; everything else passes through. */
+  const resolver =
+    (secSide: string, intrinsicName = 'unused') =>
+    async (value: unknown): Promise<unknown> =>
+      value === SSM_REF ? secSide : typeof value === 'string' ? value : intrinsicName;
+
+  const plainSsmStack = (): CloudFormationTemplate =>
+    template({ Sec: { Value: SSM_REF }, Lit: { Value: 'v', Export: { Name: LITERAL } } });
+
+  it('decides the alias from STATE when a plain-ssm SecureString keeps its token', async () => {
+    // Before: `secretSourceKeys` (a RAW spelling test) was empty, so the alias
+    // published although the deploy refuses a literal name holding the
+    // recorded plaintext.
+    const absent = await resolveTemplateOutputs(plainSsmStack(), resolver(SSM_REF), undefined, {});
+    expect(Object.prototype.hasOwnProperty.call(absent.outputs, LITERAL)).toBe(false);
+    expect(absent.failedKeys.has(LITERAL)).toBe(true);
+    expect(absent.resolutionFailed).toBe(true);
+
+    const stored = await resolveTemplateOutputs(plainSsmStack(), resolver(SSM_REF), undefined, {
+      [LITERAL]: 'v',
+    });
+    expect(stored.outputs[LITERAL]).toBe('v');
+    expect(stored.resolutionFailed).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL: a public String parameter records nothing, so the alias publishes', async () => {
+    const r = await resolveTemplateOutputs(plainSsmStack(), resolver('public-value'), undefined, {});
+    expect(r.outputs[LITERAL]).toBe('v');
+    expect(r.resolutionFailed).toBe(false);
+  });
+
+  it('counts a secretsmanager reference spelled only in an intrinsic Export.Name', async () => {
+    const tpl = template({
+      Named: { Value: 'n', Export: { Name: { 'Fn::Join': ['', ['x']] } as unknown as string } },
+      Lit: { Value: 'v', Export: { Name: LITERAL } },
+    });
+    const r = await resolveTemplateOutputs(
+      tpl,
+      resolver('unused', 'app-{{resolve:secretsmanager:db:SecretString:pw}}'),
+      undefined,
+      {}
+    );
+    expect(Object.prototype.hasOwnProperty.call(r.outputs, LITERAL)).toBe(false);
+    expect(r.failedKeys.has(LITERAL)).toBe(true);
+  });
+});

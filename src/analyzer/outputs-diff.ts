@@ -678,6 +678,23 @@ export async function resolveTemplateOutputs(
   const templateHasSecretReference = containsSecretDynamicReference(template);
   const secretBearingExportNames: string[] = [];
   let resolutionFailed = false;
+  // Does the deploy's outputs pass RECORD a secret at all (issue #4143)? A
+  // spelled output value (`secretSourceKeys`) is one source; a resolved value
+  // or intrinsic `Export.Name` that keeps a deploy-resolved token after the
+  // skip pass (a plain `ssm` SecureString, or a `secretsmanager` reference
+  // spelled only in a name) is the other, invisible to that raw spelling
+  // test. Decided after the loop, so LITERAL aliases wait for it.
+  let passResolvesSecret = false;
+  const pendingLiteralAliases: Array<{ outputKey: string; exportName: string; value: unknown }> =
+    [];
+  const keepsTokenInLeaves = (value: unknown): boolean => {
+    if (typeof value === 'string') return keepsSecretReferenceToken(value);
+    if (Array.isArray(value)) return value.some(keepsTokenInLeaves);
+    if (value !== null && typeof value === 'object') {
+      return Object.values(value as Record<string, unknown>).some(keepsTokenInLeaves);
+    }
+    return false;
+  };
   // The deploy engine REFUSES an export alias whose name is another published
   // output's name, and refuses one carrying a secret (issue #1919). This module
   // previews the bag that engine persists, so it has to refuse the same two —
@@ -850,6 +867,7 @@ export async function resolveTemplateOutputs(
       continue;
     }
     outputs[outputKey] = value;
+    if (keepsTokenInLeaves(value)) passResolvesSecret = true;
 
     if (output.Export?.Name) {
       let exportName: unknown = output.Export.Name;
@@ -876,6 +894,13 @@ export async function resolveTemplateOutputs(
         }
       }
       if (typeof exportName === 'string') recordTokenBearingExportName(exportName);
+      if (
+        declaredExportIsIntrinsic &&
+        typeof exportName === 'string' &&
+        keepsSecretReferenceToken(exportName)
+      ) {
+        passResolvesSecret = true;
+      }
       if (typeof exportName === 'string' && !isUnresolvedValue(exportName, exportSourceUsedSub)) {
         // The refusal order MIRRORS the deploy engine's — secret first, then
         // collision — so a name matching both is attributed the same way on
@@ -905,79 +930,9 @@ export async function resolveTemplateOutputs(
           logger.debug(
             `Diff skipping export alias ${stripControlChars(exportName)} of ${stripControlChars(outputKey)} — collides with an output name`
           );
-        } else if (!declaredExportIsIntrinsic && secretSourceKeys.size > 0) {
-          // The deploy refuses a LITERAL name that CONTAINS a resolved secret
-          // plaintext — the `prod-<secret>-endpoint` shape — and this preview
-          // never substitutes a plaintext, so it cannot evaluate that predicate
-          // directly. Narrowed to stacks where the deploy actually records a
-          // secret: with no secret-bearing output there is nothing for a name
-          // to contain.
-          //
-          // STATE decides it (issue #1942). The stored bag holding this exact
-          // alias KEY is proof that a PREVIOUS deploy — which did hold the
-          // plaintext and did evaluate the predicate — published it, so this
-          // preview can publish it too: same literal name, same output, so the
-          // next deploy re-evaluates the same predicate over the same name. The
-          // preview is not guessing at the predicate; it is reading a verdict
-          // the apply already recorded.
-          //
-          // Publishing regardless of the stored VALUE, deliberately. The
-          // refusal deploy makes is about the NAME, which is a template literal
-          // and unchanged between the two runs; the value is what the output
-          // resolves to today, and previewing a CHANGED one is exactly the #875
-          // case this whole section exists for. Requiring value equality would
-          // suppress the only row anyone needed.
-          //
-          // ABSENT key -> suppress, as before. Absence is not evidence: it means
-          // either a first deploy of this alias or a first deploy of the stack,
-          // and in both the apply's verdict does not exist yet. Guessing there
-          // would be guessing at the predicate, which is what this arm refuses
-          // to do.
-          //
-          // Two residuals, stated rather than papered over. (1) A secret that
-          // ROTATES to a value which is a substring of the literal export name
-          // flips deploy's verdict, so the preview would publish a row deploy
-          // now refuses — a phantom, and the row's KEY would carry that
-          // plaintext; the name is a fixed template literal and the value is
-          // high-entropy, so this needs a coincidence rather than a mistake.
-          // (2) A key stored by a PRE-#1919 binary records no verdict at all
-          // (the refusal did not exist then) — that is the same key
-          // `cdkd scrub` reports through `secretBearingStateKeyWarning`, and
-          // it prints as a row on any stack whose section is not suppressed,
-          // so publishing does not widen it. Its NAME goes through
-          // `computeOutputsDiff`'s key verdict (issue #4015). While the name is
-          // still declared it is template text -- the plaintext it would carry
-          // is in the template itself -- and is masked only when the corpus
-          // holds it; once removed, its stored key is a REMOVE row the
-          // alias-name refusal there withholds.
-          const storedProvesPublished =
-            storedOutputs !== undefined &&
-            Object.prototype.hasOwnProperty.call(storedOutputs, exportName);
-          if (storedProvesPublished) {
-            outputs[exportName] = value;
-            exportNames.add(exportName);
-          } else {
-            // Suppressing is this module's existing answer to "cannot reproduce
-            // what deploy will do", and it also avoids printing a row whose KEY
-            // may hold that plaintext into CI logs.
-            //
-            // Recording the ALIAS key is what keeps the suppression honest: it
-            // is absent from this bag but may well be PRESENT in state, and
-            // without recording it the warning downstream reads it as a REMOVE
-            // and blames "an output referencing a resource this deploy has yet
-            // to create" — the wrong cause, on every run, forever.
-            // `failedKeys.add` directly, NOT `recordFailure`: that helper also
-            // records `outputKey`, whose value resolved fine and belongs in the
-            // diff.
-            logger.debug(
-              `Diff cannot decide the export alias of ${stripControlChars(outputKey)} — a literal name may contain a resolved secret and state does not hold that key`
-            );
-            failedKeys.add(exportName);
-            resolutionFailed = true;
-            // Deploy DOES decide this alias, holding the plaintext, and the
-            // merge has no verdict to carry or drop it by.
-            failuresMirrorDeploy = false;
-          }
+        } else if (!declaredExportIsIntrinsic) {
+          // Decided after the loop, once `passResolvesSecret` is known.
+          pendingLiteralAliases.push({ outputKey, exportName, value });
         } else {
           outputs[exportName] = value;
           exportNames.add(exportName);
@@ -989,6 +944,87 @@ export async function resolveTemplateOutputs(
         resolutionFailed = true;
         failuresMirrorDeploy = false;
       }
+    }
+  }
+
+  const deployRecordsSecret = secretSourceKeys.size > 0 || passResolvesSecret;
+  for (const { outputKey, exportName, value } of pendingLiteralAliases) {
+    if (!deployRecordsSecret) {
+      outputs[exportName] = value;
+      exportNames.add(exportName);
+      continue;
+    }
+    // The deploy refuses a LITERAL name that CONTAINS a resolved secret
+    // plaintext — the `prod-<secret>-endpoint` shape — and this preview
+    // never substitutes a plaintext, so it cannot evaluate that predicate
+    // directly. Narrowed to stacks where the deploy actually records a
+    // secret (`passResolvesSecret`, issue #4143): with none there is nothing
+    // for a name to contain.
+    //
+    // STATE decides it (issue #1942). The stored bag holding this exact
+    // alias KEY is proof that a PREVIOUS deploy — which did hold the
+    // plaintext and did evaluate the predicate — published it, so this
+    // preview can publish it too: same literal name, same output, so the
+    // next deploy re-evaluates the same predicate over the same name. The
+    // preview is not guessing at the predicate; it is reading a verdict
+    // the apply already recorded.
+    //
+    // Publishing regardless of the stored VALUE, deliberately. The
+    // refusal deploy makes is about the NAME, which is a template literal
+    // and unchanged between the two runs; the value is what the output
+    // resolves to today, and previewing a CHANGED one is exactly the #875
+    // case this whole section exists for. Requiring value equality would
+    // suppress the only row anyone needed.
+    //
+    // ABSENT key -> suppress, as before. Absence is not evidence: it means
+    // either a first deploy of this alias or a first deploy of the stack,
+    // and in both the apply's verdict does not exist yet. Guessing there
+    // would be guessing at the predicate, which is what this arm refuses
+    // to do.
+    //
+    // Two residuals, stated rather than papered over. (1) A secret that
+    // ROTATES to a value which is a substring of the literal export name
+    // flips deploy's verdict, so the preview would publish a row deploy
+    // now refuses — a phantom, and the row's KEY would carry that
+    // plaintext; the name is a fixed template literal and the value is
+    // high-entropy, so this needs a coincidence rather than a mistake.
+    // (2) A key stored by a PRE-#1919 binary records no verdict at all
+    // (the refusal did not exist then) — that is the same key
+    // `cdkd scrub` reports through `secretBearingStateKeyWarning`, and
+    // it prints as a row on any stack whose section is not suppressed,
+    // so publishing does not widen it. Its NAME goes through
+    // `computeOutputsDiff`'s key verdict (issue #4015). While the name is
+    // still declared it is template text -- the plaintext it would carry
+    // is in the template itself -- and is masked only when the corpus
+    // holds it; once removed, its stored key is a REMOVE row the
+    // alias-name refusal there withholds.
+    const storedProvesPublished =
+      storedOutputs !== undefined &&
+      Object.prototype.hasOwnProperty.call(storedOutputs, exportName);
+    if (storedProvesPublished) {
+      outputs[exportName] = value;
+      exportNames.add(exportName);
+    } else {
+      // Suppressing is this module's existing answer to "cannot reproduce
+      // what deploy will do", and it also avoids printing a row whose KEY
+      // may hold that plaintext into CI logs.
+      //
+      // Recording the ALIAS key is what keeps the suppression honest: it
+      // is absent from this bag but may well be PRESENT in state, and
+      // without recording it the warning downstream reads it as a REMOVE
+      // and blames "an output referencing a resource this deploy has yet
+      // to create" — the wrong cause, on every run, forever.
+      // `failedKeys.add` directly, NOT `recordFailure`: that helper also
+      // records `outputKey`, whose value resolved fine and belongs in the
+      // diff.
+      logger.debug(
+        `Diff cannot decide the export alias of ${stripControlChars(outputKey)} — a literal name may contain a resolved secret and state does not hold that key`
+      );
+      failedKeys.add(exportName);
+      resolutionFailed = true;
+      // Deploy DOES decide this alias, holding the plaintext, and the
+      // merge has no verdict to carry or drop it by.
+      failuresMirrorDeploy = false;
     }
   }
 

@@ -1235,8 +1235,10 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     }
     expect(twin).toContain('declaredExportIsIntrinsic && keepsSecretReferenceToken(exportName)');
     // ...and the LITERAL arm, which is what keeps the diff from publishing an
-    // alias deploy refuses without being able to see the secret.
-    expect(twin).toContain('!declaredExportIsIntrinsic && secretSourceKeys.size > 0');
+    // alias deploy refuses without being able to see the secret. Its gate
+    // counts every secret the deploy's pass records, not only a spelled value
+    // (issue #4143).
+    expect(twin).toContain('secretSourceKeys.size > 0 || passResolvesSecret');
     // No source grep for that arm's stored-bag decision (issue #1942), and the
     // absence is deliberate. This describe fences CROSS-FILE parity — a claim
     // about the deploy engine that the twin's own behavioral tests cannot
