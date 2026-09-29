@@ -51,6 +51,12 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
  *  - API Gateway V2 HTTP Api + default Stage with Description on each
  *    (PR #198). inject-drift.ts mutates both descriptions via
  *    UpdateApi / UpdateStage; provider.update reverts via the same APIs.
+ *  - A NAMED IAM Role and a NAMED IAM ManagedPolicy (issue #4023). verify.sh
+ *    deploys with `CDKD_PREFIX_USER_SUPPLIED_NAMES=true`, so AWS holds
+ *    `<stack>-<name>` while the template records `<name>`; step 6e strips
+ *    their observed baselines and reverts an out-of-band change, which must
+ *    land on the prefixed resources rather than replace them under the bare
+ *    template name.
  */
 export class DriftRevertStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -95,6 +101,25 @@ export class DriftRevertStack extends cdk.Stack {
           ],
         }),
       },
+    });
+
+    // Issue #4023: user-supplied names, so the deploy's
+    // `CDKD_PREFIX_USER_SUPPLIED_NAMES=true` prefixes them. Neither is attached to
+    // anything, so a leaked copy under the bare name (the pre-fix revert's
+    // replacement) is deletable by `cleanup` with one call each.
+    new iam.Role(this, 'DriftNamedRole', {
+      roleName: 'cdkd-drift-revert-named-role',
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'drift-revert named role',
+    });
+    new iam.ManagedPolicy(this, 'DriftNamedPolicy', {
+      managedPolicyName: 'cdkd-drift-revert-named-policy',
+      statements: [
+        new iam.PolicyStatement({
+          actions: ['s3:GetObject'],
+          resources: ['arn:aws:s3:::cdkd-drift-revert-placeholder/*'],
+        }),
+      ],
     });
 
     const key = new kms.Key(this, 'DriftKey', {

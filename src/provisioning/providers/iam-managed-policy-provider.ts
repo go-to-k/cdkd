@@ -44,6 +44,7 @@ import type {
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import {
   onlySecretDerived,
   readPrincipalLists,
@@ -272,24 +273,48 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    const newPolicyName = generateResourceNameWithFallback(
+    const derivedPolicyName = generateResourceNameWithFallback(
       properties['ManagedPolicyName'] as string | undefined,
       logicalId,
       { maxLength: 128 }
     );
     const oldPolicyName = derivePolicyNameFromArn(physicalId);
     // Issue #2177 -- see `create()`, including the derived-name needles. The
-    // recorded ARN's name is paired with the PREVIOUS value it was derived from.
+    // recorded ARN's name is paired with the PREVIOUS value it was derived from,
+    // and with the DESIRED one too, for the reason `IAMRoleProvider.update`
+    // gives (issue #4023).
     const log = withDerivedNameMasks(
       this.logger,
       createMaskedLogSinks(this.logger, context?.maskSecrets),
       [
-        [properties['ManagedPolicyName'], newPolicyName],
+        [properties['ManagedPolicyName'], derivedPolicyName],
         [previousProperties['ManagedPolicyName'], oldPolicyName],
+        // Only on a revert: on a template-path rename the recorded name is
+        // NOT derived from the desired value, and masking it would hide the
+        // old name for no reason.
+        ...(context?.desiredFromAwsReadback === true
+          ? [[properties['ManagedPolicyName'], oldPolicyName] as [unknown, string]]
+          : []),
       ]
     );
     const { value: v } = log;
     log.debug(`Updating IAM managed policy ${logicalId}: ${v(physicalId)}`);
+    // Issue #4023: `cdkd drift --revert` keeps the recorded name, as
+    // `IAMRoleProvider.update` does and for the same reason — the derivation
+    // runs outside the deploy's stack-name / prefix scope, and a policy's name
+    // cannot change in place, so a mismatch would REPLACE the live policy.
+    const revertKeepsName =
+      context?.desiredFromAwsReadback === true && derivedPolicyName !== oldPolicyName;
+    if (revertKeepsName) {
+      log.warn(
+        `IAM managed policy ${logicalId}: ManagedPolicyName is not reverted — the policy ` +
+          `${v(oldPolicyName)} keeps its name (the reverted properties derive ` +
+          `${v(derivedPolicyName)}), since a drift revert never replaces a policy. 'cdkd drift' ` +
+          `keeps reporting the name until 'cdkd drift --accept' records the live one; only a ` +
+          `deploy renames the policy.`
+      );
+    }
+    const newPolicyName = revertKeepsName ? oldPolicyName : derivedPolicyName;
     // BOTH sides before any call (go-to-k/cdkd#3906). The previous side is the
     // state record, and a rollback revert or `drift --revert` replays this
     // method with a recorded bag as the DESIRED side: a string there was
@@ -337,6 +362,22 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       newPolicyName !== oldPolicyName ||
       newPath !== oldPath ||
       (newDescription ?? '') !== (oldDescription ?? '');
+
+    // Issue #4023: the replacement arm re-derives the name inside `create()`,
+    // so on a revert it would still create under the derived name and delete
+    // the recorded policy. A revert never replaces: refuse before any call.
+    if (needsReplacement && context?.desiredFromAwsReadback === true) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `IAM managed policy ${logicalId}: ${newPath !== oldPath ? 'Path' : 'Description'} ` +
+            `cannot be reverted — it cannot change in place, and a drift revert never replaces ` +
+            `the policy ${v(physicalId)}. Nothing was changed; deploy the stack to replace it.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
 
     if (needsReplacement) {
       const reason =

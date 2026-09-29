@@ -389,6 +389,134 @@ describe('IAMManagedPolicyProvider', () => {
       expect(callsOfType(DeletePolicyCommand)).toHaveLength(1);
     });
 
+    // Issue #4023: `cdkd drift --revert` (`desiredFromAwsReadback`) derives the
+    // name outside the deploy's stack-name / prefix scope, so its bag can name
+    // the template's pre-prefix name while the live policy carries the
+    // prefixed one. The same input WITHOUT the flag replaces (control below),
+    // so the flag is what keeps the live policy.
+    describe('drift revert keeps the recorded name (issue #4023)', () => {
+      const PREFIXED_ARN = 'arn:aws:iam::123456789012:policy/MyStack-my-policy';
+      const bags = (): [Record<string, unknown>, Record<string, unknown>] => [
+        { PolicyDocument: POLICY_DOC, ManagedPolicyName: 'my-policy' },
+        { PolicyDocument: POLICY_DOC, ManagedPolicyName: 'MyStack-my-policy' },
+      ];
+
+      it('updates in place and warns instead of replacing', async () => {
+        const [desired, previous] = bags();
+        const warn = vi.mocked(getLogger().child('IAMManagedPolicyProvider').warn);
+        warn.mockClear();
+
+        const result = await provider.update(
+          'MyManagedPolicy',
+          PREFIXED_ARN,
+          'AWS::IAM::ManagedPolicy',
+          desired,
+          previous,
+          { desiredFromAwsReadback: true }
+        );
+
+        expect(result.wasReplaced).toBe(false);
+        expect(result.physicalId).toBe(PREFIXED_ARN);
+        expect(callsOfType(CreatePolicyCommand)).toHaveLength(0);
+        expect(callsOfType(DeletePolicyCommand)).toHaveLength(0);
+        // Nothing but the name differs, so no in-place call is needed either.
+        expect(mockSend).not.toHaveBeenCalled();
+        const lines = warn.mock.calls.map((c) => String(c[0]));
+        expect(
+          lines.some(
+            (l) =>
+              l.includes('ManagedPolicyName is not reverted') &&
+              l.includes('MyStack-my-policy') &&
+              l.includes('derive my-policy')
+          )
+        ).toBe(true);
+      });
+
+      it('still replaces on the template path (control)', async () => {
+        const [desired, previous] = bags();
+        const newArn = 'arn:aws:iam::123456789012:policy/my-policy';
+        mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'my-policy' } });
+        mockSend.mockResolvedValueOnce({ Policy: { Arn: PREFIXED_ARN } });
+        mockSend.mockResolvedValueOnce({ IsTruncated: false });
+        mockSend.mockResolvedValueOnce({ Versions: [], IsTruncated: false });
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.update(
+          'MyManagedPolicy',
+          PREFIXED_ARN,
+          'AWS::IAM::ManagedPolicy',
+          desired,
+          previous
+        );
+
+        expect(result.wasReplaced).toBe(true);
+        expect(callsOfType(CreatePolicyCommand)).toHaveLength(1);
+        expect(callsOfType(DeletePolicyCommand)).toHaveLength(1);
+      });
+
+      it.each([
+        ['Path', { Path: '/other/' }],
+        ['Description', { Description: 'other' }],
+      ])('refuses a %s revert instead of replacing the policy', async (field, extra) => {
+        const [desired, previous] = bags();
+        await expect(
+          provider.update(
+            'MyManagedPolicy',
+            PREFIXED_ARN,
+            'AWS::IAM::ManagedPolicy',
+            { ...desired, ...extra },
+            previous,
+            { desiredFromAwsReadback: true }
+          )
+        ).rejects.toThrow(new RegExp(`${field} cannot be reverted .*never replaces`));
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('masks a secret-derived recorded name in the warning', async () => {
+        const warn = vi.mocked(getLogger().child('IAMManagedPolicyProvider').warn);
+        warn.mockClear();
+        const secret = `Secret_Value_${'x'.repeat(130)}`;
+        const recorded = `MyStack-Secret-Value-${'x'.repeat(98)}-deadbeef`;
+        const arn = `arn:aws:iam::123456789012:policy/${recorded}`;
+
+        await provider.update(
+          'MyManagedPolicy',
+          arn,
+          'AWS::IAM::ManagedPolicy',
+          { PolicyDocument: POLICY_DOC, ManagedPolicyName: secret },
+          { PolicyDocument: POLICY_DOC, ManagedPolicyName: recorded },
+          {
+            desiredFromAwsReadback: true,
+            maskSecrets: (t: string) => t.split(secret).join('***'),
+          }
+        );
+
+        const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('is not reverted'));
+        expect(line).toBeDefined();
+        expect(line).not.toContain('Secret-Value');
+        expect(line).not.toContain('Secret_Value');
+      });
+
+      it('does not warn when the reverted name matches the recorded one', async () => {
+        const warn = vi.mocked(getLogger().child('IAMManagedPolicyProvider').warn);
+        warn.mockClear();
+
+        const result = await provider.update(
+          'MyManagedPolicy',
+          PREFIXED_ARN,
+          'AWS::IAM::ManagedPolicy',
+          { PolicyDocument: POLICY_DOC, ManagedPolicyName: 'MyStack-my-policy' },
+          { PolicyDocument: POLICY_DOC, ManagedPolicyName: 'MyStack-my-policy' },
+          { desiredFromAwsReadback: true }
+        );
+
+        expect(result.wasReplaced).toBe(false);
+        expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'is not reverted'
+        );
+      });
+    });
+
     it('diffs and applies tag changes', async () => {
       mockSend.mockResolvedValue({});
 

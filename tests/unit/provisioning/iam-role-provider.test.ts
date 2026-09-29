@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  CreateRoleCommand,
+  DeleteRoleCommand,
   GetRoleCommand,
   NoSuchEntityException,
   UpdateRoleCommand,
@@ -34,6 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 describe('IAMRoleProvider', () => {
   let provider: IAMRoleProvider;
@@ -483,6 +486,137 @@ describe('IAMRoleProvider', () => {
       expect(result.wasReplaced).toBe(true);
       expect(result.outcome).toBeUndefined();
       expect(result.reason).toBeUndefined();
+    });
+
+    // Issue #4023: `cdkd drift --revert` (`desiredFromAwsReadback`) derives the
+    // name outside the deploy's stack-name / prefix scope, so its bag can name
+    // the template's pre-prefix `RoleName` while the live role carries the
+    // prefixed one. The same input WITHOUT the flag replaces (control below),
+    // so the flag is what keeps the live role.
+    describe('drift revert keeps the recorded name (issue #4023)', () => {
+      const DOC = { Version: '2012-10-17', Statement: [] };
+      const sent = (klass: { new (...args: never[]): unknown }): unknown[] =>
+        mockSend.mock.calls.filter((c) => c[0] instanceof klass).map((c) => c[0]);
+
+      it('updates in place and warns instead of replacing', async () => {
+        const warn = vi.mocked(getLogger().child('IAMRoleProvider').warn);
+        mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
+        mockSend.mockResolvedValueOnce({
+          Role: { RoleName: 'MyStack-my-role', Arn: 'arn:aws:iam::0:role/MyStack-my-role' },
+        }); // GetRoleCommand
+
+        const result = await provider.update(
+          'L',
+          'MyStack-my-role',
+          'AWS::IAM::Role',
+          { RoleName: 'my-role', AssumeRolePolicyDocument: DOC },
+          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC },
+          { desiredFromAwsReadback: true }
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(result.wasReplaced).toBe(false);
+        expect(result.physicalId).toBe('MyStack-my-role');
+        expect(sent(CreateRoleCommand)).toHaveLength(0);
+        expect(sent(DeleteRoleCommand)).toHaveLength(0);
+        const update = sent(UpdateRoleCommand)[0] as UpdateRoleCommand;
+        expect(update.input.RoleName).toBe('MyStack-my-role');
+        const lines = warn.mock.calls.map((c) => String(c[0]));
+        expect(
+          lines.some(
+            (l) =>
+              l.includes('RoleName is not reverted') &&
+              l.includes('MyStack-my-role') &&
+              l.includes('derive my-role')
+          )
+        ).toBe(true);
+      });
+
+      it('still replaces on the template path (control)', async () => {
+        mockSend.mockResolvedValueOnce({
+          Role: { RoleName: 'my-role', Arn: 'arn:aws:iam::0:role/my-role', RoleId: 'r2' },
+        }); // create()
+        mockSend.mockResolvedValue({}); // the delete()'s cleanup calls all succeed
+
+        const result = await provider.update(
+          'L',
+          'MyStack-my-role',
+          'AWS::IAM::Role',
+          { RoleName: 'my-role', AssumeRolePolicyDocument: DOC },
+          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC }
+        );
+
+        expect(result.wasReplaced).toBe(true);
+        expect(sent(CreateRoleCommand)).toHaveLength(1);
+        expect(sent(DeleteRoleCommand)).toHaveLength(1);
+      });
+
+      // The replacement arm re-derives the name inside `create()`, so a Path
+      // mismatch on a revert must refuse rather than replace under the bare name.
+      it('refuses a Path revert instead of replacing the role', async () => {
+        await expect(
+          provider.update(
+            'L',
+            'MyStack-my-role',
+            'AWS::IAM::Role',
+            { RoleName: 'my-role', Path: '/other/', AssumeRolePolicyDocument: DOC },
+            { RoleName: 'MyStack-my-role', Path: '/', AssumeRolePolicyDocument: DOC },
+            { desiredFromAwsReadback: true }
+          )
+        ).rejects.toThrow(/Path cannot be reverted to \/other\/ .*never replaces the role MyStack-my-role/);
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      // The recorded name of a secret-derived RoleName is truncated with a hash,
+      // so it holds no copy of the derived needle: it is masked through the
+      // desired-side pair.
+      it('masks a secret-derived recorded name in the warning', async () => {
+        const warn = vi.mocked(getLogger().child('IAMRoleProvider').warn);
+        const secret = `Secret_Value_${'x'.repeat(60)}`;
+        const recorded = `MyStack-Secret-Value-${'x'.repeat(34)}-deadbeef`;
+        mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
+        mockSend.mockResolvedValueOnce({ Role: { RoleName: recorded, Arn: 'arn:aws:iam::0:role/r' } });
+
+        await provider.update(
+          'L',
+          recorded,
+          'AWS::IAM::Role',
+          { RoleName: secret, AssumeRolePolicyDocument: DOC },
+          { RoleName: recorded, AssumeRolePolicyDocument: DOC },
+          {
+            desiredFromAwsReadback: true,
+            maskSecrets: (t: string) => t.split(secret).join('***'),
+          }
+        );
+
+        const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('is not reverted'));
+        expect(line).toBeDefined();
+        expect(line).not.toContain('Secret-Value');
+        expect(line).not.toContain('Secret_Value');
+      });
+
+      it('does not warn when the reverted name matches the recorded one', async () => {
+        const warn = vi.mocked(getLogger().child('IAMRoleProvider').warn);
+        mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
+        mockSend.mockResolvedValueOnce({
+          Role: { RoleName: 'MyStack-my-role', Arn: 'arn:aws:iam::0:role/MyStack-my-role' },
+        }); // GetRoleCommand
+
+        const result = await provider.update(
+          'L',
+          'MyStack-my-role',
+          'AWS::IAM::Role',
+          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC },
+          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC },
+          { desiredFromAwsReadback: true }
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(result.wasReplaced).toBe(false);
+        expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'is not reverted'
+        );
+      });
     });
 
     it('sends UpdateRoleCommand with Description="" so AWS clears the existing description (not silently dropped by truthy gate)', async () => {

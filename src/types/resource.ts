@@ -656,6 +656,12 @@ export interface UpdateContext extends SecretMaskingContext {
    * collection rather than an absent key. Reverting to that baseline therefore
    * legitimately means REMOVING the live configuration.
    *
+   * Also that the call restores the RECORDED resource, never renames it: a
+   * provider deriving a physical name from the bag keeps the physical id
+   * instead of replacing on a mismatch (issue #4023). The name is derived
+   * outside the deploy's stack-name / prefix scope, and a bag with no observed
+   * baseline carries the template's name.
+   *
    * **What it does NOT license.** It says nothing about whether the user has a
    * remedy (they do — the baseline is cdkd's own record, editable via
    * `cdkd drift --accept`), so it is not a reason to relax a data-safety guard

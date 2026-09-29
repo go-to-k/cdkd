@@ -14,10 +14,46 @@
 #      -> assert exit 1 (a real principal change is still drift)
 #  6c. rewrite it to the role's REAL unique id
 #      -> assert exit 0 (issue #1515 canonicalization)
+#  6d. issue #1626: untemplated values survive a template-only baseline
+#  6e. issue #4023: --revert on a legacy-prefixed NAMED role / managed policy
+#      with a template-only baseline updates them in place, never under the
+#      bare template name
 #   7. cdkd destroy --force
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
@@ -51,9 +87,33 @@ fi
 # the peer releases its lock.
 PEER_HOLDS_STACK=0
 
+# Issue #4023: the template names of step 6e's role and managed policy. A
+# revert that re-derives the name (the pre-fix behaviour) creates copies under
+# these BARE names that no state record owns, so `destroy` cannot reach them.
+BARE_ROLE="cdkd-drift-revert-named-role"
+BARE_POLICY="cdkd-drift-revert-named-policy"
+# Set by step 6e once it knows the partition-qualified ARN; empty before that,
+# when no revert has run and nothing under the bare names can exist.
+BARE_POLICY_ARN=""
+
+# Best-effort removal of those copies. Neither is attached to anything (the
+# template attaches no policy to the role and the policy to no principal), so
+# one call each deletes them.
+sweep_bare_iam_names() { (
+  set +eu
+  [ -n "${BARE_POLICY_ARN}" ] || exit 0
+  # Only a copy carrying the fixture's own description: a same-named role
+  # someone else made is left alone.
+  if [ "$(aws iam get-role --role-name "${BARE_ROLE}" --query Role.Description --output text 2>/dev/null)" = "drift-revert named role" ]; then
+    aws iam delete-role --role-name "${BARE_ROLE}" >/dev/null 2>&1
+  fi
+  aws iam delete-policy --policy-arn "${BARE_POLICY_ARN}" >/dev/null 2>&1
+  exit 0
+) }
+
 cleanup() {
   rc=$?
-  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}"
+  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}" "${STEP6E_ERR:-}"
   if [ "${PEER_HOLDS_STACK}" = 1 ]; then
     echo "[verify] FAIL (exit ${rc}) — destroy and log-group sweep SKIPPED: this run deployed nothing to ${STACK}"
     exit "${rc}"
@@ -61,6 +121,7 @@ cleanup() {
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
+    sweep_bare_iam_names
   fi
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   exit "${rc}"
@@ -81,7 +142,10 @@ DEPLOY_LOG="$(mktemp)"
 set +e
 # `tee -i`: a Ctrl-C must not kill tee first, or deploy's interrupt notice hits
 # a closed pipe and it exits without saving state.
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee -i "${DEPLOY_LOG}"
+# `CDKD_PREFIX_USER_SUPPLIED_NAMES=true` (issue #4023) is the legacy naming step
+# 6e needs, `<stack>-<name>` on AWS beside `<name>` in the template. It changes
+# no other resource here — only a NAMED IAM / ELBv2 resource takes the prefix.
+CDKD_PREFIX_USER_SUPPLIED_NAMES=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee -i "${DEPLOY_LOG}"
 deploy_rc=${PIPESTATUS[0]}
 set -e
 if [ "${deploy_rc}" -ne 0 ]; then
@@ -228,6 +292,104 @@ if [ "${OWNER_AFTER}" != "cdkd-integ" ]; then
   exit 1
 fi
 echo "[verify] step 6d ok: untemplated tag preserved, templated tag reverted"
+
+# Issue #4023: `--revert` handed the provider a desired bag holding the
+# TEMPLATE name while AWS holds the legacy-prefixed one, and the IAM Role /
+# ManagedPolicy providers re-derive the name outside the deploy's stack-name /
+# prefix scope and REPLACE on a mismatch — a new role / policy under the bare
+# name, the live one deleted. The baseline must be template-only for the bag to
+# carry the bare name (an observed baseline carries the live one), so it is
+# manufactured as in step 6d. Asserted on AWS: the SAME role (RoleId) and the
+# SAME policy ARN carry the reverted values, and nothing exists under the bare
+# names.
+echo "[verify] step 6e: issue #4023 — --revert keeps a legacy-prefixed IAM name"
+NAMED_IDS="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const r=(JSON.parse(b).state??JSON.parse(b)).resources;const one=(p,t)=>{const ids=Object.keys(r).filter(k=>k.startsWith(p)&&r[k].resourceType===t);if(ids.length!==1)throw new Error(`expected one ${t} ${p}, found ${ids.length}`);return r[ids[0]].physicalId;};process.stdout.write(one("DriftNamedRole","AWS::IAM::Role")+" "+one("DriftNamedPolicy","AWS::IAM::ManagedPolicy"));})')"
+NAMED_ROLE="${NAMED_IDS%% *}"
+NAMED_POLICY_ARN="${NAMED_IDS#* }"
+# Non-vacuity: the deploy must have PREFIXED both names, or the template name
+# equals the live one and there is nothing for a revert to re-derive.
+if [ "${NAMED_ROLE}" != "${STACK}-${BARE_ROLE}" ]; then
+  echo "[verify] FAIL step 6e: role is '${NAMED_ROLE}', expected '${STACK}-${BARE_ROLE}' (was CDKD_PREFIX_USER_SUPPLIED_NAMES honoured?)" >&2
+  exit 1
+fi
+case "${NAMED_POLICY_ARN}" in
+  arn:*:iam::"${ACCOUNT_ID}":policy/"${STACK}-${BARE_POLICY}") ;;
+  *)
+    echo "[verify] FAIL step 6e: policy is '${NAMED_POLICY_ARN}', expected the '${STACK}-${BARE_POLICY}' ARN" >&2
+    exit 1
+    ;;
+esac
+BARE_POLICY_ARN="${NAMED_POLICY_ARN%/*}/${BARE_POLICY}"
+ROLE_ID_BEFORE="$(aws iam get-role --role-name "${NAMED_ROLE}" --query Role.RoleId --output text)"
+[ -n "${ROLE_ID_BEFORE}" ] || { echo "[verify] FAIL step 6e: empty RoleId for ${NAMED_ROLE}" >&2; exit 1; }
+
+STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" node strip-observed.ts DriftNamedRole AWS::IAM::Role RoleName
+STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" node strip-observed.ts DriftNamedPolicy AWS::IAM::ManagedPolicy ManagedPolicyName
+
+# The out-of-band changes the revert must undo: without them a revert that
+# skipped both resources would pass every assertion below.
+aws iam update-role --role-name "${NAMED_ROLE}" --description "DRIFTED-BY-INTEG"
+DRIFTED_POLICY_DOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::cdkd-drift-revert-placeholder/*"}]}'
+DRIFTED_VERSION="$(aws iam create-policy-version --query PolicyVersion.VersionId --output text --cli-input-json "$(node -e \
+  'process.stdout.write(JSON.stringify({PolicyArn:process.argv[1],PolicyDocument:process.argv[2],SetAsDefault:true}))' \
+  "${NAMED_POLICY_ARN}" "${DRIFTED_POLICY_DOC}")")"
+[ -n "${DRIFTED_VERSION}" ] || { echo "[verify] FAIL step 6e: create-policy-version returned no VersionId" >&2; exit 1; }
+
+# IAM reads lag writes briefly: wait until both changes are visible, or the
+# drift read can miss them and the revert has nothing to undo.
+wait_iam() { # usage: wait_iam "<what>" "<expected>" aws ... (reads one text value)
+  local what="$1" want="$2" got="" _
+  shift 2
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    got="$("$@")" || { echo "[verify] FAIL step 6e: ${what} probe failed ($*)" >&2; exit 1; }
+    [ "${got}" = "${want}" ] && return 0
+    sleep 2
+  done
+  echo "[verify] FAIL step 6e: ${what} is '${got}' after 20s, expected '${want}'" >&2
+  exit 1
+}
+wait_iam "injected role description" "DRIFTED-BY-INTEG" \
+  aws iam get-role --role-name "${NAMED_ROLE}" --query Role.Description --output text
+wait_iam "injected policy default version" "${DRIFTED_VERSION}" \
+  aws iam get-policy --policy-arn "${NAMED_POLICY_ARN}" --query Policy.DefaultVersionId --output text
+
+${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+
+STEP6E_ERR="$(mktemp)"
+ROLE_ID_AFTER="$(aws iam get-role --role-name "${NAMED_ROLE}" --query Role.RoleId --output text 2>"${STEP6E_ERR}")" || {
+  echo "[verify] FAIL step 6e: the prefixed role ${NAMED_ROLE} is gone after --revert: $(cat "${STEP6E_ERR}")" >&2
+  exit 1
+}
+if [ "${ROLE_ID_AFTER}" != "${ROLE_ID_BEFORE}" ]; then
+  echo "[verify] FAIL step 6e: ${NAMED_ROLE} was REPLACED by --revert (RoleId ${ROLE_ID_BEFORE} -> ${ROLE_ID_AFTER})" >&2
+  exit 1
+fi
+wait_iam "reverted role description" "drift-revert named role" \
+  aws iam get-role --role-name "${NAMED_ROLE}" --query Role.Description --output text
+POLICY_VERSION="$(aws iam get-policy --policy-arn "${NAMED_POLICY_ARN}" --query Policy.DefaultVersionId --output text 2>"${STEP6E_ERR}")" || {
+  echo "[verify] FAIL step 6e: the prefixed policy ${NAMED_POLICY_ARN} is gone after --revert: $(cat "${STEP6E_ERR}")" >&2
+  exit 1
+}
+[ -n "${POLICY_VERSION}" ] || { echo "[verify] FAIL step 6e: empty DefaultVersionId for ${NAMED_POLICY_ARN}" >&2; exit 1; }
+# The revert sets a NEW default version; a lagging read still names the drifted one.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "${POLICY_VERSION}" != "${DRIFTED_VERSION}" ] && break
+  sleep 2
+  POLICY_VERSION="$(aws iam get-policy --policy-arn "${NAMED_POLICY_ARN}" --query Policy.DefaultVersionId --output text)"
+done
+POLICY_ACTION="$(aws iam get-policy-version --policy-arn "${NAMED_POLICY_ARN}" --version-id "${POLICY_VERSION}" \
+  --query 'PolicyVersion.Document.Statement[0].Action' --output text)"
+if [ "${POLICY_ACTION}" != "s3:GetObject" ]; then
+  echo "[verify] FAIL step 6e: policy default version grants '${POLICY_ACTION}', expected the template's s3:GetObject" >&2
+  exit 1
+fi
+assert_gone "--revert created a role under the bare template name ${BARE_ROLE}" \
+  aws iam get-role --role-name "${BARE_ROLE}"
+assert_gone "--revert created a policy under the bare template name ${BARE_POLICY_ARN}" \
+  aws iam get-policy --policy-arn "${BARE_POLICY_ARN}"
+rm -f "${STEP6E_ERR}"
+echo "[verify] step 6e ok: role ${ROLE_ID_BEFORE} and policy reverted in place, no bare-name copies"
 
 echo "[verify] step 7: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force

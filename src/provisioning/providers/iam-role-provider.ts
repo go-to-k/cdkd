@@ -37,6 +37,7 @@ import {
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -290,29 +291,75 @@ export class IAMRoleProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    const newRoleName = generateResourceNameWithFallback(
+    const derivedRoleName = generateResourceNameWithFallback(
       properties['RoleName'] as string | undefined,
       logicalId,
       { maxLength: 64 }
     );
     // Issue #2177 -- see `create()`, including the derived-name needles. The
-    // recorded name is paired with the PREVIOUS value it was derived from.
+    // recorded name is paired with the PREVIOUS value it was derived from, and
+    // with the DESIRED one too: on a `drift --revert` the previous side is an
+    // AWS readback (never secret-derived) while the desired bag re-resolved the
+    // secret the recorded name was built from, and a truncated recorded name
+    // contains no copy of the derived needle (issue #4023).
     const log = withDerivedNameMasks(
       this.logger,
       createMaskedLogSinks(this.logger, context?.maskSecrets),
       [
-        [properties['RoleName'], newRoleName],
+        [properties['RoleName'], derivedRoleName],
         [previousProperties['RoleName'], physicalId],
+        // Only on a revert: on a template-path rename the recorded name is
+        // NOT derived from the desired value, and masking it would hide the
+        // old name for no reason.
+        ...(context?.desiredFromAwsReadback === true
+          ? [[properties['RoleName'], physicalId] as [unknown, string]]
+          : []),
       ]
     );
     const { value: v } = log;
     log.debug(`Updating IAM role ${logicalId}: ${v(physicalId)}`);
+
+    // Issue #4023: `cdkd drift --revert` keeps the recorded name. The name is
+    // derived in the CALLER's stack-name / prefix scope, which a revert does
+    // not reproduce, and its desired bag can carry the template's pre-prefix
+    // name (a legacy `--prefix-user-supplied-names` stack with no observed
+    // baseline) — so a mismatch there is not a rename the user asked for, and
+    // the replacement arm below would create a role under the derived name and
+    // delete the live one. A role cannot be renamed in place anyway.
+    const revertKeepsName =
+      context?.desiredFromAwsReadback === true && derivedRoleName !== physicalId;
+    if (revertKeepsName) {
+      log.warn(
+        `IAM role ${logicalId}: RoleName is not reverted — the role ${v(physicalId)} keeps ` +
+          `its name (the reverted properties derive ${v(derivedRoleName)}), since a drift ` +
+          `revert never replaces a role. 'cdkd drift' keeps reporting the name until ` +
+          `'cdkd drift --accept' records the live one; only a deploy renames the role.`
+      );
+    }
+    const newRoleName = revertKeepsName ? physicalId : derivedRoleName;
 
     // Check if immutable properties changed (requires replacement)
     // RoleName and Path are immutable - cannot be changed after creation
     const newPath = (properties['Path'] as string | undefined) || '/';
     const oldPath = (previousProperties['Path'] as string | undefined) || '/';
     const needsReplacement = newRoleName !== physicalId || newPath !== oldPath;
+
+    // Issue #4023: the replacement arm re-derives the name inside `create()`,
+    // so on a revert it would still create under the derived name and delete
+    // the recorded role. A revert restores the recorded resource and never
+    // replaces it: refuse before any call.
+    if (needsReplacement && context?.desiredFromAwsReadback === true) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `IAM role ${logicalId}: Path cannot be reverted to ${v(newPath)} — a role's Path ` +
+            `cannot change in place, and a drift revert never replaces the role ` +
+            `${v(physicalId)}. Nothing was changed; deploy the stack to replace it.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
 
     if (needsReplacement) {
       const reason = newRoleName !== physicalId ? 'RoleName' : 'Path';
