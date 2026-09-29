@@ -2410,11 +2410,19 @@ describe('reportDriftBaselineGaps', () => {
         expect(optionRegion, region).not.toMatch(/cdkd state refresh-observed S/);
         expect(optionRegion, region).not.toContain("'<region>'");
         // The sentence names the VALUE the gate refused, rendered from its
-        // reason (M3 of the go-to-k/cdkd#3764 review).
+        // reason (M3 of the go-to-k/cdkd#3764 review) — and does not say the
+        // CLI would read it as an option, which `--stack-region`'s value never
+        // is (go-to-k/cdkd#4036).
         expect(optionRegion, region).toContain(
-          "this stack's region starts with '-', which cdkd refuses rather than risk"
+          "this stack's region starts with '-', which no AWS region does, so cdkd does not put it"
         );
+        expect(optionRegion, region).not.toContain('reading it as an option');
       }
+      // A STACK NAME beginning with `-` keeps the option sentence: it is the
+      // positional Commander would read as the option.
+      expect(render('--all', 'us-east-1', false).join('\n')).toContain(
+        "this stack's name starts with '-', which cdkd refuses rather than risk the CLI reading it as an option"
+      );
       // The READ line keeps its hole and explains it BEFORE the command, so
       // the command stays last and pasteable -- for an option-shaped region
       // and for a capped one alike (the explanation keys on `inspect.exact`,

@@ -6475,11 +6475,15 @@ function refreshWithheldReason(built: PasteableCommand): string {
   const reason = first?.reason;
   switch (reason) {
     case 'option-shaped':
-      return (
-        `${what} starts with '-', which cdkd refuses rather than risk the CLI reading it as ` +
-        `an option however it is quoted ('--all' would rewrite every record in the region ` +
-        `rather than this one).`
-      );
+      // Only the stack name is a positional Commander could read as the
+      // option; the region is `--stack-region`'s value, taken as given, so its
+      // sentence says only that cdkd refuses it (go-to-k/cdkd#4036).
+      return first?.hole === 'region'
+        ? `${what} starts with '-', which no AWS region does, so cdkd does not put it in a ` +
+            `command that rewrites a record.`
+        : `${what} starts with '-', which cdkd refuses rather than risk the CLI reading it as ` +
+            `an option however it is quoted ('--all' would rewrite every record in the region ` +
+            `rather than this one).`;
     case 'not-plain':
       return (
         `${what} is not a plain identifier (a letter or digit, then letters, digits, '~', ` +
