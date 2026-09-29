@@ -81,7 +81,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    env -u CDKD_TEST_RENAME node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   QUEUE_URL="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
@@ -131,7 +131,7 @@ cleanup
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy Lambda-with-grant + standalone role"
-node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 echo "    deploy complete"
 
@@ -140,11 +140,18 @@ echo "    deploy complete"
 # role compares clean against the (also-filtered) AWS-current snapshot. Run
 # twice — the first immediately after deploy (tightest race window), the
 # second after a short settle — both must be clean.
-assert_no_role_drift() {
-  local label="$1"
+assert_no_role_drift() { # usage: assert_no_role_drift <label> [rename:true|false]
+  local label="$1" rename="${2:-false}"
   local out
-  out="$(node "${LOCAL_DIST}" drift "${STACK}" \
-    --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
+  # The template the drift synth reads must be the one deployed: RENAME only
+  # after Phase 2b.
+  if [ "${rename}" = "true" ]; then
+    out="$(CDKD_TEST_RENAME=true node "${LOCAL_DIST}" drift "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
+  else
+    out="$(env -u CDKD_TEST_RENAME node "${LOCAL_DIST}" drift "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
+  fi
   if printf '%s' "${out}" | grep -q 'AWS::IAM::Role'; then
     echo "FAIL: cdkd drift reported phantom drift on an AWS::IAM::Role (${label}):" >&2
     printf '%s\n' "${out}" | grep -B1 -A6 'AWS::IAM::Role' >&2
@@ -157,9 +164,61 @@ echo "==> Phase 2: assert no phantom drift on any AWS::IAM::Role"
 assert_no_role_drift "immediately after deploy"
 assert_no_role_drift "second pass"
 
+# --- Phase 2b: rename an inline policy in place (go-to-k/cdkd#4152) ------
+# The role stays listed across the rename. Before the fix the update put the
+# NEW name and removed the old one only from principals that LEFT the list, so
+# the role kept `...-renamed-old` too: a stale grant no record names.
+OLD_POLICY="cdkd-iam-drift-clean-renamed-old"
+NEW_POLICY="cdkd-iam-drift-clean-renamed-new"
+role_policies() { # -> the role's inline policy names, sorted, one line
+  aws iam list-role-policies --role-name "${ROLE_NAME}" --region "${REGION}" \
+    --query 'PolicyNames' --output text | tr '\t' '\n' | awk 'NF' | sort | tr '\n' ' '
+}
+has_policy() { # usage: has_policy <name> -> 0 when the role holds it
+  case " $(role_policies) " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+echo "==> Phase 2b: rename RenamedPolicy in place; the role must hold only the new name"
+# Polled like the post-rename check: IAM reads are eventually consistent.
+premise_ok=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if has_policy "${OLD_POLICY}"; then
+    premise_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${premise_ok}" -ne 1 ]; then
+  echo "FAIL: premise: the role does not hold ${OLD_POLICY} after the first deploy (got: $(role_policies))" >&2
+  exit 1
+fi
+CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# Polled: IAM reads are eventually consistent right after a write.
+renamed_ok=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if has_policy "${NEW_POLICY}" && ! has_policy "${OLD_POLICY}"; then
+    renamed_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${renamed_ok}" -ne 1 ]; then
+  echo "FAIL: after the rename the role holds '$(role_policies)'; want ${NEW_POLICY} and NOT ${OLD_POLICY} (the old-named policy is a stale grant)" >&2
+  exit 1
+fi
+echo "    the role holds ${NEW_POLICY} and no longer ${OLD_POLICY}"
+# The declared inline policy and the Default Policy sibling are untouched.
+if ! has_policy "DeclaredInline"; then
+  echo "FAIL: the rename removed the role's declared DeclaredInline policy (got: $(role_policies))" >&2
+  exit 1
+fi
+echo "    DeclaredInline kept"
+# The renamed policy is still a sibling the role's drift read filters out.
+assert_no_role_drift "after rename" true
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" \
+CDKD_TEST_RENAME=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "function ${FN_NAME} still exists after destroy" aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}"
@@ -174,4 +233,4 @@ echo "    queue deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — IAM Role with a sibling Default Policy shows no phantom drift after deploy; all 3 phases passed"
+echo "[verify] PASS — IAM Role with a sibling Default Policy shows no phantom drift after deploy; all phases passed, and an in-place rename left no old-named policy on the retained role"

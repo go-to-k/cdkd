@@ -30,7 +30,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *     name and keeps the declared one.
  *
  * verify.sh deploys this, runs `cdkd drift`, and asserts NO drift on any
- * `AWS::IAM::Role`.
+ * `AWS::IAM::Role`. A RENAME phase then renames `RenamedPolicy` in place and
+ * asserts the role holds only the NEW-named policy (go-to-k/cdkd#4152).
  */
 export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -78,6 +79,22 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
         resources: [queue.queueArn],
       })
     );
+
+    // go-to-k/cdkd#4152: a standalone inline policy on the SAME role, renamed
+    // in place by the RENAME phase (CDKD_TEST_RENAME=true). The role stays
+    // listed across the rename, which is the principal that used to keep the
+    // OLD-named policy. Fixed names, so verify.sh reads each back exactly.
+    const renamed = process.env.CDKD_TEST_RENAME === 'true';
+    new iam.CfnPolicy(this, 'RenamedPolicy', {
+      policyName: renamed
+        ? 'cdkd-iam-drift-clean-renamed-new'
+        : 'cdkd-iam-drift-clean-renamed-old',
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 'sqs:GetQueueUrl', Resource: queue.queueArn }],
+      },
+      roles: [role.roleName],
+    });
 
     new cdk.CfnOutput(this, 'FnName', { value: fn.functionName });
     new cdk.CfnOutput(this, 'WorkerRoleName', { value: role.roleName });
