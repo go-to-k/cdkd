@@ -90,9 +90,16 @@ describe('refuseNoValueOutputs (issue #4077)', () => {
 
     it.each([
       ['whose evaluation threw', { Broken: THROWS }, 'Broken'],
+      // Both declaration orders: Broken first taints Composite on a memo hit,
+      // Composite first on Broken's throw reaching Composite's own catch.
       [
-        'that depends on one whose evaluation threw',
+        'that depends on one whose evaluation threw (declared after it)',
         { Broken: THROWS, Composite: { 'Fn::Not': [{ Condition: 'Broken' }] } },
+        'Composite',
+      ],
+      [
+        'that depends on one whose evaluation threw (declared before it)',
+        { Composite: { 'Fn::Not': [{ Condition: 'Broken' }] }, Broken: THROWS },
         'Composite',
       ],
       [

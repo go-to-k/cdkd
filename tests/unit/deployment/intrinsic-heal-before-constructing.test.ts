@@ -173,6 +173,18 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
     expect(healer).not.toHaveBeenCalled();
   });
 
+  it.each(CASES.filter((c) => c.attribute === 'StreamArn'))(
+    '$type StreamArn on a record this deploy wrote (heal not attempted) names the StreamSpecification',
+    async (c) => {
+      const healer = vi.fn(
+        async (): Promise<StaleAttributeHealOutcome> => ({ kind: 'not-attempted' })
+      );
+      await expect(resolveWith(c, healer)).rejects.toThrow(
+        /add a StreamSpecification to the table/
+      );
+    }
+  );
+
   it.each(CASES)('$type $attribute falls back, or refuses, with no healer wired', async (c) => {
     if (c.fallback === REFUSED) {
       // No heal ran (`cdkd diff`, `cdkd drift`, ...): `cdkd deploy` is the
