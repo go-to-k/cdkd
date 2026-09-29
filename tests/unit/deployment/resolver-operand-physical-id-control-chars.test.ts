@@ -204,22 +204,26 @@ describe('the Fn::Select index and Fn::Split delimiter are sanitized (#3479)', (
     expect(control).toContain('Fn::Select: index 9 out of bounds (array length: 2)');
   });
 
-  it('sanitizes the index REFUSAL, reached by an index that is not a number (#3574)', async () => {
+  it('keeps a hostile index out of the index REFUSAL, reached by an index that is not a number (#3574)', async () => {
     const error = await selectRefusal(EVIL);
-    expectSanitized(error, 'the index refusal');
-    expect(renders(error)).toBe(1);
+    expectClean(error, 'the index refusal');
+    // A value the display builder altered is described rather than quoted by
+    // hand (go-to-k/cdkd#3950), so it is not rendered at all.
+    expect(error).toContain('got string (not shown: it is not a plain identifier).');
+    expect(renders(error)).toBe(0);
 
     const control = await resolveValue({ 'Fn::Select': [1, ['a', 'b']] });
     expect(control).toContain('Resolved Fn::Select: index 1 -> "b"');
   });
 
-  it('sanitizes the Fn::Split delimiter on its DEBUG line', async () => {
+  it('keeps a hostile Fn::Split delimiter out of its DEBUG line', async () => {
     const got = await resolveValue({ 'Fn::Split': [EVIL, `a${EVIL}b`] });
-    const debug = line(got, 'Resolved Fn::Split: split by "');
+    // Described rather than quoted by hand since go-to-k/cdkd#3950.
+    const debug = line(
+      got,
+      'Resolved Fn::Split: split by a delimiter (not shown: it is not a plain identifier) -> '
+    );
     expectClean(debug, 'the Fn::Split debug line');
-    // The delimiter render itself, between the quotes, carries the skeleton.
-    const rendered = debug.slice('Resolved Fn::Split: split by "'.length).split('" -> ')[0] ?? '';
-    expectSanitized(rendered, 'the rendered delimiter');
 
     const control = await resolveValue({ 'Fn::Split': [',', 'a,b'] });
     expect(control).toContain('Resolved Fn::Split: split by "," -> ["a","b"]');

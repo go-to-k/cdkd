@@ -10,7 +10,8 @@
  *
  * BOUND: the pattern sees a sanitizer CALLED inside the quote, or a hoisted
  * sanitized value whose variable is named `safe*` (`'${safeId}'`,
- * `'${safeId || UNRENDERABLE}'`). A hoisted value under any other name is
+ * `'${safeId || UNRENDERABLE}'`) or `logged*` (the resolver's bindings of a
+ * `displayMasked` render, `'${loggedExportName}'`). A hoisted value under any other name is
  * invisible to it, and so is a site split across a continuation line. Those
  * are covered per site by paste cases, not here.
  *
@@ -34,12 +35,10 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
  * it, and `$( )` runs inside it regardless.
  */
 const HAND_QUOTED =
-  /['"]\$\{(?:(?:safeSegment|displaySafe|safe|safeId|safeStack|displayIdent|displayStackName|showId|(?:this\.)?displayMasked|(?:this\.)?displayLeaf)\(|safe[A-Za-z]*\s*(?:\}|\|\|))/;
+  /['"]\$\{(?:(?:safeSegment|displaySafe|safe|safeId|safeStack|displayIdent|displayStackName|showId|(?:this\.)?displayMasked|(?:this\.)?displayLeaf)\(|(?:safe|logged)[A-Za-z]*\s*(?:\}|\|\|))/;
 
 /** Files whose sites go-to-k/cdkd#3950 still lists as open, each with its reason. */
 const ALLOWED: Readonly<Record<string, string>> = {
-  'src/deployment/intrinsic-function-resolver.ts':
-    "open row of go-to-k/cdkd#3950 (the resolver's displayMasked / displayLeaf renders inside single quotes; they keep `'`). While listed, the two sites #4052 fixed here rely on their paste cases, not this fence",
 };
 
 function sourceFiles(dir: string): string[] {
@@ -81,6 +80,7 @@ describe('no sanitized value inside a hand-written quote (go-to-k/cdkd#3950)', (
     expect(hits('x.ts', "`so '${showId(identifier)}' is looked up`")).toEqual(['x.ts:1']);
     expect(hits('x.ts', "`deleting '${safeId || UNRENDERABLE}' from`")).toEqual(['x.ts:1']);
     expect(hits('x.ts', "`deleting '${safeName}' from`")).toEqual(['x.ts:1']);
+    expect(hits('x.ts', "`export '${loggedExportName}' not found`")).toEqual(['x.ts:1']);
     expect(hits('x.ts', "`mapping '${this.displayMasked(mapName, context)}' not found`")).toEqual([
       'x.ts:1',
     ]);

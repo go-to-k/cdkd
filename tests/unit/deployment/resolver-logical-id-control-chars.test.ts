@@ -72,6 +72,7 @@ import {
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -930,4 +931,98 @@ describe('the two redacted-read DISPLAY builders sanitize their logical id (#343
     expect(read.display.endsWith('.Secret')).toBe(true);
     expect(read.logicalId).toBe(EVIL);
   });
+});
+
+/**
+ * go-to-k/cdkd#3950: the physical-id refusals quoted the record's physical id
+ * by hand (`"${displayMasked(physicalId)}"`), and the nested-output refusal
+ * the logical id (`'${loggedLogicalId}'`). Each is driven with every
+ * `PASTE_PAYLOADS` value in that position: described, never quoted, and fed
+ * WHOLE to the paste harness. The nested-output row also prints the logical id
+ * BARE in its `Fn::GetAtt [<id>, ...]` head, an unquoted render outside this
+ * issue's class, so that row asserts only that every span that runs carries
+ * the value bare; the others must run nothing.
+ */
+describe('go-to-k/cdkd#3950: the hand-quoted ids of the resolver are described', () => {
+  const NOT_SHOWN = '(not shown: it is not a plain identifier)';
+  const at = (resourceType: string, physicalId: string, attributes: Record<string, unknown> = {}) => ({
+    physicalId,
+    resourceType,
+    properties: {},
+    attributes,
+    dependencies: [],
+  });
+  const ROWS = [
+    { label: 'VPC DefaultSecurityGroup', type: 'AWS::EC2::VPC', attribute: 'DefaultSecurityGroup', described: `state record's physical id ${NOT_SHOWN} is not a VPC id` },
+    { label: 'SecurityGroup VpcId', type: 'AWS::EC2::SecurityGroup', attribute: 'VpcId', described: `state record's physical id ${NOT_SHOWN} is not a security group id` },
+    { label: 'CloudFront DomainName', type: 'AWS::CloudFront::Distribution', attribute: 'DomainName', described: `state record's physical id ${NOT_SHOWN} is not a distribution id` },
+    { label: 'DBProxy VpcId', type: 'AWS::RDS::DBProxy', attribute: 'VpcId', described: `and the physical id ${NOT_SHOWN} is a name, not a VPC id` },
+    { label: 'ARN-shape fallback', type: 'AWS::SQS::Queue', attribute: 'SomethingArn', described: `fallback ${NOT_SHOWN} is not an ARN` },
+    { label: '--strict-getatt fallback', type: 'AWS::SQS::Queue', attribute: 'Whatever', described: `rejects the physical ID fallback ${NOT_SHOWN} (which`, strict: true },
+  ] as const;
+
+  async function thrown(
+    logicalId: string,
+    attribute: string,
+    record: ReturnType<typeof at>,
+    strict = false
+  ): Promise<string> {
+    resetAccountInfoCache();
+    const resolver = new IntrinsicFunctionResolver('us-east-1', {
+      cfnFallback: false,
+      ...(strict && { strictGetAtt: true }),
+    });
+    const template = { Resources: { [logicalId]: { Type: record.resourceType } } } as unknown as CloudFormationTemplate;
+    const got = await capture(() =>
+      resolver.resolve({ 'Fn::GetAtt': [logicalId, attribute] }, contextOf(template, { [logicalId]: record }))
+    );
+    expect(got.error, `no refusal for ${logicalId}.${attribute}`).toBeDefined();
+    return got.error!;
+  }
+
+  it('keeps a plain physical id quoted, byte-identical to before', async () => {
+    for (const row of ROWS) {
+      const message = await thrown('R', row.attribute, at(row.type, 'Plain-1'), 'strict' in row);
+      expect(message, row.label).toContain('"Plain-1"');
+      expect(message, row.label).not.toContain(NOT_SHOWN);
+    }
+    const nested = await thrown('Child', 'Outputs.Missing', at('AWS::CloudFormation::Stack', 'p', { 'Outputs.Known': 'v' }));
+    expect(nested).toContain("the nested stack 'Child' declares no output named 'Missing'");
+  });
+
+  it('describes every payload, and no pasted span runs through the rewritten site', async () => {
+    const rendered: Array<{ label: string; value: string; message: string; described: string; bare: boolean }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const row of ROWS) {
+        rendered.push({
+          label: `${row.label}: ${value}`,
+          value,
+          message: await thrown('R', row.attribute, at(row.type, value), 'strict' in row),
+          described: row.described,
+          bare: false,
+        });
+      }
+      rendered.push({
+        label: `nested output logical id: ${value}`,
+        value,
+        message: await thrown(value, 'Outputs.Missing', at('AWS::CloudFormation::Stack', 'p', { 'Outputs.Known': 'v' })),
+        described: `the nested stack ${NOT_SHOWN} declares no output named 'Missing'`,
+        bare: true,
+      });
+    }
+    expect(rendered).toHaveLength(PASTE_PAYLOADS.length * (ROWS.length + 1));
+    withPasteDir((dir) => {
+      for (const { label, value, message, described, bare } of rendered) {
+        expect(message, label).toContain(described);
+        expect(message, label).not.toContain(JSON.stringify(value));
+        const ran = spansThatRun(message, dir);
+        if (bare) {
+          for (const span of ran) expect(span, `${label}: a span ran without the bare render`).toContain(value);
+        } else {
+          expect(message, label).not.toContain(value);
+          expect(ran, label).toEqual([]);
+        }
+      }
+    });
+  }, 240_000);
 });
