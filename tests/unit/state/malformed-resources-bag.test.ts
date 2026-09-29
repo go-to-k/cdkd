@@ -110,6 +110,7 @@ function safeIdentifierFor(value: string): string {
     .text;
 }
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import ts from 'typescript-v6';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -4515,85 +4516,53 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
 
 describe('every repair the module exports is classified and has its read-only callers (go-to-k/cdkd#3504)', () => {
   /**
+   * Every IDENTIFIER in the file that names a repair, from the TypeScript AST —
+   * so a name inside a comment, string, template or regex literal is not one,
+   * and no hand-rolled scanner decides where a literal ends (one failed open in
+   * go-to-k/cdkd#4062's review). A repair's own
+   * declaration name is not a use. `calls` holds the names CALLED directly,
+   * `mentions` every use, an import specifier included. A file the parser
+   * reports a diagnostic on REFUSES rather than contributing nothing.
+   */
+  function repairUses(relPath: string): { calls: Set<string>; mentions: Set<string> } {
+    const sf = ts.createSourceFile(
+      relPath,
+      readFileSync(join(repoRoot, relPath), 'utf8'),
+      ts.ScriptTarget.Latest,
+      true
+    );
+    const diagnostics = (sf as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics;
+    if (diagnostics && diagnostics.length > 0) {
+      throw new Error(`${relPath}: ${diagnostics.length} parse diagnostic(s) — scan REFUSED`);
+    }
+    const calls = new Set<string>();
+    const mentions = new Set<string>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && node.text.startsWith('repairMalformed')) {
+        const parent = node.parent;
+        const isDeclarationName = ts.isFunctionDeclaration(parent) && parent.name === node;
+        if (!isDeclarationName) {
+          mentions.add(node.text);
+          // `name(…)` and `ns.name(…)` alike: the callee, or the name it ends in.
+          const callee = ts.isPropertyAccessExpression(parent) && parent.name === node ? parent : node;
+          if (ts.isCallExpression(callee.parent) && callee.parent.expression === callee) {
+            calls.add(node.text);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return { calls, mentions };
+  }
+
+  /**
    * The REPAIR-side twin of the two refusal derivations above. Derived from the
    * module's RUNTIME export list rather than from its source text, so it reads
    * neither of theirs and also sees an export spelled `export const` or
    * re-exported from another file — a shape the `export function` grep above
    * cannot.
    */
-  /**
-   * The file's CODE only: comments, string literals, template-literal text and
-   * regex literals are dropped, while `${…}` substitutions are kept. A
-   * character scanner rather than `code()`'s regexes, because a name inside a
-   * message string must not stand in for a call, and blanking strings by regex
-   * mis-pairs quotes across template substitutions. A mis-read can only drop
-   * code, so the caller sets below fail closed on it rather than open.
-   */
-  function codeWithoutStrings(relPath: string): string {
-    const src = readFileSync(join(repoRoot, relPath), 'utf8');
-    let out = '';
-    // One entry per open template literal: the `{` depth of its current `${`.
-    const templates: number[] = [];
-    let depth = 0;
-    let i = 0;
-    const skipQuoted = (quote: string): void => {
-      for (i++; i < src.length && src[i] !== quote && src[i] !== '\n'; i++) if (src[i] === '\\') i++;
-      i++;
-    };
-    const skipTemplateText = (): void => {
-      // Called just inside a template's text; stops after the closing backtick
-      // or after a `${`, which it records.
-      for (; i < src.length; i++) {
-        if (src[i] === '\\') i++;
-        else if (src[i] === '`') { i++; return; }
-        else if (src[i] === '$' && src[i + 1] === '{') { templates.push(depth); i += 2; return; }
-      }
-    };
-    while (i < src.length) {
-      const c = src[i]!;
-      const next = src[i + 1];
-      if (c === '/' && next === '/') {
-        while (i < src.length && src[i] !== '\n') i++;
-      } else if (c === '/' && next === '*') {
-        const end = src.indexOf('*/', i + 2);
-        i = end === -1 ? src.length : end + 2;
-      } else if (c === "'" || c === '"') {
-        skipQuoted(c);
-        out += ' ';
-      } else if (c === '`') {
-        i++;
-        skipTemplateText();
-        out += ' ';
-      } else if (c === '/' && /[(,=:[!&|?{};]$|^$/.test(out.trimEnd().slice(-1))) {
-        // A regex literal: `/` where an expression starts.
-        let inClass = false;
-        for (i++; i < src.length && src[i] !== '\n'; i++) {
-          if (src[i] === '\\') i++;
-          else if (src[i] === '[') inClass = true;
-          else if (src[i] === ']') inClass = false;
-          else if (src[i] === '/' && !inClass) break;
-        }
-        i++;
-        out += ' ';
-      } else if (c === '{') {
-        depth++;
-        out += c;
-        i++;
-      } else if (c === '}' && templates.length > 0 && templates[templates.length - 1] === depth) {
-        // The `}` closing a `${`: back into that template's text.
-        templates.pop();
-        i++;
-        skipTemplateText();
-        out += ' ';
-      } else {
-        if (c === '}') depth--;
-        out += c;
-        i++;
-      }
-    }
-    return out;
-  }
-
   async function repairExports(): Promise<string[]> {
     const mod = await import('../../../src/state/malformed-resources-bag.js');
     return Object.keys(mod).filter((name) => name.startsWith('repairMalformed'));
@@ -4642,7 +4611,7 @@ describe('every repair the module exports is classified and has its read-only ca
   });
 
   /**
-   * The files calling each repair, derived from the comment-stripped tree. Every
+   * The files calling each repair, derived from the tree's AST. Every
    * one of them is READ-ONLY on the path that calls it: `diff-recursive.ts`,
    * `state.ts` (`state resources` and `state show`'s text modes) and
    * `s3-local-state-provider.ts` write no `state.json`; `drift.ts` repairs only
@@ -4694,22 +4663,16 @@ describe('every repair the module exports is classified and has its read-only ca
       .stdout.split('\n')
       .filter((file) => file !== '' && file !== 'src/state/malformed-resources-bag.ts');
     expect(listed.length, 'the grep stopped matching; this fence is reading nothing').toBeGreaterThan(3);
-    // Two sets per export, both held to the table. CALLS (`name(`, which an
-    // `import { … }` clause cannot contain) go red when a call is deleted and its
-    // import kept. MENTIONS (the bare name, import clause included) go red for a
-    // caller the call regex cannot see: `import { name as x }` then `x(…)`, or
-    // the function passed as a value. Read without string literals, so a name
-    // inside a message cannot stand in for a call.
+    // Two sets per export, both held to the table. CALLS go red when a call is
+    // deleted and its import kept. MENTIONS (import specifier included) go red
+    // for a caller the call set cannot see: `import { name as x }` then `x(…)`,
+    // or the function passed as a value.
     const calls: Record<string, string[]> = {};
     const mentions: Record<string, string[]> = {};
-    const record = (into: Record<string, string[]>, name: string, file: string): void => {
-      const list = (into[name] ??= []);
-      if (!list.includes(file)) list.push(file);
-    };
     for (const file of listed) {
-      const src = codeWithoutStrings(file);
-      for (const m of src.matchAll(/\b(repairMalformed\w*)\(/g)) record(calls, m[1]!, file);
-      for (const m of src.matchAll(/\b(repairMalformed\w*)\b/g)) record(mentions, m[1]!, file);
+      const uses = repairUses(file);
+      for (const name of uses.calls) (calls[name] ??= []).push(file);
+      for (const name of uses.mentions) (mentions[name] ??= []).push(file);
     }
     for (const name of exported) {
       const expected = [...REPAIR_CALLERS[name]!].sort();
@@ -4726,23 +4689,21 @@ describe('every repair the module exports is classified and has its read-only ca
     }
   });
 
-  it('the module uses no repair itself, so no wrapper export reaches one unlisted', async () => {
+  it('the module uses no repair itself, so no wrapper export reaches one unlisted', () => {
     // Callers are read OUTSIDE the module, so an internal use — a call, or a
     // reference called through a local — would let a non-repair export carry a
     // repair to a write path this fence never sees.
-    const scanned = codeWithoutStrings('src/state/malformed-resources-bag.ts');
-    // Non-vacuity: the scan still sees every declaration, so it did not drop
-    // the module as one long mis-read literal.
+    const uses = repairUses('src/state/malformed-resources-bag.ts');
     expect(
-      scanned.match(/export function repairMalformed\w*\(/g) ?? [],
-      'the scan lost repair declarations; this case would read nothing'
-    ).toHaveLength((await repairExports()).length);
-    const internal = scanned.replace(/export function repairMalformed\w*\(/g, '');
-    expect(
-      [...internal.matchAll(/\brepairMalformed\w*\b/g)].map((m) => m[0]),
-      'the module now calls a repair internally; its callers are no longer only the files ' +
+      [...uses.mentions].sort(),
+      'the module now uses a repair internally; its callers are no longer only the files ' +
         'REPAIR_CALLERS names.'
     ).toEqual([]);
+    // Non-vacuity: the same walk DOES see a use when one exists — a caller
+    // file's, read by the identical function.
+    expect(repairUses('src/cli/commands/scrub.ts').calls.has('repairMalformedOrphanRecordsForReadOnly')).toBe(
+      true
+    );
   });
 });
 
