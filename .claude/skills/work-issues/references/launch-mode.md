@@ -27,8 +27,6 @@ every lane dispatch, and state them all in the opening report.
   relative `.git` and macOS's `/private/tmp`.
 - `MAIN_CHECKOUT` is `dirname "$COMMON"`, never `pwd` or `--show-toplevel`:
   both answer "the tree I stand in", wrong in exactly the mode needing it.
-- `LANE_TREE` is the tree this run stands in: equal to `MAIN_CHECKOUT` in
-  MAIN-CHECKOUT, different IN-PLACE.
 - `LAUNCH_BRANCH` is the branch at probe time — IN-PLACE, the OUTER TOOL's.
   Empty means launched detached and selects §9's detach fallback. Record it
   now: once §5 switches to the lane branch it is unrecoverable. MAIN-CHECKOUT
@@ -41,8 +39,9 @@ every lane dispatch, and state them all in the opening report.
   `origin/main` reads `upstream/main`, lanes push to `origin` and open with
   `--head <fork-owner>:<branch>`. Read `gh api repos/go-to-k/cdkd --jq
   .permissions` NOW: without `push`, the merge, its integ and any issue-body
-  edit are the maintainer's, so lanes stop at PR open + CI green and correct a
-  classification by comment.
+  edit are the maintainer's, so lanes stop at PR open + CI green (or
+  `action_required` awaiting approval) and correct an issue's `Session-fit` by
+  comment.
 
 **The guard on the first line is not decoration.** Outside a work tree every
 substitution collapses to `""`, so an unguarded compare prints MAIN-CHECKOUT
@@ -101,8 +100,7 @@ block is its own shell, so the variable is already empty there — and an empty
 
 ### What IN-PLACE changes, and where each consequence fires
 
-IN-PLACE means the run was launched inside a worktree someone else created, so
-it has exactly ONE launch tree (a concurrent lane lives in a sibling, row 1):
+IN-PLACE runs in a worktree someone else created — ONE launch tree (row 1):
 
 | # | Consequence | Where |
 |---|---|---|
