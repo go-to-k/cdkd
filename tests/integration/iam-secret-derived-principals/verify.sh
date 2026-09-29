@@ -176,6 +176,15 @@ cleanup() {
   if [ "${DEPLOYED}" = "1" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+    # Both skip the SecretInlinePolicy / SecretGroupAddition records while
+    # they hold a secret reference (go-to-k/cdkd#4150), leaving the stack's
+    # state behind for the next run's pre-flight to refuse. Drop what is left;
+    # a no-op once the state is gone. Their AWS side is covered below and by
+    # the destroy: the seeded role and user lose the inline policy and the
+    # membership in delete_seeded_role / delete_seeded_user, and the stack's
+    # own AddedRole, SecretMember and AdditionGroup deletes remove theirs.
+    node "${LOCAL_DIST}" state orphan "${STACK}" --stack-region "${REGION}" \
+      --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
   [ "${SEEDED_ROLE}" = "1" ] && delete_seeded_role "${EXT_ROLE}"
   [ "${SEEDED_ELSE_ROLE}" = "1" ] && delete_seeded_role "${ELSE_ROLE}"
@@ -506,8 +515,10 @@ expect_eq "the policy's document change landed" "logs:DescribeLogGroups logs:Get
 expect_eq "SecretPolicy on the ADDED role" "1" policy_on_role "${ADDED_ROLE}"
 expect_eq "SecretPolicy still on the secret-named role" "1" policy_on_role "${EXT_ROLE}"
 expect_eq "SecretPolicy still on the hand-attached role (ADD-only: no template names it)" "1" policy_on_role "${ELSE_ROLE}"
-WANT_GROUPS=$(printf '%s\n%s\n%s\n' "${EXT_GROUP}" "${ELSE_GROUP}" "${ADDED_GROUP}" | sort | tr '\n' ' ')
-expect_eq "the user's groups (added one joined; secret-named and hand-added ones kept, ADD-only)" "${WANT_GROUPS}" user_groups "${MEMBER}"
+# ADDITION_GROUP too: the update adds the stack's user through
+# SecretGroupAddition (the go-to-k/cdkd#4064 arm).
+WANT_GROUPS=$(printf '%s\n%s\n%s\n%s\n' "${EXT_GROUP}" "${ELSE_GROUP}" "${ADDED_GROUP}" "${ADDITION_GROUP}" | sort | tr '\n' ' ')
+expect_eq "the user's groups (added and addition ones joined; secret-named and hand-added ones kept, ADD-only)" "${WANT_GROUPS}" user_groups "${MEMBER}"
 for needle in "${EXT_ROLE}" "${EXT_GROUP}" "${EXT_USER}"; do
   if state_holds "${needle}"; then
     echo "FAIL: the current state.json carries a secret-derived name in plaintext after the update" >&2
