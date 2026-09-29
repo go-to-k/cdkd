@@ -3,7 +3,9 @@
 # A schedule in a CUSTOM ScheduleGroup was unaddressable via Cloud Control:
 # UPDATE failed NotFound and a schedule-only removal silently orphaned the
 # live schedule. Phases: deploy -> UPDATE (expression) -> schedule-only
-# removal (group kept; the schedule MUST actually leave AWS) -> destroy.
+# removal (group kept; the schedule MUST actually leave AWS) -> re-add, then
+# `--recreate-via-cc-api` on it must be refused touching nothing (issue #4119)
+# -> destroy.
 
 set -euo pipefail
 
@@ -103,6 +105,37 @@ echo "    OK: schedule actually left AWS"
 aws scheduler get-schedule-group --name "${GROUP}" --region "${REGION}" >/dev/null 2>&1 \
   || { echo "FAIL: schedule group disappeared during schedule-only removal" >&2; exit 1; }
 echo "    OK: schedule group survived"
+
+echo "==> Phase 3b: --recreate-via-cc-api on the cc-broken schedule is refused, touching nothing (issue #4119)"
+# The schedule was removed in phase 3; re-add it so there is a live resource
+# the refused recreate could have deleted.
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVE_SCHED \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+SCHED_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Scheduler::Schedule") | .key] | first // ""')
+[ -n "${SCHED_LOGICAL}" ] || { echo "FAIL: #4119 premise: no AWS::Scheduler::Schedule in state" >&2; exit 1; }
+BEFORE_ARN=$(aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" --query 'Arn' --output text)
+BEFORE_MOD=$(aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" --query 'LastModificationDate' --output text)
+RECREATE_OUT="$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVE_SCHED CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --recreate-via-cc-api "${SCHED_LOGICAL}" --yes 2>&1)" && {
+  printf '%s\n' "${RECREATE_OUT}" >&2
+  echo "FAIL: #4119: --recreate-via-cc-api on a cc-broken type exited 0; it must be refused" >&2
+  exit 1
+}
+RECREATE_PLAIN="$(printf '%s' "${RECREATE_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if ! grep -qF "resource(s) of types cdkd never runs on Cloud Control" <<<"${RECREATE_PLAIN}"; then
+  printf '%s\n' "${RECREATE_PLAIN}" >&2
+  echo "FAIL: #4119: the deploy failed, but not with the cc-broken recreate refusal" >&2
+  exit 1
+fi
+AFTER_ARN=$(aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" --query 'Arn' --output text)
+AFTER_MOD=$(aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" --query 'LastModificationDate' --output text)
+EXPR=$(aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" --query 'ScheduleExpression' --output text)
+[ "${AFTER_ARN}" = "${BEFORE_ARN}" ] && [ "${AFTER_MOD}" = "${BEFORE_MOD}" ] && [ "${EXPR}" = "rate(1 hour)" ] || {
+  echo "FAIL: #4119: the refused recreate touched the schedule (arn ${BEFORE_ARN} -> ${AFTER_ARN}, modified ${BEFORE_MOD} -> ${AFTER_MOD}, expression ${EXPR})" >&2
+  exit 1
+}
+echo "    OK: refused before anything was touched; the schedule is unchanged"
 
 echo "==> Phase 4: Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

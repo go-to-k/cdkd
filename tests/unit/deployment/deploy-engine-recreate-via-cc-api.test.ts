@@ -380,6 +380,27 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
       expect(callOrder).toEqual([]);
     });
 
+    it('refuses a cc-broken TEMPLATE type before deleting anything (issue #4119)', async () => {
+      const state = makeState();
+      state.MyLambda!.resourceType = 'AWS::Scheduler::Schedule';
+      const template = makeTemplate();
+      template.Resources!['MyLambda']!.Type = 'AWS::Scheduler::Schedule';
+      const change = { ...makeUpdateChange(), resourceType: 'AWS::Scheduler::Schedule' };
+      const engine = makeEngine();
+
+      const err = await invokeProvision(engine, change, state, template).then(
+        () => null,
+        (e) => (e as { cause?: unknown }).cause as Error & { code?: string }
+      );
+
+      expect(err).not.toBeNull();
+      expect(err!.code).toBe('RECREATE_TARGETS_INVALID');
+      expect(err!.message).toContain("Cloud Control's handler cannot manage this type correctly");
+      expect(err!.message).toContain('Nothing was deleted');
+      expect(isMarkedNonRetryable(err)).toBe(true);
+      expect(callOrder).toEqual([]);
+    });
+
     it('asks about the TEMPLATE type', async () => {
       // A Type-change row, so the two candidate types differ.
       const state = makeState();

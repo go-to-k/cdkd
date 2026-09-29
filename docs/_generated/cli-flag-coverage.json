@@ -740,6 +740,7 @@
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "rollback-replay-cc-generated-name",
+        "scheduler-custom-group",
         "sdk-ccapi-crossref"
       ]
     },

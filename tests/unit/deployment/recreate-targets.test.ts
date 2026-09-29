@@ -1223,6 +1223,7 @@ function emptyValidation(
     blockedAlreadyCcApi: [],
     blockedNoSdkProvider: [],
     blockedNoCcRoute: [],
+    blockedCcBroken: [],
     conflictingDirections: [],
     nestedStackLogicalIds: [],
     blockedNestedStackTargets: [],
@@ -2204,6 +2205,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
       blockedNoCcRoute: [],
+      blockedCcBroken: [],
       conflictingDirections: [],
       nestedStackLogicalIds: [],
       blockedNestedStackTargets: [],
@@ -2280,6 +2282,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
       blockedNoCcRoute: [],
+      blockedCcBroken: [],
       conflictingDirections: [],
       nestedStackLogicalIds: [],
       blockedNestedStackTargets: [],
@@ -2404,6 +2407,39 @@ describe('--recreate-via-cc-api on a type Cloud Control cannot create (#3887)', 
     const v = validate('AWS::EMR::InstanceGroupConfig', 'AWS::EMR::InstanceGroupConfig');
     expect(v.blockedNoCcRoute.map((t) => t.logicalId)).toEqual(['Target']);
     expect(v.blockedNoCcRoute[0]!.reason).toContain('disableCcApiFallback');
+  });
+
+  it.each(['AWS::Scheduler::Schedule', 'AWS::RDS::DBProxyTargetGroup', 'AWS::Lambda::EventInvokeConfig'])(
+    'refuses a cc-broken type %s, which routing keeps on its SDK provider (issue #4119)',
+    (type) => {
+      const v = validate(type, type);
+      expect(v.blockedNoCcRoute).toEqual([]);
+      expect(v.blockedCcBroken.map((t) => [t.logicalId, t.templateType])).toEqual([
+        ['Target', type],
+      ]);
+      const error = renderRecreateTargetsErrors(v);
+      expect(error).toContain(
+        "--recreate-via-cc-api named 1 resource(s) of types cdkd never runs on Cloud Control (Cloud Control's handler cannot manage this type correctly):"
+      );
+      expect(error).toContain(`  - Target (${type})`);
+      expect(error).toContain('None of these resources was touched.');
+    }
+  );
+
+  it('gives a cc-api record of a cc-broken type only the cc-broken reason, not "already on Cloud Control"', () => {
+    const v = validate('AWS::Scheduler::Schedule', 'AWS::Scheduler::Schedule', {
+      provisionedBy: 'cc-api',
+    });
+    expect(v.blockedCcBroken.map((t) => t.logicalId)).toEqual(['Target']);
+    expect(v.blockedAlreadyCcApi).toEqual([]);
+  });
+
+  it('does not refuse a cc-broken type on --recreate-via-sdk-provider', () => {
+    const v = validate('AWS::Scheduler::Schedule', 'AWS::Scheduler::Schedule', {
+      direction: 'to-sdk',
+      provisionedBy: 'cc-api',
+    });
+    expect(v.blockedCcBroken).toEqual([]);
   });
 
   it('accepts a type Cloud Control can create', () => {

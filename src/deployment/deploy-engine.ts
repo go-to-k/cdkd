@@ -149,7 +149,11 @@ import type { LockManager } from '../state/lock-manager.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
-import { ProviderRegistry, STICKY_CC_MIGRATION_EXEMPT } from '../provisioning/provider-registry.js';
+import {
+  ProviderRegistry,
+  STICKY_CC_MIGRATION_EXEMPT,
+  ccBrokenReason,
+} from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
 import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
 import {
@@ -7549,6 +7553,19 @@ export class DeployEngine {
                   `--recreate-via-cc-api cannot recreate ${logicalId} (${resourceType}): Cloud ` +
                     `Control API cannot create this type (${noCcRoute}). Nothing was deleted. ` +
                     `Drop ${logicalId} from --recreate-via-cc-api.`,
+                  'RECREATE_TARGETS_INVALID'
+                )
+              );
+            }
+            // Issue #4119: routing ignores the flag for this type, so the
+            // recreate would delete and recreate it on the SDK route.
+            const ccBroken = ccBrokenReason(resourceType);
+            if (ccBroken !== undefined) {
+              throw markNonRetryable(
+                new CdkdError(
+                  `--recreate-via-cc-api cannot move ${logicalId} (${resourceType}) to Cloud ` +
+                    `Control: ${ccBroken}, so cdkd keeps it on its SDK provider. Nothing was ` +
+                    `deleted. Drop ${logicalId} from --recreate-via-cc-api.`,
                   'RECREATE_TARGETS_INVALID'
                 )
               );
