@@ -479,8 +479,42 @@ if [ "${TAGS}" != "cdkd-team=platform" ]; then
 fi
 echo "    OK: the cc-api record returned to the SDK provider in place (${TG_ARN}); tag diff applied (${TAGS})"
 
+# --- go-to-k/cdkd#3945 premise: the proxy target group before its UPDATE ---
+# Re-read: phases 1b/1c above rewrote the record (Tags, the cc-api flip).
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+# Phase 2 sets MaxConnectionsPercent=90 on the proxy, which reaches AWS only
+# through the DBProxyTargetGroup provider's `update()` — the method that now
+# reads both DBClusterIdentifiers sides as identifier lists before any call.
+PROXY_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxy") | .value.physicalId] | first // ""')
+if [ -z "${PROXY_NAME}" ] || [ "${PROXY_NAME}" = "null" ]; then
+  echo "FAIL: could not resolve the DBProxy name from state" >&2
+  exit 1
+fi
+# The target group must be SDK-routed, or phase 2 runs Cloud Control's update
+# and passes without reaching the provider under test.
+TG_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxyTargetGroup") | .value.provisionedBy // "sdk"] | first // ""')
+if [ "${TG_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: #3945 premise: the DBProxyTargetGroup is routed via '${TG_PROVISIONED_BY}', expected 'sdk'" >&2
+  exit 1
+fi
+# The recorded side the update will read must be the well-formed list naming
+# the L2 cluster, or phase 2 proves nothing about reading one.
+RECORDED_TG_CLUSTERS=$(echo "${STATE}" | jq -c '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxyTargetGroup") | .value.properties.DBClusterIdentifiers] | first')
+if [ "${RECORDED_TG_CLUSTERS}" != "[\"${AURORA_CLUSTER_ID}\"]" ]; then
+  echo "FAIL: #3945 premise: the DBProxyTargetGroup records DBClusterIdentifiers ${RECORDED_TG_CLUSTERS}, expected [\"${AURORA_CLUSTER_ID}\"]" >&2
+  exit 1
+fi
+PRE_MAX_CONN=$(aws rds describe-db-proxy-target-groups --db-proxy-name "${PROXY_NAME}" \
+  --target-group-name default --region "${REGION}" \
+  --query 'TargetGroups[0].ConnectionPoolConfig.MaxConnectionsPercent' --output text)
+if [ "${PRE_MAX_CONN}" = "90" ]; then
+  echo "FAIL: #3945 premise: MaxConnectionsPercent is already 90 before phase 2, so the UPDATE arm cannot show the change landed" >&2
+  exit 1
+fi
+echo "    OK: #3945 premise: proxy ${PROXY_NAME} target group records [${AURORA_CLUSTER_ID}], MaxConnectionsPercent=${PRE_MAX_CONN}"
+
 # --- Phase 2: UPDATE pass (#1160 reset-on-removal) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication; set proxy MaxConnectionsPercent=90)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -521,6 +555,40 @@ if [ -n "${TAGS}" ]; then
   exit 1
 fi
 echo "    OK: dropping Tags from the template removed them from the target group (#4087)"
+
+# --- go-to-k/cdkd#3945: the DBProxyTargetGroup UPDATE -----------------
+# The pool change landed (so `update()` ran past its list reads rather than
+# refusing a well-formed list), and the cluster target is still the one
+# registered: no Deregister of the real target, no stray registration.
+POST_MAX_CONN=$(aws rds describe-db-proxy-target-groups --db-proxy-name "${PROXY_NAME}" \
+  --target-group-name default --region "${REGION}" \
+  --query 'TargetGroups[0].ConnectionPoolConfig.MaxConnectionsPercent' --output text)
+if [ "${POST_MAX_CONN}" != "90" ]; then
+  echo "FAIL: #3945: after phase 2, MaxConnectionsPercent is '${POST_MAX_CONN}', expected 90 -- the DBProxyTargetGroup update did not apply" >&2
+  exit 1
+fi
+# jq over the whole list, not `--query`: the CLI applies a query per PAGE.
+POST_TARGETS_JSON=$(aws rds describe-db-proxy-targets --db-proxy-name "${PROXY_NAME}" \
+  --target-group-name default --region "${REGION}" --output json)
+POST_CLUSTERS=$(echo "${POST_TARGETS_JSON}" | jq -c '[.Targets[] | select(.Type == "TRACKED_CLUSTER") | .RdsResourceId] | sort')
+if [ "${POST_CLUSTERS}" != "[\"${AURORA_CLUSTER_ID}\"]" ]; then
+  echo "FAIL: #3945: after phase 2 the proxy's cluster targets are ${POST_CLUSTERS}, expected [\"${AURORA_CLUSTER_ID}\"]" >&2
+  exit 1
+fi
+# An instance target that is not a member of the tracked cluster is a stray
+# registration (the pre-fix walk registered one-letter identifiers).
+STRAY_INSTANCES=$(echo "${POST_TARGETS_JSON}" | jq -c --arg c "${AURORA_CLUSTER_ID}" '[.Targets[] | select(.Type == "RDS_INSTANCE" and .TrackedClusterId != $c) | .RdsResourceId]')
+if [ "${STRAY_INSTANCES}" != "[]" ]; then
+  echo "FAIL: #3945: after phase 2 the proxy holds instance targets outside ${AURORA_CLUSTER_ID}: ${STRAY_INSTANCES}" >&2
+  exit 1
+fi
+POST_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+POST_TG_CLUSTERS=$(echo "${POST_STATE}" | jq -c '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxyTargetGroup") | .value.properties.DBClusterIdentifiers] | first')
+if [ "${POST_TG_CLUSTERS}" != "[\"${AURORA_CLUSTER_ID}\"]" ]; then
+  echo "FAIL: #3945: after phase 2 the DBProxyTargetGroup records DBClusterIdentifiers ${POST_TG_CLUSTERS}, expected [\"${AURORA_CLUSTER_ID}\"]" >&2
+  exit 1
+fi
+echo "    OK: #3945: target group update applied MaxConnectionsPercent=90; ${AURORA_CLUSTER_ID} is still the only cluster target"
 
 # --- Phase 2b: --remove-protection compensation (issue #2204) ---------
 # The failure has to be TERMINAL (a retryable one is retried, and a sequence

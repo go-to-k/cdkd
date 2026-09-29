@@ -33,8 +33,8 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 |---|---|
 | `AWS::Glue::Connection` | drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise. |
 | `AWS::Kinesis::StreamConsumer` | immutable type (every property change replaces); unit roundtrip suffices. Add integ if a Lambda EFO consumer pattern bug surfaces. |
-| `AWS::RDS::DBProxy` | rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time. |
-| `AWS::RDS::DBProxyTargetGroup` | see DBProxy above — same rds-aurora-extend reasoning. |
+| `AWS::RDS::DBProxy` | rds-aurora provisions it through the L2 rds.DatabaseProxy, whose type name never appears literally in the fixture, so the literal scan cannot credit it. |
+| `AWS::RDS::DBProxyTargetGroup` | see DBProxy above; rds-aurora's phase 2 also drives its UPDATE path (go-to-k/cdkd#3945). |
 
 ## Covered providers (130)
 

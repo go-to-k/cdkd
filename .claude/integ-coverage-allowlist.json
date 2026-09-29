@@ -17,9 +17,8 @@
   "AWS::S3Tables::Namespace": "existing s3-tables integ exercises only TableBucket. Namespace + Table are sub-resources sharing the same provider; unit roundtrip + parent-bucket integ suffice for now.",
   "AWS::S3Tables::Table": "see Namespace above. Extend tests/integration/s3-tables/ when a real-AWS Namespace/Table lifecycle bug surfaces.",
 
-  "AWS::RDS::DBProxy": "rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time.",
-  "AWS::RDS::DBProxyTargetGroup": "see DBProxy above — same rds-aurora-extend reasoning.",
-  "AWS::RDS::DBProxyEndpoint": "see DBProxy above — same rds-aurora-extend reasoning.",
+  "AWS::RDS::DBProxy": "rds-aurora provisions it through the L2 rds.DatabaseProxy, whose type name never appears literally in the fixture, so the literal scan cannot credit it.",
+  "AWS::RDS::DBProxyTargetGroup": "see DBProxy above; rds-aurora's phase 2 also drives its UPDATE path (go-to-k/cdkd#3945).",
 
   "AWS::ServiceDiscovery::Service": "drift-revert-vpc covers PrivateDnsNamespace; Service is a sub-resource sharing the same provider. Add an ECS service-discovery integ if a Service-specific real-AWS bug surfaces."
 }
