@@ -43,6 +43,12 @@ import {
   templateLetsConditionsReachOutputs,
   type OutputChange,
 } from '../../analyzer/outputs-diff.js';
+import {
+  WITHHELD_NAME_DISPLAY,
+  displayTextOrWithheld,
+  secretSafeKeyDisplay,
+  type SecretSafeKeyDisplay,
+} from '../../deployment/outputs-export-alias.js';
 import { bindingSkippedOutputs } from '../../analyzer/skipped-outputs.js';
 import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -1258,6 +1264,12 @@ export async function computeStackDiff(
       declaredKeys: resolved.declaredKeys,
       templateHasSecretReference,
       forceLegacyRecord,
+      secretBearingExportNames: resolved.secretBearingExportNames,
+      // A malformed `exportNames` (not a list) reads as none recorded, so the
+      // alias test falls back to the key's own shape -- the wider refusal.
+      storedExportNames: Array.isArray(currentState.exportNames)
+        ? currentState.exportNames.filter((name): name is string => typeof name === 'string')
+        : undefined,
     });
 
   // A partially-resolved bag previews the deploy's NO-CHANGE merge when the
@@ -2271,6 +2283,49 @@ export interface DiffOutputChangeJson {
   oldValueRedacted?: boolean;
   /** True for an `Export.Name` key — the ones a consumer's `Fn::ImportValue` reads. */
   export: boolean;
+  /**
+   * Present and true when `name` is NOT the stored key but its masked form or
+   * a placeholder, because the key holds a secret (issue #4015). The change is
+   * still reported.
+   */
+  nameRedacted?: boolean;
+}
+
+/** How a stored Outputs key is shown: {@link OutputChange.nameDisplay}, or a no-corpus verdict. */
+function outputNameDisplay(change: OutputChange): SecretSafeKeyDisplay {
+  return change.nameDisplay ?? secretSafeKeyDisplay(change.name, new Map());
+}
+
+/** The `--json` `name` / `nameRedacted` pair for one Outputs change (issue #4015). */
+function outputNameJson(change: OutputChange): { name: string; nameRedacted?: true } {
+  const display = outputNameDisplay(change);
+  if (display.kind === 'safe') return { name: change.name };
+  return { name: displayTextOrWithheld(display), nameRedacted: true };
+}
+
+/**
+ * The row name for one Outputs change on the HUMAN path (issue #4015): the
+ * verdict's own text, never a separately sanitised copy of the key.
+ *
+ * A MASKED name carrying anything outside printable ASCII is withheld rather
+ * than printed, the rule `outputs-export-alias.ts`'s `maskedLabel` applies. No
+ * sink on this path reshapes such a character today (`terminalSafe` does not);
+ * it is the defensive fallback issue #4015 asked for beside the corpus, so a
+ * future sink that blanks one cannot make the printed text differ from the
+ * tested one.
+ */
+function outputNameRow(change: OutputChange): string {
+  const display = outputNameDisplay(change);
+  switch (display.kind) {
+    case 'safe':
+      return display.text;
+    case 'masked':
+      return /[^ -~]/.test(display.text)
+        ? WITHHELD_NAME_DISPLAY
+        : `${display.text} (name masked: it contains a secret)`;
+    case 'withheld':
+      return WITHHELD_NAME_DISPLAY;
+  }
 }
 
 /** Serializable diff-tree node for `--json` (nested when `--recursive`). */
@@ -2333,7 +2388,11 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
     region: node.region,
     changes,
     outputChanges: node.outputChanges.map((change) => ({
-      name: change.name,
+      // The RAW key when its verdict is safe -- this payload is a machine
+      // interface and a consumer matches on the exact key -- and the verdict's
+      // own text otherwise, flagged, for the reason `oldValue` is withheld
+      // below: this is the payload CI tooling captures (issue #4015).
+      ...outputNameJson(change),
       changeType: change.changeType,
       // `oldValue` / `newValue` are omitted rather than set to `undefined` so
       // `JSON.stringify` does not have to drop them: an ADD has no old side and
@@ -2669,8 +2728,12 @@ export function renderOutputChangeLines(
     // [A-Za-z0-9] — an Outputs bag key can be an `Export.Name` that cdkd
     // RESOLVED from an `Fn::Sub` / parameter / SSM value, so it never passed a
     // CFn validator and may carry control characters or ANSI escapes that would
-    // rewrite the surrounding terminal output.
-    const name = stripControlChars(change.name);
+    // rewrite the surrounding terminal output — or, written by an older binary,
+    // a resolved secret. `secretSafeKeyDisplay` answers both in ONE string
+    // space: its text deletes a superset of what the logger's sink blanks, so
+    // `correct` + U+2028 + `horse` cannot reach the terminal as `correct horse`
+    // beside a verdict taken on the unsplit key (issue #4015).
+    const name = outputNameRow(change);
     switch (change.changeType) {
       case 'ADD':
         counts.add++;

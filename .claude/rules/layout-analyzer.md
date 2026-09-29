@@ -77,9 +77,13 @@ in CI. THREE signals, each concluding something different:
 `{{resolve:ssm:` is EXCLUDED — a `String` parameter is public and legitimately
 persisted resolved, and the verdict is record-wide.
 
-Output and export NAMES are stripped of control characters before printing: an
-`Export.Name` is a RESOLVED value, so unlike a logical id it never passed a
-validator.
+Outputs ROW names print only `secretSafeKeyDisplay`'s verdict (#4015): an
+older binary could store an `Export.Name` holding a secret. The diff fetches
+none. Its corpus: the proving keys' values (the whole bag when the merge
+FORCES the verdict), plus, for an unaccountable name only, unaccountable values
+and `secretSpanInStoredKey`. A removed non-alphanumeric ALIAS (listed in
+`exportNames` when recorded) is withheld in a secret-referencing stack; other
+names (debug lines, warnings) are control-stripped.
 
 **A deliberate SECOND implementation, not shared code**: extracting the
 deploy-side block would edit `src/deployment/deploy-engine.ts` and pull a

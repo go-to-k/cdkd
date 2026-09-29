@@ -4,7 +4,13 @@ import { INTRINSIC_KEYS, type IntrinsicResolveFn } from './diff-calculator.js';
 import {
   collectPublishedOutputNames,
   isExportAliasCollision,
+  secretSafeKeyDisplay,
+  type SecretSafeKeyDisplay,
 } from '../deployment/outputs-export-alias.js';
+import {
+  dynamicReferenceTokens,
+  type RecordedSecretValues,
+} from '../deployment/secret-redaction.js';
 import { stripControlChars } from '../utils/regexp.js';
 import { isReadableBag } from '../state/malformed-resources-bag.js';
 import {
@@ -59,6 +65,19 @@ export interface OutputChange {
    * stand-in is worded as a possibility.
    */
   oldValueRedacted?: boolean;
+  /**
+   * How {@link name} may be SHOWN (issue
+   * [#4015](https://github.com/go-to-k/cdkd/issues/4015)): the verdict
+   * `secretSafeKeyDisplay` returned for this key against the corpus
+   * {@link computeOutputsDiff} derived, so a renderer prints the verdict's own
+   * text and never a separately sanitised copy of the key.
+   *
+   * Present only when the verdict is NOT `safe`. Absence loses nothing: the
+   * corpus and the force-mask set only ever ADD exposures, and a `safe` text
+   * depends on the key alone, so the no-corpus verdict a renderer computes for
+   * a change without this field is the same `safe` display.
+   */
+  nameDisplay?: SecretSafeKeyDisplay;
 }
 
 /** Result of resolving a template's `Outputs` section for the diff. */
@@ -188,6 +207,67 @@ export interface ResolvedTemplateOutputs {
    * string, and blanket withholding is worse than that gap.
    */
   templateHasSecretReference: boolean;
+  /**
+   * Each RESOLVED `Export.Name` that still carries a `{{resolve:...}}` token
+   * after this resolver's `skipDynamicReferences` pass — a name the deploy
+   * substitutes a secret into and refuses (issue #1919), spelled with the
+   * `{{resolve:...}}` token where an older binary substituted the plaintext.
+   * {@link secretSpanInStoredKey} reads them to find that plaintext in a stored
+   * alias key (issue #4015).
+   */
+  secretBearingExportNames: string[];
+}
+
+/**
+ * The stretch of a stored alias KEY that an older binary filled in for the
+ * `{{resolve:...}}` tokens of `exportName`, or `undefined` when the key does
+ * not have the name's shape (issue
+ * [#4015](https://github.com/go-to-k/cdkd/issues/4015)).
+ *
+ * This is the diff's only route to the plaintext itself: it resolves with
+ * `skipDynamicReferences` and must not fetch a secret, while a binary from
+ * before issue #1919 published `app-<plaintext>` as a state KEY for the
+ * `Export.Name` today's resolver spells `app-{{resolve:secretsmanager:...}}`.
+ * The literal text before the first token and after the last one must match
+ * the key's ends; what lies between is the substituted span.
+ *
+ * ONE span from the first token to the last, not one per token: with two
+ * tokens the split between them is ambiguous, and the span masks every
+ * candidate at the cost of also masking the literal between them. A key with
+ * nothing between the ends is no match, since a substituted secret is never
+ * empty.
+ */
+export function secretSpanInStoredKey(key: string, exportName: string): string | undefined {
+  // The shared token scan, never a local pattern: `secret-redaction.ts` owns
+  // the grammar. `indexOf` / `lastIndexOf` place the first and last match,
+  // since an earlier or later copy of either text would itself be a match.
+  const tokens = dynamicReferenceTokens(exportName);
+  const first = tokens[0];
+  const last = tokens[tokens.length - 1];
+  if (first === undefined || last === undefined) return undefined;
+  const prefix = exportName.slice(0, exportName.indexOf(first));
+  const suffix = exportName.slice(exportName.lastIndexOf(last) + last.length);
+  if (key.length <= prefix.length + suffix.length) return undefined;
+  if (!key.startsWith(prefix) || !key.endsWith(suffix)) return undefined;
+  return key.slice(prefix.length, key.length - suffix.length);
+}
+
+/**
+ * The expression half of a corpus entry built from a stored value. Never
+ * printed: `secretSafeKeyDisplay` masks with the plaintext side only.
+ */
+const SUSPECTED_PLAINTEXT_EXPRESSION = '<stored output value withheld as possible plaintext>';
+
+/** Every string leaf of a stored value, as corpus entries (issue #4015). */
+function addStringLeaves(value: unknown, into: RecordedSecretValues): void {
+  if (typeof value === 'string') {
+    if (value.length > 0) into.set(value, SUSPECTED_PLAINTEXT_EXPRESSION);
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  for (const member of Object.values(value as Record<string, unknown>)) {
+    addStringLeaves(member, into);
+  }
 }
 
 /**
@@ -471,6 +551,7 @@ export async function resolveTemplateOutputs(
   // mentions the secret — so an Outputs-only walk would answer `false` for
   // every case the gate exists to catch.
   const templateHasSecretReference = containsSecretDynamicReference(template);
+  const secretBearingExportNames: string[] = [];
   let resolutionFailed = false;
   // The deploy engine REFUSES an export alias whose name is another published
   // output's name, and refuses one carrying a secret (issue #1919). This module
@@ -492,6 +573,7 @@ export async function resolveTemplateOutputs(
       declaredKeys,
       templateHasSecretReference,
       resolutionFailed,
+      secretBearingExportNames,
     };
   }
 
@@ -528,6 +610,44 @@ export async function resolveTemplateOutputs(
     if (typeof output.Export?.Name === 'string') secretSourceKeys.add(output.Export.Name);
   }
 
+  /**
+   * Record the secret-bearing `Export.Name` of an output the loop below leaves
+   * BEFORE its alias block -- condition-false, previewed absent by a #2740
+   * record, or FAILED -- for the stored-key span only (issue #4015). A failed
+   * one counts too: a RENAMED exporter whose value fails leaves the section
+   * rendered (its old output key and alias are REMOVE rows), and its stale
+   * alias printed raw without this. The
+   * output's alias is not in this bag, so a stored copy of it is a REMOVE or
+   * carried row whose NAME a binary from before #1919 filled with the
+   * plaintext; without this, a condition-gated exporter printed it. Nothing
+   * is published from here, and a name that throws or does not keep its token
+   * gives no span.
+   */
+  /**
+   * ANY `{{resolve:...}}` token left after this resolver's
+   * `skipDynamicReferences` pass marks a name the deploy substitutes a SECRET
+   * into, not only the `secretsmanager` / `ssm-secure` spellings
+   * `isSecretDynamicReference` knows: a plain `{{resolve:ssm:...}}` to a
+   * `SecureString` parameter stays a token too (measured), while a public
+   * `String` one resolves to its value and carries none. So the token scan,
+   * not the spelling, decides (issue #4015). Corpus only -- which alias this
+   * preview publishes is decided below as before.
+   */
+  const recordTokenBearingExportName = (name: string): void => {
+    if (dynamicReferenceTokens(name).length > 0) secretBearingExportNames.push(name);
+  };
+
+  const recordSkippedSecretExportName = async (output: TemplateOutput): Promise<void> => {
+    const declared: unknown = output.Export?.Name;
+    if (declared === undefined || typeof declared === 'string') return;
+    try {
+      const resolvedName = await resolveFn(structuredClone(declared));
+      if (typeof resolvedName === 'string') recordTokenBearingExportName(resolvedName);
+    } catch {
+      // No span from a name this preview cannot resolve.
+    }
+  };
+
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
     if (output.Condition !== undefined && conditions?.[output.Condition] === false) {
       logger.debug(
@@ -535,6 +655,7 @@ export async function resolveTemplateOutputs(
       );
       // NOT a resolution failure — CFn genuinely does not create it, so the
       // deploy drops it from the bag too and a REMOVE here is CORRECT.
+      await recordSkippedSecretExportName(output);
       continue;
     }
     // Issue #2740: the last deploy could not resolve this output and the
@@ -556,6 +677,7 @@ export async function resolveTemplateOutputs(
       logger.debug(
         `Diff previewing output ${stripControlChars(outputKey)} as absent — the last deploy could not resolve it and its template inputs are unchanged`
       );
+      await recordSkippedSecretExportName(output);
       continue;
     }
     const sourceUsedSub = templateUsesSub(output.Value);
@@ -581,6 +703,7 @@ export async function resolveTemplateOutputs(
       // The deploy records a throw the same way (its catch stores `undefined`):
       // a matching failure signal, not a promise that its resolution throws too.
       failedOutputKeys.add(outputKey);
+      await recordSkippedSecretExportName(output);
       continue;
     }
     if (isUnresolvedValue(value, sourceUsedSub)) {
@@ -597,6 +720,7 @@ export async function resolveTemplateOutputs(
       // what the deploy does with the key, so it cannot be previewed as carried.
       if (value === undefined) failedOutputKeys.add(outputKey);
       else failuresMirrorDeploy = false;
+      await recordSkippedSecretExportName(output);
       continue;
     }
     outputs[outputKey] = value;
@@ -625,6 +749,7 @@ export async function resolveTemplateOutputs(
           continue;
         }
       }
+      if (typeof exportName === 'string') recordTokenBearingExportName(exportName);
       if (typeof exportName === 'string' && !isUnresolvedValue(exportName, exportSourceUsedSub)) {
         // The refusal order MIRRORS the deploy engine's — secret first, then
         // collision — so a name matching both is attributed the same way on
@@ -689,8 +814,13 @@ export async function resolveTemplateOutputs(
           // (2) A key stored by a PRE-#1919 binary records no verdict at all
           // (the refusal did not exist then) — that is the same key
           // `cdkd scrub` reports through `secretBearingStateKeyWarning`, and
-          // it prints today as a REMOVE row on any stack whose section is not
-          // suppressed, so publishing does not widen it.
+          // it prints as a row on any stack whose section is not suppressed,
+          // so publishing does not widen it. Its NAME goes through
+          // `computeOutputsDiff`'s key verdict (issue #4015). While the name is
+          // still declared it is template text -- the plaintext it would carry
+          // is in the template itself -- and is masked only when the corpus
+          // holds it; once removed, its stored key is a REMOVE row the
+          // alias-name refusal there withholds.
           const storedProvesPublished =
             storedOutputs !== undefined &&
             Object.prototype.hasOwnProperty.call(storedOutputs, exportName);
@@ -743,6 +873,7 @@ export async function resolveTemplateOutputs(
     declaredKeys,
     templateHasSecretReference,
     resolutionFailed,
+    secretBearingExportNames,
   };
 }
 
@@ -861,6 +992,13 @@ export function computeOutputsDiff(
      * evidence only its resolved value held is gone.
      */
     forceLegacyRecord?: boolean;
+    /** {@link ResolvedTemplateOutputs.secretBearingExportNames} (issue #4015). */
+    secretBearingExportNames?: readonly string[];
+    /**
+     * The record's `exportNames` (schema v9+), or `undefined` when it records
+     * none: which stored keys are export ALIASES (issue #4015).
+     */
+    storedExportNames?: readonly string[] | undefined;
   } = {}
 ): OutputChange[] {
   const changes: OutputChange[] = [];
@@ -891,20 +1029,21 @@ export function computeOutputsDiff(
     current !== undefined && isReadableBag(current) ? current : {};
 
   // Pass 1: is this a pre-GHSA record? See the "Withholding" note above.
+  // Named, because issue #4015's corpus reads the keys that TRIGGER it.
+  const provesLegacy = ([name, oldValue]: [string, unknown]): boolean => {
+    // LEAF granularity on the VETO, deep on both positive arms — and the
+    // asymmetry is the point rather than an oversight. Widening this one (as an
+    // earlier revision did) makes a CONTAINER holding any expression leaf vote
+    // "already redacted", so a partially-redacted bag —
+    // `["{{resolve:secretsmanager:A}}", "prod-<plaintext>"]`, the residue
+    // `cdkd scrub` itself admits it can leave — is read as post-GHSA and its
+    // plaintext leaf then prints in a rendered row. A veto must be harder to
+    // earn than a suspicion.
+    if (typeof oldValue === 'string' && isSecretDynamicReference(oldValue)) return false;
+    return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
+  };
   const legacyRecord =
-    unaccountableScan.forceLegacyRecord === true ||
-    Object.entries(currentBag).some(([name, oldValue]) => {
-      // LEAF granularity on the VETO, deep on both positive arms — and the
-      // asymmetry is the point rather than an oversight. Widening this one (as an
-      // earlier revision did) makes a CONTAINER holding any expression leaf vote
-      // "already redacted", so a partially-redacted bag —
-      // `["{{resolve:secretsmanager:A}}", "prod-<plaintext>"]`, the residue
-      // `cdkd scrub` itself admits it can leave — is read as post-GHSA and its
-      // plaintext leaf then prints in a rendered row. A veto must be harder to
-      // earn than a suspicion.
-      if (typeof oldValue === 'string' && isSecretDynamicReference(oldValue)) return false;
-      return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
-    });
+    unaccountableScan.forceLegacyRecord === true || Object.entries(currentBag).some(provesLegacy);
 
   // Pass 2: the issue #1948 exoneration, RECORD-level unlike the per-key veto
   // above, and it has to be: the question is whether the LAST write redacted,
@@ -920,20 +1059,123 @@ export function computeOutputsDiff(
     !declaredKeys.has(name) &&
     !Object.prototype.hasOwnProperty.call(desired, name);
 
+  // THE KEY'S OWN VERDICT (issue #4015). A stored key is printed as a row
+  // name, and a binary from before issue #1919 (or #2889) could publish an
+  // alias key holding a resolved secret -- which no redaction pass rewrites,
+  // since they all walk VALUES. So every row name goes through
+  // `secretSafeKeyDisplay`, and the renderers print its verdict-bound text.
+  //
+  // The CORPUS is what this diff can know without fetching a secret, which it
+  // must not do (the GHSA fix resolves with `skipDynamicReferences`):
+  //
+  // - in a record judged pre-GHSA, the stored values of the keys that proved
+  //   it (the template declares them secret, so their stored value IS the
+  //   plaintext), or the whole bag when the merge preview FORCED the verdict,
+  //   whose evidence is gone by construction. Tested against every row name;
+  // - the stored value of each key the template cannot account for, and the
+  //   span an older binary substituted for the `{{resolve:...}}` tokens of a
+  //   secret-bearing `Export.Name` (`secretSpanInStoredKey`, FORCE-MASK so a
+  //   span below the containment floor is still masked). Tested ONLY against a
+  //   name that is neither declared nor desired: resolution substituted no
+  //   plaintext into any other, and a deleted `Stage: prod` must not mask an
+  //   ADD `prod-ApiUrl` under a false "contains a secret" label.
+  //
+  // OVER-MASKING, stated, fail-closed on purpose: the span needs only the
+  // literal ends to match, so a stale sibling alias sharing them is masked
+  // too; and one removed output's stored value found inside ANOTHER removed
+  // output's logical id masks that id (`Deleted: 'prod'` beside a removed
+  // `prodOldApi`).
+  //
+  // Then a REFUSAL over what the corpus cannot see: see `withholdsAliasName`.
+  const recordCorpus: RecordedSecretValues = new Map();
+  const unaccountedCorpus: RecordedSecretValues = new Map();
+  for (const entry of Object.entries(currentBag)) {
+    // `provesLegacy(entry)` implies `legacyRecord`, so it needs no conjunct.
+    if (unaccountableScan.forceLegacyRecord === true || provesLegacy(entry)) {
+      addStringLeaves(entry[1], recordCorpus);
+    }
+    if (unaccountable(entry[0])) addStringLeaves(entry[1], unaccountedCorpus);
+  }
+  // Built ONCE, so every unaccountable row shares one map and the detection
+  // cache `secretSafeKeyDisplay` keys by map identity hits.
+  const unaccountedNameCorpus: RecordedSecretValues = new Map([
+    ...recordCorpus,
+    ...unaccountedCorpus,
+  ]);
+  const accountable = (name: string): boolean =>
+    declaredKeys.has(name) || Object.prototype.hasOwnProperty.call(desired, name);
+
+  // THE ALIAS-NAME REFUSAL (issue #4015, maintainer decision). A stored key
+  // holding a secret the corpus cannot see -- its `Export.Name` since removed
+  // or edited, or a LITERAL one containing the plaintext, on a record whose
+  // values were redacted -- has its NAME withheld, when ALL hold: a REMOVE
+  // row (implied by the next: an ADD or MODIFY key is desired, so accountable),
+  // a key the template does not account for, a template that references
+  // a secret, and a key that can only be an export ALIAS: carrying a character
+  // a CloudFormation Output logical id cannot (outside `[A-Za-z0-9]`), and,
+  // when the record lists `exportNames` (v9+), listed there. A plain Output
+  // logical id is never withheld -- not even one listed in `exportNames`,
+  // which a self-aliased output (`exportName` equal to its own id) puts there.
+  //
+  // TWO BOUNDS remain, each printing unless the corpus or the span covers it:
+  // - an alphanumeric-only alias key, which reads as an Output logical id;
+  // - any alias in a stack whose template no longer references a secret by a
+  //   spelling `templateHasSecretReference` knows (`secretsmanager` /
+  //   `ssm-secure`) -- including one whose only secret is a plain
+  //   `{{resolve:ssm:...}}` to a `SecureString`.
+  const storedExportNames =
+    unaccountableScan.storedExportNames === undefined
+      ? undefined
+      : new Set(unaccountableScan.storedExportNames);
+  const withholdsAliasName = (name: string): boolean =>
+    unaccountableScan.templateHasSecretReference === true &&
+    !accountable(name) &&
+    /[^A-Za-z0-9]/.test(name) &&
+    (storedExportNames === undefined || storedExportNames.has(name));
+
+  const nameDisplay = (name: string): { nameDisplay?: SecretSafeKeyDisplay } => {
+    if (withholdsAliasName(name)) {
+      return { nameDisplay: { kind: 'withheld' } };
+    }
+    let corpus = recordCorpus;
+    let forceMask: RecordedSecretValues | undefined;
+    if (!accountable(name)) {
+      corpus = unaccountedNameCorpus;
+      forceMask = new Map();
+      for (const exportName of unaccountableScan.secretBearingExportNames ?? []) {
+        const span = secretSpanInStoredKey(name, exportName);
+        if (span !== undefined) forceMask.set(span, exportName);
+      }
+    }
+    const display = secretSafeKeyDisplay(
+      name,
+      corpus,
+      forceMask !== undefined && forceMask.size > 0 ? forceMask : undefined
+    );
+    return display.kind === 'safe' ? {} : { nameDisplay: display };
+  };
+
   const push = (change: OutputChange): void => {
+    const shown: OutputChange = { ...change, ...nameDisplay(change.name) };
     if (change.changeType !== 'ADD' && (legacyRecord || unaccountable(change.name))) {
-      const { oldValue: _dropped, ...rest } = change;
+      const { oldValue: _dropped, ...rest } = shown;
       changes.push({ ...rest, oldValueRedacted: true });
       return;
     }
-    changes.push(change);
+    changes.push(shown);
   };
 
   for (const [name, newValue] of Object.entries(desired)) {
     const isExport = exportNames.has(name);
     if (!Object.prototype.hasOwnProperty.call(currentBag, name)) {
       // An ADD has no stored side, so there is nothing to withhold.
-      changes.push({ name, changeType: 'ADD', newValue, isExport });
+      changes.push({
+        name,
+        changeType: 'ADD',
+        newValue,
+        isExport,
+        ...nameDisplay(name),
+      });
       continue;
     }
     const oldValue = currentBag[name];
