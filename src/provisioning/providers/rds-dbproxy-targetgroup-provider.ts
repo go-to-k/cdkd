@@ -493,14 +493,19 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     // register calls -- addresses the proxy by NAME, which another region can
     // also hold, and the deregister arm reads NotFound as success: refuse a
     // wrong-region client before any of them goes out.
-    assertRegionMatch(
-      await this.getClient().config.region(),
-      context?.expectedRegion,
-      resourceType,
-      logicalId,
-      physicalId,
-      'pre-update'
-    );
+    // The client region is resolved only when there is a recorded region to
+    // hold it to: without one the check is a no-op, and resolving it can fail
+    // on a client with no region configured.
+    if (context?.expectedRegion) {
+      assertRegionMatch(
+        await this.getClient().config.region(),
+        context.expectedRegion,
+        resourceType,
+        logicalId,
+        physicalId,
+        'pre-update'
+      );
+    }
 
     // go-to-k/cdkd#3945: both sides are read as target lists before ANY call,
     // the pool config included. The previous side is the state record, and a
