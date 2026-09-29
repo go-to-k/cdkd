@@ -46,6 +46,8 @@ import {
   explicitNamePropertyFor,
   generateResourceName,
   generateResourceNameWithFallback,
+  getCurrentSkipPrefix,
+  withSkipPrefix,
 } from '../provisioning/resource-name.js';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { SECRET_MASK } from './secret-redaction.js';
@@ -301,12 +303,13 @@ const GENERATED_NAME_VERBATIM: ReadonlySet<string> = new Set([
  * asked for is NOT the recorded one: it depends on the stack-name scope
  * (`withStackName`) and the prefix flag (`withSkipPrefix`) — the failed
  * deploy's flag, which `cdkd rollback` restores from the journal segment
- * (go-to-k/cdkd#4018), yet an EARLIER deploy that created the old resource may
- * have run under the other one — and the default pattern rewrites `_` and `.`
- * to `-`. So a recorded name proves nothing here: the name the re-create
- * sends is derived IN THE CURRENT SCOPE by the provider's own generator, and
- * only the new resource's physical id naming THAT name proves a holder.
- * Fenced against the generator's callers in `src/provisioning/providers/`.
+ * (go-to-k/cdkd#4018), unless {@link replayPrefixChoice} finds that the OTHER
+ * flag created the old resource (go-to-k/cdkd#4024) — and the default pattern
+ * rewrites `_` and `.` to `-`. So a recorded name proves nothing here: the
+ * name the re-create sends is derived IN THE CURRENT SCOPE by the provider's
+ * own generator, and only the new resource's physical id naming THAT name
+ * proves a holder. Fenced against the generator's callers in
+ * `src/provisioning/providers/`.
  */
 const SENT_NAME_REWRITTEN: Readonly<
   Record<string, { readonly property: string; readonly maxLength: number }>
@@ -319,6 +322,109 @@ const SENT_NAME_REWRITTEN: Readonly<
   'AWS::IAM::Role': { property: 'RoleName', maxLength: 64 },
   'AWS::IAM::User': { property: 'UserName', maxLength: 64 },
 };
+
+/**
+ * Which user-supplied-name prefix flag a rollback replays one op under
+ * (go-to-k/cdkd#4024). See {@link replayPrefixChoice}.
+ *
+ * - `not-applicable`: the flag cannot change what is sent (not a
+ *   `SENT_NAME_REWRITTEN` type, a Cloud Control route, or no explicit name —
+ *   a logical-id name keeps the prefix under either flag).
+ * - `reproduced`: `skipPrefix` derives a name the old physical id names.
+ * - `unreproduced`: neither flag does, or it cannot be decided; `skipPrefix`
+ *   is the current scope's (the failed deploy's) and `names` the two
+ *   derivations when they could be computed.
+ */
+export type ReplayPrefixChoice =
+  | { readonly kind: 'not-applicable' }
+  | {
+      readonly kind: 'reproduced';
+      readonly skipPrefix: boolean;
+      /** The current scope's flag, for the caller's note when it differs. */
+      readonly recorded: boolean;
+      readonly property: string;
+      /** The declared (PLAINTEXT) name, so a caller can tell a secret-derived one. */
+      readonly declared: string;
+      readonly names: { readonly skipped: string; readonly kept: string };
+    }
+  | {
+      readonly kind: 'unreproduced';
+      readonly skipPrefix: boolean;
+      readonly property: string;
+      readonly declared: string | undefined;
+      readonly names: { readonly skipped: string; readonly kept: string } | undefined;
+    };
+
+/**
+ * The prefix flag a rollback should replay an op of a `SENT_NAME_REWRITTEN`
+ * type under: the one whose derived name REPRODUCES the old resource's
+ * physical id (go-to-k/cdkd#4024).
+ *
+ * The replay's scope carries the FAILED deploy's flag (#4018), but the old
+ * resource was created by an EARLIER deploy, which may have run under the
+ * other one. Its provider derives the name from the flag (for a re-create,
+ * and for an in-place `update()` that re-derives the name and replaces on a
+ * mismatch), so replaying under the failed deploy's flag restores the resource
+ * under a name it never had. The physical id records the name it DID have:
+ * the name itself for an IAM Role / User / Group / InstanceProfile, the last
+ * `/` segment of a ManagedPolicy ARN (`arn:…:policy[/path]/<name>`), the name
+ * segment of an ELBv2 ARN (`…:targetgroup/<name>/<id>`,
+ * `…:loadbalancer/<app|net|gwy>/<name>/<id>`).
+ *
+ * Call it in the replay's own async scope (stack name, recorded flag): both
+ * derivations run there with only the flag overridden. The current flag wins
+ * when both derive a name the id names (no stack name in scope); neither, or
+ * an old id / explicit name cdkd cannot read, keeps the current flag as
+ * `unreproduced`, which the caller warns about. Names compare in the type's
+ * case rule (`CASE_INSENSITIVE_NAME_TYPES`).
+ */
+export function replayPrefixChoice(input: {
+  resourceType: string;
+  /** The bag the replay sends (the old resource's resolved properties). */
+  properties: Record<string, unknown> | undefined;
+  logicalId: unknown;
+  /** The old resource's physical id. */
+  physicalId: unknown;
+  /** The route the replay's create / update takes. */
+  via: ProvisionedBy | undefined;
+}): ReplayPrefixChoice {
+  const rewrite = ownEntry(SENT_NAME_REWRITTEN, input.resourceType);
+  if (rewrite === undefined || input.via === 'cc-api') return { kind: 'not-applicable' };
+  const raw = input.properties?.[rewrite.property];
+  // What `generateResourceNameWithFallback` reads as "no explicit name": the
+  // logical-id name is prefixed under either flag. A `null` is NOT that (the
+  // generator passes it on), so it falls to the undecided arm below.
+  if (raw === undefined || raw === '') return { kind: 'not-applicable' };
+  const recorded = getCurrentSkipPrefix();
+  const property = rewrite.property;
+  const declared = valueAt(input.properties, [property]);
+  if (
+    declared === undefined ||
+    typeof input.logicalId !== 'string' ||
+    typeof input.physicalId !== 'string' ||
+    input.physicalId === ''
+  ) {
+    return { kind: 'unreproduced', skipPrefix: recorded, property, declared, names: undefined };
+  }
+  const logicalId = input.logicalId;
+  const nameUnder = (skip: boolean): string =>
+    withSkipPrefix(skip, () =>
+      generateResourceNameWithFallback(declared, logicalId, { maxLength: rewrite.maxLength })
+    );
+  const fold = CASE_INSENSITIVE_NAME_TYPES.has(input.resourceType)
+    ? (value: string): string => value.toLowerCase()
+    : (value: string): string => value;
+  const id = fold(input.physicalId);
+  const names = { skipped: nameUnder(true), kept: nameUnder(false) };
+  const reproduces = (skip: boolean): boolean => {
+    const name = skip ? names.skipped : names.kept;
+    return name !== '' && holderIdNames(id, fold(name));
+  };
+  const decided = { recorded, property, declared, names };
+  if (reproduces(recorded)) return { kind: 'reproduced', skipPrefix: recorded, ...decided };
+  if (reproduces(!recorded)) return { kind: 'reproduced', skipPrefix: !recorded, ...decided };
+  return { kind: 'unreproduced', skipPrefix: recorded, property, declared, names };
+}
 
 /** The rewriting types and their generator options, for the fence. */
 export function reverseReplacementRewrittenNameTypes(): Readonly<

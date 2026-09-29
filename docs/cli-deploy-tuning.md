@@ -190,7 +190,8 @@ does not rename it. It proposes a replacement instead — see below.
 
 A deploy that fails records the setting in its rollback journal, so
 [`cdkd rollback`](cli-rollback.md) re-creates resources under the names this
-deploy would have used without the flag being passed again.
+deploy would have used without the flag being passed again. A resource an
+earlier deploy created under the other setting comes back under the name it had.
 
 The old `--no-prefix-user-supplied-names` flag, its
 `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` env var, and its

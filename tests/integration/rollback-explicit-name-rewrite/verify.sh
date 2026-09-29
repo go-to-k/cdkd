@@ -41,6 +41,18 @@
 #     8. `cdkd rollback` WITHOUT the flag and without the env: the recorded
 #        flag wins, so the role comes back as `${STACK}-cdkd-integ-rbrw-a` and
 #        the bare `cdkd-integ-rbrw-a` is never created.
+#   PHASE 6 (the flag FLIPPED between the creating and the failed deploy, #4024):
+#     8b. The role `${STACK}-cdkd-integ-rbrw-a` was created with the prefix
+#        KEPT (step 8). A failing replacing deploy WITHOUT the flag
+#        (--no-rollback) creates the bare `cdkd-integ-rbrw-b` and deletes the
+#        prefixed `-a`; the segment records skipPrefix=true.
+#     8c. `cdkd rollback`: the old role comes back as EXACTLY its original
+#        `${STACK}-cdkd-integ-rbrw-a` (before the fix: the bare
+#        `cdkd-integ-rbrw-a`, a name it never had), `-b` is deleted, journal
+#        gone, and the log names the setting it chose.
+#     8d. The same failing deploy WITH the automatic rollback: the in-process
+#        rollback restores `${STACK}-cdkd-integ-rbrw-a` the same way and leaves
+#        only the failed CreateQueue in the journal (#1208).
 #     9. Destroy clean; every role name the run could mint is gone.
 #
 # BSD/macOS-portable. Integ-exit-code-capture pattern (bash ...; rc=$?) so a
@@ -446,6 +458,122 @@ assert_gone "rollback journal still present after the prefix-kept rollback" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 assert_no_legacy_fallback "${LOG_DIR}/rollback-prefixed.log"
 echo "[verify] step 8 ok: ${PREFIXED_A} restored under the recorded (prefix-kept) name"
+
+# ---------------------------------------------------------------------------
+# PHASE 6: the flag flipped between the creating deploy and the failed one (#4024)
+# ---------------------------------------------------------------------------
+# The parsed marker names the chosen and the recorded setting; the sentinel is
+# the line's own opening, independent of it. Sentinel without marker = the
+# wording drifted — never read as "no choice was made".
+FLIP_SENTINEL="Rollback: re-creating NamedRole (AWS::IAM::Role) under the user-supplied-name prefix setting that created"
+FLIP_MARKER="(stack-name prefix KEPT; the failed deploy ran with it SKIPPED)"
+assert_flip_logged() { # usage: assert_flip_logged <log>
+  if ! grep -qF "${FLIP_SENTINEL}" "$1"; then
+    echo "[verify] FAIL: the rollback did not say it re-created NamedRole under the setting that created it"
+    exit 1
+  fi
+  if ! grep -F "${FLIP_SENTINEL}" "$1" | grep -qF "${FLIP_MARKER}"; then
+    echo "[verify] FAIL: the setting line is present but does not name prefix KEPT over the recorded SKIPPED (wording drifted, or another setting was chosen):"
+    grep -F "${FLIP_SENTINEL}" "$1" | sed 's/^/  /'
+    exit 1
+  fi
+}
+
+# Replaces NamedRole with the bare `-b` in a deploy WITHOUT the flag, so its
+# segment records skipPrefix=true while the old role was created with the
+# prefix kept. Leaves the deploy's log in the named file.
+#
+# `--yes`: the state still holds the PREFIXED role, so the deploy's
+# prefix-migration check lists it as a pending REPLACE and asks first — which
+# refuses outright in a non-interactive run. Its warning is asserted: it is
+# the evidence this deploy really ran with the flag dropped.
+MIGRATION_WARNING="WARNING: --no-prefix-user-supplied-names will REPLACE"
+replace_without_flag() { # usage: replace_without_flag <log> [extra deploy args...]
+  local log="$1" rc
+  shift
+  set +e
+  env -u CDKD_PREFIX_USER_SUPPLIED_NAMES ROLE_SUFFIX=b INJECT_FAIL=true \
+    ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --yes "$@" > "${log}" 2>&1
+  rc=$?
+  set -e
+  sed 's/^/  /' "${log}" || true
+  if [ "${rc}" -eq 0 ]; then
+    echo "[verify] FAIL: the flag-dropped failing deploy unexpectedly SUCCEEDED"
+    exit 1
+  fi
+  if ! grep -qF "${MIGRATION_WARNING}" "${log}"; then
+    echo "[verify] FAIL: the flag-dropped deploy printed no prefix-migration warning — it did not run with the prefix skipped against the prefixed role"
+    exit 1
+  fi
+}
+
+echo "[verify] step 8b: failing replacing deploy WITHOUT --prefix-user-supplied-names --no-rollback"
+replace_without_flag "${LOG_DIR}/replace-flipped.log" --no-rollback
+if [ "$(role_description "${ROLE_B}")" != "${ROLE_DESCRIPTION}" ]; then
+  echo "[verify] FAIL: ${ROLE_B} missing — the flag-dropped replacement did not land"
+  exit 1
+fi
+wait_role_gone "old ${PREFIXED_A} still exists — the flag-dropped replacement did not delete it" "${PREFIXED_A}"
+J_SKIP3="$(journal_skip_prefix)"
+if [ "${J_SKIP3}" != "true" ]; then
+  echo "[verify] FAIL: the journal segment records skipPrefix=${J_SKIP3} (expected true: the deploy dropped the flag)"
+  exit 1
+fi
+echo "[verify] step 8b ok: ${ROLE_B} created, ${PREFIXED_A} deleted, journal records skipPrefix=true"
+
+echo "[verify] step 8c: cdkd rollback (the old role must come back as ${PREFIXED_A})"
+set +e
+env -u CDKD_PREFIX_USER_SUPPLIED_NAMES \
+  ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-flipped.log" 2>&1
+RB3_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/rollback-flipped.log" || true
+if [ "${RB3_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: the flag-flipped cdkd rollback exited ${RB3_RC} (output above)"
+  exit 1
+fi
+if [ "$(role_description "${PREFIXED_A}")" != "${ROLE_DESCRIPTION}" ]; then
+  echo "[verify] FAIL: ${PREFIXED_A} was not re-created under its original name"
+  exit 1
+fi
+RB3_ID="$(state_role_id)"
+if [ "${RB3_ID}" != "${PREFIXED_A}" ]; then
+  echo "[verify] FAIL: state records NamedRole as ${RB3_ID} after the flag-flipped rollback (expected ${PREFIXED_A})"
+  exit 1
+fi
+assert_gone "the flag-flipped rollback re-created the old role under the bare ${ROLE_A}, a name it never had" \
+  aws iam get-role --role-name "${ROLE_A}"
+wait_role_gone "new ${ROLE_B} still exists after the flag-flipped rollback" "${ROLE_B}"
+assert_gone "rollback journal still present after the flag-flipped rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+assert_no_legacy_fallback "${LOG_DIR}/rollback-flipped.log"
+assert_flip_logged "${LOG_DIR}/rollback-flipped.log"
+echo "[verify] step 8c ok: ${PREFIXED_A} restored under its original name, ${ROLE_B} deleted, journal gone"
+
+echo "[verify] step 8d: the same flag-dropped failing deploy WITH the automatic rollback"
+replace_without_flag "${LOG_DIR}/replace-flipped-auto.log"
+if [ "$(role_description "${PREFIXED_A}")" != "${ROLE_DESCRIPTION}" ]; then
+  echo "[verify] FAIL: the automatic rollback did not re-create ${PREFIXED_A} under its original name"
+  exit 1
+fi
+RB4_ID="$(state_role_id)"
+if [ "${RB4_ID}" != "${PREFIXED_A}" ]; then
+  echo "[verify] FAIL: state records NamedRole as ${RB4_ID} after the automatic rollback (expected ${PREFIXED_A})"
+  exit 1
+fi
+assert_gone "the automatic rollback re-created the old role under the bare ${ROLE_A}, a name it never had" \
+  aws iam get-role --role-name "${ROLE_A}"
+wait_role_gone "new ${ROLE_B} still exists after the automatic rollback" "${ROLE_B}"
+# A clean automatic rollback keeps only the failed CreateQueue (#1208): one
+# `auto-rollback-clean` segment with no completed operation left to revert.
+AUTO_JOURNAL="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"
+AUTO_SHAPE="$(printf '%s' "${AUTO_JOURNAL}" | jq -r '"\(.segments | length) \(.segments[-1].reason) \([.segments[].operations | length] | add) \([.segments[-1].failedOperations[]?.logicalId] | join(","))"')"
+if [ "${AUTO_SHAPE}" != "1 auto-rollback-clean 0 FailingQueue" ]; then
+  echo "[verify] FAIL: journal after the automatic rollback is '${AUTO_SHAPE}' (expected '1 auto-rollback-clean 0 FailingQueue': the rollback did not complete cleanly)"
+  exit 1
+fi
+assert_flip_logged "${LOG_DIR}/replace-flipped-auto.log"
+echo "[verify] step 8d ok: the automatic rollback restored ${PREFIXED_A}, ${ROLE_B} deleted, failed-only journal left for destroy"
 
 echo "[verify] step 9: cdkd destroy ${STACK} --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force

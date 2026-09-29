@@ -5,8 +5,10 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * Fixture for `cdkd rollback` re-creating an EXPLICITLY named IAM Role under
- * the name its deploy sent (issue #4018), and for the rewritten-name holder
- * refusal (issue #4010) on that re-create.
+ * the name its deploy sent (issue #4018) — or, when the prefix flag flipped
+ * between the deploy that created it and the one that failed, under the name
+ * it had (issue #4024) — and for the rewritten-name holder refusal (issue
+ * #4010) on that re-create.
  *
  * covers: AWS::IAM::Role
  * covers: AWS::SQS::Queue
