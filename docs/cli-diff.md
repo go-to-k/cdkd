@@ -706,7 +706,10 @@ The refusal is the same; only the row it names differs.
 A cycle that closes through a row whose `Condition` evaluates false is refused
 too, because `cdkd deploy` checks the tree without evaluating conditions. That
 refusal uses the deploy's wording (`The nested template tree under stack ...
-contains a cycle`) and ends `Refusing to diff.`
+contains a cycle`) and ends `Refusing to diff.` The same check refuses the
+deploy's other tree defects below such a row — an absolute or escaping
+`aws:asset:path`, a chain deeper than 512 levels, or a tree of more than 10,000
+nested rows — with the same ending.
 
 It is a refusal rather than a truncation because a cyclic assembly has no
 correct diff to render, and a partial one would under-report changes the next
