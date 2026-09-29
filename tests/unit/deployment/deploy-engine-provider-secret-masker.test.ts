@@ -256,9 +256,24 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
   it("UPDATE: recordedAttributes is the updated record's own attributes (issue #4051)", async () => {
     const template = primeUpdatePath();
     const recorded = { RepositoryId: 'rid-4051', Arn: 'arn:recorded' };
-    const { state } = await mockStateBackend.getState!();
-    (state.resources['Pool'] as { attributes?: unknown }).attributes = recorded;
-    mockStateBackend.getState!.mockResolvedValue({ state, etag: 'etag-old' });
+    mockStateBackend.getState!.mockResolvedValue({
+      state: {
+        version: 8,
+        stackName,
+        region: 'us-east-1',
+        resources: {
+          Pool: {
+            physicalId: 'phys',
+            resourceType: RESOURCE_TYPE,
+            properties: { UserPoolName: 'pool', EnabledMfas: 'PREVIOUS' },
+            attributes: recorded,
+          },
+        },
+        outputs: {},
+        lastModified: 1,
+      },
+      etag: 'etag-old',
+    });
 
     await makeEngine().deploy(stackName, template);
 
