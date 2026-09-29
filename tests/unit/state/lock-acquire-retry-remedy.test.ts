@@ -114,6 +114,21 @@ describe('acquireLockWithRetry exhausted-retry message (site 14)', () => {
     }
   });
 
+  it('calls an empty owner an unnamed holder, and describes a comma-carrying one (go-to-k/cdkd#4115)', async () => {
+    const unnamed = await failureMessage('MyStack', 'us-east-1', { ...LIVE_LOCK(), owner: '' } as LockInfo);
+    expect(unnamed).toContain('Locked by: an unnamed holder, operation: deploy, expires in ');
+
+    const comma = await failureMessage('MyStack', 'us-east-1', {
+      ...LIVE_LOCK(),
+      owner: 'alice@host:1,expired:true',
+      operation: 'deploy,expired:true',
+    } as LockInfo);
+    expect(comma).toContain(
+      'Locked by: a lock owner that is not a plain identifier, operation: a lock operation that is not a plain identifier, expires in '
+    );
+    expect(comma).not.toContain('expired:true');
+  });
+
   it('gives the recovery command even when the lock body could not be read', async () => {
     // Pre-#2610 this arm ended with no remedy at all; pre-#4055 it also said
     // "Lock exists" about a read that found none.

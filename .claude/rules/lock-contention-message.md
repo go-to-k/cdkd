@@ -71,6 +71,4 @@ hint included.
 - `formatLockExpiry(expiresAt)` is the ONE rendering of a lock deadline. It
   takes the RAW `expiresAt` and tests it with `Number.isFinite`, the same test
   `isLockExpired` makes. Fenced by
-  `tests/unit/state/lock-expiry-renderer-sync.test.ts`. `formatLockOwner` / `formatLockOperation` are the
-  same for the owner and operation: `displaySafe` keeps spaces, so a bare
-  owner can restate the deadline (go-to-k/cdkd#4115).
+  `tests/unit/state/lock-expiry-renderer-sync.test.ts`.

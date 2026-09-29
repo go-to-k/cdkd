@@ -3629,14 +3629,10 @@ async function warnOnLiveForeignLock(
     const where = region
       ? describedStackRef({ stackName, region })
       : `${plainOrDescribed(stackName, 'stack name')} (legacy lock key)`;
-    // `owner` / `operation` arrive SANITIZED from `getLockInfo` (issue #2170
-    // round 3), which folds control characters but keeps interior spaces and
-    // no cap. That is enough for the other readers; it is not enough for this
-    // one, which prints beside `state orphan`'s labelled `Destroy with:` row:
-    // an owner padded to the terminal width wraps into a counterfeit one. So
-    // this reader adds the #3760 rule on top -- a value shows only when it
-    // renders as itself through `displayIdent` (no space, no quote, under the
-    // cap), and is described otherwise. `alice@host:4242` and `deploy` show.
+    // `owner` / `operation` go through the shared lock formatters, like every
+    // lock render (go-to-k/cdkd#4115). Here that also matters because the
+    // line prints beside `state orphan`'s labelled `Destroy with:` row, where a
+    // padded owner would wrap into a counterfeit one (go-to-k/cdkd#3760).
     const owner = info.owner ? formatLockOwner(info.owner) : '';
     const operation = info.operation ? `, operation: ${formatLockOperation(info.operation)}` : '';
     logger.warn(

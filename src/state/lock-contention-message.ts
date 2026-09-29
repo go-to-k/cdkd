@@ -128,20 +128,30 @@ export function formatLockExpiry(expiresAt: number): string {
     : `expired ${formatDuration(-remainingMs)} ago`;
 }
 
+const LOCK_OWNER_DESCRIBED = 'a lock owner that is not a plain identifier';
+const LOCK_OPERATION_DESCRIBED = 'a lock operation that is not a plain identifier';
+
 /**
  * The ONE rendering of a `lock.json` owner beside cdkd's own clauses, shared by
  * this module and `LockManager` like {@link formatLockExpiry}. `getLockRecord`'s
  * `displaySafe` keeps spaces, so an owner `x (operation: deploy), expired 3h
  * ago` would make a live lock read as expired and invite a force-unlock: a
- * value that is not a plain identifier is described (go-to-k/cdkd#4115).
+ * value that is not a plain identifier is described (go-to-k/cdkd#4115). A
+ * comma is refused too: no genuine `user@host:pid` owner or operation name
+ * carries one, and `x,expired:true` would read as one of this line's labels.
+ * An empty owner (`getLockRecord` reads a missing one as `''`) is an unnamed
+ * holder, the wording the contention refusal uses.
  */
 export function formatLockOwner(owner: string): string {
-  return plainIdentOr(owner, 'a lock owner that is not a plain identifier');
+  if (owner === '') return 'an unnamed holder';
+  return owner.includes(',') ? LOCK_OWNER_DESCRIBED : plainIdentOr(owner, LOCK_OWNER_DESCRIBED);
 }
 
 /** {@link formatLockOwner} for the `operation` field. */
 export function formatLockOperation(operation: string): string {
-  return plainIdentOr(operation, 'a lock operation that is not a plain identifier');
+  return operation.includes(',')
+    ? LOCK_OPERATION_DESCRIBED
+    : plainIdentOr(operation, LOCK_OPERATION_DESCRIBED);
 }
 
 /** `1m23s` / `45s` from a non-negative millisecond count. */
@@ -384,9 +394,7 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   try {
     const info = await lockManager.getLockInfo(stackName, region);
     if (info) {
-      const operation = info.operation
-        ? `, operation: ${formatLockOperation(displaySafe(info.operation))}`
-        : '';
+      const operation = info.operation ? `, operation: ${formatLockOperation(info.operation)}` : '';
       const expires = formatLockExpiry(info.expiresAt);
       const owner = displaySafe(info.owner);
       // An ABSENT / empty owner is not evidence of a live holder. `getLockInfo`
