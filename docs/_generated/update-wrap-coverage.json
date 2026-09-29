@@ -1,9 +1,9 @@
 {
   "summary": {
     "classifiedCount": 87,
-    "wrapped": 81,
+    "wrapped": 80,
     "noAws": 6,
-    "gap": 0,
+    "gap": 1,
     "unguardedWrap": 0,
     "allowListed": 0,
     "unresolvedCallee": 0
@@ -444,8 +444,10 @@
     {
       "file": "lambda-event-invoke-config-provider.ts",
       "className": "LambdaEventInvokeConfigProvider",
-      "bucket": "wrapped",
-      "unwrappedSendMethods": [],
+      "bucket": "gap",
+      "unwrappedSendMethods": [
+        "refuseRespellingToAnotherFunction"
+      ],
       "unguardedWrapMethods": [],
       "unresolvedCallees": []
     },

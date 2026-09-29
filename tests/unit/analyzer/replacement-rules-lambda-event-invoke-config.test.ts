@@ -55,6 +55,9 @@ describe('ReplacementRulesRegistry — Lambda EventInvokeConfig', () => {
       ['an ARN of a different name', 'fn', 'arn:aws:lambda:us-east-1:123456789012:function:other'],
       ['a qualified ARN', 'fn', `${arn}:live`],
       ['an unresolved intrinsic', 'fn', { 'Fn::GetAtt': ['Fn', 'Arn'] }],
+      ['an ARN of another account', arn, 'arn:aws:lambda:us-east-1:222222222222:function:fn'],
+      ['an ARN of another region', arn, 'arn:aws:lambda:eu-west-1:123456789012:function:fn'],
+      ['a partial ARN of another account', arn, '222222222222:function:fn'],
     ])('still replaces on %s', (_label, oldValue, newValue) => {
       expect(registry.requiresReplacement(EIC, 'FunctionName', oldValue, newValue)).toBe(true);
     });

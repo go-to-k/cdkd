@@ -143,10 +143,16 @@ describe('LambdaEventInvokeConfigProvider', () => {
 
   describe('physical id after an in-place update (issue #4118)', () => {
     const T = 'AWS::Lambda::EventInvokeConfig';
-    const arn = (name: string) => `arn:aws:lambda:us-east-1:123456789012:function:${name}`;
+    const arn = (name: string, account = '123456789012') =>
+      `arn:aws:lambda:us-east-1:${account}:function:${name}`;
+    const getFn = (functionArn: string) => ({ Configuration: { FunctionArn: functionArn } });
+    const names = () => mockSend.mock.calls.map((c) => c[0].constructor.name);
 
-    it('keeps the id when FunctionName is only re-spelled as the ARN', async () => {
-      mockSend.mockResolvedValueOnce({});
+    it('keeps the id when FunctionName is only re-spelled as the ARN, after confirming it is one function', async () => {
+      mockSend
+        .mockResolvedValueOnce(getFn(arn('my-fn')))
+        .mockResolvedValueOnce(getFn(arn('my-fn')))
+        .mockResolvedValueOnce({});
       const result = await provider.update(
         'Cfg',
         'my-fn|$LATEST',
@@ -154,23 +160,48 @@ describe('LambdaEventInvokeConfigProvider', () => {
         { FunctionName: arn('my-fn'), Qualifier: '$LATEST', MaximumRetryAttempts: 2 },
         { FunctionName: 'my-fn', Qualifier: '$LATEST', MaximumRetryAttempts: 2 }
       );
+      expect(names()).toEqual([
+        'GetFunctionCommand',
+        'GetFunctionCommand',
+        'PutFunctionEventInvokeConfigCommand',
+      ]);
       expect(result.physicalId).toBe('my-fn|$LATEST');
     });
 
-    it('names the new function when the Put landed on a renamed one', async () => {
+    it('refuses before the Put when the re-spelling resolves to another function', async () => {
+      mockSend
+        .mockResolvedValueOnce(getFn(arn('my-fn')))
+        .mockResolvedValueOnce(getFn(arn('my-fn', '222222222222')));
+      await expect(
+        provider.update(
+          'Cfg',
+          'my-fn|$LATEST',
+          T,
+          { FunctionName: arn('my-fn', '222222222222'), Qualifier: '$LATEST' },
+          { FunctionName: 'my-fn', Qualifier: '$LATEST' }
+        )
+      ).rejects.toThrow(/Refusing to update Lambda EventInvokeConfig Cfg in place.*Nothing was changed/);
+      expect(names()).toEqual(['GetFunctionCommand', 'GetFunctionCommand']);
+    });
+
+    it('records the new spelling verbatim when the Put landed on a renamed function', async () => {
       mockSend.mockResolvedValueOnce({});
       const result = await provider.update(
         'Cfg',
         'my-fn|$LATEST',
         T,
-        { FunctionName: arn('my-fn-2'), Qualifier: '$LATEST', MaximumRetryAttempts: 1 },
+        { FunctionName: arn('my-fn-2', '222222222222'), Qualifier: '$LATEST', MaximumRetryAttempts: 1 },
         { FunctionName: 'my-fn', Qualifier: '$LATEST', MaximumRetryAttempts: 1 }
       );
-      expect(result.physicalId).toBe('my-fn-2|$LATEST');
+      expect(names()).toEqual(['PutFunctionEventInvokeConfigCommand']);
+      expect(result.physicalId).toBe(`${arn('my-fn-2', '222222222222')}|$LATEST`);
     });
 
     it('keeps an id recorded in ARN spelling when the name is unchanged', async () => {
-      mockSend.mockResolvedValueOnce({});
+      mockSend
+        .mockResolvedValueOnce(getFn(arn('my-fn')))
+        .mockResolvedValueOnce(getFn(`${arn('my-fn')}:$LATEST`))
+        .mockResolvedValueOnce({});
       const result = await provider.update(
         'Cfg',
         `${arn('my-fn')}|$LATEST`,

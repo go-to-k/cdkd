@@ -13416,6 +13416,7 @@
             "canonicalizeDriftProperties",
             "create",
             "physicalIdAfterUpdate",
+            "refuseRespellingToAnotherFunction",
             "update"
           ]
         },

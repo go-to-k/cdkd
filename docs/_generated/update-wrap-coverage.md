@@ -13,16 +13,20 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 ## Summary
 
 - Provider classes with `update()`: **87**
-- Wrapped: **81**
+- Wrapped: **80**
 - No AWS call in update(): **6**
-- **Unwrapped-send gaps (blocks CI): 0**
+- **Unwrapped-send gaps (blocks CI): 1**
 - **Unguarded wraps (blocks CI): 0**
 - Allow-listed known gaps (does NOT block CI): **0**
 - Unresolved-callee (verdict not trustworthy): **0**
 
-## Gaps
+## Unwrapped-send gaps — BLOCKS CI
 
-None. Every provider `update()` either makes no AWS call or wraps every reachable `send` in a `ProvisioningError`, with typed errors passed through.
+Wrap the AWS call so an SDK failure surfaces as `ProvisioningError` (`resourceType` / `logicalId` / `physicalId` / `cause`), matching the same provider's `create()`. Remember the typed pass-through.
+
+| Provider class | File | Methods with an unwrapped `send` |
+| --- | --- | --- |
+| `LambdaEventInvokeConfigProvider` | `lambda-event-invoke-config-provider.ts` | `refuseRespellingToAnotherFunction` |
 
 ## Full classification
 
@@ -82,7 +86,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `KinesisStreamProvider` | `kinesis-provider.ts` | wrapped |
 | `KinesisStreamConsumerProvider` | `kinesis-streamconsumer-provider.ts` | wrapped |
 | `KMSProvider` | `kms-provider.ts` | wrapped |
-| `LambdaEventInvokeConfigProvider` | `lambda-event-invoke-config-provider.ts` | wrapped |
+| `LambdaEventInvokeConfigProvider` | `lambda-event-invoke-config-provider.ts` | gap |
 | `LambdaEventSourceMappingProvider` | `lambda-eventsource-provider.ts` | wrapped |
 | `LambdaFunctionProvider` | `lambda-function-provider.ts` | wrapped |
 | `LambdaLayerVersionProvider` | `lambda-layer-provider.ts` | no-aws |

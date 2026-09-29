@@ -9,7 +9,7 @@
  */
 
 import { getLogger } from '../utils/logger.js';
-import { canonicalLambdaFunctionName } from '../utils/lambda-function-name.js';
+import { sameLambdaFunctionAddress } from '../utils/lambda-function-name.js';
 
 /**
  * Resource replacement rule
@@ -71,11 +71,15 @@ export function durableConfigPresenceToggled(oldValue: unknown, newValue: unknow
  * config onto the function, then the old half's delete removes it from the
  * same function, leaving none. Only a change of the function NAME replaces.
  *
+ * Two ARNs must also agree on partition, region and account. A bare name
+ * against an ARN cannot be confirmed here, so the provider's `update()`
+ * resolves both spellings with `GetFunction` before its Put and refuses when
+ * they are different functions.
+ *
  * A QUALIFIED ARN (`...:function:<name>:<qualifier>`) is compared verbatim, as
- * is anything that is not a string (an unresolved intrinsic): the conservative
- * direction, which can over-report a replacement but never skip one. An ARN of
- * another account or region with the same name reads as the same function;
- * Lambda refuses such a Put, so that case fails loudly instead of replacing.
+ * is anything that is not a string (an unresolved intrinsic), so it still
+ * replaces. For this type that is a known RESIDUAL, not a safe default: a
+ * replacement onto the same target Puts the config and then deletes it.
  *
  * A call with NO value on either side (`undefined`, `undefined`) is the diff's
  * promoted-dependent probe -- the function this config points at is being
@@ -84,9 +88,10 @@ export function durableConfigPresenceToggled(oldValue: unknown, newValue: unknow
  */
 export function eventInvokeConfigFunctionChanged(oldValue: unknown, newValue: unknown): boolean {
   if (oldValue === undefined && newValue === undefined) return true;
-  const canonical = (value: unknown): unknown =>
-    typeof value === 'string' ? canonicalLambdaFunctionName(value) : JSON.stringify(value);
-  return canonical(oldValue) !== canonical(newValue);
+  if (typeof oldValue === 'string' && typeof newValue === 'string') {
+    return !sameLambdaFunctionAddress(oldValue, newValue);
+  }
+  return JSON.stringify(oldValue) !== JSON.stringify(newValue);
 }
 
 export function attributeTypeChangedForSharedAttribute(

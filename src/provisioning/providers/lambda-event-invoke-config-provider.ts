@@ -3,13 +3,18 @@ import {
   PutFunctionEventInvokeConfigCommand,
   DeleteFunctionEventInvokeConfigCommand,
   GetFunctionEventInvokeConfigCommand,
+  GetFunctionCommand,
   ResourceNotFoundException,
   type DestinationConfig,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
-import { canonicalLambdaFunctionName } from '../../utils/lambda-function-name.js';
+import {
+  canonicalLambdaFunctionName,
+  sameLambdaFunctionAddress,
+} from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { packCompositeId, type CompositeIdOptions } from '../composite-id.js';
@@ -88,13 +93,6 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   }
 
   /**
-   * Split a `<FunctionName>|<Qualifier>` physical id back into its parts.
-   * Tolerates a bare function name (defaults the qualifier to `$LATEST`).
-   * Splits on the FIRST `|`, which is unambiguous: a Lambda function name is
-   * `[a-zA-Z0-9-_]+` and a function ARN contains no `|`, so the separator can
-   * never appear inside the FunctionName segment.
-   */
-  /**
    * The id the config is addressed by AFTER an in-place Put (issue #4118). A
    * re-spelling of the same function keeps `physicalId`. When the function
    * NAME itself moved -- the config was classified in place against the
@@ -109,14 +107,58 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   ): string {
     const next = properties['FunctionName'];
     if (typeof next !== 'string') return physicalId;
-    const nextName = canonicalLambdaFunctionName(next);
     const { functionName: recorded, qualifier } = this.parsePhysicalId(physicalId);
-    if (canonicalLambdaFunctionName(recorded) === nextName) return physicalId;
+    if (sameLambdaFunctionAddress(recorded, next)) return physicalId;
     const nextQualifier =
       typeof properties['Qualifier'] === 'string' ? properties['Qualifier'] : qualifier;
-    return this.buildPhysicalId(logicalId, nextName, nextQualifier);
+    // Verbatim, as `create()` records it: an ARN's account and region are part
+    // of what the id addresses.
+    return this.buildPhysicalId(logicalId, next, nextQualifier);
   }
 
+  /**
+   * Before an in-place Put onto a RE-SPELLED FunctionName (issue #4118):
+   * confirm the new spelling resolves to the function the record addresses.
+   * A bare name against an ARN leaves the ARN's account and region open, and
+   * the diff classified the change in place on the name alone.
+   */
+  private async refuseRespellingToAnotherFunction(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    properties: Record<string, unknown>
+  ): Promise<void> {
+    const next = properties['FunctionName'];
+    if (typeof next !== 'string') return;
+    const { functionName: recorded } = this.parsePhysicalId(physicalId);
+    if (recorded === next || !sameLambdaFunctionAddress(recorded, next)) return;
+    const arnOf = async (functionName: string): Promise<string | undefined> => {
+      const resp = await this.lambdaClient.send(
+        new GetFunctionCommand({ FunctionName: functionName })
+      );
+      return resp.Configuration?.FunctionArn?.replace(/:\$LATEST$/, '');
+    };
+    const [recordedArn, nextArn] = await Promise.all([arnOf(recorded), arnOf(next)]);
+    if (recordedArn !== undefined && recordedArn === nextArn) return;
+    throw markNonRetryable(
+      new ProvisioningError(
+        `Refusing to update Lambda EventInvokeConfig ${logicalId} in place: its FunctionName ` +
+          `now resolves to ${nextArn ?? 'an unreadable function'}, not the function the recorded ` +
+          `config is on (${recordedArn ?? 'unreadable'}). Nothing was changed.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
+   * Split a `<FunctionName>|<Qualifier>` physical id back into its parts.
+   * Tolerates a bare function name (defaults the qualifier to `$LATEST`).
+   * Splits on the FIRST `|`, which is unambiguous: a Lambda function name is
+   * `[a-zA-Z0-9-_]+` and a function ARN contains no `|`, so the separator can
+   * never appear inside the FunctionName segment.
+   */
   private parsePhysicalId(physicalId: string): { functionName: string; qualifier: string } {
     const sep = physicalId.indexOf('|');
     if (sep === -1) {
@@ -291,6 +333,8 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     if (!changed) {
       return { physicalId, wasReplaced: false, attributes: {} };
     }
+
+    await this.refuseRespellingToAnotherFunction(logicalId, resourceType, physicalId, properties);
 
     try {
       // Full-replace write (Put, not the CC patch) — this is the whole reason
