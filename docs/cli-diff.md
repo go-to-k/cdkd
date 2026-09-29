@@ -706,15 +706,20 @@ The refusal is the same; only the row it names differs.
 A cycle that closes through a row whose `Condition` evaluates false is refused
 too, because `cdkd deploy` checks the tree without evaluating conditions. That
 refusal uses the deploy's wording (`The nested template tree under stack ...
-contains a cycle`) and ends `Refusing to diff.`
+contains a cycle`) and ends `Refusing to diff.` The same check refuses an
+absolute or escaping `aws:asset:path` declared beneath such a row, with the
+same ending.
 
-It is a refusal rather than a truncation because a cyclic assembly has no
+That check walks the whole tree, whatever the conditions say, so it also
+applies the deploy's size limits everywhere: a chain more than 512 levels deep,
+or more than 10,000 nested-stack rows to follow, is refused.
+
+A cycle is refused rather than truncated because a cyclic assembly has no
 correct diff to render, and a partial one would under-report changes the next
 deploy would still make. The command exits `1`.
 
 Two sibling rows naming the **same** template are fine — that is a shared child,
-not a cycle. Only a repeat along one root-to-child path is refused, so nesting
-depth itself is never limited.
+not a cycle. Only a repeat along one root-to-child path counts as a cycle.
 
 ### Nested templates outside the assembly directory are refused
 
