@@ -457,20 +457,27 @@ run_deploy() { # run_deploy <phase label> <Deploying|Updating|Unchanged> [env as
   # truncated capture. `create` logs `Deploying nested stack <child>`, `update`
   # logs `Updating nested stack <child>` (nested-stack-provider.ts); the verb
   # is the proof of WHICH arm of the recovery ran.
+  #
+  # Every provider arm (Deploying / Updating / Destroying / Reverting) names
+  # the child followed by ` (logicalId=`. The bare name is not an arm: a
+  # successful top-level deploy, a NO_CHANGE one included, sweeps each nested
+  # child's rollback journal and logs `Deleted the rollback journal of nested
+  # stack <child>` at debug level (go-to-k/cdkd#4070).
+  local arm="nested stack ${CHILD} (logicalId="
   if [ "${verb}" = "Unchanged" ]; then
     # The nested row is NO_CHANGE: no provider arm may run, and the log must
     # still name the stack whose UPDATE this phase is about.
-    if grep -qF "nested stack ${CHILD}" "${DEPLOY_LOG}"; then
+    if grep -qF "${arm}" "${DEPLOY_LOG}"; then
       fail "${label}: the nested stack ${CHILD} was redeployed in a phase where nothing in it changed"
     fi
     if ! grep -qF "${CONSUMER}" "${DEPLOY_LOG}"; then
       fail "${label}: the captured deploy log never names ${CONSUMER} — the capture is empty, so the log scan would be vacuous"
     fi
-  elif ! grep -qF "${verb} nested stack ${CHILD}" "${DEPLOY_LOG}"; then
-    if grep -qF "nested stack ${CHILD}" "${DEPLOY_LOG}"; then
+  elif ! grep -qF "${verb} ${arm}" "${DEPLOY_LOG}"; then
+    if grep -qF "${arm}" "${DEPLOY_LOG}"; then
       fail "${label}: the deploy log names ${CHILD} but not through '${verb} nested stack' — the parent took a different arm than this phase expects, or the wording drifted"
     fi
-    fail "${label}: the captured deploy log never names ${CHILD} — the capture is empty or the wording drifted, so the log scan would be vacuous"
+    fail "${label}: the captured deploy log shows no provider arm for ${CHILD} — the capture is empty or the wording drifted, so the log scan would be vacuous"
   fi
   # The token check runs BEFORE the log is echoed anywhere, so a leak is never
   # printed by the check that exists to catch it.

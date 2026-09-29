@@ -65,7 +65,7 @@ cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip afte
 cross-stack-secret-import	2026-09-29T02:39:47Z	PASS	411	verify.sh	PR #4003 (#2889) run; rc ok, orph clean
 custom-resource-getatt-data	2026-09-28T09:01:57Z	PASS	90	verify.sh	rc ok, orph clean, embedded arm (#2453)
 custom-resource-masked-service-token	2026-09-28T21:40:21Z	PASS	156	verify.sh	rc ok, orph clean; #3938 + #3976 refusal + #3960 seeded arms; pre-#3976 probe RED at R1
-custom-resource-noecho-nested	2026-09-29T08:16:56Z	FAIL	426	verify.sh	Phase 4 child redeployed with nothing changed; same FAIL on an origin/main baseline (2fb8c65bf), pre-existing: #4070; orph clean
+custom-resource-noecho-nested	2026-09-29T09:59:00Z	PASS	1243	verify.sh	rc ok, orph clean (#4070 sentinel matches only a provider arm)
 custom-resource-provider	2026-09-28T18:18:03Z	PASS	712	verify.sh	rc ok, orph clean (#4012)
 custom-resource-resolved-secret	2026-09-28T23:14:51Z	PASS	316	verify.sh	rc ok, orph clean; 8-d: guard reverted -> A/B/U leak RED, new-side-only -> U replay leak RED
 data-analytics	2026-09-28T10:21:55Z	PASS	105	verify.sh	#3939 PR #3947 rebased head 06245f7f7, stdin /dev/null; phase 2 Changes 0/3/0 + Updated: 3 printed, rc 0, no lock.json left, no stall-guard line; orph clean
