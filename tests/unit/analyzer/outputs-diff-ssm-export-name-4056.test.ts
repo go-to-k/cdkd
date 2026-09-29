@@ -142,6 +142,72 @@ describe('an intrinsic Export.Name carrying a plain ssm reference (issue #4056)'
   });
 });
 
+describe('a stored value beside a SecureString ssm output (issue #4056 sweep)', () => {
+  const tpl = (): CloudFormationTemplate =>
+    template({ Out: { Value: SSM_REF }, Other: { Value: 'o2' } });
+
+  it('WITHHOLDS a pre-#1901 record that stored the parameter plaintext', async () => {
+    // A binary before issue #1901 resolved a plain ssm reference and stored
+    // its value. The diff keeps the token for a SecureString, so the desired
+    // side is the secret's expression and the record is pre-GHSA: its values
+    // are withheld record-wide, as for a `secretsmanager` one.
+    ssmSend.mockResolvedValue({ Parameter: { Value: 'AQICencrypted', Type: 'SecureString' } });
+
+    const { outputChanges } = await computeStackDiff(
+      stateWith({ Out: 'hunter2pass', Other: 'o1' }),
+      tpl(),
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator()
+    );
+
+    expect(JSON.stringify(outputChanges)).not.toContain('hunter2pass');
+    expect(outputChanges).toEqual([
+      expect.objectContaining({ name: 'Out', changeType: 'MODIFY', oldValueRedacted: true }),
+      expect.objectContaining({ name: 'Other', changeType: 'MODIFY', oldValueRedacted: true }),
+    ]);
+  });
+
+  it('keeps previous values on a record that stores the token as its expression', async () => {
+    // The veto half: a post-#1901 deploy stores the token itself, and reading
+    // the desired side's token as a secret without reading the stored one the
+    // same way would withhold `o1` on every such stack.
+    ssmSend.mockResolvedValue({ Parameter: { Value: 'AQICencrypted', Type: 'SecureString' } });
+
+    const { outputChanges } = await computeStackDiff(
+      stateWith({ Out: SSM_REF, Other: 'o1' }),
+      tpl(),
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator()
+    );
+
+    expect(outputChanges).toEqual([
+      { name: 'Other', changeType: 'MODIFY', oldValue: 'o1', newValue: 'o2', isExport: false },
+    ]);
+  });
+
+  it('prints previous values for a String parameter, which resolves to its value', async () => {
+    ssmSend.mockResolvedValue({ Parameter: { Value: 'PlainValue', Type: 'String' } });
+
+    const { outputChanges } = await computeStackDiff(
+      stateWith({ Out: 'OldPlain', Other: 'o1' }),
+      tpl(),
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator()
+    );
+
+    expect(outputChanges).toEqual([
+      { name: 'Out', changeType: 'MODIFY', oldValue: 'OldPlain', newValue: 'PlainValue', isExport: false },
+      { name: 'Other', changeType: 'MODIFY', oldValue: 'o1', newValue: 'o2', isExport: false },
+    ]);
+  });
+});
+
 describe('resolveTemplateOutputs: which surviving tokens refuse an intrinsic alias', () => {
   /** A resolver that hands back `name` for the Export.Name and `v` for the value. */
   const resolverReturning =

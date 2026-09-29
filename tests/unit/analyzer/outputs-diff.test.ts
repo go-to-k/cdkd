@@ -812,16 +812,18 @@ describe('secretSourceKeys + record-level withholding (issue #1921 review round 
     expect(added.newValue).toBe('n');
   });
 
-  it('does NOT treat a PUBLIC {{resolve:ssm:...}} output as a legacy record', () => {
+  it('does NOT treat a PUBLIC ssm output as a legacy record: the diff resolves it', () => {
     // Per issue #1901 an ssm reference is classified by the parameter's TYPE: a
     // String / StringList parameter is public and legitimately persisted
-    // RESOLVED, while the diff (skipDynamicReferences) holds the expression. A
-    // signal keyed on "any {{resolve:" would fire on that ordinary record --
-    // and since the verdict is record-WIDE, it would withhold every previous
-    // value in the stack and advise `cdkd scrub`, which would find nothing.
+    // RESOLVED, and the diff's `skipDynamicReferences` pass resolves it too, so
+    // its desired side reaches this function as the VALUE, never the token.
+    // (An earlier revision fed the token here as the public shape; the resolver
+    // keeps a plain ssm token only for a SecureString, which the next case
+    // pins, issue #4056.) Record-WIDE, so a false verdict would withhold every
+    // previous value in the stack and advise `cdkd scrub`, which finds nothing.
     const changes = computeOutputsDiff(
       { PublicParam: 'us-east-1a', Other: 'old' },
-      { PublicParam: '{{resolve:ssm:/my/public/param}}', Other: 'new' },
+      { PublicParam: 'us-east-1b', Other: 'new' },
       new Set(),
       new Set()
     );
@@ -829,6 +831,33 @@ describe('secretSourceKeys + record-level withholding (issue #1921 review round 
       expect(change.oldValueRedacted).toBeUndefined();
     }
     expect(changes.find((c) => c.name === 'Other')!.oldValue).toBe('old');
+  });
+
+  it('DOES treat a surviving plain ssm token as secret-bearing (a SecureString, issue #4056)', () => {
+    const changes = computeOutputsDiff(
+      { Secret: 'plaintext', Other: 'old' },
+      { Secret: '{{resolve:ssm:/my/secure/param}}', Other: 'new' },
+      new Set(),
+      new Set()
+    );
+    for (const change of changes) {
+      expect(change.oldValueRedacted).toBe(true);
+    }
+    expect(JSON.stringify(changes)).not.toContain('plaintext');
+  });
+
+  it('a stored plain ssm token vetoes like any stored secret expression (issue #4056)', () => {
+    // The stored twin of the case above: a post-#1901 deploy stores the
+    // SecureString's token, and the record is then NOT pre-GHSA.
+    const changes = computeOutputsDiff(
+      { Secret: '{{resolve:ssm:/my/secure/param}}', Other: 'old' },
+      { Secret: '{{resolve:ssm:/my/secure/param}}', Other: 'new' },
+      new Set(),
+      new Set()
+    );
+    expect(changes).toEqual([
+      { name: 'Other', changeType: 'MODIFY', oldValue: 'old', newValue: 'new', isExport: false },
+    ]);
   });
 
   it('DOES treat an ssm-secure reference as secret-bearing', () => {

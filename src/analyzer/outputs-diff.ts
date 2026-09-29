@@ -403,6 +403,26 @@ function keepsSecretReferenceToken(resolvedName: string): boolean {
 }
 
 /**
+ * A secret's expression in RESOLVED text (or in what a post-#1901 deploy
+ * stores for it): the spelling test, or a surviving token of a service the
+ * deploy resolves. See {@link keepsSecretReferenceToken} for why the token
+ * reading is sound only there, never on RAW template text.
+ */
+function isSecretReferenceText(value: string): boolean {
+  return isSecretDynamicReference(value) || keepsSecretReferenceToken(value);
+}
+
+/** {@link isSecretReferenceText} over every string leaf of a resolved value. */
+function containsSecretReferenceText(value: unknown): boolean {
+  if (typeof value === 'string') return isSecretReferenceText(value);
+  if (Array.isArray(value)) return value.some(containsSecretReferenceText);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(containsSecretReferenceText);
+  }
+  return false;
+}
+
+/**
  * The same question asked of a whole template VALUE, walking every string leaf.
  *
  * The leaf predicate answers `false` for a non-string, and an output's `Value`
@@ -937,8 +957,9 @@ export async function resolveTemplateOutputs(
  * Two independent signals identify such a record, and BOTH are needed:
  *
  * - the desired side is still a secret-bearing expression per
- *   {@link isSecretDynamicReference} (this resolver runs with
- *   `skipDynamicReferences`) while the stored side is not; and
+ *   {@link isSecretReferenceText} (this resolver runs with
+ *   `skipDynamicReferences`, so a `SecureString` ssm token counts, issue
+ *   #4056) while the stored side is not; and
  * - `secretSourceKeys` — the template itself declares the key's value as such a
  *   reference. This one reaches a case the first cannot: a condition-skipped
  *   secret output has NO desired side at all and would otherwise print in full
@@ -1076,8 +1097,16 @@ export function computeOutputsDiff(
     // `cdkd scrub` itself admits it can leave — is read as post-GHSA and its
     // plaintext leaf then prints in a rendered row. A veto must be harder to
     // earn than a suspicion.
-    if (typeof oldValue === 'string' && isSecretDynamicReference(oldValue)) return false;
-    return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
+    //
+    // Both TOKEN arms read the secret's token, not only its `secretsmanager` /
+    // `ssm-secure` spelling (issue #4056's sweep). `desired` is RESOLVED text,
+    // where a plain `{{resolve:ssm:...}}` survives only for a `SecureString`,
+    // so a record an older binary wrote with that parameter's plaintext printed
+    // it as the `old:` side of a MODIFY row. The stored side is read the same
+    // way, or a post-#1901 record storing that token as its expression would be
+    // judged pre-GHSA by its own desired side and lose every previous value.
+    if (typeof oldValue === 'string' && isSecretReferenceText(oldValue)) return false;
+    return containsSecretReferenceText(desired[name]) || secretSourceKeys.has(name);
   };
   const legacyRecord =
     unaccountableScan.forceLegacyRecord === true || Object.entries(currentBag).some(provesLegacy);
