@@ -179,18 +179,17 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('sends a secret-derived DESIRED side back to its source', async () => {
-    // A rollback replay re-resolves references and refuses a masked bag first,
-    // so the value is unresolved at its source: the template, or a NoEcho
-    // custom resource whose masked Data a dependent resolved.
+  it('sends a secret-derived DESIRED side back to the template', async () => {
+    // Only the template's own value reaches this: a deploy refuses a masked
+    // attribute read, and a rollback replay re-resolves references and refuses
+    // a masked bag, before update() runs.
     const error = await new IAMPolicyProvider()
       .update('P', 'pol', TYPE, { ...valid, Groups: ['***'] }, valid)
       .catch((e: unknown) => e);
     expect((error as Error).message).toBe(
       'desired Groups of IAM policy P is not a list of IAM names — no inline policy was ' +
         `attached or detached ${DESIRED_SIDE_NOTE}: the desired Groups holds a dynamic ` +
-        "reference or cdkd's mask that resolved to no names; fix that value at its source (the " +
-        'template, or the custom resource that supplied it)'
+        "reference or cdkd's mask that resolved to no names; fix that value in the template"
     );
     expect((error as Error).message).not.toContain('re-run');
     expect(mockSend).not.toHaveBeenCalled();
@@ -227,17 +226,16 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('asks for a secret-derived desired side to be fixed at its source first', async () => {
+  it('asks for a secret-derived desired side to be fixed in the template first', async () => {
     const error = await new IAMPolicyProvider()
       .update('P', 'pol', TYPE, { ...valid, Groups: ['***'] }, { ...valid, Roles: 'AdminRole' })
       .catch((e: unknown) => e);
     expect((error as Error).message).toBe(
       'desired Groups / recorded Roles of IAM policy P is not a list of IAM names — no inline ' +
         `policy was attached or detached ${DESIRED_SIDE_NOTE}: the desired Groups holds a ` +
-        "dynamic reference or cdkd's mask that resolved to no names; fix that value at its " +
-        'source (the template, or the custom resource that supplied it) first, since the ' +
-        'repair below re-applies it; then repair the recorded Roles in state.json to a list ' +
-        'of role / group / user names and re-run'
+        "dynamic reference or cdkd's mask that resolved to no names; fix that value in the " +
+        'template first, since the repair below re-applies it; then repair the recorded Roles ' +
+        'in state.json to a list of role / group / user names and re-run'
     );
   });
 

@@ -179,10 +179,11 @@ function recordedSideRepair(targets: MalformedPolicyTargets, renamed: boolean): 
  * both the state.json repair and the orphan route re-apply it.
  *
  * A desired side reaches this holding a dynamic reference or cdkd's mask only
- * when that value is unresolved at its SOURCE: a rollback replay re-resolves
- * every reference and refuses a masked bag first, and `drift --revert` never
- * gets here. The source is the template, or a `NoEcho` custom resource whose
- * masked `Data` a dependent resolved (see `rollback-executor.ts`).
+ * when the TEMPLATE itself holds it: a deploy refuses a masked attribute read
+ * (a `NoEcho` custom resource's `Data`) in `refuseRedactedAttributeReads`
+ * before any provider call, a rollback replay re-resolves every reference and
+ * refuses a masked bag in `refuseMaskedReplayBaseline`, and `drift --revert`
+ * never gets here.
  */
 function refusalRepair(
   desired: PolicyTargetLists | MalformedPolicyTargets,
@@ -195,8 +196,7 @@ function refusalRepair(
     if (desired.secretDerived.length > 0) {
       clauses.push(
         `the desired ${desired.secretDerived.join(' / ')} holds a dynamic reference or cdkd's ` +
-          `mask that resolved to no names; fix that value at its source (the template, or the ` +
-          `custom resource that supplied it)` +
+          `mask that resolved to no names; fix that value in the template` +
           (recordedMalformed ? ' first, since the repair below re-applies it' : '')
       );
     } else if (recordedMalformed) {
