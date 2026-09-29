@@ -258,7 +258,6 @@ recreate-via-cc-api	2026-09-29T03:32:02Z	PASS	120	verify.sh	rc ok, orph clean (#
 recreate-via-sdk-provider	2026-09-25T09:51:57Z	PASS	95	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-29T08:16:56Z	PASS	1319	verify.sh	rc ok, orph clean; PR #4046
 remove-protection	2026-09-29T10:33:40Z	PASS	1363	verify.sh	PR 4065 step 4b compensation arm PASS (pool re-enabled ACTIVE after failed destroy); rc ok, orph clean
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-09-29T02:36:16Z	PASS	70	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, phase C refused naming the sent name (N + squatter untouched), phase D same-name delete-first ok, orph clean
