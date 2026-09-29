@@ -30,7 +30,8 @@ import {
   withNestedRevertRun,
   type NestedRevertRun,
 } from '../../deployment/nested-child-journal.js';
-import { withStackName } from '../../provisioning/resource-name.js';
+import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
+import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
 import { startRunRecorder } from './deployment-events-run.js';
@@ -768,6 +769,37 @@ export async function rollbackCommand(
         );
       }
 
+      // Issue #4018: each segment is replayed under the prefix flag its deploy
+      // ran with, so a re-create asks AWS for the name that deploy (and its
+      // in-process rollback) would. A segment an older cdkd wrote carries no
+      // flag: fall back to the deploy's own resolution minus the CLI flag
+      // (env, the cdk.json in the current directory, the default), resolved
+      // once and only when needed, and say so BEFORE the confirmation.
+      let fallbackSkipPrefix: boolean | undefined;
+      const legacySkipPrefix = (): boolean =>
+        (fallbackSkipPrefix ??= resolveSkipPrefix({ quiet: true }));
+      const legacySegments = journal.segments.filter((s) => s.skipPrefix === undefined).length;
+      if (legacySegments > 0) {
+        logger.warn(
+          safeMsg`${legacySegments} of ${journal.segments.length} rollback journal segment(s) ` +
+            'were recorded by a cdkd that did not record the user-supplied-name prefix ' +
+            'setting; replaying them with the stack-name prefix ' +
+            (legacySkipPrefix() ? 'SKIPPED' : 'KEPT') +
+            ' on user-supplied physical names (CDKD_PREFIX_USER_SUPPLIED_NAMES / ' +
+            'context.cdkd.prefixUserSuppliedNames in ./cdk.json / the default). If the failed ' +
+            'deploy ran with --prefix-user-supplied-names, re-run with ' +
+            'CDKD_PREFIX_USER_SUPPLIED_NAMES=true instead.'
+        );
+      }
+      /** The async scope a segment replays in: its stack name and its prefix flag. */
+      const inSegmentScope = <T>(
+        segment: { skipPrefix?: boolean },
+        fn: () => Promise<T>
+      ): Promise<T> =>
+        withSkipPrefix(segment.skipPrefix ?? legacySkipPrefix(), () =>
+          withStackName(stackName, fn)
+        );
+
       // 5. Plan — newest-first, one block per segment.
       logger.info(`\nRollback plan for ${safeStack(stackName)} (${safe(region)}):`);
       if (orphanedPending > 0) {
@@ -1001,7 +1033,7 @@ export async function rollbackCommand(
             () =>
               withNestedRevertRun(segment.runId, (run) => {
                 nestedRun = run;
-                return withStackName(stackName, async () => {
+                return inSegmentScope(segment, async () => {
                   // #1198: revert the segment's FAILED in-flight op(s) first
                   // (opt-in). Their revert is independent of the completed-op
                   // replay (one op per resource per deploy), so a failed-op

@@ -3915,6 +3915,7 @@
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "retain-orphan-redeploy",
+        "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-replay-cc-generated-name",
         "s3-replication-and-filter",
@@ -4137,6 +4138,10 @@
         ],
         "retain-orphan-redeploy": [
           "l2",
+          "literal"
+        ],
+        "rollback-explicit-name-rewrite": [
+          "l1",
           "literal"
         ],
         "rollback-failure-injection": [
@@ -5894,6 +5899,7 @@
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
+        "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
@@ -6026,6 +6032,10 @@
           "l1"
         ],
         "rollback-deletion-policy-snapshot": [
+          "l1",
+          "literal"
+        ],
+        "rollback-explicit-name-rewrite": [
           "l1",
           "literal"
         ],

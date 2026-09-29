@@ -35,3 +35,7 @@ paths:
   journal forwards what `parseStateBody` tolerates, and refusing would lock
   `cdkd rollback` out of a journal cdkd wrote. It may refuse where `state.json`
   cannot, being discardable.
+
+  Each segment records the deploy's `skipPrefix`; every replay of a segment
+  runs inside `withSkipPrefix(<it>)`, or a re-create derives a different name
+  than the deploy sent ([#4018](https://github.com/go-to-k/cdkd/issues/4018)).

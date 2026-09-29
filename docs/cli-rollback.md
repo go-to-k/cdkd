@@ -44,6 +44,17 @@ If the journal recorded a `--role-arn` for the failed deploy and you do not pass
 one, cdkd prints an informational note — the rollback then runs with ambient
 credentials.
 
+A re-created resource gets the physical name the failed deploy would have
+given it. The journal records whether that deploy prefixed user-declared names
+with the stack name ([`--prefix-user-supplied-names`](cli-deploy-tuning.md#prefix-user-supplied-names)),
+and the rollback replays under that setting, so you do not pass the flag again.
+A journal written by an older cdkd does not carry the setting. The rollback
+then takes it from `CDKD_PREFIX_USER_SUPPLIED_NAMES`, then the `cdk.json` in
+the current directory, else the default (no prefix), and prints a warning
+saying which setting it chose. If the failed
+deploy ran with `--prefix-user-supplied-names`, re-run with
+`CDKD_PREFIX_USER_SUPPLIED_NAMES=true`.
+
 ## Synth-free
 
 Everything `cdkd rollback` needs lives in cdkd state plus a **rollback
@@ -176,7 +187,7 @@ resource holds the name the re-create collided on:
 - **IAM roles, users, groups, instance profiles and managed policies, and ELBv2
   load balancers and target groups** turn even an explicit name into a
   different name before sending it: a stack-name prefix that
-  `--no-prefix-user-supplied-names` controls, and a character rewrite. For
+  `--prefix-user-supplied-names` controls, and a character rewrite. For
   these, cdkd works out the name this re-create actually sent and matches it
   only against the new resource's physical id. A matching recorded name is not
   enough.

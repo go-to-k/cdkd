@@ -491,6 +491,23 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     );
   });
 
+  // Issue #4018: the flag picks the name a re-create SENDS, so a truthy
+  // non-boolean (the string "false") must never reach `withSkipPrefix`.
+  it('round-trips a boolean skipPrefix, and refuses any other type', () => {
+    expect(parseRollbackJournal(body({ skipPrefix: false }), 'P~C').segments[0]?.skipPrefix).toBe(false);
+    expect(parseRollbackJournal(body({ skipPrefix: true }), 'P~C').segments[0]?.skipPrefix).toBe(true);
+    expect(parseRollbackJournal(body({}), 'P~C').segments[0]?.skipPrefix).toBeUndefined();
+    expect(() => parseRollbackJournal(body({ skipPrefix: 'false' }), 'P~C')).toThrow(
+      /segments\[0\]\.skipPrefix must be a boolean when present \(got string\)/
+    );
+    expect(() => parseRollbackJournal(body({ skipPrefix: 1 }), 'P~C')).toThrow(
+      /segments\[0\]\.skipPrefix must be a boolean when present \(got number\)/
+    );
+    expect(() => parseRollbackJournal(body({ skipPrefix: null }), 'P~C')).toThrow(
+      /segments\[0\]\.skipPrefix must be a boolean when present \(got null\)/
+    );
+  });
+
   it('round-trips previousCrossStackReads, and refuses a non-object or a non-array list', () => {
     const reads = { imports: [{ exportName: 'E' }], outputReads: [] };
     expect(

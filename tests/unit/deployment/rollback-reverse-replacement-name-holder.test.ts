@@ -511,11 +511,11 @@ function roleOp(oldId: string, newId: string): CompletedOperation {
 }
 
 describe('a provider that rewrites the name it sends proves a holder only by that name (#3979, #4018)', () => {
-  // The old role was made by a plain deploy (`CdkdX-my-role`); the replacing
-  // deploy ran under `--no-prefix-user-supplied-names` (withSkipPrefix), so
-  // the live new role is `my-role`. `cdkd rollback` enters withStackName but
-  // not withSkipPrefix, so the real IAMRoleProvider sends `CdkdX-my-role`,
-  // which something else still holds. The records both say `my-role`.
+  // The replay runs with the prefix KEPT (no `withSkipPrefix` scope reads
+  // `false`, as under a deploy recorded with `--prefix-user-supplied-names`,
+  // #4018), so the real IAMRoleProvider sends `CdkdX-my-role`, which something
+  // else still holds. The live new role is `my-role` and the records both say
+  // `my-role` -- a recorded name proves nothing for this type.
   it('an orphan holding the SENT name does not cost the live new role', async () => {
     const sent = stubIam();
     const provider = new IAMRoleProvider();
