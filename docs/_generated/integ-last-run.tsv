@@ -82,9 +82,9 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-24T22:46:12Z	PASS	109	verify.sh	rc ok, 0 orphans (#3663)
 docdb-neptune	2026-09-28T17:20:47Z	PASS	5463	verify.sh	rc ok, orph clean (#2204 PR #3956 step 3g; fix-reverted run RED at the readback)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-09-28T13:55:11Z	PASS	160	verify.sh	PR #3974 merge-gate run; rc ok, orph clean
+drift-revert	2026-09-29T04:05:50Z	PASS	192	verify.sh	maintainer merge-gate rerun of PR 3836 (destroy display sanitizing); rc ok, orph clean
 drift-revert-arrays	2026-09-29T04:17:42Z	PASS	195	verify.sh	PR #4032 merge-gate run; rc ok, orph clean
-drift-revert-vpc	2026-09-29T00:37:02Z	PASS	350	verify.sh	PR #4026 merge-gate run; rc ok, orph clean; #4021 step 2 + 6c pass (ALL enables 25 metrics live)
+drift-revert-vpc	2026-09-29T04:05:50Z	PASS	371	verify.sh	maintainer merge-gate rerun of PR 3836 (destroy display sanitizing); rc ok, orph clean
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
@@ -123,7 +123,7 @@ eventbridge-pipes	2026-09-29T02:38:06Z	PASS	180	verify.sh	PR #4028 round 2 (#397
 eventbridge-scheduler	2026-09-24T22:46:12Z	PASS	58	verify.sh	rc ok, 0 orphans (#3663)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
-export	2026-09-28T18:16:26Z	PASS	250	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
+export	2026-09-29T04:05:50Z	PASS	261	verify.sh	maintainer merge-gate rerun of PR 3836 (destroy display sanitizing); rc ok, orph clean
 export-nested-stack	2026-09-28T18:19:55Z	PASS	196	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
 fifo-sqs-event-source	2026-09-27T12:27:25Z	PASS	105	verify.sh	rc ok, orph clean (#3861)
 fsx-lustre	2026-09-24T22:46:12Z	PASS	895	verify.sh	rc ok, 0 orphans (#3663)
@@ -168,7 +168,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
 kinesis-stream-mode-switch	2026-09-27T18:06:09Z	PASS	110	verify.sh	rc ok, orph clean; #3881 follow-up
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-28T18:18:03Z	PASS	131	verify.sh	rc ok, orph clean (#4012)
+lambda	2026-09-29T04:05:50Z	PASS	101	verify.sh	maintainer merge-gate rerun of PR 3836 (destroy display sanitizing); rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -257,7 +257,7 @@ recreate-via-cc-api	2026-09-29T03:32:02Z	PASS	120	verify.sh	rc ok, orph clean (#
 recreate-via-sdk-provider	2026-09-25T09:51:57Z	PASS	95	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-28T14:21:53Z	PASS	1323	verify.sh	PR #3974 merge-gate run; rc ok, orph clean
+remove-protection	2026-09-29T04:05:50Z	PASS	1315	verify.sh	maintainer merge-gate rerun of PR 3836 (destroy display sanitizing); rc ok, orph clean
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-09-29T02:36:16Z	PASS	70	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, phase C refused naming the sent name (N + squatter untouched), phase D same-name delete-first ok, orph clean
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
