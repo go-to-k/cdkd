@@ -513,7 +513,7 @@ export class ELBv2Provider implements ResourceProvider {
   // ─── Dispatch ─────────────────────────────────────────────────────
 
   /**
-   * `context` is read for ONE thing today: `maskSecrets` (issue #2050). The
+   * `create()` reads `context` for ONE thing: `maskSecrets` (issue #2050). The
    * Listener create path runs a post-create `ModifyListenerAttributes` through
    * `withRetry`, whose per-attempt `debug` line and give-up `warn` summary
    * interpolate the AWS message verbatim — and that payload is built from
@@ -611,7 +611,8 @@ export class ELBv2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context?.desiredFromAwsReadback === true
         );
       case 'AWS::ElasticLoadBalancingV2::TargetGroup':
         return this.updateTargetGroup(
@@ -620,7 +621,8 @@ export class ELBv2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context?.desiredFromAwsReadback === true
         );
       case 'AWS::ElasticLoadBalancingV2::Listener':
         return this.updateListener(
@@ -629,7 +631,8 @@ export class ELBv2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context?.desiredFromAwsReadback === true
         );
       default:
         throw new ProvisioningError(
@@ -897,7 +900,8 @@ export class ELBv2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
+    maskSecrets?: SecretMasker,
+    fromReadback = false
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -985,11 +989,16 @@ export class ELBv2Provider implements ResourceProvider {
     // Value for those (live-verified 2026-08-11 — see that table); every
     // other key keeps the empty string, which the API accepts as "clear the
     // override". Skip the call entirely when nothing changed so the
-    // no-drift round-trip is a clean no-op.
-    const submittedAttrs = this.diffAttributes(
-      this.normalizeAttributes(properties['LoadBalancerAttributes']),
-      this.normalizeAttributes(previousProperties['LoadBalancerAttributes']),
-      this.attributeRemovalResolver(LOAD_BALANCER_ATTRIBUTE_DEFAULTS)
+    // no-drift round-trip is a clean no-op. `drift --revert` sends no
+    // removal at all (go-to-k/cdkd#4147, see diffAttributeBag).
+    const submittedAttrs = this.diffAttributeBag(
+      'LoadBalancerAttributes',
+      logicalId,
+      properties['LoadBalancerAttributes'],
+      previousProperties['LoadBalancerAttributes'],
+      this.attributeRemovalResolver(LOAD_BALANCER_ATTRIBUTE_DEFAULTS),
+      fromReadback,
+      maskSecrets
     );
     if (submittedAttrs.length > 0) {
       await this.getClient().send(
@@ -1479,7 +1488,8 @@ export class ELBv2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
+    maskSecrets?: SecretMasker,
+    fromReadback = false
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating TargetGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -1607,9 +1617,12 @@ export class ELBv2Provider implements ResourceProvider {
       // key is reset by sending its documented default from
       // TARGET_GROUP_ATTRIBUTE_DEFAULTS; a key with no known default warns
       // and retains the live value. Skip the call when nothing changed.
-      const tgAttrDiff = this.diffAttributes(
-        this.normalizeAttributes(properties['TargetGroupAttributes']),
-        this.normalizeAttributes(previousProperties['TargetGroupAttributes']),
+      // `drift --revert` sends no removal at all (go-to-k/cdkd#4147).
+      const tgAttrDiff = this.diffAttributeBag(
+        'TargetGroupAttributes',
+        logicalId,
+        properties['TargetGroupAttributes'],
+        previousProperties['TargetGroupAttributes'],
         (key, currentValue) => {
           // Object.hasOwn, not a bare index: `__proto__` / `constructor` /
           // `toString` would otherwise resolve up the prototype chain to a
@@ -1635,7 +1648,9 @@ export class ELBv2Provider implements ResourceProvider {
           // the LB / Listener arms: see attributeRemovalResolver's docstring
           // for why the previous side is not always a template.
           return currentValue === fallback ? undefined : fallback;
-        }
+        },
+        fromReadback,
+        maskSecrets
       );
       if (tgAttrDiff.length > 0) {
         await this.getClient().send(
@@ -1923,7 +1938,8 @@ export class ELBv2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
+    maskSecrets?: SecretMasker,
+    fromReadback = false
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Listener ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -1974,11 +1990,16 @@ export class ELBv2Provider implements ResourceProvider {
       // changed so the no-drift round-trip is a clean no-op. A failure here
       // THROWS (caught by the outer try/catch and re-wrapped as a
       // ProvisioningError) so cdkd state is not written as-if-applied — the
-      // next deploy retries.
-      const submittedAttrs = this.diffAttributes(
-        this.normalizeAttributes(properties['ListenerAttributes']),
-        this.normalizeAttributes(previousProperties['ListenerAttributes']),
-        this.attributeRemovalResolver(LISTENER_ATTRIBUTE_DEFAULTS)
+      // next deploy retries. `drift --revert` sends no removal at all
+      // (go-to-k/cdkd#4147).
+      const submittedAttrs = this.diffAttributeBag(
+        'ListenerAttributes',
+        logicalId,
+        properties['ListenerAttributes'],
+        previousProperties['ListenerAttributes'],
+        this.attributeRemovalResolver(LISTENER_ATTRIBUTE_DEFAULTS),
+        fromReadback,
+        maskSecrets
       );
       if (submittedAttrs.length > 0) {
         // Interruptible for the same reason as the create path (issue #2053).
@@ -2166,25 +2187,76 @@ export class ELBv2Provider implements ResourceProvider {
   }
 
   /**
+   * {@link diffAttributes} over one of the three attribute bags of an
+   * `update()`, except on `cdkd drift --revert` (`fromReadback`), where a key
+   * the desired side lacks is never sent as a removal (go-to-k/cdkd#4147).
+   *
+   * There the desired side is the recorded baseline and the previous side the
+   * live readback, so such a key is one AWS reports and the baseline does not
+   * hold. With an observed baseline that means AWS was not returning the key at
+   * capture (an attribute rolled out later, or `ddos_protection.syn_cookie.mode`,
+   * which AWS returns intermittently), so cdkd has no recorded value to restore.
+   * No Elastic Load Balancing call removes an attribute key, and the removal
+   * value is a guess: `''` or a documented default. A rejected `''` (an enum or
+   * boolean key) fails the WHOLE Modify call, taking every other reverted
+   * attribute of the bag with it. (Without an observed baseline, `runRevert`
+   * merges the untemplated keys into the desired side, so none arrives here.)
+   *
+   * The key keeps its live value, and a warning names it and the remedy, since
+   * `cdkd drift` keeps reporting a key only the readback holds: it cannot tell
+   * a service-side addition from a value an operator set.
+   */
+  private diffAttributeBag(
+    bag: 'LoadBalancerAttributes' | 'TargetGroupAttributes' | 'ListenerAttributes',
+    logicalId: string,
+    desired: unknown,
+    previous: unknown,
+    removalValue: (key: string, currentValue: string) => string | undefined,
+    fromReadback: boolean,
+    maskSecrets: SecretMasker | undefined
+  ): Array<{ Key: string; Value: string }> {
+    const leftInPlace: string[] = [];
+    const submitted = this.diffAttributes(
+      this.normalizeAttributes(desired),
+      this.normalizeAttributes(previous),
+      fromReadback
+        ? (key) => {
+            leftInPlace.push(key);
+            return undefined;
+          }
+        : removalValue
+    );
+    if (leftInPlace.length > 0) {
+      // A KEY comes out of the resolved bag, so it is masked as the raw value
+      // (the TargetGroup removal warning's rule), then made display-safe.
+      const mask = maskerOrIdentity(maskSecrets);
+      const keys = leftInPlace.map((key) => mask(key)).join(', ');
+      const one = leftInPlace.length === 1;
+      const noun = one ? 'key' : 'keys';
+      const values = one ? 'its live value' : 'their live values';
+      const them = one ? 'it' : 'them';
+      this.logger.warn(
+        safeMsg`${logicalId}: AWS reports ${bag} ${noun} ${keys}, which the recorded baseline holds no value for. No Elastic Load Balancing call removes an attribute key, so the revert leaves ${values} in place, and 'cdkd drift' keeps reporting ${them}. Run 'cdkd drift --accept' to record ${them}.`
+      );
+    }
+    return submitted;
+  }
+
+  /**
    * Build the `removalValue` resolver for the LoadBalancer / Listener attribute
    * arms: reset a removed key to its documented default, or to `''` (which
    * those two APIs accept as "clear the override") when no default is known.
    *
    * **A key already AT its default is SKIPPED, and that is a safety property,
-   * not an optimization.** The previous side is not always a template: `cdkd
-   * drift --revert` calls `update(..., newProperties, outcome.awsProperties)`
-   * (`src/cli/commands/drift.ts`), so `oldAttrs` can be the FULL
-   * `readCurrentState` snapshot — every attribute AWS reports, including the
-   * ~18 the user never templated. Against a state record with no
-   * `observedProperties` the desired side is the template's one or two keys,
-   * so every untemplated key looks REMOVED and would be "reset".
-   *
-   * Writing a documented default there would silently disable deletion
-   * protection, access / connection logs, HTTP/2, WAF fail-open and zonal
-   * shift on a live load balancer. Before the defaults table existed this was
-   * accidentally safe — `''` fails validation, so the whole revert aborted and
-   * changed nothing — so introducing the table without this guard would have
-   * converted a loud refusal into a silent destructive write.
+   * not an optimization.** It was written for a previous side that is not a
+   * template: `cdkd drift --revert` calls `update(..., newProperties,
+   * outcome.awsProperties)` (`src/cli/commands/drift.ts`), so `oldAttrs` can be
+   * the FULL `readCurrentState` snapshot, where every untemplated key looks
+   * REMOVED, and writing a documented default there would silently disable
+   * deletion protection, access / connection logs, HTTP/2, WAF fail-open and
+   * zonal shift on a live load balancer. That caller no longer reaches this
+   * resolver at all ({@link diffAttributeBag}, go-to-k/cdkd#4147); the skip
+   * stays for any other caller handing a readback as the previous side.
    *
    * The skip is exact rather than heuristic: a key the user never templated is
    * BY DEFINITION sitting at its default, so it is skipped; a key the template

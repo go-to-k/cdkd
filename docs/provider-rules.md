@@ -1206,7 +1206,12 @@ Checklist when writing or reviewing an `update()`:
   (the baseline is the raw template, so cdkd cannot tell AWS-authored from
   out-of-band), `runRevert` MERGES every untemplated path into the desired bag
   it hands you, so those keys arrive with their AWS-current values on BOTH
-  sides and your diff sees no change. That covers the bulk case and the
+  sides and your diff sees no change. (ELBv2 goes further: on
+  `desiredFromAwsReadback` it sends no attribute removal at all, because no
+  ELBv2 call removes a key, so an absence from even an observed baseline only
+  means AWS was not returning the key at capture — issue
+  [#4147](https://github.com/go-to-k/cdkd/issues/4147).)
+  That covers the bulk case and the
   non-default residual the per-provider skip cannot — and, because it is on
   the desired side, it also covers a provider that replaces the bag wholesale
   and never reads `previousProperties`. It does NOT cover the observed-capture
@@ -1952,7 +1957,7 @@ When `readCurrentState` starts emitting something it used to omit, every `observ
 
 The reverse change, a readback that STOPS emitting something, is the one case where the hook drops from the baseline. `AWS::DynamoDB::Table` reads back only the `WarmThroughput` members cdkd sends (issue [#3777](https://github.com/go-to-k/cdkd/issues/3777)), so a baseline block is trimmed to the members the recorded declaration sends, read from the `properties` argument the hook also receives. Key such a trim on the declaration, never on what the readback omitted alone: a member AWS transiently fails to report must stay reported (the ELBv2 case below reads the readback only for a key the template never declared). That is safe only because a warm-throughput member missing from the desired side is not a removal: every send site coerces the block to its usable members, and AWS cannot lower or unset warm throughput. Before copying it, check that the same holds for your member.
 
-The ELBv2 attribute bags (`LoadBalancerAttributes`, `TargetGroupAttributes`, `ListenerAttributes`) are the one trim that reads the readback too (issue [#4144](https://github.com/go-to-k/cdkd/issues/4144)). A baseline entry is dropped only when its key is undeclared AND missing from the readback. That is safe because no Modify*Attributes call removes a key, and the key set otherwise moves only with configuration that is compared on its own (a listener's protocol), so a key AWS stopped reporting is the service's own change, never drift. An empty readback bag is treated as a failed read and trims nothing. A declared key stays reported, as does a value change on a key both sides hold and a key only the readback holds.
+The ELBv2 attribute bags (`LoadBalancerAttributes`, `TargetGroupAttributes`, `ListenerAttributes`) are the one trim that reads the readback too (issue [#4144](https://github.com/go-to-k/cdkd/issues/4144)). A baseline entry is dropped only when its key is undeclared AND missing from the readback. That is safe because no Modify*Attributes call removes a key, and the key set otherwise moves only with configuration that is compared on its own (a listener's protocol), so a key AWS stopped reporting is the service's own change, never drift. An empty readback bag is treated as a failed read and trims nothing. A declared key stays reported, as does a value change on a key both sides hold and a key only the readback holds. The last one cannot be told apart from an operator's value in one read, so it stays reported, but `update()` on `desiredFromAwsReadback` never sends it as a removal (issue [#4147](https://github.com/go-to-k/cdkd/issues/4147)): the removal value would be a guess, and a rejected one fails the whole Modify*Attributes call.
 
 It is non-mutating and returns both inputs by identity when nothing applies. It is async only so a provider can resolve the same client region its readback used; it issues no AWS call.
 

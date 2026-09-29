@@ -135,6 +135,13 @@ echo "[verify] step 4 ok: exit ${rc}"
 echo "[verify] step 5: cdkd drift --revert -y (expect exit 0)"
 ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
 
+# Known intermittent failure (go-to-k/cdkd#4147): AWS returns the ALB's
+# undeclared `ddos_protection.syn_cookie.mode` attribute only some of the time.
+# If step 2's observed capture lacked it and a later read returns it, step 5's
+# revert leaves it in place (no ELBv2 call removes a key; the revert warns) and
+# this step reports it as LoadBalancerAttributes drift, since one read cannot
+# tell it from an out-of-band value. Re-run the fixture. The opposite direction
+# (captured, then absent) is not drift (#4144).
 echo "[verify] step 6: cdkd drift again (expect exit 0)"
 ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
 

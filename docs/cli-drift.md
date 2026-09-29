@@ -81,16 +81,26 @@ CloudFormation's drift detection likewise compares only template-declared
 properties, so this matches its behaviour for that class. An undeclared key
 captured with a REAL value — an AWS-side default — is still compared.
 
-### ELBv2 attributes AWS stops reporting
+### ELBv2 attributes AWS stops or starts reporting
 
 `LoadBalancerAttributes`, `TargetGroupAttributes` and `ListenerAttributes` are
-captured in full, including keys the template never declared. AWS sometimes
-stops returning one of those undeclared keys (`ddos_protection.syn_cookie.mode`
-on an ALB). No ELBv2 attribute call removes a key, so that absence is not an
-out-of-band change: it is not reported, and `--revert` does not write the key
-back. A declared key that changes or disappears is still drift, as is a changed
-value on any key AWS still returns, and a key AWS returns that the baseline
-lacks.
+captured in full, including keys the template never declared. The key set AWS
+returns can change on its own: it sometimes stops or starts returning
+`ddos_protection.syn_cookie.mode` on an ALB, and a newly released attribute
+appears on existing resources. No ELBv2 attribute call removes a key.
+
+| Case | `cdkd drift` | `--revert` |
+| --- | --- | --- |
+| An undeclared key the baseline holds, absent from AWS | Not reported | Does not write the key back |
+| A key AWS returns that the baseline lacks | Reported | Leaves the live value in place, with a warning |
+| A declared key that changes or disappears | Reported | Writes the recorded value back |
+| A changed value on a key both sides hold | Reported | Writes the recorded value back |
+
+A key only AWS returns is reported because cdkd cannot tell a key AWS started
+returning from a value someone set on it. The revert cannot remove the key and
+has no recorded value to restore, so it sends nothing for it. Every other
+drifted attribute is still reverted. If the live value is expected, run
+`cdkd drift --accept` to record it.
 
 ### Tags
 
