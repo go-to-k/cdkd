@@ -9,12 +9,17 @@ import type {
   DeploymentEventRecorder,
 } from '../../../src/types/deployment-events.js';
 
+const { logInfo, logWarn, logError } = vi.hoisted(() => ({
+  logInfo: vi.fn(),
+  logWarn: vi.fn(),
+  logError: vi.fn(),
+}));
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+    info: logInfo,
+    warn: logWarn,
+    error: logError,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
 }));
@@ -33,6 +38,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 }));
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { ResourceTimeoutError } from '../../../src/utils/error-handler.js';
 
 /** Collecting recorder that captures every event the runner emits. */
 class CollectingRecorder implements DeploymentEventRecorder {
@@ -184,6 +190,131 @@ describe('runDestroyForStack - #808 deployment events', () => {
     expect(retained.logicalId).toBe('Table');
     expect(retained.resourceType).toBe('AWS::DynamoDB::Table');
     expect(retained.provisionedBy).toBe('sdk');
+  });
+
+  it('renders a planted retained resource and stack name inert (issue #3811)', async () => {
+    // The retained line is printed above the live area, where a planted
+    // cursor escape could erase the lines before it.
+    const planted = 'X\x1b[1A\x1b[2K\r\n\u202e';
+    const provider = { delete: vi.fn().mockResolvedValue(undefined) };
+    const state = makeState({
+      [`Table${planted}`]: {
+        physicalId: 'phys-table',
+        resourceType: `AWS::DynamoDB::Table${planted}`,
+        properties: {},
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+        deletionPolicy: 'Retain',
+      },
+    });
+
+    await runDestroyForStack(
+      `S${planted}`,
+      state,
+      makeContext({ provider, recorder: new CollectingRecorder() })
+    );
+
+    const lines = logInfo.mock.calls.map((c) => String(c[0]));
+    const retained = lines.find((l) => l.includes('retained'));
+    const acquiring = lines.find((l) => l.includes('Acquiring lock for stack'));
+    expect(retained).toContain('TableX');
+    expect(acquiring).toContain('"SX');
+    for (const line of [retained!, acquiring!.trimStart()]) {
+      for (const bad of ['\x1b', '\r', '\n', '\u202e']) expect(line).not.toContain(bad);
+    }
+  });
+
+  it('renders a planted logical id inert in both failed-delete lines (issue #3811)', async () => {
+    const planted = 'X\r\n  ✓ Bar (AWS::S3::Bucket) deleted\x1b[2K‮';
+    const resource = (type: string) => ({
+      physicalId: 'phys',
+      resourceType: type,
+      properties: {},
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk' as const,
+    });
+    const provider = {
+      delete: vi.fn(async (logicalId: string) => {
+        if (logicalId.startsWith('Timeout')) {
+          throw new ResourceTimeoutError(logicalId, 'AWS::SNS::Topic', 'us-east-1', 5, 'DELETE', 5);
+        }
+        throw new Error('boom');
+      }),
+    };
+    const state = makeState({
+      [`Timeout${planted}`]: resource('AWS::SNS::Topic'),
+      [`Plain${planted}`]: resource('AWS::SQS::Queue'),
+    });
+
+    await runDestroyForStack('S', state, makeContext({ provider, recorder: new CollectingRecorder() }));
+
+    const failed = logError.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('Failed to delete'));
+    expect(failed.some((l) => l.includes('TimeoutX'))).toBe(true);
+    expect(failed.some((l) => l.includes('PlainX'))).toBe(true);
+    for (const line of failed) {
+      for (const bad of ['\x1b', '\r', '\n', '‮']) expect(line).not.toContain(bad);
+    }
+  });
+
+  it('renders a planted logical id and type inert in the slow-delete warn (issue #3811)', async () => {
+    const planted = 'X\r\n  ✓ Bar (AWS::S3::Bucket) deleted\x1b[2K‮';
+    const provider = {
+      delete: vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 50))),
+    };
+    const state = makeState({
+      [`Slow${planted}`]: {
+        physicalId: 'phys',
+        resourceType: `AWS::SNS::Topic${planted}`,
+        properties: {},
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      },
+    });
+
+    await runDestroyForStack('S', state, {
+      ...makeContext({ provider, recorder: new CollectingRecorder() }),
+      resourceWarnAfterMs: 1,
+      resourceTimeoutMs: 10_000,
+    });
+
+    const warn = logWarn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('has been deleting'));
+    expect(warn).toContain('SlowX');
+    expect(warn).toContain('AWS::SNS::TopicX');
+    for (const bad of ['\x1b', '\r', '\n', '‮']) expect(warn).not.toContain(bad);
+  });
+
+  it('renders a planted stack name inert in the lock-release warning (issue #3811)', async () => {
+    const provider = { delete: vi.fn().mockResolvedValue(undefined) };
+    const ctx = makeContext({ provider, recorder: new CollectingRecorder() });
+    const lockManager = {
+      acquireLock: vi.fn().mockResolvedValue(true),
+      releaseLock: vi.fn().mockRejectedValue(new Error('boom')),
+    } as unknown as LockManager;
+
+    const state = makeState({
+      Topic: {
+        physicalId: 'phys',
+        resourceType: 'AWS::SNS::Topic',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      },
+    });
+
+    await runDestroyForStack('S\r\nX‮', state, { ...ctx, lockManager });
+
+    const warn = logWarn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to release lock'));
+    expect(warn).toMatch(/^Failed to release lock for stack "S {2}X": \S/);
   });
 
   it('treats an already-gone resource as a successful delete (RESOURCE_SUCCEEDED)', async () => {

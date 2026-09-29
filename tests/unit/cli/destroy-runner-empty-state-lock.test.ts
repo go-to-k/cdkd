@@ -62,6 +62,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => {
 });
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const REGION = 'us-east-1';
 
@@ -185,6 +186,39 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
     expect(h.releaseLock).toHaveBeenCalledWith('TestStack', REGION);
   });
 
+  it('renders a planted stack name inert in the no-longer-empty refusal (issue #3811)', async () => {
+    const planted = 'Evil\x1b[2J\r\nStack\u202e\u200b';
+    const h = makeCtx({
+      acquired: true,
+      recheck: {
+        state: { ...emptyState(), resources: { Param: populatedResource() } },
+        etag: '"e"',
+      } as Awaited<ReturnType<S3StateBackend['getState']>>,
+    });
+
+    // U+200B in the region survives `displaySafe`, so it pins `asciiOnly`.
+    const state = { ...emptyState(), region: `${REGION}\u200b\n\u202e` };
+    const message = await runDestroyForStack(planted, state, h.ctx).catch(
+      (e: Error) => e.message
+    );
+    expect(message).toContain('Stack "Evil [2J  Stack" (us-east-1) was empty');
+    for (const bad of ['\x1b', '\r', '\n', '\u202e', '\u200b']) {
+      expect(message).not.toContain(bad);
+    }
+  });
+
+  it('renders a planted stack name inert in the no-resources line (issue #3811)', async () => {
+    const planted = 'Evil\x1b[2J\r\n  \u2713 Bar (AWS::S3::Bucket) deleted\u202e\u200b';
+    const h = makeCtx({ acquired: true, recheck: null });
+    const info = vi.mocked(getLogger().info);
+
+    await runDestroyForStack(planted, { ...emptyState(), stackName: planted }, h.ctx);
+
+    const line = info.mock.calls.map((c) => String(c[0])).find((l) => l.includes('has no resources') && l.includes('Evil'));
+    expect(line).toContain('Stack "Evil [2J');
+    for (const bad of ['\x1b', '\r', '\n', '\u202e', '\u200b']) expect(line).not.toContain(bad);
+  });
+
   it('reads the state back for the same stack and region it locked', async () => {
     const h = makeCtx({ acquired: true, recheck: null });
     await runDestroyForStack('TestStack', emptyState(), h.ctx);
@@ -240,6 +274,38 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
 
     expect(result.skippedEmpty).toBe(true);
     exitSpy.mockRestore();
+  });
+
+  it('renders a planted stack name inert in the first-SIGINT notice (issue #3811)', async () => {
+    // The stack name is an S3 key segment with no charset check, so the notice
+    // written straight to stderr must not carry its control bytes.
+    const planted = 'Evil\x1b[2J\r\nStack\u2028\u202e\u200b';
+    const h = makeCtx({ acquired: true, recheck: null });
+    const writes: string[] = [];
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    h.acquireLock.mockImplementation(async () => {
+      (process.listeners('SIGINT').at(-1) as NodeJS.SignalsListener)('SIGINT');
+      return true;
+    });
+
+    try {
+      await runDestroyForStack(planted, { ...emptyState(), stackName: planted }, h.ctx);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    const notice = writes.find((w) => w.includes('finishing the state cleanup'));
+    expect(notice, 'the first-SIGINT notice was not written').toBeDefined();
+    expect(notice).toContain('Evil');
+    // U+200B survives `displaySafe`, so it pins the `displayStackName` choice.
+    for (const bad of ['\x1b', '\r', '\u2028', '\u202e', '\u200b']) {
+      expect(notice).not.toContain(bad);
+    }
+    // The only line breaks are the notice's own leading and trailing ones.
+    expect(notice!.trim()).not.toContain('\n');
   });
 
   it('does NOT report `interrupted` after DELETING the state record', async () => {

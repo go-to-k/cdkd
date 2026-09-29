@@ -55,7 +55,7 @@ describe('destroy-runner keeps each caught-value read on the helper matching its
     // the direction that at least fails loudly.
     const candidates = source
       .split('\n')
-      .filter((l) => l.includes('✗ Failed to delete ${logicalId}:'));
+      .filter((l) => l.includes('✗ Failed to delete ${displaySafe(logicalId)}:'));
     // Excluding the sibling EXPLICITLY rather than relying on it never
     // adopting a helper: it logs `wrapped.message`, a `ProvisioningError` cdkd
     // built, and if it ever routes through `describeAwsFailure` this selector
