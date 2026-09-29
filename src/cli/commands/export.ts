@@ -3721,9 +3721,12 @@ function safeSegment(value: unknown): string {
 
 /**
  * A state-record or template value for a sentence that quotes it: `'value'`
- * when it is empty or `displayIdent` renders it unchanged, and `(not shown: it
- * is not a plain identifier)` otherwise (go-to-k/cdkd#3950). A non-string is
- * never unchanged, since `displayIdent` returns a string.
+ * when it is empty, or has no whitespace and `displayIdent` renders it
+ * unchanged, and `(not shown: it is not a plain identifier)` otherwise
+ * (go-to-k/cdkd#3950). The whitespace test comes first because the round-trip
+ * alone admits a value that ends in `displayIdent`'s own cut marker
+ * (`<1152 plain characters> [cut: N more characters withheld]` renders as
+ * itself). A non-string is never plain.
  *
  * These messages wrapped a stack name, a logical id or a record value in a
  * hand-written `'...'`, raw or through {@link safeSegment}, which keeps `'`,
@@ -3737,7 +3740,10 @@ function safeSegment(value: unknown): string {
 function quotedOrNotShown(value: unknown): string {
   // An empty string prints as `''`: it closes nothing, and an empty id is
   // worth seeing (`AWS reported '', <absent>`).
-  return value === '' || displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value
+  return value === '' ||
+    (typeof value === 'string' &&
+      !/\s/.test(value) &&
+      displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value)
     ? `'${String(value)}'`
     : '(not shown: it is not a plain identifier)';
 }

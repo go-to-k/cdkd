@@ -247,6 +247,13 @@ describe('cdkd export puts no state or template value inside its own quotes (go-
     );
   });
 
+  it("describes a name that ends in displayIdent's own cut marker, which round-trips unchanged", async () => {
+    const forged = `${'a'.repeat(STACK_REF_MAX_CODE_POINTS)} [cut: 35 more characters withheld]`;
+    const message = await refusal(async () => cdkd2cfnStackName(forged));
+    expect(message).toContain(`cdkd stack name ${NOT_SHOWN} maps`);
+    expect(message).not.toContain('[cut:');
+  });
+
   it('describes a value carrying a space, which could put a clause break inside the quote', async () => {
     expect(await refusal(async () => cdkd2cfnStackName('a b_'))).toContain(`cdkd stack name ${NOT_SHOWN}`);
     expect(await refusal(async () => cdkd2cfnStackName('a: b_'))).toContain(`cdkd stack name ${NOT_SHOWN}`);
