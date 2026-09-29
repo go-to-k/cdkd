@@ -4621,21 +4621,50 @@ describe('every repair the module exports is classified and has its read-only ca
       .stdout.split('\n')
       .filter((file) => file !== '' && file !== 'src/state/malformed-resources-bag.ts');
     expect(listed.length, 'the grep stopped matching; this fence is reading nothing').toBeGreaterThan(3);
-    const callers: Record<string, string[]> = {};
+    // Two sets per export, both held to the table. CALLS (`name(`, which an
+    // `import { … }` clause cannot contain) go red when a call is deleted and its
+    // import kept. MENTIONS (the bare name, import clause included) go red for a
+    // caller the call regex cannot see: `import { name as x }` then `x(…)`, or
+    // the function passed as a value. The quote lookbehind keeps a name inside a
+    // string literal from counting, since `code()` strips comments only.
+    const calls: Record<string, string[]> = {};
+    const mentions: Record<string, string[]> = {};
+    const record = (into: Record<string, string[]>, name: string, file: string): void => {
+      const list = (into[name] ??= []);
+      if (!list.includes(file)) list.push(file);
+    };
     for (const file of listed) {
-      // A CALL, not an import: an `import { … }` clause cannot contain `name(`.
-      for (const m of code(file).matchAll(/\b(repairMalformed\w*)\(/g)) {
-        const list = (callers[m[1]!] ??= []);
-        if (!list.includes(file)) list.push(file);
-      }
+      const src = code(file);
+      for (const m of src.matchAll(/(?<!['"`])\b(repairMalformed\w*)\(/g)) record(calls, m[1]!, file);
+      for (const m of src.matchAll(/(?<!['"`])\b(repairMalformed\w*)\b/g)) record(mentions, m[1]!, file);
     }
     for (const name of exported) {
+      const expected = [...REPAIR_CALLERS[name]!].sort();
       expect(
-        [...(callers[name] ?? [])].sort(),
+        [...(calls[name] ?? [])].sort(),
         `${name}'s callers changed: a repair with no caller is dead, and a new caller must be ` +
           `read-only on the path that calls it before it is named in REPAIR_CALLERS.`
-      ).toEqual([...REPAIR_CALLERS[name]!].sort());
+      ).toEqual(expected);
+      expect(
+        [...(mentions[name] ?? [])].sort(),
+        `${name} is named by a file that does not call it by name — an aliased import or a ` +
+          `reference passed as a value is still a caller, and must be read-only and listed.`
+      ).toEqual(expected);
     }
+  });
+
+  it('the module calls no repair itself, so no wrapper export reaches one unlisted', () => {
+    // Callers are read OUTSIDE the module, so an internal call would let a
+    // non-repair export carry a repair to a write path this fence never sees.
+    const internal = code('src/state/malformed-resources-bag.ts').replace(
+      /export function repairMalformed\w*\(/g,
+      ''
+    );
+    expect(
+      [...internal.matchAll(/(?<!['"`])\brepairMalformed\w*\(/g)].map((m) => m[0]),
+      'the module now calls a repair internally; its callers are no longer only the files ' +
+        'REPAIR_CALLERS names.'
+    ).toEqual([]);
   });
 });
 
