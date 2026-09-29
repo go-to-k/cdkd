@@ -6704,11 +6704,21 @@ export function reportDriftBaselineGaps(
         // the command so the command stays last and pasteable: an operator
         // handed `'<region>'` with no reason fills it from whatever is
         // nearest, and prose after the command is what a paste picks up.
+        // A stack name beginning with `-` is never to be filled back in, keyed
+        // on the RAW `-` as `inspectClause` in malformed-resources-bag.ts is:
+        // the gate may report `altered` / `too-long` first, and Commander
+        // reads a shell-quoted `'--all'` in `cdkd state show`'s positional as
+        // the option (go-to-k/cdkd#4036). A region hole stays fillable — it is
+        // `--stack-region`'s value, which Commander takes as given.
         (inspect.exact
           ? ''
           : `A quoted '<...>' hole in the command after the list below stands for a value cdkd could not ` +
-            `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
-            `included, with the shell-quoted value. `) +
+            (stackName.startsWith('-')
+              ? `print safely. This stack name begins with '-', which the CLI could read as an ` +
+                `option however it is quoted, so do not fill the stack hole with it: repair or ` +
+                `remove the record by hand. `
+              : `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
+                `included, with the shell-quoted value. `)) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own
