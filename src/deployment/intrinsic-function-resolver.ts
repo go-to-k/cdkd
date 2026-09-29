@@ -49,6 +49,7 @@ import {
   MalformedProducerRecordRefusalError,
 } from '../utils/error-handler.js';
 import { drainDeadlines, withSharedDrainBudget } from './drain-budget.js';
+import { recordAssumedConditions } from './assumed-conditions.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
 import { isListParameterType, ssmResolvedValueType } from '../utils/parameter-types.js';
 import { classifyReplaySecretRegion } from './secret-region-classification.js';
@@ -3834,6 +3835,11 @@ export class IntrinsicFunctionResolver {
     // `Object.keys` -- so the null prototype costs nothing here.
     const conditions: Record<string, boolean> = Object.create(null) as Record<string, boolean>;
     const templateConditions = context.template.Conditions;
+    // See `assumedConditionNames`. `inProgress` holds the evaluation path, so
+    // marking it whenever a guess is made or read taints every condition whose
+    // value that guess fed.
+    const assumed = new Set<string>();
+    recordAssumedConditions(conditions, assumed);
 
     if (!templateConditions || typeof templateConditions !== 'object') {
       return conditions;
@@ -3931,6 +3937,7 @@ export class IntrinsicFunctionResolver {
       // memo decides whether a definition is evaluated at all, so it should not
       // depend on a property of a line 50 above it.
       if (Object.hasOwn(conditions, name)) {
+        if (assumed.has(name)) for (const dependent of inProgress) assumed.add(dependent);
         return conditions[name]!;
       }
       if (inProgress.has(name)) {
@@ -3952,6 +3959,8 @@ export class IntrinsicFunctionResolver {
           `Condition ${this.displayMasked(name, maskingContext)} not found in template, assuming false`
         );
         conditions[name] = false;
+        assumed.add(name);
+        for (const dependent of inProgress) assumed.add(dependent);
         return false;
       }
 
@@ -4058,6 +4067,7 @@ export class IntrinsicFunctionResolver {
           )
         );
         conditions[name] = false;
+        assumed.add(name);
         inProgress.delete(name);
       }
     }
@@ -6132,9 +6142,14 @@ export class IntrinsicFunctionResolver {
             attributeName,
             resourceType,
             context,
-            why:
-              'cdkd cannot build it from the table name (a table with no StreamSpecification ' +
-              'has no stream, and CloudFormation cannot return one for it either)',
+            why: 'cdkd cannot build it from the table name',
+            // The commonest way here is a table with no StreamSpecification:
+            // it has no stream, so no re-read or re-import can produce one.
+            remedyWhenHealCompleted:
+              'A table with no StreamSpecification has no stream, and CloudFormation cannot ' +
+              'return a StreamArn for it either: add a StreamSpecification to the table. If ' +
+              'it already has one, change any property of the table so its next update ' +
+              're-records the attributes.',
           });
         default:
           return this.guardedPhysicalIdFallback(
@@ -7488,7 +7503,9 @@ export class IntrinsicFunctionResolver {
    * interpolated hole happens to carry a pattern — the `logicalId` (the #1838
    * hazard: `DependencyViolation` and two other bare words), or the error
    * CLASS name `describeFailureObserved` puts in `observed`, which none of
-   * these four reads raises — and then re-describes and can heal.
+   * the EC2 describes raises (the Cloud Map `GetNamespace` read, issue #4077,
+   * can: its throttle `RequestLimitExceeded` is a retryable name, and a retry
+   * is what a throttled read wants) — and then re-describes and can heal.
    * Measured, not designed: the fabricated-account guard sits in exactly the
    * same place. Threading a sanitized SDK error as `cause` so a throttled
    * describe classifies as transient was considered and left out — a
@@ -7556,18 +7573,32 @@ export class IntrinsicFunctionResolver {
     resourceType: string;
     context: ResolverContext;
     why: string;
+    /**
+     * Replaces the stale-record remedy when the heal COMPLETED without the
+     * value (`read`, or `not-attempted` for a record this deploy wrote): the
+     * arm then knows the likelier cause better than "re-record it" does.
+     */
+    remedyWhenHealCompleted?: string;
   }): never {
-    const { logicalId, attributeName, resourceType, context, why } = site;
+    const { logicalId, attributeName, resourceType, context, why, remedyWhenHealCompleted } = site;
     const healOutcome =
       context.staleAttributeHeal?.phase === 'settled'
         ? context.staleAttributeHeal.outcome
         : undefined;
+    const healCompleted =
+      (healOutcome?.kind === 'read' && (healOutcome.withheldKeys?.length ?? 0) === 0) ||
+      healOutcome?.kind === 'not-attempted';
+    const remedy =
+      remedyWhenHealCompleted !== undefined && healCompleted
+        ? remedyWhenHealCompleted
+        : this.staleRecordRemedy(healOutcome, context);
     // not-in-class(why): a cdkd-authored literal chosen by the calling arm.
+    // not-in-class(remedy): a cdkd-authored literal, or `staleRecordRemedy`'s cdkd-authored sentence.
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
           `the state record holds no value for it and ${why}, so cdkd refuses to substitute ` +
-          `one. ${this.staleRecordRemedy(healOutcome, context)}`
+          `one. ${remedy}`
       )
     );
   }

@@ -4,6 +4,7 @@ import {
   type ResolverContext,
   resetAccountInfoCache,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { StaleAttributeHealOutcome } from '../../../src/deployment/stale-attribute-heal.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -127,15 +128,24 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
     expect(healer).toHaveBeenCalledTimes(1);
   });
 
-  it.each(CASES)('$type $attribute keeps its old answer when the heal reads nothing', async (c) => {
+  it.each(CASES)('$type $attribute falls back, or refuses, when the heal reads nothing', async (c) => {
     const healer = vi.fn(
       async (): Promise<StaleAttributeHealOutcome> => ({ kind: 'read', attributes: {} })
     );
     if (c.fallback === REFUSED) {
       // Worded from the heal's outcome: the read completed and reported none.
-      await expect(resolveWith(c, healer)).rejects.toThrow(
-        /the state record holds no value for it .*nothing to heal the record with/
+      // For StreamArn the likelier cause is a table with no stream (#4077).
+      const error = await resolveWith(c, healer).then(
+        () => undefined,
+        (e: unknown) => e
       );
+      expect((error as Error).message).toMatch(
+        c.attribute === 'StreamArn'
+          ? /the state record holds no value for it .*add a StreamSpecification to the table/
+          : /the state record holds no value for it .*nothing to heal the record with/
+      );
+      // Terminal: the heal's outcome is memoized per deploy (#1874 hazard).
+      expect(isMarkedNonRetryable(error)).toBe(true);
       return;
     }
     await expect(resolveWith(c, healer)).resolves.toBe(c.fallback);
@@ -163,9 +173,10 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
     expect(healer).not.toHaveBeenCalled();
   });
 
-  it.each(CASES)('$type $attribute keeps its old answer with no healer wired', async (c) => {
+  it.each(CASES)('$type $attribute falls back, or refuses, with no healer wired', async (c) => {
     if (c.fallback === REFUSED) {
-      // No heal ran (`cdkd diff`, `cdkd drift`, ...): `cdkd deploy` is the remedy.
+      // No heal ran (`cdkd diff`, `cdkd drift`, ...): `cdkd deploy` is the
+      // remedy, since the record may only predate the read-back.
       await expect(resolveWith(c)).rejects.toThrow(/Run 'cdkd deploy': it re-reads/);
       return;
     }

@@ -11,17 +11,26 @@
  * failure (the resolver answers the `AWS_NO_VALUE` symbol, not `undefined`).
  *
  * Decided from the evaluated `Conditions`, and only where the answer is
- * certain: an `Fn::If` on a condition cdkd could not evaluate is left alone,
- * matching `isOutputSuppressedByCondition`'s "unknown names are kept".
+ * certain: an `Fn::If` on an undeclared condition, or on one
+ * `evaluateConditions` ASSUMED false (its evaluation threw, or a condition it
+ * depends on was assumed — `conditionsAssumedFalse`), is left alone, since
+ * refusing the deploy on a guess would fail a template CloudFormation may
+ * accept.
  */
 
 import type { TemplateOutput } from '../types/resource.js';
 import { displayIdent } from '../utils/display-safe.js';
+import { conditionsAssumedFalse } from './assumed-conditions.js';
 import { isOutputSuppressedByCondition } from './outputs-export-alias.js';
 import { markNonRetryable } from './retryable-errors.js';
 
 /** Does `value` evaluate to `AWS::NoValue` under `conditions`? */
-function selectsNoValue(value: unknown, conditions: Record<string, boolean>, depth = 0): boolean {
+function selectsNoValue(
+  value: unknown,
+  conditions: Record<string, boolean>,
+  assumed: ReadonlySet<string>,
+  depth = 0
+): boolean {
   // A bound, not a correctness condition: a real template nests a handful.
   if (depth > 64 || value === null || typeof value !== 'object' || Array.isArray(value)) {
     return false;
@@ -33,8 +42,8 @@ function selectsNoValue(value: unknown, conditions: Record<string, boolean>, dep
   if (keys[0] !== 'Fn::If') return false;
   const args = record['Fn::If'];
   if (!Array.isArray(args) || args.length !== 3 || typeof args[0] !== 'string') return false;
-  if (!Object.hasOwn(conditions, args[0])) return false;
-  return selectsNoValue(conditions[args[0]] ? args[1] : args[2], conditions, depth + 1);
+  if (!Object.hasOwn(conditions, args[0]) || assumed.has(args[0])) return false;
+  return selectsNoValue(conditions[args[0]] ? args[1] : args[2], conditions, assumed, depth + 1);
 }
 
 /**
@@ -46,10 +55,14 @@ export function refuseNoValueOutputs(
   outputs: Record<string, TemplateOutput> | undefined,
   conditions: Record<string, boolean>
 ): void {
-  if (!outputs) return;
+  if (!outputs || typeof outputs !== 'object') return;
+  const assumed = conditionsAssumedFalse(conditions);
   const offending = Object.entries(outputs)
+    // A malformed entry (`null`, a scalar) is not this check's to judge; the
+    // outputs pass reports it as it always has.
+    .filter(([, output]) => output !== null && typeof output === 'object')
     .filter(([, output]) => !isOutputSuppressedByCondition(output, conditions))
-    .filter(([, output]) => selectsNoValue(output.Value, conditions))
+    .filter(([, output]) => selectsNoValue(output.Value, conditions, assumed))
     .map(([name]) => displayIdent(name));
   if (offending.length === 0) return;
   // Marked: the verdict is the template plus its evaluated conditions, which a

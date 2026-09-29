@@ -7,9 +7,13 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 
+import {
+  IntrinsicFunctionResolver,
+  type ResolverContext,
+} from '../../../src/deployment/intrinsic-function-resolver.js';
 import { refuseNoValueOutputs } from '../../../src/deployment/output-value-preflight.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
-import type { TemplateOutput } from '../../../src/types/resource.js';
+import type { CloudFormationTemplate, TemplateOutput } from '../../../src/types/resource.js';
 
 const NO_VALUE = { Ref: 'AWS::NoValue' };
 const ifOn = (cond: string, whenTrue: unknown, whenFalse: unknown): unknown => ({
@@ -64,5 +68,50 @@ describe('refuseNoValueOutputs (issue #4077)', () => {
       {}
     );
     expect((error as Error).message).toMatch(/^Output First, Second evaluates to AWS::NoValue/);
+  });
+
+  // The conditions come from the REAL `evaluateConditions`, which stores
+  // `false` for a condition it could not evaluate: a guess the preflight must
+  // not refuse on (review of #4077).
+  describe('against the real evaluateConditions', () => {
+    const THROWS = { 'Fn::Equals': [{ 'Fn::FindInMap': ['NoSuchMap', 'a', 'b'] }, 'x'] };
+    async function evaluated(conditions: Record<string, unknown>): Promise<Record<string, boolean>> {
+      const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+      return resolver.evaluateConditions({
+        template: { Resources: {}, Conditions: conditions } as unknown as CloudFormationTemplate,
+        resources: {},
+      } as ResolverContext);
+    }
+
+    it('CONTROL: refuses on a condition that evaluated false', async () => {
+      const conditions = await evaluated({ Off: { 'Fn::Equals': ['a', 'b'] } });
+      expect(refusal({ Out: { Value: ifOn('Off', 'v', NO_VALUE) } }, conditions)).toBeDefined();
+    });
+
+    it.each([
+      ['whose evaluation threw', { Broken: THROWS }, 'Broken'],
+      [
+        'that depends on one whose evaluation threw',
+        { Broken: THROWS, Composite: { 'Fn::Not': [{ Condition: 'Broken' }] } },
+        'Composite',
+      ],
+      [
+        'that references an undeclared condition',
+        { Composite: { 'Fn::Not': [{ Condition: 'Undeclared' }] } },
+        'Composite',
+      ],
+    ])('leaves an Fn::If on a condition %s alone', async (_shape, declared, name) => {
+      const conditions = await evaluated(declared);
+      // PREMISE: the bag holds a boolean for it, so only the assumed-set skips it.
+      expect(Object.hasOwn(conditions, name)).toBe(true);
+      const value = conditions[name] ? ifOn(name, NO_VALUE, 'v') : ifOn(name, 'v', NO_VALUE);
+      expect(refusal({ Out: { Value: value } }, conditions)).toBeUndefined();
+    });
+  });
+
+  it('skips a malformed (null) Output entry instead of throwing a TypeError', () => {
+    expect(
+      refusal({ Bad: null as unknown as TemplateOutput, Out: { Value: 'x' } }, {})
+    ).toBeUndefined();
   });
 });

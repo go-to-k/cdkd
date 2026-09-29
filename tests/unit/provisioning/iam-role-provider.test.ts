@@ -835,7 +835,7 @@ describe('IAMRoleProvider', () => {
 
     it('explicit override: verifies via GetRole and returns the physicalId', async () => {
       // A non-`/` Path: the resolver's `Arn` arm would build `role/my-role`
-      // and lose it, and its `RoleId` arm returns `undefined` (issue #3627).
+      // and lose it, and its `RoleId` arm refuses (issues #3627, #4077).
       const arn = 'arn:aws:iam::123456789012:role/service/my-role';
       mockSend.mockResolvedValueOnce({
         Role: { RoleName: 'my-role', Path: '/service/', Arn: arn, RoleId: 'AROAEXAMPLE' },
