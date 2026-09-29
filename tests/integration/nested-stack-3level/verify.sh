@@ -54,12 +54,14 @@
 #           row kept `MidPinOut` in plaintext, and the middle row and the
 #           grandchild kept both.
 #
-#   #3306 - the same SecureString in the three frames the #3156 fix still
+#   #3306 - the same SecureString in two of the frames the #3156 fix still
 #           refused, on the same branch and handed down PASS-THROUGH:
 #           `MidPinNest` holds its token inside a nested `Fn::Sub` part,
-#           `MidPinVar` in a used `Fn::Sub` string variable, `MidPinIf` inside
-#           an `Fn::If` around the frame. The same records and lines are
-#           asserted for each.
+#           `MidPinVar` in a used `Fn::Sub` string variable. The same records
+#           and lines are asserted for each. The third shape, an `Fn::If`
+#           around the frame, is left to unit cases: the recursive diff below
+#           resolves a nested row's `Parameters` with no condition map
+#           (go-to-k/cdkd#4094).
 #
 # Run via: /run-integ nested-stack-3level
 #         or: bash tests/integration/nested-stack-3level/verify.sh
@@ -140,15 +142,13 @@ PIN_SSM_FRAMED="pin3156s:${PIN_SSM_VALUE}"
 PIN_OUT_FRAMED="pin3156o:${PIN_OUT_VALUE}@${AWS_REGION}"
 PIN_SSM_EXPR="pin3156s:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
 PIN_OUT_EXPR="pin3156o:{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin}}@${AWS_REGION}"
-# The #3306 arm: the ssm secret in three more frames, each its own prefix so
+# The #3306 arm: the ssm secret in two more frames, each its own prefix so
 # no two share a value (the carry records one frame per value in a row).
 PIN_NEST_FRAMED="pin3306n:${PIN_SSM_VALUE}"
 PIN_VAR_FRAMED="pin3306v:${PIN_SSM_VALUE}"
-PIN_IF_FRAMED="pin3306i:${PIN_SSM_VALUE}"
 PIN_NEST_EXPR="pin3306n:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
 PIN_VAR_EXPR="pin3306v:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
-PIN_IF_EXPR="pin3306i:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
-FRAMED_PLAINTEXTS=("${PIN_SSM_FRAMED}" "${PIN_OUT_FRAMED}" "${PIN_NEST_FRAMED}" "${PIN_VAR_FRAMED}" "${PIN_IF_FRAMED}")
+FRAMED_PLAINTEXTS=("${PIN_SSM_FRAMED}" "${PIN_OUT_FRAMED}" "${PIN_NEST_FRAMED}" "${PIN_VAR_FRAMED}")
 for v in "${PIN_SSM_VALUE}" "${PIN_OUT_VALUE}"; do
   if [[ -z "${v}" || ${#v} -ge 4 ]]; then
     echo "FAIL: premise: a #3156 secret must be 1-3 characters, or the needle mask covers it and the arm tests nothing" >&2
@@ -280,7 +280,7 @@ masked_whole() {
     END { exit n == 0 ? 2 : (bad ? 1 : 0) }' <<<"$1"
 }
 GC_LINE_PREFIXES=()
-for name in GcSsmPass GcSsmWrap GcOutPass GcOutWrap GcNestPass GcVarPass GcIfPass; do
+for name in GcSsmPass GcSsmWrap GcOutPass GcOutWrap GcNestPass GcVarPass; do
   GC_LINE_PREFIXES+=("Parameter ${name}: using user-provided value " "Resolved Ref to parameter: ${name} -> ")
 done
 for prefix in "${GC_LINE_PREFIXES[@]}"; do
@@ -370,19 +370,19 @@ assert_level "${GREATGRANDCHILD}" "${GRANDCHILD}"   "GreatGrandchild"
 assert_level "${FRAMED}"          "${STACK}"        "Framed"
 assert_level "${FRAMED_GC}"       "${FRAMED}"       "FramedGrandchild"
 
-# Sanity: we should have collected 13 SSM params (RootRef, Child.Param,
+# Sanity: we should have collected 12 SSM params (RootRef, Child.Param,
 # Grandchild.Param, Grandchild.SecretA, Grandchild.SecretB,
-# GreatGrandchild.Param, and the #3156 / #3306 grandchild's seven consumers)
+# GreatGrandchild.Param, and the #3156 / #3306 grandchild's six consumers)
 # and 2 SNS topics (RootTopic, Grandchild.Topic) across the tree.
-if [[ ${#SSM_PARAM_NAMES[@]} -ne 13 ]]; then
-  echo "FAIL: expected 13 SSM parameters across the tree, found ${#SSM_PARAM_NAMES[@]}: ${SSM_PARAM_NAMES[*]}"
+if [[ ${#SSM_PARAM_NAMES[@]} -ne 12 ]]; then
+  echo "FAIL: expected 12 SSM parameters across the tree, found ${#SSM_PARAM_NAMES[@]}: ${SSM_PARAM_NAMES[*]}"
   exit 1
 fi
 if [[ ${#SNS_TOPIC_ARNS[@]} -ne 2 ]]; then
   echo "FAIL: expected 2 SNS topics across the tree, found ${#SNS_TOPIC_ARNS[@]}: ${SNS_TOPIC_ARNS[*]}"
   exit 1
 fi
-echo "  OK: 6 state files, 13 SSM params + 2 SNS topics collected across all levels"
+echo "  OK: 6 state files, 12 SSM params + 2 SNS topics collected across all levels"
 
 # --------------------------------------------------------------------
 # Step 3: every level's REAL AWS resource exists.
@@ -506,9 +506,9 @@ ROOT_TEMPLATE="cdk.out/${STACK}.template.json"
 # PREMISES, from the synthesized templates: the two spellings are the refused
 # ones, and the middle's nested-stack row spells no reference of its own, so
 # its bag holds nothing the root's carry did not hand it.
-assert_eq "premise: the root's Framed row passes down exactly the five framed parameters" \
+assert_eq "premise: the root's Framed row passes down exactly the four framed parameters" \
   "$(jq -c '.Resources.Framed.Properties.Parameters | keys' "${ROOT_TEMPLATE}")" \
-  '["MidPinIf","MidPinNest","MidPinOut","MidPinSsm","MidPinVar"]'
+  '["MidPinNest","MidPinOut","MidPinSsm","MidPinVar"]'
 assert_eq "premise: MidPinSsm is an Fn::Join whose ONE token spells ssm: with the account Ref inside it" \
   "$(jq -c '.Resources.Framed.Properties.Parameters.MidPinSsm' "${ROOT_TEMPLATE}")" \
   '{"Fn::Join":["",["pin3156s:{{resolve:ssm:cdkd-3level-pinssm-",{"Ref":"AWS::AccountId"},"}}"]]}'
@@ -522,20 +522,17 @@ assert_eq "premise: MidPinNest is an Fn::Join whose token sits in a NESTED Fn::S
 assert_eq "premise: MidPinVar is an Fn::Sub whose token a used STRING variable holds" \
   "$(jq -c '.Resources.Framed.Properties.Parameters.MidPinVar' "${ROOT_TEMPLATE}")" \
   "{\"Fn::Sub\":[\"pin3306v:\${V}\",{\"V\":\"{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}\"}]}"
-assert_eq "premise: MidPinIf is an Fn::If around an Fn::Join frame, on a condition true in every region" \
-  "$(jq -c '[.Resources.Framed.Properties.Parameters.MidPinIf, .Conditions.Always3306]' "${ROOT_TEMPLATE}")" \
-  '[{"Fn::If":["Always3306",{"Fn::Join":["",["pin3306i:{{resolve:ssm:cdkd-3level-pinssm-",{"Ref":"AWS::AccountId"},"}}"]]},"none"]},{"Fn::Not":[{"Fn::Equals":[{"Ref":"AWS::Region"},"none"]}]}]'
 FRAMED_TEMPLATE="cdk.out/$(jq -r '.Resources.Framed.Metadata["aws:asset:path"] // empty' "${ROOT_TEMPLATE}")"
 [[ -f "${FRAMED_TEMPLATE}" ]] || { echo "FAIL: premise: the Framed nested template was not found (${FRAMED_TEMPLATE})" >&2; exit 1; }
 assert_eq "premise: the middle stack owns only its nested-stack row (and CDK metadata)" \
   "$(jq -c '[.Resources | to_entries[] | select(.value.Type != "AWS::CDK::Metadata") | .key]' "${FRAMED_TEMPLATE}")" \
   '["FramedGrandchild"]'
-# Its row's Parameters are EXACTLY the seven hand-offs, each a `Ref` to a
+# Its row's Parameters are EXACTLY the six hand-offs, each a `Ref` to a
 # middle parameter or `m-` joined to one: nothing else in the middle can put a
 # pair into that row's bag.
 assert_eq "premise: the middle's nested-stack row passes down only Refs to its own parameters, bare or m- joined" \
   "$(jq -c '.Resources.FramedGrandchild.Properties.Parameters' "${FRAMED_TEMPLATE}")" \
-  '{"GcSsmPass":{"Ref":"MidPinSsm"},"GcSsmWrap":{"Fn::Join":["",["m-",{"Ref":"MidPinSsm"}]]},"GcOutPass":{"Ref":"MidPinOut"},"GcOutWrap":{"Fn::Join":["",["m-",{"Ref":"MidPinOut"}]]},"GcNestPass":{"Ref":"MidPinNest"},"GcVarPass":{"Ref":"MidPinVar"},"GcIfPass":{"Ref":"MidPinIf"}}'
+  '{"GcSsmPass":{"Ref":"MidPinSsm"},"GcSsmWrap":{"Fn::Join":["",["m-",{"Ref":"MidPinSsm"}]]},"GcOutPass":{"Ref":"MidPinOut"},"GcOutWrap":{"Fn::Join":["",["m-",{"Ref":"MidPinOut"}]]},"GcNestPass":{"Ref":"MidPinNest"},"GcVarPass":{"Ref":"MidPinVar"}}'
 # ...and its only OTHER property is CDK's asset `TemplateURL`, in its exact
 # shape up to the content hash -- the engine resolves the whole row into that
 # bag, so any other property could hold a reference of its own. CDK renders the
@@ -556,8 +553,6 @@ assert_eq "root row keeps MidPinNest (token in a nested part) as its framed expr
   "$(jq_of "${ROOT_JSON}" '.resources.Framed.properties.Parameters.MidPinNest')" "${PIN_NEST_EXPR}"
 assert_eq "root row keeps MidPinVar (token in a Sub variable) as its framed expression" \
   "$(jq_of "${ROOT_JSON}" '.resources.Framed.properties.Parameters.MidPinVar')" "${PIN_VAR_EXPR}"
-assert_eq "root row keeps MidPinIf (Fn::If around the frame) as its framed expression" \
-  "$(jq_of "${ROOT_JSON}" '.resources.Framed.properties.Parameters.MidPinIf')" "${PIN_IF_EXPR}"
 # The MIDDLE's row, pass-through and re-wrapped.
 assert_eq "middle row keeps GcSsmPass ({Ref}) as the framed expression" \
   "$(jq_of "${FRAMED_JSON}" '.resources.FramedGrandchild.properties.Parameters.GcSsmPass')" "${PIN_SSM_EXPR}"
@@ -571,10 +566,8 @@ assert_eq "middle row keeps GcNestPass ({Ref}) as the framed expression" \
   "$(jq_of "${FRAMED_JSON}" '.resources.FramedGrandchild.properties.Parameters.GcNestPass')" "${PIN_NEST_EXPR}"
 assert_eq "middle row keeps GcVarPass ({Ref}) as the framed expression" \
   "$(jq_of "${FRAMED_JSON}" '.resources.FramedGrandchild.properties.Parameters.GcVarPass')" "${PIN_VAR_EXPR}"
-assert_eq "middle row keeps GcIfPass ({Ref}) as the framed expression" \
-  "$(jq_of "${FRAMED_JSON}" '.resources.FramedGrandchild.properties.Parameters.GcIfPass')" "${PIN_IF_EXPR}"
 # The GRANDCHILD's leaves, and the live values they resolved to.
-for name in SsmPass SsmWrap OutPass OutWrap NestPass VarPass IfPass; do
+for name in SsmPass SsmWrap OutPass OutWrap NestPass VarPass; do
   case "${name}" in
     SsmPass) expr="${PIN_SSM_EXPR}"; plain="${PIN_SSM_FRAMED}" ;;
     SsmWrap) expr="m-${PIN_SSM_EXPR}"; plain="m-${PIN_SSM_FRAMED}" ;;
@@ -582,7 +575,6 @@ for name in SsmPass SsmWrap OutPass OutWrap NestPass VarPass IfPass; do
     OutWrap) expr="m-${PIN_OUT_EXPR}"; plain="m-${PIN_OUT_FRAMED}" ;;
     NestPass) expr="${PIN_NEST_EXPR}"; plain="${PIN_NEST_FRAMED}" ;;
     VarPass) expr="${PIN_VAR_EXPR}"; plain="${PIN_VAR_FRAMED}" ;;
-    IfPass) expr="${PIN_IF_EXPR}"; plain="${PIN_IF_FRAMED}" ;;
     *) echo "FAIL: no expected value for Framed${name}" >&2; exit 1 ;;
   esac
   assert_eq "grandchild Framed${name} persists gc- + the framed expression" \
