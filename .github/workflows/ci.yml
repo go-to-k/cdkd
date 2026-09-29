@@ -107,6 +107,12 @@ jobs:
       # cannot silently re-disarm it -- the comment and the assertion are
       # deliberately redundant, because the comment alone is what failed here.
       - run: vp run build
+      # zsh for the paste harness (`tests/unit/utils/paste-harness.ts`), which
+      # runs every pasted span under bash AND zsh and FAILS under `CI` when zsh
+      # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
+      # the two shells disagree on an unquoted `(` after a displayed value.
+      - name: install zsh for the paste harness
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       # CDKD_EXPECT_DIST is set ONLY here, because this is the only job that
       # builds. `tests/unit/cli/version.test.ts` skips itself when `dist/` is
       # absent -- correct for a contributor who has not built, and correct for
@@ -335,6 +341,12 @@ jobs:
           run-install: false
 
       - run: vp install --frozen-lockfile
+      # zsh for the paste harness (`tests/unit/utils/paste-harness.ts`), which
+      # runs every pasted span under bash AND zsh and FAILS under `CI` when zsh
+      # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
+      # the two shells disagree on an unquoted `(` after a displayed value.
+      - name: install zsh for the paste harness
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - run: vp run test:once-leak
 
       # Prove the detector still REJECTS, not just that it ran. With the

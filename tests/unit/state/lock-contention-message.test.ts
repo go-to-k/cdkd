@@ -8,7 +8,14 @@ import {
 } from '../../../src/state/lock-contention-message.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
 import { shellQuote } from '../../../src/utils/pasteable-command.js';
-import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  itFailsUnderZsh,
+  expectOnlyDisplayResidual,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { Command } from 'commander';
 import { stateOptions } from '../../../src/cli/options.js';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -332,7 +339,7 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
     }
   });
 
-  it('pastes nothing runnable at any granularity, through the message builder itself', async () => {
+  it('pins each head boundary, a plain message inert and a withheld one to its display residual, through the message builder itself', async () => {
     // The paste fence for THIS site (`tests/unit/utils/paste-harness.ts`): the
     // plain-name message is inert in every span; a payload one is held to the
     // per-block criterion whether the gate named or withheld it.
@@ -362,10 +369,8 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
     }
     withPasteDir((dir) => {
       expect(spansThatRun(plain, dir)).toEqual([]);
-      // Measured: NO span runs for any family here (the `(` of the region
-      // parenthesis aborts every span holding the head before expansion), so
-      // the stronger contract is what is pinned rather than the residual
-      // criterion, which would accept a future running display.
+      // A NAMED payload's paste is the S1 case below: its block also carries
+      // the command, and under zsh the ` (us-east-1)` no longer stops the head.
       for (const { value, message } of named) {
         expect(message, value).toContain(
           `run: cdkd force-unlock ${shellQuote(value)} --stack-region us-east-1`
@@ -376,11 +381,58 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
         // pass). `displayStackName` JSON-quotes a non-plain value.
         expect(message, value).toContain(`for stack ${JSON.stringify(value)} (us-east-1)`);
         expect(message, value).not.toContain(`for stack '${value}'`);
-        expect(spansThatRun(message, dir), value).toEqual([]);
       }
+      // A WITHHELD payload's block carries no command, so under zsh its
+      // head's display may run and the residual criterion is what holds.
       for (const { value, message } of withheld) {
         expect(message, value).not.toContain('cdkd force-unlock');
         expect(message, value).toContain('No recovery command can be shown');
+        expectOnlyDisplayResidual(message, dir, value);
+      }
+    });
+  }, 120_000);
+
+  // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): EXPECTED TO FAIL until
+  // this row's source fix lands. A named payload's block displays the name
+  // (JSON) AND carries `run: cdkd force-unlock …`; under zsh the
+  // ` (us-east-1)` no longer stops a pasted line, so the head's `$( )` runs.
+  it.fails('S1 lock head: a named payload block carries no command (block rule)', async () => {
+    const messages: Array<{ value: string; message: string }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      messages.push({
+        value,
+        message: await buildLockContentionMessage({
+          lockManager: lockManagerReturning(null),
+          stackName: value,
+          region: 'us-east-1',
+        }),
+      });
+    }
+    withPasteDir((dir) => {
+      for (const { value, message } of messages) {
+        expectNoCommandBesideDisplay(message, value);
+      }
+    });
+  }, 120_000);
+
+  // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): EXPECTED TO FAIL UNDER ZSH until
+  // this row's source fix lands. A named payload's block displays the name
+  // (JSON) AND carries `run: cdkd force-unlock …`; under zsh the
+  // ` (us-east-1)` no longer stops a pasted line, so the head's `$( )` runs.
+  itFailsUnderZsh('S1 lock head: nothing in a payload block runs (paste)', async () => {
+    const messages: Array<{ value: string; message: string }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      messages.push({
+        value,
+        message: await buildLockContentionMessage({
+          lockManager: lockManagerReturning(null),
+          stackName: value,
+          region: 'us-east-1',
+        }),
+      });
+    }
+    withPasteDir((dir) => {
+      for (const { value, message } of messages) {
         expect(spansThatRun(message, dir), value).toEqual([]);
       }
     });

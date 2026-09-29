@@ -1,10 +1,10 @@
 /**
- * The PASTE harness: feed a rendered cdkd message to a real bash at three
- * granularities and report which spans RAN.
+ * The PASTE harness: feed a rendered cdkd message to real shells (bash, and zsh
+ * where it is installed) at three granularities and report which spans RAN.
  *
  * Shared by `pasteable-message-paste.test.ts` (the shapes) and by per-site
  * test files of go-to-k/cdkd#3436's fold-in, so a site drives ITS OWN renderer
- * through the same bash rather than a synthetic copy of what it prints. Not
+ * through the same shells rather than a synthetic copy of what it prints. Not
  * every touched site has such a case: `grep -rl spansThatRun tests/` answers
  * which do.
  *
@@ -43,11 +43,21 @@
  * case-insensitive filesystem (macOS) a span beginning `AWS ...` — export.ts
  * has prose like that — resolves through the stub directory before it can
  * reach the real `aws` binary, and on a case-sensitive one such a spelling is
- * not found at all. The bash functions of the same names still cover the
+ * not found at all. The shell functions of the same names still cover the
  * exact spellings (a function wins over PATH).
+ *
+ * TWO SHELLS, bash and zsh (go-to-k/cdkd#3950). macOS operators paste into zsh
+ * by default, and the two disagree on exactly the shape several sites lean on:
+ * a ` (` after a JSON-quoted name is a bash SYNTAX error, which stops the line
+ * before anything runs, while zsh reads `(us-east-1)` as a glob qualifier and
+ * expands `"x$(touch OWNED)"` BEFORE it reports the bad pattern. A span counts
+ * as having run when it ran under EITHER shell. zsh is started with `-f`, so
+ * no rc file is read. Where zsh is not installed the harness drives bash alone,
+ * except under `CI`, where a missing zsh FAILS: the CI jobs install it, so a
+ * skip there would be a harness quietly measuring less than it claims.
  */
 
-import { expect } from 'vite-plus/test';
+import { expect, it } from 'vite-plus/test';
 import {
   chmodSync,
   mkdirSync,
@@ -120,10 +130,33 @@ const DECOYS = [
 
 const DECOY_CONTENT = 'decoy\n';
 
+/** Whether `zsh` starts at all; probed once. */
+const ZSH_AVAILABLE = spawnSync('zsh', ['-f', '-c', 'exit 0'], { encoding: 'utf8' }).status === 0;
+
+/**
+ * The shells every span runs under: bash always, zsh where it is installed.
+ * See the header for why a missing zsh is a FAILURE under `CI`.
+ */
+export const PASTE_SHELLS: readonly ('bash' | 'zsh')[] = ZSH_AVAILABLE ? ['bash', 'zsh'] : ['bash'];
+
+/**
+ * `it.fails` where zsh is driven, `it` where it is not: for an S1 row's PASTE
+ * case (go-to-k/cdkd#3950), which bash's stop at a ` (` keeps inert and zsh
+ * runs past. Under bash the case pins that inertness; under zsh it is an
+ * expected failure until the row's source fix lands.
+ */
+export function itFailsUnderZsh(
+  name: string,
+  fn: () => Promise<void> | void,
+  timeout?: number
+): void {
+  (ZSH_AVAILABLE ? it.fails : it)(name, fn, timeout);
+}
+
 /** How long a span may run before the child is killed (SIGKILL). */
 export const PASTE_CHILD_TIMEOUT_MS = 5_000;
 
-/** The verbs stubbed on the child's PATH, and as bash functions. */
+/** The verbs stubbed on the child's PATH, and as shell functions. */
 const STUBBED_VERBS = ['cdkd', 'aws'] as const;
 
 /**
@@ -147,20 +180,65 @@ export function segmentsOf(message: string): Set<string> {
   return out;
 }
 
+/** A shell the harness drives. */
+export type PasteShell = 'bash' | 'zsh';
+
+/** Options for a run: `shells` narrows {@link PASTE_SHELLS} for a bash-specific case. */
+export interface PasteRunOptions {
+  readonly shells?: readonly PasteShell[];
+}
+
 /**
- * Run one span under bash with `cdkd` and `aws` stubbed; return every file it
+ * The file a stubbed `cdkd` / `aws` writes when it is INVOKED (go-to-k/cdkd#3950):
+ * the only evidence that a span ran a command, as opposed to a span whose
+ * text merely contains the verb as an argument (`Could not … cdkd force-unlock`
+ * runs `Could`). Never reported as a touched file; see {@link spanRun}.
+ */
+const VERB_RAN = 'VERB_RAN';
+
+/**
+ * Run one span under every shell in {@link PASTE_SHELLS} (or `options.shells`)
+ * with `cdkd` and `aws` stubbed; return every file it CREATED or CHANGED under
+ * any of them (each name once). The directory is put back after each shell. A
+ * stubbed verb's own marker is not a touched file.
+ */
+export function filesTouchedBy(span: string, dir: string, options: PasteRunOptions = {}): string[] {
+  return spanRun(span, dir, options).touched;
+}
+
+/** What one span did across the shells: the files it touched, and whether a stubbed verb ran. */
+function spanRun(
+  span: string,
+  dir: string,
+  options: PasteRunOptions
+): { touched: string[]; verbRan: boolean } {
+  const runs = (options.shells ?? PASTE_SHELLS).map((shell) => runUnder(shell, span, dir));
+  return {
+    touched: [...new Set(runs.flatMap((r) => r.touched))],
+    verbRan: runs.some((r) => r.verbRan),
+  };
+}
+
+/**
+ * Run one span under `shell` with `cdkd` and `aws` stubbed; return every file it
  * CREATED or CHANGED, then put the directory back — created files removed,
  * changed decoys re-seeded — so the next span starts from the decoys alone.
+ * The stubbed verbs' {@link VERB_RAN} marker is reported as `verbRan`, not as
+ * a touched file.
  */
-export function filesTouchedBy(span: string, dir: string): string[] {
+function runUnder(
+  shell: PasteShell,
+  span: string,
+  dir: string
+): { touched: string[]; verbRan: boolean } {
   expect(stubBin, 'filesTouchedBy runs only inside withPasteDir').toBeDefined();
   const before = new Map(readdirSync(dir).map((f) => [f, readFileSync(join(dir, f), 'utf8')]));
   // A bounded child with a minimal env: a span that BLOCKS fails the case
   // rather than hanging the file, and `HOME` is the scratch directory so a
   // `~`-expanding span writes where the sweep below can see it. The stub
   // directory is FIRST on PATH (see the header).
-  const functions = STUBBED_VERBS.map((verb) => `${verb}() { :; };`).join(' ');
-  const r = spawnSync('bash', ['-c', `${functions} ${span}`], {
+  const functions = STUBBED_VERBS.map((verb) => `${verb}() { : > ${VERB_RAN}; };`).join(' ');
+  const r = spawnSync(shell, [...(shell === 'zsh' ? ['-f'] : []), '-c', `${functions} ${span}`], {
     cwd: dir,
     encoding: 'utf8',
     timeout: PASTE_CHILD_TIMEOUT_MS,
@@ -170,8 +248,8 @@ export function filesTouchedBy(span: string, dir: string): string[] {
     killSignal: 'SIGKILL',
     env: { PATH: `${stubBin}${delimiter}${process.env['PATH'] ?? ''}`, HOME: dir },
   });
-  expect(r.error, `bash did not start, or hung, for: ${span}`).toBeUndefined();
-  expect(r.signal, `the child was killed for: ${span}`).toBeNull();
+  expect(r.error, `${shell} did not start, or hung, for: ${span}`).toBeUndefined();
+  expect(r.signal, `the ${shell} child was killed for: ${span}`).toBeNull();
   const touched: string[] = [];
   const after = new Set(readdirSync(dir));
   for (const f of after) {
@@ -191,14 +269,14 @@ export function filesTouchedBy(span: string, dir: string): string[] {
       writeFileSync(join(dir, f), was, 'utf8');
     }
   }
-  return touched;
+  return { touched: touched.filter((f) => f !== VERB_RAN), verbRan: touched.includes(VERB_RAN) };
 }
 
 /** Every span of `message`, at all three granularities, that touched a file. */
-export function spansThatRun(message: string, dir: string): string[] {
+export function spansThatRun(message: string, dir: string, options: PasteRunOptions = {}): string[] {
   const out: string[] = [];
   for (const span of segmentsOf(message)) {
-    if (filesTouchedBy(span, dir).length > 0) out.push(span);
+    if (filesTouchedBy(span, dir, options).length > 0) out.push(span);
   }
   return out;
 }
@@ -215,26 +293,27 @@ export function spansThatRun(message: string, dir: string): string[] {
  * double quotes do not stop `$( )` or a backtick, so a prose span that parses
  * can still run. His criterion is therefore per BLOCK — a block carrying an
  * untrusted value carries no pasteable command, and what it displays is
- * go-to-k/cdkd#3232's class — and that is what this pins: no span that runs
- * carries a command fragment (a `cdkd` / `aws` verb, or a `--flag` remedy such
- * as the SSM `--resource` one), and every one that runs holds THE VALUE
+ * go-to-k/cdkd#3232's class. This helper pins the RUNTIME half of it: no span
+ * that runs also runs a stubbed `cdkd` / `aws` (its marker, not a verb token
+ * in the text: `Could not … cdkd force-unlock …` runs `Could`, with `cdkd` as
+ * an argument, go-to-k/cdkd#3950), and every one that runs holds THE VALUE
  * inside a paired JSON span — a bare `displaySafe` render, which the SSM
  * refusal used to have, runs on a plain `;` and fails this, and so does a
  * bare value with unrelated `"..."` words on either side of it. Returns the
  * residual so a caller can see what ran. Where a site's spans are ALL inert
  * today, its test asserts `spansThatRun(...)` empty instead — the stronger
  * contract — and this helper is for the site whose display genuinely runs.
+ * The TEXT half, a command quoted beside the display, is
+ * {@link expectNoCommandBesideDisplay}.
  */
 export function expectOnlyDisplayResidual(message: string, dir: string, value: string): string[] {
-  const ran = spansThatRun(message, dir);
-  for (const span of ran) {
-    // A verb may sit behind a prose quote (`run 'cdkd state show ...'`), which
-    // is the pre-fold shape itself, so the boundary before it is whitespace OR
-    // a quote, not whitespace alone; and the boundary after it is whitespace
-    // OR the end of the span, so a span ending in `cdkd` or `--force` counts.
-    expect(span, 'a span carrying a command fragment ran').not.toMatch(
-      /(^|[\s'"`])(cdkd|aws|--[a-z][a-z-]*)(\s|$)/
-    );
+  const ran: string[] = [];
+  for (const span of segmentsOf(message)) {
+    const run = spanRun(span, dir, {});
+    if (run.touched.length === 0) continue;
+    ran.push(span);
+    // The marker a stubbed verb writes when it is INVOKED, under either shell.
+    expect(run.verbRan, `a span that ran also ran a stubbed cdkd / aws: ${span}`).toBe(false);
     // The value must sit INSIDE a paired JSON span: strip every properly
     // paired `"..."` and require the value gone. A flanking-pair regex
     // (`"[^"]*value[^"]*"`) is satisfied by a BARE value between two
@@ -271,6 +350,65 @@ export function expectOnlyDisplayResidual(message: string, dir: string, value: s
 }
 
 /**
+ * cdkd's top-level commands, the words a pasteable `cdkd` invocation starts
+ * with. `pasteable-message-paste.test.ts` pins this list to `buildProgram()`'s
+ * own commands, so a new command cannot fall outside it unnoticed.
+ */
+export const CDKD_TOP_LEVEL_COMMANDS = [
+  'bootstrap',
+  'synth',
+  'list',
+  'deploy',
+  'diff',
+  'drift',
+  'destroy',
+  'rollback',
+  'scrub',
+  'events',
+  'gc',
+  'orphan',
+  'import',
+  'publish-assets',
+  'force-unlock',
+  'state',
+  'local',
+  'export',
+] as const;
+
+/**
+ * A pasteable command, as the block rule means it: a `cdkd <command>` or an
+ * `aws <service> <operation>` invocation (its words split by spaces or tabs),
+ * or a `--flag`, each starting a word (after whitespace, a quote, a backtick or
+ * `(`) and ending one (before whitespace, a quote, `=`, a backtick or
+ * punctuation). A prose mention such as `cdkd records the name` is not one:
+ * `records` is not a cdkd command.
+ */
+const PASTEABLE_COMMAND = new RegExp(
+  `(^|[\\s'"\`(])(cdkd[ \\t]+(?:${CDKD_TOP_LEVEL_COMMANDS.join('|')})|aws[ \\t]+[a-z0-9-]+[ \\t]+[a-z0-9-]+|--[a-z][a-z-]*)(?=$|[\\s'"=\`.,;:)])`
+);
+
+/**
+ * The BLOCK rule, stated over the message text (go-to-k/cdkd#3486 round 3; the
+ * S1 rows of go-to-k/cdkd#3950): a message that DISPLAYS the untrusted `value`
+ * carries no pasteable command ({@link PASTEABLE_COMMAND}), whether it is a
+ * directive or quoted in prose. "Displays" means the value appears raw or
+ * JSON-escaped anywhere in the message, a JSON-quoted path around it included.
+ * Pass a HOSTILE value: a plain one may be named beside its own command.
+ *
+ * {@link expectOnlyDisplayResidual} cannot see this: it measures what a pasted
+ * span RUNS, and a command quoted in prose beside a JSON-bounded display runs
+ * nothing extra. Each S1 row's case asserts it, and is an expected failure
+ * until the row describes the value instead of showing it.
+ */
+export function expectNoCommandBesideDisplay(message: string, value: string): void {
+  const escaped = JSON.stringify(value).slice(1, -1);
+  if (!message.includes(value) && !message.includes(escaped)) return;
+  expect(message, 'a block that displays the value also carries a pasteable command').not.toMatch(
+    PASTEABLE_COMMAND
+  );
+}
+
+/**
  * A scratch directory seeded with the decoys, beside a stub `bin` the child's
  * PATH starts with, both removed afterwards. The POSITIVE CONTROLS run first:
  * a payload that had silently stopped working — a shell that does not do
@@ -282,9 +420,10 @@ export function expectOnlyDisplayResidual(message: string, dir: string, value: s
  * the control sentence, as it would from prose. Then a bare-hole REDIRECTION
  * onto a decoy, which creates no file: it is what proves the decoy mechanism
  * sees a truncation. Last, the PATH control: each stubbed verb, looked up
- * through PATH alone (`type -P`, which ignores the bash functions), must
- * resolve to the stub beside the scratch directory — the property the
- * unstubbed-spelling argument in the header rests on.
+ * through PATH alone (`type -P` in bash, `whence -p` in zsh, which ignore the
+ * shell functions), must resolve to the stub beside the scratch directory — the
+ * property the unstubbed-spelling argument in the header rests on. The
+ * controls run under EACH shell.
  */
 export function withPasteDir<T>(fn: (dir: string) => T): T {
   const root = mkdtempSync(join(tmpdir(), 'cdkd-paste-'));
@@ -293,7 +432,7 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
   mkdirSync(dir);
   mkdirSync(bin);
   for (const verb of STUBBED_VERBS) {
-    writeFileSync(join(bin, verb), '#!/bin/sh\nexit 0\n', 'utf8');
+    writeFileSync(join(bin, verb), `#!/bin/sh\n: > ${VERB_RAN}\nexit 0\n`, 'utf8');
     chmodSync(join(bin, verb), 0o755);
   }
   // Saved and restored rather than cleared, so a nested call leaves the
@@ -302,23 +441,72 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
   stubBin = bin;
   try {
     for (const decoy of DECOYS) writeFileSync(join(dir, decoy), DECOY_CONTENT, 'utf8');
-    for (const payload of [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD]) {
-      const { label, value, flipped } = payload;
-      const control =
-        'control' in payload ? payload.control : flipped ? `echo it's ${value}` : `echo ${value}`;
-      expect(filesTouchedBy(control, dir), `the ${label} control did not run`).toContain('OWNED');
-    }
+    // A missing zsh is a skip only outside CI (see the header).
     expect(
-      filesTouchedBy('cdkd state show <stack> region', dir),
-      'the redirection control did not truncate its decoy'
-    ).toEqual(['region']);
-    // The population is spelled out here, not read off `STUBBED_VERBS`: a
-    // verb dropped from that list would otherwise drop its own control.
-    for (const verb of ['cdkd', 'aws']) {
+      ZSH_AVAILABLE || !process.env['CI'],
+      'zsh is not installed, and under CI the paste harness must drive it'
+    ).toBe(true);
+    // The shell population itself, so dropping zsh from the list cannot pass
+    // on the strength of the availability probe alone.
+    expect(PASTE_SHELLS).toEqual(ZSH_AVAILABLE ? ['bash', 'zsh'] : ['bash']);
+    if (PASTE_SHELLS.includes('zsh')) {
+      // `zsh -f` reads no startup file: one planted in the child's HOME (the
+      // scratch directory) would otherwise run before every span.
+      writeFileSync(join(dir, '.zshenv'), 'touch RC_RAN\n', 'utf8');
+      expect(runUnder('zsh', 'true', dir).touched, 'zsh read a startup file').toEqual([]);
+      rmSync(join(dir, '.zshenv'));
+      // The shape the two shells disagree on, as its own control: an unquoted
+      // `(` after a JSON-quoted `$( )` stops bash at a syntax error, and zsh
+      // runs the substitution before it reports the bad pattern.
+      const disagreement = 'echo "x$(touch OWNED)" (us-east-1)';
+      expect(runUnder('bash', disagreement, dir).touched, 'bash ran past the `(`').toEqual([]);
+      expect(runUnder('zsh', disagreement, dir).touched, 'zsh stopped at the `(`').toEqual([
+        'OWNED',
+      ]);
+    }
+    // Every control runs under EACH shell on its own: a union would let one
+    // shell's working control hide the other's dead one.
+    for (const shell of PASTE_SHELLS) {
+      for (const payload of [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD]) {
+        const { label, value, flipped } = payload;
+        const control =
+          'control' in payload ? payload.control : flipped ? `echo it's ${value}` : `echo ${value}`;
+        expect(
+          runUnder(shell, control, dir).touched,
+          `the ${label} control did not run under ${shell}`
+        ).toContain('OWNED');
+      }
       expect(
-        filesTouchedBy(`[ "$(type -P ${verb})" -ef "$HOME/../bin/${verb}" ] && touch OWNED`, dir),
-        `${verb} does not resolve to the stub first on PATH`
-      ).toEqual(['OWNED']);
+        runUnder(shell, 'cdkd state show <stack> region', dir).touched,
+        `the redirection control did not truncate its decoy under ${shell}`
+      ).toEqual(['region']);
+      // The population is spelled out here, not read off `STUBBED_VERBS`: a
+      // verb dropped from that list would otherwise drop its own control.
+      // `type -P` is bash's PATH-only lookup, `whence -p` is zsh's.
+      const lookup = shell === 'zsh' ? 'whence -p' : 'type -P';
+      for (const verb of ['cdkd', 'aws']) {
+        expect(
+          runUnder(
+            shell,
+            `[ "$(${lookup} ${verb})" -ef "$HOME/../bin/${verb}" ] && touch OWNED`,
+            dir
+          ).touched,
+          `${verb} does not resolve to the stub first on PATH under ${shell}`
+        ).toEqual(['OWNED']);
+        // The verb marker: an invocation through the function AND through the
+        // PATH stub (`command` skips the function) reports `verbRan`, and a
+        // span naming the verb as an argument does not.
+        for (const invocation of [`${verb} state show x`, `command ${verb} state show x`]) {
+          expect(
+            runUnder(shell, invocation, dir),
+            `${invocation} did not report its verb under ${shell}`
+          ).toEqual({ touched: [], verbRan: true });
+        }
+        expect(
+          runUnder(shell, `echo ${verb} state show x`, dir),
+          `echo ${verb} reported a verb under ${shell}`
+        ).toEqual({ touched: [], verbRan: false });
+      }
     }
     return fn(dir);
   } finally {

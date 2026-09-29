@@ -107,6 +107,7 @@ import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import { displayIdent, displayStackName } from '../../../src/utils/display-safe.js';
 import {
   PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
   withPasteDir,
 } from '../utils/paste-harness.js';
@@ -1328,4 +1329,22 @@ describe('a record value in events prose is never inside cdkd quotes (go-to-k/cd
       }
     });
   }, 120_000);
+
+  // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): one EXPECTED FAILURE
+  // per row, each removed as its source fix lands. A block that displays an
+  // untrusted value carries no pasteable command; measured on the tree that
+  // added these cases, each site below still does.
+  for (const site of [
+    'EVENTS_NOT_FOUND',
+    'prune pruned runs',
+    'prune removed empty index',
+  ]) {
+    it.fails(`S1 ${site}: no block that displays a payload also carries a pasteable command`, async () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = (await messagesFor(value)).find((m) => m.site === site)?.message;
+        expect(message, `${site}: ${value}`).toBeDefined();
+        expectNoCommandBesideDisplay(message!, value);
+      }
+    });
+  }
 });

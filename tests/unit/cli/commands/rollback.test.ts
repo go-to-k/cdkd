@@ -86,6 +86,7 @@ import {
 import { CdkdError, PartialFailureError } from '../../../../src/utils/error-handler.js';
 import {
   PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
   spansThatRun,
   withPasteDir,
@@ -3452,6 +3453,23 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
       }
     });
   }, 120_000);
+
+  // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): one EXPECTED FAILURE
+  // per row, each removed as its source fix lands. A block that displays an
+  // untrusted value carries no pasteable command; measured on the tree that
+  // added these cases, each site below still does.
+  for (const site of [
+    'divergent record region',
+    'nothing to roll back',
+  ]) {
+    it.fails(`S1 ${site}: no block that displays a payload also carries a pasteable command`, async () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = (await messagesFor(value))[site];
+        expect(message, `${site}: ${value}`).toBeDefined();
+        expectNoCommandBesideDisplay(message!, value);
+      }
+    });
+  }
 
   it('CONTROL: the pre-fix hand-quoted spelling runs the embedded-quote payload', () => {
     // Proves the harness sees the class this block fences: the same prompt

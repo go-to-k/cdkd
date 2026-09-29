@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { setStdinIsTty } from '../../stdin-tty.js';
 import {
   PASTE_PAYLOADS,
+  PASTE_SHELLS,
   expectOnlyDisplayResidual,
   spansThatRun,
   withPasteDir,
@@ -347,9 +348,13 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
       expect(lines(warnSpy)).toContain('No state found for stack S in us-east-1, skipping');
     });
 
-    it('no pasted span of a hostile --stack-region skip line runs anything', async () => {
-      // The ` (` after the name stops a pasted line before the name's `$( )`
-      // residual can run beside `--stack-region` (go-to-k/cdkd#3950).
+    it('a hostile --stack-region skip line runs only its display residual', async () => {
+      // CLASSIFIED harness-only (go-to-k/cdkd#3950, 11:51Z rule): the block
+      // carries no pasteable command. `--stack-region eu-west-1` echoes the
+      // flag the operator passed, as context; it is not a remedy telling them
+      // what to run. Under bash the ` (` after the name stops a pasted line
+      // before the name's `$( )` runs; under zsh it does not, so the display
+      // residual is what is asserted.
       const messages: Array<{ value: string; message: string }> = [];
       for (const value of HOSTILE) {
         warnSpy.mockClear();
@@ -361,7 +366,12 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
       withPasteDir((dir) => {
         for (const { value, message } of messages) {
           expect(message, value).toContain(`Skipping ${JSON.stringify(value)} (no state record`);
-          expect(spansThatRun(message, dir), value).toEqual([]);
+          const ran = expectOnlyDisplayResidual(message, dir, value);
+          // Under zsh the `$( )` and backtick families DO run past the ` (`,
+          // so a residual that stopped reaching zsh cannot pass as inert.
+          if (PASTE_SHELLS.includes('zsh') && /\$\(|`/.test(value)) {
+            expect(ran.length, `zsh ran nothing for ${value}`).toBeGreaterThan(0);
+          }
         }
       });
     }, 120_000);
