@@ -333,6 +333,57 @@ function isFoldableMetricsEntry(entry: unknown): boolean {
   );
 }
 
+/**
+ * The metrics `EnableMetricsCollection` is KNOWN to enable when it is sent a
+ * `Granularity` and no `Metrics` (go-to-k/cdkd#4021), sorted. Primary source:
+ * observed on real AWS on 2026-09-28 in us-east-1 — a fresh group with no warm
+ * pool, enabled with no `Metrics`, reported these 25 in `EnabledMetrics`.
+ * Secondary source: the `EnableMetricsCollectionType.Metrics` documentation of
+ * `@aws-sdk/client-auto-scaling` 3.1140.0 ("If you specify Granularity and
+ * don't specify any metrics, all metrics are enabled"), which lists 20 and
+ * omits the four `*Retained*` names and `WarmPoolMinSize`. AWS can add more, so
+ * this is a LOWER bound: `canonicalizeDriftPair` treats a readback holding all
+ * of these (and possibly more) as ALL.
+ */
+export const ALL_GROUP_METRICS: readonly string[] = [
+  'GroupAndWarmPoolDesiredCapacity',
+  'GroupAndWarmPoolTotalCapacity',
+  'GroupDesiredCapacity',
+  'GroupInServiceCapacity',
+  'GroupInServiceInstances',
+  'GroupMaxSize',
+  'GroupMinSize',
+  'GroupPendingCapacity',
+  'GroupPendingInstances',
+  'GroupStandbyCapacity',
+  'GroupStandbyInstances',
+  'GroupTerminatingCapacity',
+  'GroupTerminatingInstances',
+  'GroupTerminatingRetainedCapacity',
+  'GroupTerminatingRetainedInstances',
+  'GroupTotalCapacity',
+  'GroupTotalInstances',
+  'WarmPoolDesiredCapacity',
+  'WarmPoolMinSize',
+  'WarmPoolPendingCapacity',
+  'WarmPoolPendingRetainedCapacity',
+  'WarmPoolTerminatingCapacity',
+  'WarmPoolTerminatingRetainedCapacity',
+  'WarmPoolTotalCapacity',
+  'WarmPoolWarmedCapacity',
+];
+
+/**
+ * A metric list naming every {@link ALL_GROUP_METRICS} entry, which create and
+ * update send AS ALL (no `Metrics`) rather than as that list (#4021): several
+ * of those names are observed, not documented as accepted by the API, and "no
+ * metrics" is AWS's own spelling of all. This applies to a template that
+ * lists all of them too, which then also enables any metric AWS adds later.
+ */
+function holdsAllKnownMetrics(metrics: readonly string[]): boolean {
+  return ALL_GROUP_METRICS.every((m) => metrics.includes(m));
+}
+
 /** One granularity of a folded `MetricsCollection`; `Metrics` absent = ALL. */
 type FoldedMetrics = { Granularity: string; Metrics?: string[] };
 
@@ -457,6 +508,55 @@ export class ASGProvider implements ResourceProvider {
     const folded = foldMetricsCollection(metrics);
     if (JSON.stringify(folded) === JSON.stringify(metrics)) return properties;
     return { ...properties, [key]: folded };
+  }
+
+  /**
+   * Compare an ALL `MetricsCollection` baseline against the per-metric readback
+   * (go-to-k/cdkd#4021). An entry with no `Metrics` enables every metric, but
+   * `EnabledMetrics` lists them one by one, so a template-shaped ALL baseline
+   * (a record deployed before observed-capture) never matched.
+   *
+   * The rule is a SUPERSET test, keyed on the BASELINE saying ALL: that
+   * granularity's baseline becomes the readback's metrics UNION
+   * {@link ALL_GROUP_METRICS}. A readback holding every known metric therefore
+   * compares clean (a metric AWS adds later included), and one missing a known
+   * metric differs by exactly the missing ones. Residual: an out-of-band
+   * disable of a metric cdkd does not yet list is NOT reported.
+   *
+   * Only the baseline is rewritten, and only by ADDING metrics, so `--accept`
+   * (which writes the readback side) persists nothing new, and `--revert`
+   * (which sends this baseline as its desired side) can only Enable, never
+   * Disable a metric the readback holds; `applyMetricsCollectionDiff` sends
+   * that Enable as ALL (no `Metrics`), not as the expanded list.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const key = 'MetricsCollection';
+    const unchanged = { baseline, aws };
+    if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') return unchanged;
+    const recorded = baseline[key];
+    if (!Array.isArray(recorded) || !recorded.every(isFoldableMetricsEntry)) return unchanged;
+    const folded = foldMetricsCollection(recorded);
+    if (folded.every((e) => e.Metrics !== undefined)) return unchanged;
+    const live = aws[key];
+    const liveBy = new Map<string, string[]>();
+    if (Array.isArray(live) && live.every(isFoldableMetricsEntry)) {
+      for (const e of foldMetricsCollection(live)) liveBy.set(e.Granularity, e.Metrics ?? []);
+    }
+    const expanded = folded.map((e) =>
+      e.Metrics !== undefined
+        ? e
+        : {
+            Granularity: e.Granularity,
+            Metrics: [
+              ...new Set([...ALL_GROUP_METRICS, ...(liveBy.get(e.Granularity) ?? [])]),
+            ].sort(),
+          }
+    );
+    return { baseline: { ...baseline, [key]: expanded }, aws };
   }
 
   private getClient(): AutoScalingClient {
@@ -664,7 +764,9 @@ export class ASGProvider implements ResourceProvider {
             new EnableMetricsCollectionCommand({
               AutoScalingGroupName: groupName,
               Granularity: entry.Granularity,
-              ...(entry.Metrics && entry.Metrics.length > 0 ? { Metrics: entry.Metrics } : {}),
+              ...(entry.Metrics && entry.Metrics.length > 0 && !holdsAllKnownMetrics(entry.Metrics)
+                ? { Metrics: entry.Metrics }
+                : {}),
             })
           );
         }
@@ -2125,11 +2227,15 @@ export class ASGProvider implements ResourceProvider {
       );
     };
     const enable = async (granularity: string, metrics: string[] | undefined): Promise<void> => {
+      // Never as ALL once this call has sent a Disable: ALL would re-enable what
+      // that Disable just removed (a metric beyond the known list included).
+      const asAll =
+        metrics === undefined || (disables.length === 0 && holdsAllKnownMetrics(metrics));
       await this.getClient().send(
         new EnableMetricsCollectionCommand({
           AutoScalingGroupName: physicalId,
           Granularity: granularity,
-          ...(metrics !== undefined ? { Metrics: metrics } : {}),
+          ...(asAll ? {} : { Metrics: metrics }),
         })
       );
     };

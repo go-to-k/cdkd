@@ -47,7 +47,14 @@ against live AWS.
    retained-entries warning printed, and the record healed to `[tg1.arn]`
    (issue #3948: a malformed recorded attachment list is read live,
    ADD-only). `tg2` is then detached before destroy.
-7. `cdkd destroy CdkdDriftRevertVpcExample --force` — clean up.
+7. Issue #4021: the ASG's `MetricsCollection` is ALL (an entry with no
+   metrics). Right after the first deploy, assert the live `EnabledMetrics`
+   holds every metric cdkd knows ALL enables (a superset: AWS may add more) and
+   the deploy-time observed capture equals the live set; on a legacy record (no
+   `observedProperties`, ALL in `properties`) `cdkd drift` must report no
+   `MetricsCollection` change, and after `GroupMinSize` is disabled out of band
+   it must report one. The planted record is restored, by the trap on failure.
+8. `cdkd destroy CdkdDriftRevertVpcExample --force` — clean up.
 
 ## Run
 
