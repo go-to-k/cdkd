@@ -1315,6 +1315,14 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       'Alias production of *** serves production traffic',
     ],
     [
+      // The layer name before its version: a Lambda ARN other than a function's.
+      'AWS::Lambda::LayerVersion',
+      { LayerName: OTHER_EXPR },
+      'arn:aws:lambda:us-east-1:123456789012:layer:bob-private-layer:3',
+      'Layer version bob-private-layer:3 is in use',
+      'Layer version ***:3 is in use',
+    ],
+    [
       'AWS::SecretsManager::Secret',
       { Name: OTHER_EXPR },
       'arn:aws:secretsmanager:us-east-1:123456789012:secret:bob-private-secret-AbC123',

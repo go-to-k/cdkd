@@ -927,7 +927,8 @@ const OTHER_SPELLED_NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
  *   `...:stateMachine:<name>`, Lambda `...:function:<name>:<version>`), and
  *   for Secrets Manager that segment without its random `-XXXXXX` suffix;
  * - where the name is NOT last (#4135): Lambda's segment after `function:`
- *   (before a `:<version>` / `:<alias>` qualifier, which is then not taken)
+ *   or `layer:` (before a `:<version>` / `:<alias>` qualifier, which is then
+ *   not taken; any other Lambda ARN takes the generic arm)
  *   and ELBv2's before its `/<hash>` (`loadbalancer/app/<name>/<hash>`,
  *   `targetgroup/<name>/<hash>`);
  * - a `|` composite's last segment (`<poolId>|<Username>`).
@@ -952,13 +953,13 @@ function idNameSegments(id: string): string[] {
     // sits before a `/<hash>`.
     const positioned =
       service === 'lambda'
-        ? /^function:([^:]+)/.exec(resource)
+        ? /^(?:function|layer):([^:]+)/.exec(resource)
         : service === 'elasticloadbalancing'
           ? /^(?:loadbalancer\/(?:app|net|gwy)|targetgroup)\/([^/]+)\//.exec(resource)
           : null;
     if (positioned !== null) {
       segments.add(positioned[1]!);
-    } else if (service !== 'lambda') {
+    } else {
       const last = resource
         .split(/[/:]/)
         .reverse()
