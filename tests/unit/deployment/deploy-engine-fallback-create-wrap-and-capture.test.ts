@@ -461,7 +461,8 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
         'MyResource',
         TYPE,
         { Mode: 'b' },
-        undefined
+        // The capture follows cdkd's own write (issue #4112).
+        { afterOwnWrite: true }
       );
     });
 

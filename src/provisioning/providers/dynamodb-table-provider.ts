@@ -75,6 +75,8 @@ import {
   STREAM_POLICY_KEY,
   STREAM_TAGS_KEY,
   type StreamMemberOp,
+  declaredStreamPolicyMember,
+  declaredStreamTagsMember,
   planStreamMemberOps,
   reverseMapStreamPolicy,
   streamDeclaresPolicy,
@@ -106,6 +108,12 @@ import {
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import { maskDeep } from '../masked-retry-logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import {
+  isAmbiguousOutcomeError,
+  isThrottlingError,
+  isTransientServerError,
+} from '../../deployment/retryable-errors.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
   ResourceProvider,
@@ -116,6 +124,7 @@ import type {
   CreateContext,
   UpdateContext,
   SecretMasker,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 
 /**
@@ -6749,7 +6758,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const resp = await this.dynamoDBClient.send(
@@ -6834,7 +6844,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           physicalId,
           table.LatestStreamArn,
           properties?.['StreamSpecification'],
-          streamBlock
+          streamBlock,
+          context?.afterOwnWrite === true
         );
       }
       // Class 2 guard: GSI / LSI placeholders. AWS omits these blocks when
@@ -7133,6 +7144,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * can never equal. A member that really drifted costs those few seconds per
    * drift run.
    *
+   * `afterOwnWrite` (issue #4112): the read captures the baseline right after
+   * a successful create / update by this deploy, whose template declares the
+   * member. There a member still ABSENT when the schedule is spent, or a read
+   * that threw, keeps the DECLARED member instead of freezing "absent" into a
+   * baseline the settled stream can never equal. Only absence: a PRESENT
+   * answer that differs is recorded as read, since AWS may store a document
+   * in another spelling and the declared one would then never match. An
+   * update that sent no stream call keeps the declared member over an
+   * out-of-band removal too, which drift then reports against it. A thrown
+   * read keeps the declared member only when the failure is TRANSIENT
+   * ({@link isTransientStreamReadFailure}); a deterministic one (a role that
+   * may put but not read) fails the same way on every drift read, so keeping
+   * the declared member there would report a removal forever. And a read that
+   * throws after an earlier PRESENT answer records that answer, as a settled
+   * one would. Every other caller (drift, import, a refresh) believes the last
+   * answer, so a member that really is gone stays drift.
+   *
    * `cdkd drift --revert` replays through `update()`, where the read-back is
    * the PREVIOUS side and {@link planStreamMemberOps} derives the restore.
    */
@@ -7140,10 +7168,24 @@ export class DynamoDBTableProvider implements ResourceProvider {
     tableName: string,
     streamArn: string | undefined,
     desiredBlock: unknown,
-    streamBlock: Record<string, unknown>
+    streamBlock: Record<string, unknown>,
+    afterOwnWrite: boolean
   ): Promise<void> {
     if (streamArn === undefined || streamArn === '') return;
+    const keepDeclared = (member: 'ResourcePolicy' | 'Tags', why: string): void => {
+      const declared =
+        member === STREAM_POLICY_KEY
+          ? declaredStreamPolicyMember(desiredBlock)
+          : declaredStreamTagsMember(desiredBlock);
+      if (declared === undefined) return;
+      streamBlock[member] = declared;
+      this.logger.debug(
+        safeMsg`Kept the declared stream ${member} of ${tableName} in the baseline captured after its write: ${why}`
+      );
+    };
     if (streamDeclaresPolicy(desiredBlock)) {
+      // The last answer the schedule got, for a read that throws after it.
+      let lastPolicy: string | undefined;
       try {
         const livePolicy = await this.reAskUntilSettled(
           async () => {
@@ -7151,23 +7193,35 @@ export class DynamoDBTableProvider implements ResourceProvider {
               const response = await this.dynamoDBClient.send(
                 new GetResourcePolicyCommand({ ResourceArn: streamArn })
               );
-              return response.Policy;
+              lastPolicy = response.Policy;
             } catch (err) {
-              if (err instanceof PolicyNotFoundException) return undefined;
-              throw err;
+              if (!(err instanceof PolicyNotFoundException)) throw err;
+              lastPolicy = undefined;
             }
+            return lastPolicy;
           },
           (answer) => streamPolicyMatchesDeclared(answer, desiredBlock)
         );
-        const member = reverseMapStreamPolicy(livePolicy, desiredBlock);
-        if (member !== undefined) streamBlock[STREAM_POLICY_KEY] = member;
+        if (afterOwnWrite && (livePolicy === undefined || livePolicy === '')) {
+          keepDeclared(STREAM_POLICY_KEY, 'the read still found no policy');
+        } else {
+          const member = reverseMapStreamPolicy(livePolicy, desiredBlock);
+          if (member !== undefined) streamBlock[STREAM_POLICY_KEY] = member;
+        }
       } catch (err) {
         this.logger.debug(
           `Could not read the stream ResourcePolicy for ${tableName}: ${describeAwsFailure(err).detail}`
         );
+        if (afterOwnWrite && lastPolicy !== undefined && lastPolicy !== '') {
+          const member = reverseMapStreamPolicy(lastPolicy, desiredBlock);
+          if (member !== undefined) streamBlock[STREAM_POLICY_KEY] = member;
+        } else if (afterOwnWrite && isTransientStreamReadFailure(err)) {
+          keepDeclared(STREAM_POLICY_KEY, 'the read failed transiently');
+        }
       }
     }
     if (streamDeclaresTags(desiredBlock)) {
+      let lastTags: Array<{ Key: string; Value: string }> = [];
       try {
         const listOnce = async (): Promise<Array<{ Key: string; Value: string }>> => {
           const liveTags: Tag[] = [];
@@ -7179,20 +7233,28 @@ export class DynamoDBTableProvider implements ResourceProvider {
             liveTags.push(...(response.Tags ?? []));
             nextToken = response.NextToken;
           } while (nextToken !== undefined && nextToken !== '');
-          return normalizeAwsTagsToCfn(liveTags);
+          lastTags = normalizeAwsTagsToCfn(liveTags);
+          return lastTags;
         };
         const tags = await this.reAskUntilSettled(listOnce, (answer) =>
           streamTagsMatchDeclared(answer, desiredBlock)
         );
         // A DECLARED empty list reads back as one, so it equals itself.
         const declared = (desiredBlock as Record<string, unknown>)[STREAM_TAGS_KEY];
-        if (tags.length > 0 || (Array.isArray(declared) && declared.length === 0)) {
+        if (afterOwnWrite && tags.length === 0 && !streamTagsMatchDeclared(tags, desiredBlock)) {
+          keepDeclared(STREAM_TAGS_KEY, 'the read still found no tags');
+        } else if (tags.length > 0 || (Array.isArray(declared) && declared.length === 0)) {
           streamBlock[STREAM_TAGS_KEY] = tags;
         }
       } catch (err) {
         this.logger.debug(
           `Could not read the stream Tags for ${tableName}: ${describeAwsFailure(err).detail}`
         );
+        if (afterOwnWrite && lastTags.length > 0) {
+          streamBlock[STREAM_TAGS_KEY] = lastTags;
+        } else if (afterOwnWrite && isTransientStreamReadFailure(err)) {
+          keepDeclared(STREAM_TAGS_KEY, 'the read failed transiently');
+        }
       }
     }
   }
@@ -7234,4 +7296,22 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * A stream-member read failure worth keeping the declared member over (issue
+ * #4112): a throttle, a 5xx, a socket failure, or `ResourceNotFoundException` on a stream arn
+ * the write just addressed. Deliberately NOT `isRetryableTransientError`,
+ * whose message patterns count `not authorized to perform` as IAM propagation:
+ * a role that can put but never read would then freeze a member every drift
+ * read drops.
+ */
+function isTransientStreamReadFailure(err: unknown): boolean {
+  return (
+    isThrottlingError(err) ||
+    isTransientServerError(err) ||
+    // A socket reset / timeout the SDK's own retries did not absorb.
+    isAmbiguousOutcomeError(err) ||
+    err instanceof ResourceNotFoundException
+  );
 }

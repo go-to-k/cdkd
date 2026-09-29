@@ -6969,7 +6969,7 @@ export class DeployEngine {
           result.physicalId,
           resourceType,
           resolvedProps,
-          createCaptureSiblings
+          { ...createCaptureSiblings, afterOwnWrite: true }
         );
 
         if (counts) counts.created++;
@@ -8270,7 +8270,8 @@ export class DeployEngine {
             logicalId,
             createResult.physicalId,
             resourceType,
-            resolvedProps
+            resolvedProps,
+            { afterOwnWrite: true }
           );
 
           if (counts) counts.updated++;
@@ -9216,7 +9217,7 @@ export class DeployEngine {
               result.physicalId,
               resourceType,
               resolvedProps,
-              updateCaptureSiblings
+              { ...updateCaptureSiblings, afterOwnWrite: true }
             );
           }
 

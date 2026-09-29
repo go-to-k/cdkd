@@ -152,11 +152,18 @@ describe('DeployEngine - IAM principal observed-capture sibling context', () => 
    * Last, not first: when a resource pre-exists in loaded state, the
    * auto-refresh path fires its own capture before the CREATE/UPDATE
    * capture — the deploy-driven capture is the later one.
+   *
+   * Every deploy-driven capture follows cdkd's own write, so it carries
+   * `afterOwnWrite` (issue #4112): asserted and split off here, leaving the
+   * SIBLING context this file is about (`undefined` when there is none).
    */
   function captureContextFor(logicalId: string): unknown {
     const calls = mockProvider.readCurrentState.mock.calls;
     for (let i = calls.length - 1; i >= 0; i--) {
-      if (calls[i]![1] === logicalId) return calls[i]![4];
+      if (calls[i]![1] !== logicalId) continue;
+      const { afterOwnWrite, ...rest } = (calls[i]![4] ?? {}) as Record<string, unknown>;
+      expect(afterOwnWrite).toBe(true);
+      return Object.keys(rest).length === 0 ? undefined : rest;
     }
     return undefined;
   }
@@ -511,6 +518,64 @@ describe('DeployEngine - IAM principal observed-capture sibling context', () => 
         },
       },
     });
+  });
+
+  it("marks the capture after a create-only REPLACEMENT as following cdkd's own write (issue #4112)", async () => {
+    mockStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 1,
+        region: 'us-east-1',
+        stackName,
+        resources: {
+          Topic: {
+            physicalId: 'phys-Topic-old',
+            resourceType: 'AWS::SNS::Topic',
+            properties: { TopicName: 'old-name' },
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: 'etag-old',
+    });
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'new-name' } },
+      },
+    };
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Topic',
+          {
+            logicalId: 'Topic',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::SNS::Topic',
+            desiredProperties: { TopicName: 'new-name' },
+            currentProperties: { TopicName: 'old-name' },
+            propertyChanges: [
+              {
+                path: 'TopicName',
+                oldValue: 'old-name',
+                newValue: 'new-name',
+                requiresReplacement: true,
+              },
+            ],
+          },
+        ],
+      ])
+    );
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['Topic']]);
+
+    await makeEngine().deploy(stackName, template);
+
+    // The engine REPLACED it (create the new one), not an in-place update().
+    expect(mockProvider.create).toHaveBeenCalledTimes(1);
+    expect(mockProvider.update).not.toHaveBeenCalled();
+    const capture = mockProvider.readCurrentState.mock.calls.find(
+      (call) => call[0] === 'phys-Topic'
+    );
+    expect(capture?.[4]).toEqual({ afterOwnWrite: true });
   });
 
   it('passes no capture context for a non-IAM-principal resource (S3 bucket)', async () => {
