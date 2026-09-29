@@ -11432,7 +11432,10 @@ export class IntrinsicFunctionResolver {
         // applied. Masking the RAW value also reaches the whole-value arm,
         // which has no {@link MIN_NEEDLE_LENGTH} floor.
         throw new Error(
-          `Fn::GetAZs: ${quotedRender(this.displayMasked(this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'", 'the value (not shown: it is not a plain identifier)')} is not a valid AWS ` +
+          // `the value` LEADS the clause: after `: ` a quoted value would be
+          // the pasted clause's COMMAND, and `QUOTABLE_RENDER` admits a path
+          // (`'/usr/bin/touch' is not …` runs touch; go-to-k/cdkd#4100 M2).
+          `Fn::GetAZs: the value ${quotedRender(this.displayMasked(this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
             `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
             `not build a client from it.`
         );

@@ -870,13 +870,13 @@ describe('issue #3150: Fn::GetAZs region, transformed by canonicalizeRegion', ()
 
   it('an invalid region carrying a twin prints as ***', async () => {
     const message = await messageOf({ 'Fn::GetAZs': sub('BAD_${P}') }, makeContext());
-    expect(message).toMatch(/^Fn::GetAZs: '\*\*\*' is not a valid AWS region name/);
+    expect(message).toMatch(/^Fn::GetAZs: the value '\*\*\*' is not a valid AWS region name/);
   });
 
   it('CONTROL: an invalid unrecorded region prints verbatim', async () => {
     const message = await messageOf({ 'Fn::GetAZs': plain('BAD_${P}') }, makeContext());
     expect(message).toMatch(
-      new RegExp(`^Fn::GetAZs: 'BAD_${UNRECORDED}' is not a valid AWS region name`)
+      new RegExp(`^Fn::GetAZs: the value 'BAD_${UNRECORDED}' is not a valid AWS region name`)
     );
   });
 });

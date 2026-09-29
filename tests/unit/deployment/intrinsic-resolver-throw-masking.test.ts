@@ -716,7 +716,7 @@ describe('#2827 — the two TRUNCATING region gates mask BEFORE they truncate', 
     expect(message, 'and no PREFIX of it either — truncation is the whole hazard').not.toContain(
       LONG_PASSWORD.slice(0, 64)
     );
-    expect(message).toContain("Fn::GetAZs: '***' is not a valid AWS region name");
+    expect(message).toContain("Fn::GetAZs: the value '***' is not a valid AWS region name");
   });
 
   it('Fn::GetStackOutput: the same, at its own region gate', async () => {
@@ -759,7 +759,7 @@ describe('#2827 — the two TRUNCATING region gates mask BEFORE they truncate', 
       message,
       'nor a 64-char prefix of it, since this site truncates'
     ).not.toContain(SPLIT_PASSWORD_STRIPPED.slice(0, 64));
-    expect(message).toContain("Fn::GetAZs: '***' is not a valid AWS region name");
+    expect(message).toContain("Fn::GetAZs: the value '***' is not a valid AWS region name");
   });
 
   it('CONTROL: an UNRECORDED bad region is still shown, truncated as before', async () => {

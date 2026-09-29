@@ -1,3 +1,5 @@
+import { chmodSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vite-plus/test';
 
 import {
@@ -9,7 +11,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { ROLE_ARN_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
-import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { PASTE_PAYLOADS, filesTouchedBy, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 /**
  * go-to-k/cdkd#3950: the resolver's messages wrapped a `displayMasked` /
@@ -298,6 +300,24 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
     withPasteDir((dir) => {
       expect(spansThatRun(message, dir)).toEqual([]);
     });
+  });
+
+  it('pastes nothing from the Fn::GetAZs refusal whose quoted value is a path', async () => {
+    // A path `QUOTABLE_RENDER` admits, so it is QUOTED. Right after `: `, the
+    // old `'/usr/bin/touch' is not …` made the value the pasted clause's
+    // command (go-to-k/cdkd#4100 review M2). `./x` is SEEDED as an executable
+    // that creates a file, so the relative case has a command to run; the
+    // control proves the old clause runs it.
+    for (const value of ['/usr/bin/touch', './x']) {
+      const message = await refusal({ 'Fn::GetAZs': value });
+      expect(message, value).toContain(`Fn::GetAZs: the value '${value}' is not a valid AWS region name`);
+      withPasteDir((dir) => {
+        writeFileSync(join(dir, 'x'), '#!/bin/sh\ntouch OWNED\n', 'utf8');
+        chmodSync(join(dir, 'x'), 0o755);
+        expect(filesTouchedBy(`'${value}' is not a valid AWS region name`, dir), value).not.toEqual([]);
+        expect(spansThatRun(message, dir), value).toEqual([]);
+      });
+    }
   });
 
   it('keeps an empty mapping name visible as an empty quote', async () => {
