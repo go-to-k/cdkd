@@ -116,6 +116,18 @@ export interface DeleteContext {
    * the user passed `--skip-final-snapshot`.
    */
   finalSnapshotIdentifier?: string;
+
+  /**
+   * The resource's recorded `DeletionPolicy`, from a caller that knows it:
+   * `cdkd destroy` / `cdkd state destroy` and the deploy engine's DELETE of a
+   * resource removed from the template. Other delete sites leave it absent.
+   *
+   * Read by `CloudControlProvider.delete` alone (issue #3993): an RDS cluster
+   * or instance leaves Cloud Control's snapshotting delete handler only on an
+   * EXPLICIT `Delete`. Absent keeps the handler, whose snapshot matches
+   * CloudFormation's `Snapshot` default for these types.
+   */
+  deletionPolicy?: string | undefined;
 }
 
 /**

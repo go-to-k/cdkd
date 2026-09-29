@@ -33,6 +33,7 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { slowCcOperationTimeoutMs } from '../slow-cc-operation-timeouts.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
   ProtectionFlipRegistry,
@@ -42,6 +43,34 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
 } from './deletion-protection-compensation.js';
+
+/**
+ * How long a cluster or instance delete waits for the resource to be gone:
+ * the Cloud Control route's own DELETE floor for these types, which a Cloud
+ * Control-routed delete now reaches through this provider (issue #3993).
+ */
+const RDS_DELETE_WAIT_MS = Math.max(
+  1_800_000,
+  slowCcOperationTimeoutMs('AWS::RDS::DBCluster', 'DELETE'),
+  slowCcOperationTimeoutMs('AWS::RDS::DBInstance', 'DELETE')
+);
+
+/**
+ * The recorded `DeleteAutomatedBackups` as a `DeleteDBCluster` /
+ * `DeleteDBInstance` input member (issue #3993), as CloudFormation's delete
+ * handler sends the template value. A Cloud Control-routed cluster or
+ * instance is deleted through this provider, so a template keeping automated
+ * backups with `false` keeps them. Only a boolean or its CFn string spelling
+ * is sent; anything else leaves AWS's default (delete them).
+ */
+function deleteAutomatedBackupsInput(properties: Record<string, unknown> | undefined): {
+  DeleteAutomatedBackups?: boolean;
+} {
+  const value = properties?.['DeleteAutomatedBackups'];
+  if (value === true || value === 'true') return { DeleteAutomatedBackups: true };
+  if (value === false || value === 'false') return { DeleteAutomatedBackups: false };
+  return {};
+}
 
 /**
  * AWS RDS Provider
@@ -57,7 +86,7 @@ import {
  */
 export class RDSProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
-  private readonly providerRegion = ambientRegion();
+  private readonly providerRegion: string | undefined;
   private logger = getLogger().child('RDSProvider');
   /**
    * What a `--remove-protection` flip did, per resource, across the outer
@@ -164,7 +193,7 @@ export class RDSProvider implements ResourceProvider {
       new Map<string, string>([
         [
           'DeleteAutomatedBackups',
-          'delete-time lifecycle flag not threaded through cdkd destroy; final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
+          'delete-time flag, sent on the delete when the record carries it (issue #3993); kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
         ],
       ]),
     ],
@@ -181,11 +210,20 @@ export class RDSProvider implements ResourceProvider {
         ],
         [
           'DeleteAutomatedBackups',
-          'delete-time lifecycle flag not threaded through cdkd destroy; final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
+          'delete-time flag, sent on the delete when the record carries it (issue #3993); kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
         ],
       ]),
     ],
   ]);
+
+  /**
+   * `region` pins the client instead of the ambient region: the Cloud Control
+   * delete delegation (issue #3993) passes its OWN client's region, which is
+   * the one its recorded-region pre-flight vetted.
+   */
+  constructor(options?: { region?: string }) {
+    this.providerRegion = options?.region ?? ambientRegion();
+  }
 
   private getClient(): RDSClient {
     if (!this.rdsClient) {
@@ -273,7 +311,7 @@ export class RDSProvider implements ResourceProvider {
       case 'AWS::RDS::DBSubnetGroup':
         return this.deleteDBSubnetGroup(logicalId, physicalId, resourceType, context);
       case 'AWS::RDS::DBCluster':
-        return this.deleteDBCluster(logicalId, physicalId, resourceType, context);
+        return this.deleteDBCluster(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::RDS::DBInstance':
         return this.deleteDBInstance(logicalId, physicalId, resourceType, properties, context);
       default:
@@ -827,12 +865,14 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
+    properties: Record<string, unknown> | undefined,
     context?: DeleteContext
   ): Promise<void> {
     await deleteWithProtectionCompensation({
       registry: this.protectionFlips,
       key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
-      run: (flip) => this.deleteDBClusterOnce(logicalId, physicalId, resourceType, context, flip),
+      run: (flip) =>
+        this.deleteDBClusterOnce(logicalId, physicalId, resourceType, properties, context, flip),
       compensation: {
         logicalId,
         physicalId,
@@ -863,6 +903,7 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
+    properties: Record<string, unknown> | undefined,
     context: DeleteContext | undefined,
     flip: ProtectionFlipRecord
   ): Promise<void> {
@@ -913,6 +954,7 @@ export class RDSProvider implements ResourceProvider {
           ...(finalSnapshotId
             ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
             : { SkipFinalSnapshot: true }),
+          ...deleteAutomatedBackupsInput(properties),
         })
       );
       // AWS took the delete: a later throw is the WAIT failing, and the guard
@@ -927,7 +969,7 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`Successfully initiated deletion of DBCluster ${logicalId}`);
 
       // Wait for cluster to be fully deleted
-      await this.waitForClusterDeleted(physicalId);
+      await this.waitForClusterDeleted(physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
@@ -1346,6 +1388,7 @@ export class RDSProvider implements ResourceProvider {
           ...(finalSnapshotId
             ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
             : { SkipFinalSnapshot: true }),
+          ...deleteAutomatedBackupsInput(properties),
         })
       );
       // AWS took the delete: see `deleteDBClusterOnce`.
@@ -1359,7 +1402,7 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`Successfully initiated deletion of DBInstance ${logicalId}`);
 
       // Wait for instance to be fully deleted
-      await this.waitForInstanceDeleted(physicalId);
+      await this.waitForInstanceDeleted(physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();

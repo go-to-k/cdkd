@@ -144,6 +144,18 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(mockCreatePreDeleteFinalSnapshot).not.toHaveBeenCalled();
   });
 
+  it('issue #3993: threads the recorded DeletionPolicy into the DeleteContext', async () => {
+    const state = makeState({ Db: res({ deletionPolicy: 'Delete' }) });
+    await runDestroyForStack('TestStack', state, makeCtx());
+    expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
+  });
+
+  it('issue #3993: an absent recorded policy stays absent in the DeleteContext', async () => {
+    const state = makeState({ Db: res() });
+    await runDestroyForStack('TestStack', state, makeCtx());
+    expect(deleteContextArg()).not.toHaveProperty('deletionPolicy');
+  });
+
   it('AWS::EC2::Volume: pre-delete snapshot dispatcher runs before the plain delete', async () => {
     const state = makeState({
       Vol: res({ resourceType: 'AWS::EC2::Volume', deletionPolicy: 'Snapshot' }),

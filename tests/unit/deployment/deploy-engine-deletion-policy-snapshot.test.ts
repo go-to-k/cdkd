@@ -256,6 +256,30 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     );
   });
 
+  it('issue #3993: threads the recorded DeletionPolicy into the DeleteContext', async () => {
+    await invokeDelete(makeEngine(), 'AWS::RDS::DBCluster', { deletionPolicy: 'Delete' });
+    expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
+  });
+
+  it('issue #3993: pre-v5 state threads the template DeletionPolicy; none stays absent', async () => {
+    await invokeDelete(
+      makeEngine(),
+      'AWS::RDS::DBCluster',
+      {},
+      {
+        Resources: {
+          Target: { Type: 'AWS::RDS::DBCluster', Properties: {}, DeletionPolicy: 'Delete' },
+        },
+      } as unknown as CloudFormationTemplate
+    );
+    expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
+  });
+
+  it('issue #3993: no recorded or template policy leaves deletionPolicy absent', async () => {
+    await invokeDelete(makeEngine(), 'AWS::RDS::DBCluster', {});
+    expect(deleteContextArg()).not.toHaveProperty('deletionPolicy');
+  });
+
   it('falls back to the template DeletionPolicy for pre-v5 state with no recorded policy', async () => {
     await invokeDelete(
       makeEngine(),

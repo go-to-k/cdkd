@@ -1778,6 +1778,9 @@ export async function runDestroyForStack(
                       ...(state.region !== undefined && { expectedRegion: state.region }),
                       ...(ctx.removeProtection === true && { removeProtection: true }),
                       ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+                      ...(resource.deletionPolicy !== undefined && {
+                        deletionPolicy: resource.deletionPolicy,
+                      }),
                     }
                   );
                   // Assign INSIDE the loop, not after it: the loop can

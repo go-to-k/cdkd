@@ -33,8 +33,8 @@ bootstrap-free-region	2026-09-01T14:50:59Z	PASS	240	verify.sh	PR#2398 arm 2/6: b
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
 budgets	2026-09-24T22:46:12Z	PASS	53	verify.sh	rc ok, 0 orphans (#3663)
 cache-streaming	2026-09-27T15:53:36Z	PASS	536	verify.sh	rc ok, orph clean (log-group sweep added)
-cc-api-fallback	2026-09-28T18:08:21Z	PASS	45	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
-cc-api-fallback-transitions	2026-09-28T18:10:10Z	PASS	100	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
+cc-api-fallback	2026-09-29T03:32:02Z	PASS	60	verify.sh	rc ok, orph clean (#3993 PR #4031)
+cc-api-fallback-transitions	2026-09-29T03:32:02Z	PASS	126	verify.sh	rc ok, orph clean (#3993 PR #4031)
 cc-getatt-readback	2026-09-19T20:26:58Z	PASS	110	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, CC protection flip over 5 types, 5 deleted 0 errors; orphan scan clean (state/RDS+DocDB global/NeptuneGraph/VerifiedPermissions)
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
@@ -248,12 +248,12 @@ outputs-only-export	2026-09-28T07:22:06Z	PASS	115	verify.sh	#3885 log-group swee
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-09-28T18:41:38Z	PASS	4796	verify.sh	rc ok, orph clean after hand-deleting the #3993 CC final snapshot (#2204 PR #3956 phase 2b; fix-reverted run RED at the readback)
-rds-dbinstance-backfill	2026-09-24T00:27:58Z	PASS	729	verify.sh	rc ok, orph clean (#1981 lane)
-rds-full-stack	2026-09-24T22:46:12Z	PASS	752	verify.sh	rc ok, 0 orphans (#3663)
+rds-aurora	2026-09-29T03:32:02Z	PASS	4734	verify.sh	rc ok, orph clean (#3993 PR #4031: no manual snapshot of the CC-routed L2 cluster)
+rds-dbinstance-backfill	2026-09-29T03:32:02Z	PASS	627	verify.sh	rc ok, orph clean (#3993 PR #4031)
+rds-full-stack	2026-09-29T03:32:02Z	PASS	566	verify.sh	rc ok, orph clean (#3993 PR #4031; fix-reverted run RED at the new no-manual-snapshot assertion, its snapshot deleted)
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc ok, orph clean; PR #3668 head
-recreate-via-cc-api	2026-09-28T18:12:06Z	PASS	110	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
+recreate-via-cc-api	2026-09-29T03:32:02Z	PASS	120	verify.sh	rc ok, orph clean (#3993 PR #4031)
 recreate-via-sdk-provider	2026-09-25T09:51:57Z	PASS	95	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph

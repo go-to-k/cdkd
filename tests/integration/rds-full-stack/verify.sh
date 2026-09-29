@@ -34,6 +34,11 @@
 #      only a real-AWS comparison can catch a wrong one. Pre-fix, this
 #      reference did not resolve wrongly: it HARD-FAILED the deploy on the
 #      resolver's *Arn shape guard (a subnet group's physicalId is its NAME).
+#   6. NO FINAL SNAPSHOT (issue 3993): the DBInstance is routed via Cloud
+#      Control (asserted), whose registry delete handler took an untagged
+#      `rds-snapshot-<random>` on every delete despite DeletionPolicy: Delete.
+#      The run fails if any manual snapshot of the instance was created after
+#      it began; cleanup deletes any such snapshot either way.
 #
 # This integ is SLOW by RDS nature (~5-10 min create, a few min delete) -
 # that is acceptable and expected.
@@ -103,6 +108,23 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DB_INSTANCE_ID=""
 DB_SUBNET_GROUP=""
 DB_PARAM_GROUP=""
+# Issue 3993: when this run began (UTC, second precision, the prefix AWS's
+# SnapshotCreateTime is compared on).
+RUN_START=""
+
+# Print the manual snapshots of instance $1 created at or after RUN_START, one
+# id per line. Fails (rc != 0) when the listing or a timestamp is unreadable,
+# so a caller cannot read an error as "none".
+this_run_instance_snapshots() { # usage: this_run_instance_snapshots <instance id>
+  local out
+  out=$(aws rds describe-db-snapshots --db-instance-identifier "$1" \
+    --snapshot-type manual --region "${REGION}" --output json) || return 1
+  echo "${out}" | jq -r --arg start "${RUN_START}" '
+    .DBSnapshots
+    | if all(.[]; (.SnapshotCreateTime // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(\\+00:00|Z)$"))
+      then .[] | select(.SnapshotCreateTime[0:19] >= $start) | .DBSnapshotIdentifier
+      else error("unreadable SnapshotCreateTime") end'
+}
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS RDS resources"
@@ -147,6 +169,19 @@ cleanup() {
       --db-parameter-group-name "${DB_PARAM_GROUP}" \
       --region "${REGION}" >/dev/null 2>&1
   fi
+  # Issue 3993: a manual snapshot of the instance this run created (the leak,
+  # or the reverted-fix proof). Older ones are not this run's to delete.
+  if [ -n "${DB_INSTANCE_ID}" ] && [ -n "${RUN_START}" ]; then
+    if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${DB_INSTANCE_ID}"); then
+      echo "    WARN: cleanup could not list the manual snapshots of ${DB_INSTANCE_ID}; check for a leftover rds-snapshot-* by hand" >&2
+      SNAPS_TO_CLEAN=""
+    fi
+    for snap in ${SNAPS_TO_CLEAN}; do
+      aws rds wait db-snapshot-available --db-snapshot-identifier "${snap}" --region "${REGION}"
+      aws rds delete-db-snapshot --db-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
+        && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+    done
+  fi
   # The SSM parameters have deterministic names - clean them directly.
   aws ssm delete-parameter \
     --name "${SSM_PARAM_NAME}" \
@@ -185,7 +220,8 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
-echo "==> Phase 1: deploy with the local binary (RDS create is ~5-10 min - be patient)"
+RUN_START=$(date -u +%Y-%m-%dT%H:%M:%S)
+echo "==> Phase 1: deploy with the local binary (RDS create is ~5-10 min - be patient; run start ${RUN_START}Z)"
 if ! node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -225,6 +261,22 @@ fi
 echo "    resolved DBInstance:      ${DB_INSTANCE_ID}"
 echo "    resolved DBSubnetGroup:   ${DB_SUBNET_GROUP}"
 echo "    resolved DBParameterGroup: ${DB_PARAM_GROUP}"
+
+# Issue 3993 premise: the DBInstance must be Cloud Control-routed, or the
+# no-snapshot assertion after the destroy tests the SDK path it always passed.
+DB_INSTANCE_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.provisionedBy // "sdk"] | first // ""')
+if [ "${DB_INSTANCE_PROVISIONED_BY}" != "cc-api" ]; then
+  echo "FAIL: issue 3993 premise: the DBInstance is routed via '${DB_INSTANCE_PROVISIONED_BY}', expected 'cc-api'" >&2
+  exit 1
+fi
+echo "    OK: DBInstance is provisionedBy=cc-api (issue 3993 premise)"
+# The fix applies to a RECORDED `DeletionPolicy: Delete` only; an absent one
+# keeps the Cloud Control handler's snapshot on purpose.
+DB_INSTANCE_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.deletionPolicy // "absent"] | first // ""')
+if [ "${DB_INSTANCE_DELETION_POLICY}" != "Delete" ]; then
+  echo "FAIL: issue 3993 premise: the DBInstance records DeletionPolicy '${DB_INSTANCE_DELETION_POLICY}', expected 'Delete'" >&2
+  exit 1
+fi
 
 # --- Assertion 1: the instance exists + uses our groups ---------------
 INSTANCE=$(aws rds describe-db-instances \
@@ -374,6 +426,18 @@ echo "    OK: SSM parameter is gone"
 # The issue-1824 DBSubnetGroupArn consumer must be gone too.
 assert_gone "SSM parameter ${SSM_SUBNET_ARN_PARAM_NAME} still exists after destroy" aws ssm get-parameter --name "${SSM_SUBNET_ARN_PARAM_NAME}" --region "${REGION}"
 echo "    OK: SSM DBSubnetGroupArn parameter is gone"
+
+# Issue 3993: before the fix the Cloud Control delete handler left a manual
+# final snapshot of the instance here.
+if ! LEAKED_SNAPSHOTS=$(this_run_instance_snapshots "${DB_INSTANCE_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${DB_INSTANCE_ID}" >&2
+  exit 1
+fi
+if [ -n "${LEAKED_SNAPSHOTS}" ]; then
+  echo "FAIL: destroying the Cloud Control-routed ${DB_INSTANCE_ID} (DeletionPolicy: Delete) left manual snapshot(s): $(printf '%s ' ${LEAKED_SNAPSHOTS})(issue 3993)" >&2
+  exit 1
+fi
+echo "    OK: no manual snapshot of ${DB_INSTANCE_ID} since ${RUN_START}Z (issue 3993)"
 
 echo ""
 echo "[verify] PASS"

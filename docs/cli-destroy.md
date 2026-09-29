@@ -248,6 +248,23 @@ Cloud Control's `DeleteResource` has no final-snapshot parameter, so cdkd
 cannot honor the policy on that route. Snapshot manually, then re-run with
 `--skip-final-snapshot`.
 
+### No snapshot under `DeletionPolicy: Delete`
+
+The Cloud Control delete handler for `AWS::RDS::DBCluster` and
+`AWS::RDS::DBInstance` takes an untagged `rds-snapshot-<random>` final snapshot
+on every delete, because Cloud Control cannot tell it the policy. So a
+Cloud-Control-routed cluster or instance whose recorded policy is `Delete` is
+deleted with RDS `DeleteDBCluster` / `DeleteDBInstance`
+(`SkipFinalSnapshot=true`) instead, by `cdkd destroy`, `cdkd state destroy` and
+a deploy that removes it from the template. A `DeleteAutomatedBackups` in the
+template is sent with the delete.
+
+| Case | Delete |
+| --- | --- |
+| No `DeletionPolicy` | Through Cloud Control, which leaves its snapshot (CloudFormation's default for these types is `Snapshot`). |
+| A cluster that sets `GlobalClusterIdentifier` | Through Cloud Control, whose handler removes it from the global cluster first; cdkd warns that the snapshot is left behind. |
+| A replacement or rollback delete | Through Cloud Control, which leaves its snapshot. |
+
 ### Which policy cdkd reads
 
 The recorded `state.deletionPolicy` (schema v5+) is what the destroy paths

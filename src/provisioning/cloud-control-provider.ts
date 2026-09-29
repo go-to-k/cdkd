@@ -53,7 +53,7 @@ import { shellQuote } from '../state/lock-contention-message.js';
 // imports are types, so a new edge INTO it cannot close a cycle.
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
@@ -675,6 +675,43 @@ function isNoSuchBucketError(error: unknown): boolean {
   return (error as { name?: string } | undefined)?.name === 'NoSuchBucket';
 }
 
+/** The types {@link deletesThroughRdsSdk} can hand to `RDSProvider`. */
+const RDS_SDK_DELETE_TYPES: ReadonlySet<string> = new Set([
+  'AWS::RDS::DBCluster',
+  'AWS::RDS::DBInstance',
+]);
+
+/**
+ * Whether `CloudControlProvider.delete` hands this resource to the SDK
+ * `RDSProvider` instead of issuing `DeleteResource` (issue #3993), once the
+ * caller has passed an explicit `DeletionPolicy: Delete`.
+ *
+ * The RDS registry handlers take a final snapshot whenever the handler
+ * request's `snapshotRequested` is null (`BooleanUtils.isNotFalse`), and
+ * Cloud Control never sets it; `DeleteResource` has no parameter that does.
+ * CloudFormation sends `false` for `DeletionPolicy: Delete`, so the snapshot
+ * exists only on the Cloud Control route.
+ *
+ * A DBCluster whose recorded `GlobalClusterIdentifier` is set stays on Cloud
+ * Control: its handler removes the member from the global cluster before the
+ * delete, which the SDK provider does not do. ANY other value there (an
+ * unresolved object, a number) keeps it too, since only a blank or absent one
+ * is known not to name a global cluster.
+ */
+export function deletesThroughRdsSdk(
+  resourceType: string,
+  properties: Record<string, unknown> | undefined
+): boolean {
+  if (resourceType === 'AWS::RDS::DBInstance') return true;
+  if (resourceType !== 'AWS::RDS::DBCluster') return false;
+  const globalCluster = properties?.['GlobalClusterIdentifier'];
+  return (
+    globalCluster === undefined ||
+    globalCluster === null ||
+    (typeof globalCluster === 'string' && globalCluster.trim() === '')
+  );
+}
+
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
@@ -720,6 +757,16 @@ export class CloudControlProvider implements ResourceProvider {
    * is dead wall clock on a destroy that is failing anyway.
    */
   private readonly PROTECTION_FLIP_TRANSIENT_GRACE_MS = 10_000;
+
+  /**
+   * The SDK provider an `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` delete
+   * goes through (issue #3993; see {@link deletesThroughRdsSdk}), and the
+   * region its client is pinned to. Kept across calls, not built per call:
+   * its `--remove-protection` compensation registry latches across a
+   * re-entered delete (`deletion-protection-compensation.ts`), which a fresh
+   * provider per call would forget.
+   */
+  private rdsDeleteDelegate: { region: string; provider: ResourceProvider } | undefined;
 
   constructor() {
     const awsClients = getAwsClients();
@@ -1248,8 +1295,9 @@ export class CloudControlProvider implements ResourceProvider {
     // `cloud-control-s3-delete-identity-2283.test.ts`, which injects a
     // `ccProtectionProperty` entry for the bucket type so the delete has a
     // real `UpdateResourceCommand` to issue first -- a test-side injection,
-    // with no production routing changed. The two SDK delegations above
-    // (`AWS::AutoScaling::AutoScalingGroup`, `AWS::EC2::Instance`) remain
+    // with no production routing changed. The SDK delegations below
+    // (`AWS::AutoScaling::AutoScalingGroup`, `AWS::EC2::Instance`, and the
+    // `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` pair of issue #3993) remain
     // UNFENCED, and deliberately so: fencing them would mean putting a
     // delegating type into `CC_DELETE_IDENTITY_CHECKED_TYPES`, which is a
     // routing change rather than a test.
@@ -1321,6 +1369,35 @@ export class CloudControlProvider implements ResourceProvider {
       return withIndeterminateGuard(
         await asgProvider.delete(logicalId, physicalId, resourceType, _properties, context),
         indeterminateGuard
+      );
+    }
+
+    // Issue #3993: under an explicit `DeletionPolicy: Delete`, an RDS cluster
+    // or instance is deleted through the SDK `RDSProvider`, never
+    // `DeleteResource`. The registry handler takes a final snapshot whenever
+    // the request's `snapshotRequested` is null, and Cloud Control always
+    // leaves it null, so every Cloud Control delete left an untagged
+    // `rds-snapshot-<random>` behind. An ABSENT policy keeps the handler: its
+    // snapshot is what CloudFormation's `Snapshot` default for these types
+    // takes. `DeletionPolicy: Snapshot` never reaches here (the fail-closed
+    // above).
+    if (context?.deletionPolicy === 'Delete' && RDS_SDK_DELETE_TYPES.has(resourceType)) {
+      if (deletesThroughRdsSdk(resourceType, _properties)) {
+        const delegate = await this.rdsDeleteDelegateInCcRegion(
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        return withIndeterminateGuard(
+          await delegate.delete(logicalId, physicalId, resourceType, _properties, context),
+          indeterminateGuard
+        );
+      }
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}) sets GlobalClusterIdentifier, so it is deleted through ` +
+          `Cloud Control, whose handler removes it from the global cluster first. That handler ` +
+          safeMsg`also takes a manual final snapshot of ${physicalId}, which cdkd does not record; ` +
+          `delete it yourself if you do not want it.`
       );
     }
 
@@ -1510,6 +1587,48 @@ export class CloudControlProvider implements ResourceProvider {
         this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
       }
     }
+  }
+
+  /**
+   * The RDS delete delegate (issue #3993), its client pinned to THIS
+   * provider's Cloud Control client region: the region the recorded-region
+   * pre-flight vetted. An ambient-region client can differ from it (a command
+   * that swaps the AWS clients without the environment), and RDS identifiers
+   * are names, so a delete there could remove a same-named resource in
+   * another region and then read its absence as success. An unresolvable
+   * region is refused, as `ec2ClientInCcRegion` does for a volume.
+   */
+  private async rdsDeleteDelegateInCcRegion(
+    resourceType: string,
+    logicalId: string,
+    physicalId: string
+  ): Promise<ResourceProvider> {
+    let ccRegion: string | undefined;
+    try {
+      ccRegion = canonicalizeRegion((await this.cloudControlClient.config.region())?.trim());
+    } catch {
+      ccRegion = undefined;
+    }
+    if (ccRegion === undefined || ccRegion === '') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Refusing to delete ${logicalId} (${resourceType}, ${physicalId}): cdkd could not ` +
+            `resolve the Cloud Control client's region, so it cannot show the RDS delete ` +
+            `would reach this resource. Re-run with --region set to the stack's region.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    if (this.rdsDeleteDelegate === undefined || this.rdsDeleteDelegate.region !== ccRegion) {
+      const { RDSProvider } = await import('./providers/rds-provider.js');
+      this.rdsDeleteDelegate = {
+        region: ccRegion,
+        provider: new RDSProvider({ region: ccRegion }),
+      };
+    }
+    return this.rdsDeleteDelegate.provider;
   }
 
   /**

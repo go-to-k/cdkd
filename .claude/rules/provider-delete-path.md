@@ -14,7 +14,9 @@ Region check: [layout-provisioning.md](layout-provisioning.md). Masking: [provid
 - `forceDataDelete` — consent to destroy contained DATA, set only by the engine's replacement / recreate deletes under `--force-stateful-recreation`, never by `cdkd destroy`. Gate force-cleanup on it or a template-borne opt-in (`data-delete-intent.ts`), else surface AWS's not-empty error. Never unconditional — verify CFn's behavior by live A/B.
 - `finalSnapshotIdentifier` — `DeletionPolicy: Snapshot`; the provider MUST create that snapshot. Only `ATOMIC_FINAL_SNAPSHOT_TYPES` receive the field, `PRE_DELETE_SNAPSHOT_TYPES` are snapshotted engine-side, and other Snapshot-tagged shapes are refused before any delete. Extend those sets (`final-snapshot.ts`); never ignore the field.
 
-A delete bag CAN carry plaintext and `delete()` has no masker: thread one before logging a property value (issue #2007).
+- `deletionPolicy` — set only by destroy and the deploy's template-removal DELETE; absent elsewhere, so never read absence as `Delete` ([#3993](https://github.com/go-to-k/cdkd/issues/3993)).
+
+A delete bag CAN carry plaintext and `delete()` has no masker: thread one before logging a property value (#2007).
 
 ## Outcomes
 

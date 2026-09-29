@@ -9102,6 +9102,7 @@ export class DeployEngine {
                 {
                   expectedRegion: this.stackRegion,
                   ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+                  ...(deletionPolicy !== undefined && { deletionPolicy }),
                 }
               ),
             logicalId,
