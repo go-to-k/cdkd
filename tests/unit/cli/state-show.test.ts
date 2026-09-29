@@ -309,6 +309,21 @@ describe('cdkd state show', () => {
     expect(out).toMatch(/Lock: locked by bob@host:5678, expired \d+s ago/);
   });
 
+  it('names an owner-less lock an unnamed holder (go-to-k/cdkd#4115)', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('MyStack'));
+    mockGetState.mockResolvedValue(makeState({ stackName: 'MyStack' }));
+    mockGetLockInfo.mockResolvedValue({
+      owner: '',
+      operation: 'deploy',
+      timestamp: Date.now() - 60_000,
+      expiresAt: Date.now() + 600_000,
+    });
+
+    const out = await runStateShow(['show', 'MyStack']);
+
+    expect(out).toContain('Lock: locked by an unnamed holder (operation: deploy), expires in ');
+  });
+
   it('describes an owner or operation that would make a live lock read as expired (go-to-k/cdkd#4109)', async () => {
     const forged = 'alice@host:1 (operation: deploy), expired 3h ago';
     for (const [lock, expected] of [

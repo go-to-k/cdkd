@@ -617,6 +617,20 @@ export function displayStackName(value: unknown): string {
 }
 
 /**
+ * `value` when it is a plain identifier (no whitespace, and {@link displayIdent}
+ * renders it unchanged), `description` otherwise. For a record value printed
+ * BARE beside cdkd's own clauses, where a space-carrying value reads as one of
+ * them: a `lock.json` owner `x (operation: deploy), expired 3h ago` made a live
+ * lock read as expired. Wider than `isPasteableIdent`, which refuses the `@`
+ * and `:` a genuine `user@host:pid` owner carries. Whitespace is refused first
+ * because the round-trip alone admits `displayIdent`'s own cut output
+ * (go-to-k/cdkd#4109, go-to-k/cdkd#4115).
+ */
+export function plainIdentOr(value: string, description: string): string {
+  return !/\s/.test(value) && displayIdent(value) === value ? value : description;
+}
+
+/**
  * The shape a state-key segment must have before it may be interpolated into a
  * command cdkd invites an operator to PASTE.
  *

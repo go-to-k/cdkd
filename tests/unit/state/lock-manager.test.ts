@@ -1171,6 +1171,44 @@ describe('LockManager — a lock record whose fields cannot be coerced (issue #2
     expect(warning).not.toContain('crashed or was suspended');
   });
 
+  it('describes an owner that would restate the deadline in the takeover warning (go-to-k/cdkd#4115)', async () => {
+    s3Client.send.mockRejectedValueOnce(
+      new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} })
+    );
+    s3Client.send.mockResolvedValueOnce({
+      ETag: '"expired-etag"',
+      ...lockBody({ owner: 'x, expires in 9m', expiresAt: Date.now() - 60_000 }),
+    });
+    s3Client.send.mockResolvedValueOnce({}); // DeleteObject
+    s3Client.send.mockResolvedValueOnce({}); // PutObject — the re-acquisition
+    childLoggerMock.warn.mockClear();
+
+    await expect(lockManager.acquireLock('test-stack', 'us-east-1', 'new-user')).resolves.toBe(true);
+
+    const warning = childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(warning).toContain('owner: a lock owner that is not a plain identifier, expired ');
+    expect(warning).not.toContain('expires in 9m');
+  });
+
+  it('describes an owner or operation in the force-release warning (go-to-k/cdkd#4115)', async () => {
+    for (const [fields, expected] of [
+      [{ owner: 'x, expired: true' }, 'owner: a lock owner that is not a plain identifier, operation: deploy, expired: false'],
+      [{ operation: 'x, expired: true' }, 'owner: u@h:1, operation: a lock operation that is not a plain identifier, expired: false'],
+    ] as const) {
+      childLoggerMock.warn.mockClear();
+      s3Client.send
+        .mockResolvedValueOnce(lockBody({ operation: 'deploy', expiresAt: Date.now() + 60_000, ...fields }))
+        .mockResolvedValueOnce({}); // DeleteObject
+
+      // eslint-disable-next-line no-await-in-loop
+      await lockManager.forceReleaseLock('test-stack', 'us-east-1');
+
+      const warning = childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+      expect(warning).toContain(expected);
+      expect(warning).not.toContain('expired: true');
+    }
+  });
+
   it('keeps the crashed-owner explanation and a real duration for a FINITE past deadline', async () => {
     // The discriminating twin: the finite arm must not have been swept into
     // the unknown-deadline wording.
