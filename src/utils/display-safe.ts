@@ -310,8 +310,10 @@ export const IDENT_MAX_CODE_POINTS = 255;
  *    terminal WRAPPING a long quoted name can put a visual line that reads
  *    exactly like a genuine row on screen with both quotes scrolled out of
  *    view -- reachable well under either cap, so the raise does not create the
- *    class, but the cap does not close it either. Tracked on
- *    go-to-k/cdkd#3179. What the cap still does is bound the PAYLOAD.
+ *    class, but the cap does not close it either (go-to-k/cdkd#3179). Beside a
+ *    labelled pasteable line the answer is to not print a non-plain value at
+ *    all (`plainOrDescribed`, go-to-k/cdkd#3760). What the cap still does is
+ *    bound the PAYLOAD.
  *
  * Its second GRAMMAR (it already has several call sites) is a failed Stage's
  * path
@@ -432,19 +434,14 @@ export function displayAwsMessage(value: unknown): string {
  * with one renders quoted; those characters are exactly the boundary-forging
  * set, so they stay out.
  *
- * `,` STAYS IN THIS SET, and issue #3164's review measured the cost of that.
- * Two callers join rendered values with `', '`, and the separator is split
- * across the value and the formatter -- a name ending in a bare `,` is followed
- * by the formatter's own ` (region)`, so `ProdStack,` renders
- * `ProdStack, (us-east-1)` and a two-target list reads as THREE entries. Only
- * `state refresh-observed` prints a count beside its list; `state orphan`
- * prints none, which is the worse of the two. Removing `,` would close that, and was tried:
- * it regresses a LEGITIMATE value class, because an IAM role name allows
- * `[\w+=,.@-]`, so `arn:aws:iam::…:role/cdkd-deploy+role,x=y` is a real role
- * ARN this module renders and `display-safe.test.ts` pins as an identity shape.
- * Quoting every such ARN to disambiguate a list that does not contain ARNs is
- * the wrong trade, so the joined-list ambiguity is recorded on
- * go-to-k/cdkd#3179 rather than paid for here.
+ * `,` STAYS IN THIS SET. Removing it was tried and regresses a LEGITIMATE
+ * value class: an IAM role name allows `[\w+=,.@-]`, so
+ * `arn:aws:iam::…:role/cdkd-deploy+role,x=y` is a real role ARN this module
+ * renders and `display-safe.test.ts` pins as an identity shape. A bare `,` is
+ * a boundary character only where cdkd JOINS values with `', '` — there
+ * `ProdStack,` beside the formatter's own ` (region)` reads as an extra entry —
+ * so the fix sits at the JOIN: `displayIdent`'s `listMember` option
+ * (go-to-k/cdkd#3179).
  */
 const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
 
@@ -497,6 +494,12 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  *    character. `src/state/lock-contention-message.ts` reached the same rule
  *    first, for the same reason.
  *
+ * `listMember` is for a value cdkd joins into a `', '`-separated list: a bare
+ * `,` then reads as a separator, so a value carrying one takes the boundary
+ * too. Off by default because a role ARN legitimately carries one (see
+ * `PLAIN_IDENT`); no stack name or region does, so a legitimate list member
+ * still renders byte-identically.
+ *
  * A caller comparing the result against the input (the `--orphan <id>` remedy
  * prints its id only when this function is the identity on it) inherits all
  * three: a quoted, cut or fallback rendering is never pasted as a command
@@ -506,7 +509,10 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  * argument), and NOT for free-form text (an SDK error message legitimately
  * carries spaces and non-ASCII; it takes `displaySafe()` directly).
  */
-export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }): string {
+export function displayIdent(
+  value: unknown,
+  opts?: { maxCodePoints?: number; listMember?: boolean }
+): string {
   // Evaluate the input ONCE. Two calls would read `value.toString()` twice, and
   // a non-deterministic one then re-opens the very spoof rule 3 exists to
   // close: `{ toString: () => n++ === 0 ? 'ProdStack ' : 'ProdStack' }` renders
@@ -542,7 +548,8 @@ export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }):
   // sanitized, read once above -- so neither a non-string nor a
   // non-deterministic `toString` can make the two operands disagree.
   const altered = clean !== raw;
-  const shown = !altered && PLAIN_IDENT.test(text) ? text : JSON.stringify(text);
+  const plain = PLAIN_IDENT.test(text) && !(opts?.listMember === true && text.includes(','));
+  const shown = !altered && plain ? text : JSON.stringify(text);
   // `clean` is ASCII here, so `.length` counts characters.
   return truncated
     ? `${shown} [cut: ${clean.length - text.length} more characters withheld]`

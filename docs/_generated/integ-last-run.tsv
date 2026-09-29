@@ -77,7 +77,7 @@ deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	241	verify.sh	#3455 fix round
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
 deployment-events	2026-09-28T17:37:19Z	PASS	45	verify.sh	rc ok, orph clean (#3950 lane B)
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
-destroy-interrupt	2026-09-28T14:53:31Z	PASS	401	verify.sh	rc ok, orph clean; Phase 1c state destroy --all refusal (PR #3987)
+destroy-interrupt	2026-09-29T03:31:30Z	PASS	397	verify.sh	rc ok, orph clean (pre-existing HandlerFn log group swept); No state found for stack(s) remedy on own line (PR #4004)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-24T22:46:12Z	PASS	109	verify.sh	rc ok, 0 orphans (#3663)
 docdb-neptune	2026-09-28T17:20:47Z	PASS	5463	verify.sh	rc ok, orph clean (#2204 PR #3956 step 3g; fix-reverted run RED at the readback)

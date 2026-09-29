@@ -28,6 +28,16 @@ const HOSTILE_REGION = `us-east-1\n${FORGED}`;
 /** Every C0 control, DEL, and the C1 range — what must not survive. */
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
+/**
+ * cdkd's OWN line break before a refusal's remedy (go-to-k/cdkd#3950: the
+ * remedy sits on its own line, away from the name). Removed before the
+ * control-character check, which is about what a VALUE carried in; the
+ * split-based checks below still see it.
+ */
+function withoutOwnBreak(message: string): string {
+  return message.replace(/\n(?=Run 'cdkd state list'|Re-run with --stack-region )/, ' ');
+}
+
 function messageOf(run: () => unknown): string {
   try {
     run();
@@ -52,7 +62,7 @@ describe('resolveSingleRegion refusals cannot forge a row (issue #3003)', () => 
 
     // The whole message, not the interpolated slice: a guard applied to one of
     // three interpolations would pass an assertion scoped to that one.
-    expect(message).not.toMatch(CONTROL);
+    expect(withoutOwnBreak(message)).not.toMatch(CONTROL);
     // The forged text must not begin a line. Asserted on the SPLIT rather than
     // as a substring, because the point is the newline, not the words — the
     // words are still there, on the same line as the region they followed.
@@ -75,7 +85,7 @@ describe('resolveSingleRegion refusals cannot forge a row (issue #3003)', () => 
       )
     );
 
-    expect(message).not.toMatch(CONTROL);
+    expect(withoutOwnBreak(message)).not.toMatch(CONTROL);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     expect(message).toContain('multiple regions');
   });
@@ -85,7 +95,7 @@ describe('resolveSingleRegion refusals cannot forge a row (issue #3003)', () => 
       resolveSingleRegion(`Ghost\n${FORGED}`, [{ stackName: 'Other', region: 'us-east-1' }], undefined)
     );
 
-    expect(message).not.toMatch(CONTROL);
+    expect(withoutOwnBreak(message)).not.toMatch(CONTROL);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     expect(message).toContain('Ghost');
   });
@@ -129,7 +139,7 @@ describe('resolveSingleRegion refusals cannot forge a row (issue #3003)', () => 
       )
     );
 
-    expect(message).not.toMatch(CONTROL);
+    expect(withoutOwnBreak(message)).not.toMatch(CONTROL);
     expect(message).toContain('(legacy)');
     expect(message).toContain('us-west-2');
   });
@@ -149,7 +159,7 @@ describe('resolveSingleRegion refusals cannot forge a row (issue #3003)', () => 
       )
     );
 
-    expect(message).not.toMatch(CONTROL);
+    expect(withoutOwnBreak(message)).not.toMatch(CONTROL);
     expect(message).not.toContain('regions: ,');
     expect(message).toContain('us-west-2');
     // The stand-in, not a dropped entry: both assertions above are satisfied by
