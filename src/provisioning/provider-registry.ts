@@ -243,6 +243,25 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
     },
   ],
   [
+    'AWS::Lambda::EventInvokeConfig',
+    {
+      // CC UPDATE always fails: the read handler injects empty
+      // `DestinationConfig.OnSuccess` / `OnFailure` objects the model then
+      // rejects (issue #4091, re-measured). A record pinned to cc-api could
+      // never be updated. Cloud Control CREATE works, so the mode costs the
+      // unrecognized-key route; and a schema refresh that lands a silent drop
+      // here must wire it in the provider, since the drop would auto-route to
+      // that broken UPDATE.
+      mode: 'cc-broken' as const,
+      physicalIdForm:
+        'both layers store `<FunctionName>|<Qualifier>`: the schema primaryIdentifier ' +
+        'is FunctionName + Qualifier and LambdaEventInvokeConfigProvider.create packs ' +
+        'the same two with `|`',
+      issue: 'https://github.com/go-to-k/cdkd/issues/4091',
+      integFixture: 'lambda-event-invoke-config-update',
+    },
+  ],
+  [
     'AWS::SNS::Topic',
     {
       // The first 'sdk-coverage' member (issue #2719). CC manages topics

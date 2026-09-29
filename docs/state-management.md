@@ -582,9 +582,10 @@ conditional the escape is:
 - **`'cc-broken'`** — Cloud Control cannot correctly manage the type at all, so
   staying pinned keeps a live bug alive. The escape is unconditional.
   `AWS::Scheduler::Schedule` (a schedule in a custom `ScheduleGroup` is
-  unaddressable via Cloud Control) and `AWS::RDS::DBProxyTargetGroup` (the
+  unaddressable via Cloud Control), `AWS::RDS::DBProxyTargetGroup` (the
   read and delete handlers cannot derive the proxy name from the
-  TargetGroupArn) are the members today.
+  TargetGroupArn) and `AWS::Lambda::EventInvokeConfig` (every Cloud Control
+  update fails validation) are the members today.
 - **`'sdk-coverage'`** — Cloud Control manages the type correctly and is merely
   slower; cdkd has since gained full property coverage. The escape is
   conditional on **this resource**: it happens only on a mutating deploy where

@@ -161,8 +161,9 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
 /**
  * SDK Provider for AWS AppSync resources
  *
- * CC API doesn't support Create for AWS::AppSync::GraphQLApi.
- * This provider uses the AppSync SDK directly.
+ * A direct AppSync SDK provider. Cloud Control manages AWS::AppSync::GraphQLApi
+ * correctly (create, update and delete re-measured for issue #4091), so it is
+ * NOT a `'cc-broken'` sticky exemption.
  *
  * Supported resource types:
  * - AWS::AppSync::GraphQLApi

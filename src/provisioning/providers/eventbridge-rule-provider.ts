@@ -50,8 +50,10 @@ interface RuleTarget {
  * AWS EventBridge Rule Provider
  *
  * Implements resource provisioning for AWS::Events::Rule using the EventBridge SDK.
- * This is required because Cloud Control API has a bug where creating a Rule with
- * Targets causes a Java NullPointerException.
+ * Cloud Control manages the type correctly, a Rule with Targets included
+ * (re-measured for issue #4091), so it is NOT a `'cc-broken'` sticky exemption;
+ * an earlier "CC create with Targets throws NullPointerException" note no longer
+ * held.
  */
 export class EventBridgeRuleProvider implements ResourceProvider {
   private eventBridgeClient: EventBridgeClient;

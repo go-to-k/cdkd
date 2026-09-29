@@ -396,6 +396,43 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   }
 
   /**
+   * Strip a `DestinationConfig.OnSuccess` / `OnFailure` that names no
+   * `Destination` from a drift comparison side, and `DestinationConfig`
+   * itself once nothing is left (issue #4091). Cloud Control's read handler
+   * injects those empty members, so an `observedProperties` bag captured
+   * while the resource was on Cloud Control carries them, while this
+   * provider's readback -- which reads a `'cc-broken'` record since the
+   * exemption -- never does. CloudFormation refuses such a member in a
+   * template, so stripping it drops nothing a user declared.
+   */
+  canonicalizeDriftProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    const dest = properties['DestinationConfig'];
+    if (dest === null || typeof dest !== 'object' || Array.isArray(dest)) return properties;
+    const members = dest as Record<string, unknown>;
+    const empty = (key: string): boolean => {
+      const m = members[key];
+      return (
+        m !== null &&
+        typeof m === 'object' &&
+        !Array.isArray(m) &&
+        (m as Record<string, unknown>)['Destination'] == null
+      );
+    };
+    const stripped = ['OnSuccess', 'OnFailure'].filter((key) => key in members && empty(key));
+    if (stripped.length === 0) return properties;
+    const kept = Object.fromEntries(
+      Object.entries(members).filter(([key]) => !stripped.includes(key))
+    );
+    const out = { ...properties };
+    if (Object.keys(kept).length === 0) delete out['DestinationConfig'];
+    else out['DestinationConfig'] = kept;
+    return out;
+  }
+
+  /**
    * Adopt an existing EventInvokeConfig into cdkd state.
    *
    * **Explicit override only.** The config attaches to a function/qualifier and
