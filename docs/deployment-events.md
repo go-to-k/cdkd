@@ -154,7 +154,7 @@ whose plaintext a run is known to have quoted — masking a later write does not
 un-persist an earlier one, and neither does deleting the stream
 ([earlier versions of it survive](#deleting-a-run-stream-does-not-remove-its-earlier-versions)).
 
-### Rendering: the human path sanitises, `--json` escapes
+### Rendering: the human path sanitises, JSON output escapes
 
 Events are read back with a plain `JSON.parse`, which restores whatever bytes
 the writer stored — and several fields are provider- or template-authored (a
@@ -297,7 +297,7 @@ cdkd events MyStack --stack-region us-east-1
   final lines (from an interrupted flush) are skipped, never hiding the
   rest of the stream.
 - `--format json` (or `--json`) emits the stored values as JSON, unsanitised
-  but escaped (see [Rendering](#rendering-the-human-path-sanitises---json-escapes)).
+  but escaped (see [Rendering](#rendering-the-human-path-sanitises-json-output-escapes)).
 - Region is auto-discovered from the `deployments/` key listing (not
   `state.json`), so it works for destroyed stacks too; `--stack-region`
   disambiguates when a stack has history in more than one region.
