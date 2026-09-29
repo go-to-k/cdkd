@@ -133,10 +133,22 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     const { functionName: recorded } = this.parsePhysicalId(physicalId);
     if (recorded === next || !sameLambdaFunctionAddress(recorded, next)) return;
     const arnOf = async (functionName: string): Promise<string | undefined> => {
-      const resp = await this.lambdaClient.send(
-        new GetFunctionCommand({ FunctionName: functionName })
-      );
-      return resp.Configuration?.FunctionArn?.replace(/:\$LATEST$/, '');
+      try {
+        const resp = await this.lambdaClient.send(
+          new GetFunctionCommand({ FunctionName: functionName })
+        );
+        return resp.Configuration?.FunctionArn?.replace(/:\$LATEST$/, '');
+      } catch (error) {
+        throw new ProvisioningError(
+          `Failed to update Lambda EventInvokeConfig ${logicalId}: could not resolve its ` +
+            `FunctionName to confirm the re-spelling names the same function: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
     };
     const [recordedArn, nextArn] = await Promise.all([arnOf(recorded), arnOf(next)]);
     if (recordedArn !== undefined && recordedArn === nextArn) return;
