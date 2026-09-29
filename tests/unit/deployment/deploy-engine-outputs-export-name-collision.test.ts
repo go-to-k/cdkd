@@ -101,10 +101,13 @@ const PUBLIC_B = 'beta-public-endpoint';
 const PLAINTEXT_SHORT = 'abc';
 const EXPR_SHORT = '{{resolve:secretsmanager:tiny:SecretString:pin:AWSCURRENT}}';
 // An `ssm` reference whose parameter Type came back unclassifiable: the resolver
-// resolves it WITH decryption but deliberately never PINS it (issue #1901), so
-// its cache-hit arm records nothing on a second resolution. Modelled below by
-// recording it exactly once per deploy — which is what makes the recording side
-// effect of the export-name resolution observable.
+// resolves it WITH decryption but deliberately never PINS it (issue #1901).
+// Since issue #1933 an unpinned value is not cached, so the real resolver
+// re-resolves and records it on EVERY pass. The mock below still records it
+// exactly once per deploy, the pre-#1933 model, kept because it is the
+// STRICTER fixture: the refusal must hold even when only the export-name
+// resolution recorded the plaintext, which is what makes that side effect
+// observable.
 const PLAINTEXT_UNPINNED = 'unpinned-securestring-value';
 const EXPR_UNPINNED = '{{resolve:ssm:/p/unclassifiable}}';
 // A NESTED pair: the short secret is a PREFIX of the long one, so masking them
@@ -123,7 +126,7 @@ const SECRET_BY_EXPRESSION: Record<string, string> = {
 
 /**
  * Expressions the mock records only on their FIRST resolution in a deploy —
- * the resolver's cache-hit behavior for a reference it cannot prove is secret.
+ * the pre-#1933 cache-hit behavior, kept as the stricter fixture (see above).
  */
 const RECORD_ONCE = new Set([EXPR_UNPINNED]);
 const alreadyRecorded = vi.hoisted(() => new Set<string>());
