@@ -30,31 +30,48 @@
  * and it was carried in review reports rather than in the code until a round
  * traded one divergence for two. Every row is pinned by a test on BOTH sides —
  * `deploy-engine-outputs-export-name-collision.test.ts` and
- * `analyzer/outputs-diff.test.ts` (the SecureString rows:
+ * `analyzer/outputs-diff.test.ts` (the pinned SecureString row:
  * `analyzer/outputs-diff-ssm-export-name-4056.test.ts`) — because a row tested
- * on one side only is how the last divergence shipped.
+ * on one side only is how the last divergence shipped. Two rows are NOT yet
+ * pinned on the diff side: the unpinned-SecureString intrinsic row (the code
+ * refuses: the skip pass keeps the token for any secure answer) and the
+ * plain-`ssm` LITERAL residual row.
  *
  * | `Export.Name` shape                            | deploy            | diff              |
  * |------------------------------------------------|-------------------|-------------------|
  * | intrinsic, substitutes a secretsmanager ref    | refuse (exact)    | refuse (token)    |
  * | intrinsic, substitutes a PINNED SecureString   | refuse (exact)    | refuse (token)    |
- * | intrinsic, substitutes an unpinned SecureString| refuse if recorded| refuse (token)    |
+ * | intrinsic, substitutes an unpinned SecureString| refuse (exact)    | refuse (token)    |
  * | LITERAL, spelled as a `{{resolve:...}}` token  | publish           | publish           |
- * | LITERAL, contains a recorded plaintext         | refuse            | decide from STATE |
- * | LITERAL, contains an unpinned `ssm:` plaintext | refuse if recorded| publish (residual)|
+ * | LITERAL, contains a recorded plaintext, and an | refuse            | decide from STATE |
+ * |   output value SPELLS secretsmanager/ssm-secure|                   |                   |
+ * | LITERAL, contains a recorded plaintext, and no | refuse            | publish (residual)|
+ * |   output value spells one (plain-`ssm` only)   |                   |                   |
  * | collides with a published output name          | refuse            | refuse            |
  *
- * The SecureString rows no longer diverge (issue
+ * The INTRINSIC SecureString rows no longer diverge (issue
  * [#4056](https://github.com/go-to-k/cdkd/issues/4056)): the diff refuses an
  * intrinsic alias whose RESOLVED name still carries a token of a service the
  * deploy resolves (`keepsSecretReferenceToken` in `outputs-diff.ts`), and its
  * `skipDynamicReferences` pass keeps a plain `{{resolve:ssm:...}}` token only
  * for a parameter the lookup finds secure, while a `String` one resolves to
- * its value. On RAW template text the spelling test still excludes a plain
- * `ssm:` token, since there it says nothing about the parameter's type. The one
- * remaining residual is a LITERAL name holding an unpinned `ssm:` plaintext:
- * the preview never substitutes one, so it cannot see it, and no plaintext
- * escapes (a reporting defect, not a disclosure).
+ * its value. The deploy refuses both pinned and unpinned exactly: since issue
+ * #1933 an unpinned value is re-resolved and recorded on every pass.
+ *
+ * Residuals, each a reporting defect rather than a disclosure (the preview
+ * never substitutes a plaintext):
+ *
+ * - A LITERAL name holding a plaintext is decided from STATE only when some
+ *   output value SPELLS `secretsmanager:` / `ssm-secure:` (`secretSourceKeys`,
+ *   a RAW-text spelling test, since on raw text a plain `ssm:` token says
+ *   nothing about the parameter's type). In a stack whose only secrets are
+ *   plain-`ssm` SecureStrings the preview publishes an alias the deploy
+ *   refuses: the last table row (issue
+ *   [#4143](https://github.com/go-to-k/cdkd/issues/4143)).
+ * - A plain-`ssm` verdict cached process-wide by token text makes the diff
+ *   refuse an alias the deploy publishes for a same-named `String` parameter
+ *   in another region (issue
+ *   [#4105](https://github.com/go-to-k/cdkd/issues/4105)).
  *
  * Two rows deserve their reason stated, because both look wrong in isolation:
  *
