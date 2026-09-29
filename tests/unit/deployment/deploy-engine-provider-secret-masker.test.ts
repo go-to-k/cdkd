@@ -253,6 +253,19 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
     expect(updateContext?.expectedRegion).toBeDefined();
   });
 
+  it("UPDATE: recordedAttributes is the updated record's own attributes (issue #4051)", async () => {
+    const template = primeUpdatePath();
+    const recorded = { RepositoryId: 'rid-4051', Arn: 'arn:recorded' };
+    const { state } = await mockStateBackend.getState!();
+    (state.resources['Pool'] as { attributes?: unknown }).attributes = recorded;
+    mockStateBackend.getState!.mockResolvedValue({ state, etag: 'etag-old' });
+
+    await makeEngine().deploy(stackName, template);
+
+    const updateContext = mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined;
+    expect(updateContext?.recordedAttributes).toEqual(recorded);
+  });
+
   it("UPDATE: expectedRegion follows the engine's stackRegion, not a constant (issue #2301)", async () => {
     // `eu-central-1` rather than `us-east-1`: the latter is this repo's
     // fallback region, so substituting the literal for `this.stackRegion` at
@@ -285,7 +298,7 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
 
     const updateContext = mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined;
     expect(updateContext).toBeDefined();
-    expect(Object.keys(updateContext ?? {}).sort()).toEqual(['expectedRegion', 'maskSecrets']);
+    expect(Object.keys(updateContext ?? {}).sort()).toEqual(['expectedRegion', 'maskSecrets', 'recordedAttributes']);
     // The sibling flag stays off for the same reason: this bag is a template,
     // not an AWS readback.
     expect(updateContext?.desiredFromAwsReadback).toBeUndefined();

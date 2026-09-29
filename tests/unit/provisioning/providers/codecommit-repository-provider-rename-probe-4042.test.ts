@@ -169,8 +169,10 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
     const err = await rejection(provider.update('Repo', OLD, TYPE, DESIRED, RECORDED));
 
     expect(err).toBeInstanceOf(ProvisioningError);
-    expect(err.message).toContain('its repository id is not the one this run renamed');
+    expect(err.message).toContain('its repository id is not the one cdkd holds for this resource');
     expect(err.message).toContain('nothing was sent to that repository');
+    // A holder KNOWN not to be this resource is never offered for re-adoption.
+    expect(err.message).not.toContain('cdkd import');
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(sentNames().filter((n) => WRITES.includes(n))).toEqual([]);
     expect(sentNames()).toEqual(['GetRepositoryCommand', 'GetRepositoryCommand']);
@@ -183,7 +185,7 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
 
     expect(err.message).toMatch(/^CodeCommit Repository Repo no longer exists under the name cdkd recorded/);
     expect(err.message).toContain('this run started no rename of this resource');
-    expect(err.message).toContain('first compare its repository id with the RepositoryId');
+    expect(err.message).toContain('its record holds no RepositoryId');
     // The recovery command, unwrapped, on its own line, last; the recorded
     // (old) name never appears.
     expect(err.message.endsWith(
@@ -222,7 +224,7 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
 
     const err = await rejection(provider.update('Repo', OLD, TYPE, DESIRED, RECORDED));
 
-    expect(err.message).toContain('its repository id is not the one this run renamed');
+    expect(err.message).toContain('its repository id is not the one cdkd holds for this resource');
     expect(sentNames()).toEqual([
       'GetRepositoryCommand',
       'UpdateRepositoryNameCommand',
@@ -314,5 +316,99 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
     const err = await rejection(provider.update('Repo', OLD, TYPE, DESIRED, RECORDED));
 
     expect(err.message).toContain('this run started no rename of this resource');
+  });
+});
+
+describe('CodeCommit rename-retry probe verifies against the RECORDED RepositoryId (#4051)', () => {
+  const recorded = (repositoryId?: string) => ({
+    recordedAttributes: repositoryId === undefined ? {} : { RepositoryId: repositoryId },
+  });
+
+  it('a fresh run adopts the repository under the new name when its id is the recorded one', async () => {
+    // An earlier deploy's rename landed and it stopped before recording the
+    // new name: this run holds no evidence of its own, the record does.
+    primeAccount({ oursUnder: NEW });
+
+    const result = await provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, recorded('id-ours'));
+
+    expect(result.physicalId).toBe(NEW);
+    expect(sentNames()).toEqual([
+      'GetRepositoryCommand', // old name: gone
+      'GetRepositoryCommand', // the probe: id-ours, the recorded id
+      'UpdateRepositoryDescriptionCommand',
+      'GetRepositoryCommand',
+      'TagResourceCommand',
+      'GetRepositoryCommand',
+    ]);
+    expect(mockSend.mock.calls[2][0].input.repositoryName).toBe(NEW);
+  });
+
+  it('a holder whose id is not the recorded one is refused, zero writes, no re-adoption offered', async () => {
+    primeAccount({ oursUnder: undefined, holderId: 'id-foreign' });
+
+    const err = await rejection(
+      provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, recorded('id-ours'))
+    );
+
+    expect(err.message).toContain('its repository id is not the one cdkd holds for this resource');
+    expect(err.message).not.toContain('cdkd import');
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    expect(sentNames()).toEqual(['GetRepositoryCommand', 'GetRepositoryCommand']);
+  });
+
+  it.each([
+    ['no RepositoryId key', { recordedAttributes: {} }],
+    ['an empty RepositoryId', { recordedAttributes: { RepositoryId: '' } }],
+    ['a non-string RepositoryId', { recordedAttributes: { RepositoryId: 42 } }],
+    ['no recordedAttributes at all', {}],
+  ])('a record with %s cannot verify the holder: refused with the re-adoption command', async (_l, ctx) => {
+    primeAccount({ oursUnder: undefined, holderId: 'id-ours' });
+
+    const err = await rejection(provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, ctx));
+
+    expect(err.message).toContain('its record holds no RepositoryId');
+    expect(err.message).toContain('cdkd import');
+    expect(sentNames().filter((n) => WRITES.includes(n))).toEqual([]);
+  });
+
+  it('the trigger read on a retry is verified against the recorded id too', async () => {
+    primeAccount({ oursUnder: NEW });
+    const base = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((cmd: { constructor: { name: string }; input: Record<string, unknown> }) =>
+      cmd.constructor.name === 'GetRepositoryTriggersCommand'
+        ? cmd.input['repositoryName'] === OLD
+          ? gone()
+          : Promise.resolve({ triggers: [] })
+        : base(cmd)
+    );
+
+    await provider.update(
+      'Repo',
+      OLD,
+      TYPE,
+      { ...DESIRED, Triggers: [] },
+      { ...RECORDED, Triggers: {} },
+      recorded('id-ours')
+    );
+
+    expect(
+      mockSend.mock.calls
+        .filter((c) => c[0].constructor.name === 'GetRepositoryTriggersCommand')
+        .map((c) => c[0].input.repositoryName)
+    ).toEqual([OLD, NEW]);
+  });
+
+  it('refuses before any call when the client region is not the recorded one', async () => {
+    primeAccount({ oursUnder: OLD });
+
+    const err = await rejection(
+      provider.update('Repo', OLD, TYPE, DESIRED, RECORDED, {
+        expectedRegion: 'eu-west-1',
+        ...recorded('id-ours'),
+      })
+    );
+
+    expect(err.message).toContain('eu-west-1');
+    expect(sentNames()).toEqual([]);
   });
 });

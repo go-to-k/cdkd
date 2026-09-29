@@ -4446,10 +4446,14 @@ async function replaySingle(
               // executor already puts on every `DeleteContext` it builds. This arm
               // is addressed BY `current.physicalId`, read out of the state record
               // being reverted, so it carries the same wrong-region hazard.
+              //
+              // `recordedAttributes` (issue #4051): the identity evidence of
+              // the record `current.physicalId` came from.
               {
                 maskSecrets: createSecretMasker(secrets),
                 expectedRegion: ctx.region,
                 replayingState: true,
+                recordedAttributes: current.attributes,
               },
             ],
             op.logicalId,
@@ -4943,10 +4947,13 @@ export async function replayFailedOperations(
                 // PREVIOUS side is `op.attemptedProperties`, the failed attempt's
                 // desired bag; `replayingState` describes the desired side, which
                 // is the side a provider's refusals read.)
+                //
+                // `recordedAttributes` (issue #4051), as on the `revert` arm.
                 {
                   maskSecrets: createSecretMasker(secrets),
                   expectedRegion: ctx.region,
                   replayingState: true,
+                  recordedAttributes: current.attributes,
                 },
               ],
               op.logicalId,

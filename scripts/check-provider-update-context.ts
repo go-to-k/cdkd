@@ -240,7 +240,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'CloudTrailProvider',
   'CloudWatchAlarmProvider',
   'CodeBuildProvider',
-  'CodeCommitRepositoryProvider',
   'DLMLifecyclePolicyProvider',
   'DocDBProvider',
   'DocDBSubnetGroupProvider',

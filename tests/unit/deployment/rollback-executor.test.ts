@@ -526,6 +526,24 @@ describe('replayRollback', () => {
     expect(ok!.reason).toBeUndefined();
   });
 
+  it("the 'revert' arm hands the addressed record's attributes as recordedAttributes (issue #4051)", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update });
+    // The PREVIOUS record carries different attributes: the context must name
+    // the record whose physicalId the call addresses (`current`).
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'prev-id' } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { a: 2 }, attributes: { RepositoryId: 'cur-id' } }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    expect((update.mock.calls[0]![5] as { recordedAttributes?: unknown }).recordedAttributes).toEqual({
+      RepositoryId: 'cur-id',
+    });
+  });
+
   it('reverts an UPDATE by calling provider.update with previous props', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx } = makeCtx({ update });
@@ -546,7 +564,7 @@ describe('replayRollback', () => {
       { a: 2 },
       // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
       // Cloud-Control-routed revert cannot be applied from the wrong region.
-      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true }
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} }
     );
     expect(state.B).toBe(prev);
   });
@@ -1085,7 +1103,7 @@ describe('replayRollback', () => {
     const result = await replayRollback(ops, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} });
     // The update went THROUGH withRetry, not around it.
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
@@ -1639,6 +1657,29 @@ describe('replayFailedOperations (#1198)', () => {
     vi.mocked(withRetry).mockClear();
   });
 
+  it("the 'revert-failed-update' arm hands the addressed record's attributes as recordedAttributes (issue #4051)", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'prev-id' } });
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+        previousState: prev,
+        attemptedProperties: { a: 2 },
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'cur-id' } }),
+    };
+    await replayFailedOperations(failedOps, state, 'S', ctx);
+    expect((update.mock.calls[0]![5] as { recordedAttributes?: unknown }).recordedAttributes).toEqual({
+      RepositoryId: 'cur-id',
+    });
+  });
+
   it('force-reverts a failed UPDATE with previous-vs-attempted diff sides', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx, events } = makeCtx({ update });
@@ -1671,7 +1712,7 @@ describe('replayFailedOperations (#1198)', () => {
       { a: 2 },
       // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
       // Cloud-Control-routed revert cannot be applied from the wrong region.
-      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true }
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} }
     );
     expect(state.B).toBe(prev);
     expect(result.failures).toBe(0);
@@ -1693,7 +1734,7 @@ describe('replayFailedOperations (#1198)', () => {
     const result = await replayFailedOperations(failedOps, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} });
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
   });
@@ -1793,7 +1834,7 @@ describe('replayFailedOperations (#1198)', () => {
     ];
     const state = { B: resT({ physicalId: 'phys-B', properties: { a: 1 } }) };
     await replayFailedOperations(failedOps, state, 'S', ctx);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} });
   });
 
   it('deletes a partially-recorded failed CREATE and drops it from state', async () => {

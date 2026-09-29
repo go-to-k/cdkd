@@ -735,6 +735,28 @@ export interface UpdateContext extends SecretMaskingContext {
    * #2245.
    */
   expectedRegion?: string | undefined;
+
+  /**
+   * The `attributes` cdkd RECORDED for the resource `physicalId` names
+   * (`ResourceState.attributes`), issue #4051: the identity evidence a
+   * provider needs to confirm that a resource it finds is the one this record
+   * describes. A name-addressed resource can be replaced out of band by a
+   * DIFFERENT resource under the same name, and a provider that adopts it
+   * overwrites, records and later deletes something the stack never created
+   * (`AWS::CodeCommit::Repository`'s rename-retry probe compares the recorded
+   * `RepositoryId`, go-to-k/cdkd#4042).
+   *
+   * Threaded by every `update()` caller, each from the record whose
+   * `physicalId` it passes: `deploy-engine.ts` (the in-place UPDATE),
+   * `rollback-executor.ts` (both revert arms) and `drift.ts` (`--revert`).
+   *
+   * Read-only evidence. ABSENT, or a key missing from it, means "no recorded
+   * identity" — a record from before the attribute existed — and a provider
+   * must then REFUSE to adopt an unverifiable resource rather than assume it is
+   * its own. Values are as recorded: a secret-derived one is redacted, so
+   * compare only non-secret identities (ids AWS generates).
+   */
+  recordedAttributes?: Readonly<Record<string, unknown>> | undefined;
 }
 
 /**
