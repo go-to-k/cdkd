@@ -571,6 +571,17 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     if (tagWarning !== undefined) this.logger.warn(tagWarning);
 
     const client = this.getClient();
+    // Every call below addresses the proxy by NAME, which another region can
+    // also hold, and the deregister arm reads NotFound as success: refuse a
+    // wrong-region client before any of them goes out.
+    assertRegionMatch(
+      await client.config.region(),
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
 
     // 1. ConnectionPoolConfigurationInfo diff.
     const oldPool = previousProperties['ConnectionPoolConfigurationInfo'] as
@@ -635,19 +646,11 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        // Idempotent: a target that's already gone is fine — same shape
-        // as delete()'s NotFound handling, region check included.
+        // Idempotent: a target that's already gone is fine. The region was
+        // checked before the first call, so this NotFound is this region's.
         if (!(error instanceof DBProxyTargetNotFoundFault)) {
           throw this.wrapError(error, 'UPDATE (deregister)', resourceType, logicalId, physicalId);
         }
-        assertRegionMatch(
-          await client.config.region(),
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId,
-          'pre-update'
-        );
       }
     }
 

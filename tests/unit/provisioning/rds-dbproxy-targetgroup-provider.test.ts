@@ -293,10 +293,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       expect(lines[0]).not.toContain('SECRETKEY');
     });
 
-    it('update checks the region before reading a missing target as already deregistered', async () => {
-      mockSend.mockRejectedValueOnce(
-        new DBProxyTargetNotFoundFault({ message: 'gone', $metadata: {} })
-      );
+    it('update refuses a wrong-region client before any call', async () => {
       await expect(
         provider.update(
           'TG',
@@ -307,6 +304,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
           { expectedRegion: 'us-west-2' }
         )
       ).rejects.toThrow(/Refusing to update TG .*does not match stack state region/);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('a failed tag call with no registered targets has nothing to retire', async () => {
