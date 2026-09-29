@@ -399,12 +399,37 @@ population is repairable by
 refusal here is unchanged, because `diff` still cannot decide from a stored
 string alone whether a value is plaintext.
 
-**Second, output and export names and rendered values are stripped of control
-and bidi characters before display.** An `Export.Name` is a value cdkd resolved
-(from an `Fn::Sub`, a parameter, an SSM lookup), so unlike a CloudFormation
-logical ID it never passed a validator. The `--json` payload is deliberately
-not stripped — it is a machine interface, and mutating a name a consumer
-matches on would be worse than the display concern it would avoid. It is
+**Second, rendered values are stripped of control and bidi characters before
+display, and Outputs row names are shown only after a secret test.** An
+`Export.Name` is a value cdkd resolved (from an `Fn::Sub`, a parameter, an SSM
+lookup), so unlike a CloudFormation logical ID it never passed a validator, and
+a cdkd older than the export-name refusal could store one holding a resolved
+secret as a state key. Each name is printed with invisible and control
+characters removed, masked (`app-*** (name masked: it contains a secret)`) when
+it holds a secret, or replaced by `<name withheld: contains a secret>` when
+masking cannot hide it. `diff` fetches no secret, so it finds one only in the
+part of a stored key that a secret-bearing `Export.Name`'s `{{resolve:...}}`
+reference covers, or where a key holds the stored value of a secret output in a
+pre-redaction record or of a key the template no longer declares. A stale alias
+sharing that `Export.Name`'s literal text is masked too.
+
+Because that search cannot see every secret, a **removed export alias is
+withheld** in a stack whose template references a secret: a REMOVE row for a
+key the template no longer declares that contains a character an Output
+logical ID cannot (anything outside `A-Z`, `a-z`, `0-9`) and, on a record that
+lists `exportNames`, is listed there. A removed ordinary Output keeps its name,
+even one exported under its own name. Two gaps remain, and each prints unless
+the search above finds its secret: an alias made only of letters and digits,
+which reads as an Output logical ID; and any alias in a stack whose template no
+longer references a secret through `{{resolve:secretsmanager:` or
+`{{resolve:ssm-secure:` — including one whose only secret is a plain
+`{{resolve:ssm:...}}` to a `SecureString` parameter.
+
+The `--json` payload is deliberately not stripped — it is a machine interface,
+and mutating a name a consumer matches on would be worse than the display
+concern it would avoid — so a name is its stored key unless it holds a secret,
+in which case it is the masked or withheld text with `nameRedacted: true` (a
+redacted `name` is not unique: two withheld rows share it). The payload is
 escaped instead: every control, format, line-separator and paragraph-separator
 character (DEL, the C1 range, `U+2028` / `U+2029`, the bidi controls and the
 zero-width characters, as well as the C0 range) is written as a `\uXXXX`
@@ -613,12 +638,15 @@ The payload is a flat array of one record per target stack:
   its SDK provider.
 
 Each `outputChanges` entry is
-`{name, changeType: "ADD" | "MODIFY" | "REMOVE", oldValue?, newValue?, oldValueRedacted?, export}`.
+`{name, changeType: "ADD" | "MODIFY" | "REMOVE", oldValue?, newValue?, oldValueRedacted?, export, nameRedacted?}`.
 `oldValue` is absent on an `ADD` and `newValue` on a `REMOVE`; `oldValue` is
 also withheld — with `oldValueRedacted: true` in its place — when state may
 hold legacy secret plaintext for that key, which includes every row beside a
 failed output whose value carried from state, an alias included, is not a
-secret reference (see [Outputs](#outputs)).
+secret reference (see [Outputs](#outputs)). `name` is the stored key unless the
+key holds a secret, as an export alias written by an older cdkd could: it is
+then masked (`app-***`) or replaced by `<name withheld: contains a secret>`,
+with `nameRedacted: true`. The human output prints the same verdict.
 
 ## `--recursive` (nested stacks)
 

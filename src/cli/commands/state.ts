@@ -1846,9 +1846,9 @@ function renderStateBlock(
       // (issue #1948). An Outputs bag KEY can be an `Export.Name` that cdkd
       // RESOLVED from an `Fn::Sub` / parameter / SSM value, so it passed no
       // CFn validator and may carry ANSI escapes or bidi overrides that
-      // rewrite the surrounding terminal output. Same guard
-      // `renderOutputChangeLines` applies to the diff's rows, which is the
-      // only other place a stored Outputs bag is rendered.
+      // rewrite the surrounding terminal output. The diff's rows, the only
+      // other place a stored Outputs bag is rendered, go further: their names
+      // render through `secretSafeKeyDisplay`'s verdict (#4015).
       lines.push(`  ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
     }
   }
