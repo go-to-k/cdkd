@@ -82,7 +82,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-24T22:46:12Z	PASS	109	verify.sh	rc ok, 0 orphans (#3663)
 docdb-neptune	2026-09-28T17:20:47Z	PASS	5463	verify.sh	rc ok, orph clean (#2204 PR #3956 step 3g; fix-reverted run RED at the readback)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-09-29T04:43:45Z	PASS	191	verify.sh	rc ok, orph clean, rebased head (#4014)
+drift-revert	2026-09-29T09:39:56Z	PASS	225	verify.sh	rc ok, orph clean; #4023 step 6e (pre-fix run red at 6e)
 drift-revert-arrays	2026-09-29T04:38:44Z	PASS	221	verify.sh	rc ok, orph clean, rebased head (#4014)
 drift-revert-vpc	2026-09-29T05:34:59Z	PASS	361	verify.sh	rc ok, orph clean, head incl #4032 (#4014)
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
