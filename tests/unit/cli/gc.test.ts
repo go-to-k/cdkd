@@ -2006,6 +2006,18 @@ describe('cdkd gc', () => {
       expectNothingDeleted();
     });
 
+    it('refuses a marker naming an invalid bucket, deleting nothing (go-to-k/cdkd#4114)', async () => {
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+        key === MARKER_KEY
+          ? JSON.stringify({ ...JSON.parse(MARKER_BODY), assetBucket: 'Some Other Bucket' })
+          : null
+      );
+
+      await expect(runGc(['--yes'])).rejects.toThrow(/is malformed/);
+      expectNothingDeleted();
+      expect(s3CommandNames()).not.toContain(ListObjectsV2Command.name);
+    });
+
     it('blames the key the marker was actually READ from when it is corrupt', async () => {
       // `resolvedMarkerKey` exists only so this message is true. With a corrupt
       // marker at the RAW key, naming the canonical one would send the user to

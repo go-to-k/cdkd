@@ -2295,4 +2295,39 @@ describe('a marker naming an invalid bucket or repository is malformed (go-to-k/
       `Bootstrap marker '${getBootstrapMarkerKey(REGION)}' is malformed — rewriting it as part of this bootstrap.`
     );
   });
+
+  it('names only the dropped name, and keeps a flag-supplied one that matches the record', async () => {
+    const run = async (body: string, flags: { assetBucketName?: string; containerRepoName?: string }) => {
+      mockS3Send.mockResolvedValue({});
+      mockEcrSend.mockResolvedValue({ repositories: [{ repositoryName: 'x' }] });
+      mockLoggerWarn.mockClear();
+      await ensureAssetStorage({
+        s3Client: new S3Client({ region: REGION }) as S3Client,
+        ecrClient: new ECRClient({}) as ECRClient,
+        stateBackend: {
+          putRawObject: vi.fn().mockResolvedValue(undefined),
+          getRawObject: vi.fn().mockResolvedValue(body),
+        } as unknown as S3StateBackend,
+        accountId: ACCOUNT,
+        region: REGION,
+        force: false,
+        ...flags,
+      });
+      return mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    };
+    const head = `Bootstrap marker '${getBootstrapMarkerKey(REGION)}' is malformed — rewriting it as part of this bootstrap.`;
+
+    // A valid custom bucket beside an invalid repository: both are dropped for
+    // the conventional names, and both are named.
+    const oneInvalid = JSON.stringify({ ...validMarker(), assetBucket: 'my-org-assets', containerRepo: "org/it's" });
+    expect(await run(oneInvalid, {})).toContain(
+      `${head} It recorded asset bucket my-org-assets and container repository "org/it's"; storage under those names is no longer tracked by cdkd.`
+    );
+
+    // The same marker with --asset-bucket naming the recorded bucket: only the
+    // repository is dropped.
+    expect(await run(oneInvalid, { assetBucketName: 'my-org-assets' })).toContain(
+      `${head} It recorded container repository "org/it's"; storage under those names is no longer tracked by cdkd.`
+    );
+  });
 });
