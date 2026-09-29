@@ -6,6 +6,7 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { isIamRoleArn } from '../utils/role-arn.js';
+import { shellBoundedDisplay } from '../utils/pasteable-command.js';
 import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { removeProtectionTypeList } from '../provisioning/remove-protection-types.js';
@@ -1333,7 +1334,12 @@ export function parseAssumeRoleToken(
   // argv with different substrings taken, so sanitizing the operand that
   // happens to be called `arn` and leaving its neighbours raw would be the
   // "guard defeated by its own neighbour" shape on one line.
-  const shownRaw = displayIdent(raw, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
+  //
+  // Each goes through `quotedArgv`, never inside a hand-written `"..."`
+  // (go-to-k/cdkd#3950): `displayIdent`'s JSON boundary does not survive a
+  // quote around it, so a `"` in the argv closed cdkd's, and `$( )` or a
+  // backtick runs inside double quotes regardless when the sentence is pasted.
+  const shownRaw = quotedArgv(raw, ROLE_ARN_MAX_CODE_POINTS);
   // A value that STARTS as an ARN is the bare form even when it contains `=`:
   // IAM role names allow `=` (`role/a=b`), and a logical id can never start
   // with `arn:` (no `:` in one), so the two forms cannot be confused.
@@ -1342,7 +1348,7 @@ export function parseAssumeRoleToken(
     const bare = raw.trim();
     if (!isIamRoleArn(bare)) {
       throw new Error(
-        `Invalid --assume-role value "${shownRaw}": expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
+        `Invalid --assume-role value ${shownRaw}: expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
       );
     }
     acc.globalArn = bare;
@@ -1353,16 +1359,34 @@ export function parseAssumeRoleToken(
   const arn = raw.substring(eqIndex + 1).trim();
   if (!/^[A-Za-z][A-Za-z0-9]*$/.test(logicalId)) {
     throw new Error(
-      `Invalid --assume-role value "${shownRaw}": left-hand side "${displayIdent(logicalId)}" must be a CloudFormation logical ID (alphanumeric, leading letter).`
+      `Invalid --assume-role value ${shownRaw}: left-hand side ${quotedArgv(logicalId)} must be a CloudFormation logical ID (alphanumeric, leading letter).`
     );
   }
   if (!isIamRoleArn(arn)) {
     throw new Error(
-      `Invalid --assume-role value "${shownRaw}": right-hand side "${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}" must be an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
+      `Invalid --assume-role value ${shownRaw}: right-hand side ${quotedArgv(arn, ROLE_ARN_MAX_CODE_POINTS)} must be an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
     );
   }
   acc.perLambda[logicalId] = arn;
   return acc;
+}
+
+/**
+ * An `--assume-role` operand for its refusal: `"value"` when it has no
+ * whitespace and `displayIdent` renders it unchanged, which prints the parse
+ * refusals' operands exactly as before (the auto-resolve refusal's global ARN,
+ * bare before, is now quoted), and otherwise
+ * `shellBoundedDisplay` over that render (go-to-k/cdkd#3950). The operator
+ * needs the value to correct it, so it is shown shell-quoted rather than
+ * described, the way the resolver shows a refused `Fn::GetStackOutput`
+ * `RoleArn`. `shellBoundedDisplay` itself describes a render holding a clause
+ * break (a tab or a cut marker included), and quotes `'<unrenderable>'`.
+ */
+function quotedArgv(value: string, maxCodePoints?: number): string {
+  const shown = displayIdent(value, maxCodePoints === undefined ? undefined : { maxCodePoints });
+  // Whitespace FIRST: the round-trip alone admits a value ending in
+  // `displayIdent`'s own cut marker, which renders as itself.
+  return !/\s/.test(value) && shown === value ? `"${value}"` : shellBoundedDisplay(shown);
 }
 
 /**
@@ -1397,11 +1421,12 @@ export function normalizeStartApiAssumeRole(
   if (autoResolve && raw.globalArn) {
     throw new Error(
       // `globalArn` CLEARED `isIamRoleArn` (issue #2348), which bounds it to
-      // printable ASCII of at most 2048 characters — still argv, and still
-      // longer than a line should carry, so it is rendered through the same
-      // capped helper as the refusals above (issue go-to-k/cdkd#3397).
+      // printable ASCII of at most 2048 characters, yet `role/[!-~]+` still
+      // admits `$`, `(`, a backtick and `"`. So it goes through `quotedArgv`,
+      // like the refusals above (go-to-k/cdkd#3950): a JSON render beside
+      // `--assume-role` would let a pasted `$( )` run.
       `--assume-role-auto auto-resolves EACH routed Lambda's own execution role, ` +
-        `but --assume-role ${displayIdent(raw.globalArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} also names a single global default. ` +
+        `but --assume-role ${quotedArgv(raw.globalArn, ROLE_ARN_MAX_CODE_POINTS)} also names a single global default. ` +
         `These are mutually exclusive on the global slot. Either drop the global ARN ` +
         `to keep --assume-role-auto for every Lambda, or drop --assume-role-auto to keep the global default. ` +
         `Per-Lambda overrides (--assume-role <LogicalId>=<arn>) are compatible with either side.`
