@@ -39,7 +39,9 @@ The script:
 - Builds cdkd from the repo root.
 - Hard-fails with exit 1 if any assertion fails. On failure it still
   attempts a final `cdkd destroy --force` so a botched run does not
-  leave AWS resources behind.
+  leave AWS resources behind — except when the deploy was refused on
+  another process's lock: this run then created nothing, and the stack
+  belongs to that peer, so the destroy is skipped.
 
 ## Resources
 
