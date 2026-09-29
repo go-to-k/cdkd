@@ -314,7 +314,7 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
     });
   });
 
-  it("sanitizes ServiceDiscovery HostedZoneId's failed-read REFUSAL and its --verbose echo", async () => {
+  it("keeps a hostile ServiceDiscovery HostedZoneId out of its failed-read REFUSAL, and sanitizes its --verbose echo", async () => {
     // Since issue #4077 a failed read refuses instead of warning and answering
     // `undefined`: the id renders in the refusal, AWS's echo of it on the
     // debug line `describeFailureObserved` writes.
@@ -343,7 +343,13 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
     };
 
     const got = await refused(`ns-${EVIL}`);
-    expectSanitized(got.message, 'the HostedZoneId refusal');
+    // The refusal describes an altered id rather than quoting it by hand
+    // (go-to-k/cdkd#3950), so it pins the id's absence; the debug line below
+    // still renders AWS's echo of it, sanitized.
+    expectClean(got.message, 'the HostedZoneId refusal');
+    expect(got.message).toContain(
+      'The physical id (not shown: it is not a plain identifier) is not a usable HostedZoneId'
+    );
     const debug = line(got.lines, 'GetNamespace failed (Error): ');
     expectSanitized(debug, 'the GetNamespace debug line');
 
