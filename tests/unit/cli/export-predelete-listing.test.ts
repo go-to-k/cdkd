@@ -39,6 +39,11 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
 
+/** No case here reads SSM (go-to-k/cdkd#3915); a read would fail the case by name. */
+const UNUSED_SSM = {
+  send: () => Promise.reject(new Error('unexpected SSM read')),
+} as unknown as AwsClients['ssm'];
+
 function policy(properties: Record<string, unknown>): RecreateBeforePhase2Entry {
   return {
     logicalId: 'HandlerPolicy',
@@ -267,6 +272,7 @@ describe('the nested-tree plan summary names each pre-delete and its detach targ
         lockManager: {} as LockManager,
         uploadOpts: { stateBucket: 'b' },
         lockOwner: 'test',
+        ssmClient: UNUSED_SSM,
       },
       options: {
         dryRun: true,

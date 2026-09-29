@@ -7,6 +7,7 @@ import {
   buildImportPlan,
   buildPerStackImportNodes,
   buildResolvedParametersPerStack,
+  ssmParameterReader,
   cdkd2cfnStackName,
   orphanWithholdWhy,
   extractChildImportParameters,
@@ -5341,6 +5342,276 @@ describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first p
       { ParameterKey: 'Stage', ParameterValue: 'prod' },
     ]);
     expect(intrinsicSkippedByCdkdName.size).toBe(0);
+  });
+
+  describe('an SSM-typed parent Parameter passed to a child (go-to-k/cdkd#3915)', () => {
+    const rootWith = (type: string, childParams: Record<string, unknown>) => ({
+      Parameters: { RootRole: { Type: type } },
+      Resources: {
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { Parameters: childParams } },
+      },
+    });
+    const tree = () => treeNode('Root', new Map([['Child', treeNode('Root~Child', new Map())]]));
+    const run = (
+      rootTemplate: Record<string, unknown>,
+      readSsmParameter?: (name: string) => Promise<{ value: string; type?: string }>
+    ) =>
+      buildResolvedParametersPerStack({
+        rootStackName: 'Root',
+        rootParameters: [{ ParameterKey: 'RootRole', ParameterValue: '/app/role-name' }],
+        perStackNodes: [
+          node('Root', rootTemplate),
+          node('Root~Child', { Resources: {} }, { stack: 'Root', logicalId: 'Child' }),
+        ],
+        tree: tree(),
+        resolver,
+        ...(readSsmParameter && { readSsmParameter }),
+      });
+
+    it('hands the child the stored value, and the root keeps submitting the SSM name', async () => {
+      const read = vi.fn(async () => ({ value: 'RealRole', type: 'String' }));
+      const { paramsByCdkdName } = await run(
+        rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } }),
+        read
+      );
+      expect(read.mock.calls).toEqual([['/app/role-name']]);
+      expect(paramsByCdkdName.get('Root~Child')).toEqual([
+        { ParameterKey: 'RoleParam', ParameterValue: 'RealRole' },
+      ]);
+      expect(paramsByCdkdName.get('Root')).toEqual([
+        { ParameterKey: 'RootRole', ParameterValue: '/app/role-name' },
+      ]);
+    });
+
+    it('makes a list-typed SSM parameter a list to Fn::Join and Fn::Select in the row', async () => {
+      const read = vi.fn(async () => ({ value: 'a, b,c', type: 'StringList' }));
+      for (const type of [
+        'AWS::SSM::Parameter::Value<List<String>>',
+        'AWS::SSM::Parameter::Value<CommaDelimitedList>',
+      ]) {
+        const { paramsByCdkdName } = await run(
+          rootWith(type, {
+            Joined: { 'Fn::Join': ['|', { Ref: 'RootRole' }] },
+            Second: { 'Fn::Select': [1, { Ref: 'RootRole' }] },
+          }),
+          read
+        );
+        expect(paramsByCdkdName.get('Root~Child')).toEqual([
+          { ParameterKey: 'Joined', ParameterValue: 'a|b|c' },
+          { ParameterKey: 'Second', ParameterValue: 'b' },
+        ]);
+      }
+    });
+
+    it('hands a list-typed SSM parameter over as its comma-joined value', async () => {
+      const read = vi.fn(async () => ({ value: 'a,b', type: 'StringList' }));
+      for (const type of [
+        'AWS::SSM::Parameter::Value<List<String>>',
+        'AWS::SSM::Parameter::Value<CommaDelimitedList>',
+      ]) {
+        const { paramsByCdkdName } = await run(rootWith(type, { Names: { Ref: 'RootRole' } }), read);
+        expect(paramsByCdkdName.get('Root~Child')).toEqual([
+          { ParameterKey: 'Names', ParameterValue: 'a,b' },
+        ]);
+      }
+    });
+
+    it('resolves a Fn::Sub mention too', async () => {
+      const read = vi.fn(async () => ({ value: 'RealRole', type: 'String' }));
+      const { paramsByCdkdName } = await run(
+        rootWith('AWS::SSM::Parameter::Value<String>', {
+          RoleArn: { 'Fn::Sub': 'arn:aws:iam::1:role/${RootRole}' },
+        }),
+        read
+      );
+      expect(paramsByCdkdName.get('Root~Child')).toEqual([
+        { ParameterKey: 'RoleArn', ParameterValue: 'arn:aws:iam::1:role/RealRole' },
+      ]);
+    });
+
+    it('reads nothing for a plain String parameter or one the row does not mention', async () => {
+      const read = vi.fn(async () => ({ value: 'never' }));
+      const plain = await run(rootWith('String', { RoleParam: { Ref: 'RootRole' } }), read);
+      expect(plain.paramsByCdkdName.get('Root~Child')).toEqual([
+        { ParameterKey: 'RoleParam', ParameterValue: '/app/role-name' },
+      ]);
+      await run(rootWith('AWS::SSM::Parameter::Value<String>', { Other: 'literal' }), read);
+      expect(read).not.toHaveBeenCalled();
+    });
+
+    it('refuses, naming the parameter and the permission, when the read fails', async () => {
+      const read = vi.fn(async () => {
+        throw Object.assign(new Error('Parameter /app/role-name not found'), {
+          name: 'ParameterNotFound',
+        });
+      });
+      await expect(
+        run(rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } }), read)
+      ).rejects.toThrow(
+        /SSM parameter \/app\/role-name.*read failed \(ParameterNotFound\).*ssm:GetParameter.*--parameter RootRole=<name>/s
+      );
+    });
+
+    it('refuses without a reader rather than handing the child the SSM name', async () => {
+      await expect(
+        run(rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } }))
+      ).rejects.toThrow('No SSM client was available to read it.');
+    });
+
+    it('reads through ssm:GetParameter without decryption, and refuses a missing value', async () => {
+      const send = vi.fn(async (_cmd: unknown) => ({ Parameter: { Value: 'v', Type: 'StringList' } }));
+      const read = ssmParameterReader({ send } as unknown as AwsClients['ssm']);
+      expect(await read('/p')).toEqual({ value: 'v', type: 'StringList' });
+      expect((send.mock.calls[0]![0] as { input: unknown }).input).toEqual({
+        Name: '/p',
+        WithDecryption: false,
+      });
+      send.mockImplementationOnce(async () => ({ Parameter: {} }) as never);
+      await expect(read('/p')).rejects.toMatchObject({ name: 'NoValue' });
+    });
+
+    it('refuses a value whose type is not reported (fails closed)', async () => {
+      const read = vi.fn(async () => ({ value: 'x' }));
+      await expect(
+        run(rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } }), read)
+      ).rejects.toThrow('Its type is not reported, not String or StringList');
+    });
+
+    it('refuses a reader that throws synchronously the same way', async () => {
+      const read = vi.fn(() => {
+        throw Object.assign(new Error('boom'), { name: 'SyncFailure' });
+      });
+      await expect(
+        run(rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } }), read)
+      ).rejects.toThrow('read failed (SyncFailure)');
+    });
+
+    it('reads one SSM name once per run, however many children it is passed to', async () => {
+      const read = vi.fn(async () => ({ value: 'RealRole', type: 'String' }));
+      const rootTemplate = {
+        Parameters: { RootRole: { Type: 'AWS::SSM::Parameter::Value<String>' } },
+        Resources: {
+          A: { Type: 'AWS::CloudFormation::Stack', Properties: { Parameters: { R: { Ref: 'RootRole' } } } },
+          B: { Type: 'AWS::CloudFormation::Stack', Properties: { Parameters: { R: { Ref: 'RootRole' } } } },
+        },
+      };
+      const { paramsByCdkdName } = await buildResolvedParametersPerStack({
+        rootStackName: 'Root',
+        rootParameters: [{ ParameterKey: 'RootRole', ParameterValue: '/app/role-name' }],
+        perStackNodes: [
+          node('Root', rootTemplate),
+          node('Root~A', { Resources: {} }, { stack: 'Root', logicalId: 'A' }),
+          node('Root~B', { Resources: {} }, { stack: 'Root', logicalId: 'B' }),
+        ],
+        tree: treeNode(
+          'Root',
+          new Map([
+            ['A', treeNode('Root~A', new Map())],
+            ['B', treeNode('Root~B', new Map())],
+          ])
+        ),
+        resolver,
+        readSsmParameter: read,
+      });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(paramsByCdkdName.get('Root~A')).toEqual([{ ParameterKey: 'R', ParameterValue: 'RealRole' }]);
+      expect(paramsByCdkdName.get('Root~B')).toEqual([{ ParameterKey: 'R', ParameterValue: 'RealRole' }]);
+    });
+
+    describe('a middle stack', () => {
+      // Root -> Middle (row `Middle`) -> Leaf (row `Leaf`).
+      const threeLevel = (
+        middleParamType: string,
+        rootRow: Record<string, unknown>,
+        read: (name: string) => Promise<{ value: string; type?: string }>
+      ) =>
+        buildResolvedParametersPerStack({
+          rootStackName: 'Root',
+          rootParameters: [{ ParameterKey: 'RootRole', ParameterValue: '/app/role-name' }],
+          perStackNodes: [
+            node('Root', {
+              Parameters: { RootRole: { Type: 'AWS::SSM::Parameter::Value<String>' } },
+              Resources: {
+                Middle: { Type: 'AWS::CloudFormation::Stack', Properties: { Parameters: rootRow } },
+              },
+            }),
+            node(
+              'Root~Middle',
+              {
+                Parameters: { MidParam: { Type: middleParamType } },
+                Resources: {
+                  Leaf: {
+                    Type: 'AWS::CloudFormation::Stack',
+                    Properties: { Parameters: { LeafParam: { Ref: 'MidParam' } } },
+                  },
+                },
+              },
+              { stack: 'Root', logicalId: 'Middle' }
+            ),
+            node('Root~Middle~Leaf', { Resources: {} }, { stack: 'Root~Middle', logicalId: 'Leaf' }),
+          ],
+          tree: treeNode(
+            'Root',
+            new Map([
+              [
+                'Middle',
+                treeNode('Root~Middle', new Map([['Leaf', treeNode('Root~Middle~Leaf', new Map())]])),
+              ],
+            ])
+          ),
+          resolver,
+          readSsmParameter: read,
+        });
+
+      it('resolves its OWN SSM-typed Parameter for its child, and is itself submitted the name', async () => {
+        const read = vi.fn(async (name: string) => ({ value: `value-of:${name}`, type: 'String' }));
+        const { paramsByCdkdName } = await threeLevel(
+          'AWS::SSM::Parameter::Value<String>',
+          { MidParam: '/mid/name' },
+          read
+        );
+        expect(read.mock.calls).toEqual([['/mid/name']]);
+        expect(paramsByCdkdName.get('Root~Middle')).toEqual([
+          { ParameterKey: 'MidParam', ParameterValue: '/mid/name' },
+        ]);
+        expect(paramsByCdkdName.get('Root~Middle~Leaf')).toEqual([
+          { ParameterKey: 'LeafParam', ParameterValue: 'value-of:/mid/name' },
+        ]);
+      });
+
+      it('passes a root value on through a String Parameter without reading it again', async () => {
+        const read = vi.fn(async (name: string) => ({ value: `value-of:${name}`, type: 'String' }));
+        const { paramsByCdkdName } = await threeLevel('String', { MidParam: { Ref: 'RootRole' } }, read);
+        expect(read.mock.calls).toEqual([['/app/role-name']]);
+        expect(paramsByCdkdName.get('Root~Middle~Leaf')).toEqual([
+          { ParameterKey: 'LeafParam', ParameterValue: 'value-of:/app/role-name' },
+        ]);
+      });
+
+      it('names no --parameter remedy for a middle stack, which --parameter cannot bind', async () => {
+        const read = vi.fn(async () => {
+          throw Object.assign(new Error('x'), { name: 'ParameterNotFound' });
+        });
+        const err = (await threeLevel(
+          'AWS::SSM::Parameter::Value<String>',
+          { MidParam: '/mid/name' },
+          read
+        ).catch((e: unknown) => e)) as Error;
+        expect(err.message).toContain('read failed (ParameterNotFound)');
+        expect(err.message).toContain('change the name the parent row passes');
+        expect(err.message).not.toContain('--parameter');
+      });
+    });
+
+    it('refuses a SecureString without rendering its value', async () => {
+      const read = vi.fn(async () => ({ value: 'ciphertext-3915', type: 'SecureString' }));
+      const err = (await run(
+        rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } }),
+        read
+      ).catch((e: unknown) => e)) as Error;
+      expect(err.message).toContain('It is a SecureString');
+      expect(err.message).not.toContain('ciphertext-3915');
+    });
   });
 
   it("reads a parent parameter named '__proto__' as an own key (go-to-k/cdkd#3916)", async () => {

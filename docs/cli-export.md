@@ -185,10 +185,12 @@ names. So cdkd checks the two against each other before anything changes:
     row passes, resolved as described under [Child Parameters](#child-parameters),
     so the check sees the same value phase 2 uses.
 
-  `PolicyName` is checked when it is a literal or such a Parameter `Ref`. An
-  SSM-typed Parameter (`AWS::SSM::Parameter::Value<...>`) is never read as
-  known: its value is the SSM parameter's name, not the name CloudFormation
-  substitutes.
+  `PolicyName` is checked when it is a literal or such a Parameter `Ref`. A
+  stack's OWN SSM-typed Parameter (`AWS::SSM::Parameter::Value<...>`) is never
+  read as known: its value is the SSM parameter's name, not the name
+  CloudFormation substitutes. A nested stack passed a parent's SSM-typed
+  Parameter is checked against the stored value, which is what it is handed
+  (see [Child Parameters](#child-parameters)).
 - Anything else, such as `Fn::ImportValue`, cannot be checked, and neither can
   a missing `PolicyName`. The plan marks each such principal or policy name,
   and the export proceeds, with `--yes` and `--dry-run` too. So under `--yes`,
@@ -400,6 +402,24 @@ at import time against the parent's resolved Parameters and cdkd state, in a
 root-first pre-pass — a child's Parameters resolve against its parent's. A
 value cdkd cannot resolve degrades to a warning, and the child template's
 Parameter `Default` must then cover it.
+
+When a parent passes one of its SSM-typed Parameters
+(`AWS::SSM::Parameter::Value<...>`) to a child, CloudFormation hands the nested
+stack the value stored under the SSM parameter, not its name. After the export
+the child is a standalone CloudFormation stack, so cdkd reads that value with
+`ssm:GetParameter` (without decryption) and submits it to the child's
+changeset. The parent's own changeset still submits the SSM parameter's name,
+which CloudFormation resolves. A list type is a list to the child row's `Ref`,
+so `Fn::Join` and `Fn::Select` over it resolve, and a bare `Ref` hands it over
+comma-joined. Only a parameter the child's row mentions is read, and `cdkd
+export` then needs `ssm:GetParameter` on it. If the read fails, or the
+parameter's type is not `String` or `StringList` (such as a `SecureString`,
+which CloudFormation does not accept for an SSM-typed Parameter), the export
+refuses before it takes any nested stack's lock or submits any changeset, so
+nothing changes. `--dry-run` warns instead and plans without the nested stacks'
+Parameter values, so their principals read as unconfirmed. The value is handled like any other resolved
+Parameter value: a `String` or `StringList` SSM parameter is public
+configuration, and a `SecureString` is never read decrypted.
 
 ### Failure and re-runs
 

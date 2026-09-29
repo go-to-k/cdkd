@@ -71,6 +71,15 @@ class ChildNestedStack extends cdk.NestedStack {
       description: 'cdkd #464 follow-up - no-Default child Parameter fed by the parent-side Ref',
     });
 
+    // go-to-k/cdkd#3915: fed by the parent's SSM-typed `SsmStage`, so a nested
+    // deploy hands it the VALUE stored under that SSM parameter; after the
+    // export the standalone child must be submitted that value, not the name.
+    // Declared only: CloudFormation accepts an unused Parameter.
+    new cdk.CfnParameter(this, 'SsmStageParam', {
+      type: 'String',
+      description: 'cdkd #3915 - fed by the parent SSM-typed Parameter',
+    });
+
     this.param = new ssm.StringParameter(this, 'ChildParam', {
       // Value reflects the resolved StageParam so the resolution is observable
       // end-to-end (deploy-time resolution sets it; export does not change it).
@@ -96,8 +105,18 @@ export class ExportNestedStackExample extends cdk.Stack {
       description: 'cdkd #464 follow-up - parent Parameter fed down to the child via {Ref: Stage}',
     });
 
+    // go-to-k/cdkd#3915: an SSM-typed Parameter passed to the child. verify.sh
+    // creates the SSM parameter this Default names before the deploy, under a
+    // per-run name it exports as CDKD_TEST_SSM_STAGE_NAME, so a concurrent run
+    // or a pre-existing parameter is never overwritten or deleted.
+    const ssmStage = new cdk.CfnParameter(this, 'SsmStage', {
+      type: 'AWS::SSM::Parameter::Value<String>',
+      default: process.env['CDKD_TEST_SSM_STAGE_NAME'] ?? '/cdkd-export-nested-stack/stage-3915',
+      description: 'cdkd #3915 - SSM-typed parent Parameter passed to the child',
+    });
+
     const child = new ChildNestedStack(this, 'Child', {
-      parameters: { StageParam: stage.valueAsString },
+      parameters: { StageParam: stage.valueAsString, SsmStageParam: ssmStage.valueAsString },
     });
     // Override CDK's auto-generated logical id
     // (`ChildNestedStackChildNestedStackResourceC40294CA` style) to a
