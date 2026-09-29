@@ -184,7 +184,7 @@ export interface CommandInterruptWatch {
  *    behavior change beyond the exit code: a fully-destroyed child that takes
  *    a tail signal no longer reports `interrupted`, so the parent no longer
  *    marks its row skipped. That is the CORRECT reading — `skipped` means
- *    "cdkd could not address this, the resources may still exist in AWS",
+ *    "cdkd did not confirm this was deleted, the resources may still exist in AWS",
  *    which is false of a child whose every resource was deleted and whose
  *    state record is gone; it would preserve the parent's row for a child that
  *    no longer exists and exit 2 over a completed teardown. Stopping the

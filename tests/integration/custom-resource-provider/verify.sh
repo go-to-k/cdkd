@@ -337,6 +337,24 @@ if ! printf '%s' "${DESTROY_OUT}" | grep -q 'Destroy skipped 1 entr'; then
   echo "    => a second skip means another resource could not be addressed either." >&2
   exit 1
 fi
+# go-to-k/cdkd#2122: cdkd ADDRESSED this resource and ISSUED its delete — the
+# handler refused it — so no summary line may say cdkd could not address it or
+# prescribe a physicalId repair. The positive marker comes first so a moved
+# summary fails here instead of passing every negative below blind.
+if ! printf '%s' "${DESTROY_OUT}" | grep -q 'whose delete cdkd did not confirm'; then
+  echo "FAIL: the exit-2 summary did not say the delete was unconfirmed (go-to-k/cdkd#2122)" >&2
+  exit 1
+fi
+if ! printf '%s' "${DESTROY_OUT}" | grep -q 'did not confirm the skipped resource(s) were deleted'; then
+  echo "FAIL: the per-stack summary did not say the delete was unconfirmed (go-to-k/cdkd#2122)" >&2
+  exit 1
+fi
+for FALSE_CLAIM in 'could not address' 'no delete was issued' 'Fix the physicalId' 'Repair the physicalId'; do
+  if printf '%s' "${DESTROY_OUT}" | grep -qF "${FALSE_CLAIM}"; then
+    echo "FAIL: destroy output says '${FALSE_CLAIM}' about a resource whose handler RAN and refused" >&2
+    exit 1
+  fi
+done
 if ! printf '%s' "${DESTROY_OUT}" | grep -q 'LEFT IN PLACE'; then
   echo "FAIL: the skip warning did not say the managed resource is left in place" >&2
   exit 1

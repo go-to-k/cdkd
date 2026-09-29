@@ -56,7 +56,8 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
   }),
 }));
 
-import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { runDestroyForStack, SKIPPED_REMEDY } from '../../../src/cli/commands/destroy-runner.js';
+import { CR_DELETE_HANDLER_FAILED_SKIP_REASON } from '../../../src/provisioning/providers/custom-resource-provider.js';
 
 const REGION = 'us-east-1';
 
@@ -271,8 +272,8 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     // `1 skipped` / `0 errors` are all printed by the pre-existing
     // errors-present branch too (ANSI-stripped, `red(0)` reads as `0`), so
     // without these two the new branch is not distinguished at all.
-    expect(warn).toContain('could not address the skipped resource(s)');
-    expect(warn).toContain('Fix the physicalId in state.json');
+    expect(warn).toContain('did not confirm the skipped resource(s) were deleted');
+    expect(warn).toContain(SKIPPED_REMEDY);
     // ...and the separate preserve-state warning, which nothing else emits.
     expect(warn).toContain('State preserved (the records are kept');
     // The headline mis-report: the clean-destroy banner must not appear.
@@ -299,9 +300,76 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     // The error branch owns the message: a run with a real failure must lead
     // with "re-run to clean up", not with the skip remedy.
     expect(warn).toContain("re-run 'cdkd destroy'");
-    expect(warn).not.toContain('could not address the skipped resource(s)');
+    expect(warn).not.toContain('did not confirm the skipped resource(s) were deleted');
     expect(mockDeleteState).not.toHaveBeenCalled();
   }, 30_000);
+
+  describe('skip text is true for a handler that RAN and refused (go-to-k/cdkd#2122)', () => {
+    // #2054 made a custom-resource Delete handler that reported FAILED a skip
+    // producer. cdkd ADDRESSED that resource and ISSUED the delete, and its
+    // record is correct — so every summary line must stop saying otherwise.
+    const FALSE_FOR_A_HANDLER = /could not address|no delete was issued|Fix the physicalId/;
+
+    it('skip-only: names the unconfirmed delete and both remedies', async () => {
+      mockProviderDelete.mockResolvedValue({
+        outcome: 'skipped',
+        reason: CR_DELETE_HANDLER_FAILED_SKIP_REASON,
+      });
+
+      await runDestroyForStack(
+        'TestStack',
+        makeState({ Cleaner: res({ resourceType: 'Custom::Cleaner' }) }),
+        makeCtx()
+      );
+
+      const warn = allWarn();
+      // The preserve-state warning and the summary, each by its own text.
+      expect(warn).toContain(
+        '1 resource(s) skipped — cdkd did not confirm they were deleted, so they may still exist in AWS.'
+      );
+      expect(warn).toContain(
+        'cdkd did not confirm the skipped resource(s) were deleted, so they may still exist in AWS. ' +
+          SKIPPED_REMEDY
+      );
+      expect(warn).not.toMatch(FALSE_FOR_A_HANDLER);
+      // Pinned as LITERALS, not through the imported constant: a comparison
+      // against `SKIPPED_REMEDY` alone passes with the constant emptied.
+      // Both remedies, and the state.json one only where the warning says so.
+      expect(warn).toContain(
+        "its warning says whether repairing the record in state.json helps. Where it does, repair it and re-run."
+      );
+      expect(warn).toContain(
+        'Otherwise (for example a custom-resource Delete handler that reported FAILED), delete the resources by hand, then drop the records.'
+      );
+      // The cause the remedy points at is on the per-resource line.
+      expect(resourceLine('Cleaner')).toContain(`skipped (${CR_DELETE_HANDLER_FAILED_SKIP_REASON})`);
+    });
+
+    it('errors + skip: the SKIPPED clause says the same', async () => {
+      mockProviderDelete.mockImplementation((logicalId: string) => {
+        if (logicalId === 'Cleaner') {
+          return Promise.resolve({ outcome: 'skipped', reason: CR_DELETE_HANDLER_FAILED_SKIP_REASON });
+        }
+        return Promise.reject(new Error('kaboom'));
+      });
+
+      await runDestroyForStack(
+        'TestStack',
+        makeState({
+          Cleaner: res({ resourceType: 'Custom::Cleaner' }),
+          Boom: res({ resourceType: 'AWS::S3::Bucket' }),
+        }),
+        makeCtx()
+      );
+
+      const warn = allWarn();
+      expect(warn).toContain(
+        'Separately, 1 resource(s) were SKIPPED — cdkd did not confirm they were deleted, so ' +
+          `they may still exist in AWS. ${SKIPPED_REMEDY}`
+      );
+      expect(warn).not.toMatch(FALSE_FOR_A_HANDLER);
+    }, 30_000);
+  });
 
   it('is BYTE-IDENTICAL to the pre-fix behavior when no resource is skipped', async () => {
     // A provider returning void (the ~80 that never changed) still counts as
@@ -334,8 +402,8 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
 
   it('carries the skip REASON into the durable RESOURCE_SKIPPED event', async () => {
     // The events store is the post-mortem a user reads days later; a bare
-    // `RESOURCE_SKIPPED` there cannot say why cdkd could not address the
-    // resource (issue #1752 review).
+    // `RESOURCE_SKIPPED` there cannot say why cdkd did not confirm the
+    // resource's delete (issue #1752 review).
     mockProviderDelete.mockResolvedValue({
       outcome: 'skipped',
       reason: 'malformed physicalId in state — no delete issued',
@@ -443,7 +511,7 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
         const warn = allWarn();
         const lines = warn.split('\n');
         // Positive control: the skip summary ran.
-        expect(warn).toContain('could not address the skipped resource(s)');
+        expect(warn).toContain('did not confirm the skipped resource(s) were deleted');
         expect(warn).not.toContain('--all --force');
         expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
           "Drop the record with: cdkd state orphan TestStack --stack-region '<region>'",
@@ -478,7 +546,7 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
 
     const warn = allWarn();
     expect(warn).toContain('Stack a stack name that is not a plain identifier partially destroyed');
-    expect(warn).toContain('could not address the skipped resource(s)');
+    expect(warn).toContain('did not confirm the skipped resource(s) were deleted');
     expect(warn).not.toContain('--all --force');
     expect(warn).toMatch(/^Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1$/m);
     expect(warn).toContain(HINT_HOLES_CLAUSE);
