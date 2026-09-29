@@ -2828,7 +2828,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DBProxyName',
         'TargetGroupName',
       ]),
-      silentDrop: new Map<string, string>(),
+      silentDrop: new Map<string, string>([['Tags', 'not yet implemented by cdkd']]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['TargetGroupArn']),
       ccRouteUnavailable: false,
