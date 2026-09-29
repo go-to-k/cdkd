@@ -54,8 +54,8 @@ the bounded `cause` chain for the error name and the Cloud Control
    logical IDs, so a child sharing the parent stack's id still passes. A
    provider's `create()` puts a failing AUXILIARY write (anything but the
    main create and its cleanup) behind that anchor with `markAuxiliaryFailure`
-   (`src/provisioning/auxiliary-failure.ts`, #3826; the DynamoDB GlobalTable
-   is residual #3877). `withRetry` carries the mark FORWARD: once an attempt
+   (`src/provisioning/auxiliary-failure.ts`, #3826, #3877). `withRetry`
+   carries the mark FORWARD: once an attempt
    failed auxiliary (#3972) or AMBIGUOUS (`isAmbiguousOutcomeError`: a
    non-throttle 5xx, a Cloud Control handler failing mid-create — its
    `Throttling` / `GeneralServiceException` included — a socket

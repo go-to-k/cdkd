@@ -50,6 +50,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -1275,6 +1276,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             `to remove the orphaned AWS-side table.`
         );
       }
+      // CreateTable succeeded, so nothing raised here is this table's own name
+      // collision: an "already exists" relayed from the replica add or the TTL
+      // call would otherwise be credited to it, and `--replace` would delete
+      // the live old table over it (issue #3826 / #3877).
+      markAuxiliaryFailure(wiringError, logicalId);
       const cause = wiringError instanceof Error ? wiringError : undefined;
       throw new ProvisioningError(
         `Failed to create DynamoDB GlobalTable ${logicalId}: ${wiringError instanceof Error ? wiringError.message : String(wiringError)}`,
