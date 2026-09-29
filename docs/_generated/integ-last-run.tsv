@@ -46,7 +46,7 @@ cloudtrail-trail	2026-09-28T07:22:06Z	PASS	196	verify.sh	#3885 log-group sweep; 
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-09-28T17:37:17Z	PASS	71	verify.sh	rc ok, orph clean (#3996, after merging main)
 codebuild-project	2026-09-27T19:00:18Z	PASS	116	verify.sh	rc ok, orph clean (#3887)
-codecommit	2026-09-29T04:14:27Z	PASS	100	verify.sh	PR #4032 merge-gate run; rc ok, orph clean
+codecommit	2026-09-29T05:18:51Z	PASS	105	verify.sh	PR #4053 run; rc ok, orph clean; in-place rename reads the id before renaming
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-09-25T19:22:55Z	PASS	245	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 cognito-custom-attribute-add	2026-09-05T21:47:13Z	PASS	51	verify.sh	PR2662 gate run; 3 phases, destroy 0 errors, 0 orphans
