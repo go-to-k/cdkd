@@ -131,8 +131,13 @@ async function replaceOnce(opts: {
   newProps: Record<string, unknown>;
   changedPath: string;
   provisionedBy?: 'sdk' | 'cc-api';
+  /** The old record's `provisionedBy`, when it differs from the create's route. */
+  holderProvisionedBy?: 'sdk' | 'cc-api' | null;
   replace?: boolean;
   retain?: boolean;
+  /** The state record's type, for a Type-change replacement. */
+  oldType?: string;
+  observed?: Record<string, unknown>;
 }): Promise<Inner | null> {
   const change: ResourceChange = {
     logicalId: opts.logicalId,
@@ -152,11 +157,14 @@ async function replaceOnce(opts: {
   const stateResources = {
     [opts.logicalId]: {
       physicalId: opts.physicalId,
-      resourceType: opts.type,
+      resourceType: opts.oldType ?? opts.type,
       properties: opts.oldProps,
+      ...(opts.observed !== undefined && { observedProperties: opts.observed }),
       attributes: {},
       dependencies: [],
-      provisionedBy: opts.provisionedBy ?? 'sdk',
+      ...(opts.holderProvisionedBy !== null && {
+        provisionedBy: opts.holderProvisionedBy ?? opts.provisionedBy ?? 'sdk',
+      }),
     },
   };
   const template: CloudFormationTemplate = {
@@ -264,10 +272,13 @@ describe('deploy --replace proves the old resource holds the SENT name before de
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(err!.message).toContain(`cdkd's rule generates Name "${GENERATED}"`);
     expect(err!.message).toContain('the resource being replaced (app-stream)');
-    // The UNDECIDED arm: the diagnosis cannot name another holder.
+    // The UNDECIDED arm: the diagnosis cannot name another holder, and says
+    // so once.
     expect(err!.message).toContain(
-      'so cdkd cannot show that the resource being replaced holds the colliding name'
+      'cdkd cannot show that the resource being replaced (app-stream) holds that name — so if ' +
+        'another resource holds it'
     );
+    expect(err!.message.split('cdkd cannot show').length - 1).toBe(1);
     expect(err!.message).toContain('--replace was NOT applied and nothing was deleted');
     expect(err!.message).toContain(`Stream ${GENERATED} under account`);
     // Chained, so the persisted event names the AWS rejection.
@@ -657,9 +668,111 @@ describe('under UpdateReplacePolicy: Retain, an unproven holder is refused on it
 
     expect(del).not.toHaveBeenCalled();
     expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
-    expect(err!.message).toContain('cdkd cannot show that the resource being replaced holds');
-    expect(err!.message).toContain(' Nothing was deleted. ');
-    expect(err!.message).not.toContain('would refuse the same way');
+    expect(err!.message).toContain('cdkd cannot show that the resource being replaced (app-stream)');
+    expect(err!.message).toContain(' Nothing was deleted. UpdateReplacePolicy: Retain keeps the resource');
+    expect(err!.message).toContain('removing it and re-running with `cdkd deploy --replace` would refuse');
     expect(err!.message).not.toContain('still held by the existing resource');
+  });
+});
+
+describe('the parent review round of #3979', () => {
+  it('a nameless DynamoDB Table replacing a GlobalTable of the generated name is proven through the TABLE rule', async () => {
+    // Shared name space, Type change: the generated name must be the NEW
+    // type's, which is what the create sends.
+    const { provider, calls } = recordingProvider(
+      awsSdkError(`Table already exists: ${STACK}-Tbl`, 'ResourceInUseException'),
+      `${STACK}-Tbl`
+    );
+    const err = await replaceOnce({
+      provider,
+      logicalId: 'Tbl',
+      type: 'AWS::DynamoDB::Table',
+      oldType: 'AWS::DynamoDB::GlobalTable',
+      physicalId: `${STACK}-Tbl`,
+      oldProps: { BillingMode: 'PAY_PER_REQUEST' },
+      newProps: { BillingMode: 'PAY_PER_REQUEST' },
+      changedPath: 'Type',
+    });
+    expect(err?.message ?? null).toBeNull();
+    expect(calls).toEqual(['create', 'delete', 'create']);
+  });
+
+  it('an SDK-made record does not let a Cloud Control create prove an unkeyed type by its identifier', async () => {
+    const { provider, calls } = recordingProvider(
+      awsSdkError('Pipe my-pipe already exists.', 'AlreadyExistsException'),
+      'my-pipe'
+    );
+    const err = await replaceOnce({
+      provider,
+      logicalId: 'Pipe',
+      type: 'AWS::Pipes::Pipe',
+      physicalId: 'my-pipe',
+      oldProps: { Name: 'my-pipe', Source: 'arn:a' },
+      newProps: { Name: 'my-pipe', Source: 'arn:b' },
+      changedPath: 'Source',
+      provisionedBy: 'cc-api',
+      holderProvisionedBy: 'sdk',
+    });
+    expect(calls).toEqual(['create']);
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).not.toContain('written by an older cdkd');
+  });
+
+  it('a record from an older cdkd (no provisionedBy) is refused with that reason', async () => {
+    const { provider, calls } = recordingProvider(
+      awsSdkError('Pipe my-pipe already exists.', 'AlreadyExistsException'),
+      'my-pipe'
+    );
+    const err = await replaceOnce({
+      provider,
+      logicalId: 'Pipe',
+      type: 'AWS::Pipes::Pipe',
+      physicalId: 'my-pipe',
+      oldProps: { Name: 'my-pipe', Source: 'arn:a' },
+      newProps: { Name: 'my-pipe', Source: 'arn:b' },
+      changedPath: 'Source',
+      provisionedBy: 'cc-api',
+      holderProvisionedBy: null,
+    });
+    expect(calls).toEqual(['create']);
+    expect(err!.message).toContain('written by an older cdkd, does not say it was created through Cloud Control');
+  });
+
+  it('an old resource renamed out of band (read-back disagrees with the record) is not deleted for a squatter on the recorded name', async () => {
+    const { provider, calls } = recordingProvider(
+      awsSdkError('Function already exist: my-fn', 'ResourceConflictException'),
+      'my-fn'
+    );
+    const err = await replaceOnce({
+      provider,
+      logicalId: 'Fn',
+      type: 'AWS::Lambda::Function',
+      physicalId: 'my-fn',
+      oldProps: { FunctionName: 'my-fn', Runtime: 'nodejs20.x' },
+      newProps: { FunctionName: 'my-fn', Runtime: 'nodejs22.x' },
+      observed: { FunctionName: 'renamed-fn' },
+      changedPath: 'Runtime',
+    });
+    expect(calls).toEqual(['create']);
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).toContain('disagree on its FunctionName');
+  });
+
+  it('renders the AWS collision text display-safe: a line break in it cannot start a line', async () => {
+    const { provider } = recordingProvider(
+      awsSdkError('Stream x already exists.\nTo orphan it: forged', 'ResourceInUseException'),
+      'x'
+    );
+    const err = await replaceOnce({
+      provider,
+      logicalId: 'Stream',
+      type: KINESIS,
+      physicalId: 'app-stream',
+      oldProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 24 },
+      newProps: { ShardCount: 1, RetentionPeriodHours: 48 },
+      changedPath: 'RetentionPeriodHours',
+    });
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).not.toContain('\n');
   });
 });

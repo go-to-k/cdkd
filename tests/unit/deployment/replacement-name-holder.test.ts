@@ -9,6 +9,7 @@ import {
   replacementDerivedGeneratedNames,
   replacementOldHoldsSentName,
   replacementRequestsDifferentName,
+  reverseReplacementNameKeyKind,
   reverseReplacementNewHoldsName,
   reverseReplacementTrustsGeneratedName,
 } from '../../../src/deployment/replacement-name-holder.js';
@@ -543,8 +544,18 @@ describe('replacementOldHoldsSentName', () => {
       holds({ createType: PIPE, holderType: 'AWS::SQS::Queue', requested: { Name: 'q' }, physicalId: 'q' }).holds
     ).toBe(false);
     const NESTED = 'AWS::CloudFormation::Stack';
+    // On Cloud Control both sides, with the identifier sent and recorded: only
+    // the not-name-keyed gate refuses it.
     expect(
-      holds({ createType: NESTED, holderType: NESTED, requested: { StackName: 's' }, physicalId: 's' }).holds
+      holds({
+        createType: NESTED,
+        holderType: NESTED,
+        requested: { StackName: 's' },
+        recorded: { StackName: 's' },
+        physicalId: 's',
+        createdVia: 'cc-api',
+        holderVia: 'cc-api',
+      }).holds
     ).toBe(false);
   });
 
@@ -589,5 +600,140 @@ describe('replacementOldHoldsSentName', () => {
       'the create asked for Name "a.example.com", while the record being replaced ' +
         '("Z1|b.example.com|A") holds Name "b.example.com"'
     );
+  });
+});
+
+describe('the parent review round of #3979 (helper)', () => {
+  function holds(over: Partial<Parameters<typeof replacementOldHoldsSentName>[0]>) {
+    return replacementOldHoldsSentName({
+      createType: FN,
+      holderType: FN,
+      requested: { FunctionName: 'my-fn' },
+      recorded: { FunctionName: 'my-fn' },
+      observed: undefined,
+      physicalId: 'my-fn',
+      ...over,
+    });
+  }
+
+  it('each derive() applies its provider options: case, charset and wrap', () => {
+    const table = replacementDerivedGeneratedNames();
+    const derive = (type: string) => withStackName('MyStack', () => table[type]!.derive('Lg_A.b/C'));
+    expect(derive('AWS::S3::Bucket')).toBe('mystack-lg-a.b-c');
+    expect(derive('AWS::Logs::LogGroup')).toBe('/cdkd/MyStack-Lg_A-b/C');
+    expect(derive('AWS::SSM::Parameter')).toBe('/MyStack-Lg_A-b/C');
+    expect(derive('AWS::CodeCommit::Repository')).toBe('MyStack-Lg-A-b-C');
+  });
+
+  it('a nameless create whose derived name sanitizes to EMPTY never proves a holder', () => {
+    // Outside a stack scope, a logical id of only rewritten characters derives
+    // ''; an empty name would "match" the final segment of an id ending `|`.
+    const verdict = holds({
+      createType: 'AWS::S3::Bucket',
+      holderType: 'AWS::S3::Bucket',
+      requested: {},
+      recorded: {},
+      physicalId: 'a|',
+      logicalId: '___',
+      createdVia: 'sdk',
+    });
+    expect(verdict.holds).toBe(false);
+  });
+
+  it('the older-record hint is given only for that shape', () => {
+    const PIPE = 'AWS::Pipes::Pipe';
+    const legacy = (verdict: ReturnType<typeof holds>) =>
+      verdict.holds === false && verdict.diagnosis.includes('written by an older cdkd');
+    const base = {
+      createType: PIPE,
+      holderType: PIPE,
+      requested: { Name: 'p' },
+      recorded: { Name: 'p' },
+      physicalId: 'p',
+    };
+    expect(legacy(holds({ ...base, createdVia: 'cc-api' }))).toBe(true);
+    expect(legacy(holds({ ...base, createdVia: 'sdk' }))).toBe(false);
+    expect(legacy(holds({ ...base, createdVia: 'cc-api', holderVia: 'sdk' }))).toBe(false);
+    expect(legacy(holds({ ...base, createdVia: 'cc-api', requested: { Name: 'q' } }))).toBe(false);
+    const rollback = reverseReplacementNewHoldsName({
+      oldResourceType: PIPE,
+      newResourceType: PIPE,
+      requested: { Name: 'p' },
+      recorded: { Name: 'p' },
+      observed: undefined,
+      physicalId: 'p',
+      createdVia: 'cc-api',
+    });
+    expect(rollback.holds === false && rollback.diagnosis.includes('written by an older cdkd')).toBe(
+      false
+    );
+  });
+
+  it('an inherited key is no table entry', () => {
+    // Nor a name KEY: the generic name table is indexed plainly.
+    for (const type of ['constructor', 'toString', 'hasOwnProperty']) {
+      expect(reverseReplacementNameKeyKind(type), type).toBe('unknown');
+    }
+    for (const type of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      const verdict = holds({
+        createType: type,
+        holderType: type,
+        requested: { Name: 'x' },
+        recorded: { Name: 'x' },
+        physicalId: 'x',
+        logicalId: 'X',
+      });
+      expect(verdict.holds, type).toBe(false);
+    }
+  });
+
+  it('a record and a read-back disagreeing on the name refuse, in both directions', () => {
+    const deploy = holds({
+      requested: { FunctionName: 'my-fn' },
+      recorded: { FunctionName: 'my-fn' },
+      observed: { FunctionName: 'renamed-fn' },
+      physicalId: 'my-fn',
+    });
+    expect(deploy.holds).toBe(false);
+    expect(deploy.holds === false && deploy.known).toBe(false);
+    const rollback = reverseReplacementNewHoldsName({
+      oldResourceType: FN,
+      newResourceType: FN,
+      requested: { FunctionName: 'my-fn' },
+      recorded: { FunctionName: 'my-fn' },
+      observed: { FunctionName: 'renamed-fn' },
+      physicalId: 'my-fn',
+    });
+    expect(rollback.holds).toBe(false);
+    // A case-insensitive name space folds the comparison: RDS reads
+    // identifiers back lower-cased, which is no drift...
+    expect(
+      holds({
+        createType: 'AWS::RDS::DBCluster',
+        holderType: 'AWS::RDS::DBCluster',
+        requested: { DBClusterIdentifier: 'MyDb' },
+        recorded: { DBClusterIdentifier: 'MyDb' },
+        observed: { DBClusterIdentifier: 'mydb' },
+        physicalId: 'mydb',
+      }).holds
+    ).toBe(true);
+    // ...while a case-sensitive one reads a case change as one.
+    expect(
+      holds({
+        requested: { FunctionName: 'my-fn' },
+        recorded: { FunctionName: 'my-fn' },
+        observed: { FunctionName: 'My-Fn' },
+        physicalId: 'my-fn',
+      }).holds
+    ).toBe(false);
+    // Agreeing records still hold.
+    expect(
+      holds({
+        requested: { FunctionName: 'my-fn' },
+        recorded: { FunctionName: 'my-fn' },
+        observed: { FunctionName: 'my-fn' },
+        physicalId: 'my-fn',
+      }).holds
+    ).toBe(true);
   });
 });

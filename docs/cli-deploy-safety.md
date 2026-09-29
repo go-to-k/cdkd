@@ -774,7 +774,8 @@ checks that the old resource holds the name the create actually sent:
 | A type cdkd has no name property for (Cloud Control only) | Both were created through Cloud Control, the create sent the old physical id itself as a `...Name` / `...Identifier` property, and every such property it sent matches the old resource's |
 
 A name placed inside a parent (an API's stage, a cluster's service) must also
-be in the same parent. When the check fails or cannot decide, the deploy fails
+be in the same parent, and the old resource's state record and its last
+read-back must not name it differently (a resource renamed outside cdkd). When the check fails or cannot decide, the deploy fails
 with `NAMED_REPLACEMENT_COLLISION` and **nothing is deleted** — with or without
 `--replace`, and without advising `--replace`, which would refuse the same way.
 Remove or rename whatever holds the name if it is yours — if that is the

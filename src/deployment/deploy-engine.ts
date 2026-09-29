@@ -24,7 +24,13 @@ import {
   ResourceUpdateNotSupportedError,
   CdkdError,
 } from '../utils/error-handler.js';
-import { displayIdent, displaySafe, isPasteableIdent, safeMsg } from '../utils/display-safe.js';
+import {
+  displayAwsMessage,
+  displayIdent,
+  displaySafe,
+  isPasteableIdent,
+  safeMsg,
+} from '../utils/display-safe.js';
 import { shellQuote } from '../state/lock-contention-message.js';
 import {
   refuseMalformedOutputs,
@@ -7741,8 +7747,15 @@ export class DeployEngine {
                 replaceProvider
               );
             } catch (createError) {
-              const createMsg =
-                createError instanceof Error ? createError.message : String(createError);
+              // The AWS text every refusal below quotes: masked FIRST (the
+              // create was handed resolved values), then rendered display-safe
+              // and bounded, since an AWS message can echo a template value.
+              const createMsg = displayAwsMessage(
+                maskSecretsInText(
+                  createError instanceof Error ? createError.message : String(createError),
+                  updateSecrets
+                )
+              );
               // A custom-named resource cannot be safely replaced: the
               // create-first attempt collides with the old resource still
               // holding the name. CloudFormation refuses this same shape
@@ -7846,7 +7859,9 @@ export class DeployEngine {
                   this.options.replace === true
                     ? ` --replace was NOT applied and nothing was deleted.`
                     : updateReplacePolicy === 'Retain'
-                      ? ` Nothing was deleted.`
+                      ? ` Nothing was deleted. UpdateReplacePolicy: Retain keeps the resource ` +
+                        `being replaced in place; removing it and re-running with ` +
+                        `\`cdkd deploy --replace\` would refuse the same way rather than delete it.`
                       : ` Nothing was deleted, and \`cdkd deploy --replace\` would refuse the ` +
                         `same way rather than delete it.`;
                 throw markNonRetryable(
@@ -7863,8 +7878,7 @@ export class DeployEngine {
                             flagClause +
                             ` Remove or rename the resource holding that name if it is yours, ` +
                             `then re-run the deploy.`
-                          : `so cdkd cannot show that the resource being replaced holds the ` +
-                            `colliding name. If another resource holds it (an orphan of an ` +
+                          : `so if another resource holds it (an orphan of an ` +
                             `earlier attempt, or one made outside this stack), deleting the ` +
                             `resource being replaced would destroy it and collide again.` +
                             flagClause +

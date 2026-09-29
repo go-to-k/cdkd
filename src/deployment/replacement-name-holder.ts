@@ -136,6 +136,15 @@ interface NameKey {
 const flat = (property: string): NameKey => ({ name: [[property]] });
 
 /**
+ * A per-type table's OWN entry: a resource type is template text, and an
+ * inherited key (`constructor`, `__proto__`, `toString`) must read as absent,
+ * never as an entry.
+ */
+function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
+/**
  * The name key of every type whose name is NOT read by the generic
  * {@link explicitNamePropertyFor} rule — a nested name, a name placed by a
  * parent (scope), or a type absent from that table — keyed by type.
@@ -363,10 +372,11 @@ export function reverseReplacementNameKeyKind(
 
 function nameKeyFor(resourceType: string): NameKey | undefined {
   if (NOT_NAME_KEYED_TYPES.has(resourceType)) return undefined;
-  const own = REVERSE_REPLACEMENT_NAME_KEYS[resourceType];
+  const own = ownEntry(REVERSE_REPLACEMENT_NAME_KEYS, resourceType);
   if (own !== undefined) return own;
   const property = explicitNamePropertyFor(resourceType);
-  return property === undefined ? undefined : flat(property);
+  // That table is read by plain indexing: an inherited member is no name.
+  return typeof property === 'string' ? flat(property) : undefined;
 }
 
 function valueAt(
@@ -917,9 +927,21 @@ function holderVerdict(
     ) {
       return HOLDS;
     }
+    // The one shape the identity rule would have proven but for a record
+    // that predates cdkd recording its route: still refused, with the reason.
+    const legacyRecord =
+      v.identityFallback &&
+      input.createdVia === 'cc-api' &&
+      input.holderVia === undefined &&
+      reverseReplacementNameKeyKind(oldResourceType) === 'unknown' &&
+      sentIdentifierIs(requested, recorded, observed, physicalId);
     return unproven(
       `cdkd has no name property to compare for a ${r.shown(oldResourceType)}, so it cannot ` +
-        `show that ${newResource} holds the colliding name`
+        `show that ${newResource} holds the colliding name` +
+        (legacyRecord
+          ? ` (its state record, written by an older cdkd, does not say it was created through ` +
+            `Cloud Control, which is what would let its identifier prove it)`
+          : '')
     );
   }
   const labels = oldKey.name.map((p) => r.shown(p.join('.'))).join(' / ');
@@ -933,7 +955,7 @@ function holderVerdict(
         `, so cdkd cannot compare it with ${newResource}`
     );
   }
-  const rewrite = SENT_NAME_REWRITTEN[oldResourceType];
+  const rewrite = ownEntry(SENT_NAME_REWRITTEN, oldResourceType);
   if (rewrite !== undefined) {
     return rewrittenNameHolds(
       input,
@@ -957,18 +979,20 @@ function holderVerdict(
     wantName = namePath === undefined ? undefined : valueAt(input.generated, namePath);
     generatedName = wantName !== undefined;
   }
-  const derived = DERIVED_GENERATED_NAMES[oldResourceType];
-  if (
+  const derived = ownEntry(DERIVED_GENERATED_NAMES, oldResourceType);
+  const derivedName =
     namePath === undefined &&
     v.derivedNames &&
     derived !== undefined &&
     input.createdVia !== 'cc-api' &&
     typeof input.logicalId === 'string' &&
     input.logicalId !== ''
-  ) {
+      ? derived.derive(input.logicalId)
+      : '';
+  if (derivedName !== '') {
     namePath = oldKey.name[0];
-    wantName = derived.derive(input.logicalId);
-    generatedName = wantName !== '';
+    wantName = derivedName;
+    generatedName = true;
   }
   if (namePath === undefined || wantName === undefined) {
     return unproven(
@@ -986,6 +1010,25 @@ function holderVerdict(
   const inCase = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
     ? (value: string): string => value.toLowerCase()
     : (value: string): string => value;
+  // A record and a read-back that name the holder DIFFERENTLY (renamed out
+  // of band, or a drifted record) cannot say which name it holds now: the
+  // physical id would still name the recorded one. Undecided, in both
+  // directions.
+  const drifted = newKey.name.find((path) => {
+    const recordedName = valueAt(recorded, path);
+    const observedName = valueAt(observed, path);
+    return (
+      recordedName !== undefined && observedName !== undefined && !same(recordedName, observedName)
+    );
+  });
+  if (drifted !== undefined) {
+    return unproven(
+      `${wanted}, and the records of ${newResource} disagree on its ` +
+        `${r.shown(drifted.join('.'))} (recorded ${r.quoted(valueAt(recorded, drifted) ?? '')}, ` +
+        `read back ${r.quoted(valueAt(observed, drifted) ?? '')}), so cdkd cannot show which name ` +
+        `it holds`
+    );
+  }
   const held = newKey.name.map((path) => heldAt(recorded, observed, path));
   const haveName = held.find((h) => h.value !== undefined)?.value;
   const nameHeld =
