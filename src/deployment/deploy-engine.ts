@@ -183,6 +183,7 @@ import {
   type CreateOnlyPrefetch,
 } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
+import { withUnchangedSecretPrincipalLists } from '../provisioning/iam-policy-targets.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import {
   resourcesNamingDeclaredParameter,
@@ -8365,17 +8366,38 @@ export class DeployEngine {
           // the stateful guard), and Cloud Control would patch a create-only
           // path. In memory only: nothing persists this bag, and the provider's
           // masker already holds the value as a needle.
-          const previousForUpdate =
-            noEchoHeldPaths.size === 0
-              ? currentPropsAsWritten
-              : {
-                  ...currentPropsAsWritten,
-                  ...Object.fromEntries(
-                    [...noEchoHeldPaths]
-                      .filter((path) => Object.prototype.hasOwnProperty.call(updateProps, path))
-                      .map((path) => [path, updateProps[path]])
-                  ),
-                };
+          //
+          // And for a type whose provider has no live source for a recorded
+          // principal list (IAM::Policy, UserToGroupAddition), an entry state
+          // holds as a secret reference the template still spells the same
+          // way is dropped from the previous side (go-to-k/cdkd#4064): the
+          // record's `{{resolve:...}}` is not a name, so every in-place update
+          // was refused, and the desired side names that principal too.
+          const { previous: previousForUpdate, dropped: droppedPrincipalKinds } =
+            withUnchangedSecretPrincipalLists(
+              resourceType,
+              currentResource.physicalId,
+              noEchoHeldPaths.size === 0
+                ? currentPropsAsWritten
+                : {
+                    ...currentPropsAsWritten,
+                    ...Object.fromEntries(
+                      [...noEchoHeldPaths]
+                        .filter((path) => Object.prototype.hasOwnProperty.call(updateProps, path))
+                        .map((path) => [path, updateProps[path]])
+                    ),
+                  },
+              desiredForSkipCheckAsWritten
+            );
+          if (droppedPrincipalKinds.length > 0) {
+            // Kinds only, never names. A secret whose value changed since the
+            // last deploy under the same reference is not visible here: the
+            // record keeps only the reference.
+            const kinds = droppedPrincipalKinds.join(' / ');
+            this.logger.warn(
+              safeMsg`${logicalId} (${resourceType}): the recorded ${kinds} holds a secret reference the template still spells the same way, so cdkd re-applies it to the principals this deploy resolved it to and removes it from none of them. If that secret's value changed since the last deploy, a principal only the OLD value named still has the policy or membership: remove it from that principal by hand.`
+            );
+          }
 
           let result;
           let resultProvisionedBy = updateDecision.provisionedBy;
@@ -8429,7 +8451,9 @@ export class DeployEngine {
                     // Patch, so a key the SDK route never wrote must be absent
                     // here or the patch omits it and the auto-route sends
                     // nothing for it. `previousForUpdate` differs from it only
-                    // at confirmed NoEcho paths (go-to-k/cdkd#3729).
+                    // at confirmed NoEcho paths (go-to-k/cdkd#3729), and at an
+                    // IAM::Policy / UserToGroupAddition principal list whose
+                    // unchanged secret reference was dropped (go-to-k/cdkd#4064).
                     previousForUpdate,
                     // The UPDATE twin of the CREATE call's masker (issue #1932
                     // item 3): same resolved bag, same exposure, so the contract

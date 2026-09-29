@@ -3879,6 +3879,7 @@
         "export",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
+        "iam-secret-derived-principals",
         "migrate-from-cfn"
       ],
       "signals": {
@@ -3893,6 +3894,10 @@
           "literal"
         ],
         "iam-role-policies-drift-clean": [
+          "literal"
+        ],
+        "iam-secret-derived-principals": [
+          "l1",
           "literal"
         ],
         "migrate-from-cfn": [
@@ -4291,10 +4296,15 @@
       "resourceType": "AWS::IAM::UserToGroupAddition",
       "integs": [
         "iam-managed-policy",
+        "iam-secret-derived-principals",
         "infra-security"
       ],
       "signals": {
         "iam-managed-policy": [
+          "l1",
+          "literal"
+        ],
+        "iam-secret-derived-principals": [
           "l1",
           "literal"
         ],

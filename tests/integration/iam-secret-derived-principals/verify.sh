@@ -25,8 +25,17 @@
 #      a full live diff would detach it), with the update log carrying both
 #      ADD-only warnings as positive markers of the live-read path; the document
 #      change landed; and neither name appears in the deploy or update log.
+#   3b. go-to-k/cdkd#4064: the inline AWS::IAM::Policy and the
+#      UserToGroupAddition, whose providers have NO live source, update too:
+#      the engine drops the unchanged reference from the recorded side, so the
+#      provider re-applies it.
+#      The added role gets the inline policy, the stack's user joins the
+#      addition group, the secret-named principals keep theirs, and the inline
+#      document change landed.
 #   4. Destroy is clean, and no surviving object version under the stack's
-#      state prefix carries either name.
+#      state prefix carries any of the names. The two #4064 records are
+#      orphaned and their attachments removed by hand first: their DELETE still
+#      skips a secret-derived record (go-to-k/cdkd#4150).
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -79,6 +88,8 @@ DEPLOY_LOG="$(mktemp -t iam-secret-derived-principals.XXXXXX)"
 SUFFIX="$(date +%s)-$$"
 EXT_ROLE="cdkd-integ-sdp-role-${SUFFIX}"
 EXT_GROUP="cdkd-integ-sdp-group-${SUFFIX}"
+EXT_USER="cdkd-integ-sdp-user-${SUFFIX}"
+INLINE_POLICY="cdkd-integ-sdp-inline"
 # Attached / joined BY HAND after the first deploy, and named by NO template:
 # what IAM lists beyond the template. A full live diff would detach / remove
 # them; ADD-only must leave them.
@@ -87,6 +98,7 @@ ELSE_GROUP="cdkd-integ-sdp-else-group-${SUFFIX}"
 export SDP_SECRET_NAME="cdkd-integ-sdp-${SUFFIX}"
 SEEDED_ROLE=0
 SEEDED_GROUP=0
+SEEDED_USER=0
 SEEDED_ELSE_ROLE=0
 SEEDED_ELSE_GROUP=0
 SEEDED_SECRET=0
@@ -112,7 +124,20 @@ delete_seeded_role() { # usage: delete_seeded_role <role-name>
       [ "${arn}" = "None" ] && continue
       aws iam detach-role-policy --role-name "$1" --policy-arn "${arn}" >/dev/null 2>&1
     done
+    # The #4064 inline policy, which a skipped delete leaves on the role.
+    aws iam delete-role-policy --role-name "$1" --policy-name "${INLINE_POLICY}" >/dev/null 2>&1
     aws iam delete-role --role-name "$1" >/dev/null 2>&1
+  )
+}
+delete_seeded_user() { # usage: delete_seeded_user <user-name>
+  (
+    set +eu
+    groups="$(aws iam list-groups-for-user --user-name "$1" --query 'Groups[].GroupName' --output text 2>/dev/null)"
+    for group in ${groups}; do
+      [ "${group}" = "None" ] && continue
+      aws iam remove-user-from-group --group-name "${group}" --user-name "$1" >/dev/null 2>&1
+    done
+    aws iam delete-user --user-name "$1" >/dev/null 2>&1
   )
 }
 delete_seeded_group() { # usage: delete_seeded_group <group-name>
@@ -132,7 +157,8 @@ delete_seeded_group() { # usage: delete_seeded_group <group-name>
 # name a seeded principal on a failure; those names are synthetic per-run
 # values, never a real secret.
 redact() {
-  sed -e "s|${EXT_ROLE}|<secret-role>|g" -e "s|${EXT_GROUP}|<secret-group>|g"
+  sed -e "s|${EXT_ROLE}|<secret-role>|g" -e "s|${EXT_GROUP}|<secret-group>|g" \
+    -e "s|${EXT_USER}|<secret-user>|g"
 }
 log_tail() {
   tail -60 "${DEPLOY_LOG}" | redact >&2
@@ -150,10 +176,26 @@ cleanup() {
   if [ "${DEPLOYED}" = "1" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+    # Both skip the SecretInlinePolicy / SecretGroupAddition records while
+    # they hold a secret reference (go-to-k/cdkd#4150), leaving the stack's
+    # state behind for the next run's pre-flight to refuse. Orphan ONLY those
+    # two, one call each (a path already gone fails alone), so a record left
+    # for any OTHER reason still blocks the next pre-flight rather than
+    # hiding a live resource. Then retry the state teardown. Their AWS side is
+    # covered below and by the destroy: the seeded role and user lose the
+    # inline policy and the membership in delete_seeded_role /
+    # delete_seeded_user, and the stack's own AddedRole, SecretMember and
+    # AdditionGroup deletes remove theirs.
+    for path in SecretInlinePolicy SecretGroupAddition; do
+      AWS_REGION="${REGION}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/${path}" \
+        --state-bucket "${STATE_BUCKET:-}" --stack-region "${REGION}" --yes >/dev/null 2>&1
+    done
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
   [ "${SEEDED_ROLE}" = "1" ] && delete_seeded_role "${EXT_ROLE}"
   [ "${SEEDED_ELSE_ROLE}" = "1" ] && delete_seeded_role "${ELSE_ROLE}"
   [ "${SEEDED_GROUP}" = "1" ] && delete_seeded_group "${EXT_GROUP}"
+  [ "${SEEDED_USER}" = "1" ] && delete_seeded_user "${EXT_USER}"
   [ "${SEEDED_ELSE_GROUP}" = "1" ] && delete_seeded_group "${ELSE_GROUP}"
   if [ "${SEEDED_SECRET}" = "1" ]; then
     aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDP_SECRET_NAME}" \
@@ -182,7 +224,7 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/n
   exit 1
 fi
 
-echo "==> Step 1: seed the external role and group, and the secret naming them"
+echo "==> Step 1: seed the external role, group and user, and the secret naming them"
 aws iam create-role --role-name "${EXT_ROLE}" \
   --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
   >/dev/null
@@ -195,15 +237,18 @@ aws iam create-group --group-name "${EXT_GROUP}" >/dev/null
 SEEDED_GROUP=1
 aws iam create-group --group-name "${ELSE_GROUP}" >/dev/null
 SEEDED_ELSE_GROUP=1
+aws iam create-user --user-name "${EXT_USER}" >/dev/null
+SEEDED_USER=1
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t iam-secret-derived-principals-secret.XXXXXX)"
-printf '{"role":"%s","group":"%s"}' "${EXT_ROLE}" "${EXT_GROUP}" > "${SECRET_FILE}"
+printf '{"role":"%s","group":"%s","user":"%s"}' "${EXT_ROLE}" "${EXT_GROUP}" "${EXT_USER}" > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDP_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
 SEEDED_SECRET=1
 rm -f "${SECRET_FILE}"
 aws iam wait role-exists --role-name "${EXT_ROLE}"
 aws iam wait role-exists --role-name "${ELSE_ROLE}"
+aws iam wait user-exists --user-name "${EXT_USER}"
 # No group-exists waiter: poll, so the deploy's AddUserToGroup does not race it.
 for group in "${EXT_GROUP}" "${ELSE_GROUP}"; do
   seen=0
@@ -246,6 +291,18 @@ policy_document() { # usage: policy_document <unused> -> the default version's d
   aws iam get-policy-version --policy-arn "${POLICY_ARN}" --version-id "${version}" \
     --query 'PolicyVersion.Document.Statement[0].Action' --output text | tr '\t' '\n' | sort | tr '\n' ' '
 }
+inline_on_role() { # usage: inline_on_role <role-name> -> 1 when the #4064 inline policy is on it, 0 when not
+  aws iam list-role-policies --role-name "$1" \
+    --query "PolicyNames[?@=='${INLINE_POLICY}'] | length(@)" --output text
+}
+inline_document() { # usage: inline_document <role-name> -> the inline policy's actions, sorted
+  aws iam get-role-policy --role-name "$1" --policy-name "${INLINE_POLICY}" \
+    --query 'PolicyDocument.Statement[0].Action' --output text | tr '\t' '\n' | sort | tr '\n' ' '
+}
+group_users() { # usage: group_users <group-name> -> its members, sorted
+  aws iam get-group --group-name "$1" --query 'Users[].UserName' --output text \
+    | tr '\t' '\n' | awk 'NF' | sort | tr '\n' ' '
+}
 expect_eq() { # usage: expect_eq <what> <want> <readback-fn> <arg>
   # Polls: IAM reads are eventually consistent right after a write. A failed
   # readback FAILS the run rather than reading as an empty answer.
@@ -269,7 +326,7 @@ expect_eq() { # usage: expect_eq <what> <want> <readback-fn> <arg>
 # each group it leaves. Never echoes the needle.
 log_holds_no_plaintext() { # usage: log_holds_no_plaintext <phase>
   local needle
-  for needle in "${EXT_ROLE}" "${EXT_GROUP}"; do
+  for needle in "${EXT_ROLE}" "${EXT_GROUP}" "${EXT_USER}"; do
     if grep -qF "${needle}" "${DEPLOY_LOG}"; then
       echo "FAIL: the $1 log carries a secret-derived name in plaintext" >&2
       exit 1
@@ -348,18 +405,19 @@ POLICY_ARN=$(aws iam list-policies --scope Local \
 ADDED_ROLE=$(find_name list-roles Roles RoleName AddedRole)
 ADDED_GROUP=$(find_name list-groups Groups GroupName AddedGroup)
 MEMBER=$(find_name list-users Users UserName SecretMember)
-for v in POLICY_ARN ADDED_ROLE ADDED_GROUP MEMBER; do
+ADDITION_GROUP=$(find_name list-groups Groups GroupName AdditionGroup)
+for v in POLICY_ARN ADDED_ROLE ADDED_GROUP MEMBER ADDITION_GROUP; do
   if [ -z "${!v}" ]; then echo "FAIL: ${v} not found for ${STACK}" >&2; exit 1; fi
 done
 
 echo "==> Step 3 (PREMISE): state records the redacted expression, not the names"
-for field in role group; do
+for field in role group user; do
   if ! state_holds "{{resolve:secretsmanager:${SDP_SECRET_NAME}:SecretString:${field}::}}"; then
     echo "FAIL: state does not record the {{resolve:secretsmanager: expression for the ${field}; that list is not secret-derived, so the update below would not exercise its live read" >&2
     exit 1
   fi
 done
-for needle in "${EXT_ROLE}" "${EXT_GROUP}"; do
+for needle in "${EXT_ROLE}" "${EXT_GROUP}" "${EXT_USER}"; do
   if state_holds "${needle}"; then
     echo "FAIL: the current state.json carries a secret-derived name in plaintext" >&2
     exit 1
@@ -368,6 +426,8 @@ done
 echo "    OK: state holds the expression and neither name"
 expect_eq "SecretPolicy on the secret-named role" "1" policy_on_role "${EXT_ROLE}"
 expect_eq "the user's groups" "${EXT_GROUP} " user_groups "${MEMBER}"
+expect_eq "the inline policy on the secret-named role" "1" inline_on_role "${EXT_ROLE}"
+expect_eq "the addition group's members" "${EXT_USER} " group_users "${ADDITION_GROUP}"
 
 echo "==> Step 3b: attach the policy and add the user BY HAND to principals no template names"
 aws iam attach-role-policy --role-name "${ELSE_ROLE}" --policy-arn "${POLICY_ARN}"
@@ -387,7 +447,7 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
 UPDATE_RC=$?
 set -e
 if [ "${UPDATE_RC}" -ne 0 ]; then
-  echo "FAIL: update deploy exited ${UPDATE_RC}; the secret-derived recorded list was not read from IAM" >&2
+  echo "FAIL: update deploy exited ${UPDATE_RC}; a secret-derived recorded list was not read from IAM (ManagedPolicy / User) or was refused (inline Policy / UserToGroupAddition, go-to-k/cdkd#4064)" >&2
   log_tail
   exit 1
 fi
@@ -412,15 +472,31 @@ echo "    OK: the update read the secret-derived lists from IAM, ADD-only"
 # Positive siblings from the same debug stream first: the ADDED principals'
 # attach / add lines prove debug lines reach this log, so the absence check
 # below cannot pass on a silent log.
-for sibling in 'Attached .* to role ' 'Added user .* to group '; do
+# Each pattern is anchored to ONE arm: ManagedPolicy's attach names an ARN,
+# the inline policy's says "inline policy".
+for sibling in 'Attached arn:.* to role ' 'Attached inline policy .* to role '; do
   if ! grep -qE "${sibling}" "${DEPLOY_LOG}"; then
     echo "FAIL: the update log has no '${sibling}' line; its debug output is missing (or the wording drifted), so the no-detach check below would pass on nothing" >&2
     log_tail
     exit 1
   fi
 done
+# The User arm and the UserToGroupAddition share one wording, so COUNT: the
+# User arm adds the user to AddedGroup (1), the addition adds the secret-named
+# user and the stack's user to AdditionGroup (2; go-to-k/cdkd#4064 drops the
+# unchanged reference from the recorded side, so it is re-added).
+ADD_LINES=$(grep -cE 'Added user .* to group ' "${DEPLOY_LOG}" || true)
+# At least, not exactly: withRetry re-runs a throttled or propagation-failed
+# update() whole, and the provider re-logs its adds. A lost re-add is caught by
+# Step 5b's group_users readback.
+if [ "${ADD_LINES}" -lt 3 ]; then
+  echo "FAIL: the update log has ${ADD_LINES} 'Added user ... to group' line(s), want at least 3 (User arm 1 + UserToGroupAddition 2)" >&2
+  log_tail
+  exit 1
+fi
 # Keyed on the line SHAPE, not the ARN, so a masked policy name cannot blunt it.
-for forbidden in 'Detached .* from (role|group|user) ' 'Removed user .* from group '; do
+for forbidden in 'Detached .* from (role|group|user) ' 'Removed user .* from group ' \
+  'Removed inline policy .* from (role|group|user) '; do
   if grep -qE "${forbidden}" "${DEPLOY_LOG}"; then
     echo "FAIL: the update log carries a '${forbidden}' line; an update that only adds principals detached or removed one" >&2
     log_tail
@@ -428,21 +504,66 @@ for forbidden in 'Detached .* from (role|group|user) ' 'Removed user .* from gro
   fi
 done
 echo "    OK: the update log carries no detach or removal"
+# go-to-k/cdkd#4064's positive marker: the engine dropped the unchanged
+# reference from both no-live-source records (kinds only, never names).
+for marker in "(AWS::IAM::Policy): the recorded Roles holds a secret reference the template still spells the same way" \
+  "(AWS::IAM::UserToGroupAddition): the recorded Users holds a secret reference the template still spells the same way"; do
+  if ! grep -qF "${marker}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the update log has no '${marker}' warning; the #4064 path did not run (or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+done
+echo "    OK: the no-live-source records took the #4064 path"
 
 echo "==> Step 5 (LOAD-BEARING): the added principals joined, the secret-named ones stayed"
 expect_eq "the policy's document change landed" "logs:DescribeLogGroups logs:GetLogEvents " policy_document -
 expect_eq "SecretPolicy on the ADDED role" "1" policy_on_role "${ADDED_ROLE}"
 expect_eq "SecretPolicy still on the secret-named role" "1" policy_on_role "${EXT_ROLE}"
 expect_eq "SecretPolicy still on the hand-attached role (ADD-only: no template names it)" "1" policy_on_role "${ELSE_ROLE}"
-WANT_GROUPS=$(printf '%s\n%s\n%s\n' "${EXT_GROUP}" "${ELSE_GROUP}" "${ADDED_GROUP}" | sort | tr '\n' ' ')
-expect_eq "the user's groups (added one joined; secret-named and hand-added ones kept, ADD-only)" "${WANT_GROUPS}" user_groups "${MEMBER}"
-for needle in "${EXT_ROLE}" "${EXT_GROUP}"; do
+# ADDITION_GROUP too: the update adds the stack's user through
+# SecretGroupAddition (the go-to-k/cdkd#4064 arm).
+WANT_GROUPS=$(printf '%s\n%s\n%s\n%s\n' "${EXT_GROUP}" "${ELSE_GROUP}" "${ADDED_GROUP}" "${ADDITION_GROUP}" | sort | tr '\n' ' ')
+expect_eq "the user's groups (added and addition ones joined; secret-named and hand-added ones kept, ADD-only)" "${WANT_GROUPS}" user_groups "${MEMBER}"
+for needle in "${EXT_ROLE}" "${EXT_GROUP}" "${EXT_USER}"; do
   if state_holds "${needle}"; then
     echo "FAIL: the current state.json carries a secret-derived name in plaintext after the update" >&2
     exit 1
   fi
 done
-echo "    OK: state still holds neither name"
+echo "    OK: state still holds no name"
+
+echo "==> Step 5b (LOAD-BEARING, go-to-k/cdkd#4064): the no-live-source arms updated by record diff"
+# Before the fix both refused the update over the recorded reference (the
+# update rc above). These prove the update ran with the unchanged reference
+# dropped from the recorded side: the added principal joined and the
+# secret-named one kept it (the forbidden-line check above covers a detach).
+expect_eq "the inline policy's document change landed" "logs:DescribeLogGroups logs:GetLogEvents " inline_document "${EXT_ROLE}"
+expect_eq "the inline policy on the ADDED role" "1" inline_on_role "${ADDED_ROLE}"
+expect_eq "the inline policy still on the secret-named role" "1" inline_on_role "${EXT_ROLE}"
+WANT_ADDITION=$(printf '%s\n%s\n' "${EXT_USER}" "${MEMBER}" | sort | tr '\n' ' ')
+expect_eq "the addition group's members (stack user joined, secret-named user kept)" "${WANT_ADDITION}" group_users "${ADDITION_GROUP}"
+
+echo "==> Step 5c: orphan the two #4064 records and remove their attachments by hand"
+# Their DELETE still skips a secret-derived record (go-to-k/cdkd#4150),
+# which would fail the destroy below. Orphan first, THEN remove by hand, so a
+# failure between the two leaves an attachment cleanup still removes rather
+# than a record a destroy would skip.
+for path in SecretInlinePolicy SecretGroupAddition; do
+  AWS_REGION="${REGION}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/${path}" \
+    --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes > "${DEPLOY_LOG}" 2>&1 || {
+    echo "FAIL: cdkd orphan ${STACK}/${path} failed" >&2
+    log_tail
+    exit 1
+  }
+done
+for role in "${EXT_ROLE}" "${ADDED_ROLE}"; do
+  aws iam delete-role-policy --role-name "${role}" --policy-name "${INLINE_POLICY}"
+done
+for user in "${EXT_USER}" "${MEMBER}"; do
+  aws iam remove-user-from-group --group-name "${ADDITION_GROUP}" --user-name "${user}"
+done
+echo "    OK: orphaned, and the inline policy and memberships removed"
 
 echo "==> Step 6: destroy"
 set +e
@@ -468,11 +589,14 @@ assert_gone "IAM group ${ADDED_GROUP} still exists after destroy" \
   aws iam get-group --group-name "${ADDED_GROUP}"
 assert_gone "IAM user ${MEMBER} still exists after destroy" \
   aws iam get-user --user-name "${MEMBER}"
-echo "    OK: 0 orphans (state, policy, added role and group, user all gone)"
+assert_gone "IAM group ${ADDITION_GROUP} still exists after destroy" \
+  aws iam get-group --group-name "${ADDITION_GROUP}"
+echo "    OK: 0 orphans (state, policy, added role and group, user, addition group all gone)"
 
 echo "==> Step 8 (LOAD-BEARING): no surviving state version carries either name"
 assert_no_plaintext_in_versions "${EXT_ROLE}" "the secret-named role"
 assert_no_plaintext_in_versions "${EXT_GROUP}" "the secret-named group"
+assert_no_plaintext_in_versions "${EXT_USER}" "the secret-named user"
 
 echo "==> Step 9: remove the seeded roles, groups and secret"
 aws iam delete-role --role-name "${EXT_ROLE}"
@@ -483,6 +607,8 @@ aws iam delete-group --group-name "${EXT_GROUP}"
 SEEDED_GROUP=0
 aws iam delete-group --group-name "${ELSE_GROUP}"
 SEEDED_ELSE_GROUP=0
+aws iam delete-user --user-name "${EXT_USER}"
+SEEDED_USER=0
 aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDP_SECRET_NAME}" \
   --force-delete-without-recovery >/dev/null
 SEEDED_SECRET=0
@@ -490,6 +616,7 @@ assert_gone "the seeded secret-named role still exists" aws iam get-role --role-
 assert_gone "the seeded secret-named group still exists" aws iam get-group --group-name "${EXT_GROUP}"
 assert_gone "the seeded hand-attached role still exists" aws iam get-role --role-name "${ELSE_ROLE}"
 assert_gone "the seeded hand-added group still exists" aws iam get-group --group-name "${ELSE_GROUP}"
+assert_gone "the seeded secret-named user still exists" aws iam get-user --user-name "${EXT_USER}"
 echo "    OK: seeded principals and secret removed"
 
 trap - EXIT INT TERM
@@ -501,4 +628,4 @@ echo "==> Step 10: sweep every object version under the stack's state prefix"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 echo ""
-echo "==> iam-secret-derived-principals test passed: the secret-derived lists were read from IAM ADD-only, the added principals joined, the secret-named ones stayed, destroy clean, no plaintext in any state version"
+echo "==> iam-secret-derived-principals test passed: the secret-derived lists were read from IAM ADD-only (ManagedPolicy / User) or with the unchanged reference dropped from the recorded side (inline Policy / UserToGroupAddition), the added principals joined, the secret-named ones stayed, destroy clean, no plaintext in any state version"

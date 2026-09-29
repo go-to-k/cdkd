@@ -164,3 +164,131 @@ export function recordedPrincipalsRepair(
 /** For a provider that reads a secret-derived recorded list from AWS instead. */
 export const SECRET_DERIVED_READ_LIVE =
   'cdkd reads it from IAM instead once every other list is well-formed';
+
+/**
+ * The principal lists, per type, whose provider has NO live source for the
+ * recorded side (IAM lists neither the principals holding an inline policy nor
+ * which members a `UserToGroupAddition` added), so a secret-derived record
+ * refuses the update unless the engine drops an unchanged reference from it
+ * (go-to-k/cdkd#4064). The types with a live read (ManagedPolicy,
+ * InstanceProfile, User `Groups`) keep their ADD-only live path.
+ */
+export const RESOLVED_PREVIOUS_PRINCIPAL_KEYS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::IAM::Policy': ['Roles', 'Groups', 'Users'],
+  'AWS::IAM::UserToGroupAddition': ['Users'],
+};
+
+/**
+ * The property that NAMES what a principal is attached to, per type. A drop is
+ * only sound while it is unchanged: the provider removes the attachment from
+ * the OLD target only for principals the recorded side still lists, so a
+ * dropped principal would keep a membership in the old group, or the
+ * old-named inline policy, untracked. A change there keeps the refusal, and
+ * so does a SECRET-DERIVED target, whose recorded reference or mask cannot
+ * show whether it changed.
+ */
+const ATTACHMENT_TARGET_KEY: Readonly<Record<string, string>> = {
+  'AWS::IAM::Policy': 'PolicyName',
+  'AWS::IAM::UserToGroupAddition': 'GroupName',
+};
+
+/** A value holding cdkd's mask anywhere (a mask says nothing about the value it hides). */
+function holdsMask(value: unknown): boolean {
+  if (typeof value === 'string') return value === SECRET_MASK;
+  if (Array.isArray(value)) return value.some(holdsMask);
+  if (typeof value === 'object' && value !== null) return Object.values(value).some(holdsMask);
+  return false;
+}
+
+/**
+ * The attachment target the PROVIDER derives for the recorded side, where it
+ * does not read it from the recorded property: `IAMPolicyProvider.update`
+ * takes the old policy name from the physical id (`<name>` or the legacy
+ * `<name>:<role>`). `undefined` means the provider reads the recorded property,
+ * which the target comparison already covers. A record with no `PolicyName`
+ * (a generated name) never equals it and stays refused: the fail-safe side,
+ * and CloudFormation requires `PolicyName` on this type.
+ */
+function providerRecordedTarget(resourceType: string, physicalId: string): string | undefined {
+  if (resourceType !== 'AWS::IAM::Policy') return undefined;
+  return physicalId.includes(':') ? physicalId.split(':')[0]! : physicalId;
+}
+
+/**
+ * The previous side an `update()` of one of {@link RESOLVED_PREVIOUS_PRINCIPAL_KEYS}'
+ * types is handed (go-to-k/cdkd#4064). State keeps a secret-derived principal
+ * list entry as its `{{resolve:...}}` expression, which is not an IAM name, so
+ * the provider refused every in-place update after the first deploy.
+ *
+ * A recorded entry that is an expression the desired side's REDACTED list also
+ * holds is a reference the template has not changed, and the desired side
+ * names that principal too, so the provider never removes it. The entry is
+ * DROPPED from the recorded list: both providers then treat it as newly
+ * desired, and `Put*Policy` / `AddUserToGroup` are idempotent. Dropping rather
+ * than substituting the resolved name matters after a ROTATION: a substituted
+ * name reads as already attached, and the UserToGroupAddition provider adds
+ * only users the previous side lacks, so the user the new value names was
+ * never added. And no plaintext enters the previous side at all.
+ *
+ * ALL OR NOTHING: when any secret-derived entry of any principal list cannot
+ * be dropped, nothing is, so the provider's refusal and the caller's warning
+ * never disagree. What stays refused, deliberately: a reference the template
+ * RE-POINTED or removed (its principal would never be detached); a changed,
+ * secret-derived or physical-id-disagreeing attachment target (`GroupName` /
+ * `PolicyName`: the dropped principal would keep the OLD one); and a recorded
+ * MASK (`***` equal to `***` says nothing about the value, go-to-k/cdkd#3662).
+ *
+ * The residual is a rotation under an unchanged reference: a principal only
+ * the OLD value named keeps the policy or membership, and has to be removed by
+ * hand (before this, the same principal kept it too, behind a refusal).
+ * `dropped` names the keys rewritten, so the caller can say so (kinds only,
+ * never names). The returned bag is in memory only.
+ */
+export function withUnchangedSecretPrincipalLists(
+  resourceType: string,
+  physicalId: string,
+  previous: Record<string, unknown>,
+  desiredRedacted: Record<string, unknown>
+): { previous: Record<string, unknown>; dropped: string[] } {
+  const untouched = { previous, dropped: [] as string[] };
+  const keys = Object.prototype.hasOwnProperty.call(RESOLVED_PREVIOUS_PRINCIPAL_KEYS, resourceType)
+    ? RESOLVED_PREVIOUS_PRINCIPAL_KEYS[resourceType]!
+    : [];
+  if (keys.length === 0) return untouched;
+  const target = ATTACHMENT_TARGET_KEY[resourceType]!;
+  const recordedTarget = previous[target];
+  const derivedTarget = providerRecordedTarget(resourceType, physicalId);
+  if (
+    // A secret-derived target (a reference, or the mask) redacts to the same
+    // string whatever it names, so equality proves nothing about it.
+    holdsSecretDerivedEntry(recordedTarget) ||
+    JSON.stringify(recordedTarget) !== JSON.stringify(desiredRedacted[target]) ||
+    // The provider's own reading of the old target must be the same one.
+    (derivedTarget !== undefined && recordedTarget !== derivedTarget)
+  ) {
+    return untouched;
+  }
+  const rewritten: Array<[string, unknown[]]> = [];
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(previous, key)) continue;
+    const recorded = previous[key];
+    if (!holdsSecretDerivedEntry(recorded)) continue;
+    const redacted = desiredRedacted[key];
+    if (!Array.isArray(recorded) || !Array.isArray(redacted) || holdsMask(recorded)) {
+      return untouched;
+    }
+    const kept: unknown[] = [];
+    for (const entry of recorded) {
+      if (!holdsSecretDerivedEntry(entry)) {
+        kept.push(entry);
+        continue;
+      }
+      if (typeof entry !== 'string' || !redacted.includes(entry)) return untouched;
+    }
+    rewritten.push([key, kept]);
+  }
+  if (rewritten.length === 0) return untouched;
+  const out: Record<string, unknown> = { ...previous };
+  for (const [key, kept] of rewritten) out[key] = kept;
+  return { previous: out, dropped: rewritten.map(([key]) => key) };
+}

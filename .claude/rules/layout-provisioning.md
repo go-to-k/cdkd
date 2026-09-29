@@ -28,7 +28,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: `pending` and NO state are unsettled, everything else is settled. Shared by the provider and the resolver's live arm, which must not disagree. A LEAF.
 
-- **iam-policy-targets.ts** - every IAM principal list is read here ([#3878](https://github.com/go-to-k/cdkd/issues/3878), [#3906](https://github.com/go-to-k/cdkd/issues/3906)). Malformed is refused before ANY call; only a secret-derived RECORDED list on a ManagedPolicy / InstanceProfile / User `Groups` UPDATE is read from IAM. `IAM::Policy` and every create refuse it. A LEAF.
+- **iam-policy-targets.ts** - every IAM principal list is read here ([#3878](https://github.com/go-to-k/cdkd/issues/3878), [#3906](https://github.com/go-to-k/cdkd/issues/3906)). Malformed is refused before ANY call; only a secret-derived RECORDED list on a ManagedPolicy / InstanceProfile / User `Groups` UPDATE is read from IAM. `IAM::Policy` / `UserToGroupAddition` have no live source: the engine DROPS an UNCHANGED reference from their update's recorded side (`withUnchangedSecretPrincipalLists`, [#4064](https://github.com/go-to-k/cdkd/issues/4064)) — never substitutes the resolved name, which after a rotation reads as already attached, and never across a `GroupName` / `PolicyName` change — and they refuse the rest; every create refuses it. A LEAF.
 
 - **tag-list.ts** - provider CFn `Tags` diffs read both sides here ([#3994](https://github.com/go-to-k/cdkd/issues/3994)): malformed desired is refused before ANY call, malformed recorded is ADD-only.
 

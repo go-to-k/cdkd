@@ -14,19 +14,29 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * names and detaches nothing on IAM's evidence (IAM's list includes attachments
  * made elsewhere).
  *
- * `verify.sh` creates the role and the group OUTSIDE the stack and seeds the
- * secret `SDP_SECRET_NAME` with their names (`{"role": ..., "group": ...}`), so
- * the names appear nowhere in the template: the only way into state is through
- * the secret, which is what the plaintext sweep checks.
+ * The types with NO live source for the recorded side, an inline
+ * AWS::IAM::Policy's `Roles` and a UserToGroupAddition's `Users`, instead have
+ * the unchanged reference dropped from the recorded side (go-to-k/cdkd#4064),
+ * so the provider re-applies it: a plain record diff, no ADD-only reading.
+ *
+ * `verify.sh` creates the role, the group and the user OUTSIDE the stack and
+ * seeds the secret `SDP_SECRET_NAME` with their names (`{"role": ...,
+ * "group": ..., "user": ...}`), so the names appear nowhere in the template:
+ * the only way into state is through the secret, which is what the plaintext
+ * sweep checks.
  *
  * Deploys:
  *   - `SecretPolicy` (AWS::IAM::ManagedPolicy), `Roles: [<secret role>]`.
  *   - `SecretMember` (AWS::IAM::User), `Groups: [<secret group>]`.
+ *   - `SecretInlinePolicy` (AWS::IAM::Policy), `Roles: [<secret role>]`.
+ *   - `SecretGroupAddition` (AWS::IAM::UserToGroupAddition) into
+ *     `AdditionGroup`, `Users: [<secret user>]`.
  *   - `AddedRole` / `AddedGroup`, the principals the update adds.
  *
- * UPDATE (CDKD_TEST_UPDATE=true) changes the policy document (an unrelated
- * change that forces the in-place update) and ADDS `AddedRole` to the policy
- * and `AddedGroup` to the user, keeping the secret-derived ones.
+ * UPDATE (CDKD_TEST_UPDATE=true) changes both policy documents (an unrelated
+ * change that forces the in-place update) and ADDS `AddedRole` to both
+ * policies, `AddedGroup` to the user and `SecretMember` to the addition,
+ * keeping the secret-derived ones.
  */
 export class IamSecretDerivedPrincipalsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -56,8 +66,26 @@ export class IamSecretDerivedPrincipalsStack extends cdk.Stack {
       roles: update ? [fromSecret('role'), addedRole.roleName] : [fromSecret('role')],
     });
 
-    new iam.CfnUser(this, 'SecretMember', {
+    const member = new iam.CfnUser(this, 'SecretMember', {
       groups: update ? [fromSecret('group'), addedGroup.groupName] : [fromSecret('group')],
+    });
+
+    // go-to-k/cdkd#4064: the recorded `Roles` / `Users` hold the reference, and
+    // neither provider can read the old side from IAM. The fixed name keeps
+    // verify.sh's readbacks exact; the stack name is fixed, so no two runs
+    // share it (the pre-flight refuses a leftover state).
+    new iam.CfnPolicy(this, 'SecretInlinePolicy', {
+      policyName: 'cdkd-integ-sdp-inline',
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: actions, Resource: '*' }],
+      },
+      roles: update ? [fromSecret('role'), addedRole.roleName] : [fromSecret('role')],
+    });
+    const additionGroup = new iam.Group(this, 'AdditionGroup');
+    new iam.CfnUserToGroupAddition(this, 'SecretGroupAddition', {
+      groupName: additionGroup.groupName,
+      users: update ? [fromSecret('user'), member.ref] : [fromSecret('user')],
     });
   }
 }
