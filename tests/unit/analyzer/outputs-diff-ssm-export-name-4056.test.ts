@@ -267,7 +267,7 @@ describe('the stored-side ssm veto needs the whole shape, not a substring (revie
   });
 });
 
-describe('a stored secret expression whose output was removed (orchestrator test M1)', () => {
+describe('a stored secret expression whose output is condition-skipped (orchestrator test M1)', () => {
   it('does not crash, rows the REMOVE, and trusts only a whole token', () => {
     // `desired[name]` is absent, so the literal-parts arm has no string to
     // compare against: a mixed stored value earns no veto there, and with the
@@ -292,6 +292,45 @@ describe('a stored secret expression whose output was removed (orchestrator test
     expect(whole).toEqual([
       { name: 'Other', changeType: 'MODIFY', oldValue: 'o1', newValue: 'o2', isExport: false },
       { name: 'Out', changeType: 'REMOVE', oldValue: SSM_REF, isExport: false },
+    ]);
+  });
+});
+
+describe('the #1948 exoneration of a REMOVED output reads the same shape (issue #4101)', () => {
+  // The output is gone from the template, so it is neither declared nor
+  // desired: only the unaccountable-key signal can withhold it, and the
+  // record-level exoneration stands that signal down.
+  const scan = { declaredKeys: new Set(['Keep']), templateHasSecretReference: true };
+
+  it('withholds a mixed secret value, which cannot exonerate its own record', () => {
+    // Before: the substring spelling test read this as post-GHSA and the REMOVE
+    // row printed `{{resolve:secretsmanager:A}}-GONEPLAINTEXT`.
+    const changes = computeOutputsDiff(
+      { Gone: '{{resolve:secretsmanager:A}}-GONEPLAINTEXT', Keep: 'k' },
+      { Keep: 'k' },
+      new Set(),
+      new Set(),
+      scan
+    );
+    expect(JSON.stringify(changes)).not.toContain('GONEPLAINTEXT');
+    expect(changes).toEqual([
+      expect.objectContaining({ name: 'Gone', changeType: 'REMOVE', oldValueRedacted: true }),
+    ]);
+  });
+
+  it.each([
+    ['a whole secretsmanager token', '{{resolve:secretsmanager:A}}'],
+    ['a whole SecureString ssm token', SSM_REF],
+  ])('still exonerates the record for %s beside the removed key', (_label, token) => {
+    const changes = computeOutputsDiff(
+      { Gone: 'public-old', Sec: token, Keep: 'k' },
+      { Sec: token, Keep: 'k' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['Keep', 'Sec']), templateHasSecretReference: true }
+    );
+    expect(changes).toEqual([
+      { name: 'Gone', changeType: 'REMOVE', oldValue: 'public-old', isExport: false },
     ]);
   });
 });

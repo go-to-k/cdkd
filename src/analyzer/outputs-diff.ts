@@ -15,10 +15,7 @@ import {
 } from '../deployment/secret-redaction.js';
 import { stripControlChars } from '../utils/regexp.js';
 import { isReadableBag } from '../state/malformed-resources-bag.js';
-import {
-  bagHoldsSecretExpression,
-  isSecretBearingReferenceString as isSecretDynamicReference,
-} from '../deployment/no-change-outputs-merge.js';
+import { isSecretBearingReferenceString as isSecretDynamicReference } from '../deployment/no-change-outputs-merge.js';
 
 /**
  * Kind of change for one key of the persisted Outputs bag.
@@ -1185,8 +1182,15 @@ export function computeOutputsDiff(
   // and one redacted key is read as answering it for the whole bag — a reading
   // with the residuals the note above names (issue #2771 refuses the merge that
   // would add one). Same LEAF granularity, so a container holding an expression
-  // still does not earn it.
-  const recordProvesPostGhsa = bagHoldsSecretExpression(currentBag);
+  // still does not earn it. A key earns it only in the shape the pass-1 veto
+  // accepts (issue #4101): the shared `bagHoldsSecretExpression` is a substring
+  // spelling test, so a stored `{{resolve:secretsmanager:A}}-<plaintext>` of a
+  // REMOVED output exonerated its own record and printed on the REMOVE row.
+  // That helper stays as-is for its deploy-side readers.
+  const recordProvesPostGhsa = Object.entries(currentBag).some(
+    ([name, value]) =>
+      typeof value === 'string' && storedSecretTokenIsExpression(value, desired[name])
+  );
   const declaredKeys = unaccountableScan.declaredKeys ?? new Set<string>();
   const unaccountable = (name: string): boolean =>
     unaccountableScan.templateHasSecretReference === true &&
