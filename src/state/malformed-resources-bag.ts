@@ -12,6 +12,7 @@ import {
 import {
   pasteableCommand,
   type CommandArg,
+  type WithheldValue,
   type WithholdReason,
 } from '../utils/pasteable-command.js';
 import {
@@ -395,7 +396,7 @@ function inspectTail(
   recovery?: LockRecoveryContext
 ): string {
   if (stackName === undefined || region !== undefined) {
-    return `${prose} Inspect it with: ${inspectCommand(stackName, region)}`;
+    return `${prose} ${inspectClause(stackName, region)}Inspect it with: ${inspectCommand(stackName, region)}`;
   }
   const legacy = orphanInspectClause(stackName, undefined, recovery);
   return [`${prose} ${legacy.sentence ?? ''}`.trimEnd(), ...(legacy.locations ?? [])].join('\n');
@@ -487,6 +488,16 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
 }
 
 /**
+ * Where a withheld identity is taken from, and why there: `cdkd state list
+ * --json` writes each name raw rather than sanitized. ONE spelling, shared by
+ * {@link WITHHELD_LISTING_POINTER} and {@link inspectClause}, so the two
+ * cannot drift (M3 of the go-to-k/cdkd#4011 review).
+ */
+const LISTING_SOURCE =
+  `'cdkd state list --json', which writes each name raw rather than sanitized, and act on the ` +
+  `one whose key matches`;
+
+/**
  * Where the three DESTROY withhold arms send the reader for the exact name
  * (go-to-k/cdkd#3420): {@link malformedDestroyResourcesRefusalMessage},
  * {@link malformedDestroyOrphansRefusalMessage} and
@@ -509,8 +520,7 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
  * either, so the listing reads the same bucket that command does.
  */
 const WITHHELD_LISTING_POINTER =
-  `'cdkd state list --json', which writes each name raw rather than sanitized, and act on the ` +
-  `one whose key matches, filling the Inspect command's holes from it — replacing each quoted ` +
+  `${LISTING_SOURCE}, filling the Inspect command's holes from it — replacing each quoted ` +
   `hole, quotes included, with the shell-quoted value`;
 
 /**
@@ -962,7 +972,7 @@ export function malformedDeployResourcesRefusalMessage(
     `wrong. Reading the bag as EMPTY produces that same plan rather than avoiding it. Nothing ` +
     `was provisioned and no state was written FOR THIS STACK. Repair or remove the record ` +
     `first; 'cdkd diff' previews the stack with this map read as EMPTY and warns that it did. ` +
-    `Inspect it with: ${inspectCommand(stackName, region)}`
+    `${inspectClause(stackName, region)}Inspect it with: ${inspectCommand(stackName, region)}`
   );
 }
 
@@ -1097,7 +1107,7 @@ export function malformedRenderedContainersWarning(
     `is malformed or truncated. 'Object.entries' walks a string or a list as readily as a map, ` +
     `so rendering one INVENTS a row per character or element. Continuing with it EMPTY: this ` +
     `view shows no rows there, which is not the same as the record holding none. A per-resource ` +
-    `container is named once however many resources hold one. See the stored values with: ` +
+    `container is named once however many resources hold one. ${inspectClause(stackName, region)}See the stored values with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -1158,7 +1168,7 @@ export function malformedResourcesWarning(
   return (
     `${malformedStateDiagnosis(stackName, region)} Continuing with an EMPTY resource set: this ` +
     `command's output describes zero resources, which is not the same as the stack having none. ` +
-    `Inspect it with: ${inspectCommand(stackName, region)}`
+    `${inspectClause(stackName, region)}Inspect it with: ${inspectCommand(stackName, region)}`
   );
 }
 
@@ -1266,7 +1276,7 @@ export function malformedOutputsWarning(rawStackName: string, rawRegion: string)
     `or null, it yields no comparison at all. Continuing with it EMPTY: every output this diff ` +
     `resolves is reported as an ADD and no stored key is reported as a REMOVE, which is not the ` +
     `same as the record holding none. ${DEPLOY_REFUSES_OUTPUTS_SENTENCE} ` +
-    `See the stored value with: ` +
+    `${inspectClause(stackName, region)}See the stored value with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -1398,7 +1408,7 @@ export function malformedExportSourceWarning(rawStackName: string, rawRegion: st
     `Fn::ImportValue of a name this stack really publishes will fail in the CONSUMER stack, ` +
     `naming that stack rather than this record. Continuing with the other producers — ` +
     `enumerating a string or a list here would instead publish one FABRICATED export per ` +
-    `character or element. See the stored values with: ` +
+    `character or element. ${inspectClause(stackName, region)}See the stored values with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -1438,7 +1448,7 @@ export function malformedExportNamesWarning(rawStackName: string, rawRegion: str
     `the record is malformed or truncated. It is read as an EMPTY export set, which is not the ` +
     `same as the record holding one: no stored key is reported as an export, so a row that ` +
     `should carry an '[export]' tag renders without it. Reading it as UNKNOWN instead would be ` +
-    `worse — that falls back to the pre-v9 rule where every output name is importable. See the ` +
+    `worse — that falls back to the pre-v9 rule where every output name is importable. ${inspectClause(stackName, region)}See the ` +
     `stored value with: ` +
     inspectCommand(stackName, region)
   );
@@ -1585,7 +1595,7 @@ export function malformedOrphansWarning(rawStackName: string, rawRegion: string)
     `admits a string, a number, a plain object and null alike: a string is WALKED, one garbage ` +
     `orphan per character, and the others read as no orphans at all. Continuing with it EMPTY: ` +
     `this view previews no adoption and names no orphan, which is NOT the same as the record ` +
-    `holding none — resources from an earlier failed deploy may still be live in AWS. See the ` +
+    `holding none — resources from an earlier failed deploy may still be live in AWS. ${inspectClause(stackName, region)}See the ` +
     `stored value with: ` +
     inspectCommand(stackName, region)
   );
@@ -1620,7 +1630,7 @@ export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: 
     `orphans at all — so a run would delete or adopt against a record whose evidence of ` +
     `resources left live in AWS by an earlier failed deploy it never read. Repair or remove the ` +
     `record first, and no cdkd command repairs this container: rewriting it to [] by hand ` +
-    `discards the very evidence this refusal is protecting. Inspect the record with: ` +
+    `discards the very evidence this refusal is protecting. ${inspectClause(stackName, region)}Inspect the record with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -1776,7 +1786,7 @@ export function malformedDestroyOutputsRefusalMessage(
     `imports from. A string or a list invents one export name per character or element; a null, ` +
     `a number or a boolean reads as 'exports nothing' and SKIPS the check entirely, deleting the ` +
     `record while consumers still resolve against it. Repair or remove the record first. ` +
-    `Inspect it with: ` +
+    `${inspectClause(stackName, region)}Inspect it with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -1848,7 +1858,7 @@ export function malformedNestedChildOutputsRefusalMessage(
     `'Object.entries' walks a string or a list as readily as a map — so a six-character value ` +
     `would become six fabricated parent attributes that every Fn::GetAtt against this nested ` +
     `stack then resolves into live AWS calls. The deploy refuses rather than fabricating them. ` +
-    `Repair or remove the child's record first. Inspect it with: ` +
+    `Repair or remove the child's record first. ${inspectClause(childStackName, region)}Inspect it with: ` +
     inspectCommand(childStackName, region)
   );
 }
@@ -1924,7 +1934,7 @@ export function malformedLocalOutputsWarning(rawStackName: string, rawRegion: st
     `record is malformed or truncated. 'Object.entries' walks a string or a list as readily as ` +
     `a map, so reading it would hand this local run one FABRICATED output per character or ` +
     `element. Continuing with it EMPTY: every reference to an output of this record resolves to ` +
-    `nothing and is dropped, which is not the same as the record holding none. See the stored ` +
+    `nothing and is dropped, which is not the same as the record holding none. ${inspectClause(stackName, region)}See the stored ` +
     `value with: ` +
     inspectCommand(stackName, region)
   );
@@ -2188,10 +2198,111 @@ function rendersExactly(value: string, maxCodePoints: number = STACK_REF_MAX_COD
  * {@link inspectTail}.
  */
 function inspectCommand(stackName: string | undefined, region: string | undefined): string {
+  return inspectGate(stackName, region).command;
+}
+
+/**
+ * The sentence a caller of {@link inspectCommand} puts BEFORE its label when
+ * the gate withheld a value it was handed, so the hole does not go unexplained
+ * and the operator does not fill it with the spelling the prose shows (the
+ * go-to-k/cdkd#3764 follow-up recorded on go-to-k/cdkd#3436). `''` when the
+ * command names everything it was given, and for the no-identity template,
+ * whose caller explains itself. A full sentence ending in a space, so a
+ * caller writes `${inspectClause(s, r)}See the stored values with: ` and a
+ * named command leaves the text byte-identical.
+ *
+ * Rendered from the gate's own reasons, per value. A STACK NAME beginning
+ * with `-` must not be filled back in — Commander could read it in
+ * `cdkd state show`'s positional as the option — so it gets no fill-in
+ * instruction, keyed on the RAW `-` because the gate reports `altered` /
+ * `too-long` first. The region is `--stack-region`'s VALUE, which Commander
+ * takes as given, so its hole may be filled.
+ */
+function inspectClause(stackName: string | undefined, region: string | undefined): string {
+  // Subsumed, and kept for the type: `inspectGate` withholds nothing for an
+  // absent name (its template arm), so the empty-`parts` return below would
+  // answer `''` too, but `stackName.startsWith` needs the narrowing.
+  if (stackName === undefined) return '';
+  const { withheld } = inspectGate(stackName, region);
+  const parts = [
+    inspectWithheldPart('stack name above', withheld, 'stack', true),
+    inspectWithheldPart('region above', withheld, 'region', false),
+  ].filter((part) => part !== '');
+  if (parts.length === 0) return '';
+  // The command follows its label on the SAME line (`... Inspect it with:
+  // cdkd state show ...`), so the sentence says "at the end of this line", not
+  // "below" (M1 of the go-to-k/cdkd#4011 review).
+  const holes = parts.length === 1 ? 'a quoted hole in its place' : 'quoted holes in their place';
+  // The no-fill rule restates the option parse only when the stack's own
+  // reason did not already say it (`altered` / `too-long` win first), m1.
+  const stackReason = withheld.find((w) => w.hole === 'stack')?.reason;
+  const noFill =
+    (stackReason === 'option-shaped'
+      ? ''
+      : `A value beginning with '-' could parse as an option there, so `) +
+    `do not fill the stack hole with it: repair or remove the record by hand. `;
+  return (
+    `The ${parts.join(', and the ')}, so the command at the end of this line prints ${holes}. ` +
+    (stackName.startsWith('-')
+      ? noFill.charAt(0).toUpperCase() + noFill.slice(1)
+      : `Take the values from ${LISTING_SOURCE}, replacing each quoted hole in the command at ` +
+        `the end of this line, quotes included, with the shell-quoted value. `)
+  );
+}
+
+/** One value's half of {@link inspectClause}, or `''` when the gate named it. */
+function inspectWithheldPart(
+  what: string,
+  withheld: readonly WithheldValue[],
+  hole: string,
+  positional: boolean
+): string {
+  const reason = withheld.find((w) => w.hole === hole)?.reason;
+  if (reason === undefined) return '';
+  switch (reason) {
+    case 'altered':
+      return `${what} did not render exactly`;
+    // Unreachable through today's callers, which normalise `''` to absent
+    // (`absentIfEmpty`) before this runs; a sentence rather than a throw
+    // because this renders inside a refusal, where a throw would replace it.
+    case 'empty':
+      return `${what} is empty`;
+    case 'too-long':
+      return `${what} is too long to name in a command`;
+    case 'option-shaped':
+      return positional
+        ? `${what} begins with a '-', which 'cdkd state show' could parse as an option`
+        : `${what} begins with a '-', which cdkd refuses to print as an argument`;
+    case 'not-plain':
+      return (
+        `${what} is not a plain identifier (a letter or digit, then letters, digits, '~', ` +
+        `'_', '.' or '-'), the only shape the command at the end of this line names, since it sits beside a ` +
+        `labelled line`
+      );
+    // Unreachable: `inspectGate` passes no `patternMatched`.
+    case 'pattern-shaped':
+      throw new Error(
+        `inspectWithheldPart: 'pattern-shaped' needs a gate option never passed here`
+      );
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error(`inspectWithheldPart: unhandled WithholdReason ${String(_exhaustive)}`);
+    }
+  }
+}
+
+/** {@link inspectCommand}'s gate, returned whole so {@link inspectClause} reads the same verdict. */
+function inspectGate(
+  stackName: string | undefined,
+  region: string | undefined
+): { readonly command: string; readonly withheld: readonly WithheldValue[] } {
   if (stackName === undefined) {
     // A TEMPLATE rather than a command, and it says so: substituting anything
     // here would be substituting the untrusted values the clause above drops.
-    return `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`;
+    return {
+      command: `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`,
+      withheld: [],
+    };
   }
   // The SHARED gate since go-to-k/cdkd#3436's fold-in. The local form printed
   // `shellQuote(safeStackName(...))` -- the SANITIZED spelling, ungated -- so a
@@ -2216,22 +2327,21 @@ function inspectCommand(stackName: string | undefined, region: string | undefine
   // exact "borrowing a gate UPWARD" the rule file forbids. `maxCodePoints` is
   // how the gate takes a caller's cap without the caller re-spelling the
   // comparison.
-  return `${
-    pasteableCommand(
-      'cdkd state show',
-      region === undefined
-        ? [{ value: stackName, hole: 'stack', opts: { plainIdent: true } }]
-        : [
-            { value: stackName, hole: 'stack', opts: { plainIdent: true } },
-            {
-              flag: '--stack-region',
-              value: region,
-              hole: 'region',
-              opts: { plainIdent: true, maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
-            },
-          ]
-    ).command
-  } --json`;
+  const built = pasteableCommand(
+    'cdkd state show',
+    region === undefined
+      ? [{ value: stackName, hole: 'stack', opts: { plainIdent: true } }]
+      : [
+          { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+          {
+            flag: '--stack-region',
+            value: region,
+            hole: 'region',
+            opts: { plainIdent: true, maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
+          },
+        ]
+  );
+  return { command: `${built.command} --json`, withheld: built.withheld };
 }
 
 /**
@@ -2508,7 +2618,7 @@ export function malformedResourcePropertiesRefusalMessage(
     `template did not change, and reading the bag as empty produces that same verdict rather ` +
     `than avoiding it. Nothing was provisioned and no state was written FOR THIS STACK. Repair or ` +
     `remove the record first; 'cdkd diff' previews the rest of the stack with those maps read ` +
-    `as EMPTY and warns that it did. Inspect the record with: ` +
+    `as EMPTY and warns that it did. ${inspectClause(stackName, region)}Inspect the record with: ` +
     `${inspectCommand(stackName, region)}`
   );
 }
@@ -3094,7 +3204,7 @@ export function malformedResourcePropertiesWarning(
     `addition and a create-only one as a replacement; where it no longer declares it, the ` +
     `DELETE row shows an empty previous side instead of the stored one. ` +
     `Do NOT run 'cdkd deploy' against this record — it REFUSES on the same defect rather than ` +
-    `acting on this preview. See the stored values with: ${inspectCommand(stackName, region)}`
+    `acting on this preview. ${inspectClause(stackName, region)}See the stored values with: ${inspectCommand(stackName, region)}`
   );
 }
 
@@ -3263,7 +3373,7 @@ export function malformedResourceEntriesWarning(
   return (
     `${namedEntriesClause(stackName, region, logicalIds)} Continuing WITHOUT them: this ` +
     `command's output describes the remaining resources only, which is not the same as the ` +
-    `stack holding none of these. See the stored values with: ` +
+    `stack holding none of these. ${inspectClause(stackName, region)}See the stored values with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -3330,7 +3440,7 @@ export function malformedOrphanRecordsWarning(
         : `they are not previewed for adoption, and 'cdkd deploy' refuses the record over them ` +
           `rather than dropping them as this command does`
     }. These ids were read from 'orphans'; ` +
-    `the 'resources' map carries its own warning when it is damaged too. See the ` +
+    `the 'resources' map carries its own warning when it is damaged too. ${inspectClause(stackName, region)}See the ` +
     `stored values with: ` +
     inspectCommand(stackName, region)
   );
@@ -3392,7 +3502,7 @@ export function malformedResourceEntriesRefusalMessage(
     `${namedEntriesClause(stackName, region, logicalIds)} This command can WRITE state, so it ` +
     `refuses rather than skipping them: saving over the record would report a clean run for ` +
     `entries nothing could read, and would leave the next command to fail on them with no more ` +
-    `to go on. Nothing was locked, read from AWS or written FOR THIS STACK. Inspect it with: ` +
+    `to go on. Nothing was locked, read from AWS or written FOR THIS STACK. ${inspectClause(stackName, region)}Inspect it with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -3459,7 +3569,7 @@ export function malformedDeployResourceEntriesRefusalMessage(
     `second copy of a live resource, or a name collision), and a row with no resource type is ` +
     `planned as a TYPE CHANGE, which replaces the live resource. Nothing was provisioned and no ` +
     `state was written FOR THIS STACK. Repair or remove the record first; 'cdkd diff' previews ` +
-    `the rest of the stack without those rows and warns that it did. Inspect the record with: ` +
+    `the rest of the stack without those rows and warns that it did. ${inspectClause(stackName, region)}Inspect the record with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -3550,7 +3660,7 @@ export function malformedDestroyResourceEntriesRefusalMessage(
     `counted done, the record removed and success reported with its resource still live. ` +
     `Nothing was deleted or written FOR THIS STACK. Repair the row first; ` +
     `'cdkd state orphan' drops the whole record with every resource left standing, which is ` +
-    `more than this row asks for. Inspect the record with: ` +
+    `more than this row asks for. ${inspectClause(stackName, region)}Inspect the record with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -3650,7 +3760,7 @@ export function malformedImportUnrepairedEntriesRefusalMessage(
     `would save still holds them unreadable; it refuses rather than saving a row it could not ` +
     `replace. Nothing was written FOR THIS STACK, and the resources this run did import stay ` +
     `as they are in AWS. Fix what the import reported, or repair the rows by hand, and re-run. ` +
-    `Inspect the record with: ` +
+    `${inspectClause(stackName, region)}Inspect the record with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -3699,7 +3809,7 @@ export function malformedScrubResourceEntriesRefusalMessage(
     `saved as one; and a row with no resource type is rewritten and saved still without one. ` +
     `Nothing was written FOR THIS STACK. Repair or ` +
     `remove the row first; '--dry-run' audits the rest of the record without it and warns ` +
-    `that it did. Inspect the record with: ` +
+    `that it did. ${inspectClause(stackName, region)}Inspect the record with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -3726,7 +3836,7 @@ export function malformedLocalResourcesWarning(rawStackName: string, rawRegion: 
     `'Fn::GetAtt' in this run's environment that names a resource of this record resolves to ` +
     `nothing and is dropped, and a bare '--assume-role' falls back to the developer's ` +
     `credentials — which is not the same as the record holding no resources. Nothing is ` +
-    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. See the stored ` +
+    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. ${inspectClause(stackName, region)}See the stored ` +
     `value with: ` +
     inspectCommand(stackName, region)
   );
@@ -3754,7 +3864,7 @@ export function malformedLocalResourceEntriesWarning(
     `'Fn::GetAtt' in this run's environment that names one of these ids resolves to nothing and ` +
     `is dropped, and a bare '--assume-role' read through one falls back to the developer's ` +
     `credentials — which is not the same as the record holding no such resource. Nothing is ` +
-    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. See the stored ` +
+    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. ${inspectClause(stackName, region)}See the stored ` +
     `values with: ` +
     inspectCommand(stackName, region)
   );
@@ -4449,7 +4559,7 @@ export function malformedOrphanRowsKeptWarning(
     `${stackClause(stackName, region)} holds ${logicalIds.length} rollback-orphan record(s) in ` +
     `'orphans' — ${namedOrphanRows(logicalIds)} — whose 'properties' or 'attributes' map is not ` +
     `an object. This preview KEEPS them. 'cdkd deploy' of THIS stack does NOT: it refuses the ` +
-    `whole record over these rows and will not start until they are repaired. See the stored ` +
+    `whole record over these rows and will not start until they are repaired. ${inspectClause(stackName, region)}See the stored ` +
     `values with: ` +
     inspectCommand(stackName, region)
   );

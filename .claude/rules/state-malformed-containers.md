@@ -199,16 +199,14 @@ with `-` is never to be filled back in (go-to-k/cdkd#3436). It serves every
 refusal built on `orphanRefusal`: `cdkd orphan`'s `properties`, entry,
 `attributes` and `orphans`-list refusals, and the `orphans`-records refusals
 `cdkd deploy`, `import`, `rollback`, `scrub` and `destroy` raise. The region
-takes its own 128 cap there, the one the prose renders at. Every
-other message here offers a read ONLY: `inspectCommand` builds it through the
-shared gate with `plainIdent` on BOTH values, so an altered, capped,
-option-shaped or non-plain name prints as a hole rather than as its sanitized
-spelling — nothing substitutes a sanitized spelling. Its no-name arm
-(`stackName === undefined`, which the destroy refusals take for an inexact
-identity) returns a two-hole template on purpose. Borrowing a gate across
-sites is safe only DOWNWARD: a 128-capped gate at a 1152-capped site withholds;
-the reverse names a region its own clause renders truncated — which is why
-`inspectCommand` hands the shared gate the region's 128 as `maxCodePoints`.
+takes its own 128 cap there. Every other message offers a read ONLY:
+`inspectCommand` gates BOTH values with `plainIdent`, printing a hole, never a
+sanitized spelling, and each caller naming an identity puts `inspectClause`'s
+reason BEFORE its label (unit-fenced per call, go-to-k/cdkd#3436). Its no-name
+arm (`stackName === undefined`, the destroy refusals' inexact identity) is a
+two-hole template on purpose. Borrow a gate only DOWNWARD: a 128-capped gate at
+a 1152-capped site withholds; the reverse names a region its clause renders
+cut — hence `inspectCommand`'s region `maxCodePoints` of 128.
 
 Where a site's two caps DIFFER, fence that operand — the pasteability half needs a row
 that is exact yet unpasteable, which no truncation row reaches. Where they are

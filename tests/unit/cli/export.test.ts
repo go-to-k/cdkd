@@ -2420,16 +2420,16 @@ describe('reportDriftBaselineGaps', () => {
       // and for a capped one alike (the explanation keys on `inspect.exact`,
       // not on one spelling).
       for (const region of ['--all', 'r'.repeat(129)]) {
-        const line = render('S', region, true).find((m) => m.includes('Inspect it with:'))!;
+        const line = render('S', region, true).join('\n');
         expect(line, region).toMatch(
-          /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show S --stack-region '<region>' --json$/
+          /hole in the command after the list below stands for [^\n]*after the list below\.\n(?: {2}[^\n]*\n)+Inspect it with: cdkd state show S --stack-region '<region>' --json$/m
         );
       }
       // ...and for a withheld STACK NAME with an ordinary region, so the
       // explanation keys on any hole, not on the region's alone.
-      const stackHole = render('--all', 'us-east-1', true).find((m) => m.includes('Inspect it with:'))!;
+      const stackHole = render('--all', 'us-east-1', true).join('\n');
       expect(stackHole).toMatch(
-        /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+        /hole in the command after the list below stands for [^\n]*after the list below\.\n(?: {2}[^\n]*\n)+Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/m
       );
       // The listing it points at is the RAW one: `--long` trims through
       // `displayIdent`, so it would hand back the spelling the gate refused
@@ -2441,11 +2441,29 @@ describe('reportDriftBaselineGaps', () => {
       // ...and for a NON-PLAIN stack name, which `plainIdent` holes where
       // exactness alone would have named it shell-quoted (M2 of the
       // go-to-k/cdkd#3764 review).
-      const plainHole = render("It's Stack", 'us-east-1', true).find((m) => m.includes('Inspect it with:'))!;
+      const plainHole = render("It's Stack", 'us-east-1', true).join('\n');
       expect(plainHole).toMatch(
-        /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+        /hole in the command after the list below stands for [^\n]*after the list below\.\n(?: {2}[^\n]*\n)+Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/m
       );
-      expect(render('S', 'us-east-1', true).join('\n')).not.toContain('hole in the command at the end of this line');
+      expect(render('S', 'us-east-1', true).join('\n')).not.toContain('hole in the command after the list');
+      // A NAMED command is on its own line too — not only a holed one — with
+      // or without a region (go-to-k/cdkd#3436).
+      for (const [region, command] of [
+        ['us-east-1', 'cdkd state show S --stack-region us-east-1 --json'],
+        ['', 'cdkd state show S --json'],
+      ] as const) {
+        const warns = render('S', region, true);
+        const at = warns.indexOf(`Inspect it with: ${command}`);
+        expect(at, region).toBeGreaterThan(0);
+        // The pointer sentence, then ONLY the id rows, then the command: the
+        // rows come before the command so they do not hang off it (m2 of the
+        // go-to-k/cdkd#4011 review).
+        const pointer = warns.findIndex((w) => w.endsWith('Inspect it with the command after the list below.'));
+        expect(pointer, region).toBeGreaterThan(-1);
+        expect(pointer).toBeLessThan(at - 1);
+        for (const row of warns.slice(pointer + 1, at)) expect(row, region).toMatch(/^ {2}\S/);
+        expect(warns[pointer]).not.toContain('cdkd state show');
+      }
     });
   }, 120_000);
 
@@ -3042,21 +3060,22 @@ describe('reportDriftBaselineGaps', () => {
     // can spell a labelled line once the terminal wraps. The clause before
     // the command says what the hole stands for, and the name itself appears
     // nowhere in the report.
-    const inspect = logger.warn.mock.calls
-      .map((c) => String(c[0]))
-      .find((m) => m.includes('cdkd state show'));
-    expect(inspect).toBeDefined();
-    expect(inspect).toContain("A quoted '<...>' hole in the command at the end of this line stands for");
+    const warns = logger.warn.mock.calls.map((c) => String(c[0]));
+    const at = warns.findIndex((m) => m.startsWith('Inspect it with: '));
+    // The explanation, then only the id rows, then the command's own line.
+    const pointer = warns.findIndex((w) => w.endsWith('Inspect it with the command after the list below.'));
+    expect(warns[pointer]).toContain("A quoted '<...>' hole in the command after the list below stands for");
+    expect(pointer).toBeLessThan(at - 1);
+    for (const row of warns.slice(pointer + 1, at)) expect(row).toMatch(/^ {2}\S/);
+    const inspect = warns.join('\n');
     expect(inspect).not.toContain('curl');
-    // The command must be the WHOLE tail after `Inspect it with: ` — LAST and
-    // UNWRAPPED, the contract `lock-contention-message.ts` states. A
-    // `toContain` survives both mutants that break it: prose appended after
-    // `--json`, and the whole command wrapped in quotes.
-    const MARKER = 'Inspect it with: ';
-    expect(inspect).toContain(MARKER);
-    expect(inspect!.slice(inspect!.indexOf(MARKER) + MARKER.length)).toBe(
-      "cdkd state show '<stack>' --stack-region r --json"
-    );
+    // The command is the WHOLE of its own warn — UNWRAPPED, the contract
+    // `lock-contention-message.ts` states, and on a line of its OWN
+    // (go-to-k/cdkd#3436), since a shell-quoted value sharing a line with
+    // prose is what an apostrophe turns inside out. A `toContain` survives
+    // the mutants that break it: prose appended after `--json`, the command
+    // wrapped in quotes, or folded back into the prose warn.
+    expect(warns[at]).toBe("Inspect it with: cdkd state show '<stack>' --stack-region r --json");
   });
 
   it('caps the NAMED unreadable ids and counts the rest', () => {
@@ -3083,6 +3102,10 @@ describe('reportDriftBaselineGaps', () => {
     expect(named).toHaveLength(10);
     expect(messages.some((m) => m.trim() === '... and 1 more')).toBe(true);
     expect(messages.some((m) => m.includes('11 of 11 resource(s)'))).toBe(true);
+    // The command comes AFTER the whole list, the overflow summary included
+    // (m2 of the go-to-k/cdkd#4011 review).
+    const more = messages.findIndex((m) => m.trim() === '... and 1 more');
+    expect(messages[more + 1]).toBe('Inspect it with: cdkd state show S --stack-region r --json');
   });
 
   it('sanitizes the ids in the REFRESHABLE and REFUSED lists too, not only the unreadable one', () => {
