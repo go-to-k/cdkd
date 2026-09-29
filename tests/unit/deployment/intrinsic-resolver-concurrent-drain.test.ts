@@ -57,6 +57,13 @@ const control = vi.hoisted(() => ({
   fails: new Set<string>(),
   /** Of those, the ones that reject with `undefined` rather than an Error. */
   rejectsWithUndefined: new Set<string>(),
+  /** Of those, the ones that reject with `null`. */
+  rejectsWithNull: new Set<string>(),
+  /**
+   * Of those, the ones that throw the SAME error object on every lookup, the
+   * shape of a memoized refusal thrown again by a later resolution.
+   */
+  reusedErrors: new Map<string, Error>(),
   /** Lookups that answer only after a real timer, so a sibling rejects first. */
   delays: new Map<string, number>(),
   /** Lookups that never settle at all — the hang the cap exists to bound. */
@@ -84,6 +91,10 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
         control.events.push(`reject:${id}`);
         // eslint-disable-next-line @typescript-eslint/only-throw-error
         if (control.rejectsWithUndefined.has(id)) throw undefined;
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
+        if (control.rejectsWithNull.has(id)) throw null;
+        const reused = control.reusedErrors.get(id);
+        if (reused) throw reused;
         const error = new Error(`refused ${id}`);
         error.name = 'ResourceNotFoundException';
         throw error;
@@ -239,6 +250,8 @@ beforeEach(() => {
   control.holds.clear();
   control.fails.clear();
   control.rejectsWithUndefined.clear();
+  control.rejectsWithNull.clear();
+  control.reusedErrors.clear();
   control.delays.clear();
   control.hangs.clear();
   control.events.length = 0;
@@ -969,14 +982,20 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     await expect(first).rejects.toThrow(`refused ${FAIL_ID}`);
   });
 
-  it('the nested rule: an inner drain holds its failure, so the SHALLOWER one is reported', async () => {
-    // Consequence 2, pinned rather than only described. The inner list drains
-    // around its own held sibling, so its earlier rejection is still in that
-    // drain when the outer join's later one arrives — and the outer reports
-    // the later, shallower failure. Pre-drain the inner rejected at once and
-    // the caller saw the DEEPER one.
+  it('the nested rule: an inner drain holds its failure, and the EARLIER, deeper one is still reported (issue #2805)', async () => {
+    // The inner list drains around its own held sibling, so its earlier
+    // rejection is still in that drain when the outer join's later one
+    // arrives. Picking by ARRIVAL reported the later, shallower failure;
+    // pre-drain the inner rejected at once and the caller saw the DEEPER one,
+    // which is what the capture order restores. The shallower failure is held
+    // for a turn: two failures in ONE turn reach their drains in an order set
+    // by how many async layers each crosses (measured: ungated, the deeper
+    // lookup rejects first and still reaches its drain second), so only
+    // failures a turn apart have an order this case can assert.
     const held = gate();
+    const shallowGate = gate();
     control.holds.set(SLOW_ID, held.promise);
+    control.holds.set(FAIL_ID, shallowGate.promise);
     control.fails.add(FAIL_DEEP_ID);
     control.fails.add(FAIL_ID);
     const context = makeContext();
@@ -988,6 +1007,8 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     );
     const seen = watch(pending);
     await settleTurn();
+    shallowGate.open();
+    await settleTurn();
     expect(seen.state()).toBe('pending');
     held.open();
 
@@ -995,17 +1016,294 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
       () => undefined,
       (reason: unknown) => reason
     );
-    expect((error as Error).message, 'the shallower failure is the one reported').toBe(
-      `refused ${FAIL_ID}`
+    expect((error as Error).message, 'the earlier, deeper failure is the one reported').toBe(
+      `refused ${FAIL_DEEP_ID}`
     );
     // The whole sequence, not only the two rejections: the deeper one really
     // does happen first, and the held sibling really does record after both —
-    // which is what makes the surfaced SHALLOWER error a selection rather
-    // than an accident of what had run.
+    // so the outer join RECEIVED the shallower one first, and reporting the
+    // deeper one is a selection by capture order rather than by arrival.
     expect(control.events, 'deep rejects, shallow rejects, then the held sibling records').toEqual([
       `reject:${FAIL_DEEP_ID}`,
       `reject:${FAIL_ID}`,
       `record:${SLOW_ID}`,
+    ]);
+  });
+
+  it('the nested rule selects by TIME, not by depth: a shallower failure that came first still wins (issue #2805)', async () => {
+    // The converse of the case above, same shape, opposite order. A rule
+    // preferring the DEEPEST failure passes the case above and fails this one.
+    const held = gate();
+    const deepGate = gate();
+    control.holds.set(SLOW_ID, held.promise);
+    control.holds.set(FAIL_DEEP_ID, deepGate.promise);
+    control.fails.add(FAIL_DEEP_ID);
+    control.fails.add(FAIL_ID);
+    const context = makeContext();
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+
+    const pending = resolver.resolve(
+      { 'Fn::Join': ['-', [[ref(SLOW_ID), ref(FAIL_DEEP_ID)], ref(FAIL_ID)]] },
+      context
+    );
+    const seen = watch(pending);
+    await settleTurn();
+    deepGate.open();
+    await settleTurn();
+    expect(seen.state()).toBe('pending');
+    held.open();
+
+    await expect(pending).rejects.toThrow(`refused ${FAIL_ID}`);
+    expect(control.events, 'shallow rejects, deep rejects, then the held sibling records').toEqual([
+      `reject:${FAIL_ID}`,
+      `reject:${FAIL_DEEP_ID}`,
+      `record:${SLOW_ID}`,
+    ]);
+  });
+
+  it('the capture order survives TWO nested drains, each holding a later failure of its own (issue #2805)', async () => {
+    // `[[[slow, deep], mid], shallow]`: the innermost list holds the earliest
+    // failure behind its slow sibling, the middle list receives its own later
+    // failure first, and the join receives the latest one first of all. Every
+    // drain above the innermost must compare by the order it was CAPTURED in.
+    const held = gate();
+    const midGate = gate();
+    const shallowGate = gate();
+    control.holds.set(SLOW_ID, held.promise);
+    control.holds.set(FAIL_LATE_ID, midGate.promise);
+    control.holds.set(FAIL_ID, shallowGate.promise);
+    control.fails.add(FAIL_DEEP_ID);
+    control.fails.add(FAIL_LATE_ID);
+    control.fails.add(FAIL_ID);
+    const context = makeContext();
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+
+    const pending = resolver.resolve(
+      { 'Fn::Join': ['-', [[[ref(SLOW_ID), ref(FAIL_DEEP_ID)], ref(FAIL_LATE_ID)], ref(FAIL_ID)]] },
+      context
+    );
+    const seen = watch(pending);
+    await settleTurn();
+    midGate.open();
+    await settleTurn();
+    shallowGate.open();
+    await settleTurn();
+    expect(seen.state()).toBe('pending');
+    held.open();
+
+    const error = await pending.then(
+      () => undefined,
+      (reason: unknown) => reason
+    );
+    expect((error as Error).message, 'the earliest failure, two levels down').toBe(
+      `refused ${FAIL_DEEP_ID}`
+    );
+    expect(control.events).toEqual([
+      `reject:${FAIL_DEEP_ID}`,
+      `reject:${FAIL_LATE_ID}`,
+      `reject:${FAIL_ID}`,
+      `record:${SLOW_ID}`,
+    ]);
+  });
+
+  it('an error object an EARLIER resolution already threw is ordered by its arrival, not by that old capture (issue #2805)', async () => {
+    // A memoized refusal can be thrown again, as the same object, by a later
+    // resolution. The order the first resolution recorded for it predates the
+    // second one entirely, and honouring it would make that error win every
+    // later race it enters.
+    const reused = new Error(`refused ${FAIL_DEEP_ID}`);
+    control.reusedErrors.set(FAIL_DEEP_ID, reused);
+    control.fails.add(FAIL_DEEP_ID);
+    control.fails.add(FAIL_ID);
+
+    // NESTED, so the first resolution really records a capture order for the
+    // object: a top-level drain has no parent to record it for.
+    const first = new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::Join': ['-', [[ref(FAIL_DEEP_ID)]]] },
+      makeContext()
+    );
+    await expect(first, 'the first resolution throws the reused object').rejects.toBe(reused);
+
+    const deepGate = gate();
+    control.holds.set(FAIL_DEEP_ID, deepGate.promise);
+    control.events.length = 0;
+    const second = new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::Join': ['-', [ref(FAIL_DEEP_ID), ref(FAIL_ID)]] },
+      makeContext()
+    );
+    await settleTurn();
+    deepGate.open();
+
+    await expect(second).rejects.toThrow(`refused ${FAIL_ID}`);
+    expect(control.events, 'the fresh failure really did come first').toEqual([
+      `reject:${FAIL_ID}`,
+      `reject:${FAIL_DEEP_ID}`,
+    ]);
+  });
+
+  it('two resolutions whose nested drains throw ONE error object at once each keep their own capture order (issue #2805)', async () => {
+    // A single record per error object would let the second inner drain's
+    // write replace the first's before the first's parent read it: that parent
+    // would then order its legitimate early capture by arrival and report its
+    // own later failure. Both holds are released in the same turn so both
+    // inner drains throw before either parent runs. This pins a SINGLE record
+    // per error that names its receiving drain (measured: red against that
+    // shape), not one map shared by every drain, which records the same order
+    // here and passes; the reused-object and concurrent cases pin that one.
+    const shared = new Error(`refused ${FAIL_DEEP_ID}`);
+    const deepB = 'cdkd-drain-inner-b';
+    const slowB = 'cdkd-drain-slow-b';
+    const lateA = 'cdkd-drain-tardy-a';
+    const lateB = 'cdkd-drain-tardy-b';
+    control.reusedErrors.set(FAIL_DEEP_ID, shared);
+    control.reusedErrors.set(deepB, shared);
+    for (const id of [FAIL_DEEP_ID, deepB, lateA, lateB]) control.fails.add(id);
+    const held = gate();
+    const lateGate = gate();
+    control.holds.set(SLOW_ID, held.promise);
+    control.holds.set(slowB, held.promise);
+    control.holds.set(lateA, lateGate.promise);
+    control.holds.set(lateB, lateGate.promise);
+
+    const a = new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::Join': ['-', [[ref(SLOW_ID), ref(FAIL_DEEP_ID)], ref(lateA)]] },
+      makeContext()
+    );
+    const b = new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::Join': ['-', [[ref(slowB), ref(deepB)], ref(lateB)]] },
+      makeContext()
+    );
+    const aSeen = watch(a);
+    const bSeen = watch(b);
+    await settleTurn();
+    lateGate.open();
+    await settleTurn();
+    expect([aSeen.state(), bSeen.state()], 'both still held by their slow siblings').toEqual([
+      'pending',
+      'pending',
+    ]);
+    held.open();
+
+    await expect(a, 'resolution A reports its earlier, nested failure').rejects.toBe(shared);
+    await expect(b, 'resolution B reports its earlier, nested failure').rejects.toBe(shared);
+    expect(control.events.slice(0, 4).sort(), 'both deep failures came before both late ones').toEqual(
+      [`reject:${FAIL_DEEP_ID}`, `reject:${deepB}`, `reject:${lateA}`, `reject:${lateB}`].sort()
+    );
+    expect(control.events.slice(0, 2).sort()).toEqual([`reject:${FAIL_DEEP_ID}`, `reject:${deepB}`].sort());
+  });
+
+  it.each([
+    ['undefined', 'rejectsWithUndefined'],
+    ['null', 'rejectsWithNull'],
+  ] as const)(
+    'a NESTED drain rejecting with `%s` hands it on unchanged, with no capture order to record (issue #2805)',
+    async (_label, set) => {
+      // A `WeakMap` refuses a primitive key, so the record a nested drain
+      // writes for its parent is guarded: without the guard the drain would
+      // throw a `TypeError` of its own in place of the reason.
+      control[set].add(FAIL_ID);
+      control.fails.add(FAIL_ID);
+
+      const outcome = await new IntrinsicFunctionResolver('us-east-1')
+        .resolve({ 'Fn::Join': ['-', [[ref(FAIL_ID)]]] }, makeContext())
+        .then(
+          () => ({ settled: 'fulfilled' as const, value: undefined as unknown }),
+          (reason: unknown) => ({ settled: 'rejected' as const, value: reason })
+        );
+
+      expect(outcome.settled).toBe('rejected');
+      expect(outcome.value).toBe(set === 'rejectsWithNull' ? null : undefined);
+    }
+  );
+
+  it('two SIBLING drains throwing one error object in the same turn keep the earlier capture (issue #2805)', async () => {
+    // `[[slow, shared], other, [slowB, sharedAgain]]`: the first list captures
+    // the shared object first, the join then receives `other`, and the second
+    // list captures the same object last. Both lists are released in one turn,
+    // so the second list's record lands before the join reads the first's.
+    const shared = new Error(`refused ${FAIL_DEEP_ID}`);
+    const deepB = 'cdkd-drain-inner-b';
+    const slowB = 'cdkd-drain-slow-b';
+    control.reusedErrors.set(FAIL_DEEP_ID, shared);
+    control.reusedErrors.set(deepB, shared);
+    for (const id of [FAIL_DEEP_ID, deepB, FAIL_ID]) control.fails.add(id);
+    const held = gate();
+    const otherGate = gate();
+    const deepBGate = gate();
+    control.holds.set(SLOW_ID, held.promise);
+    control.holds.set(slowB, held.promise);
+    control.holds.set(FAIL_ID, otherGate.promise);
+    control.holds.set(deepB, deepBGate.promise);
+
+    const pending = new IntrinsicFunctionResolver('us-east-1').resolve(
+      {
+        'Fn::Join': [
+          '-',
+          [[ref(SLOW_ID), ref(FAIL_DEEP_ID)], ref(FAIL_ID), [ref(slowB), ref(deepB)]],
+        ],
+      },
+      makeContext()
+    );
+    const seen = watch(pending);
+    await settleTurn();
+    otherGate.open();
+    await settleTurn();
+    deepBGate.open();
+    await settleTurn();
+    expect(seen.state()).toBe('pending');
+    held.open();
+
+    await expect(pending, 'the first capture of the shared object').rejects.toBe(shared);
+    expect(control.events.slice(0, 3)).toEqual([
+      `reject:${FAIL_DEEP_ID}`,
+      `reject:${FAIL_ID}`,
+      `reject:${deepB}`,
+    ]);
+  });
+
+  it('an order a CONCURRENT resolution recorded for the same error object is not imported (issue #2805)', async () => {
+    // Recency is not nesting. The second resolution is OPEN when the first
+    // one's nested drain captures the shared object and throws it, so an order
+    // compared only against when a drain started would pass, and the shared
+    // object would outrank the second resolution's own earlier failure.
+    // Two secret ids fail with ONE shared object, the shape of a memoized
+    // refusal reached from two resolutions.
+    const shared = new Error(`refused ${FAIL_DEEP_ID}`);
+    control.reusedErrors.set(FAIL_DEEP_ID, shared);
+    control.reusedErrors.set(FAIL_LATE_ID, shared);
+    control.fails.add(FAIL_DEEP_ID);
+    control.fails.add(FAIL_LATE_ID);
+    control.fails.add(FAIL_ID);
+    const freshGate = gate();
+    const sharedGate = gate();
+    control.holds.set(FAIL_ID, freshGate.promise);
+    control.holds.set(FAIL_LATE_ID, sharedGate.promise);
+
+    // The second resolution opens FIRST and stays open throughout.
+    const second = new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::Join': ['-', [ref(FAIL_ID), ref(FAIL_LATE_ID)]] },
+      makeContext()
+    );
+    const secondSeen = watch(second);
+    // The other resolution throws the shared object out of a NESTED drain.
+    const other = new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::Join': ['-', [[ref(FAIL_DEEP_ID)]]] },
+      makeContext()
+    );
+    await expect(other, 'the other resolution throws the shared object').rejects.toBe(shared);
+    expect(secondSeen.state(), 'the second resolution is still open').toBe('pending');
+
+    freshGate.open();
+    await settleTurn();
+    sharedGate.open();
+
+    await expect(second, "the second resolution's own first failure").rejects.toThrow(
+      `refused ${FAIL_ID}`
+    );
+    expect(control.events).toEqual([
+      `reject:${FAIL_DEEP_ID}`,
+      `reject:${FAIL_ID}`,
+      `reject:${FAIL_LATE_ID}`,
     ]);
   });
 

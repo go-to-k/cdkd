@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import {
   CloudFormationClient,
@@ -2054,6 +2055,28 @@ export const concurrentDrainCap: { ms?: number } = {};
 const abandonReported = new WeakSet<object>();
 
 /**
+ * The order in which drains CAPTURED rejections, across every drain in the
+ * process (issue [#2805](https://github.com/go-to-k/cdkd/issues/2805)). A
+ * counter, not `Date.now()`: two rejections in one millisecond still order.
+ */
+let rejectionClock = 0;
+
+/**
+ * The capture orders a drain's NESTED drains threw their picks with, keyed by
+ * the thrown error. Each drain starts its parts inside its own map's scope,
+ * so a drain nested in one of them writes into its PARENT's map and nobody
+ * else's. The parent then compares that failure by when it happened rather
+ * than by when the inner drain let it go. Per parent, not one map per error:
+ * a memoized error object can be in flight in two resolutions at once, and a
+ * single record would let one resolution's drain overwrite the other's before
+ * its parent read it, or hand one drain a capture that never happened in its
+ * own parts. A `WeakMap` so an entry dies with its error. A primitive
+ * rejection (`throw undefined`) has no key and is ordered by arrival, as
+ * every rejection was before #2805.
+ */
+const nestedCaptureOrders = new AsyncLocalStorage<WeakMap<object, number>>();
+
+/**
  * `Promise.all`'s RESULT and its choice of error, with `Promise.allSettled`'s
  * TIMING: every promise started here has settled before this returns, and
  * before it throws unless the cap below expires first (issue
@@ -2077,7 +2100,8 @@ const abandonReported = new WeakSet<object>();
  * does and what a naive `Promise.allSettled` + "first rejected entry" would
  * silently change: with two parts rejecting out of input order, the entry scan
  * reports the LATER one. Each promise gets its own `catch`, so the callbacks
- * fire in rejection order and the first assignment wins.
+ * fire in rejection order and each one is ranked as it arrives: by arrival,
+ * or by the capture order a nested drain recorded for it (below).
  *
  * Every input is `catch`-ed, so nothing here can raise an unhandled rejection
  * while the drain waits.
@@ -2151,27 +2175,40 @@ const abandonReported = new WeakSet<object>();
  * still running calls `onAbandoned` with how many, at most once per budget,
  * and the resolver turns that into a warning.
  *
- * ONE REMAINING CONSEQUENCE, deliberate and pinned by a case rather than only
- * described: the earliest-in-time rule holds PER INVOCATION, not across
- * NESTED resolutions. For a join whose parts are `[listWithAnEarlyFailure,
- * laterFailure]`, the inner list's drain holds its own rejection while its
- * slow sibling finishes, so the outer join captures the later failure first
- * and reports that instead. That is not only cosmetic: the retry classifiers
- * DO read the message (`retryClassificationText` feeds
- * `isRetryableTransientError`, whose `RETRYABLE_ERROR_MESSAGE_PATTERNS` is an
- * explicit substring table), so swapping which failure surfaces can swap a
- * transient verdict for a terminal one. What does not change is that the
- * resolution FAILS: both are genuine failures of the same resolve, and the
- * selection was already timing-dependent — `Promise.all` reports whichever
- * lost the race. The drain adds a systematic bias toward the SHALLOWER
- * failure where the old race was arbitrary. Residual: issue
- * [#2805](https://github.com/go-to-k/cdkd/issues/2805).
+ * THE EARLIEST-IN-TIME RULE HOLDS ACROSS NESTED DRAINS, not only per
+ * invocation (issue [#2805](https://github.com/go-to-k/cdkd/issues/2805)).
+ * For a join whose parts are `[listWithAnEarlyFailure, laterFailure]`, the
+ * inner list's drain holds its own rejection while its slow sibling finishes,
+ * so the outer join RECEIVES the later failure first. Picking by arrival would
+ * report that shallower one, and it is not only cosmetic: the retry
+ * classifiers read the message (`retryClassificationText` feeds
+ * `isRetryableTransientError`, whose `RETRYABLE_ERROR_MESSAGE_PATTERNS` is a
+ * substring table), so swapping which failure surfaces can swap a transient
+ * verdict for a terminal one. So each rejection carries the order it was
+ * CAPTURED in: a drain throws its pick with that order recorded in its
+ * parent's {@link nestedCaptureOrders} map, and the parent keeps the smallest.
+ * CAPTURED means the moment the first drain above a failure saw it, not the
+ * moment its lookup failed: two failures inside one turn are ordered by how
+ * many async layers each crossed to reach a drain, which is scheduling rather
+ * than time, and the case file pins only failures a turn apart. The helper
+ * STARTS the parts (`start`) so it can run them inside its own map's scope:
+ * that is how a nested drain finds the one drain it throws to, and any other
+ * drain receiving the same error object orders it by arrival. Where the
+ * answer still differs from `Promise.all`'s: a drain the cap releases reports
+ * the earliest it has RECEIVED, and an inner failure still held below it is
+ * not among them; a layer that WRAPS an error between two drains drops the
+ * order, and the wrapper is ordered by arrival.
  */
 async function allSettledKeepingFirstRejection<T>(
-  promises: readonly Promise<T>[],
+  start: () => readonly Promise<T>[],
   onAbandoned: (pending: number) => void
 ): Promise<T[]> {
-  let rejection: { readonly error: unknown } | undefined;
+  let rejection: { readonly error: unknown; readonly at: number } | undefined;
+  // Where this drain's nested drains record their picks' capture orders, and
+  // where this drain records its own, for its parent (issue #2805).
+  const nestedOrders = new WeakMap<object, number>();
+  const parentOrders = nestedCaptureOrders.getStore();
+  const promises = nestedCaptureOrders.run(nestedOrders, start);
   // Unreachable through today's entry points: both public methods that reach
   // a drain open a store (`resolve`, `evaluateConditions`). A case in the
   // drain test reds when a public member reaches a drain without opening one
@@ -2202,9 +2239,15 @@ async function allSettledKeepingFirstRejection<T>(
       },
       (error: unknown) => {
         settled += 1;
+        // A primitive reads `undefined` from a `WeakMap`, so it needs no guard
+        // here; the WRITE below does, since `set` throws on one.
+        const recorded = nestedOrders.get(error as object);
+        const at = recorded ?? (rejectionClock += 1);
         if (rejection === undefined) {
-          rejection = { error };
+          rejection = { error, at };
           armCap?.();
+        } else if (at < rejection.at) {
+          rejection = { error, at };
         }
         // The value is never read: the throw below happens first whenever any
         // input rejected, and this cast keeps the settled-values type honest
@@ -2292,7 +2335,14 @@ async function allSettledKeepingFirstRejection<T>(
           onAbandoned(pending);
         }
       }
-      throw rejection.error;
+      const { error, at } = rejection;
+      if (parentOrders !== undefined && typeof error === 'object' && error !== null) {
+        // The SMALLEST: two sibling drains can throw one memoized error object
+        // in the same turn, before the parent has read either record.
+        const earlier = parentOrders.get(error);
+        parentOrders.set(error, earlier === undefined ? at : Math.min(earlier, at));
+      }
+      throw error;
     }
     // Narrowed rather than cast: winning the race without a rejection is
     // unreachable today, since only a rejection arms the cap — and an edit
@@ -4185,7 +4235,7 @@ export class IntrinsicFunctionResolver {
       // join-level drain alone would still let a late recording escape (issue
       // #2563).
       const resolved = await allSettledKeepingFirstRejection(
-        value.map((v) => this.resolveValue(v, context)),
+        () => value.map((v) => this.resolveValue(v, context)),
         (pending) => this.warnAbandonedParts(pending)
       );
       return resolved.filter((v) => v !== AWS_NO_VALUE);
@@ -7839,56 +7889,57 @@ export class IntrinsicFunctionResolver {
     // (issue #3156), read only after the drain and in part order, so the
     // record does not depend on which part settled first.
     const resolvedParts = await allSettledKeepingFirstRejection(
-      values.map(
-        async (
-          v
-        ): Promise<
-          LogTwin & {
-            readonly product: boolean;
-            readonly raw?: { value: unknown };
-            readonly input: string;
-            readonly substitutions: readonly DynamicReferenceSubstitution[];
-            readonly complete: boolean;
-          }
-        > => {
-          if (typeof v === 'string') {
-            // An element of a list an intrinsic returned can still spell a
-            // reference after that intrinsic resolved it (a resolved value that
-            // is itself reference text). Its second resolution starts from the
-            // twin the first one registered, so the first stage's mask is kept
-            // (issue #3114). A literal element's seed differs from its text only
-            // when a product of this pass equals that text, or when the text is
-            // itself a recorded secret (a token-shaped plaintext, issue #1917),
-            // so for a literal the seed can only mask more.
-            const part = v.includes('{{resolve:')
-              ? await this.resolveDynamicReferencesWithLogTwin(
-                  v,
-                  this.logTwinOfProduct({ result: v, twin: v }, context).twin,
-                  context
-                )
-              : { result: v, twin: v, substitutions: [], complete: true };
+      () =>
+        values.map(
+          async (
+            v
+          ): Promise<
+            LogTwin & {
+              readonly product: boolean;
+              readonly raw?: { value: unknown };
+              readonly input: string;
+              readonly substitutions: readonly DynamicReferenceSubstitution[];
+              readonly complete: boolean;
+            }
+          > => {
+            if (typeof v === 'string') {
+              // An element of a list an intrinsic returned can still spell a
+              // reference after that intrinsic resolved it (a resolved value that
+              // is itself reference text). Its second resolution starts from the
+              // twin the first one registered, so the first stage's mask is kept
+              // (issue #3114). A literal element's seed differs from its text only
+              // when a product of this pass equals that text, or when the text is
+              // itself a recorded secret (a token-shaped plaintext, issue #1917),
+              // so for a literal the seed can only mask more.
+              const part = v.includes('{{resolve:')
+                ? await this.resolveDynamicReferencesWithLogTwin(
+                    v,
+                    this.logTwinOfProduct({ result: v, twin: v }, context).twin,
+                    context
+                  )
+                : { result: v, twin: v, substitutions: [], complete: true };
+              return {
+                result: part.result,
+                twin: part.twin,
+                product: !literalList,
+                input: v,
+                substitutions: part.substitutions,
+                complete: part.complete,
+              };
+            }
+            const raw = await this.resolveValue(v, context);
+            const resolved = String(raw);
             return {
-              result: part.result,
-              twin: part.twin,
-              product: !literalList,
-              input: v,
-              substitutions: part.substitutions,
-              complete: part.complete,
+              result: resolved,
+              twin: resolved,
+              product: true,
+              raw: { value: raw },
+              input: resolved,
+              substitutions: [],
+              complete: true,
             };
           }
-          const raw = await this.resolveValue(v, context);
-          const resolved = String(raw);
-          return {
-            result: resolved,
-            twin: resolved,
-            product: true,
-            raw: { value: raw },
-            input: resolved,
-            substitutions: [],
-            complete: true,
-          };
-        }
-      ),
+        ),
       (pending) => this.warnAbandonedParts(pending)
     );
     const parts = resolvedParts.map((part) => {
