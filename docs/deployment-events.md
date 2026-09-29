@@ -132,9 +132,10 @@ enum-shaped identifiers that never carry a caller-supplied value.
 #### What the masking does NOT cover
 
 The mask is a **literal-occurrence substitution**, so it is bounded in three
-ways. None of these is new — they are inherited from `maskSecretsInText` and
-predate the masking described above — but they are worth stating HERE rather
-than only at the log sites, because a durable sink keeps whatever gets through:
+ways. The first two are inherited from `maskSecretsInText`; the third is the
+limit of how `NoEcho` parameter values reach it. All three are worth stating
+HERE rather than only at the log sites, because a durable sink keeps whatever
+gets through:
 
 - **Secrets shorter than 4 characters are not substituted**
   (`MIN_NEEDLE_LENGTH` in `src/deployment/secret-redaction.ts`) unless the whole
@@ -144,10 +145,13 @@ than only at the log sites, because a durable sink keeps whatever gets through:
   back JSON-escaped, truncated (`Value 'hunte...'`), re-cased, or URL-encoded
   passes through unchanged, because the scanned string no longer contains the
   recorded plaintext.
-- **A `NoEcho: true` template parameter is outside the model entirely.** The
-  masker works from the resolver's `{{resolve:...}}` bag, and a `Ref` to a
-  `NoEcho` parameter has no such expression to map back to, so its value is
-  never recorded and never masked.
+- **A `NoEcho: true` template parameter is masked only where the run resolved
+  it.** A `Ref` or `Fn::Sub` variable serving one records the value for that
+  resource, so an event whose message quotes it is masked. Nothing re-derives
+  it elsewhere: a `cdkd rollback` run in its own process re-resolves a journal
+  that names no parameter, so its events are not masked. A FRAGMENT of the
+  value (`Fn::Split` over it) is not recorded either, and a 1-3 character value
+  inside a longer message is not substituted, per the first bullet.
 
 Treat `deployments/*.jsonl` as sensitive on that basis, and rotate any secret
 whose plaintext a run is known to have quoted — masking a later write does not

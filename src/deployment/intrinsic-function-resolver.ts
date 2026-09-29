@@ -62,7 +62,12 @@ import {
 import {
   dynamicReferenceTokens,
   maskSecretsInText,
+  maskRecordedSecretsInText,
   maskSecretsInError,
+  recordLogOnlyValue,
+  carryLogOnlyValuesCarriedBy,
+  hasMaskableValues,
+  hasLogOnlyValues,
   recordSecretExpression,
   forgetSecretExpression,
   isRecordedSecretExpression,
@@ -3599,8 +3604,10 @@ export class IntrinsicFunctionResolver {
     // alone, which is the only bag that can hold the needle at this seam, so a
     // FOURTH call site is a security decision rather than a copy.
     const maskInherited = (text: string): string => {
+      // `hasMaskableValues` (go-to-k/cdkd#1998): an inherited bag holding
+      // only the parent's LOG-ONLY needles still masks.
       const mask = (value: string): string =>
-        inheritedSecrets && inheritedSecrets.size > 0
+        inheritedSecrets && hasMaskableValues(inheritedSecrets)
           ? maskSecretsInText(value, inheritedSecrets)
           : value;
       return displaySafe(mask(stripControlChars(mask(text))));
@@ -4470,6 +4477,12 @@ export class IntrinsicFunctionResolver {
   ): void {
     const inherited = context.inheritedSecrets;
     const recorded = context.recordedSecretValues;
+    // go-to-k/cdkd#1998: a `NoEcho` value the PARENT consumed is a log-only
+    // needle of the parent's bag, and the child's own parameter declaration
+    // (a CDK-synthesized one never says `NoEcho`) cannot re-derive it. Carried
+    // BEFORE the size test below, which reads a bag holding only log-only
+    // needles as empty.
+    if (inherited && recorded) carryLogOnlyValuesCarriedBy(inherited, recorded, value);
     if (!inherited || inherited.size === 0 || !recorded) return;
     // Issue #2291 round 2. THIS parameter's own expression, when the parent
     // certified one, rather than the collapsed map's survivor. See the
@@ -4506,6 +4519,41 @@ export class IntrinsicFunctionResolver {
       // the new value's `***` as equal to the recorded `***`.
       carryFreshNoEchoMark(inherited, recorded, plaintext);
     }
+  }
+
+  /**
+   * Record the value of a `NoEcho: true` PARAMETER as a LOG-ONLY needle of the
+   * pass that consumed it (go-to-k/cdkd#1998). `NoEcho` is the template
+   * author's declaration that the value is sensitive, and CloudFormation masks
+   * it everywhere it echoes one.
+   *
+   * Every leaf a log line can spell is recorded: a string leaf, the
+   * `String()` form of a number (a `Number` parameter is coerced before this
+   * runs), and a list's comma-joined form, the spelling the user supplied and
+   * the one `String()` renders. Log-only, so over-covering costs a masked log
+   * line and nothing else. Recorded into the pass's own bag and nowhere else:
+   * a pass without one (the parameter pass's log context) has no masker to
+   * feed.
+   */
+  private recordNoEchoParameterValue(
+    paramDef: ParameterDefinition | undefined,
+    value: unknown,
+    context: ResolverContext
+  ): void {
+    const bag = context.recordedSecretValues;
+    if (paramDef?.NoEcho !== true || bag === undefined) return;
+    const record = (leaf: unknown): void => {
+      if (typeof leaf === 'string') recordLogOnlyValue(bag, leaf);
+      else if (typeof leaf === 'number' || typeof leaf === 'boolean') {
+        recordLogOnlyValue(bag, String(leaf));
+      }
+    };
+    if (Array.isArray(value)) {
+      for (const element of value) record(element);
+      record(value.map((element: unknown) => String(element)).join(','));
+      return;
+    }
+    record(value);
   }
 
   /**
@@ -4768,6 +4816,11 @@ export class IntrinsicFunctionResolver {
       const paramDef = (
         declared != null && Object.hasOwn(declared, logicalId) ? declared[logicalId] : undefined
       ) as ParameterDefinition | undefined;
+      // go-to-k/cdkd#1998: a `NoEcho` value becomes a LOG-ONLY needle of the
+      // pass that consumes it, so the provider's masker, the engine's error and
+      // event masking and this resolver's own lines mask it. Never a map entry:
+      // persistence is unchanged.
+      this.recordNoEchoParameterValue(paramDef, value, context);
       // Masked BEFORE the pair is recorded below, which is why it goes through
       // `displayMasked` (which consults `context.inheritedSecrets`) rather
       // than relying on `recordedSecretValues`: at this instant that bag is
@@ -10640,7 +10693,9 @@ export class IntrinsicFunctionResolver {
     let masked: unknown = error;
     let positional = extraMask;
     for (const bag of [context?.inheritedSecrets, context?.recordedSecretValues]) {
-      if (!bag || bag.size === 0) continue;
+      // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a bag holding only
+      // log-only needles still masks a thrown message.
+      if (!bag || !hasMaskableValues(bag)) continue;
       masked = maskSecretsInError(masked, bag, positional);
       positional = undefined;
     }
@@ -11042,6 +11097,18 @@ export class IntrinsicFunctionResolver {
         recordFreshNoEchoValuesIn(result, context.recordedSecretValues);
       }
     }
+    // go-to-k/cdkd#1998: the encoding of text holding a LOG-ONLY needle (a
+    // `NoEcho` parameter's value) decodes straight back to it, so it is a
+    // log-only needle too. LOG-ONLY, deliberately, and outside the guard
+    // above: that guard decides what is PERSISTED and must not see this class.
+    if (
+      context.recordedSecretValues &&
+      this.hasLogOnlyNeedles(context) &&
+      this.maskPrintedNeedlesForLog(resolvedValue, context) !==
+        this.maskNeedlesForLog(resolvedValue, context)
+    ) {
+      recordLogOnlyValue(context.recordedSecretValues, result);
+    }
 
     this.logger.debug(
       `Resolved Fn::Base64: ${this.displayMasked(inputLogText, context)} -> ${this.displayMasked(inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
@@ -11372,8 +11439,19 @@ export class IntrinsicFunctionResolver {
    */
   private maskSecretsRaw(text: string, context?: ResolverContext): string {
     const registered = this.registeredLogTwin(text, context);
-    if (registered === undefined) return this.maskNeedlesForLog(text, context);
-    return this.maskNeedlesForLog(text, context) !== text ? SECRET_MASK : registered;
+    const needled = this.maskNeedlesForLog(text, context);
+    // go-to-k/cdkd#1998: the LOG-ONLY needles join here, at the render, and
+    // nowhere upstream of it. When they change nothing this is the recorded
+    // answer byte for byte. When they do and no twin is registered, the
+    // printing mask is the answer; with a twin, its spans cannot be merged
+    // with the log-only ones, so the whole text is masked — the rule the two
+    // lines below already apply to the recorded needles.
+    if (this.hasLogOnlyNeedles(context)) {
+      const printed = this.maskPrintedNeedlesForLog(text, context);
+      if (printed !== needled) return registered === undefined ? printed : SECRET_MASK;
+    }
+    if (registered === undefined) return needled;
+    return needled !== text ? SECRET_MASK : registered;
   }
 
   /**
@@ -11440,10 +11518,42 @@ export class IntrinsicFunctionResolver {
     // Masking against the inherited bag is never a widening: its keys are pairs
     // the parent PROVED secret, so anything it masks is a value that must not
     // be echoed regardless of which resource is being resolved.
+    //
+    // The RECORDED needles only (go-to-k/cdkd#1998): this answer is also a
+    // DETECTOR — `resolveBase64` records what it persists from it, the
+    // unsupported-service arm refuses on it, and the log-twin machinery that
+    // `Fn::Base64` reads is built from it — so a log-only needle must not move
+    // it. The render adds the log-only needles in {@link maskSecretsRaw}.
     const inherited = context?.inheritedSecrets;
-    if (inherited && inherited.size > 0) masked = maskSecretsInText(masked, inherited);
+    if (inherited && inherited.size > 0) masked = maskRecordedSecretsInText(masked, inherited);
     const secrets = context?.recordedSecretValues;
-    if (secrets && secrets.size > 0) masked = maskSecretsInText(masked, secrets);
+    if (secrets && secrets.size > 0) masked = maskRecordedSecretsInText(masked, secrets);
+    return masked;
+  }
+
+  /**
+   * Does either bag hold a LOG-ONLY needle (go-to-k/cdkd#1998)? The cheap
+   * test that lets a print skip {@link maskPrintedNeedlesForLog} in the
+   * common case, where there is none.
+   */
+  private hasLogOnlyNeedles(context?: ResolverContext): boolean {
+    return (
+      hasLogOnlyValues(context?.inheritedSecrets) || hasLogOnlyValues(context?.recordedSecretValues)
+    );
+  }
+
+  /**
+   * The PRINTING mask: {@link maskNeedlesForLog} plus the pass's LOG-ONLY
+   * needles (go-to-k/cdkd#1998), both bags in the same order, each in ONE
+   * regex so a longer needle of either class wins over a shorter one it
+   * overlaps. Never a detector: see {@link maskNeedlesForLog}.
+   */
+  private maskPrintedNeedlesForLog(text: string, context?: ResolverContext): string {
+    let masked = text;
+    const inherited = context?.inheritedSecrets;
+    if (inherited && hasMaskableValues(inherited)) masked = maskSecretsInText(masked, inherited);
+    const secrets = context?.recordedSecretValues;
+    if (secrets && hasMaskableValues(secrets)) masked = maskSecretsInText(masked, secrets);
     return masked;
   }
 

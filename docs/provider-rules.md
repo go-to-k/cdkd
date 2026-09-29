@@ -447,12 +447,13 @@ implementation. Three details are worth copying:
     verified, not assumed — so this is a shape to prefer, not a live gap.
 
     Back to the masker itself, whose scope the paragraphs above interrupted.
-    `maskDeep` covers cdkd's
-    dynamic-reference secret model only — a `NoEcho: true` template PARAMETER
-    is outside that model and is not masked by it, and that residual is
-    PERSISTED rather than log-only (a `NoEcho` value quoted inside an AWS error
-    reaches `deployments/*.jsonl`; issue
-    [#1998](https://github.com/go-to-k/cdkd/issues/1998)). A DIFFERENT `NoEcho`
+    `maskDeep` masks what the caller's resolution recorded: the
+    dynamic-reference secrets, and since issue
+    [#1998](https://github.com/go-to-k/cdkd/issues/1998) the value of a
+    `NoEcho: true` template PARAMETER that a `Ref` or `Fn::Sub` variable served,
+    recorded as a LOG-ONLY needle that the masker reads and nothing persisted
+    does. No provider change was needed for that, which is the point of
+    handing providers a function. A DIFFERENT `NoEcho`
     — the custom-resource RESPONSE field of the same name — IS covered since
     issue [#2274](https://github.com/go-to-k/cdkd/issues/2274), through
     `noEchoAttributes` above; the two share only a spelling, so do not read one

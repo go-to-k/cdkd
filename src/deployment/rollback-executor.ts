@@ -90,6 +90,8 @@ import {
   scrubResourceRecord,
   redactSecretsForState,
   createSecretMasker,
+  carryLogOnlyValues,
+  hasMaskableValues,
   dynamicReferenceTokens,
   maskSecretsInError,
   maskSecretsInText,
@@ -236,7 +238,9 @@ function maskedRollbackEventError(
   secrets: RecordedSecretValues
 ): DeploymentEventError {
   const extracted = extractDeploymentEventError(error);
-  if (secrets.size === 0) return extracted;
+  // `hasMaskableValues` (go-to-k/cdkd#1998): a bag seeded with log-only
+  // needles alone still masks the event.
+  if (!hasMaskableValues(secrets)) return extracted;
   return { ...extracted, message: maskSecretsInText(extracted.message, secrets) };
 }
 
@@ -1123,6 +1127,16 @@ export interface RollbackExecutorContext {
    * (go-to-k/cdkd#3859).
    */
   nestedChildStack?: string | undefined;
+  /**
+   * The deploy's own bag for a logical id, supplied only by the IN-PROCESS
+   * rollback (`DeployEngine`), read for its LOG-ONLY needles alone
+   * (go-to-k/cdkd#1998): a `NoEcho` parameter's value the failed deploy
+   * consumed. The replay re-resolves a journal that holds no parameter to
+   * `Ref`, so without this a provider revert line, a thrown message or a
+   * rollback event quoting the value would print it. Its map entries are NOT
+   * copied: the op's own re-resolution is what positions the redaction.
+   */
+  logOnlyNeedlesFor?: ((logicalId: string) => RecordedSecretValues | undefined) | undefined;
 }
 
 /** The action the planner / replayer decided for a single op. */
@@ -2572,6 +2586,9 @@ async function replaySingle(
    * maskers keep their identity behavior).
    */
   const secrets: RecordedSecretValues = new Map();
+  // go-to-k/cdkd#1998: see `RollbackExecutorContext.logOnlyNeedlesFor`.
+  const deployBag = ctx.logOnlyNeedlesFor?.(op.logicalId);
+  if (deployBag) carryLogOnlyValues(deployBag, secrets);
   /**
    * The route a CREATE-rollback arm resolved for this op (issue #1366) —
    * hoisted so the shared catch's ROLLBACK_RESOURCE_FAILED reports the route

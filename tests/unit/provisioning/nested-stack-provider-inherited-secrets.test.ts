@@ -60,6 +60,7 @@ import {
   type NestedStackProviderContext,
 } from '../../../src/provisioning/nested-stack-context.js';
 import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import type { DeployEngineOptions } from '../../../src/deployment/deploy-engine.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -153,6 +154,22 @@ describe('NestedStackProvider — inherited secrets + child-region provenance', 
           { Parameters: { DbPassword: SECRET_PLAINTEXT } },
           {}
         )
+      )
+    );
+
+    expect(childOptions().inheritedSecrets).toBe(parentSecrets);
+  });
+
+  it('forwards a bag holding ONLY log-only needles (go-to-k/cdkd#1998)', async () => {
+    // A `NoEcho` parameter's value handed to the child is a LOG-ONLY needle of
+    // the parent's bag, with no map entry: a `size` test reads it as empty.
+    const provider = new NestedStackProvider();
+    const parentSecrets = new Map<string, string>();
+    recordLogOnlyValue(parentSecrets, 'hunter2-noecho-password');
+
+    await withCurrentResourceSecrets(parentSecrets, () =>
+      withNestedStackContext(makeContext(), () =>
+        provider.create('Child', NESTED, { Parameters: { Pw: 'hunter2-noecho-password' } })
       )
     );
 

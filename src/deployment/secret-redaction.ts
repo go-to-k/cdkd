@@ -968,6 +968,152 @@ function carryMaskOnlyMarks(from: RecordedSecretValues, to: RecordedSecretValues
 }
 
 /**
+ * The LOG-ONLY needles of a pass (go-to-k/cdkd#1998): values that must not be
+ * PRINTED, but that cdkd has no business rewriting in anything it PERSISTS.
+ * Keyed by the pass's map like {@link freshNoEchoValuesOf}.
+ *
+ * The one writer is the resolver, for the value of a `NoEcho: true` template
+ * PARAMETER at the point a `Ref` (or an `Fn::Sub` variable) serves it, and for
+ * the `Fn::Base64` encoding of text that embeds one.
+ *
+ * WHY A SIDE SET AND NOT THE MAP. The map's VALUE is what a plaintext is
+ * rewritten to on the way into state: an expression, or {@link SECRET_MASK}
+ * for the mask-only class. A parameter's value has neither on the terms state
+ * needs: a `Ref` is no expression a reader can re-resolve, and a mask would
+ * change what cdkd persists and diffs against on every later deploy (the
+ * resource's record, its outputs, the no-change skip). Maintainer decision on
+ * #1998: persistence is unchanged. So nothing that PERSISTS reads this set —
+ * {@link redactSecretsForState}, {@link scrubResourceRecord} and every
+ * positioner walk the map alone — and the maskers that PRINT read both:
+ * {@link maskSecretsInText}, {@link maskSecretsInError} and
+ * {@link createSecretMasker}, the capability providers receive.
+ *
+ * A DETECTOR that decides what is persisted or sent must not read it either,
+ * which is what {@link maskRecordedSecretsInText} is for: the resolver's
+ * `Fn::Base64` recording and its unsupported-service refusal ask "did the
+ * recorded needles change this text", and a log-only needle answering yes
+ * there would put `***` into state or refuse a deploy that succeeds today.
+ *
+ * THE FLOOR is {@link maskSecretsInText}'s own, unchanged: a whole text equal
+ * to a log-only value is masked at any length, and an embedded one only at or
+ * above {@link MIN_NEEDLE_LENGTH}. The mask-only class floors its RECORDING at
+ * that length because its whole-value arm rewrites every equal leaf in state;
+ * a log-only value rewrites nothing, so it is recorded at any length. It gets
+ * the substring floor only, NOT the resolver's position twins (#3100), which
+ * are built from the recorded needles: a 1-3 character `NoEcho` value embedded
+ * in a longer string still prints.
+ */
+const logOnlyValuesOf = new WeakMap<RecordedSecretValues, Set<string>>();
+
+/**
+ * Record `plaintext` as a LOG-ONLY needle of the pass that owns `secrets` (see
+ * {@link logOnlyValuesOf}). The empty string is refused: it would mask every
+ * empty text. Adds nothing to the map itself.
+ */
+export function recordLogOnlyValue(secrets: RecordedSecretValues, plaintext: string): void {
+  if (plaintext === '') return;
+  sideSetOf(logOnlyValuesOf, secrets).add(plaintext);
+}
+
+/**
+ * Carry every log-only needle of `from` into `to`. For a caller that copies
+ * one bag into another and then MASKS with the copy: a `new Map(...)` or an
+ * entry-by-entry copy keeps the map and drops this set.
+ */
+export function carryLogOnlyValues(from: RecordedSecretValues, to: RecordedSecretValues): void {
+  const values = logOnlyValuesOf.get(from);
+  if (values === undefined || values.size === 0) return;
+  const into = sideSetOf(logOnlyValuesOf, to);
+  for (const value of values) into.add(value);
+}
+
+/**
+ * Carry the log-only needles of `from` that `value` CARRIES into `to` — a
+ * string leaf equal to one, or containing one at or above
+ * {@link MIN_NEEDLE_LENGTH}. The nested-stack child's twin of the parent's
+ * `Ref` recording: a child resource consuming a parameter the parent built
+ * from a `NoEcho` value gets that value as a needle in its OWN bag, which is
+ * the bag its provider's masker and its error / event masking read.
+ */
+export function carryLogOnlyValuesCarriedBy(
+  from: RecordedSecretValues,
+  to: RecordedSecretValues,
+  value: unknown
+): void {
+  const values = logOnlyValuesOf.get(from);
+  if (values === undefined || values.size === 0) return;
+  const leaves = printedLeavesOf(value);
+  if (leaves.size === 0) return;
+  for (const needle of values) {
+    for (const leaf of leaves) {
+      if (leaf === needle || (needle.length >= MIN_NEEDLE_LENGTH && leaf.includes(needle))) {
+        recordLogOnlyValue(to, needle);
+        break;
+      }
+    }
+  }
+}
+
+/**
+ * Every leaf of `value` as a log line spells it: each string, and the
+ * `String()` form of each number and boolean, arrays included — the spellings
+ * `recordNoEchoParameterValue` records. A child parameter declared `Number`
+ * turns the parent's `"7391"` into `7391` before it is consumed, and a
+ * string-only walk would carry nothing for it.
+ */
+function printedLeavesOf(value: unknown): Set<string> {
+  const leaves = wholeStringLeavesOf(value);
+  const seen: WalkedContainers = new Set();
+  const walk = (node: unknown): void => {
+    if (typeof node === 'number' || typeof node === 'boolean') {
+      leaves.add(String(node));
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    for (const child of Array.isArray(node) ? node : Object.values(node)) walk(child);
+  };
+  walk(value);
+  return leaves;
+}
+
+/**
+ * Make `view` SHARE `target`'s log-only side set, so a needle recorded
+ * through the view at any time — late, or on a path that throws — lands in
+ * `target`'s set. For a recording VIEW or write-through map built over a pass
+ * map (`ForwardingSecrets`, `SharedEntriesSecrets`): the side set is keyed by
+ * the bag INSTANCE, so without this every record through the view stays on
+ * the view. Call it at the view's creation, before anything records.
+ */
+export function shareLogOnlyValues(view: RecordedSecretValues, target: RecordedSecretValues): void {
+  logOnlyValuesOf.set(view, sideSetOf(logOnlyValuesOf, target));
+}
+
+/**
+ * Is there at least one LOG-ONLY needle in `secrets`? The cheap test a
+ * printing path asks before building the combined regex.
+ */
+export function hasLogOnlyValues(secrets: RecordedSecretValues | undefined): boolean {
+  if (secrets === undefined) return false;
+  const logOnly = logOnlyValuesOf.get(secrets);
+  return logOnly !== undefined && logOnly.size > 0;
+}
+
+/**
+ * Does `secrets` hold anything a MASKER would act on — a map entry or a
+ * log-only needle? The test a masking site's empty-bag short-circuit must ask
+ * instead of `secrets.size === 0`, which reads a bag holding only log-only
+ * needles as empty. A PERSISTENCE site keeps asking `size`.
+ */
+export function hasMaskableValues(secrets: RecordedSecretValues | undefined): boolean {
+  if (secrets === undefined) return false;
+  if (secrets.size > 0) return true;
+  const logOnly = logOnlyValuesOf.get(secrets);
+  return logOnly !== undefined && logOnly.size > 0;
+}
+
+/**
  * Does `text` EMBED a fresh `NoEcho` value of this pass? Asked by
  * `Fn::Base64`, whose encoded result is a new plaintext that carries the
  * value's freshness along with its secrecy.
@@ -7703,8 +7849,32 @@ export function scrubResourceRecord<
  * event, which no consumer reads back as a value, so a partial mask costs
  * nothing and closes an EMBEDDED disclosure that would otherwise print. See
  * the mask-only channel note above.
+ *
+ * The LOG-ONLY needles ({@link logOnlyValuesOf}, go-to-k/cdkd#1998) take part
+ * on the same terms, which is what makes this the PRINTING masker: a `NoEcho`
+ * parameter's value is masked here and never rewritten by the persist path. A
+ * caller asking whether the RECORDED needles changed a text, to decide what
+ * to persist or send, calls {@link maskRecordedSecretsInText} instead.
  */
 export function maskSecretsInText(text: string, secrets: RecordedSecretValues): string {
+  const logOnly = logOnlyValuesOf.get(secrets);
+  if (logOnly === undefined || logOnly.size === 0) return maskRecordedSecretsInText(text, secrets);
+  // Whole-value first, then the substring scan over BOTH populations in one
+  // regex, so a longer needle of either kind is matched before a shorter one
+  // it overlaps.
+  if (text !== '' && (secrets.has(text) || logOnly.has(text))) return SECRET_MASK;
+  const regex = buildNeedleRegex([...secrets.keys(), ...logOnly]);
+  if (!regex) return text;
+  return text.replace(regex, SECRET_MASK);
+}
+
+/**
+ * {@link maskSecretsInText} over the MAP alone, without the log-only needles
+ * (go-to-k/cdkd#1998). For a DETECTOR — "did a recorded secret change this
+ * text?" — whose answer decides what is persisted or sent, never for a line
+ * that is printed.
+ */
+export function maskRecordedSecretsInText(text: string, secrets: RecordedSecretValues): string {
   if (secrets.size === 0) return text;
   // Whole-value masking first (covers below-threshold secrets that are the
   // entire string), then substring masking for the rest. An empty-string secret
@@ -7861,7 +8031,9 @@ export function maskSecretsInError<T>(
   secrets: RecordedSecretValues,
   extraMask?: (text: string) => string
 ): T {
-  if (!(error instanceof Error) || (secrets.size === 0 && !extraMask)) return error;
+  // `hasMaskableValues`, not `size`: a bag holding only log-only needles
+  // (go-to-k/cdkd#1998) still has work to do.
+  if (!(error instanceof Error) || (!hasMaskableValues(secrets) && !extraMask)) return error;
   const maskText = (text: string): string =>
     maskSecretsInText(extraMask ? extraMask(text) : text, secrets);
   const chain = errorCauseChain(error);
@@ -7965,8 +8137,9 @@ export function maskSecretsInError<T>(
  *    structurally re-declared `(text: string) => string` was the wrong way to
  *    keep it true, since it only bought a way to drift from the contract.
  * 4. **It can be WIDENED without touching a provider.** What a masker covers
- *    is the caller's decision, so growing cdkd's notion of "sensitive" — see
- *    the `NoEcho` gap below — changes the deploy engine alone. Threading the
+ *    is the caller's decision, so growing cdkd's notion of "sensitive" — the
+ *    `NoEcho` parameter values of go-to-k/cdkd#1998, under gap 3 below, are
+ *    the case — changes the deploy engine alone. Threading the
  *    bag would freeze the provider contract to today's secret model.
  *
  * A masked LOGGER (injecting `{ warn }` that masks) was rejected too: providers
@@ -7975,10 +8148,10 @@ export function maskSecretsInError<T>(
  * and no safe place to stash one. The masker is per-CALL for exactly that
  * reason, which is also why a provider must never cache it on `this`.
  *
- * **What it does NOT cover — THREE gaps, not one.** The first is about which
- * values are known; the other two are about how a caller USES the masker, and
- * both are why {@link SecretMaskingContext} tells providers to mask the VALUE
- * rather than the finished line:
+ * **What it does NOT cover — THREE gaps, not one.** The first two are about
+ * how a caller USES the masker, and both are why {@link SecretMaskingContext}
+ * tells providers to mask the VALUE rather than the finished line; the third
+ * is about which values are known:
  *
  * 1. **Escaping / stringification.** A masker matches by literal occurrence,
  *    so anything that TRANSFORMS the value before it lands in the text defeats
@@ -7990,38 +8163,33 @@ export function maskSecretsInError<T>(
  *    whole-value match at any length, but only SCANS for substrings of at
  *    least {@link MIN_NEEDLE_LENGTH} characters. Masking a finished message
  *    can only reach the scan, so a 1-3 character secret survives it.
- * 3. **`NoEcho` parameters**, below.
+ * 3. **Where the value is known.** It masks what the pass that owns the bag
+ *    RECORDED, and nothing else.
  *
- * On the model itself: it covers only what cdkd's dynamic-reference secret
- * model records: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm-secure:...}}` /
- * `SecureString` ssm resolutions. A `NoEcho: true` template PARAMETER is
- * outside that model by construction — the resolver redacts it in its own
- * debug line (`stringifyParameterForLog`) but never records the value, and the
- * same limit is already documented at `outputs-export-alias.ts`. So
- * `EnabledMfas: {Ref: SomeNoEchoParam}` is NOT masked by this, and no masker
- * built from a {@link RecordedSecretValues} bag could be: that map exists to
- * rewrite a plaintext back onto the `{{resolve:...}}` expression it came from,
- * and a `Ref` has no such expression. Recording `NoEcho` values into it would
- * therefore also change what {@link redactSecretsForState} PERSISTS, which is
- * a separate behavior change and is filed on its own (issue #1998).
+ * What it knows: the dynamic-reference secrets (`{{resolve:secretsmanager:...}}`
+ * and `SecureString` ssm resolutions) in the map, and — since go-to-k/cdkd#1998,
+ * the widening point 4 of "Why a FUNCTION" was designed for — the value of a `NoEcho: true`
+ * template PARAMETER, recorded as a LOG-ONLY needle ({@link logOnlyValuesOf})
+ * when a `Ref` or an `Fn::Sub` variable serves it. So
+ * `EnabledMfas: {Ref: SomeNoEchoParam}` is masked on a provider's warn line,
+ * in the engine's error text and in the `deployments/*.jsonl` event, with no
+ * provider edit.
  *
- * That residual is NOT log-only, which is worth stating because the obvious
- * assumption is that it is: a `NoEcho` value quoted back inside an AWS ERROR
- * reaches `deployments/*.jsonl`, because the event masker works from this same
- * bag and the bag never holds a `NoEcho` value. So it is PERSISTED exposure.
- * The dynamic-reference case this contract fixes really is log-only — that
- * path's errors already pass through {@link maskSecretsInText} — so do not
- * carry the log-only framing across to the `NoEcho` one.
+ * What it still does not: the parameter's value is NOT rewritten in anything
+ * cdkd persists (maintainer decision on #1998). The map exists to rewrite a
+ * plaintext onto the expression it came from, and a `Ref` has none, so the
+ * value stays out of the map and {@link redactSecretsForState} never sees it:
+ * a resource property or output holding a `NoEcho` value is persisted as
+ * before, and an `Export.Name` embedding one is published as before
+ * (`outputs-export-alias.ts`). Such a value is masked only on the log, error
+ * and event surfaces, and only in a pass that resolved the `Ref`: a rollback
+ * replay re-resolving a state record has no parameter to resolve.
  *
  * A DIFFERENT `NoEcho` — the CUSTOM-RESOURCE RESPONSE field of the same name —
- * IS covered since issue #2274, through {@link recordMaskOnlyValue}. Do not
- * read that as closing #1998: a template PARAMETER's `NoEcho` and a custom
- * resource's `NoEcho` share only a spelling. The parameter case has a `Ref`
- * whose value cdkd must keep serving from state on every later deploy, so it
- * cannot take a mask on the same terms; the custom-resource case is a
- * handler-GENERATED value that arrives fresh with each invocation. #1998
- * remains open on its own Direction 2 (the persistence question), which #2274
- * answers only for the response field.
+ * is covered since issue #2274, through {@link recordMaskOnlyValue}, and IS
+ * persisted as a mask: that value is handler-GENERATED and arrives fresh with
+ * each invocation, while a parameter's `Ref` must keep resolving from state on
+ * every later deploy. The two share only a spelling.
  */
 export type SecretMasker = (text: string) => string;
 

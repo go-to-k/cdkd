@@ -48,7 +48,11 @@ import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
 // `ResourceUpdateNotSupportedError` — the class raised here is NOT a refusal
 // in every instance (see the per-arm note at the `errorCount` throw).
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
-import { carriesSecretMask, recoverMaskedOutput } from '../../deployment/secret-redaction.js';
+import {
+  carriesSecretMask,
+  hasMaskableValues,
+  recoverMaskedOutput,
+} from '../../deployment/secret-redaction.js';
 import {
   ambientCredentialConfig,
   credentialFingerprint,
@@ -759,7 +763,10 @@ export class NestedStackProvider implements ResourceProvider {
         // `properties.Parameters` on its `AWS::CloudFormation::Stack`
         // resource — that's the authoritative source.
         parameters: childParameters,
-        ...(inheritedSecrets && inheritedSecrets.size > 0 && { inheritedSecrets }),
+        // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a bag holding
+        // only LOG-ONLY needles (a `NoEcho` parameter's value) still masks the
+        // child's lines and is carried into its consuming resources' bags.
+        ...(inheritedSecrets && hasMaskableValues(inheritedSecrets) && { inheritedSecrets }),
         parentStackInfo: {
           parentStack: parentCtx.parentStackName,
           parentLogicalId: logicalId,

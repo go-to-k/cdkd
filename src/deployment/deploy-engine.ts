@@ -72,6 +72,8 @@ import {
   maskSecretsInText,
   maskSecretsInError,
   createSecretMasker,
+  hasMaskableValues,
+  shareLogOnlyValues,
   recordNestedStackParameterExpressions,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
@@ -1715,8 +1717,14 @@ export class DeployEngine {
       // residual for a resource that resolves a `{{resolve:...}}`, so this is
       // the child reaching parity with it — not a claim that no
       // over-approximation remains.
+      //
+      // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a parent bag
+      // holding only LOG-ONLY needles (a `NoEcho` parameter's value) must still
+      // reach the child's resolver, which masks with it and carries it into the
+      // bag of the child resource consuming the parameter. Every reader of
+      // this field that PERSISTS or positions still asks `size` itself.
       ...(this.options.inheritedSecrets &&
-        this.options.inheritedSecrets.size > 0 && {
+        hasMaskableValues(this.options.inheritedSecrets) && {
           inheritedSecrets: this.options.inheritedSecrets,
         }),
       // FRESH per-context map: the resolver records each resolved secret
@@ -3955,8 +3963,11 @@ export class DeployEngine {
         template,
         this.options.parameters,
         {
+          // `hasMaskableValues` (go-to-k/cdkd#1998): only the `--verbose`
+          // lines read a bag holding log-only needles alone here; the
+          // coercion refusal asks `size` itself.
           ...(this.options.inheritedSecrets &&
-            this.options.inheritedSecrets.size > 0 && {
+            hasMaskableValues(this.options.inheritedSecrets) && {
               inheritedSecrets: this.options.inheritedSecrets,
             }),
         }
@@ -5851,6 +5862,10 @@ export class DeployEngine {
       // rollback of the CHILD, so the refusals' `--orphan` command names it
       // (go-to-k/cdkd#3859).
       ...(this.options.parentStackInfo && { nestedChildStack: stackName }),
+      // go-to-k/cdkd#1998: the LOG-ONLY needles (a `NoEcho` parameter's
+      // value) this deploy recorded per resource, which the replay's own
+      // re-resolution of the journal cannot re-derive.
+      logOnlyNeedlesFor: (logicalId) => this.perResourceSecrets.get(logicalId),
       // Issue #2057: the producer regions this stack reads across, so the
       // replay refuses a region-LESS `{{resolve:...}}` expression rather than
       // re-resolving it here and writing a same-named foreign secret to a live
@@ -6388,6 +6403,10 @@ export class DeployEngine {
    * (`Value '<secret>' at 'X' failed to satisfy ...`), and a provider `reason`
    * is provider-authored prose; both reach the event store as `error.message` /
    * `reason`. No-op when the deploy recorded no secrets.
+   *
+   * The LOG-ONLY needles count (go-to-k/cdkd#1998): a `NoEcho` parameter's
+   * value quoted inside an AWS error is exactly what this store must not keep,
+   * and masking text in an event rewrites no value cdkd reads back.
    */
   private maskSecretsInEvent<
     T extends { logicalId?: string; error?: { message?: string }; reason?: string },
@@ -6395,7 +6414,7 @@ export class DeployEngine {
     // Mask with the event's own resource secrets; a resource-less (run-level)
     // event carries no properties-derived text.
     const secrets = event.logicalId ? this.perResourceSecrets.get(event.logicalId) : undefined;
-    if (!secrets || secrets.size === 0) return event;
+    if (!secrets || !hasMaskableValues(secrets)) return event;
     const next: T = { ...event };
     if (next.error?.message) {
       next.error = { ...next.error, message: maskSecretsInText(next.error.message, secrets) };
@@ -10353,6 +10372,13 @@ export class DeployEngine {
         const nameSecrets: RecordedSecretValues = new ForwardingSecrets(
           context.recordedSecretValues
         );
+        // The LOG-ONLY needles (go-to-k/cdkd#1998) are keyed by the map
+        // INSTANCE and do not write through with the entries, so the name map
+        // SHARES the pass map's set: a record at any time, a late one or one on
+        // a throwing path included, is visible to every print of this pass.
+        if (context.recordedSecretValues) {
+          shareLogOnlyValues(nameSecrets, context.recordedSecretValues);
+        }
         // The alias NAME can carry the same masked `Ref` the value can — an
         // `Fn::Sub` over one is ordinary. Guarded for the same reason as the
         // value: an export whose NAME is built from a raw physical id binds
@@ -10376,7 +10402,8 @@ export class DeployEngine {
         } catch (error) {
           // The pass map, which already holds every entry the failed name
           // resolution recorded (`nameSecrets` writes through) — the needle
-          // for a plaintext that resolution itself recorded.
+          // for a plaintext that resolution itself recorded; its LOG-ONLY
+          // needles are shared with it (above).
           this.handleOutputResolutionFailure(
             error,
             outputKey,
