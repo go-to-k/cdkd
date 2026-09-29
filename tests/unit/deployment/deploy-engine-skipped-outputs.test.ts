@@ -645,7 +645,12 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
       // expression is a plain ssm token (the one expression that exonerates,
       // issue #4108), exonerates the same row and exposes the plaintext as its
       // returned `oldValue`, which the renderer then prints.
-      const deletedSsm: CloudFormationTemplate = { Resources: template().Resources, Outputs: { Sec: { Value: SSM } } };
+      // `Sm` makes the raw template prove a secret, so the exoneration, not
+      // that gate, decides the row.
+      const deletedSsm: CloudFormationTemplate = {
+        Resources: template().Resources,
+        Outputs: { Sec: { Value: SSM }, Sm: { Value: SEC } },
+      };
       const unguarded = { ...saved, outputs: { Old: PLAINTEXT, Sec: SSM } };
       const leaked = await diffWithWithholding(unguarded, deletedSsm);
       expect(JSON.stringify(leaked)).toContain(PLAINTEXT);
@@ -674,6 +679,18 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
       expect(JSON.stringify(rows)).not.toContain(PLAINTEXT);
     });
 
+    it('ALLOWED merge from a bag that already held a secretsmanager expression (the engine re-check)', async () => {
+      const PREV = '{{resolve:secretsmanager:prev:SecretString:password}}';
+      const { engine, stateBackend } = buildEngine({
+        priorState: makeState({ Old: 'an-ordinary-value', Prev: PREV }),
+      });
+      await engine.deploy(stackName, {
+        Resources: template().Resources,
+        Outputs: { Old: { Value: '__boom__' }, Prev: { Value: PREV }, Sec: { Value: SEC } },
+      });
+      expect(lastSaved(stateBackend).outputs).toStrictEqual({ Old: 'an-ordinary-value', Prev: PREV, Sec: SEC });
+    });
+
     it('ALLOWED merge: from a bag that already held an expression, the carried value is merged and a later deletion returns it as the row\x27s old value', async () => {
       // Plain ssm tokens: only a bag holding one proves every value redacted
       // (issue #4108), so only such a bag returns the deleted key's value.
@@ -689,9 +706,11 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
       const saved = lastSaved(stateBackend);
       expect(saved.outputs).toStrictEqual({ Old: 'an-ordinary-value', Prev: PREV, Sec: SSM });
 
+      // `Sm` makes the raw template prove a secret, so the exoneration, not
+      // that gate, is what returns the row's old value.
       const deleted: CloudFormationTemplate = {
         Resources: template().Resources,
-        Outputs: { Prev: { Value: PREV }, Sec: { Value: SSM } },
+        Outputs: { Prev: { Value: PREV }, Sec: { Value: SSM }, Sm: { Value: SEC } },
       };
       const rows = await diffWithWithholding(saved, deleted);
       expect(rows.find((r) => r.name === 'Old')).toMatchObject({
