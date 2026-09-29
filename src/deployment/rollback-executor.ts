@@ -918,59 +918,70 @@ const OTHER_SPELLED_NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * The NAME part of an id an AWS message may quote on its own (#4099 review):
+ * A segment AWS generates rather than a name a template chose: a number (a
+ * version or revision), a UUID (optionally suffixed, MSK's `<uuid>-2`), a hex
+ * hash of 16+ characters (ELBv2, AppRunner), a WAF scope word, or a Cognito
+ * user pool id. Never a needle: masking one hides nothing and blurs the line.
+ */
+const GENERATED_ID_SEGMENT = new RegExp(
+  [
+    String.raw`^\d+$`,
+    String.raw`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[0-9a-z]+)?$`,
+    String.raw`^[0-9a-f]{16,}$`,
+    String.raw`^(?:REGIONAL|CLOUDFRONT|GLOBAL)$`,
+    String.raw`^[a-z]{2}(?:-[a-z]+)+-\d+_[A-Za-z0-9]+$`,
+  ].join('|'),
+  'i'
+);
+
+/**
+ * The NAME parts of an id an AWS message may quote on their own (#4099,
+ * #4135, #4138), for a record whose name is secret-derived:
  *
- * - an ARN's last `/` segment, and that segment without a `:<revision>`
- *   suffix (`task-definition/<Family>:<rev>`);
- * - for any `arn:` id, the last NON-NUMERIC segment of its resource part,
- *   split on both `/` and `:` (SNS `...:<topic>`, Step Functions
- *   `...:stateMachine:<name>`, Lambda `...:function:<name>:<version>`), and
- *   for Secrets Manager that segment without its random `-XXXXXX` suffix;
- * - where the name is NOT last (#4135): Lambda's segment after `function:`
- *   or `layer:` (before a `:<version>` / `:<alias>` qualifier, which is then
- *   not taken; any other Lambda ARN takes the generic arm)
- *   and ELBv2's before its `/<hash>` (`loadbalancer/app/<name>/<hash>`,
- *   `targetgroup/<name>/<hash>`);
- * - a `|` composite's last segment (`<poolId>|<Username>`).
+ * - every segment of an ARN's resource part (split on `/` and `:`) except the
+ *   leading resource-type word when there is more than one, and every segment
+ *   of a `|` composite, minus {@link GENERATED_ID_SEGMENT}. So the name is
+ *   taken wherever the service puts it: last (SNS `...:<topic>`), before a hash
+ *   (ELBv2 `loadbalancer/app/<name>/<hash>`, AppRunner, MSK), mid-path (EKS
+ *   `nodegroup/<cluster>/<name>/<uuid>`) or first (WAFv2 `<Name>|<Id>|<Scope>`).
+ *   A sibling non-generated segment (EKS's cluster name) is masked too, which
+ *   only over-masks;
+ * - Lambda's segment after `function:` / `layer:` ONLY: a `:<alias>` qualifier
+ *   is a chosen word too, and taking it masked prose (`production`) while
+ *   adding nothing;
+ * - Secrets Manager's name without its random `-XXXXXX` suffix;
+ * - any id's last `/` segment, with and without a `:<revision>` (ECS's
+ *   `task-definition/<Family>:<rev>` is quoted whole), unless AWS generated it.
  *
- * The last segment is the name for most types, otherwise an AWS-generated id,
- * which is harmless to mask. Derived spellings, so each clears the literal
- * masker's substring floor (4) and differs from the id itself.
+ * Derived spellings, so each clears the literal masker's substring floor (4)
+ * and differs from the id itself.
  */
 function idNameSegments(id: string): string[] {
   const segments = new Set<string>();
-  const afterSlash = id.includes('/') ? id.slice(id.lastIndexOf('/') + 1) : undefined;
-  if (afterSlash !== undefined) {
-    segments.add(afterSlash);
-    segments.add(afterSlash.replace(/:\d+$/, ''));
-  }
+  const chosen = (parts: readonly string[]): string[] =>
+    parts.filter((part) => part !== '' && !GENERATED_ID_SEGMENT.test(part));
   const arn = /^arn:[^:]*:([^:]*):[^:]*:[^:]*:(.+)$/.exec(id);
   if (arn !== null) {
-    const [, service, resource] = arn as unknown as [string, string, string];
-    // Services whose name is NOT the last segment (#4135): Lambda's comes
-    // before a `:<version>` / `:<alias>` qualifier, and taking the qualifier
-    // instead would mask a word like `live` while the name printed; ELBv2's
-    // sits before a `/<hash>`.
-    const positioned =
-      service === 'lambda'
-        ? /^(?:function|layer):([^:]+)/.exec(resource)
-        : service === 'elasticloadbalancing'
-          ? /^(?:loadbalancer\/(?:app|net|gwy)|targetgroup)\/([^/]+)\//.exec(resource)
-          : null;
-    if (positioned !== null) {
-      segments.add(positioned[1]!);
+    const service = arn[1]!;
+    const resource = arn[2]!;
+    const lambda = service === 'lambda' ? /^(?:function|layer):([^:]+)/.exec(resource) : null;
+    if (lambda !== null) {
+      segments.add(lambda[1]!);
     } else {
-      const last = resource
-        .split(/[/:]/)
-        .reverse()
-        .find((part) => part !== '' && !/^\d+$/.test(part));
-      if (last !== undefined) {
-        segments.add(last);
-        if (service === 'secretsmanager') segments.add(last.replace(/-[A-Za-z0-9]{6}$/, ''));
+      const parts = resource.split(/[/:]/);
+      for (const part of chosen(parts.length > 1 ? parts.slice(1) : parts)) {
+        segments.add(part);
+        if (service === 'secretsmanager') segments.add(part.replace(/-[A-Za-z0-9]{6}$/, ''));
       }
     }
   }
-  if (id.includes('|')) segments.add(id.slice(id.lastIndexOf('|') + 1));
+  if (id.includes('/')) {
+    const afterSlash = id.slice(id.lastIndexOf('/') + 1);
+    for (const spelling of [afterSlash, afterSlash.replace(/:\d+$/, '')]) {
+      if (!GENERATED_ID_SEGMENT.test(spelling)) segments.add(spelling);
+    }
+  }
+  if (id.includes('|')) for (const part of chosen(id.split('|'))) segments.add(part);
   return [...segments].filter((segment) => segment.length >= 4 && segment !== id);
 }
 

@@ -1265,8 +1265,9 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       'AWS::Cognito::UserPoolUser',
       { UserPoolId: 'us-east-1_x', Username: OTHER_EXPR },
       'us-east-1_x|bob-private-user',
-      'User bob-private-user does not exist',
-      'User *** does not exist',
+      // The AWS-generated pool id stays readable.
+      'User bob-private-user does not exist in us-east-1_x',
+      'User *** does not exist in us-east-1_x',
     ],
     [
       'AWS::SNS::Topic',
@@ -1321,6 +1322,41 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       'arn:aws:lambda:us-east-1:123456789012:layer:bob-private-layer:3',
       'Layer version bob-private-layer:3 is in use',
       'Layer version ***:3 is in use',
+    ],
+    [
+      // #4138: the name before a UUID; the UUID itself stays readable.
+      'AWS::MSK::Cluster',
+      { ClusterName: OTHER_EXPR },
+      'arn:aws:kafka:us-east-1:123456789012:cluster/bob-private-msk/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0-2',
+      'Cluster bob-private-msk (0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0-2) is busy',
+      'Cluster *** (0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0-2) is busy',
+    ],
+    [
+      // #4138: the name before a 32-hex id.
+      'AWS::AppRunner::Service',
+      { ServiceName: OTHER_EXPR },
+      'arn:aws:apprunner:us-east-1:123456789012:service/bob-private-svc/8fe1e10304f84fd2b0df550fe98a71fa',
+      // The hex service id stays readable.
+      'Service bob-private-svc (8fe1e10304f84fd2b0df550fe98a71fa) is OPERATION_IN_PROGRESS',
+      'Service *** (8fe1e10304f84fd2b0df550fe98a71fa) is OPERATION_IN_PROGRESS',
+    ],
+    [
+      // #4138: the name mid-path, between the cluster and a UUID.
+      'AWS::EKS::Nodegroup',
+      { ClusterName: 'plain-cluster', NodegroupName: OTHER_EXPR },
+      'arn:aws:eks:us-east-1:123456789012:nodegroup/plain-cluster/bob-private-ng/4ac4bf66-2bd0-6ab1-4b92-bfa7f2d1c4a2',
+      // The leading resource-type word stays readable.
+      'Nodegroup bob-private-ng is DELETING; list the nodegroup again later',
+      'Nodegroup *** is DELETING; list the nodegroup again later',
+    ],
+    [
+      // #4138: a Cloud Control composite with the name FIRST; the scope word
+      // and the UUID stay readable.
+      'AWS::WAFv2::WebACL',
+      { Name: OTHER_EXPR, Scope: 'REGIONAL' },
+      'bob-private-acl|a1b2c3d4-e5f6-7890-abcd-ef1234567890|REGIONAL',
+      'WebACL bob-private-acl is associated with a REGIONAL resource',
+      'WebACL *** is associated with a REGIONAL resource',
     ],
     [
       'AWS::SecretsManager::Secret',
