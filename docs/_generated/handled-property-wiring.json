@@ -9930,6 +9930,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in canonicalizeDriftPair()",
         "computed key in updateTargetGroup()",
         "stripHandled(...) in updateLoadBalancer()"
       ]

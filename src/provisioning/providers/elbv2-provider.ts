@@ -351,6 +351,20 @@ function targetGroupAttributes(
   });
 }
 
+/** The keyed `[{Key, Value}]` attribute bag each ELBv2 type reads back in full. */
+const ATTRIBUTE_BAG_BY_TYPE: ReadonlyMap<string, string> = new Map([
+  ['AWS::ElasticLoadBalancingV2::LoadBalancer', 'LoadBalancerAttributes'],
+  ['AWS::ElasticLoadBalancingV2::TargetGroup', 'TargetGroupAttributes'],
+  ['AWS::ElasticLoadBalancingV2::Listener', 'ListenerAttributes'],
+]);
+
+/** An attribute entry's string `Key`, or `undefined` when it has none. */
+function attributeEntryKey(entry: unknown): string | undefined {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+  const key = (entry as { Key?: unknown }).Key;
+  return typeof key === 'string' ? key : undefined;
+}
+
 /**
  * AWS ELBv2 Provider
  *
@@ -2430,7 +2444,8 @@ export class ELBv2Provider implements ResourceProvider {
     // by Key for stable positional compare and emit the whole list, so a
     // console-side change to any attribute (templated or not) surfaces
     // as drift on the v3 observedProperties baseline (which captures
-    // the same full set at deploy time). On the v2 fallback baseline
+    // the same full set at deploy time); an undeclared key AWS stops
+    // returning is not drift (`canonicalizeDriftPair`). On the v2 fallback baseline
     // (state.properties) users templating only a subset will see drift
     // on the AWS-defaulted keys — that's the v2 limitation in general
     // and the documented motivation for upgrading to v3 / running
@@ -2671,6 +2686,68 @@ export class ELBv2Provider implements ResourceProvider {
   getDriftUnorderedPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::ElasticLoadBalancingV2::TargetGroup') return [];
     return ['Targets'];
+  }
+
+  /**
+   * Drop from the BASELINE an attribute-bag entry whose key the template never
+   * declared and the readback no longer reports (go-to-k/cdkd#4144).
+   *
+   * The attribute readbacks emit every key AWS returns, and the observed
+   * baseline captured the same. AWS can stop returning an undeclared key
+   * (`ddos_protection.syn_cookie.mode` came and went between two reads of one
+   * ALB), and nobody out-of-band can cause that: the Modify*Attributes APIs
+   * set values and never remove a key. The key set otherwise moves only with
+   * the resource's own configuration (a listener's protocol), which is compared
+   * on its own. So that one-sided absence is not drift, and `--revert` must not
+   * write the key back.
+   *
+   * Still compared: a DECLARED key that changed or vanished, an undeclared key
+   * present on both sides, and a key only the readback holds. Fails closed
+   * (identity) when the readback bag is not an array (its read failed) or is
+   * empty (a degenerate reply), or the
+   * declared bag is present but not a list of string `Key`s, since then which
+   * keys are declared is unknown.
+   *
+   * Only the baseline is trimmed, so `--accept` (which writes the readback
+   * side) persists nothing new. `--revert` sends this baseline as its desired
+   * side against the readback as previous; the dropped key is on neither, so
+   * `diffAttributes` submits nothing for it.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties?: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const unchanged = { baseline, aws };
+    const bagKey = ATTRIBUTE_BAG_BY_TYPE.get(resourceType);
+    if (bagKey === undefined) return unchanged;
+    const recorded = baseline[bagKey];
+    const live = aws[bagKey];
+    // An EMPTY readback is a degenerate read (no `Attributes` in the reply),
+    // not a report that every key vanished: dropping on it would hide the bag.
+    if (!Array.isArray(recorded) || !Array.isArray(live) || live.length === 0) return unchanged;
+    const declared = properties?.[bagKey];
+    const declaredKeys = new Set<string>();
+    if (declared !== undefined) {
+      if (!Array.isArray(declared)) return unchanged;
+      for (const entry of declared) {
+        const key = attributeEntryKey(entry);
+        if (key === undefined) return unchanged;
+        declaredKeys.add(key);
+      }
+    }
+    const liveKeys = new Set<string>();
+    for (const entry of live) {
+      const key = attributeEntryKey(entry);
+      if (key !== undefined) liveKeys.add(key);
+    }
+    const kept = recorded.filter((entry) => {
+      const key = attributeEntryKey(entry);
+      return key === undefined || declaredKeys.has(key) || liveKeys.has(key);
+    });
+    if (kept.length === recorded.length) return unchanged;
+    return { baseline: { ...baseline, [bagKey]: kept }, aws };
   }
 
   private async readListener(physicalId: string): Promise<Record<string, unknown> | undefined> {

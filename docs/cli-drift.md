@@ -81,6 +81,17 @@ CloudFormation's drift detection likewise compares only template-declared
 properties, so this matches its behaviour for that class. An undeclared key
 captured with a REAL value — an AWS-side default — is still compared.
 
+### ELBv2 attributes AWS stops reporting
+
+`LoadBalancerAttributes`, `TargetGroupAttributes` and `ListenerAttributes` are
+captured in full, including keys the template never declared. AWS sometimes
+stops returning one of those undeclared keys (`ddos_protection.syn_cookie.mode`
+on an ALB). No ELBv2 attribute call removes a key, so that absence is not an
+out-of-band change: it is not reported, and `--revert` does not write the key
+back. A declared key that changes or disappears is still drift, as is a changed
+value on any key AWS still returns, and a key AWS returns that the baseline
+lacks.
+
 ### Tags
 
 Tag drift is compared for every SDK provider with a read-back and on the Cloud
