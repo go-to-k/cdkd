@@ -506,6 +506,34 @@ function shownName(value: string): string {
 }
 
 /**
+ * The names a malformed marker being rewritten recorded, for the rewrite
+ * warning (go-to-k/cdkd#4114): a marker with one invalid name loses its valid
+ * one too, so storage it tracked is no longer found by `cdkd gc` /
+ * `bootstrap --destroy` unless the operator is told which. Rendered through
+ * `shownName`; empty when the body carries no string name.
+ */
+function discardedMarkerNames(body: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return '';
+  }
+  const fields = (parsed ?? {}) as { assetBucket?: unknown; containerRepo?: unknown };
+  const named = [
+    typeof fields.assetBucket === 'string' && fields.assetBucket !== ''
+      ? `asset bucket ${shownName(fields.assetBucket)}`
+      : undefined,
+    typeof fields.containerRepo === 'string' && fields.containerRepo !== ''
+      ? `container repository ${shownName(fields.containerRepo)}`
+      : undefined,
+  ].filter((n): n is string => n !== undefined);
+  return named.length === 0
+    ? ''
+    : ` It recorded ${named.join(' and ')}; storage under those names is no longer tracked by cdkd.`;
+}
+
+/**
  * `Asset bucket name '<name>'` for a plain name. The name can come from the
  * marker's body (`ensureAssetStorage` reuses it when no `--asset-bucket` is
  * passed, and `verifyAssetStorageExists` checks its region), so any other is
@@ -805,7 +833,8 @@ export async function ensureAssetStorage(
       // fix ("Re-run 'cdkd bootstrap' ... to rewrite it"), so treat it as
       // absent and rewrite it below.
       logger.warn(
-        `${markerSubject(markerKey)} is malformed — rewriting it as part of this bootstrap.`
+        `${markerSubject(markerKey)} is malformed — rewriting it as part of this bootstrap.` +
+          discardedMarkerNames(existingBody)
       );
     }
   }

@@ -65,7 +65,8 @@ A region with **no** marker has no asset storage in scope, and gc says so. It
 then continues to the state bucket's response-placeholder sweep rather than
 returning, because those objects exist whether or not the region opted in to
 asset storage. With nothing to collect on either side it is a friendly no-op. A
-**corrupt** marker is different: it ends the run before the sweep, because gc
+**corrupt** marker (one that does not parse, or names an invalid bucket or
+repository) is different: it ends the run before the sweep, because gc
 cannot trust what it knows about the region. The parse error names the remedy.
 
 ## Reference collection
@@ -260,7 +261,7 @@ by digest in a deployed stack.
 | `ASSET_STORAGE_FOREIGN_BUCKET` | The asset bucket exists but is not owned by this account, or access is denied. Nothing is touched. |
 | `GC_DELETE_FAILED` | One or more objects or images could not be deleted. |
 | `NON_INTERACTIVE_CONFIRM` | The confirmation prompt was reached on a non-interactive stdin. Pass `-y` / `--yes`, or `--dry-run` to report only. |
-| Corrupt bootstrap marker | The region's marker exists but does not parse. The error names the remedy. |
+| Corrupt bootstrap marker | The region's marker exists but does not parse, or names an invalid bucket or repository. The error names the remedy. |
 
 The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
 

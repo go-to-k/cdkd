@@ -298,6 +298,19 @@ describe('AssetModeResolver', () => {
     expect(gcNotices).toHaveLength(1);
   });
 
+  it('refuses a marker naming an invalid bucket before any AWS call (go-to-k/cdkd#4114)', async () => {
+    const getRawObject = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ ...validMarker(), assetBucket: 'Some Other Bucket' }));
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
+    mockS3Send.mockClear();
+    mockEcrSend.mockClear();
+
+    await expect(resolver.resolve(REGION)).rejects.toMatchObject({ code: 'INVALID_BOOTSTRAP_MARKER' });
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockEcrSend).not.toHaveBeenCalled();
+  });
+
   it('resolves cdkd-assets mode when the marker exists and resources verify', async () => {
     const getRawObject = vi.fn().mockResolvedValue(JSON.stringify(validMarker()));
     const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
@@ -2179,6 +2192,8 @@ describe('a marker naming an invalid bucket or repository is malformed (go-to-k/
     ['bucket too short', { assetBucket: 'ab' }],
     ['repo with a quote', { containerRepo: "org/it's" }],
     ['repo with a doubled separator', { containerRepo: 'org//repo' }],
+    ['repo too short', { containerRepo: 'a' }],
+    ['repo too long', { containerRepo: 'a'.repeat(257) }],
   ];
 
   it('parseBootstrapMarker refuses it with the malformed-marker code', () => {
@@ -2230,8 +2245,11 @@ describe('a marker naming an invalid bucket or repository is malformed (go-to-k/
       force: false,
     });
 
+    // The warning names what the marker recorded, so storage it tracked can
+    // still be found: both names, each through displayIdent's boundary.
     expect(mockLoggerWarn.mock.calls.map((c) => String(c[0]))).toContain(
-      `Bootstrap marker '${getBootstrapMarkerKey(REGION)}' is malformed — rewriting it as part of this bootstrap.`
+      `Bootstrap marker '${getBootstrapMarkerKey(REGION)}' is malformed — rewriting it as part of this bootstrap.` +
+        ` It recorded asset bucket "my bucket" and container repository "org/it's"; storage under those names is no longer tracked by cdkd.`
     );
     expect(result.assetBucket).toBe(getCdkdAssetBucketName(ACCOUNT, REGION));
     expect(result.containerRepo).toBe(getCdkdContainerRepoName(ACCOUNT, REGION));
@@ -2244,5 +2262,11 @@ describe('a marker naming an invalid bucket or repository is malformed (go-to-k/
     expect(sentBuckets.length).toBeGreaterThan(0);
     expect(sentBuckets).not.toContain('my bucket');
     expect(sentBuckets).toContain(getCdkdAssetBucketName(ACCOUNT, REGION));
+    const sentRepos = mockEcrSend.mock.calls.flatMap((c) => {
+      const cmd = c[0] as { repositoryName?: string; repositoryNames?: string[] };
+      return [...(cmd.repositoryName ? [cmd.repositoryName] : []), ...(cmd.repositoryNames ?? [])];
+    });
+    expect(sentRepos.length).toBeGreaterThan(0);
+    expect(new Set(sentRepos)).toEqual(new Set([getCdkdContainerRepoName(ACCOUNT, REGION)]));
   });
 });
