@@ -110,6 +110,7 @@ function safeIdentifierFor(value: string): string {
     .text;
 }
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import ts from 'typescript-v6';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -4510,6 +4511,214 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     expect(() =>
       refuseMalformedNestedChildOutputs({ outputs: { A: 'v' } }, 'P~C', 'us-east-1')
     ).not.toThrow();
+  });
+});
+
+describe('every repair the module exports is classified and has its read-only callers (go-to-k/cdkd#3504)', () => {
+  /**
+   * Every IDENTIFIER (or `ns['…']` key) in the file that names a repair, from the TypeScript AST —
+   * so a name inside a comment, string, template or regex literal is not one,
+   * and no hand-rolled scanner decides where a literal ends (one failed open in
+   * go-to-k/cdkd#4062's review). A repair's own
+   * declaration name is not a use. `calls` holds the names CALLED directly,
+   * `mentions` every use, an import specifier included. A file the parser
+   * reports a diagnostic on REFUSES rather than contributing nothing.
+   */
+  function repairUses(relPath: string): { calls: Set<string>; mentions: Set<string> } {
+    const sf = ts.createSourceFile(
+      relPath,
+      readFileSync(join(repoRoot, relPath), 'utf8'),
+      ts.ScriptTarget.Latest,
+      true
+    );
+    // An internal field: assert its shape, so a rename cannot switch the
+    // refusal off silently.
+    const diagnostics = (sf as unknown as { parseDiagnostics?: unknown }).parseDiagnostics;
+    if (!Array.isArray(diagnostics)) throw new Error('parseDiagnostics is gone; scan REFUSED');
+    if (diagnostics.length > 0) {
+      throw new Error(`${relPath}: ${diagnostics.length} parse diagnostic(s) — scan REFUSED`);
+    }
+    const calls = new Set<string>();
+    const mentions = new Set<string>();
+    const visit = (node: ts.Node): void => {
+      // An identifier, or the string key of `ns['repairMalformed…']`.
+      const named =
+        ts.isIdentifier(node) ||
+        ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+          ts.isElementAccessExpression(node.parent) &&
+          node.parent.argumentExpression === node);
+      if (named && node.text.startsWith('repairMalformed')) {
+        const parent = node.parent;
+        const isDeclarationName =
+          (ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent)) &&
+          parent.name === node;
+        if (!isDeclarationName) {
+          mentions.add(node.text);
+          // `name(…)` and `ns.name(…)` alike: the callee, or the name it ends in.
+          const callee =
+            (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+            ts.isElementAccessExpression(parent)
+              ? parent
+              : node;
+          if (ts.isCallExpression(callee.parent) && callee.parent.expression === callee) {
+            calls.add(node.text);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return { calls, mentions };
+  }
+
+  /**
+   * The REPAIR-side twin of the two refusal derivations above. Derived from the
+   * module's RUNTIME export list rather than from its source text, so it reads
+   * neither of theirs and also sees an export spelled `export const` or
+   * re-exported from another file — a shape the `export function` grep above
+   * cannot.
+   */
+  async function repairExports(): Promise<string[]> {
+    const mod = await import('../../../src/state/malformed-resources-bag.js');
+    return Object.keys(mod).filter((name) => name.startsWith('repairMalformed'));
+  }
+
+  it('partitions the repairs by container, each class asserted exactly', async () => {
+    const exported = await repairExports();
+    // A LITERAL, not a length read from a list below: a count derived from the
+    // pool it guards cannot fail.
+    expect(
+      exported.length,
+      `a repair was added or removed; classify it below. Exported: ${exported.join(', ')}`
+    ).toBe(6);
+
+    // The same predicates the refusal partition uses, so one export cannot sit
+    // in different classes on the two sides.
+    const outputs = exported.filter((n) => /Outputs(?:[A-Z]|$)/.test(n));
+    const properties = exported.filter((n) => n.includes('ResourceProperties'));
+    const entries = exported.filter((n) => n.includes('ResourceEntries'));
+    const attributes = exported.filter((n) => n.includes('ResourceAttributes'));
+    const orphans = exported.filter((n) => n.startsWith('repairMalformedOrphan'));
+    const resources = exported.filter(
+      (n) =>
+        !outputs.includes(n) &&
+        !properties.includes(n) &&
+        !entries.includes(n) &&
+        !attributes.includes(n) &&
+        !orphans.includes(n)
+    );
+    // Each class exactly, not the union: a rename that moves an export from one
+    // class to another keeps the total unmoved.
+    expect(outputs).toEqual(['repairMalformedOutputsForReadOnly']);
+    expect(properties).toEqual(['repairMalformedResourcePropertiesForReadOnly']);
+    expect(entries).toEqual(['repairMalformedResourceEntriesForReadOnly']);
+    // No read-only command repairs an entry's `attributes` map today; only
+    // `cdkd orphan` refuses on it.
+    expect(attributes).toEqual([]);
+    // The container and the ROWS (go-to-k/cdkd#3500), as on the refusal side.
+    expect([...orphans].sort()).toEqual([
+      'repairMalformedOrphanRecordsForReadOnly',
+      'repairMalformedOrphansForReadOnly',
+    ]);
+    expect(resources, 'a repair belongs to no known container').toEqual([
+      'repairMalformedResourcesForReadOnly',
+    ]);
+  });
+
+  /**
+   * The files calling each repair, derived from the tree's AST. Every
+   * one of them is READ-ONLY on the path that calls it: `diff-recursive.ts`,
+   * `state.ts` (`state resources` and `state show`'s text modes) and
+   * `s3-local-state-provider.ts` write no `state.json`; `drift.ts` repairs only
+   * outside `--accept` / `--revert`; `scrub.ts` only under `--dry-run`, which
+   * the REFUSE loop above pins. A file joining a list is a new caller whose
+   * write path has to be checked before it is added here.
+   */
+  const REPAIR_CALLERS: Record<string, readonly string[]> = {
+    repairMalformedResourcesForReadOnly: [
+      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/drift.ts',
+      'src/cli/commands/scrub.ts',
+      'src/cli/commands/state.ts',
+      'src/local/s3-local-state-provider.ts',
+    ],
+    repairMalformedOutputsForReadOnly: [
+      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/scrub.ts',
+      'src/local/s3-local-state-provider.ts',
+    ],
+    repairMalformedOrphansForReadOnly: [
+      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/scrub.ts',
+    ],
+    // `cdkd diff` does not call it: it keeps the survivors itself through the
+    // narrower `isPreviewableOrphanRecord`.
+    repairMalformedOrphanRecordsForReadOnly: ['src/cli/commands/scrub.ts'],
+    repairMalformedResourcePropertiesForReadOnly: [
+      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/drift.ts',
+    ],
+    repairMalformedResourceEntriesForReadOnly: [
+      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/drift.ts',
+      'src/cli/commands/scrub.ts',
+      'src/local/s3-local-state-provider.ts',
+    ],
+  };
+
+  it('every repair has exactly its named read-only callers in src/', async () => {
+    const exported = await repairExports();
+    expect(Object.keys(REPAIR_CALLERS).sort(), 'REPAIR_CALLERS no longer names every repair').toEqual(
+      [...exported].sort()
+    );
+    const listed = spawnSync('git', ['grep', '-l', 'repairMalformed', '--', 'src'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+      .stdout.split('\n')
+      .filter((file) => file !== '' && file !== 'src/state/malformed-resources-bag.ts');
+    expect(listed.length, 'the grep stopped matching; this fence is reading nothing').toBeGreaterThan(3);
+    // Two sets per export, both held to the table. CALLS go red when a call is
+    // deleted and its import kept. MENTIONS (import specifier included) go red
+    // for a caller the call set cannot see: `import { name as x }` then `x(…)`,
+    // or the function passed as a value.
+    const calls: Record<string, string[]> = {};
+    const mentions: Record<string, string[]> = {};
+    for (const file of listed) {
+      const uses = repairUses(file);
+      for (const name of uses.calls) (calls[name] ??= []).push(file);
+      for (const name of uses.mentions) (mentions[name] ??= []).push(file);
+    }
+    for (const name of exported) {
+      const expected = [...REPAIR_CALLERS[name]!].sort();
+      expect(
+        [...(calls[name] ?? [])].sort(),
+        `${name}'s callers changed: a repair with no caller is dead, and a new caller must be ` +
+          `read-only on the path that calls it before it is named in REPAIR_CALLERS.`
+      ).toEqual(expected);
+      expect(
+        [...(mentions[name] ?? [])].sort(),
+        `${name} is named by a file that does not call it by name — an aliased import or a ` +
+          `reference passed as a value is still a caller, and must be read-only and listed.`
+      ).toEqual(expected);
+    }
+  });
+
+  it('the module uses no repair itself, so no wrapper export reaches one unlisted', () => {
+    // Callers are read OUTSIDE the module, so an internal use — a call, or a
+    // reference called through a local — would let a non-repair export carry a
+    // repair to a write path this fence never sees.
+    const uses = repairUses('src/state/malformed-resources-bag.ts');
+    expect(
+      [...uses.mentions].sort(),
+      'the module now uses a repair internally; its callers are no longer only the files ' +
+        'REPAIR_CALLERS names.'
+    ).toEqual([]);
+    // Non-vacuity: the same walk DOES see a use when one exists — a caller
+    // file's, read by the identical function.
+    expect(repairUses('src/cli/commands/scrub.ts').calls.has('repairMalformedOrphanRecordsForReadOnly')).toBe(
+      true
+    );
   });
 });
 
