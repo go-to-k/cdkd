@@ -33,6 +33,7 @@ import {
   displayStackName,
   isPasteableIdent,
   safeMsg,
+  stringifyJsonPayload,
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
@@ -119,6 +120,15 @@ interface StackDetail {
    * `resources` is not a JSON object, else `null`.
    */
   stateReadError: string | null;
+  /**
+   * Which failure {@link stateReadError} describes, for a machine consumer that
+   * must not string-match the prose: `null` exactly when `stateReadError` is.
+   * The two want opposite handling -- a failed read may be transient and is
+   * worth retrying, a malformed `resources` is persistent -- so a consumer that
+   * retried on any `stateReadError` would re-read a malformed record forever
+   * (go-to-k/cdkd#3163).
+   */
+  stateReadErrorKind: StateReadErrorKind | null;
   /** A fixed, class-level reason when the lock read failed, else `null`. */
   lockReadError: string | null;
 }
@@ -157,6 +167,19 @@ const LEGACY_LOCK_READ_FAILED_REASON = 'lock could not be read';
  */
 const RESOURCES_MALFORMED_REASON =
   'resources is not a JSON object; run `cdkd state show --json` to see the record';
+
+/**
+ * The machine-readable half of `stateReadError` under `--long --json`. A
+ * string union rather than a boolean so a later failure class is ADDITIVE: a
+ * consumer switching on it has a default arm to fall into.
+ */
+type StateReadErrorKind = 'read-failed' | 'resources-malformed';
+
+/** The fixed `stateReadError` text for each {@link StateReadErrorKind}. */
+const STATE_READ_REASONS: Record<StateReadErrorKind, string> = {
+  'read-failed': STATE_READ_FAILED_REASON,
+  'resources-malformed': RESOURCES_MALFORMED_REASON,
+};
 
 /**
  * A record's resource count, or `null` when its `resources` is not a JSON
@@ -691,7 +714,7 @@ async function stateListCommand(options: {
     // --json without --long: array of `{stackName, region}` records.
     if (options.json && !options.long) {
       const payload = refs.map((r) => ({ stackName: r.stackName, region: r.region ?? null }));
-      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      process.stdout.write(`${stringifyJsonPayload(payload)}\n`);
       return;
     }
 
@@ -722,17 +745,22 @@ async function stateListCommand(options: {
           : state
             ? resourceCountOrNull(state.resources)
             : 0;
+        // Decided ONCE, and the reason derived from it, so `stateReadError`
+        // and `stateReadErrorKind` cannot disagree about which failure it was.
+        const stateReadErrorKind: StateReadErrorKind | null = !stateRead.ok
+          ? 'read-failed'
+          : resourceCount === null
+            ? 'resources-malformed'
+            : null;
         return {
           stackName: ref.stackName,
           region: ref.region ?? null,
           resourceCount,
           lastModified: state ? isoTimestampOrNull(state.lastModified) : null,
           locked: lockRead.ok ? lockRead.value : null,
-          stateReadError: !stateRead.ok
-            ? STATE_READ_FAILED_REASON
-            : resourceCount === null
-              ? RESOURCES_MALFORMED_REASON
-              : null,
+          stateReadError:
+            stateReadErrorKind === null ? null : STATE_READ_REASONS[stateReadErrorKind],
+          stateReadErrorKind,
           lockReadError: lockRead.ok
             ? null
             : ref.region
@@ -755,7 +783,7 @@ async function stateListCommand(options: {
     }
 
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(details, null, 2)}\n`);
+      process.stdout.write(`${stringifyJsonPayload(details)}\n`);
       return;
     }
 
@@ -769,11 +797,10 @@ async function stateListCommand(options: {
     // `  Region:` line below takes the same boundary: with no surrounding
     // quotes at all, a padded value could carry this view's next row on the
     // same line (go-to-k/cdkd#3179).
-    // `--json` is NOT sanitized at all: `JSON.stringify` escapes only C0,
-    // `"`, `\` and lone surrogates, so DEL, the C1 range, the line and
-    // paragraph separators, the bidi overrides and the zero-width characters
-    // pass through verbatim (see `display-safe.ts`). Tracked as
-    // go-to-k/cdkd#3163.
+    // `--json` does not take this view's replace-and-quote rule, which would
+    // change the values a consumer matches on: `stringifyJsonPayload` ESCAPES
+    // the dangerous class instead, so the payload parses back to the stored
+    // values and carries none of them raw (go-to-k/cdkd#3163).
     for (const detail of details) {
       lines.push(
         formatStackRefSafe({
@@ -899,7 +926,7 @@ async function renderTreeMode(
   const roots = buildStackTree(entries);
 
   if (asJson) {
-    process.stdout.write(`${JSON.stringify(stackTreeToJson(roots), null, 2)}\n`);
+    process.stdout.write(`${stringifyJsonPayload(stackTreeToJson(roots))}\n`);
     return;
   }
 
@@ -1084,7 +1111,7 @@ async function stateResourcesCommand(
       .sort((a, b) => a.logicalId.localeCompare(b.logicalId));
 
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(details, null, 2)}\n`);
+      process.stdout.write(`${stringifyJsonPayload(details)}\n`);
       return;
     }
 
@@ -1427,7 +1454,7 @@ async function stateShowCommand(
         // enumerating the tree concludes it is complete when a subtree was cut.
         // The record itself is still emitted verbatim, so the evidence survives.
         warnUnreadableTreeNodes(treeWithLocks, logger);
-        process.stdout.write(`${JSON.stringify(treeToShowJson(treeWithLocks), null, 2)}\n`);
+        process.stdout.write(`${stringifyJsonPayload(treeToShowJson(treeWithLocks))}\n`);
         return;
       }
 
@@ -1439,7 +1466,7 @@ async function stateShowCommand(
 
     if (options.json) {
       process.stdout.write(
-        `${JSON.stringify({ state: stateResult.state, lock: lockInfo }, null, 2)}\n`
+        `${stringifyJsonPayload({ state: stateResult.state, lock: lockInfo })}\n`
       );
       return;
     }
@@ -3207,7 +3234,7 @@ async function stateInfoCommand(options: {
         stackCount: stateFileKeys.length,
         assetStorage,
       };
-      process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
+      process.stdout.write(`${stringifyJsonPayload(json)}\n`);
       return;
     }
 

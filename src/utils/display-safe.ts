@@ -150,6 +150,55 @@ export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): str
 }
 
 /**
+ * Every code point {@link stringifyJsonPayload} escapes: control (`Cc`), format
+ * (`Cf`), line separator and paragraph separator. It is WIDER than the class
+ * `displaySafe` strips -- it also takes the invisible formatters and bidi marks
+ * that function's note records as a residual -- because escaping loses nothing:
+ * a residual there is the cost of REPLACING a byte, and here nothing is
+ * replaced. The replacer leaves a raw `\n` alone: `JSON.stringify` escapes
+ * all of C0 inside a string, so a raw `\n` in its output is always LAYOUT,
+ * outside any string literal.
+ */
+const JSON_PAYLOAD_ESCAPED = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/**
+ * Serialize a `--json` PAYLOAD for stdout (issue go-to-k/cdkd#3163).
+ *
+ * `JSON.stringify` escapes only C0, `"`, `\` and lone surrogates, so DEL, the
+ * C1 range (`U+009B` is a live CSI in xterm's UTF-8 mode), `U+2028` /
+ * `U+2029`, the bidi overrides and isolates and the zero-width characters all
+ * reach the terminal verbatim when an operator runs the command bare or pipes it
+ * into a viewer. This emits each of them as a `\uXXXX` escape instead (an astral
+ * one as its surrogate pair).
+ *
+ * ESCAPING, NOT SANITIZING, because `--json` is a machine contract: the output
+ * is still valid JSON and `JSON.parse` returns values IDENTICAL to what
+ * `JSON.stringify` alone would have produced, so a consumer matching on a value
+ * sees no change. Only the bytes a terminal or log viewer would act on differ.
+ * Indentation is `JSON.stringify`'s two spaces, the shape every caller used.
+ *
+ * Why a post-pass over the text is sound: outside a string literal the output
+ * holds only ASCII punctuation, digits, literals, spaces and `\n`, so every
+ * matched character sits INSIDE a string, where `\uXXXX` is a valid escape; and
+ * an escape `JSON.stringify` wrote is always complete, so a raw character never
+ * follows a dangling backslash.
+ *
+ * POLICY: every `--json` payload cdkd writes to stdout goes through this rather
+ * than calling `JSON.stringify` itself. `cdkd state` is the first adopter; the
+ * other commands' payloads are go-to-k/cdkd#4045.
+ */
+export function stringifyJsonPayload(value: object): string {
+  return JSON.stringify(value, null, 2).replace(JSON_PAYLOAD_ESCAPED, (match) => {
+    if (match === '\n') return match;
+    let out = '';
+    for (let i = 0; i < match.length; i++) {
+      out += `\\u${match.charCodeAt(i).toString(16).padStart(4, '0')}`;
+    }
+    return out;
+  });
+}
+
+/**
  * The escape sequences cdkd itself emits (`src/utils/colors.ts` and the level
  * prefixes in `logger.ts`). An ALLOWLIST: every other CSI is removed whole, so
  * a value carrying cursor movement or a screen clear cannot drive the terminal.

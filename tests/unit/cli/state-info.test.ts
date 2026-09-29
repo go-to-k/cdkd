@@ -474,6 +474,24 @@ describe('cdkd state info', () => {
       expect(out).toContain('  us-east-1: "evil / x   eu-west-1: a" / "repo (x)"');
     });
 
+    it('--json escapes a planted C1 / separator character and round-trips it (go-to-k/cdkd#3163)', async () => {
+      const planted = 'us-east-1\u009b[2J x';
+      scriptMarker(planted, marker('bucket‮evil', 'repo​'));
+      const out = await runStateInfo(['info', '--json']);
+
+      expect(out.replace(/\n/g, '')).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+      expect(out).toContain('\\u009b');
+      const parsed = JSON.parse(out) as { assetStorage: Array<Record<string, unknown>> };
+      // Premise: the marker reached the payload, so the absence above is not
+      // the absence of the values.
+      expect(parsed.assetStorage).toHaveLength(1);
+      expect(parsed.assetStorage[0]).toMatchObject({
+        region: planted,
+        assetBucket: 'bucket‮evil',
+        containerRepo: 'repo​',
+      });
+    });
+
     it('a legitimate row is byte-identical', async () => {
       scriptMarker(
         'ap-northeast-1',

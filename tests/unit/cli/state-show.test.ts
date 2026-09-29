@@ -1611,6 +1611,26 @@ describe('cdkd state show', () => {
     expect(parsed.lock).toBeNull();
   });
 
+  it('--json escapes planted control and separator characters in the record and round-trips them (go-to-k/cdkd#3163)', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('EscStack'));
+    const physicalId = 'id\u009b[2J ﻿';
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EscStack',
+        outputs: { Endpoint: 'http://x y' },
+        resources: { R1: makeResource({ resourceType: 'AWS::IAM::Role', physicalId }) },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EscStack', '--json']);
+
+    expect(out.replace(/\n/g, '')).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+    const parsed = JSON.parse(out);
+    expect(parsed.state.resources.R1.physicalId).toBe(physicalId);
+    expect(parsed.state.outputs).toEqual({ Endpoint: 'http://x y' });
+  });
+
   // #555 A4: recursive child stack rendering.
   describe('--show-nested', () => {
     it('appends a Nested stack block per child in DFS order (3-level deep)', async () => {
@@ -1745,6 +1765,38 @@ describe('cdkd state show', () => {
       expect(parsed.children[0].lock).toBeNull();
       // Stable key set: `children: []` on leaves rather than omitted.
       expect(parsed.children[0].children).toEqual([]);
+    });
+
+    it('--show-nested --json escapes a planted character in a child record and round-trips it (go-to-k/cdkd#3163)', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Parent', region: 'us-east-1' }]);
+      const physicalId = 'r\u009b[2J ';
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'Parent') {
+          return makeState({
+            stackName: 'Parent',
+            resources: {
+              Child: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::Parent~Child',
+              }),
+            },
+          });
+        }
+        return makeState({
+          stackName: 'Parent~Child',
+          parentStack: 'Parent',
+          parentLogicalId: 'Child',
+          parentRegion: 'us-east-1',
+          resources: { R: makeResource({ resourceType: 'AWS::IAM::Role', physicalId }) },
+        });
+      });
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'Parent', '--show-nested', '--json']);
+
+      expect(out.replace(/\n/g, '')).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+      // Premise: the child was walked, so the planted value was on the emitted path.
+      expect(JSON.parse(out).children[0].state.resources.R.physicalId).toBe(physicalId);
     });
 
     it('combines with --stack-region to disambiguate when same name lives in two regions', async () => {

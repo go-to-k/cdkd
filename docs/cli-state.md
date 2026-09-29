@@ -176,7 +176,7 @@ and the lock read degrade separately:
 
 | Read that failed | Text row | `--long --json` |
 | --- | --- | --- |
-| state record, or a `resources` that could not be counted (see below) | `Resources: unknown (...)`; the lock is still reported | `resourceCount: null`, `stateReadError` set |
+| state record, or a `resources` that could not be counted (see below) | `Resources: unknown (...)`; the lock is still reported | `resourceCount: null`, `stateReadError` and `stateReadErrorKind` set |
 | lock | `Lock: unknown (...)`; the resource count is still reported | `locked: null`, `lockReadError` set |
 
 The reason text is fixed and never quotes the underlying error, because a
@@ -187,12 +187,22 @@ region is the exception: its lock reason names no command, because
 warning on stderr counts the rows that could not be fully read or counted, and
 the command still exits 0.
 
+`stateReadErrorKind` tells the two record-side failures apart without matching
+the reason text. It is `null` exactly when `stateReadError` is:
+
+| `stateReadErrorKind` | Meaning | Retrying helps? |
+| --- | --- | --- |
+| `read-failed` | the record could not be read | possibly — the failure may be transient |
+| `resources-malformed` | the record was read, but its `resources` is not a JSON object | no — the record itself has to be fixed |
+
+Treat an unrecognised value as a failure: more kinds may be added.
+
 Other malformed values render instead of stopping the listing:
 
 | Value | How it renders |
 | --- | --- |
 | a `lastModified` outside the date range, or not a number | `Last Modified: unknown`, `null` under `--json` |
-| a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` set; the warning counts the row. An absent or `null` `resources` counts as `0`. What the other commands do with such a record is under [When `resources` is not an object](#when-resources-is-not-an-object) |
+| a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` and `stateReadErrorKind` set; the warning counts the row. An absent or `null` `resources` counts as `0`. What the other commands do with such a record is under [When `resources` is not an object](#when-resources-is-not-an-object) |
 | a character outside printable ASCII in a stack name or region | replaced with a space, and the value is then quoted (see the row below). A value with nothing printable left shows as `<unrenderable>` |
 | a stack name or region that cdkd had to CHANGE to render — anything outside printable ASCII, or surrounding whitespace it trimmed | rendered as a quoted string, so its boundary is visible. A trailing space is enough: `ProdStack ` renders `"ProdStack" (us-east-1)` |
 | a stack name or region carrying a space, a bracket or a quote — anything outside `A-Za-z0-9` and `:_@./+=,~-` | quoted the same way: `"ProdStack (us-east-1)" (us-east-1)`. Both rules apply to both halves of every reference |
@@ -221,10 +231,14 @@ Where it applies, and what it does not promise:
 | Can a long name still mislead? | Yes, if your terminal wraps it: a wrapped line can read like a genuine row with the quotes off-screen. Widen the terminal, or use `--json` |
 | Can anything else still mislead? | Yes. A name ending in a comma is left unquoted, and the prompts above list references separated by `, ` — so one such name reads as two entries. `cdkd state orphan` prints no count to check it against |
 
-`--json` output is not sanitized. JSON escapes only C0 control characters,
-`"`, `\` and unpaired surrogates, so other invisible or line-breaking
-characters in a stack name or region pass through unchanged. Sanitize those
-values yourself before printing them to a terminal.
+`--json` output is not sanitized, because that would change the values a
+script matches on. It is escaped instead: every control, format, line-separator
+and paragraph-separator character — including DEL, the C1 range, `U+2028`,
+`U+2029`, the bidi overrides and the zero-width characters, which plain JSON
+would emit raw — is written as a `\uXXXX` escape. The output parses back to
+exactly the stored values, and printing it to a terminal cannot run a control
+sequence. The same applies to the `--json` output of every `cdkd state`
+subcommand.
 
 ### Without cdkd
 
@@ -297,7 +311,10 @@ they print as untrusted text:
   empty slot, and the underlying cause a refusal reports is flattened the same
   way. This covers the refusals these two commands raise; an error reaching you
   from the AWS SDK itself is that service's own text.
-- **`--json` applies none of this sanitizing**, and `cdkd state show --json` is
+- **`--json` applies none of this sanitizing** — it escapes the same
+  characters as `\uXXXX` instead, so the values parse back unchanged (see
+  [Unreadable records and unsafe values](#unreadable-records-and-unsafe-values)) —
+  and `cdkd state show --json` is
   the mode to reach for when you need the stored value rather than a readable
   one. It is not byte-for-byte in every mode, and the exceptions differ per
   command:
