@@ -688,7 +688,7 @@ export async function runDestroyForStack(
     // Take the lock, then RE-READ: the snapshot this function was handed was
     // taken by the caller before any of this, so emptiness has to be
     // re-established under the lock rather than inherited from it.
-    logger.info(`Stack ${stackName} has no resources, cleaning up state...`);
+    logger.info(`Stack ${displayStackName(stackName)} has no resources, cleaning up state...`);
     // Issue #1348's rule applies to THIS acquire too, and the fence in
     // `tests/unit/cli/signal-before-lock-ordering.test.ts` caught the first
     // cut of this fix without one: register the handler BEFORE acquiring, or a
@@ -840,7 +840,7 @@ export async function runDestroyForStack(
         // records would otherwise read `0 resource(s)`, which contradicts the
         // refusal it is explaining.
         throw new Error(
-          `Stack ${displayStackName(stackName)} (${displaySafe(regionForState)}) was empty when this run started but ` +
+          `Stack ${displayStackName(stackName)} (${displaySafe(regionForState, { asciiOnly: true })}) was empty when this run started but ` +
             `now has ${recheckResources} resource(s) and ${recheckOrphans} rollback-orphaned ` +
             `resource(s) — another cdkd process wrote to it. Re-run the destroy to act on ` +
             `the current state.`
@@ -1125,7 +1125,7 @@ export async function runDestroyForStack(
     }
   };
   if (stackRegion && stackRegion !== ctx.baseRegion) {
-    logger.info(`Stack region: ${stackRegion}`);
+    logger.info(`Stack region: ${displaySafe(stackRegion, { asciiOnly: true })}`);
     process.env['AWS_REGION'] = stackRegion;
     process.env['AWS_DEFAULT_REGION'] = stackRegion;
     regionSwitched = true;
@@ -1505,10 +1505,10 @@ export async function runDestroyForStack(
     saveChain = saveChain.then(async () => {
       try {
         await ctx.stateBackend.saveState(stackName, regionForState, buildDestroySnapshot());
-        logger.debug(`State persisted after deleting ${logicalId}`);
+        logger.debug(`State persisted after deleting ${displaySafe(logicalId)}`);
       } catch (error) {
         logger.warn(
-          `Failed to persist state after deleting ${logicalId} (continuing): ${describeAwsFailure(error).detail}`
+          `Failed to persist state after deleting ${displaySafe(logicalId)} (continuing): ${describeAwsFailure(error).detail}`
         );
       }
     });
@@ -1570,7 +1570,7 @@ export async function runDestroyForStack(
               DependsOn: [...depsArray, logicalId],
             };
             logger.debug(
-              `Implicit delete dependency: ${depId} (${depType}) must be deleted before ${logicalId} (${resource.resourceType})`
+              `Implicit delete dependency: ${displaySafe(depId)} (${displaySafe(depType)}) must be deleted before ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)})`
             );
           }
         }
@@ -1591,7 +1591,7 @@ export async function runDestroyForStack(
           DependsOn: [...depsArray, after],
         };
         logger.debug(
-          `Implicit delete dependency: ${before} (${state.resources[before]?.resourceType}) must be deleted before ${after} (${state.resources[after]?.resourceType})`
+          `Implicit delete dependency: ${displaySafe(before)} (${displaySafe(state.resources[before]?.resourceType)}) must be deleted before ${displaySafe(after)} (${displaySafe(state.resources[after]?.resourceType)})`
         );
       }
     }
@@ -1633,7 +1633,7 @@ export async function runDestroyForStack(
 
         const resource = state.resources[logicalId];
         if (!resource) {
-          logger.warn(`Resource ${logicalId} not found in state, skipping`);
+          logger.warn(`Resource ${displaySafe(logicalId)} not found in state, skipping`);
           return;
         }
 
@@ -1839,7 +1839,7 @@ export async function runDestroyForStack(
                   if (!isRetryable || attempt >= maxAttempts) break;
                   const delay = 5000 * Math.pow(2, attempt);
                   logger.debug(
-                    `  ⏳ Retrying delete ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${maxAttempts})`
+                    `  ⏳ Retrying delete ${displaySafe(logicalId)} in ${delay / 1000}s (attempt ${attempt + 1}/${maxAttempts})`
                   );
                   await new Promise((resolve) => setTimeout(resolve, delay));
                 }
@@ -2026,7 +2026,7 @@ export async function runDestroyForStack(
               msg.includes('NoSuchEntity') ||
               msg.includes('NotFoundException'))
           ) {
-            logger.debug(`  ${logicalId} already deleted, removing from state`);
+            logger.debug(`  ${displaySafe(logicalId)} already deleted, removing from state`);
             result.deletedCount++;
             ctx.eventRecorder?.record({
               eventType: 'RESOURCE_SUCCEEDED',
@@ -2051,7 +2051,7 @@ export async function runDestroyForStack(
               resource.physicalId,
               error
             );
-            logger.error(`  ✗ Failed to delete ${logicalId}:`, wrapped.message);
+            logger.error(`  ✗ Failed to delete ${displaySafe(logicalId)}:`, wrapped.message);
             result.errorCount++;
             failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
             ctx.eventRecorder?.record({
@@ -2065,7 +2065,7 @@ export async function runDestroyForStack(
               error: extractDeploymentEventError(wrapped),
             });
           } else {
-            logger.error(`  ✗ Failed to delete ${logicalId}:`, safeStringify(error));
+            logger.error(`  ✗ Failed to delete ${displaySafe(logicalId)}:`, safeStringify(error));
             result.errorCount++;
             failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
             ctx.eventRecorder?.record({
@@ -2353,7 +2353,7 @@ export async function runDestroyForStack(
         await ctx.lockManager.releaseLock(stackName, regionForState);
       } catch (releaseErr) {
         logger.warn(
-          `Failed to release lock for stack '${stackName}': ${describeAwsFailure(releaseErr).detail}`
+          `Failed to release lock for stack ${displayStackName(stackName)}:${describeAwsFailure(releaseErr).detail}`
         );
       }
     } finally {

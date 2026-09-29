@@ -561,6 +561,7 @@ describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => 
         removeProtection,
       });
       const prompt = String(readlineQuestion.mock.calls[0]?.[0]);
+      expect(prompt.includes('REMOVING DELETION PROTECTION')).toBe(removeProtection);
       expect(prompt).toContain('"Evil [2J  Stack"');
       // The prompt's own leading newline is the only one allowed.
       for (const b of bad) expect(prompt.slice(1)).not.toContain(b);

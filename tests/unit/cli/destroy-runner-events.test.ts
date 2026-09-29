@@ -9,13 +9,17 @@ import type {
   DeploymentEventRecorder,
 } from '../../../src/types/deployment-events.js';
 
-const logInfo = vi.hoisted(() => vi.fn());
+const { logInfo, logWarn, logError } = vi.hoisted(() => ({
+  logInfo: vi.fn(),
+  logWarn: vi.fn(),
+  logError: vi.fn(),
+}));
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
     info: logInfo,
-    warn: vi.fn(),
-    error: vi.fn(),
+    warn: logWarn,
+    error: logError,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
 }));
@@ -34,6 +38,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 }));
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { ResourceTimeoutError } from '../../../src/utils/error-handler.js';
 
 /** Collecting recorder that captures every event the runner emits. */
 class CollectingRecorder implements DeploymentEventRecorder {
@@ -218,6 +223,71 @@ describe('runDestroyForStack - #808 deployment events', () => {
     for (const line of [retained!, acquiring!.trimStart()]) {
       for (const bad of ['\x1b', '\r', '\n', '\u202e']) expect(line).not.toContain(bad);
     }
+  });
+
+  it('renders a planted logical id inert in both failed-delete lines (issue #3811)', async () => {
+    const planted = 'X\r\n  ✓ Bar (AWS::S3::Bucket) deleted\x1b[2K‮';
+    const resource = (type: string) => ({
+      physicalId: 'phys',
+      resourceType: type,
+      properties: {},
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk' as const,
+    });
+    const provider = {
+      delete: vi.fn(async (logicalId: string) => {
+        if (logicalId.startsWith('Timeout')) {
+          throw new ResourceTimeoutError(logicalId, 'AWS::SNS::Topic', 'us-east-1', 5, 'DELETE', 5);
+        }
+        throw new Error('boom');
+      }),
+    };
+    const state = makeState({
+      [`Timeout${planted}`]: resource('AWS::SNS::Topic'),
+      [`Plain${planted}`]: resource('AWS::SQS::Queue'),
+    });
+
+    await runDestroyForStack('S', state, makeContext({ provider, recorder: new CollectingRecorder() }));
+
+    const failed = logError.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('Failed to delete'));
+    expect(failed.some((l) => l.includes('TimeoutX'))).toBe(true);
+    expect(failed.some((l) => l.includes('PlainX'))).toBe(true);
+    for (const line of failed) {
+      for (const bad of ['\x1b', '\r', '\n', '‮']) expect(line).not.toContain(bad);
+    }
+  });
+
+  it('renders a planted logical id and type inert in the slow-delete warn (issue #3811)', async () => {
+    const planted = 'X\r\n  ✓ Bar (AWS::S3::Bucket) deleted\x1b[2K‮';
+    const provider = {
+      delete: vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 50))),
+    };
+    const state = makeState({
+      [`Slow${planted}`]: {
+        physicalId: 'phys',
+        resourceType: `AWS::SNS::Topic${planted}`,
+        properties: {},
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      },
+    });
+
+    await runDestroyForStack('S', state, {
+      ...makeContext({ provider, recorder: new CollectingRecorder() }),
+      resourceWarnAfterMs: 1,
+      resourceTimeoutMs: 10_000,
+    });
+
+    const warn = logWarn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('has been deleting'));
+    expect(warn).toContain('SlowX');
+    expect(warn).toContain('AWS::SNS::TopicX');
+    for (const bad of ['\x1b', '\r', '\n', '‮']) expect(warn).not.toContain(bad);
   });
 
   it('treats an already-gone resource as a successful delete (RESOURCE_SUCCEEDED)', async () => {
