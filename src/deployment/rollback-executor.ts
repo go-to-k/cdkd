@@ -918,59 +918,77 @@ const OTHER_SPELLED_NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * The NAME part of an id an AWS message may quote on its own (#4099 review):
+ * The two POSITIONS in a `|` composite that are certainly not a chosen name,
+ * each tested only there (#4141 review): a Cloud Control WAF id ends in its
+ * upper-case scope word (`<Name>|<Id>|REGIONAL`), and a Cognito id starts with
+ * its user pool id (`<region>_<id>|<Username>`). No shape is excluded anywhere
+ * else: a secret-derived name is often a UUID or hex token, and masking an
+ * AWS-generated segment only over-masks.
+ */
+const COMPOSITE_SCOPE_LAST = /^(?:REGIONAL|CLOUDFRONT|GLOBAL)$/;
+const COMPOSITE_POOL_FIRST = /^[a-z]{2}(?:-gov)?-[a-z]+-\d+_[A-Za-z0-9]+$/;
+
+/**
+ * The NAME parts of an id an AWS message may quote on their own (#4099,
+ * #4135, #4138), for a record whose name is secret-derived. Every choice errs
+ * toward over-masking, never toward skipping a segment that may be the name:
  *
- * - an ARN's last `/` segment, and that segment without a `:<revision>`
- *   suffix (`task-definition/<Family>:<rev>`);
- * - for any `arn:` id, the last NON-NUMERIC segment of its resource part,
- *   split on both `/` and `:` (SNS `...:<topic>`, Step Functions
- *   `...:stateMachine:<name>`, Lambda `...:function:<name>:<version>`), and
- *   for Secrets Manager that segment without its random `-XXXXXX` suffix;
- * - where the name is NOT last (#4135): Lambda's segment after `function:`
- *   or `layer:` (before a `:<version>` / `:<alias>` qualifier, which is then
- *   not taken; any other Lambda ARN takes the generic arm)
- *   and ELBv2's before its `/<hash>` (`loadbalancer/app/<name>/<hash>`,
- *   `targetgroup/<name>/<hash>`);
- * - a `|` composite's last segment (`<poolId>|<Username>`).
+ * - every segment of an ARN's resource part (split on `/` and `:`), except the
+ *   leading resource-type word when there is more than one and a TRAILING
+ *   number (a version or revision) when another is left. So the name is taken
+ *   wherever the service puts it: last (SNS `...:<topic>`), before a hash
+ *   (ELBv2 `loadbalancer/app/<name>/<hash>`, AppRunner, MSK), mid-path (EKS
+ *   `nodegroup/<cluster>/<name>/<uuid>`). A sibling segment (EKS's cluster
+ *   name, an IAM path word, a hash) is masked too;
+ * - Lambda's segment after `function:` / `layer:` AND a non-numeric qualifier
+ *   after it: an alias name may be the secret-derived one (#4141 review), so a
+ *   word like `production` is masked when the function's name is;
+ * - Secrets Manager's name without its random `-XXXXXX` suffix;
+ * - any id's last `/` segment, with and without a `:<revision>` (ECS's
+ *   `task-definition/<Family>:<rev>` is quoted whole);
+ * - every segment of a `|` composite but {@link COMPOSITE_SCOPE_LAST} /
+ *   {@link COMPOSITE_POOL_FIRST} in their own positions (WAFv2's name is
+ *   FIRST).
  *
- * The last segment is the name for most types, otherwise an AWS-generated id,
- * which is harmless to mask. Derived spellings, so each clears the literal
- * masker's substring floor (4) and differs from the id itself.
+ * Derived spellings, so each clears the literal masker's substring floor (4)
+ * and differs from the id itself.
  */
 function idNameSegments(id: string): string[] {
   const segments = new Set<string>();
-  const afterSlash = id.includes('/') ? id.slice(id.lastIndexOf('/') + 1) : undefined;
-  if (afterSlash !== undefined) {
-    segments.add(afterSlash);
-    segments.add(afterSlash.replace(/:\d+$/, ''));
-  }
   const arn = /^arn:[^:]*:([^:]*):[^:]*:[^:]*:(.+)$/.exec(id);
   if (arn !== null) {
-    const [, service, resource] = arn as unknown as [string, string, string];
-    // Services whose name is NOT the last segment (#4135): Lambda's comes
-    // before a `:<version>` / `:<alias>` qualifier, and taking the qualifier
-    // instead would mask a word like `live` while the name printed; ELBv2's
-    // sits before a `/<hash>`.
-    const positioned =
-      service === 'lambda'
-        ? /^(?:function|layer):([^:]+)/.exec(resource)
-        : service === 'elasticloadbalancing'
-          ? /^(?:loadbalancer\/(?:app|net|gwy)|targetgroup)\/([^/]+)\//.exec(resource)
-          : null;
-    if (positioned !== null) {
-      segments.add(positioned[1]!);
+    const service = arn[1]!;
+    const resource = arn[2]!;
+    const lambda =
+      service === 'lambda' ? /^(?:function|layer):([^:]+)(?::([^:]+))?/.exec(resource) : null;
+    if (lambda !== null) {
+      segments.add(lambda[1]!);
+      const qualifier = lambda[2];
+      if (qualifier !== undefined && !/^\d+$/.test(qualifier)) segments.add(qualifier);
     } else {
-      const last = resource
-        .split(/[/:]/)
-        .reverse()
-        .find((part) => part !== '' && !/^\d+$/.test(part));
-      if (last !== undefined) {
-        segments.add(last);
-        if (service === 'secretsmanager') segments.add(last.replace(/-[A-Za-z0-9]{6}$/, ''));
+      const parts = resource.split(/[/:]/).filter((part) => part !== '');
+      let body = parts.length > 1 ? parts.slice(1) : parts;
+      if (body.length > 1 && /^\d+$/.test(body[body.length - 1]!)) body = body.slice(0, -1);
+      for (const part of body) {
+        segments.add(part);
+        if (service === 'secretsmanager') segments.add(part.replace(/-[A-Za-z0-9]{6}$/, ''));
       }
     }
   }
-  if (id.includes('|')) segments.add(id.slice(id.lastIndexOf('|') + 1));
+  if (id.includes('/')) {
+    const afterSlash = id.slice(id.lastIndexOf('/') + 1);
+    segments.add(afterSlash);
+    segments.add(afterSlash.replace(/:\d+$/, ''));
+  }
+  if (id.includes('|')) {
+    const parts = id.split('|');
+    parts.forEach((part, index) => {
+      if (part === '') return;
+      if (index === parts.length - 1 && parts.length > 1 && COMPOSITE_SCOPE_LAST.test(part)) return;
+      if (index === 0 && parts.length > 1 && COMPOSITE_POOL_FIRST.test(part)) return;
+      segments.add(part);
+    });
+  }
   return [...segments].filter((segment) => segment.length >= 4 && segment !== id);
 }
 
