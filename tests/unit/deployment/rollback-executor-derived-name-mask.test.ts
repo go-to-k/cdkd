@@ -1324,21 +1324,20 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       'Layer version ***:3 is in use',
     ],
     [
-      // #4138: the name before a UUID; the UUID itself stays readable.
+      // #4138: the name before a UUID.
       'AWS::MSK::Cluster',
       { ClusterName: OTHER_EXPR },
       'arn:aws:kafka:us-east-1:123456789012:cluster/bob-private-msk/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0-2',
-      'Cluster bob-private-msk (0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0-2) is busy',
-      'Cluster *** (0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0-2) is busy',
+      'Cluster bob-private-msk is busy',
+      'Cluster *** is busy',
     ],
     [
       // #4138: the name before a 32-hex id.
       'AWS::AppRunner::Service',
       { ServiceName: OTHER_EXPR },
       'arn:aws:apprunner:us-east-1:123456789012:service/bob-private-svc/8fe1e10304f84fd2b0df550fe98a71fa',
-      // The hex service id stays readable.
-      'Service bob-private-svc (8fe1e10304f84fd2b0df550fe98a71fa) is OPERATION_IN_PROGRESS',
-      'Service *** (8fe1e10304f84fd2b0df550fe98a71fa) is OPERATION_IN_PROGRESS',
+      'Service bob-private-svc is OPERATION_IN_PROGRESS',
+      'Service *** is OPERATION_IN_PROGRESS',
     ],
     [
       // #4138: the name mid-path, between the cluster and a UUID.
@@ -1350,13 +1349,62 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       'Nodegroup *** is DELETING; list the nodegroup again later',
     ],
     [
-      // #4138: a Cloud Control composite with the name FIRST; the scope word
-      // and the UUID stay readable.
+      // #4138: a Cloud Control composite with the name FIRST; the upper-case
+      // scope word stays readable.
       'AWS::WAFv2::WebACL',
       { Name: OTHER_EXPR, Scope: 'REGIONAL' },
       'bob-private-acl|a1b2c3d4-e5f6-7890-abcd-ef1234567890|REGIONAL',
       'WebACL bob-private-acl is associated with a REGIONAL resource',
       'WebACL *** is associated with a REGIONAL resource',
+    ],
+    // #4141 review: a secret-derived name is often a generated-looking token,
+    // so no shape exclusion may skip it.
+    [
+      'AWS::SNS::Topic',
+      { TopicName: OTHER_EXPR },
+      'arn:aws:sns:us-east-1:123456789012:deadbeefcafebabe1234',
+      'Topic deadbeefcafebabe1234 not found',
+      'Topic *** not found',
+    ],
+    [
+      'AWS::ECS::TaskDefinition',
+      { Family: OTHER_EXPR },
+      'arn:aws:ecs:us-east-1:123456789012:task-definition/deadbeefcafebabe1234:1',
+      'family deadbeefcafebabe1234 is INACTIVE',
+      'family *** is INACTIVE',
+    ],
+    [
+      'AWS::Cognito::UserPoolUser',
+      { UserPoolId: 'us-east-1_x', Username: OTHER_EXPR },
+      'us-east-1_x|0f8fad5b-d9cb-469f-a165-70867728950e',
+      'User 0f8fad5b-d9cb-469f-a165-70867728950e does not exist',
+      'User *** does not exist',
+    ],
+    [
+      // A UUID-shaped name beside an ordinary segment: no shape exclusion may
+      // leave only the cluster name.
+      'AWS::EKS::Nodegroup',
+      { ClusterName: 'plain-cluster', NodegroupName: OTHER_EXPR },
+      'arn:aws:eks:us-east-1:123456789012:nodegroup/plain-cluster/7c9e6679-7425-40de-944b-e07fc1f90ae7/4ac4bf66-2bd0-6ab1-4b92-bfa7f2d1c4a2',
+      'Nodegroup 7c9e6679-7425-40de-944b-e07fc1f90ae7 is DELETING',
+      'Nodegroup *** is DELETING',
+    ],
+    [
+      // Every composite segment looks generated (a pool-id-shaped Username):
+      // all are taken rather than none.
+      'AWS::Cognito::UserPoolUser',
+      { UserPoolId: 'us-east-1_x', Username: OTHER_EXPR },
+      'us-east-1_x|eu-west-1_Secret9',
+      'User eu-west-1_Secret9 does not exist',
+      'User *** does not exist',
+    ],
+    [
+      // A numeric name mid-path is kept: only a TRAILING number is a revision.
+      'AWS::MSK::Cluster',
+      { ClusterName: OTHER_EXPR },
+      'arn:aws:kafka:us-east-1:123456789012:cluster/12345678/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0-2',
+      'Cluster 12345678 is busy',
+      'Cluster *** is busy',
     ],
     [
       'AWS::SecretsManager::Secret',

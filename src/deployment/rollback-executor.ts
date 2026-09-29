@@ -918,21 +918,15 @@ const OTHER_SPELLED_NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * A segment AWS generates rather than a name a template chose: a number (a
- * version or revision), a UUID (optionally suffixed, MSK's `<uuid>-2`), a hex
- * hash of 16+ characters (ELBv2, AppRunner), a WAF scope word, or a Cognito
- * user pool id. Never a needle: masking one hides nothing and blurs the line.
+ * A segment that is certainly not a template-chosen name, so it is never a
+ * needle: a WAF scope word (upper case, as
+ * AWS spells it), or a Cognito user pool id (`<region>_<id>`). Deliberately
+ * NOT a UUID or hex shape: a secret-derived name is often exactly that shape
+ * (#4141 review), and masking an AWS-generated one only over-masks. Case
+ * sensitive for the same reason.
  */
-const GENERATED_ID_SEGMENT = new RegExp(
-  [
-    String.raw`^\d+$`,
-    String.raw`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[0-9a-z]+)?$`,
-    String.raw`^[0-9a-f]{16,}$`,
-    String.raw`^(?:REGIONAL|CLOUDFRONT|GLOBAL)$`,
-    String.raw`^[a-z]{2}(?:-[a-z]+)+-\d+_[A-Za-z0-9]+$`,
-  ].join('|'),
-  'i'
-);
+const GENERATED_ID_SEGMENT =
+  /^(?:REGIONAL|CLOUDFRONT|GLOBAL)$|^[a-z]{2}(?:-gov)?-[a-z]+-\d+_[A-Za-z0-9]+$/;
 
 /**
  * The NAME parts of an id an AWS message may quote on their own (#4099,
@@ -940,7 +934,8 @@ const GENERATED_ID_SEGMENT = new RegExp(
  *
  * - every segment of an ARN's resource part (split on `/` and `:`) except the
  *   leading resource-type word when there is more than one, and every segment
- *   of a `|` composite, minus {@link GENERATED_ID_SEGMENT}. So the name is
+ *   of a `|` composite, minus {@link GENERATED_ID_SEGMENT} (a lone segment is
+ *   taken as it is, and an all-excluded list still yields its last segment). So the name is
  *   taken wherever the service puts it: last (SNS `...:<topic>`), before a hash
  *   (ELBv2 `loadbalancer/app/<name>/<hash>`, AppRunner, MSK), mid-path (EKS
  *   `nodegroup/<cluster>/<name>/<uuid>`) or first (WAFv2 `<Name>|<Id>|<Scope>`).
@@ -951,15 +946,20 @@ const GENERATED_ID_SEGMENT = new RegExp(
  *   adding nothing;
  * - Secrets Manager's name without its random `-XXXXXX` suffix;
  * - any id's last `/` segment, with and without a `:<revision>` (ECS's
- *   `task-definition/<Family>:<rev>` is quoted whole), unless AWS generated it.
+ *   `task-definition/<Family>:<rev>` is quoted whole), whatever its shape.
  *
  * Derived spellings, so each clears the literal masker's substring floor (4)
  * and differs from the id itself.
  */
 function idNameSegments(id: string): string[] {
   const segments = new Set<string>();
-  const chosen = (parts: readonly string[]): string[] =>
-    parts.filter((part) => part !== '' && !GENERATED_ID_SEGMENT.test(part));
+  // Never empty when a segment exists: if every segment looks generated, all
+  // are taken, since one of them may be the name (over-masking, not a leak).
+  const chosen = (parts: readonly string[]): string[] => {
+    const present = parts.filter((part) => part !== '');
+    const kept = present.filter((part) => !GENERATED_ID_SEGMENT.test(part));
+    return kept.length > 0 ? kept : present;
+  };
   const arn = /^arn:[^:]*:([^:]*):[^:]*:[^:]*:(.+)$/.exec(id);
   if (arn !== null) {
     const service = arn[1]!;
@@ -968,8 +968,14 @@ function idNameSegments(id: string): string[] {
     if (lambda !== null) {
       segments.add(lambda[1]!);
     } else {
-      const parts = resource.split(/[/:]/);
-      for (const part of chosen(parts.length > 1 ? parts.slice(1) : parts)) {
+      const parts = resource.split(/[/:]/).filter((part) => part !== '');
+      // A lone segment is the name itself (SNS `...:<topic>`), whatever its
+      // shape. Otherwise drop the resource-type word, and a TRAILING number
+      // (a version or revision) when a segment is left; a number elsewhere
+      // may be the name.
+      let body = parts.length > 1 ? parts.slice(1) : parts;
+      if (body.length > 1 && /^\d+$/.test(body[body.length - 1]!)) body = body.slice(0, -1);
+      for (const part of parts.length > 1 ? chosen(body) : parts) {
         segments.add(part);
         if (service === 'secretsmanager') segments.add(part.replace(/-[A-Za-z0-9]{6}$/, ''));
       }
@@ -977,9 +983,8 @@ function idNameSegments(id: string): string[] {
   }
   if (id.includes('/')) {
     const afterSlash = id.slice(id.lastIndexOf('/') + 1);
-    for (const spelling of [afterSlash, afterSlash.replace(/:\d+$/, '')]) {
-      if (!GENERATED_ID_SEGMENT.test(spelling)) segments.add(spelling);
-    }
+    segments.add(afterSlash);
+    segments.add(afterSlash.replace(/:\d+$/, ''));
   }
   if (id.includes('|')) for (const part of chosen(id.split('|'))) segments.add(part);
   return [...segments].filter((segment) => segment.length >= 4 && segment !== id);
