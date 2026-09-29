@@ -154,7 +154,9 @@ describe('cdkd state resources', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(errorSpy).toHaveBeenCalled();
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-    expect(message).toMatch(/No state found for stack 'Missing'/);
+    // The name in `displayIdent`'s boundary, never inside cdkd's own `'...'`
+    // (go-to-k/cdkd#3950): a plain name renders bare.
+    expect(message).toMatch(/No state found for stack Missing\./);
   });
 
   it('errors when the stack has multiple regions and --stack-region is missing', async () => {
@@ -461,7 +463,10 @@ describe('cdkd state resources', () => {
     expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     expect(message).toContain('only a legacy state record');
-    expect(message).toContain('PhysicalID: arn:forged');
+    // Beside the labelled `Migrate with:` line the name is DESCRIBED rather
+    // than shown (go-to-k/cdkd#3760), so the forged text never reaches it.
+    expect(message).toContain('A stack whose name is not a plain identifier');
+    expect(message).not.toContain('arn:forged');
   });
 
   it('names the migrate command on its own trailing line, and holds a pattern-shaped key', async () => {
@@ -492,7 +497,10 @@ describe('cdkd state resources', () => {
     await runStateResources(['resources', 'Old;Stack']).catch(() => undefined);
     const held = errorSpy.mock.calls.map(String).join('\n');
     expect(held).toContain('only a legacy state record');
-    expect(held).toContain('is not a plain identifier');
+    expect(held).toContain('is not a plain identifier (a letter or digit');
+    // ...and the prose describes the name rather than showing it
+    // (go-to-k/cdkd#3760).
+    expect(held).not.toContain('Old;Stack');
     expect(held).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
     expect(held.trimEnd().endsWith("Migrate with: cdkd deploy '<stack>'")).toBe(true);
     expect(held).not.toContain("cdkd deploy 'Old;Stack'");
@@ -503,12 +511,14 @@ describe('cdkd state resources', () => {
     await runStateResources(['resources', 'Prod*']).catch(() => undefined);
     const pattern = errorSpy.mock.calls.map(String).join('\n');
     expect(pattern).toContain("would be read as a PATTERN by 'cdkd deploy'");
-    expect(pattern).not.toContain('is not a plain identifier');
+    // The subject describes the name (go-to-k/cdkd#3760), but the CLAUSE is the
+    // gate's own first reason, not the `not-plain` one.
+    expect(pattern).not.toContain('is not a plain identifier (a letter or digit');
   });
 
   it('names no padded legacy name on the `Migrate with:` line (go-to-k/cdkd#3696)', async () => {
     // Exact, `*`-free and not option-shaped, so only `plainIdent` withholds
-    // it. The prose still echoes the operator's own positional (mid-line);
+    // it. The prose describes it rather than echoing it (go-to-k/cdkd#3760);
     // what must hold is that the ONE line starting with the label is the
     // real command, carrying the hole.
     const forged = `ProdStack${' '.repeat(60)}Migrate with: cdkd destroy --all --force #`;

@@ -23,26 +23,32 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  *    made `Decoy` render as `Decoy (x) (us-east-1)`, reading as stack
  *    `Decoy (x)` in `us-east-1`.
  *
- * Both are asserted at ALL SIX callers of the helper, not at the listing
- * alone. Guarding one site and leaving five is the per-site spelling
- * `safe()`'s own doc comment records having failed twice (go-to-k/cdkd#2772,
- * and the first cut of go-to-k/cdkd#3003), so the population lives here as a
- * TABLE: a seventh caller added to `state.ts` is a row added here, and the
- * floor below refuses a table that silently shrinks.
+ * Both are asserted at EVERY caller of the helper, not at the listing alone.
+ * Guarding one site and leaving the rest is the per-site spelling that failed
+ * twice (go-to-k/cdkd#2772, and the first cut of go-to-k/cdkd#3003), so the
+ * population lives here as a TABLE: a new caller added to `state.ts` is a row
+ * added here, and the floor below refuses a table that silently shrinks.
+ *
+ * The two CONFIRMATION PROMPTS left this helper for `describedStackRef`
+ * (go-to-k/cdkd#3760): they sit beside a labelled pasteable line, where a
+ * non-plain value is described rather than shown. Their own describe block is
+ * at the end of this file.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { setStdinIsTty } from '../../stdin-tty.js';
 
 const infoSpy = vi.hoisted(() => vi.fn());
+const warnSpy = vi.hoisted(() => vi.fn());
+const errorSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: infoSpy,
-    warn: vi.fn(),
-    error: vi.fn(),
+    warn: warnSpy,
+    error: errorSpy,
     child: () => ({
       debug: vi.fn(),
       info: vi.fn(),
@@ -85,11 +91,12 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 const mockIsLocked = vi.fn<() => Promise<boolean>>();
+const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     isLocked: mockIsLocked,
     forceReleaseLock: vi.fn(async () => {}),
-    getLockInfo: vi.fn(async () => null),
+    getLockInfo: mockGetLockInfo,
   })),
 }));
 
@@ -154,6 +161,27 @@ async function runState(args: string[]): Promise<string> {
   return cap.output.join('');
 }
 
+/** Run a command that REFUSES, and return the refusal `handleError` logged. */
+async function refusalOf(args: string[]): Promise<string> {
+  errorSpy.mockClear();
+  await runState(args).catch(() => undefined);
+  return errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+}
+
+/** Every line a logger spy received. */
+function lines(spy: typeof infoSpy): string[] {
+  return spy.mock.calls.map((c) => String(c[0]));
+}
+
+/** The last logger line at `spy` that starts with `prefix`, prefix removed. */
+function lastLine(spy: typeof infoSpy, prefix: string): string {
+  const line = spy.mock.calls
+    .map((c) => String(c[0]))
+    .filter((m) => m.startsWith(prefix))
+    .at(-1);
+  return (line ?? '').slice(prefix.length);
+}
+
 /**
  * One row per `formatStackRefSafe` caller in `src/cli/commands/state.ts`.
  * `render` drives the real command with a state bucket holding exactly ONE
@@ -161,7 +189,11 @@ async function runState(args: string[]): Promise<string> {
  * surrounding word of cdkd's own sentence stripped -- so the assertions below
  * compare the rendering itself rather than a substring of it.
  */
-const SITES: Array<{ name: string; render: (ref: Ref) => Promise<string> }> = [
+const SITES: Array<{
+  name: string;
+  regionOnly?: boolean;
+  render: (ref: Ref) => Promise<string>;
+}> = [
   {
     name: 'state list (plain listing)',
     render: async (ref) => {
@@ -187,48 +219,61 @@ const SITES: Array<{ name: string; render: (ref: Ref) => Promise<string> }> = [
       return (await runState(['list', '--tree'])).trimEnd();
     },
   },
+  // The sites below were raw or bare-allowlist renders until go-to-k/cdkd#3179.
+  // `regionOnly`: the site never renders a region-LESS ref as this helper's
+  // output (a legacy record takes a different refusal or wording there), so
+  // the region-less rows of the cases below are skipped for it.
   {
-    name: 'state orphan (confirmation prompt)',
+    name: 'state resources (no-record refusal)',
+    regionOnly: true,
     render: async (ref) => {
       mockListStacks.mockResolvedValue([ref]);
-      mockIsLocked.mockResolvedValue(false);
-      readlineQuestion.mockResolvedValue('n');
-      await runState(['orphan', ref.stackName]);
-      const prompt = readlineQuestion.mock.calls.at(-1)?.[0] ?? '';
-      // Greedy: the reference itself may contain ` from s3://` only if an
-      // attacker plants it, and the trailing literal is cdkd's own.
-      return /^Remove state for (.*) from s3:\/\//.exec(prompt)?.[1] ?? '';
+      mockGetState.mockResolvedValue(null);
+      const message = await refusalOf(['resources', ref.stackName]);
+      return /No state found for stack (.*) in s3:\/\//.exec(message)?.[1] ?? '';
     },
   },
   {
-    name: 'state orphan (removal confirmation line)',
+    name: 'state show (no-record refusal)',
+    regionOnly: true,
     render: async (ref) => {
       mockListStacks.mockResolvedValue([ref]);
-      mockIsLocked.mockResolvedValue(false);
-      readlineQuestion.mockResolvedValue('y');
-      await runState(['orphan', ref.stackName]);
-      const line = infoSpy.mock.calls
-        .map((c) => String(c[0]))
-        .filter((m) => m.startsWith('✓ Removed state for stack: '))
-        .at(-1);
-      return (line ?? '').slice('✓ Removed state for stack: '.length);
+      mockGetState.mockResolvedValue(null);
+      const message = await refusalOf(['show', ref.stackName]);
+      return /No state found for stack (.*) in s3:\/\//.exec(message)?.[1] ?? '';
     },
   },
   {
-    name: 'state refresh-observed (confirmation prompt)',
+    name: 'state destroy (preparing line)',
     render: async (ref) => {
       mockListStacks.mockResolvedValue([ref]);
-      readlineQuestion.mockResolvedValue('n');
-      await runState(['refresh-observed', '--all']);
-      const prompt = readlineQuestion.mock.calls.at(-1)?.[0] ?? '';
-      return /^Refresh observedProperties for 1 stack\(s\) \((.*)\)\?/.exec(prompt)?.[1] ?? '';
+      // No record at the read: the command skips the stack after naming it,
+      // so no destroy runs.
+      mockGetState.mockResolvedValue(null);
+      await runState(['destroy', ref.stackName, '--yes']);
+      return lastLine(infoSpy, '\nPreparing to destroy stack: ');
+    },
+  },
+  {
+    name: 'state refresh-observed (per-stack line)',
+    regionOnly: true,
+    render: async (ref) => {
+      mockListStacks.mockResolvedValue([ref]);
+      // An empty bag: the per-stack line names the record and skips it.
+      mockGetState.mockResolvedValue({ state: { resources: {} } });
+      await runState(['refresh-observed', '--all', '--yes']);
+      const line = lastLine(infoSpy, '✓ ');
+      return line.slice(0, line.lastIndexOf(': no resources in state'));
     },
   },
 ];
 
 /**
- * The floor. `formatStackRefSafe` had six callers when this fix landed; the
- * table above is the claim that all six are covered. A row silently dropped
+ * The floor. `formatStackRefSafe` had six callers when issue #3164 landed and
+ * seven since go-to-k/cdkd#3179 (every `state orphan` line and the
+ * refresh-observed prompt left it for `describedStackRef`, and five raw or
+ * bare-allowlist sites joined it); the table
+ * above is the claim that all of them are covered. A row silently dropped
  * (a merge, a rewrite) would leave the remaining cases green while testing
  * less, which is the failure this number exists to make loud. It is NOT
  * derived from the source, deliberately -- a population computed from the
@@ -241,7 +286,7 @@ const SITES: Array<{ name: string; render: (ref: Ref) => Promise<string> }> = [
  * happened twice. `formatStackRefSafe callers` below closes that direction by
  * counting the call sites in the source.
  */
-const EXPECTED_SITE_COUNT = 6;
+const EXPECTED_SITE_COUNT = 7;
 
 /**
  * Where the source population is read from. A literal path, not a glob: this
@@ -316,6 +361,7 @@ const PADDING_SPOOFS: Array<{ label: string; ref: Ref }> = [
 
 describe('every state-list / prompt reference renders its own boundary (issue #3164)', () => {
   let originalIsTty: boolean | undefined;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     originalIsTty = process.stdin.isTTY;
@@ -331,9 +377,17 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     mockDeleteLegacyState.mockResolvedValue();
     readlineQuestion.mockReset();
     infoSpy.mockReset();
+    warnSpy.mockReset();
+    errorSpy.mockReset();
+    mockGetLockInfo.mockReset();
+    mockGetLockInfo.mockResolvedValue(null);
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
   });
 
   afterEach(() => {
+    exitSpy.mockRestore();
     setStdinIsTty(originalIsTty);
     vi.clearAllMocks();
   });
@@ -343,7 +397,7 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     expect(new Set(SITES.map((s) => s.name)).size).toBe(EXPECTED_SITE_COUNT);
   });
 
-  it('and state.ts names formatStackRefSafe in CODE exactly 1 + 6 times', () => {
+  it('and state.ts names formatStackRefSafe in CODE exactly 1 + EXPECTED_SITE_COUNT times', () => {
     const source = readFileSync(STATE_TS, 'utf-8');
 
     // Strip comments FIRST, then count every remaining mention of the name.
@@ -392,6 +446,7 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     for (const site of SITES) {
       it(`${site.name}`, async () => {
         for (const { ref, expected } of LEGIT) {
+          if (site.regionOnly && ref.region === undefined) continue;
           // eslint-disable-next-line no-await-in-loop
           const rendered = await site.render(ref);
           expect(rendered, `${site.name} rendered ${ref.stackName}`).toBe(expected);
@@ -401,7 +456,10 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
   });
 
   describe('a planted NAME carrying the (region) annotation cannot impersonate a real row', () => {
-    for (const site of SITES) {
+    // The spoof is a region-LESS ref by construction, so a `regionOnly` site
+    // never renders it through this helper; the PADDED cases below reach
+    // those sites' name half instead.
+    for (const site of SITES.filter((s) => !s.regionOnly)) {
       it(`${site.name}`, async () => {
         const genuine = await site.render(GENUINE);
         const spoof = await site.render(NAME_SPOOF);
@@ -526,47 +584,288 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     const nameless = await SITES[0]!.render({ stackName: nothingPrintable, region: 'us-east-1' });
     expect(nameless).toBe(`${UNRENDERABLE} (us-east-1)`);
   });
+});
 
-  // BOTH prompt sites `join(', ')`, and every case above renders ONE ref, so
-  // the join never runs there. Covering only one of the two left the other
-  // free: mutating `state orphan`'s separator alone was measured green while
-  // the `refresh-observed` case was red. They are separate `join` expressions,
-  // so they need separate cases.
-  const PLANTED_ENTRY: Ref = { stackName: 'Planted, Victim (us-east-1)', region: 'us-west-2' };
+/**
+ * The two CONFIRMATION PROMPTS (go-to-k/cdkd#3760, the maintainer's option 1).
+ * Each sits beside a labelled pasteable line -- `state orphan`'s
+ * `Destroy with:`, `state refresh-observed`'s legacy `Migrate with:` -- where
+ * `displayIdent`'s boundary is not enough: it keeps interior spaces, so a
+ * planted value padded to the terminal width WRAPS into a counterfeit
+ * labelled row. So each half is shown only when `isPasteableIdent` admits it
+ * and described otherwise.
+ */
+const PROMPTS: Array<{
+  name: string;
+  /** Renders ONE ref per line, so the joined-list case does not apply. */
+  perRef?: boolean;
+  /** Renders a region-less ref in its own wording (`(legacy lock key)`). */
+  regionOnly?: boolean;
+  render: (refs: Ref[]) => Promise<string>;
+}> = [
+  {
+    // After the operator's `y`: the line lands just below the banner's
+    // `Destroy with:` row (the go-to-k/cdkd#4004 security review).
+    name: 'state orphan (removal confirmation line)',
+    perRef: true,
+    render: async (refs) => {
+      mockListStacks.mockResolvedValue(refs);
+      mockIsLocked.mockResolvedValue(false);
+      readlineQuestion.mockResolvedValue('y');
+      await runState(['orphan', refs[0]!.stackName]);
+      // The reference only: the pointer a described target adds is pinned by
+      // its own cases below.
+      return lastLine(infoSpy, '✓ Removed state for stack: ');
+    },
+  },
+  {
+    name: 'state orphan (live-lock warning)',
+    perRef: true,
+    regionOnly: true,
+    render: async (refs) => {
+      mockListStacks.mockResolvedValue(refs);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({
+        owner: 'someone@host:1',
+        operation: 'deploy',
+        expiresAt: Date.now() + 60_000,
+      });
+      await runState(['orphan', refs[0]!.stackName, '--yes']);
+      const line = lastLine(warnSpy, 'Force-releasing a LIVE lock on ');
+      return line.slice(0, line.lastIndexOf(' held by '));
+    },
+  },
+  {
+    name: 'state orphan (warning banner + prompt)',
+    render: async (refs) => {
+      mockListStacks.mockResolvedValue(refs);
+      mockIsLocked.mockResolvedValue(false);
+      readlineQuestion.mockResolvedValue('n');
+      const out = await runState(['orphan', refs[0]!.stackName]);
+      const banner = /removes cdkd's state record for \[(.*)\] only\./.exec(out)?.[1] ?? '';
+      // The prompt renders the SAME string, so a forged entry would land in
+      // whichever of the two the operator is reading.
+      const prompt = readlineQuestion.mock.calls.at(-1)?.[0] ?? '';
+      expect(prompt.startsWith(`Remove state for ${banner} from s3://`)).toBe(true);
+      return banner;
+    },
+  },
+  {
+    name: 'state refresh-observed (prompt)',
+    render: async (refs) => {
+      mockListStacks.mockResolvedValue(refs);
+      readlineQuestion.mockResolvedValue('n');
+      await runState(['refresh-observed', '--all']);
+      const prompt = readlineQuestion.mock.calls.at(-1)?.[0] ?? '';
+      const head = `Refresh observedProperties for ${refs.length} stack(s) (`;
+      const end = prompt.lastIndexOf(')?');
+      return prompt.startsWith(head) && end > head.length ? prompt.slice(head.length, end) : '';
+    },
+  },
+];
 
-  it('refresh-observed: a planted name cannot forge a second entry in the joined list', async () => {
-    mockListStacks.mockResolvedValue([{ stackName: 'Real', region: 'us-east-1' }, PLANTED_ENTRY]);
-    readlineQuestion.mockResolvedValue('n');
-    await runState(['refresh-observed', '--all']);
+describe('the two confirmation prompts describe a non-plain name or region (go-to-k/cdkd#3760)', () => {
+  let originalIsTty: boolean | undefined;
 
-    const prompt = readlineQuestion.mock.calls.at(-1)?.[0] ?? '';
-    const list = /^Refresh observedProperties for 2 stack\(s\) \((.*)\)\?/.exec(prompt)?.[1] ?? '';
-
-    // Unquoted, the planted name contributes TWO entries and the operator
-    // agrees to a set they did not read; quoted, the `, ` inside it is visibly
-    // inside the boundary.
-    expect(list).toBe('Real (us-east-1), "Planted, Victim (us-east-1)" (us-west-2)');
+  beforeEach(() => {
+    originalIsTty = process.stdin.isTTY;
+    setStdinIsTty(true);
+    mockListStacks.mockReset();
+    mockIsLocked.mockReset();
+    mockVerifyBucketExists.mockReset();
+    mockVerifyBucketExists.mockResolvedValue();
+    mockDeleteState.mockReset();
+    mockDeleteState.mockResolvedValue();
+    mockDeleteLegacyState.mockReset();
+    mockDeleteLegacyState.mockResolvedValue();
+    mockGetLockInfo.mockReset();
+    mockGetLockInfo.mockResolvedValue(null);
+    readlineQuestion.mockReset();
+    infoSpy.mockReset();
+    warnSpy.mockReset();
   });
 
-  it('state orphan: a planted name cannot forge a second entry in the [...] list', async () => {
-    // The higher-blast-radius twin -- this list names the records the operator
-    // is agreeing to REMOVE. Both targets must belong to ONE stack name for a
-    // single prompt to list two of them, which is the multi-region shape.
-    mockListStacks.mockResolvedValue([
-      { stackName: PLANTED_ENTRY.stackName, region: 'us-east-1' },
-      { stackName: PLANTED_ENTRY.stackName, region: 'us-west-2' },
-    ]);
+  afterEach(() => {
+    setStdinIsTty(originalIsTty);
+    vi.clearAllMocks();
+  });
+
+  for (const site of PROMPTS) {
+    it(`${site.name}: a legitimate reference is byte-identical`, async () => {
+      for (const { ref, expected } of LEGIT) {
+        if (site.regionOnly && ref.region === undefined) continue;
+        // eslint-disable-next-line no-await-in-loop
+        expect(await site.render([ref]), `${site.name} rendered ${ref.stackName}`).toBe(expected);
+      }
+    });
+
+    it(`${site.name}: a planted name or region is described, never shown`, async () => {
+      if (!site.regionOnly) {
+        expect(await site.render([NAME_SPOOF])).toBe('a stack name that is not a plain identifier');
+      }
+      expect(await site.render([REGION_SPOOF])).toBe(
+        'Decoy (a region that is not a plain identifier)'
+      );
+      for (const { label, ref } of PADDING_SPOOFS) {
+        // eslint-disable-next-line no-await-in-loop
+        const rendered = await site.render([ref]);
+        expect(rendered, label).toContain('that is not a plain identifier');
+        expect(rendered, label).not.toBe('ProdStack (us-east-1)');
+      }
+    });
+
+    it(`${site.name}: a region padded to wrap cannot print a counterfeit labelled row`, async () => {
+      // The go-to-k/cdkd#3755 security review's shape: a `*`-free REGION
+      // segment whose padding puts a forged `Destroy with:` row at column 0 of
+      // a terminal wrapped at the width the attacker guessed.
+      const rendered = await site.render([{ stackName: 'Decoy', region: WRAPPING_REGION }]);
+
+      expect(rendered).toBe('Decoy (a region that is not a plain identifier)');
+      expect(rendered).not.toContain('Destroy with:');
+    });
+
+    it.skipIf(site.perRef === true)(`${site.name}: a bare comma cannot forge an extra list entry (go-to-k/cdkd#3179)`, async () => {
+      // `ProdStack,` beside the formatter's own ` (region)` read as
+      // `ProdStack, (us-east-1)` -- THREE entries in a two-target list. A
+      // described half carries no `,`.
+      const rendered = await site.render([
+        { stackName: 'ProdStack,', region: 'us-east-1' },
+        { stackName: 'ProdStack,', region: 'us-west-2' },
+      ]);
+      expect(rendered).toBe(
+        'a stack name that is not a plain identifier (us-east-1), ' +
+          'a stack name that is not a plain identifier (us-west-2)'
+      );
+    });
+  }
+
+  it('state orphan: the banner points at state list --long when a target is described, and only then', async () => {
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValue('n');
-
-    const out = await runState(['orphan', PLANTED_ENTRY.stackName]);
-
-    const banner = /removes cdkd's state record for \[(.*)\] only\./.exec(out)?.[1] ?? '';
-    expect(banner).toBe(
-      '"Planted, Victim (us-east-1)" (us-east-1), "Planted, Victim (us-east-1)" (us-west-2)'
+    // Two records of one stack whose regions both describe the same way.
+    mockListStacks.mockResolvedValue([
+      { stackName: 'S', region: 'us-east-1 (a)' },
+      { stackName: 'S', region: 'us-east-1 (b)' },
+    ]);
+    const described = await runState(['orphan', 'S']);
+    expect(described).toContain(
+      'AWS resources will NOT be deleted. ' + "'cdkd state list --long' shows the records as stored.\n"
     );
-    // The prompt renders the SAME string, so a forged entry would land in
-    // whichever of the two the operator is reading.
-    expect(readlineQuestion.mock.calls.at(-1)?.[0] ?? '').toContain(banner);
+
+    mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);
+    const plain = await runState(['orphan', 'S']);
+    expect(plain).toContain('AWS resources will NOT be deleted.\n');
+    expect(plain).not.toContain('state list --long');
   });
+
+  it('state refresh-observed: the prompt is preceded by the pointer when a target is described, and only then', async () => {
+    readlineQuestion.mockResolvedValue('n');
+    mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1 (a)' }]);
+    await runState(['refresh-observed', '--all']);
+    expect(lines(infoSpy)).toContain("'cdkd state list --long' shows the records as stored.");
+
+    infoSpy.mockClear();
+    mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);
+    await runState(['refresh-observed', '--all']);
+    expect(lines(infoSpy).join('\n')).not.toContain('state list --long');
+  });
+
+  it('state orphan: the cancelled line describes a non-plain name', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Decoy (x)', region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+    await runState(['orphan', 'Decoy (x)']);
+    // No pointer here: the banner above it already printed one.
+    expect(lines(infoSpy)).toContain(
+      'Cancelled removal of state for stack: a stack name that is not a plain identifier'
+    );
+    expect(lines(infoSpy).join('\n')).not.toContain('state list --long');
+  });
+
+  it('state orphan: the cancelled line carries no pointer for a plain name either', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+    await runState(['orphan', 'S']);
+    expect(lines(infoSpy)).toContain('Cancelled removal of state for stack: S');
+    expect(lines(infoSpy).join('\n')).not.toContain('state list --long');
+  });
+
+  it('state orphan --yes: the removal line carries the pointer for a described target, and only then', async () => {
+    // No banner prints under `--yes`, so this line is where the route to the
+    // records as stored has to be.
+    mockIsLocked.mockResolvedValue(false);
+    mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1 (a)' }]);
+    await runState(['orphan', 'S', '--yes']);
+    expect(lines(infoSpy)).toContain(
+      `✓ Removed state for stack: S (a region that is not a plain identifier). ${POINTER}`
+    );
+
+    infoSpy.mockClear();
+    mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);
+    await runState(['orphan', 'S', '--yes']);
+    expect(lines(infoSpy)).toContain('✓ Removed state for stack: S (us-east-1)');
+    expect(lines(infoSpy).join('\n')).not.toContain('state list --long');
+  });
+
+  it('state orphan, answered y: the removal line carries no pointer (the banner printed it)', async () => {
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('y');
+    mockListStacks.mockResolvedValue([
+      { stackName: 'S', region: 'us-east-1 (a)' },
+      { stackName: 'S', region: 'us-east-1 (b)' },
+    ]);
+    const out = await runState(['orphan', 'S']);
+    expect(out.match(/state list --long/g) ?? []).toHaveLength(1);
+    const removed = lines(infoSpy).filter((l) => l.startsWith('✓ Removed state for stack: '));
+    expect(removed).toHaveLength(2);
+    for (const line of removed) expect(line).not.toContain('state list --long');
+  });
+
+  it('a described NAME with a plain region switches the pointer on at both prompts', async () => {
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+    mockListStacks.mockResolvedValue([{ stackName: 'Decoy (x)', region: 'us-east-1' }]);
+    const banner = await runState(['orphan', 'Decoy (x)']);
+    expect(banner).toContain(`AWS resources will NOT be deleted. ${POINTER}\n`);
+
+    infoSpy.mockClear();
+    await runState(['refresh-observed', '--all']);
+    expect(lines(infoSpy)).toContain(POINTER);
+  });
+
+  for (const answer of ['n', 'y']) {
+    it(`state orphan (answer ${answer}): stdout and every logger line carry exactly ONE Destroy with: row`, async () => {
+      // Answering `y` too, with the logger lines: the removal line and the
+      // live-lock warning print after the prompt, just below the real row
+      // (the go-to-k/cdkd#4004 security review).
+      mockListStacks.mockResolvedValue([{ stackName: 'Decoy', region: WRAPPING_REGION }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({
+        owner: 'someone@host:1',
+        operation: 'deploy',
+        expiresAt: Date.now() + 60_000,
+      });
+      readlineQuestion.mockResolvedValue(answer);
+      const out = await runState(['orphan', 'Decoy']);
+      const logged = [...lines(infoSpy), ...lines(warnSpy)].join('\n');
+      const all = `${out}\n${logged}`;
+
+      expect(all.match(/Destroy with:/g) ?? []).toHaveLength(1);
+      expect(out).toContain('\nDestroy with: cdkd destroy Decoy\n');
+      expect(all).not.toContain('--all --force');
+      if (answer === 'y') {
+        expect(logged).toContain('✓ Removed state for stack: Decoy (a region that is not a plain identifier)');
+        expect(logged).toContain('Force-releasing a LIVE lock on Decoy (a region that is not a plain identifier)');
+      } else {
+        expect(logged).toContain('Cancelled removal of state for stack: Decoy');
+      }
+    });
+  }
 });
+
+/** The sentence a message adds when it described a value. */
+const POINTER = "'cdkd state list --long' shows the records as stored.";
+
+/** A region segment padded so its tail wraps to column 0 as a labelled row. */
+const WRAPPING_REGION = `x${' '.repeat(80)}Destroy with: cdkd destroy --all --force #`;

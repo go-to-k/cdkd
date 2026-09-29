@@ -194,7 +194,9 @@ describe('cdkd state show', () => {
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-    expect(message).toMatch(/No state found for stack 'Missing'/);
+    // The name in `displayIdent`'s boundary, never inside cdkd's own `'...'`
+    // (go-to-k/cdkd#3950): a plain name renders bare.
+    expect(message).toMatch(/No state found for stack Missing\./);
   });
 
   it('names a plain legacy name in its migrate command and holds a non-plain one (go-to-k/cdkd#3696)', async () => {
@@ -474,9 +476,14 @@ describe('cdkd state show', () => {
     // after it — but it stays JOINED to its own row. A forged row would be a
     // line that BEGINS with the injected text; there is none.
     expect(out.split('\n').filter((l) => l.startsWith('Fake: 1'))).toEqual([]);
-    expect(out).toContain('Stack: ForgeStack: Fake');
-    expect(out).toContain('  Region: us-east-1Fake: 1');
-    expect(out).toContain('  Parent: ParentStack: Fake (us-west-2Fake: 1), logical id: PLFake: 1');
+    // The IDENTIFIER rows take `displayIdent`'s boundary on top
+    // (go-to-k/cdkd#3179): the allowlist maps the newline to a space, and the
+    // value is quoted because sanitizing altered it.
+    expect(out).toContain('Stack: "Forge Stack: Fake"');
+    expect(out).toContain('  Region: "us-east-1 Fake: 1"');
+    expect(out).toContain(
+      '  Parent: "Parent Stack: Fake" ("us-west-2 Fake: 1"), logical id: "PL Fake: 1"'
+    );
     expect(out).toContain('  Type: AWS::SNS::TopicFake: 1');
     expect(out).toContain('  ProvisionedBy: sdkFake: 1');
     expect(out).toContain('  Dependencies: AFake: 1, B');
@@ -1552,7 +1559,10 @@ describe('cdkd state show', () => {
     expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     expect(message).toContain('only a legacy state record');
-    expect(message).toContain('PhysicalID: arn:forged');
+    // Beside the labelled `Migrate with:` line the name is DESCRIBED rather
+    // than shown (go-to-k/cdkd#3760), so the forged text never reaches it.
+    expect(message).toContain('A stack whose name is not a plain identifier');
+    expect(message).not.toContain('arn:forged');
   });
 
   it('emits a `{state, lock}` JSON object with --json', async () => {
@@ -1781,6 +1791,46 @@ describe('cdkd state show', () => {
       expect(out).toContain('Nested stack: Parent~Child');
     });
 
+    it('does not cut the longest legitimate child name in its header (stack-ref cap)', async () => {
+      // `displayStackName`, not `displayIdent`'s 255 default: a nested child's
+      // name runs to 1152 code points (go-to-k/cdkd#3179).
+      const LONG_ID = 'L'.repeat(1152 - 'Parent~'.length);
+      const child = `Parent~${LONG_ID}`;
+      expect(child).toHaveLength(1152);
+      mockListStacks.mockResolvedValue([{ stackName: 'Parent', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'Parent') {
+          return makeState({
+            stackName: 'Parent',
+            resources: {
+              [LONG_ID]: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: `cdkd-local::stack::${child}`,
+              }),
+            },
+          });
+        }
+        if (name === child) {
+          return makeState({
+            stackName: child,
+            parentStack: 'Parent',
+            parentLogicalId: LONG_ID,
+            parentRegion: 'us-east-1',
+          });
+        }
+        return null;
+      });
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'Parent', '--show-nested']);
+
+      // The header line itself. (The id here is past CloudFormation's own 255,
+      // so its `logical id:` row elsewhere is cut, correctly.)
+      const header = out.split('\n').find((l) => l.startsWith('Nested stack: ')) ?? '';
+      expect(header).toBe(`Nested stack: ${child}`);
+      expect(header).not.toContain('[cut:');
+    });
+
     it('a NEWLINE in a child name cannot forge a row in its header', async () => {
       // The header name is built as `<parent>~<logicalId>`, and the logical id
       // is a KEY of the parent's hand-editable `resources` map — so the flat
@@ -1816,7 +1866,10 @@ describe('cdkd state show', () => {
 
       // Unstripped, the header's own newline ends the row and `Stack: Fake`
       // begins a forged one that reads exactly like a top-level stack header.
-      expect(out).toContain('Nested stack: Parent~ChildStack: Fake');
+      // Since go-to-k/cdkd#3179 the header takes `displayStackName`'s boundary:
+      // the newline folds to a space and the altered name is quoted, so its
+      // own `Stack: Fake` cannot pass for this view's next header either.
+      expect(out).toContain('Nested stack: "Parent~Child Stack: Fake"');
       expect(out.split('\n').filter((l) => l.startsWith('Stack: Fake'))).toEqual([]);
     });
 

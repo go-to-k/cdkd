@@ -261,7 +261,7 @@ describe('cdkd state orphan', () => {
     expect(mockDeleteState).not.toHaveBeenCalled();
   });
 
-  it('renders a locked name in the identifier boundary, so pasting the sentence, a line or a clause runs nothing (go-to-k/cdkd#3436)', async () => {
+  it('describes a non-plain locked name, so pasting the sentence, a line or a clause runs nothing (go-to-k/cdkd#3436, go-to-k/cdkd#3760)', async () => {
     // The row used to quote the name by hand, `Stack '${displaySafe(...)}'`.
     // `asciiOnly` keeps `'`, `$` and `(`, so `x'$(touch OWNED) #` closed that
     // quote and the substitution ran when the sentence was pasted (measured by
@@ -279,8 +279,15 @@ describe('cdkd state orphan', () => {
     }
     withPasteDir((dir) => {
       for (const { value, message } of messages) {
-        expect(message, value).toContain(`Stack ${JSON.stringify(value)} (us-east-1) is locked`);
-        expect(message, value).not.toContain(`Stack '${value}'`);
+        // Described, not quoted, since go-to-k/cdkd#3760: this refusal sits in
+        // `state orphan`'s run, where a padded name in quotes could wrap into
+        // a counterfeit `Run:` row.
+        expect(message, value).toContain(
+          'A stack whose name is not a plain identifier (us-east-1) is locked'
+        );
+        // The HEAD never names it; the force-unlock command after `Run:` is
+        // the shared builder's, which shell-quotes an exact value.
+        expect(message.split(' Run: ')[0], value).not.toContain(value);
         expect(spansThatRun(message, dir), value).toEqual([]);
       }
     });
@@ -301,7 +308,7 @@ describe('cdkd state orphan', () => {
     expect(message).toContain(`Stack ${long} (us-east-1) is locked`);
   });
 
-  it('cuts a locked name ONE past the stack-ref cap, with the cut marked (go-to-k/cdkd#3436)', async () => {
+  it('describes a locked name ONE past the stack-ref cap rather than cutting it (go-to-k/cdkd#3436, go-to-k/cdkd#3760)', async () => {
     const over = 'q'.repeat(1153);
     mockListStacks.mockResolvedValue([{ stackName: over, region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(true);
@@ -311,8 +318,10 @@ describe('cdkd state orphan', () => {
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toContain('is locked');
     expect(message).not.toContain(over);
-    expect(message).toContain('q'.repeat(1152));
-    expect(message).toContain('more characters withheld]');
+    // Past the cap `isPasteableIdent` refuses it, so the head describes it,
+    // and the force-unlock command is withheld for the same length.
+    expect(message).toContain('A stack whose name is not a plain identifier (us-east-1)');
+    expect(message).not.toContain('cdkd force-unlock');
   });
 
   it('removes a locked stack when --force is set (and skips lock check)', async () => {
@@ -483,13 +492,15 @@ describe('cdkd state orphan', () => {
       expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
     });
 
-    it('passes the holder through unchanged — sanitization is NOT re-done here', async () => {
+    it('passes a plain holder through unchanged', async () => {
       // `LockManager.getLockInfo` sanitizes `owner` / `operation` at the source
-      // so all five readers inherit it (issue #2170 round 3). This reader must
-      // therefore NOT carry a second spelling of the rule — that asymmetry is
-      // what the source fix removed. The source-level fence lives in
-      // `tests/unit/state/lock-manager.test.ts`, where the real `getLockInfo`
-      // runs; a mock here would only be testing the mock.
+      // so all five readers inherit it (issue #2170 round 3), and this reader
+      // does not re-spell THAT rule. It adds a different one on top, deliberately:
+      // it prints beside `state orphan`'s labelled `Destroy with:` row, where a
+      // source-sanitized value keeping its interior spaces still wraps into a
+      // counterfeit row, so a value that is not identifier-shaped is described
+      // (go-to-k/cdkd#3760; the next case). A genuine `user@host:pid` owner and
+      // an operation name render as themselves, which this case pins.
       mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
       mockIsLocked.mockResolvedValue(false);
       mockGetLockInfo.mockResolvedValue({
@@ -501,9 +512,62 @@ describe('cdkd state orphan', () => {
       await runStateOrphan(['orphan', 'MyStack', '--yes']);
 
       const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warned).toContain('held by alice@host:1');
-      expect(warned).toContain('operation: deploy');
+      expect(warned).toContain('held by alice@host:1, operation: deploy.');
     });
+
+    it('describes a padded owner or operation, so neither can wrap into a counterfeit Destroy with: row (go-to-k/cdkd#3760)', async () => {
+      const wrap = `${' '.repeat(80)}Destroy with: cdkd destroy --all --force #`;
+      for (const [field, lock, expected] of [
+        [
+          'owner',
+          { owner: `alice@host:1${wrap}`, operation: 'deploy' },
+          'held by a lock owner that is not a plain identifier, operation: deploy.',
+        ],
+        [
+          'operation',
+          { owner: 'alice@host:1', operation: `deploy${wrap}` },
+          'held by alice@host:1, operation: a lock operation that is not a plain identifier.',
+        ],
+      ] as const) {
+        warnSpy.mockClear();
+        mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+        mockIsLocked.mockResolvedValue(false);
+        mockGetLockInfo.mockResolvedValue({ ...lock, expiresAt: Date.now() + 60_000 });
+
+        // eslint-disable-next-line no-await-in-loop
+        await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+        const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned, field).toContain(expected);
+        expect(warned, field).not.toContain('Destroy with:');
+        expect(warned, field).not.toContain('--all --force');
+      }
+    });
+
+    it('no pasted span of the live-lock warning runs, whatever the owner or operation carries', async () => {
+      const messages: Array<{ value: string; message: string }> = [];
+      for (const { value } of PASTE_PAYLOADS) {
+        for (const lock of [
+          { owner: value, operation: 'deploy' },
+          { owner: 'alice@host:1', operation: value },
+        ]) {
+          warnSpy.mockClear();
+          mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+          mockIsLocked.mockResolvedValue(false);
+          mockGetLockInfo.mockResolvedValue({ ...lock, expiresAt: Date.now() + 60_000 });
+          // eslint-disable-next-line no-await-in-loop
+          await runStateOrphan(['orphan', 'MyStack', '--yes']);
+          messages.push({ value, message: warnSpy.mock.calls.map((c) => String(c[0])).join('\n') });
+        }
+      }
+      withPasteDir((dir) => {
+        for (const { value, message } of messages) {
+          expect(message, value).toContain('Force-releasing a LIVE lock on MyStack (us-east-1)');
+          expect(message, value).not.toContain(value);
+          expect(spansThatRun(message, dir), value).toEqual([]);
+        }
+      });
+    }, 120_000);
 
     it('sanitizes the REGION too — it is an S3 key segment', async () => {
       // Round 4: the region was still hand-interpolated raw, one clause from a
@@ -522,7 +586,11 @@ describe('cdkd state orphan', () => {
       const warned = lines.find((l) => l.includes('Force-releasing'));
       expect(warned, 'the live-lock warning did not fire').toBeDefined();
       expect(warned).not.toContain('\n');
-      expect(warned).toContain('FORGED');
+      // Since go-to-k/cdkd#3760 a non-plain region beside this run's
+      // `Destroy with:` row is DESCRIBED rather than shown, so the planted
+      // text does not reach the line at all.
+      expect(warned).toContain('MyStack (a region that is not a plain identifier)');
+      expect(warned).not.toContain('FORGED');
     });
 
     it('withholds the still-running claim for an unnamed holder, keeping the rest', async () => {

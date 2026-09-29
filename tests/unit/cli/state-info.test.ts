@@ -7,6 +7,7 @@ import {
 import type { ResolvedStateBucket } from '../../../src/cli/config-loader.js';
 
 // Mock logger to suppress output during tests.
+const warnSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => ({
   // Issue #2280: the commands under test call this under --json; the mock
   // must export it or the import is `undefined` and the call throws.
@@ -15,7 +16,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: () => ({
       debug: vi.fn(),
@@ -419,6 +420,115 @@ describe('cdkd state info', () => {
     expect(out).toContain(
       'Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in'
     );
+  });
+
+  describe('a planted bootstrap marker renders inside its boundary (go-to-k/cdkd#3179)', () => {
+    // A marker KEY is an S3 key under `cdkd-bootstrap/` and its BODY is an
+    // object there, so anyone with `s3:PutObject` on the state bucket picks
+    // the region sliced out of the key and both names in the body. The rows
+    // go to stdout raw, so each value takes `displayIdent`'s boundary. The
+    // listing is URL-encoded as S3 returns it under `EncodingType: 'url'`.
+    function scriptMarker(region: string, body: string): void {
+      const key = `cdkd-bootstrap/${region}.json`;
+      mockS3Send.mockImplementation(async (command) => {
+        if (command instanceof GetBucketLocationCommand) return { LocationConstraint: undefined };
+        if (command instanceof ListObjectsV2Command) {
+          const prefix = (command.input.Prefix as string | undefined) ?? '';
+          return {
+            Contents: key.startsWith(prefix) ? [{ Key: encodeURIComponent(key) }] : [],
+          };
+        }
+        if (command instanceof GetObjectCommand) {
+          expect(command.input.Key).toBe(key);
+          return { Body: { transformToString: async () => body } };
+        }
+        throw new Error(`Unexpected command: ${command.constructor.name}`);
+      });
+    }
+    const marker = (assetBucket: string, containerRepo: string): string =>
+      JSON.stringify({
+        assetBucket,
+        containerRepo,
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      });
+
+    beforeEach(() => {
+      warnSpy.mockReset();
+      mockResolveWithSource.mockResolvedValue({ bucket: 'b', source: 'cli-flag' });
+    });
+
+    it('a region carrying a newline and a forged row stays on its own row, quoted', async () => {
+      scriptMarker('us-east-1\n  eu-west-1', marker('good-bucket', 'good-repo'));
+      const out = await runStateInfo(['info']);
+
+      expect(out.split('\n').filter((l) => l.startsWith('  eu-west-1'))).toEqual([]);
+      expect(out).toContain('  "us-east-1   eu-west-1": good-bucket / good-repo');
+    });
+
+    it('a body carrying the row separator cannot spoof the `: a / b` annotation', async () => {
+      scriptMarker('us-east-1', marker('evil / x\n  eu-west-1: a', 'repo (x)'));
+      const out = await runStateInfo(['info']);
+
+      expect(out.split('\n').filter((l) => l.startsWith('  eu-west-1'))).toEqual([]);
+      expect(out).toContain('  us-east-1: "evil / x   eu-west-1: a" / "repo (x)"');
+    });
+
+    it('a legitimate row is byte-identical', async () => {
+      scriptMarker(
+        'ap-northeast-1',
+        marker(
+          'cdkd-assets-123456789012-ap-northeast-1',
+          'cdkd-container-assets-123456789012-ap-northeast-1'
+        )
+      );
+      expect(await runStateInfo(['info'])).toContain(
+        '  ap-northeast-1: cdkd-assets-123456789012-ap-northeast-1 / cdkd-container-assets-123456789012-ap-northeast-1\n'
+      );
+    });
+
+    it('names a malformed marker by its key in a boundary, not inside cdkd quotes', async () => {
+      scriptMarker("x' ; touch OWNED #", '{ not json');
+      await runStateInfo(['info']);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(
+        `Skipping malformed/unreadable bootstrap marker ${JSON.stringify("cdkd-bootstrap/x' ; touch OWNED #.json")}: `
+      );
+      // Only the HEAD is this site's: the cause after `: ` is
+      // `parseBootstrapMarker`'s own text (`src/assets/asset-storage.ts`).
+      expect(warned).not.toContain("bootstrap marker 'cdkd-bootstrap/");
+    });
+
+    it('does not cut a legitimate 256-character repository name', async () => {
+      // An ECR repository name runs to 256 characters, one past
+      // `displayIdent`'s default cap.
+      const repo = 'r'.repeat(256);
+      scriptMarker('us-east-1', marker('good-bucket', repo));
+      const out = await runStateInfo(['info']);
+      expect(out).toContain(`  us-east-1: good-bucket / ${repo}\n`);
+      expect(out).not.toContain('[cut:');
+    });
+
+    it('does not cut a long legitimate marker key in the skip warning', async () => {
+      // An S3 key runs to 1024 bytes, past `displayIdent`'s default cap.
+      const region = 'a'.repeat(900);
+      scriptMarker(region, '{ not json');
+      await runStateInfo(['info']);
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(`bootstrap marker cdkd-bootstrap/${region}.json: `);
+      expect(warned).not.toContain('[cut:');
+    });
+
+    it('names a plain malformed marker key bare', async () => {
+      scriptMarker('us-east-1', '{ not json');
+      await runStateInfo(['info']);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(
+        'Skipping malformed/unreadable bootstrap marker cdkd-bootstrap/us-east-1.json: '
+      );
+    });
   });
 
   describe('cross-region state bucket (issue #1054)', () => {

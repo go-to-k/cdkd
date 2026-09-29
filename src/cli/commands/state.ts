@@ -1,6 +1,7 @@
 import {
   commandHole,
   pasteableCommand,
+  plainOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
 import { Command, Option } from 'commander';
@@ -29,7 +30,6 @@ import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend
 import { LockManager } from '../../state/lock-manager.js';
 import {
   displayIdent,
-  displaySafe,
   displayStackName,
   isPasteableIdent,
   safeMsg,
@@ -37,11 +37,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
-import {
-  UNRENDERABLE,
-  buildForceUnlockCommand,
-  formatLockExpiry,
-} from '../../state/lock-contention-message.js';
+import { buildForceUnlockCommand, formatLockExpiry } from '../../state/lock-contention-message.js';
 import {
   buildLockContentionMessage,
   type LockRecoveryContext,
@@ -218,19 +214,18 @@ interface ResourceDetail {
 }
 
 /**
- * Render `Stack` or `Stack (region)` for a line a terminal renders: a
- * CONFIRMATION PROMPT's sentence, and every `state list` text view -- the
- * default one-reference-per-line listing and the `--long` / `--tree` rows
- * (issue #3069). The unsanitized twin it replaced lost its last caller there.
+ * Render `Stack` or `Stack (region)` for a line a terminal renders: every
+ * `state list` text view -- the default one-reference-per-line listing and the
+ * `--long` / `--tree` rows (issue #3069) -- and every refusal, log line and
+ * warning in this file that names a record by its reference
+ * (go-to-k/cdkd#3179). The unsanitized twin it replaced lost its last caller.
  *
  * Both halves come from an S3 key segment (or, for a legacy record, a state
  * body), so both are attacker-influenced in exactly the way issue #2170 round
- * 4 found for the lock error sixty lines below this helper's callers: a
- * planted `\n` forged a whole line inside that sentence. A forged line in a
- * PROMPT is strictly worse than one in an error, because the sentence it
- * corrupts is the one the operator answers `y` to.
+ * 4 found for a lock error: a planted `\n` forged a whole line inside that
+ * sentence.
  *
- * BOTH halves go through `displayIdent`, not the bare `safe()` allowlist below
+ * BOTH halves go through `displayIdent`, not the bare `asciiOnly` allowlist
  * (issue #3164). The allowlist closes line FORGERY and nothing else: it is the
  * identity on printable ASCII, and this function's ` (` / `)` is cdkd's OWN
  * annotation of the line, so a planted 2-segment legacy key
@@ -239,20 +234,14 @@ interface ResourceDetail {
  * the genuine `ProdStack` in `us-east-1`. A `while read -r ref` cleanup loop —
  * the consumer the sanitization exists for — cannot tell the two apart, so it
  * acts on the reference the operator believes is real and the planted record
- * survives the sweep. The join in the two prompt callers is a second boundary
- * of the same kind: they `join(', ')`, which a name carrying `, ` forges an
- * extra entry in -- and quoting closes that, since a space is outside
- * `PLAIN_IDENT`.
+ * survives the sweep.
  *
- * A BARE `,` is NOT closed, and an earlier revision of this comment was wrong
- * to call it harmless: the formatter supplies the space that completes the
- * separator, so `ProdStack,` renders `ProdStack, (us-east-1)` and a two-target
- * list reads as THREE entries. Only `state refresh-observed` prints a count
- * beside its list; `state orphan`'s banner prints none, so there nothing on
- * screen contradicts the forged entry -- the worse of the two. Removing `,`
- * from `PLAIN_IDENT` would close it and was tried; it regresses a legitimate
- * IAM role ARN, whose role-name segment allows `[\w+=,.@-]`. Recorded on
- * go-to-k/cdkd#3179 rather than traded for that.
+ * The two confirmation prompts no longer render through this helper: they sit
+ * beside a labelled pasteable line, where a value that is not a plain
+ * identifier is DESCRIBED rather than shown ({@link describedStackRef},
+ * go-to-k/cdkd#3760). That also closes the joined-list forgery those prompts
+ * had -- `ProdStack,` beside the formatter's own ` (region)` read as an extra
+ * entry -- since a described value carries no `,` (go-to-k/cdkd#3179).
  *
  * `displayIdent` makes the boundary VISIBLE by JSON-quoting anything that is
  * not a plain identifier, so the row above reads `"ProdStack (us-east-1)"` and
@@ -264,10 +253,9 @@ interface ResourceDetail {
  * Every legitimate row is byte-identical, because `displayIdent` is the
  * identity on a plain identifier and CloudFormation stack names
  * (`Parent~Child` included) and AWS region codes all are — so no fixture, no
- * script's grep and no round-trip into `cdkd state show` changes. It keeps
- * `safe()`'s `UNRENDERABLE` fallback for a value sanitising leaves empty, since
- * an empty `()` would read as "no region" rather than "a region cdkd will not
- * print".
+ * script's grep and no round-trip into `cdkd state show` changes. A value
+ * sanitising leaves empty renders `UNRENDERABLE`, since an empty `()` would
+ * read as "no region" rather than "a region cdkd will not print".
  *
  * The NAME half passes `STACK_REF_MAX_CODE_POINTS` rather than taking
  * `displayIdent`'s 255 default, and that is load-bearing for the paragraph
@@ -277,12 +265,6 @@ interface ResourceDetail {
  * exceeds 255 and would be rendered CUT — a byte change on a legitimate row, in
  * the middle of a line `while read -r ref` consumes. The REGION half keeps the
  * default; an AWS region code is at most 25 characters.
- *
- * The consequence is taken at ALL SIX callers, the confirmation prompt
- * included, rather than at the listing alone: guarding one site and leaving
- * five is the per-site spelling `safe()`'s own comment below records having
- * failed twice. In the prompt a quoted spoof is the most valuable of the six —
- * that sentence is the one an operator answers `y` to.
  *
  * What the quoting is NOT: shell-safe. A JSON string literal is visually
  * indistinguishable from a shell DOUBLE-quoted argument, in which `$(...)`,
@@ -301,59 +283,59 @@ function formatStackRefSafe(ref: StackStateRef): string {
 }
 
 /**
- * One spelling of "this value came from an S3 key or a state record, and is
- * about to be interpolated into a message a terminal will render".
+ * A stack name or region cdkd's own `', '` joins into a list: `displayIdent`
+ * with `listMember`, so a value carrying a bare `,` is quoted rather than read
+ * as a separator (go-to-k/cdkd#3179). `(legacy)` is this file's own literal
+ * for a region-less record, never a value from a key.
  *
- * Call it for a stack name or a region. NOT every refusal in this file goes
- * through it, and this comment does not say which do -- `grep safe(` answers
- * it exactly. The sentence that used to sit here claimed all of them, and
- * three sites in `state destroy` / `state refresh-observed` disprove it by
- * interpolating a `listStacks()` region raw (go-to-k/cdkd#3027). That is the
- * same over-claiming shape `lock-manager.ts`'s twin helper records having got
- * wrong three times.
- *
- * It exists as one function rather than the expression repeated per site
- * because the failure this closes WAS the repeated form: issue #2772 guarded
- * the rendered rows and left the refusals, and the first cut of #3003 guarded
- * three refusals and left four more in these same two commands. A value
- * reaching a message is the population, not a list of call sites.
- *
- * `asciiOnly` because the population has a known charset — CloudFormation
- * constrains a stack name and AWS constrains a region, so the allowlist is a
- * no-op on every legitimate input while an S3 key admits any UTF-8. Free-form
- * text (a parser's own message, an AWS error) takes the denylist class
- * instead; `display-safe.ts`'s header draws that line.
- *
- * It is the WEAKER of this file's two spellings and stays so deliberately.
- * `formatStackRefSafe` above uses `displayIdent` instead, because it renders
- * cdkd's own ` (region)` annotation right beside the value and the allowlist
- * cannot stop a value from carrying that annotation itself (issue #3164).
- * Widening this helper is tracked as go-to-k/cdkd#3179 rather than done here,
- * for reasons that are per-SITE rather than uniform, so read that issue's
- * table rather than generalising from this paragraph: most of these sites are
- * REFUSALS, where the surrounding `'...'` is at least SOME boundary -- but not
- * all of them are, and `  Region: ${safe(...)}` in the `--long` view below has
- * no surrounding anything -- while `Run 'cdkd deploy <stack>'` sites are
- * COMMAND HINTS, where quoting is not this repo's answer at all:
- * `buildForceUnlockCommand` SUPPRESSES the whole command instead.
- *
- * `grep safe(` does NOT enumerate the class, in BOTH directions. Some sites
- * spell `displaySafe(..., { asciiOnly: true })` inline rather than calling this
- * helper (`warnOnLiveForeignLock` renders its own `stack (region)` that way,
- * inside the same `state orphan` output); others sanitise NOTHING
- * (`stateRefreshObservedCommand` interpolates raw `listStacks` values into its
- * refusals, including a third `cdkd deploy` hint); and `describeStateKey`
- * (`state-file-keys.ts`) renders the same shape from raw key segments.
- * go-to-k/cdkd#3179 enumerates them all; a grep of this helper does not.
+ * Every value a refusal or log line in this file names -- a stack name or a
+ * region out of `listStacks()`, a state body, or the operator's argv -- renders
+ * through `displayIdent`'s boundary and never inside cdkd's own `'...'`: the
+ * `asciiOnly` allowlist keeps `'`, `$`, `(` and `;`, so a value carrying `'`
+ * closed a hand-written quote and whatever followed ran when the sentence was
+ * pasted (go-to-k/cdkd#3950), and it keeps a space, so a value could carry
+ * cdkd's own ` (region)` annotation (go-to-k/cdkd#3179). A plain value renders
+ * bare and byte-identically.
  */
-function safe(value: string | undefined): string {
-  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+function listedStackName(stackName: string): string {
+  return displayIdent(stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS, listMember: true });
+}
+
+function listedRegion(region: string | undefined): string {
+  return region === undefined ? '(legacy)' : displayIdent(region, { listMember: true });
+}
+
+/**
+ * A target reference for a sentence printed BESIDE a labelled pasteable line
+ * (`state orphan`'s `Destroy with:` banner and prompt and every line of the
+ * same run, `state refresh-observed`'s prompt ahead of the legacy refusal's
+ * `Migrate with:`). `displayIdent`'s
+ * boundary is not enough there: it keeps interior spaces, so a padded name or
+ * region can WRAP on screen into a counterfeit labelled row. Each half is
+ * therefore shown only when `isPasteableIdent` admits it and DESCRIBED
+ * otherwise (go-to-k/cdkd#3760, option 1) -- which also means no rendered half
+ * carries a `,` into the joined list (go-to-k/cdkd#3179).
+ */
+function describedStackRef(ref: StackStateRef): string {
+  const name = plainOrDescribed(ref.stackName, 'stack name');
+  return ref.region ? `${name} (${plainOrDescribed(ref.region, 'region')})` : name;
+}
+
+/**
+ * The subject of a legacy-record refusal, which sits beside a labelled
+ * `Migrate with:` line: the name only when `isPasteableIdent` admits it, the
+ * same predicate the command's `plainIdent` gate applies, so the prose never
+ * names a value the command withholds (go-to-k/cdkd#3696, go-to-k/cdkd#3760).
+ */
+function legacyRecordSubject(stackName: string): string {
+  return isPasteableIdent(stackName)
+    ? `Stack ${stackName}`
+    : `A stack whose name is not a plain identifier (see 'cdkd state list --long')`;
 }
 
 /**
  * `state resources` / `state show` refusing a legacy region-less record. The
- * name is the operator's own positional, rendered through `safe` in the prose;
- * the `cdkd deploy` beside the labelled line takes `plainIdent`, as
+ * `cdkd deploy` beside the labelled line takes `plainIdent`, as
  * `refresh-observed`'s legacy refusal does (go-to-k/cdkd#3696), so all three
  * decide "may I name this target" by one predicate and explain a hole with the
  * gate's own reason.
@@ -363,7 +345,7 @@ function legacyRecordRefusal(stackName: string): Error {
     { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
   ]);
   return new Error(
-    `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
+    `${legacyRecordSubject(stackName)} has only a legacy state record without a region. ` +
       `A cdkd write migrates it to the region-scoped layout; re-run this command ` +
       `after it.` +
       withheldTargetClause(migrate, 'stack', 'cdkd deploy') +
@@ -372,57 +354,145 @@ function legacyRecordRefusal(stackName: string): Error {
 }
 
 /**
+ * The sentence a message adds when it DESCRIBED a value rather than showing it:
+ * a description is not an identity, so two records whose names or regions are
+ * both described read the same, and the operator needs the route to the
+ * records as stored.
+ */
+const STATE_LIST_POINTER = `'cdkd state list --long' shows the records as stored.`;
+
+/**
+ * A lock.json field (`owner`, `operation`) beside a labelled row: the value
+ * when it renders as itself through `displayIdent` -- an identifier-shaped
+ * token with no space, no quote and under the cap, which a host / pid owner is
+ * -- and a description otherwise. Not `plainOrDescribed`: `isPasteableIdent`
+ * refuses the `@` and `:` every genuine owner carries (go-to-k/cdkd#3760).
+ */
+function plainValueOrDescribed(value: string, what: string): string {
+  return displayIdent(value) === value ? value : `a ${what} that is not a plain identifier`;
+}
+
+/** Whether `describedStackRef` describes either half of `ref`. */
+function refIsDescribed(ref: StackStateRef): boolean {
+  // The same region test `describedStackRef` applies, so the two agree.
+  return !isPasteableIdent(ref.stackName) || (ref.region ? !isPasteableIdent(ref.region) : false);
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * `stack <name>` for a plain identifier, else a description that reads as a
+ * noun phrase in the same slot (`a stack whose name is not a plain
+ * identifier`) -- `plainOrDescribed` there would print `stack a stack name
+ * that is not a plain identifier`.
+ */
+function describedStackSubject(stackName: string): string {
+  return isPasteableIdent(stackName)
+    ? `stack ${stackName}`
+    : 'a stack whose name is not a plain identifier';
+}
+
+/**
+ * `--stack-region` named a region the stack has no record in. One spelling for
+ * the three commands that refuse it (`resolveSingleRegion`, `state orphan`;
+ * `state refresh-observed` reaches it through `resolveSingleRegion`).
+ *
+ * `described` is for `state orphan`, whose refusal for one stack can print
+ * below an earlier stack's `Destroy with:` row in the same run: there every
+ * value takes `plainOrDescribed`, because a padded region inside
+ * `displayIdent`'s quotes still wraps into a counterfeit row
+ * (go-to-k/cdkd#3760). Elsewhere no labelled row is near, and the candidate
+ * list keeps each region's identity.
+ */
+function noStateInRegionError(
+  stackName: string,
+  requestedRegion: string,
+  matches: readonly StackStateRef[],
+  opts?: { described?: boolean }
+): Error {
+  const described = opts?.described === true;
+  const subject = described
+    ? describedStackSubject(stackName)
+    : `stack ${displayStackName(stackName)}`;
+  const requested = described
+    ? plainOrDescribed(requestedRegion, 'region')
+    : displayIdent(requestedRegion);
+  const candidates = matches.map((r) =>
+    r.region === undefined
+      ? '(legacy)'
+      : described
+        ? plainOrDescribed(r.region, 'region')
+        : listedRegion(r.region)
+  );
+  // A described value is not identity: several non-plain candidates read the
+  // same, so say where the records can be seen as stored.
+  const anyDescribed =
+    described &&
+    [stackName, requestedRegion, ...matches.flatMap((r) => (r.region ? [r.region] : []))].some(
+      (v) => !isPasteableIdent(v)
+    );
+  return new Error(
+    `No state found for ${subject} in region ${requested}. ` +
+      `Available regions: ${candidates.join(', ')}.` +
+      (anyDescribed ? ` ${STATE_LIST_POINTER}` : '')
+  );
+}
+
+/**
+ * The stack has records in several regions and no `--stack-region` picked one.
+ * The candidate regions are raw S3 key segments from `listStacks()`
+ * (go-to-k/cdkd#3027); `remedy` is the caller's own sentence, and spells its
+ * placeholder as `commandHole`'s QUOTED hole -- a bare `<region> to` pasted
+ * from the sentence reads the file `region` and truncates one named `to`.
+ *
+ * The remedy goes on its OWN line, as it does after every hostile-name head
+ * in this file that names no ` (region)` right after the name: a JSON
+ * boundary makes a `'` or a `;` in the name literal but not a `$( )` or a
+ * backtick, so a pasted LINE holding both the name and a `--flag` remedy ran
+ * the name's substitution beside a command fragment (go-to-k/cdkd#3950). On
+ * its own line the name's display residual is all a span can run.
+ */
+function multipleRegionsError(
+  stackName: string,
+  matches: readonly StackStateRef[],
+  remedy: string
+): Error {
+  return new Error(
+    `Stack ${displayStackName(stackName)} has state in multiple regions: ` +
+      `${matches.map((r) => listedRegion(r.region)).join(', ')}.\n${remedy}`
+  );
+}
+
+/**
  * Resolve a stack name + optional region flag against the `listStacks` index
  * built up front. When a name resolves to multiple regions and the caller
  * didn't pin one, surface a clear error listing the candidates so the user
- * knows exactly which `--region X` to add.
+ * knows exactly which `--stack-region X` to add.
  */
 export function resolveSingleRegion(
   stackName: string,
   refs: StackStateRef[],
   requestedRegion: string | undefined
 ): StackStateRef {
-  // Sanitized for the same reason `formatStackRefSafe` above is, on the same
-  // values in the same file -- but through the bare allowlist rather than that
-  // helper's `displayIdent`. That is a scope judgement recorded on issue #3164
-  // and tracked as go-to-k/cdkd#3179, not an oversight: the sites below are
-  // REFUSALS, not the listing a `while read` loop consumes. None of THEM is a
-  // command hint (the two that are live at `stateResourcesCommand` /
-  // `stateShowCommand` below); what they do share with those is that a
-  // BOUNDARY, not a rejection, is the open question -- the candidate lists here
-  // `join(', ')`, so a region carrying `, ` reads as two candidates. A `region`
-  // here is a raw S3 KEY SEGMENT from `listStacks`, and an S3 key admits any
-  // UTF-8 including newline and ESC, so planting
-  // `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into these
-  // messages. `state list`'s formatted `--long` and `--tree` rows are sanitized
-  // too (issue #3069); the refusal a malformed record is most likely to reach
-  // had not been (issue #3003).
   const matches = refs.filter((r) => r.stackName === stackName);
   if (matches.length === 0) {
     throw new Error(
-      `No state found for stack '${safe(stackName)}'. Run 'cdkd state list' to see available stacks.`
+      `No state found for stack ${displayStackName(stackName)}.\n` +
+        `Run 'cdkd state list' to see available stacks.`
     );
   }
   if (requestedRegion) {
     const ref = matches.find((r) => r.region === requestedRegion);
-    if (!ref) {
-      // `(legacy)` is this function's own literal for a region-less record,
-      // never a value from a key, so it is not routed through the guard. It is
-      // all-ASCII, so passing it through would be a no-op rather than a
-      // hazard — the ternary exists for clarity about WHOSE text it is.
-      const seen = matches.map((r) => (r.region === undefined ? '(legacy)' : safe(r.region)));
-      throw new Error(
-        `No state found for stack '${safe(stackName)}' in region '${safe(requestedRegion)}'. ` +
-          `Available regions: ${seen.join(', ')}.`
-      );
-    }
+    if (!ref) throw noStateInRegionError(stackName, requestedRegion, matches);
     return ref;
   }
   if (matches.length === 1) return matches[0]!;
-  const regions = matches.map((r) => (r.region === undefined ? '(legacy)' : safe(r.region)));
-  throw new Error(
-    `Stack '${safe(stackName)}' has state in multiple regions: ${regions.join(', ')}. ` +
-      `Re-run with --stack-region <region> to disambiguate.`
+  throw multipleRegionsError(
+    stackName,
+    matches,
+    `Re-run with --stack-region ${commandHole('region')} to disambiguate.`
   );
 }
 
@@ -696,8 +766,9 @@ async function stateListCommand(options: {
     // newline or ESC, so a planted key could otherwise forge a `Lock:` line
     // inside another row -- and, since issue #3164, could spoof a genuine
     // header row by carrying this view's own ` (region)` annotation. The
-    // `  Region:` line below keeps the bare allowlist: it has no adjacent
-    // cdkd-authored annotation for a value to impersonate.
+    // `  Region:` line below takes the same boundary: with no surrounding
+    // quotes at all, a padded value could carry this view's next row on the
+    // same line (go-to-k/cdkd#3179).
     // `--json` is NOT sanitized at all: `JSON.stringify` escapes only C0,
     // `"`, `\` and lone surrogates, so DEL, the C1 range, the line and
     // paragraph separators, the bidi overrides and the zero-width characters
@@ -710,7 +781,7 @@ async function stateListCommand(options: {
           ...(detail.region ? { region: detail.region } : {}),
         })
       );
-      lines.push(`  Region: ${detail.region === null ? '(legacy)' : safe(detail.region)}`);
+      lines.push(`  Region: ${detail.region === null ? '(legacy)' : displayIdent(detail.region)}`);
       lines.push(
         `  Resources: ${
           detail.stateReadError !== null
@@ -930,7 +1001,7 @@ async function stateResourcesCommand(
     const stateResult = await setup.stateBackend.getState(stackName, ref.region);
     if (!stateResult) {
       throw new Error(
-        `No state found for stack '${safe(stackName)}' (${safe(ref.region)}) in s3://${setup.bucket}/${setup.prefix}/. ` +
+        `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
           `Run 'cdkd state list' to see available stacks.`
       );
     }
@@ -1151,6 +1222,20 @@ function formatAttributeValue(value: unknown): string {
 }
 
 /**
+ * A record IDENTIFIER field (a stack name, a region, a logical id) for a
+ * `state show` row: `displayIdent`'s boundary when it is a string, so a value
+ * cannot pass for cdkd's own annotation beside it, and
+ * {@link formatAttributeValue} for any other runtime type -- the field's
+ * declared type is an unchecked cast. A non-string renders as it always did: an
+ * object or array as its JSON, a number or boolean bare, neither able to spoof
+ * an annotation.
+ */
+function formatIdentField(value: unknown, maxCodePoints?: number): string {
+  if (typeof value !== 'string') return formatAttributeValue(value);
+  return displayIdent(value, maxCodePoints === undefined ? undefined : { maxCodePoints });
+}
+
+/**
  * Render a whole `Dependencies` row from a list that is an unchecked cast.
  *
  * It owns the `(none)` case as well as the values, so that no caller touches
@@ -1313,7 +1398,7 @@ async function stateShowCommand(
 
     if (!stateResult) {
       throw new Error(
-        `No state found for stack '${safe(stackName)}' (${safe(ref.region)}) in s3://${setup.bucket}/${setup.prefix}/. ` +
+        `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
           `Run 'cdkd state list' to see available stacks.`
       );
     }
@@ -1697,21 +1782,25 @@ function renderStateBlock(
   // read away. What that failure SAYS goes through `displaySafe`, so a value
   // that throws on coercion, or carries a control character, still yields the
   // schema message on one line (go-to-k/cdkd#2947).
-  lines.push(`Stack: ${formatAttributeValue(state.stackName)}`);
-  if (state.region) lines.push(`  Region: ${formatAttributeValue(state.region)}`);
+  //
+  // The IDENTIFIER rows go further, through `formatIdentField`: a stack name,
+  // a region and a logical id have a known charset, and the `Parent:` row
+  // prints cdkd's own ` (region)` and `, logical id:` annotations beside them,
+  // which a value keeping its interior spaces could carry itself
+  // (go-to-k/cdkd#3179).
+  lines.push(`Stack: ${formatIdentField(state.stackName, STACK_REF_MAX_CODE_POINTS)}`);
+  if (state.region) lines.push(`  Region: ${formatIdentField(state.region)}`);
   lines.push(`  Version: ${state.version}`);
   lines.push(`  Last Modified: ${formatLastModified(state.lastModified)}`);
   lines.push(`  Lock: ${formatLockSummary(lockInfo)}`);
   if (state.parentStack !== undefined) {
-    const parentRegionStr = state.parentRegion
-      ? ` (${formatAttributeValue(state.parentRegion)})`
-      : '';
+    const parentRegionStr = state.parentRegion ? ` (${formatIdentField(state.parentRegion)})` : '';
     const logicalIdStr =
       state.parentLogicalId !== undefined
-        ? `, logical id: ${formatAttributeValue(state.parentLogicalId)}`
+        ? `, logical id: ${formatIdentField(state.parentLogicalId)}`
         : '';
     lines.push(
-      `  Parent: ${formatAttributeValue(state.parentStack)}${parentRegionStr}${logicalIdStr}`
+      `  Parent: ${formatIdentField(state.parentStack, STACK_REF_MAX_CODE_POINTS)}${parentRegionStr}${logicalIdStr}`
     );
   }
 
@@ -1979,11 +2068,12 @@ function renderTreeWithChildren(root: CdkdStateStackTreeWithLock): string[] {
 function appendDescendants(children: readonly CdkdStateStackTreeWithLock[], out: string[]): void {
   for (const child of children) {
     out.push('');
-    // The bare strip, not the field guard: this name is not read from a record.
-    // `walkCdkdStateStackTree` builds it as `` `${parent}~${logicalId}` `` from a
-    // resources KEY, so it is always a string — and the logical id half is
-    // exactly why it still needs stripping.
-    out.push(`Nested stack: ${stripControlChars(child.stackName)}`);
+    // Not read from a record: `walkCdkdStateStackTree` builds it as
+    // `` `${parent}~${logicalId}` `` from a resources KEY, so it is always a
+    // string -- and the logical id half is attacker-chosen, so it takes
+    // `displayStackName`'s boundary and cap like every other stack name this
+    // view prints (go-to-k/cdkd#3179). A plain `Parent~Child` is unchanged.
+    out.push(`Nested stack: ${displayStackName(child.stackName)}`);
     out.push(...renderStateBlock(child.state, child.lock, false));
     appendDescendants(child.children, out);
   }
@@ -2087,7 +2177,14 @@ async function stateOrphanCommand(
     for (const stackName of stackArgs) {
       const stackRefs = refs.filter((r) => r.stackName === stackName);
       if (stackRefs.length === 0) {
-        logger.info(safeMsg`No state found for stack: ${stackName}, skipping`);
+        // Every line `state orphan` prints can sit beside a labelled
+        // `Destroy with:` row -- this one above the NEXT stack's banner -- so
+        // it names the stack only when it is a plain identifier
+        // (go-to-k/cdkd#3760).
+        logger.info(
+          safeMsg`No state found for stack: ${plainOrDescribed(stackName, 'stack name')}, skipping` +
+            (isPasteableIdent(stackName) ? '' : safeMsg`. ${STATE_LIST_POINTER}`)
+        );
         continue;
       }
 
@@ -2111,21 +2208,15 @@ async function stateOrphanCommand(
           : stackRefs;
 
       if (targets.length === 0) {
-        // Sanitized like the lock message below (issue #2170): every value
-        // here is an S3 key segment or a legacy state body, so a planted
-        // newline forged a line in this very sentence. The presence check
-        // above routes more traffic onto this branch.
-        const seen = stackRefs
-          .map((r) =>
-            r.region ? displaySafe(r.region, { asciiOnly: true }) || UNRENDERABLE : '(legacy)'
-          )
-          .join(', ');
-        throw new Error(
-          `No state found for stack ` +
-            `'${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' in ` +
-            `region '${displaySafe(options.stackRegion ?? '', { asciiOnly: true })}'. ` +
-            `Available regions: ${seen}.`
-        );
+        // Every value here is an S3 key segment or a legacy state body, so a
+        // planted newline forged a line in this very sentence (issue #2170);
+        // the shared builder's `described` mode shows each value only when it
+        // is a plain identifier, since in a multi-stack run this refusal can
+        // print below an earlier stack's `Destroy with:` row (go-to-k/cdkd#3760).
+        // The presence check above routes more traffic onto this branch.
+        throw noStateInRegionError(stackName, options.stackRegion ?? '', stackRefs, {
+          described: true,
+        });
       }
 
       // Lock check applies per region; --force bypasses it.
@@ -2140,25 +2231,29 @@ async function stateOrphanCommand(
             // as the reason to route the hint through the shared builder.
             // Bare word, not '(legacy)': the template below already wraps
             // `where` in parentheses, so the parenthesised form rendered
-            // `Stack 'X' ((legacy)) is locked.`
-            const where = target.region
-              ? displaySafe(target.region, { asciiOnly: true }) || UNRENDERABLE
-              : 'legacy';
+            // `Stack 'X' ((legacy)) is locked.` Described unless plain: a
+            // region keeping its spaces could carry this sentence's own
+            // `) is locked.` (go-to-k/cdkd#3179), or wrap into a counterfeit
+            // `Run:` row -- the only one on screen when the builder withholds
+            // the real command (go-to-k/cdkd#3760).
+            const where = target.region ? plainOrDescribed(target.region, 'region') : 'legacy';
             const recoveryCommand = buildForceUnlockCommand(stackName, target.region, {
               profile: options.profile,
               stateBucket: setup.bucket,
               statePrefix: options.statePrefix,
             });
-            // The name in `displayStackName`'s identifier boundary, never inside
-            // cdkd's own `'...'`: `asciiOnly` keeps `'`, `$` and `(`, so a name
-            // `x'$(touch OWNED) #` closed a hand-written quote and the rest ran
-            // when the sentence was pasted (go-to-k/cdkd#3436). The same head
-            // shape `buildLockContentionMessage` takes, at the same cap. Its
-            // double quotes do not stop `$(...)` or a backtick: the sentence is
-            // inert because ` (region)` follows the name, which aborts the span
-            // before expansion — selecting the name alone still runs those two.
+            // Never inside cdkd's own `'...'`: `asciiOnly` kept `'`, `$` and
+            // `(`, so a name `x'$(touch OWNED) #` closed a hand-written quote and
+            // the rest ran when the sentence was pasted (go-to-k/cdkd#3436). And
+            // not in `displayIdent`'s quotes either, as `buildLockContentionMessage`
+            // renders it: this refusal belongs to `state orphan`'s run, where a
+            // padded name kept inside quotes could wrap into a counterfeit `Run:`
+            // row -- the only one on screen when the builder withholds the real
+            // command -- so a name that is not a plain identifier is DESCRIBED,
+            // as the region beside it is (go-to-k/cdkd#3760). A plain name holds
+            // no shell metacharacter, so the pasted sentence is inert.
             throw new Error(
-              `Stack ${displayStackName(stackName)} (${where}) is locked. ` +
+              `${capitalize(describedStackSubject(stackName))} (${where}) is locked. ` +
                 // Through the shared builder rather than hand-interpolated
                 // (issue #2170): `target.region` comes from an S3 key segment
                 // or a legacy state body, so a raw `\n` here forged a second
@@ -2203,18 +2298,16 @@ async function stateOrphanCommand(
 
       // Single confirmation listing all regions being affected.
       if (!options.yes && !options.force) {
-        // Sanitised, like the lock error above runs on these SAME values
-        // (issue #2170 round 4) — see `formatStackRefSafe`. Both the warning
-        // banner and the question below render this one string, so a forged
-        // line would land in whichever the operator is reading. Since issue
-        // #3164 the helper also quotes a value that is not a plain identifier,
-        // which this site needs twice over: the `[...]` list is joined with
-        // `, `, so an unquoted name carrying `, ` forges an extra entry in the
-        // set of records the operator is agreeing to remove. A BARE `,` is a
-        // plain identifier and still slips through — the formatter supplies the
-        // space — which `formatStackRefSafe` records as a residual on
-        // go-to-k/cdkd#3179 rather than closing at the cost of IAM role ARNs.
-        const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
+        // Both the warning banner and the question below render this one
+        // string, beside the labelled `Destroy with:` line, so each half is
+        // shown only when it is a plain identifier and DESCRIBED otherwise
+        // (`describedStackRef`, go-to-k/cdkd#3760): a planted REGION padded to
+        // the terminal width wrapped into a counterfeit `Destroy with:` row
+        // two lines above the real one. A forged line in this sentence is
+        // worse than one in an error — it is the one the operator answers `y`
+        // to (issue #2170 round 4) — and a described half carries no `,`, so
+        // the `[...]` list cannot gain an entry either (go-to-k/cdkd#3179).
+        const targetList = targets.map((t) => describedStackRef(t)).join(', ');
         // `plainIdent` for the same reason as the legacy refusals in this file
         // (go-to-k/cdkd#3696): a labelled `Destroy with:` line names a target
         // only when it is a plain identifier, and a hole says why.
@@ -2223,7 +2316,11 @@ async function stateOrphanCommand(
         ]);
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
-            `AWS resources will NOT be deleted.\n` +
+            `AWS resources will NOT be deleted.` +
+            // A described half is not an identity: two records of one stack
+            // with non-plain regions read the same at the `y` prompt.
+            (targets.some(refIsDescribed) ? ` ${STATE_LIST_POINTER}` : '') +
+            `\n` +
             `Delete the actual resources instead with the command below.` +
             withheldTargetClause(destroyCmd, 'stack', 'cdkd destroy') +
             `\nDestroy with: ${destroyCmd.command}\n\n`
@@ -2232,7 +2329,11 @@ async function stateOrphanCommand(
           `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/?`
         );
         if (!ok) {
-          logger.info(safeMsg`Cancelled removal of state for stack: ${stackName}`);
+          logger.info(
+            // No pointer: this line only follows the banner, which printed it
+            // for any described target (`refIsDescribed` covers the name).
+            safeMsg`Cancelled removal of state for stack: ${plainOrDescribed(stackName, 'stack name')}`
+          );
           continue;
         }
       }
@@ -2262,7 +2363,18 @@ async function stateOrphanCommand(
           await setup.stateBackend.deleteLegacyState(stackName);
           await setup.lockManager.forceReleaseLock(stackName, undefined);
         }
-        logger.info(safeMsg`✓ Removed state for stack: ${formatStackRefSafe(target)}`);
+        // After the operator's `y`, just below the banner's `Destroy with:`
+        // row: `describedStackRef`, as the banner, since a padded region in
+        // `formatStackRefSafe`'s quotes still wraps (go-to-k/cdkd#3760).
+        // Under `--yes` / `--force` no banner printed the pointer, so this line
+        // carries it when it described anything. Interactively the banner
+        // already did, once for the whole run.
+        logger.info(
+          safeMsg`✓ Removed state for stack: ${describedStackRef(target)}` +
+            ((options.yes || options.force) && refIsDescribed(target)
+              ? safeMsg`. ${STATE_LIST_POINTER}`
+              : '')
+        );
       }
     }
   } finally {
@@ -2442,14 +2554,18 @@ async function stateDestroyCommand(
     // typos here would be more dangerous than helpful for a destroy command.
     const missing = stackArgs.filter((name) => !knownStackNames.has(name));
     if (missing.length > 0) {
+      // Each name through `listedStackName`, so one carrying `, ` or a bare `,`
+      // cannot read as two entries of this list (go-to-k/cdkd#3179).
       throw new Error(
-        `No state found for stack(s): ${missing.join(', ')}. ` +
+        `No state found for stack(s): ${missing.map(listedStackName).join(', ')}.\n` +
           `Run 'cdkd state list' to see available stacks.`
       );
     }
     const stackNames = stackArgs;
 
-    logger.info(safeMsg`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
+    logger.info(
+      safeMsg`Found ${stackNames.length} stack(s) to destroy: ${stackNames.map(listedStackName).join(', ')}`
+    );
 
     let totalErrors = 0;
     // Issue #1752: resources whose provider reported `{ outcome: 'skipped' }`
@@ -2510,24 +2626,31 @@ async function stateDestroyCommand(
         targets = refs.filter((r) => r.region === options.stackRegion || !r.region);
         if (targets.length === 0) {
           logger.warn(
-            safeMsg`Skipping ${stackName}: no state record matches --stack-region '${options.stackRegion}'`
+            // The name is followed by ` (`, which stops a pasted line before
+            // the name's `$( )` residual can run beside the `--flag`
+            // (go-to-k/cdkd#3950).
+            safeMsg`Skipping ${displayStackName(stackName)} (no state record matches ` +
+              safeMsg`--stack-region ${displayIdent(options.stackRegion)})`
           );
           continue;
         }
       } else if (refs.length === 1) {
         targets = refs;
       } else {
-        const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
-        throw new Error(
-          safeMsg`Stack '${stackName}' has state in multiple regions: ${regions}. ` +
-            `Use --stack-region <region> to pick one.`
+        // The candidate regions are raw `listStacks()` key segments
+        // (go-to-k/cdkd#3027); the shared builder gives each its boundary.
+        throw multipleRegionsError(
+          stackName,
+          refs,
+          `Use --stack-region ${commandHole('region')} to pick one.`
         );
       }
 
       for (const [refIndex, ref] of targets.entries()) {
-        logger.info(
-          safeMsg`\nPreparing to destroy stack: ${stackName}${ref.region ? ` (${ref.region})` : ''}`
-        );
+        // `ref.region` is an S3 key segment beside cdkd's own ` (region)`
+        // annotation, so it takes `formatStackRefSafe`'s boundary
+        // (go-to-k/cdkd#3179).
+        logger.info(safeMsg`\nPreparing to destroy stack: ${formatStackRefSafe(ref)}`);
 
         const stateResult = await setup.stateBackend.getState(
           stackName,
@@ -2535,7 +2658,9 @@ async function stateDestroyCommand(
         );
         if (!stateResult) {
           logger.warn(
-            safeMsg`No state found for stack ${stackName}${ref.region ? ` in ${ref.region}` : ''}, skipping`
+            safeMsg`No state found for stack ${displayStackName(stackName)}` +
+              (ref.region ? safeMsg` in ${displayIdent(ref.region)}` : '') +
+              ', skipping'
           );
           continue;
         }
@@ -2948,8 +3073,13 @@ async function listAssetStorageMarkers(s3: S3Client, bucket: string): Promise<As
         createdAt: marker.createdAt,
       });
     } catch (error) {
+      // The key through `displayIdent`'s boundary rather than inside cdkd's own
+      // `'...'`: it is an S3 key anyone with `s3:PutObject` on the bucket
+      // chooses (go-to-k/cdkd#3179, go-to-k/cdkd#3950). An S3 key is at most
+      // 1024 bytes, under the stack-ref cap, so a legitimate one is never cut.
       logger.warn(
-        safeMsg`Skipping malformed/unreadable bootstrap marker '${key}': ${(error as Error).message}`
+        safeMsg`Skipping malformed/unreadable bootstrap marker ` +
+          safeMsg`${displayIdent(key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })}: ${(error as Error).message}`
       );
     }
   }
@@ -3095,8 +3225,17 @@ async function stateInfoCommand(options: {
       lines.push('Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in');
     } else {
       lines.push(`Asset storage:   cdkd-assets mode in ${assetStorage.length} region(s)`);
+      // The region is sliced out of a bootstrap-marker KEY and the two names
+      // come from that marker's BODY, all three chosen by whoever can write the
+      // state bucket, and this text goes to stdout raw -- so each takes
+      // `displayIdent`'s boundary: no row forgery, no spoofed `: a / b`
+      // annotation (go-to-k/cdkd#3179). A bucket or repository name is a plain
+      // identifier, so a legitimate row is byte-identical; the repository takes
+      // the stack-ref cap because an ECR name runs to 256 characters.
       for (const entry of assetStorage) {
-        lines.push(`  ${entry.region}: ${entry.assetBucket} / ${entry.containerRepo}`);
+        lines.push(
+          `  ${displayIdent(entry.region)}: ${displayIdent(entry.assetBucket)} / ${displayIdent(entry.containerRepo, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })}`
+        );
       }
     }
     process.stdout.write(`${lines.join('\n')}\n`);
@@ -3227,35 +3366,12 @@ async function stateRefreshObservedCommand(
         return;
       }
     } else {
-      targets = [];
-      for (const stackName of stackArgs) {
-        const matches = stateRefs.filter((r) => r.stackName === stackName);
-        if (matches.length === 0) {
-          throw new Error(
-            `No state found for stack '${stackName}'. ` +
-              `Run 'cdkd state list' to see available stacks.`
-          );
-        }
-        if (options.stackRegion) {
-          const ref = matches.find((r) => r.region === options.stackRegion);
-          if (!ref) {
-            const seen = matches.map((r) => r.region ?? '(legacy)').join(', ');
-            throw new Error(
-              safeMsg`No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
-                safeMsg`Available regions: ${seen}.`
-            );
-          }
-          targets.push(ref);
-        } else if (matches.length === 1) {
-          targets.push(matches[0]!);
-        } else {
-          const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
-          throw new Error(
-            safeMsg`Stack '${stackName}' has state in multiple regions: ${regions}. ` +
-              `Re-run with --stack-region <region> to disambiguate.`
-          );
-        }
-      }
+      // `resolveSingleRegion` rather than the open-coded copy of it this loop
+      // used to carry, whose refusals interpolated the `listStacks()` regions
+      // raw and hand-quoted the name (go-to-k/cdkd#3027).
+      targets = stackArgs.map((stackName) =>
+        resolveSingleRegion(stackName, stateRefs, options.stackRegion)
+      );
     }
 
     const regionScoped = targets.flatMap((target) =>
@@ -3288,12 +3404,16 @@ async function stateRefreshObservedCommand(
     }
 
     if (!options.yes && !options.dryRun) {
-      // Sanitised for the same reason as the `state orphan` prompt above: this
-      // file's OTHER confirmation prompt, built from the same S3 key segments,
-      // joined the same way, and boundary-quoted by the same helper since
-      // issue #3164 -- here the joined list sits inside the sentence's own
-      // `(...)`, which an unquoted name carrying `)` could close early.
-      const targetList = targets.map(formatStackRefSafe).join(', ');
+      // The same rendering as the `state orphan` prompt above, for the same
+      // reason: this file's OTHER confirmation prompt, built from the same S3
+      // key segments (every name, under `--all`) and printed ahead of the
+      // legacy refusal's labelled `Migrate with:` line, where a padded
+      // regional sibling wrapped into a counterfeit one (go-to-k/cdkd#3760).
+      // A described half also cannot close the sentence's own `(...)` early.
+      const targetList = targets.map(describedStackRef).join(', ');
+      // A described half is not an identity, so name where the records can be
+      // seen as stored before the `y` is asked for.
+      if (targets.some(refIsDescribed)) logger.info(STATE_LIST_POINTER);
       const ok = await confirmRefresh(
         `Refresh observedProperties for ${targets.length} stack(s) (${targetList})?`
       );
@@ -3324,14 +3444,12 @@ async function stateRefreshObservedCommand(
         // enough for the prose: it folds a newline and quotes what it alters,
         // but keeps interior spaces, so `ProdStack` + padding + `Migrate
         // with: cdkd destroy --all --force #` still wraps into a counterfeit
-        // row. A name the predicate refuses is described, not shown — the
-        // clause below gives the gate's own reason, and `cdkd state list
-        // --long` shows it. `plainIdent` makes the command's verdict the
-        // same one, so the prose never names a value the command withholds.
-        const named = isPasteableIdent(target.stackName);
-        const subject = named
-          ? `Stack ${target.stackName}`
-          : `A stack whose name is not a plain identifier (see 'cdkd state list --long')`;
+        // row. A name the predicate refuses is described, not shown
+        // (`legacyRecordSubject`, shared with `state resources` / `state
+        // show`) — the clause below gives the gate's own reason. `plainIdent`
+        // makes the command's verdict the same one, so the prose never names
+        // a value the command withholds.
+        //
         // The command is LAST and UNWRAPPED on its own labelled line, named
         // only when the gate names it: not when it would not render EXACTLY
         // (an altered name can name a DIFFERENT stack, and `cdkd deploy`
@@ -3354,7 +3472,7 @@ async function stateRefreshObservedCommand(
         // sentences. Per-site judgement about what is safe HERE is the habit
         // this PR exists to end.
         throw new Error(
-          `${subject} has only a legacy state record without a region. Migrate it to ` +
+          `${legacyRecordSubject(target.stackName)} has only a legacy state record without a region. Migrate it to ` +
             `the region-scoped layout with any cdkd write, then re-run refresh-observed.` +
             // The clause comes from the GATE's own reason, not from a second
             // predicate here (M11 of the go-to-k/cdkd#3499 review). Keyed on
@@ -3477,16 +3595,26 @@ async function warnOnLiveForeignLock(
     if (!info) return;
     const expiryKnown = Number.isFinite(info.expiresAt);
     if (expiryKnown && info.expiresAt <= Date.now()) return;
-    const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+    // `describedStackRef`, not `formatStackRefSafe`: this line prints cdkd's
+    // own ` (region)` annotation beside two S3 key segments (go-to-k/cdkd#3179)
+    // inside `state orphan`'s run, beside its `Destroy with:` rows, where a
+    // padded value in quotes still wraps into a counterfeit row
+    // (go-to-k/cdkd#3760).
     const where = region
-      ? `${safeStack} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE})`
-      : `${safeStack} (legacy lock key)`;
-    // `owner` / `operation` arrive ALREADY sanitized: `getLockInfo` does it at
-    // the source so every reader inherits it (issue #2170 round 3). Re-doing it
-    // here would put a second spelling of the rule at one of five readers,
-    // which is the asymmetry that fix removed.
-    const owner = info.owner;
-    const operation = info.operation ? `, operation: ${info.operation}` : '';
+      ? describedStackRef({ stackName, region })
+      : `${plainOrDescribed(stackName, 'stack name')} (legacy lock key)`;
+    // `owner` / `operation` arrive SANITIZED from `getLockInfo` (issue #2170
+    // round 3), which folds control characters but keeps interior spaces and
+    // no cap. That is enough for the other readers; it is not enough for this
+    // one, which prints beside `state orphan`'s labelled `Destroy with:` row:
+    // an owner padded to the terminal width wraps into a counterfeit one. So
+    // this reader adds the #3760 rule on top -- a value shows only when it
+    // renders as itself through `displayIdent` (no space, no quote, under the
+    // cap), and is described otherwise. `alice@host:4242` and `deploy` show.
+    const owner = info.owner ? plainValueOrDescribed(info.owner, 'lock owner') : '';
+    const operation = info.operation
+      ? `, operation: ${plainValueOrDescribed(info.operation, 'lock operation')}`
+      : '';
     logger.warn(
       safeMsg`Force-releasing a LIVE lock on ${where} ` +
         // Agrees with `lock-contention-message.ts`: an unusable owner withholds
@@ -3530,12 +3658,15 @@ async function refreshObservedForStack(
   }
 ): Promise<{ refreshed: number; unsupported: number; failed: number; refusedBaseline: number }> {
   const { logger, lockRecovery } = opts;
+  // `stackName` is an S3 key segment under `--all` and `region` always is, so
+  // every line naming this record takes `formatStackRefSafe`'s boundary rather
+  // than cdkd's own ` (region)` beside a raw value (go-to-k/cdkd#3179).
+  const ref = formatStackRefSafe({ stackName, region });
 
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
     throw new Error(
-      safeMsg`No state found for stack '${stackName}' (${region}). ` +
-        `Run 'cdkd state list' to see available stacks.`
+      safeMsg`No state found for stack ${ref}. ` + `Run 'cdkd state list' to see available stacks.`
     );
   }
   const { state, etag, migrationPending } = result;
@@ -3577,7 +3708,7 @@ async function refreshObservedForStack(
   const entries = Object.entries(state.resources);
 
   if (entries.length === 0) {
-    logger.info(safeMsg`✓ ${stackName} (${region}): no resources in state, skipping`);
+    logger.info(safeMsg`✓ ${ref}: no resources in state, skipping`);
     return { refreshed: 0, unsupported: 0, failed: 0, refusedBaseline: 0 };
   }
 
@@ -3609,7 +3740,7 @@ async function refreshObservedForStack(
       else wouldUnsupported++;
     }
     logger.info(
-      safeMsg`Plan ${stackName} (${region}): ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported` +
+      safeMsg`Plan ${ref}: ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported` +
         (wouldRefuse > 0 ? safeMsg`, ${wouldRefuse} refused (import baseline refusal)` : '')
     );
     return {
@@ -3808,7 +3939,8 @@ async function refreshObservedForStack(
         } catch (err) {
           failed++;
           logger.warn(
-            safeMsg`  ✗ ${stackName}/${logicalId} (${resource.resourceType}): ` +
+            safeMsg`  ✗ ${displayStackName(stackName)}/${displayIdent(logicalId)} ` +
+              safeMsg`(${displayIdent(resource.resourceType)}): ` +
               safeMsg`readCurrentState failed — ${err instanceof Error ? err.message : String(err)}`
           );
         }
@@ -3834,7 +3966,7 @@ async function refreshObservedForStack(
     await stateBackend.saveState(stackName, region, state, saveOptions);
 
     logger.info(
-      safeMsg`✓ ${stackName} (${region}): ` +
+      safeMsg`✓ ${ref}: ` +
         safeMsg`${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed` +
         // Issue #2944: appended rather than always printed, so a stack with no
         // refused record renders byte-identically to the pre-v10 line.
@@ -3845,7 +3977,7 @@ async function refreshObservedForStack(
   } finally {
     await lockManager.releaseLock(stackName, region).catch((err) => {
       logger.warn(
-        safeMsg`Failed to release lock for ${stackName} (${region}): ${err instanceof Error ? err.message : String(err)}`
+        safeMsg`Failed to release lock for ${ref}: ${err instanceof Error ? err.message : String(err)}`
       );
     });
   }

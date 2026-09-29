@@ -1837,7 +1837,7 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
 
       expect(error).toBeDefined();
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-      expect(message).toContain("No state found for stack 'Gone'");
+      expect(message).toContain('No state found for stack Gone (us-east-1).');
       expect(message).not.toContain('TypeError');
     });
 

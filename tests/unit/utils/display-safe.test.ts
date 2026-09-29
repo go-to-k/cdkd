@@ -339,6 +339,37 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
   });
 });
 
+describe('displayIdent listMember option (go-to-k/cdkd#3179)', () => {
+  // A bare `,` stays in `PLAIN_IDENT` for IAM role ARNs, so it is a boundary
+  // character only where cdkd JOINS values with `', '`: there `ProdStack,`
+  // beside the formatter's own ` (region)` read as an extra entry.
+  it('quotes a list member carrying a bare comma', () => {
+    expect(displayIdent('ProdStack,', { listMember: true })).toBe('"ProdStack,"');
+    expect(displayIdent('us-east-1,eu-west-1', { listMember: true })).toBe(
+      '"us-east-1,eu-west-1"'
+    );
+  });
+
+  it('leaves the same value bare without the option, so a role ARN keeps its identity', () => {
+    expect(displayIdent('ProdStack,')).toBe('ProdStack,');
+    expect(displayIdent('arn:aws:iam::123456789012:role/cdkd-deploy+role,x=y')).toBe(
+      'arn:aws:iam::123456789012:role/cdkd-deploy+role,x=y'
+    );
+  });
+
+  it('renders every comma-free legitimate list member byte-identically', () => {
+    for (const v of ['ProdStack', 'Parent~Child', 'us-east-1', 'us-gov-west-1', 'cn-northwest-1']) {
+      expect(displayIdent(v, { listMember: true })).toBe(v);
+    }
+  });
+
+  it('keeps the cap and the cut marker outside the quotes', () => {
+    expect(displayIdent(`${'a'.repeat(5)},${'b'.repeat(5)}`, { maxCodePoints: 7, listMember: true })).toBe(
+      '"aaaaa,b" [cut: 4 more characters withheld]'
+    );
+  });
+});
+
 describe('displayIdent cannot be switched off by a hostile toString (issue #3164)', () => {
   it('reads the value ONCE, so a value that changes between reads cannot go bare', () => {
     // Two evaluations would sanitize the PADDED first reading and compare it

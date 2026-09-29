@@ -216,7 +216,10 @@ describe('cdkd state destroy', () => {
 
     await expect(runStateDestroy(['destroy', 'S', '--yes'])).rejects.toThrow();
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-    expect(message).toContain('us-east-1, eu-west-1 Forged: all clear.');
+    // Flattened AND bounded: `displayIdent` maps the newline to a space and
+    // quotes the altered value, so the planted text cannot read as the next
+    // candidate or as cdkd's own sentence (go-to-k/cdkd#3027).
+    expect(message).toContain('us-east-1, "eu-west-1 Forged: all clear".\nUse --stack-region');
     expect(message).not.toContain('\nForged');
   });
 
