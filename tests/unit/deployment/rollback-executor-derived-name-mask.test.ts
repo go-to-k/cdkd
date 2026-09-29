@@ -1291,6 +1291,30 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       'Function *** is in use by an event source mapping',
     ],
     [
+      // #4135: the name sits before the hash, not last.
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      { Name: OTHER_EXPR },
+      'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/bob-private-lb/50dc6c495c0c9188',
+      'Load balancer bob-private-lb is busy',
+      'Load balancer *** is busy',
+    ],
+    [
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      { Name: OTHER_EXPR },
+      'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/bob-private-tg/73e2d6bc24d8a067',
+      'Target group bob-private-tg is in use by a listener',
+      'Target group *** is in use by a listener',
+    ],
+    [
+      // #4135: the function name before an alias qualifier. The qualifier is
+      // not a needle, so the alias name in the message stays readable.
+      'AWS::Lambda::Alias',
+      { FunctionName: OTHER_EXPR, Name: 'production' },
+      'arn:aws:lambda:us-east-1:123456789012:function:bob-private-fn:production',
+      'Alias production of bob-private-fn serves production traffic',
+      'Alias production of *** serves production traffic',
+    ],
+    [
       'AWS::SecretsManager::Secret',
       { Name: OTHER_EXPR },
       'arn:aws:secretsmanager:us-east-1:123456789012:secret:bob-private-secret-AbC123',

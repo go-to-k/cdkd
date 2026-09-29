@@ -926,6 +926,10 @@ const OTHER_SPELLED_NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
  *   split on both `/` and `:` (SNS `...:<topic>`, Step Functions
  *   `...:stateMachine:<name>`, Lambda `...:function:<name>:<version>`), and
  *   for Secrets Manager that segment without its random `-XXXXXX` suffix;
+ * - where the name is NOT last (#4135): Lambda's segment after `function:`
+ *   (before a `:<version>` / `:<alias>` qualifier, which is then not taken)
+ *   and ELBv2's before its `/<hash>` (`loadbalancer/app/<name>/<hash>`,
+ *   `targetgroup/<name>/<hash>`);
  * - a `|` composite's last segment (`<poolId>|<Username>`).
  *
  * The last segment is the name for most types, otherwise an AWS-generated id,
@@ -941,13 +945,28 @@ function idNameSegments(id: string): string[] {
   }
   const arn = /^arn:[^:]*:([^:]*):[^:]*:[^:]*:(.+)$/.exec(id);
   if (arn !== null) {
-    const last = arn[2]!
-      .split(/[/:]/)
-      .reverse()
-      .find((part) => part !== '' && !/^\d+$/.test(part));
-    if (last !== undefined) {
-      segments.add(last);
-      if (arn[1] === 'secretsmanager') segments.add(last.replace(/-[A-Za-z0-9]{6}$/, ''));
+    const [, service, resource] = arn as unknown as [string, string, string];
+    // Services whose name is NOT the last segment (#4135): Lambda's comes
+    // before a `:<version>` / `:<alias>` qualifier, and taking the qualifier
+    // instead would mask a word like `live` while the name printed; ELBv2's
+    // sits before a `/<hash>`.
+    const positioned =
+      service === 'lambda'
+        ? /^function:([^:]+)/.exec(resource)
+        : service === 'elasticloadbalancing'
+          ? /^(?:loadbalancer\/(?:app|net|gwy)|targetgroup)\/([^/]+)\//.exec(resource)
+          : null;
+    if (positioned !== null) {
+      segments.add(positioned[1]!);
+    } else if (service !== 'lambda') {
+      const last = resource
+        .split(/[/:]/)
+        .reverse()
+        .find((part) => part !== '' && !/^\d+$/.test(part));
+      if (last !== undefined) {
+        segments.add(last);
+        if (service === 'secretsmanager') segments.add(last.replace(/-[A-Za-z0-9]{6}$/, ''));
+      }
     }
   }
   if (id.includes('|')) segments.add(id.slice(id.lastIndexOf('|') + 1));
