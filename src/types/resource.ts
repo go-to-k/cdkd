@@ -875,6 +875,17 @@ export interface ReadCurrentStateContext {
       attributes?: Record<string, unknown>;
     }
   >;
+  /**
+   * Set only by the deploy's `observedProperties` capture right after cdkd's
+   * own CREATE / UPDATE / replacement of this resource (issue #4112): the
+   * write succeeded, and the `properties` bag is the template it deployed. A
+   * provider whose reads are eventually consistent may then keep a DECLARED
+   * member its read still reports ABSENT, rather than freeze a lagging
+   * "absent" into the baseline.
+   * Absent on every other read (drift, import, a baseline refresh), where the
+   * live answer must be believed so a member that really is gone reports.
+   */
+  afterOwnWrite?: boolean;
 }
 
 /**

@@ -335,6 +335,30 @@ export function streamPolicyMatchesDeclared(
   }
 }
 
+/**
+ * The DECLARED policy member, in the shape a read that settled on it would
+ * emit. For a baseline captured right after cdkd's own write, when the read
+ * never confirmed that write (issue #4112). `undefined` unless declared and usable.
+ */
+export function declaredStreamPolicyMember(
+  desiredBlock: unknown
+): Record<string, unknown> | undefined {
+  const declared = readStreamPolicy(desiredBlock);
+  return declared.kind === 'usable'
+    ? reverseMapStreamPolicy(declared.document, desiredBlock)
+    : undefined;
+}
+
+/** The tag twin of {@link declaredStreamPolicyMember}. */
+export function declaredStreamTagsMember(
+  desiredBlock: unknown
+): Array<{ Key: string; Value: string }> | undefined {
+  const declared = readStreamTags(desiredBlock);
+  return declared.kind === 'usable'
+    ? [...declared.tags].map(([Key, Value]) => ({ Key, Value }))
+    : undefined;
+}
+
 /** The tag twin of {@link streamPolicyMatchesDeclared}, over USER tags. */
 export function streamTagsMatchDeclared(
   liveTags: ReadonlyArray<{ Key: string; Value: string }>,

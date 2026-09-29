@@ -899,6 +899,238 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       ]);
     });
 
+    describe("the baseline captured right after cdkd's own write (issue #4112)", () => {
+      const capture = (desired: unknown) =>
+        provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, tableProps(desired), {
+          afterOwnWrite: true,
+        });
+      const streamOf = (live: Record<string, unknown> | undefined) =>
+        live!['StreamSpecification'] as Record<string, unknown>;
+
+      beforeEach(() => {
+        setRereadDelays([0, 0]);
+      });
+
+      it('keeps BOTH declared members when the reads never confirm them, so drift reports nothing once they settle', async () => {
+        // The put and the tag call landed, but every read in the schedule lags.
+        const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        const desired = streamBlock('NEW_IMAGE', MEMBERS);
+        const baseline = await capture(desired);
+
+        // Three attempts each: the schedule was spent before the member was kept.
+        expect(
+          sent(GetResourcePolicyCommand).filter((cmd) => cmd.input.ResourceArn === streamArnOf(1))
+        ).toHaveLength(3);
+        expect(
+          sent(ListTagsOfResourceCommand).filter((cmd) => cmd.input.ResourceArn === streamArnOf(1))
+        ).toHaveLength(3);
+        expect(streamOf(baseline)).toEqual({
+          StreamEnabled: true,
+          StreamViewType: 'NEW_IMAGE',
+          ResourcePolicy: { PolicyDocument: DOC },
+          Tags: [{ Key: 'team', Value: 'data' }],
+        });
+
+        // The stream settles; a later drift read compares against the baseline.
+        aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
+        aws.tags.set(streamArnOf(1), new Map([['team', 'data']]));
+        const live = await read(desired);
+        expect(
+          calculateResourceDrift({ StreamSpecification: streamOf(baseline) }, live!, {
+            unionWalkObjects: true,
+          })
+        ).toEqual([]);
+        const debug = childLogger.debug.mock.calls.map(([message]) => String(message));
+        expect(debug.filter((line) => line.includes('the read still found no policy'))).toHaveLength(
+          1
+        );
+        expect(debug.filter((line) => line.includes('the read still found no tags'))).toHaveLength(
+          1
+        );
+      });
+
+      it('records a PRESENT answer that differs as read: AWS may store the document in another spelling', async () => {
+        const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
+        aws.tags.set(streamArnOf(1), new Map([['team', 'old']]));
+        const baseline = await capture(
+          streamBlock('NEW_IMAGE', {
+            ResourcePolicy: { PolicyDocument: OTHER_DOC },
+            Tags: MEMBERS.Tags,
+          })
+        );
+        expect(streamOf(baseline)['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+        expect(streamOf(baseline)['Tags']).toEqual([{ Key: 'team', Value: 'old' }]);
+        expect(
+          childLogger.debug.mock.calls.some(([message]) => String(message).includes('Kept the'))
+        ).toBe(false);
+      });
+
+      /** Every stream-arn read rejects with `error`; table-level reads pass through. */
+      function failStreamReads(error: Error): void {
+        const inner = mockSend.getMockImplementation()!;
+        mockSend.mockImplementation((cmd: unknown) => {
+          const arn = (cmd as { input?: { ResourceArn?: string } }).input?.ResourceArn;
+          if (arn === streamArnOf(1)) return Promise.reject(error);
+          return inner(cmd);
+        });
+      }
+
+      it.each([
+        ['a throttle', Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })],
+        [
+          'a 5xx',
+          Object.assign(new Error('We encountered an internal error'), {
+            name: 'InternalServerError',
+            $metadata: { httpStatusCode: 500 },
+          }),
+        ],
+        ['a socket reset', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+        [
+          'a not-found on the just-written stream',
+          new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} }),
+        ],
+      ])('keeps BOTH declared members when the reads fail TRANSIENTLY (%s)', async (_n, error) => {
+        primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        failStreamReads(error);
+        const baseline = await capture(streamBlock('NEW_IMAGE', MEMBERS));
+        expect(streamOf(baseline)['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+        expect(streamOf(baseline)['Tags']).toEqual(MEMBERS.Tags);
+        const debug = childLogger.debug.mock.calls.map(([message]) => String(message));
+        expect(debug.filter((line) => line.includes('the read failed transiently'))).toHaveLength(
+          2
+        );
+      });
+
+      it.each([
+        [
+          'an access denial (a role that may put but not read)',
+          Object.assign(
+            new Error(
+              'User: arn:aws:sts::111111111111:assumed-role/r/s is not authorized to perform: dynamodb:GetResourcePolicy'
+            ),
+            { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
+          ),
+        ],
+        [
+          'a validation error',
+          Object.assign(new Error('Invalid resource arn'), {
+            name: 'ValidationException',
+            $metadata: { httpStatusCode: 400 },
+          }),
+        ],
+      ])('omits BOTH members on a DETERMINISTIC failure (%s), as a drift read would', async (_n, error) => {
+        primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        failStreamReads(error);
+        const desired = streamBlock('NEW_IMAGE', MEMBERS);
+        const baseline = await capture(desired);
+        expect(streamOf(baseline)).toEqual({ StreamEnabled: true, StreamViewType: 'NEW_IMAGE' });
+        // The drift read fails the same way, so baseline and drift agree.
+        const live = await read(desired);
+        expect(
+          calculateResourceDrift({ StreamSpecification: streamOf(baseline) }, live!, {
+            unionWalkObjects: true,
+          })
+        ).toEqual([]);
+      });
+
+      it('records a PRESENT answer that differs when a later re-ask throws', async () => {
+        const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
+        aws.tags.set(streamArnOf(1), new Map([['team', 'old']]));
+        const throttled = Object.assign(new Error('Rate exceeded'), {
+          name: 'ThrottlingException',
+        });
+        const inner = mockSend.getMockImplementation()!;
+        const reads = new Map<unknown, number>();
+        mockSend.mockImplementation((cmd: unknown) => {
+          const arn = (cmd as { input?: { ResourceArn?: string } }).input?.ResourceArn;
+          if (arn === streamArnOf(1)) {
+            const kind = (cmd as object).constructor;
+            const n = (reads.get(kind) ?? 0) + 1;
+            reads.set(kind, n);
+            // The first answer is PRESENT and differs; the re-ask throws.
+            if (n > 1) return Promise.reject(throttled);
+          }
+          return inner(cmd);
+        });
+        const baseline = await capture(
+          streamBlock('NEW_IMAGE', {
+            ResourcePolicy: { PolicyDocument: OTHER_DOC },
+            Tags: MEMBERS.Tags,
+          })
+        );
+        expect(reads.get(GetResourcePolicyCommand)).toBe(2);
+        expect(reads.get(ListTagsOfResourceCommand)).toBe(2);
+        expect(streamOf(baseline)['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+        expect(streamOf(baseline)['Tags']).toEqual([{ Key: 'team', Value: 'old' }]);
+      });
+
+      it('keeps a declared EMPTY tag list as [] when the read fails transiently', async () => {
+        primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        failStreamReads(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+        const baseline = await capture(streamBlock('NEW_IMAGE', { Tags: [] }));
+        expect(streamOf(baseline)['Tags']).toEqual([]);
+      });
+
+      it('keeps a policy declared as a JSON STRING in its declared spelling', async () => {
+        primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        const declaredString = JSON.stringify(DOC, null, 2);
+        const baseline = await capture(
+          streamBlock('NEW_IMAGE', { ResourcePolicy: { PolicyDocument: declaredString } })
+        );
+        expect(streamOf(baseline)['ResourcePolicy']).toEqual({ PolicyDocument: declaredString });
+      });
+
+      it('believes a settled answer, and keeps nothing for a member the block does not declare usably', async () => {
+        const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
+        aws.tags.set(
+          streamArnOf(1),
+          new Map([
+            ['team', 'data'],
+            ['aws:cloudformation:stack-name', 'x'],
+          ])
+        );
+        const settled = await capture(streamBlock('NEW_IMAGE', MEMBERS));
+        expect(streamOf(settled)['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+        expect(streamOf(settled)['Tags']).toEqual(MEMBERS.Tags);
+        expect(
+          childLogger.debug.mock.calls.some(([message]) => String(message).includes('Kept the'))
+        ).toBe(false);
+
+        // An unusable policy (a state replay skipped it) and an undeclared tag
+        // list: nothing is read, and nothing is invented.
+        mockSend.mockClear();
+        const skipped = await capture(streamBlock('NEW_IMAGE', { ResourcePolicy: 'junk' }));
+        expect(streamOf(skipped)).toEqual({ StreamEnabled: true, StreamViewType: 'NEW_IMAGE' });
+        expect(
+          sent(GetResourcePolicyCommand).filter((cmd) => cmd.input.ResourceArn === streamArnOf(1))
+        ).toHaveLength(0);
+      });
+
+      it('keeps a declared EMPTY tag list as the empty list', async () => {
+        primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        const baseline = await capture(streamBlock('NEW_IMAGE', { Tags: [] }));
+        expect(streamOf(baseline)['Tags']).toEqual([]);
+      });
+
+      it('a read WITHOUT the flag still believes the last answer, so a member really gone stays drift', async () => {
+        primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        const desired = streamBlock('NEW_IMAGE', MEMBERS);
+        for (const context of [undefined, {}, { afterOwnWrite: false }]) {
+          const live = await provider.readCurrentState(
+            TABLE_NAME,
+            'T',
+            RESOURCE_TYPE,
+            tableProps(desired),
+            context
+          );
+          expect(streamOf(live)).toEqual({ StreamEnabled: true, StreamViewType: 'NEW_IMAGE' });
+        }
+      });
+    });
+
     it('drift --revert: the read-back as the previous side restores a deleted policy', async () => {
       const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
       aws.tags.set(streamArnOf(1), new Map([['team', 'data']]));
