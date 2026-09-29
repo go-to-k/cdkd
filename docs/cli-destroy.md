@@ -255,24 +255,42 @@ cannot honor the policy on that route. Snapshot manually, then re-run with
 The Cloud Control delete handler for `AWS::RDS::DBCluster` and
 `AWS::RDS::DBInstance` takes an untagged `rds-snapshot-<random>` final snapshot
 on every delete, because Cloud Control cannot tell it the policy. So a
-Cloud-Control-routed cluster or instance whose recorded policy is `Delete` is
-deleted with RDS `DeleteDBCluster` / `DeleteDBInstance`
-(`SkipFinalSnapshot=true`) instead, by `cdkd destroy`, `cdkd state destroy` and
-a deploy that removes it from the template. A `DeleteAutomatedBackups` in the
-template is sent with the delete.
+Cloud-Control-routed cluster or instance is deleted with RDS
+`DeleteDBCluster` / `DeleteDBInstance` (`SkipFinalSnapshot=true`) instead when
+its recorded policy is `Delete`, or when `--skip-final-snapshot` is passed. Both
+apply to `cdkd destroy`, `cdkd state destroy` and a deploy that removes it from
+the template; the flag also applies to a rollback of its creation. A
+`DeleteAutomatedBackups` in the template is sent with the delete.
 
 | Case | Delete |
 | --- | --- |
-| No `DeletionPolicy` | Through Cloud Control, which leaves its snapshot (CloudFormation's default for these types is `Snapshot`). |
+| No `DeletionPolicy` | CloudFormation's default, `Snapshot`, applies: refused on the Cloud Control route unless `--skip-final-snapshot` (see [Which policy cdkd reads](#which-policy-cdkd-reads)). |
 | A cluster that sets `GlobalClusterIdentifier` | Through Cloud Control, whose handler removes it from the global cluster first; cdkd warns that the snapshot is left behind. |
-| A replacement or rollback delete | Through Cloud Control, which leaves its snapshot. |
+| A replacement delete, or a rollback's delete of a replacement's new resource | Through Cloud Control, which leaves its snapshot, with or without `--skip-final-snapshot`. |
+| A rollback of its creation without `--skip-final-snapshot` | Through Cloud Control, which leaves its snapshot, whatever the policy. |
 
 ### Which policy cdkd reads
 
 The recorded `state.deletionPolicy` (schema v5+) is what the destroy paths
-consult. Pre-v5 state keeps the legacy plain-delete behavior until a redeploy
-records the attribute; `cdkd destroy` additionally falls back to the synth
-template's `DeletionPolicy` for pre-v5 state.
+consult; they never read the template's attribute. Pre-v5 state has none
+recorded until a redeploy records the attribute, so it takes the default
+below. A deploy that removes a resource from the template falls back to the
+template's `DeletionPolicy` when none is recorded.
+
+With no policy recorded, cdkd applies CloudFormation's default:
+
+| Resource | Default |
+| --- | --- |
+| `AWS::RDS::DBCluster` | `Snapshot` |
+| `AWS::RDS::DBInstance` without `DBClusterIdentifier` | `Snapshot` |
+| Every other resource, including a cluster-member `AWS::RDS::DBInstance` | `Delete` |
+
+So an L1 `CfnDBCluster` or standalone `CfnDBInstance` with no
+`DeletionPolicy` gets a final snapshot on destroy, on a deploy that removes
+it, and on a rollback of its creation. A Cloud-Control-routed one is refused
+like an explicit `Snapshot` (see above). Pass `--skip-final-snapshot` to
+delete without one. `UpdateReplacePolicy` defaults to `Delete` for every
+type, so replacement deletes are unaffected.
 
 ### Which deletes the policy covers
 
@@ -299,8 +317,8 @@ failing the update.
 
 `cdkd rollback --revert-failed` applies the same policy matrix: `Retain`
 leaves the resource in AWS, `Snapshot` snapshots then deletes (refusing what it
-cannot snapshot), and `RetainExceptOnCreate` / `Delete` / absent delete
-plainly. It only engages when AWS actually provisioned the resource — the
+cannot snapshot), `RetainExceptOnCreate` / `Delete` delete plainly, and absent
+takes CloudFormation's default (see [Which policy cdkd reads](#which-policy-cdkd-reads)). It only engages when AWS actually provisioned the resource — the
 action requires a recorded physical id AND a matching state record — so the
 policy is never applied to a resource that never existed.
 

@@ -98,6 +98,23 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # The fixture's DBInstance has no explicit instanceIdentifier, so CDK
 # auto-generates the physical name; resolve it from cdkd state after deploy.
 DB_INSTANCE_ID=""
+# Issue #4030: when this run began (UTC, second precision, the prefix AWS's
+# SnapshotCreateTime is compared on).
+RUN_START=""
+
+# Print the manual snapshots of instance $1 created at or after RUN_START, one
+# id per line. Fails (rc != 0) when the listing or a timestamp is unreadable,
+# so a caller cannot read an error as "none".
+this_run_instance_snapshots() { # usage: this_run_instance_snapshots <instance id>
+  local out
+  out=$(aws rds describe-db-snapshots --db-instance-identifier "$1" \
+    --snapshot-type manual --region "${REGION}" --output json) || return 1
+  echo "${out}" | jq -r --arg start "${RUN_START}" '
+    .DBSnapshots
+    | if all(.[]; (.SnapshotCreateTime // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(\\+00:00|Z)$"))
+      then .[] | select(.SnapshotCreateTime[0:19] >= $start) | .DBSnapshotIdentifier
+      else error("unreadable SnapshotCreateTime") end'
+}
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS DBInstance"
@@ -118,10 +135,14 @@ cleanup() {
     # --remove-protection: an aborted run can leave the phase-1
     # DeletionProtection=true live on the DBInstance (#1160 fixture
     # shape); idempotent when protection is already off.
+    # --skip-final-snapshot: the policy-less L1 resource defaults to Snapshot
+    # (#4030), and a cleanup snapshot would outlive the run (RUN_START is empty
+    # before the run) or be refused on a resource still `creating`.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --remove-protection \
+      --skip-final-snapshot \
       --yes
   fi
   if [ -n "${DB_INSTANCE_ID}" ]; then
@@ -136,6 +157,20 @@ cleanup() {
       --db-instance-identifier "${DB_INSTANCE_ID}" \
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
+  fi
+  # Issue #4030: the final snapshot this run's destroy takes of the
+  # policy-less instance (CloudFormation's default is Snapshot). Older
+  # snapshots are not this run's to delete.
+  if [ -n "${DB_INSTANCE_ID}" ] && [ -n "${RUN_START}" ]; then
+    if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${DB_INSTANCE_ID}"); then
+      echo "    WARN: cleanup could not list the manual snapshots of ${DB_INSTANCE_ID}; check for a leftover by hand" >&2
+      SNAPS_TO_CLEAN=""
+    fi
+    for snap in ${SNAPS_TO_CLEAN}; do
+      aws rds wait db-snapshot-available --db-snapshot-identifier "${snap}" --region "${REGION}"
+      aws rds delete-db-snapshot --db-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
+        && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+    done
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -167,7 +202,8 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
-echo "==> Phase 1: deploy with the local binary"
+RUN_START=$(date -u +%Y-%m-%dT%H:%M:%S)
+echo "==> Phase 1: deploy with the local binary (run start ${RUN_START}Z)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -187,6 +223,17 @@ if [ -z "${DB_INSTANCE_ID}" ] || [ "${DB_INSTANCE_ID}" = "null" ]; then
   exit 1
 fi
 echo "    resolved DBInstance identifier: ${DB_INSTANCE_ID}"
+
+# Issue #4030 premise: the L1 instance declares NO DeletionPolicy, so the
+# destroy must apply CloudFormation's default for a standalone instance,
+# Snapshot. A recorded policy would make the snapshot assertion below test
+# the explicit-policy path instead.
+INST_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.deletionPolicy // "absent"] | first // ""')
+if [ "${INST_DELETION_POLICY}" != "absent" ]; then
+  echo "FAIL: issue #4030 premise: the DBInstance records DeletionPolicy '${INST_DELETION_POLICY}', expected none" >&2
+  exit 1
+fi
+echo "    OK: DBInstance records no DeletionPolicy (issue #4030 premise)"
 
 # Resolve the expected VPC security group id from state so the assertion
 # can compare against the real generated id (no hardcoded sg-XXX needed).
@@ -401,6 +448,22 @@ else
   echo "FAIL: DBInstance still in unexpected state after destroy: ${INSTANCE_STATUS}" >&2
   exit 1
 fi
+
+# Issue #4030: with no DeletionPolicy, CloudFormation's default for a
+# standalone instance is Snapshot, so the destroy took exactly one final
+# snapshot named `<instance id>-final-<UTC timestamp>`. Before the fix it
+# took none. Cleanup deletes it.
+if ! FINAL_SNAPSHOTS=$(this_run_instance_snapshots "${DB_INSTANCE_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${DB_INSTANCE_ID}" >&2
+  exit 1
+fi
+FINAL_COUNT=$(printf '%s\n' "${FINAL_SNAPSHOTS}" | grep -c -- "^${DB_INSTANCE_ID}-final-[0-9]\{8\}-[0-9]\{6\}$" || true)
+OTHER_SNAPSHOTS=$(printf '%s\n' "${FINAL_SNAPSHOTS}" | grep -v -- "^${DB_INSTANCE_ID}-final-" | grep -v '^$' || true)
+if [ "${FINAL_COUNT}" != "1" ] || [ -n "${OTHER_SNAPSHOTS}" ]; then
+  echo "FAIL: destroying the policy-less ${DB_INSTANCE_ID} took ${FINAL_COUNT} cdkd final snapshot(s), expected 1 (CloudFormation's default DeletionPolicy is Snapshot; issue #4030); this run's snapshots: $(printf '%s ' ${FINAL_SNAPSHOTS})" >&2
+  exit 1
+fi
+echo "    OK: destroy took the final snapshot $(printf '%s' "${FINAL_SNAPSHOTS}") (issue #4030; cleanup deletes it)"
 
 echo ""
 echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #1160 reset-on-removal ==="

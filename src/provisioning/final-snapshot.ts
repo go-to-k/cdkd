@@ -75,6 +75,34 @@ export const PRE_DELETE_SNAPSHOT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The `DeletionPolicy` a delete must honor: the recorded one, or, when none
+ * is recorded, CloudFormation's DEFAULT (issue #4030). That default is
+ * `Delete` for every type except `AWS::RDS::DBCluster` and an
+ * `AWS::RDS::DBInstance` without `DBClusterIdentifier`, where it is
+ * `Snapshot` (CloudFormation Template Reference, "DeletionPolicy attribute").
+ *
+ * DeletionPolicy ONLY: `UpdateReplacePolicy` defaults to `Delete` for every
+ * type, so a replacement delete never reads this. Applied where a delete
+ * CONSUMES the policy, never where it is recorded: the recorded value is what
+ * `cdkd diff` compares against the template's attribute.
+ */
+export function effectiveDeletionPolicy<P extends string>(
+  resourceType: string,
+  recorded: P | undefined,
+  properties: Record<string, unknown> | undefined
+): P | 'Snapshot' | undefined {
+  if (recorded !== undefined) return recorded;
+  if (resourceType === 'AWS::RDS::DBCluster') return 'Snapshot';
+  if (
+    resourceType === 'AWS::RDS::DBInstance' &&
+    properties?.['DBClusterIdentifier'] === undefined
+  ) {
+    return 'Snapshot';
+  }
+  return undefined;
+}
+
+/**
  * How a `Snapshot`-policy delete of a given (resourceType, routing layer) is
  * carried out — or why it cannot be.
  *

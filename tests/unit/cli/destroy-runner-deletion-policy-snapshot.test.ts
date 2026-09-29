@@ -38,9 +38,18 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const mockCreatePreDeleteFinalSnapshot = vi.hoisted(() => vi.fn());
+const mockCcRoutedFinalSnapshotError = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/provisioning/final-snapshot.js', async () => {
-  const actual = await vi.importActual('../../../src/provisioning/final-snapshot.js');
-  return { ...actual, createPreDeleteFinalSnapshot: mockCreatePreDeleteFinalSnapshot };
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/final-snapshot.js')
+  >('../../../src/provisioning/final-snapshot.js');
+  // The real refusal, observed: a case can pin WHICH error refused the delete.
+  mockCcRoutedFinalSnapshotError.mockImplementation(actual.ccRoutedFinalSnapshotError);
+  return {
+    ...actual,
+    createPreDeleteFinalSnapshot: mockCreatePreDeleteFinalSnapshot,
+    ccRoutedFinalSnapshotError: mockCcRoutedFinalSnapshotError,
+  };
 });
 
 vi.mock('../../../src/utils/live-renderer.js', () => ({
@@ -137,11 +146,60 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 
-  it('policy absent (pre-v5 state) — plain delete, no snapshot machinery', async () => {
-    const state = makeState({ Db: res() });
+  it('policy absent on a type whose CFn default is Delete — plain delete, no snapshot machinery', async () => {
+    const state = makeState({ Q: res({ resourceType: 'AWS::SQS::Queue' }) });
     await runDestroyForStack('TestStack', state, makeCtx());
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
     expect(mockCreatePreDeleteFinalSnapshot).not.toHaveBeenCalled();
+  });
+
+  describe('issue #4030: an absent policy is CloudFormation default Snapshot for RDS', () => {
+    it.each([
+      ['a standalone DBInstance', res()],
+      ['a DBCluster', res({ resourceType: 'AWS::RDS::DBCluster' })],
+    ])('%s: threads a generated finalSnapshotIdentifier', async (_label, resource) => {
+      const state = makeState({ Db: resource });
+      const result = await runDestroyForStack('TestStack', state, makeCtx());
+      expect(result.errorCount).toBe(0);
+      expect(deleteContextArg()['finalSnapshotIdentifier']).toMatch(/^phys-id-final-/);
+    });
+
+    it('a cluster-member DBInstance keeps the plain delete (its CFn default is Delete)', async () => {
+      const state = makeState({ Db: res({ properties: { DBClusterIdentifier: 'c1' } }) });
+      await runDestroyForStack('TestStack', state, makeCtx());
+      expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+    });
+
+    it('an explicit Delete keeps the plain delete', async () => {
+      const state = makeState({ Db: res({ deletionPolicy: 'Delete' }) });
+      await runDestroyForStack('TestStack', state, makeCtx());
+      expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+    });
+
+    it('--skip-final-snapshot opts out, and says so to the provider (issue #4029)', async () => {
+      const state = makeState({ Db: res() });
+      await runDestroyForStack('TestStack', state, makeCtx({ skipFinalSnapshot: true }));
+      expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+      expect(deleteContextArg()['skipFinalSnapshot']).toBe(true);
+    });
+
+    it('without --skip-final-snapshot the context carries no opt-out', async () => {
+      const state = makeState({ Db: res() });
+      await runDestroyForStack('TestStack', state, makeCtx());
+      expect(deleteContextArg()).not.toHaveProperty('skipFinalSnapshot');
+    });
+
+    it('cc-api-routed: refused with the Cloud Control final-snapshot error, no delete', async () => {
+      const state = makeState({ Db: res({ provisionedBy: 'cc-api' }) });
+      const result = await runDestroyForStack('TestStack', state, makeCtx());
+      expect(result.errorCount).toBe(1);
+      expect(mockProviderDelete).not.toHaveBeenCalled();
+      expect(mockCcRoutedFinalSnapshotError).toHaveBeenCalledWith(
+        'Db',
+        'AWS::RDS::DBInstance',
+        '--skip-final-snapshot'
+      );
+    });
   });
 
   it('issue #3993: threads the recorded DeletionPolicy into the DeleteContext', async () => {

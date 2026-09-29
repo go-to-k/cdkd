@@ -75,6 +75,7 @@ import {
   buildFinalSnapshotIdentifier,
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
+  effectiveDeletionPolicy,
   finalSnapshotMechanism,
   unsupportedFinalSnapshotError,
   type PreDeleteSnapshotClients,
@@ -1429,8 +1430,13 @@ export function classifyRollbackOp(
     }
     // The CURRENT record's DeletionPolicy governs the rollback delete
     // (issue #1358): `Retain` keeps the resource (orphan), `Snapshot`
-    // snapshots it first, everything else plain-deletes.
-    const policy = current.deletionPolicy;
+    // snapshots it first, everything else plain-deletes. Absent is
+    // CloudFormation's default (issue #4030).
+    const policy = effectiveDeletionPolicy(
+      current.resourceType,
+      current.deletionPolicy,
+      current.properties
+    );
     if (policy === 'Retain') return 'orphan-retain';
     if (policy === 'Snapshot') return 'delete-with-final-snapshot';
     return 'delete';
@@ -1576,8 +1582,13 @@ export function classifyFailedOp(
     // "the CREATE failed" is not a licence to ignore the user's Retain /
     // Snapshot. CloudFormation applies the policy to a failed create's
     // rollback delete too; `RetainExceptOnCreate` exists precisely to opt
-    // OUT of that for `Retain`, and it keeps deleting here.
-    const policy = current.deletionPolicy;
+    // OUT of that for `Retain`, and it keeps deleting here. Absent is
+    // CloudFormation's default (issue #4030).
+    const policy = effectiveDeletionPolicy(
+      current.resourceType,
+      current.deletionPolicy,
+      current.properties
+    );
     if (policy === 'Retain') return 'orphan-failed-create-retain';
     if (policy === 'Snapshot') return 'delete-failed-create-with-final-snapshot';
     return 'delete-failed-create';
@@ -2818,6 +2829,7 @@ async function replaySingle(
           {
             expectedRegion: ctx.region,
             ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+            ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
           }
         );
         throwIfDeleteSkipped(
@@ -4347,6 +4359,7 @@ export async function replayFailedOperations(
             {
               expectedRegion: ctx.region,
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+              ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
             }
           );
           // Issue #1762: the partially-created resource is still there, so

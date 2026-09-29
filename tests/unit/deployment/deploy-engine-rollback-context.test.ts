@@ -172,6 +172,9 @@ describe('DeployEngine rollback context threading (#1363)', () => {
     );
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
     expect(mockCreatePreDeleteFinalSnapshot).not.toHaveBeenCalled();
+    // Issue #4029: the opt-out reaches the provider, so a Cloud Control-routed
+    // RDS delete stays off the registry handler that snapshots on its own.
+    expect(deleteContextArg()['skipFinalSnapshot']).toBe(true);
   });
 
   it('threads skipFinalSnapshot: false — the rollback delete DOES snapshot (opposite polarity)', async () => {
@@ -182,6 +185,7 @@ describe('DeployEngine rollback context threading (#1363)', () => {
     expect(deleteContextArg()['finalSnapshotIdentifier']).toMatch(
       /^phys-target-final-\d{8}-\d{6}$/
     );
+    expect(deleteContextArg()).not.toHaveProperty('skipFinalSnapshot');
   });
 
   it('skipFinalSnapshot: true also reaches the pre-delete snapshot types', async () => {

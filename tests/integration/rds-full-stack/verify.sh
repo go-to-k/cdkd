@@ -270,8 +270,9 @@ if [ "${DB_INSTANCE_PROVISIONED_BY}" != "cc-api" ]; then
   exit 1
 fi
 echo "    OK: DBInstance is provisionedBy=cc-api (issue 3993 premise)"
-# The fix applies to a RECORDED `DeletionPolicy: Delete` only; an absent one
-# keeps the Cloud Control handler's snapshot on purpose.
+# Without --skip-final-snapshot the fix applies to a RECORDED
+# `DeletionPolicy: Delete` only; an absent one is CloudFormation's `Snapshot`
+# default, which the Cloud Control route refuses (#4030).
 DB_INSTANCE_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.deletionPolicy // "absent"] | first // ""')
 if [ "${DB_INSTANCE_DELETION_POLICY}" != "Delete" ]; then
   echo "FAIL: issue 3993 premise: the DBInstance records DeletionPolicy '${DB_INSTANCE_DELETION_POLICY}', expected 'Delete'" >&2

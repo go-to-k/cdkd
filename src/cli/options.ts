@@ -1469,7 +1469,9 @@ export const destroyOptions = [
 export const skipFinalSnapshotOption = new Option(
   '--skip-final-snapshot',
   'Delete resources whose DeletionPolicy (or, on replacements, UpdateReplacePolicy) is ' +
-    "'Snapshot' WITHOUT creating the final snapshot the policy promises (DATA LOSS — " +
+    "'Snapshot' — including an RDS DB cluster or standalone DB instance with no " +
+    "DeletionPolicy, whose CloudFormation default is 'Snapshot' — WITHOUT creating " +
+    'the final snapshot the policy promises (DATA LOSS — ' +
     'explicit opt-out of CloudFormation parity). By default cdkd creates the final ' +
     'snapshot for every CloudFormation-supported type (RDS DBInstance / DBCluster, ' +
     'Neptune / DocDB clusters, ElastiCache CacheCluster / ReplicationGroup, Redshift ' +
