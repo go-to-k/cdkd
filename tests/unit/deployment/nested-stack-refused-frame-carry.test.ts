@@ -5,9 +5,11 @@
  * its service to an intrinsic part), and a frame whose non-literal part sits
  * OUTSIDE the token -- so a 1-3 character secret in either persisted in
  * plaintext in the child, the parent's row (for the second), and a grandchild's
- * log lines.
+ * log lines. Issue [#3306](https://github.com/go-to-k/cdkd/issues/3306) carries
+ * the three shapes that fix still refused: a token inside a nested part, in a
+ * used `Fn::Sub` variable, or inside an `Fn::If` around the frame.
  *
- * Every case here but the five hand-built records drives the REAL
+ * Every case here but the hand-built records drives the REAL
  * resolver: the fix certifies on what the
  * resolver recorded while resolving the parameter's own `Fn::Join` / `Fn::Sub`
  * object (its substitution, and the verdict that substitution took), so a
@@ -74,6 +76,11 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
           return { Parameter: { Value: 'q7', Type: 'SecureString' } };
         }
         if (name === '/other') return { Parameter: { Value: 'q7', Type: 'SecureString' } };
+        // A SecureString whose value is itself reference text (issue #3306's
+        // two-stage shape): the object's final pass resolves it again.
+        if (name === '/app/ref') {
+          return { Parameter: { Value: '{{resolve:ssm:/app/pin}}', Type: 'SecureString' } };
+        }
         // A PUBLIC parameter holding the same two characters.
         if (name === '/app/prod') return { Parameter: { Value: 'q7', Type: 'String' } };
         // No `Type` first (unclassifiable: secret for that read, never cached),
@@ -123,7 +130,10 @@ beforeEach(() => {
   resetAccountInfoCache();
 });
 
-/** A template declaring `values`' keys as String parameters, and the values bound. */
+/**
+ * A template declaring `values`' keys as String parameters, the values bound,
+ * and two conditions.
+ */
 function contextFor(
   values: Record<string, string>,
   bag: RecordedSecretValues,
@@ -136,6 +146,8 @@ function contextFor(
     } as CloudFormationTemplate,
     resources: {},
     parameters: values,
+    // For the `Fn::If` cases (issue #3306); no other case names a condition.
+    conditions: { On: true, Off: false },
     recordedSecretValues: bag,
     ...(inheritedSecrets ? { inheritedSecrets } : {}),
   };
@@ -397,28 +409,191 @@ describe('issue #3156: what the provenance arm refuses', () => {
     it(`a leaf whose affix holds ANOTHER secret ${label} resolved, which the spelling would carry verbatim`, async () => {
       const { bag, resolved, record } = await deployRow({ Pin: pin });
       expect(resolved.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
-      // Premise: the outer object's own record certifies everything but the
-      // affix -- one secret replacement, `/app/b`, framing the value.
+      // Premise: both secrets resolved into the bag. The nested part's record
+      // now reaches the outer one (issue #3306), so the outer record holds TWO
+      // replacements and the count refuses it before the affix test is asked;
+      // the affix cases below keep a part with no record of its own.
       expect(bag.get(PIN)).toMatch(/^\{\{resolve:ssm-secure:\/app\/[ab]\}\}$/);
       expect(bag.has(`${PIN}/${PIN}`)).toBe(false);
       expect(record.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
     });
   }
 
-  it('a leaf whose token a USED Fn::Sub variable holds: the template spells a placeholder, not a token', async () => {
-    const { bag, resolved } = await deployRow({
-      Pin: { 'Fn::Sub': ['port:${V}', { V: '{{resolve:ssm:/app/pin}}' }] },
+});
+
+describe('issue #3306: the carry certifies a token a nested part, a Sub variable or an Fn::If holds', () => {
+  const EXPRESSION = 'port:{{resolve:ssm:/app/pin}}';
+  const SHAPES: ReadonlyArray<readonly [label: string, source: unknown, bound: Record<string, string>]> = [
+    ['a nested Fn::Sub part', { 'Fn::Join': ['', ['port:', { 'Fn::Sub': '{{resolve:ssm:/app/pin}}' }]] }, {}],
+    [
+      'a nested Fn::Join part with a Ref inside its token',
+      { 'Fn::Join': ['', ['port:', { 'Fn::Join': ['', ['{{resolve:ssm:/app/', { Ref: 'Env' }, '}}']] }]] },
+      { Env: 'pin' },
+    ],
+    ['a used string Fn::Sub variable', { 'Fn::Sub': ['port:${V}', { V: '{{resolve:ssm:/app/pin}}' }] }, {}],
+    [
+      'a used intrinsic Fn::Sub variable',
+      { 'Fn::Sub': ['port:${V}', { V: { 'Fn::Sub': '{{resolve:ssm:/app/pin}}' } }] },
+      {},
+    ],
+    [
+      'an Fn::If around an Fn::Join, true branch',
+      { 'Fn::If': ['On', { 'Fn::Join': ['', ['port:', '{{resolve:ssm:/app/pin}}']] }, 'none'] },
+      {},
+    ],
+    [
+      'an Fn::If around an Fn::Sub, false branch',
+      { 'Fn::If': ['Off', 'none', { 'Fn::Sub': 'port:{{resolve:ssm:/app/${Env}}}' }] },
+      { Env: 'pin' },
+    ],
+    ['an Fn::If around a string branch', { 'Fn::If': ['On', EXPRESSION, 'none'] }, {}],
+    [
+      'an Fn::If whose condition is not in context (the false branch)',
+      { 'Fn::If': ['Missing', 'none', { 'Fn::Join': ['', ['port:', '{{resolve:ssm:/app/pin}}']] }] },
+      {},
+    ],
+    [
+      'an Fn::If as a Join part',
+      { 'Fn::Join': ['', ['port:', { 'Fn::If': ['On', { 'Fn::Sub': '{{resolve:ssm:/app/pin}}' }, 'x'] }]] },
+      {},
+    ],
+  ];
+
+  for (const [label, source, bound] of SHAPES) {
+    it(`records ${label}, and the parent row and the child persist the expression`, async () => {
+      const { bag, resolved, record } = await deployRow({ Pin: source }, bound);
+      const value = resolved.Parameters['Pin'] as string;
+      // Premises, as in the #3156 table: a sub-floor pin the scan is silent on.
+      expect(value).toBe(`port:${PIN}`);
+      expect(redactSecretsForState(value, new Map([[PIN, 'x']]))).toBe(value);
+
+      expect(bag.get(value)).toBe(EXPRESSION);
+      expect(record.Parameters['Pin']).toBe(EXPRESSION);
+      expect(await childPersist(bag, 'Pin', value)).toBe(EXPRESSION);
     });
+  }
+
+  it('does not certify a used variable whose secret is itself reference text the final pass resolves again', async () => {
+    const { bag, resolved } = await deployRow({
+      Pin: { 'Fn::Sub': ['port:${V}', { V: '{{resolve:ssm:/app/ref}}' }] },
+    });
+    // Premises: two stages, both secret, one span in the record's input. The
+    // record's count and token test refuse it, and so does the carry's own
+    // pair gate (the span's token resolved to the second token, not the
+    // middle); the hand-built count case below pins the count alone.
     expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
+    expect(bag.get('{{resolve:ssm:/app/pin}}')).toBe('{{resolve:ssm:/app/ref}}');
+    expect(bag.get(PIN)).toBe('{{resolve:ssm:/app/pin}}');
     expect(bag.has(`port:${PIN}`)).toBe(false);
   });
 
-  it('a leaf whose token sits in a NESTED intrinsic part, which leaves the outer object\'s own text spelling no token', async () => {
-    const { bag } = await deployRow({
-      Pin: { 'Fn::Join': ['', ['port:', { 'Fn::Sub': '{{resolve:ssm:/app/pin}}' }]] },
+  it('does not stringify an UNUSED intrinsic variable to build the record', async () => {
+    const { resolved } = await deployRow({
+      Pin: { 'Fn::Sub': ['port:{{resolve:ssm:/app/pin}}', { Unused: { toString: 'x' } }] },
     });
+    expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
+  });
+
+  // A POISONED part: an object this bag already saw resolve two different
+  // ways reads as having no record, so it lends nothing -- to an outer Join,
+  // or to an Fn::If that selected it.
+  for (const [label, wrap] of [
+    ['a nested Join part', (inner: object): unknown => ({ 'Fn::Join': ['', ['port:', inner]] })],
+    ['an Fn::If branch', (inner: object): unknown => ({ 'Fn::If': ['On', inner, 'none'] })],
+  ] as const) {
+    it(`lends nothing from ${label} whose record is poisoned`, async () => {
+      const inner = { 'Fn::Sub': label === 'an Fn::If branch' ? 'port:{{resolve:ssm:/app/pin}}' : '{{resolve:ssm:/app/pin}}' };
+      const bag: RecordedSecretValues = new Map();
+      recordIntrinsicLeafResolution(bag, inner, { input: 'a', output: 'a', substitutions: [], complete: true });
+      recordIntrinsicLeafResolution(bag, inner, { input: 'b', output: 'b', substitutions: [], complete: true });
+      const source = { TemplateURL: TEMPLATE_URL, Parameters: { Pin: wrap(inner) } };
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const resolved = (await resolver.resolve(source, contextFor({}, bag) as never)) as {
+        Parameters: Record<string, unknown>;
+      };
+      recordNestedStackParameterExpressions(bag, NESTED, resolved, source);
+      // Premise: the same source with a fresh bag is carried (the table above).
+      expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
+      expect(bag.has(`port:${PIN}`)).toBe(false);
+    });
+  }
+
+  it('does not certify an Fn::If whose selected branch has no record of its own', async () => {
+    const { bag, resolved } = await deployRow({
+      Pin: { 'Fn::If': ['On', { 'Fn::Select': [0, ['port:{{resolve:ssm:/app/pin}}']] }, 'none'] },
+    });
+    expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
+    // Premise: the token resolved into the bag.
+    expect(bag.get(PIN)).toBe('{{resolve:ssm:/app/pin}}');
     expect(bag.has(`port:${PIN}`)).toBe(false);
   });
+
+  for (const [label, otherBranch] of [
+    ['a string branch spelling another token', 'port:{{resolve:ssm:/app/a}}'],
+    ['a branch with no record of its own', { 'Fn::Select': [0, ['port:{{resolve:ssm:/app/a}}']] }],
+  ] as const) {
+    for (const [order, first] of [
+      ['the certified branch first', true],
+      ['the certified branch last', false],
+    ] as const) {
+      it(`refuses an Fn::If one bag saw select two different branches (${label}, ${order})`, async () => {
+        const pin = { 'Fn::If': ['Flip', { 'Fn::Sub': 'port:{{resolve:ssm:/app/pin}}' }, otherBranch] };
+        const bag: RecordedSecretValues = new Map();
+        const source = { TemplateURL: TEMPLATE_URL, Parameters: { Pin: pin } };
+        const resolver = new IntrinsicFunctionResolver('us-east-1');
+        await resolver.resolve(source, { ...contextFor({}, bag), conditions: { Flip: first } } as never);
+        const resolved = (await resolver.resolve(source, {
+          ...contextFor({}, bag),
+          conditions: { Flip: !first },
+        } as never)) as { Parameters: Record<string, unknown> };
+        recordNestedStackParameterExpressions(bag, NESTED, resolved, source);
+        // Premise: the certified branch alone is carried (the `On` rows
+        // above); the other resolution selected a branch that says otherwise.
+        expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
+        expect(bag.has(`port:${PIN}`)).toBe(false);
+      });
+    }
+  }
+
+  for (const [label, pin] of [
+    [
+      'a nested Fn::Sub part',
+      {
+        'Fn::Join': [
+          '',
+          [{ 'Fn::Select': [0, ['{{resolve:ssm-secure:/app/a}}']] }, '/', { 'Fn::Sub': '{{resolve:ssm-secure:/app/b}}' }],
+        ],
+      },
+    ],
+    [
+      'a used string Fn::Sub variable',
+      {
+        'Fn::Sub': [
+          '${X}/${V}',
+          { X: { 'Fn::Select': [0, ['{{resolve:ssm-secure:/app/a}}']] }, V: '{{resolve:ssm-secure:/app/b}}' },
+        ],
+      },
+    ],
+    [
+      'an Fn::If',
+      {
+        'Fn::If': [
+          'On',
+          { 'Fn::Join': ['', [{ 'Fn::Select': [0, ['{{resolve:ssm-secure:/app/a}}']] }, '/{{resolve:ssm-secure:/app/b}}']] },
+          'none',
+        ],
+      },
+    ],
+  ] as const) {
+    it(`keeps the affix refusal for a token in ${label} beside another secret a part with no record resolved`, async () => {
+      const { bag, resolved, record } = await deployRow({ Pin: pin });
+      expect(resolved.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
+      // Premise: both secrets resolved into the bag.
+      expect(bag.get(PIN)).toMatch(/^\{\{resolve:ssm-secure:\/app\/[ab]\}\}$/);
+      expect(bag.has(`${PIN}/${PIN}`)).toBe(false);
+      expect(record.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
+    });
+  }
 });
 
 describe('issue #3156: a record the resolver would not write is refused, not certified', () => {
@@ -465,6 +640,11 @@ describe('issue #3156: a record the resolver would not write is refused, not cer
     expect(carryOver({ ...FAITHFUL, substitutions }).has(`port:${PIN}`)).toBe(false);
   });
 
+  it('refuses a record listing a second replacement its input does not spell', () => {
+    const substitutions = [FAITHFUL.substitutions[0]!, FAITHFUL.substitutions[0]!];
+    expect(carryOver({ ...FAITHFUL, substitutions }).has(`port:${PIN}`)).toBe(false);
+  });
+
   it('refuses a record whose one replacement produced another value', () => {
     const substitutions = [{ token: TOKEN, value: 'zz', secret: true }];
     expect(carryOver({ ...FAITHFUL, substitutions }).has(`port:${PIN}`)).toBe(false);
@@ -492,15 +672,36 @@ describe('issue #3156 point 2: a grandchild no longer prints the value', () => {
   }
 
   const EXPRESSION = 'port:{{resolve:ssm:/app/pin}}';
-  for (const [spelling, deep, middleRecord] of [
-    ['PASS-THROUGH', { Ref: 'Pin' }, EXPRESSION],
-    ['RE-WRAP', { 'Fn::Join': ['', ['m-', { Ref: 'Pin' }]] }, `m-${EXPRESSION}`],
+  for (const [spelling, deep, middleRecord, topPin] of [
+    [
+      'PASS-THROUGH',
+      { Ref: 'Pin' },
+      EXPRESSION,
+      { 'Fn::Join': ['', ['port:{{resolve:ssm:/app/', { Ref: 'Env' }, '}}']] },
+    ],
+    [
+      'RE-WRAP',
+      { 'Fn::Join': ['', ['m-', { Ref: 'Pin' }]] },
+      `m-${EXPRESSION}`,
+      { 'Fn::Join': ['', ['port:{{resolve:ssm:/app/', { Ref: 'Env' }, '}}']] },
+    ],
+    // Issue #3306: a token the top row's parameter holds in a used Fn::Sub
+    // variable, and one it holds in a nested part.
+    [
+      'PASS-THROUGH (a used Fn::Sub variable at the top)',
+      { Ref: 'Pin' },
+      EXPRESSION,
+      { 'Fn::Sub': ['port:${V}', { V: '{{resolve:ssm:/app/pin}}' }] },
+    ],
+    [
+      'RE-WRAP (a nested Fn::Sub part at the top)',
+      { 'Fn::Join': ['', ['m-', { Ref: 'Pin' }]] },
+      `m-${EXPRESSION}`,
+      { 'Fn::Join': ['', ['port:', { 'Fn::Sub': '{{resolve:ssm:/app/${Env}}}' }]] },
+    ],
   ] as const) {
     it(`through the ${spelling} spelling of the middle stack`, async () => {
-      const top = await deployRow(
-        { Pin: { 'Fn::Join': ['', ['port:{{resolve:ssm:/app/', { Ref: 'Env' }, '}}']] } },
-        { Env: 'pin' }
-      );
+      const top = await deployRow({ Pin: topPin }, { Env: 'pin' });
       const pinValue = top.resolved.Parameters['Pin'] as string;
       expect(pinValue).toBe(`port:${PIN}`);
 

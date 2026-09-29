@@ -162,10 +162,10 @@ class ChildNestedStack extends cdk.NestedStack {
 
 /**
  * THE #3156 ARM, depth 2: the grandchild of the `Framed` branch. Consumes each
- * of the four parameters the middle hands down in its own SSM parameter,
- * through an `Fn::Join` (`gc-` + the `Ref`), so its three debug lines per
- * parameter -- `Parameter`, `Resolved Ref to parameter`, `Resolved Fn::Join`
- * -- are all emitted.
+ * of the parameters the middle hands down in its own SSM parameter, through
+ * an `Fn::Join` (`gc-` + the `Ref`), so its three debug lines per parameter --
+ * `Parameter`, `Resolved Ref to parameter`, `Resolved Fn::Join` -- are all
+ * emitted. The last three are the #3306 arm's, handed down pass-through only.
  */
 class FramedGrandchildNestedStack extends cdk.NestedStack {
   constructor(scope: Construct, id: string, props?: cdk.NestedStackProps) {
@@ -173,12 +173,12 @@ class FramedGrandchildNestedStack extends cdk.NestedStack {
 
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('FramedGrandchild');
 
-    for (const name of ['SsmPass', 'SsmWrap', 'OutPass', 'OutWrap'] as const) {
+    for (const name of ['SsmPass', 'SsmWrap', 'OutPass', 'OutWrap', 'NestPass', 'VarPass', 'IfPass'] as const) {
       const parameter = new cdk.CfnParameter(this, `Gc${name}`, { type: 'String' });
       parameter.overrideLogicalId(`Gc${name}`);
       const consumer = new ssm.StringParameter(this, `Framed${name}`, {
         stringValue: `gc-${parameter.valueAsString}`,
-        description: `cdkd nested-stack-3level integ - #3156 grandchild consumer of Gc${name}`,
+        description: `cdkd nested-stack-3level integ - #3156 / #3306 grandchild consumer of Gc${name}`,
       });
       (consumer.node.defaultChild as ssm.CfnParameter).overrideLogicalId(`Framed${name}`);
     }
@@ -203,6 +203,13 @@ class FramedNestedStack extends cdk.NestedStack {
     pinSsm.overrideLogicalId('MidPinSsm');
     const pinOut = new cdk.CfnParameter(this, 'MidPinOut', { type: 'String' });
     pinOut.overrideLogicalId('MidPinOut');
+    // The #3306 arm: three more frames, each handed down pass-through.
+    const pinNest = new cdk.CfnParameter(this, 'MidPinNest', { type: 'String' });
+    pinNest.overrideLogicalId('MidPinNest');
+    const pinVar = new cdk.CfnParameter(this, 'MidPinVar', { type: 'String' });
+    pinVar.overrideLogicalId('MidPinVar');
+    const pinIf = new cdk.CfnParameter(this, 'MidPinIf', { type: 'String' });
+    pinIf.overrideLogicalId('MidPinIf');
 
     new FramedGrandchildNestedStack(this, 'FramedGrandchild', {
       parameters: {
@@ -210,6 +217,9 @@ class FramedNestedStack extends cdk.NestedStack {
         GcSsmWrap: cdk.Fn.join('', ['m-', pinSsm.valueAsString]),
         GcOutPass: pinOut.valueAsString,
         GcOutWrap: cdk.Fn.join('', ['m-', pinOut.valueAsString]),
+        GcNestPass: pinNest.valueAsString,
+        GcVarPass: pinVar.valueAsString,
+        GcIfPass: pinIf.valueAsString,
       },
     });
   }
@@ -267,8 +277,30 @@ export class NestedStack3Level extends cdk.Stack {
     // the stack's env resolves the account, which CDK then folds into the
     // literal text -- a plain string frame, not the intrinsic one this arm is
     // for (measured: verify.sh's premise caught exactly that).
+    // THE #3306 ARM, depth 0: the same SecureString in the three frames the
+    // #3156 fix still refused -- its token inside a NESTED `Fn::Sub` part, in
+    // a used `Fn::Sub` STRING variable (the account folded into the text, as
+    // the comment above measured), and inside an `Fn::If` around the frame.
+    // True in every region; spelled against the region `Ref` so it is not a
+    // constant CloudFormation's validator warns about.
+    const always = new cdk.CfnCondition(this, 'Always3306', {
+      expression: cdk.Fn.conditionNot(cdk.Fn.conditionEquals(cdk.Aws.REGION, 'none')),
+    });
+    always.overrideLogicalId('Always3306');
     new FramedNestedStack(this, 'Framed', {
       parameters: {
+        MidPinNest: cdk.Fn.join('', [
+          'pin3306n:',
+          cdk.Fn.sub('{{resolve:ssm:cdkd-3level-pinssm-${AWS::AccountId}}}'),
+        ]),
+        MidPinVar: cdk.Fn.sub('pin3306v:${V}', {
+          V: `{{resolve:ssm:cdkd-3level-pinssm-${account}}}`,
+        }),
+        MidPinIf: cdk.Fn.conditionIf(
+          'Always3306',
+          cdk.Fn.join('', ['pin3306i:{{resolve:ssm:cdkd-3level-pinssm-', cdk.Aws.ACCOUNT_ID, '}}']),
+          'none'
+        ).toString(),
         MidPinSsm: cdk.Fn.join('', [
           'pin3156s:{{resolve:ssm:cdkd-3level-pinssm-',
           cdk.Aws.ACCOUNT_ID,
