@@ -1777,6 +1777,11 @@
       "scenarios": []
     },
     {
+      "name": "noecho-parameter-masking",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "opensearch-domain-getatt",
       "annotated": true,
       "scenarios": [
@@ -3149,6 +3154,7 @@
     "nested-stack-replace-guard",
     "nested-stack-rollback",
     "nodejs-function",
+    "noecho-parameter-masking",
     "rds-dbinstance-backfill",
     "recreate-mixed-direction",
     "recreate-nested-logical-id-collision",

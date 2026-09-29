@@ -61,6 +61,9 @@ import {
   dynamicReferenceTokens,
   errorCauseChain,
   maskSecretsInError,
+  carryLogOnlyValues,
+  hasMaskableValues,
+  shareLogOnlyValues,
   maskSecretsInText,
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
@@ -2042,8 +2045,15 @@ function allRecordedSecrets(
   orphanSecrets: ReadonlyMap<string, RecordedSecretValues>
 ): RecordedSecretValues {
   const union: RecordedSecretValues = new Map();
+  // go-to-k/cdkd#1998: the LOG-ONLY needles (a `NoEcho` parameter's value) are
+  // keyed by the bag INSTANCE, so the entry copies below drop them. Carried
+  // for the two consumers that PRINT through this union — the error boundary
+  // and the cross-stack producer line; every consumer that persists walks the
+  // map alone and never reads them. Not from the orphan bags: an orphan pass
+  // resolves persisted text, which holds no parameter `Ref` to record one.
   for (const recorded of perResourceSecrets.values()) {
     for (const [value, expression] of recorded) union.set(value, expression);
+    carryLogOnlyValues(recorded, union);
   }
   // Folded BEFORE `outputSecrets`: two docs in this file promise the OUTPUTS'
   // expression wins a value collision "because it is written last", and
@@ -2056,6 +2066,7 @@ function allRecordedSecrets(
     for (const [value, expression] of recorded) union.set(value, expression);
   }
   for (const [value, expression] of outputSecrets) union.set(value, expression);
+  carryLogOnlyValues(outputSecrets, union);
   for (const value of union.keys()) {
     if (value.length < MIN_NEEDLE_LENGTH) union.delete(value);
   }
@@ -5632,8 +5643,14 @@ export async function scrubStack(
   const { logger } = opts;
   const shownStack = displayStackName(stack.stackName);
   const nestedInput = opts.nestedChild?.input;
+  // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a parent bag holding
+  // only LOG-ONLY needles still masks this child's lines and is carried into
+  // the bag of the child resource consuming the parameter. The association
+  // copy in `newBag` finds nothing to copy in such a bag.
   const inheritedSecrets =
-    nestedInput && nestedInput.inheritedSecrets.size > 0 ? nestedInput.inheritedSecrets : undefined;
+    nestedInput && hasMaskableValues(nestedInput.inheritedSecrets)
+      ? nestedInput.inheritedSecrets
+      : undefined;
   /**
    * A FRESH per-context bag, carrying the parent's per-parameter position
    * associations on a nested child — what `DeployEngine.buildResolverContext`
@@ -6678,6 +6695,12 @@ export async function scrubStack(
           // too, and the never-cached reference above re-asks AWS regardless.
           // The entries are shared either way, without leaning on that.)
           const nameSecrets: RecordedSecretValues = new SharedEntriesSecrets(outputSecrets);
+          // The LOG-ONLY needles (go-to-k/cdkd#1998) are keyed by the map
+          // INSTANCE, so the view SHARES `outputSecrets`' set: a needle recorded
+          // through it — by the pin, the cross-stack reads, or a resolution
+          // that throws — is visible to every later print that masks with
+          // `outputSecrets`, the error boundary included.
+          shareLogOnlyValues(nameSecrets, outputSecrets);
           // Whether the name's resolution threw (a swallowed, best-effort
           // failure). A boolean rather than the error's presence: `undefined`
           // is a legal thrown value, and the old catch warned for it too.
@@ -7531,6 +7554,9 @@ export async function scrubStack(
         boundaryNeedles.set(value, expression);
       }
     }
+    // The parent's LOG-ONLY needles too (go-to-k/cdkd#1998), which the copy
+    // above cannot see.
+    if (inheritedSecrets) carryLogOnlyValues(inheritedSecrets, boundaryNeedles);
     throw maskSecretsInError(err, boundaryNeedles);
   } finally {
     if (acquired) {

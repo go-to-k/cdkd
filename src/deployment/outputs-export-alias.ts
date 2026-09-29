@@ -94,9 +94,15 @@
  *   VALUE is no longer cached either, precisely so the two cannot disagree. A
  *   later occurrence therefore RE-RESOLVES and records into its own bag rather
  *   than substituting a plaintext with nothing recorded, so the refusal fires.
- * - A `Ref` to a `NoEcho` PARAMETER substituted into an export name is recorded
- *   nowhere: `NoEcho` is outside cdkd's dynamic-reference secret model
- *   entirely, so nothing here can see it.
+ * - A `Ref` to a `NoEcho` PARAMETER substituted into an export name is not
+ *   REFUSED, and the name is published as before. Since go-to-k/cdkd#1998 the
+ *   resolver records such a value as a LOG-ONLY needle of the pass's bag,
+ *   read by the printing maskers (`maskSecretsInText` and the provider
+ *   masker), but it is no map ENTRY, and every reader here iterates the map:
+ *   the refusal above and this module's own warning masks. Deliberately so —
+ *   the decision on #1998 left persistence unchanged, and refusing the alias
+ *   would change what the deploy publishes into state and the exports index.
+ *   Whether it should is go-to-k/cdkd#4043.
  * - In the DEPLOY ENGINE, `evaluateConditions` runs before any bag is built and
  *   records into a map that caller discards, while still WARMING the resolver's
  *   dynamic-reference cache — so a PINNED reference (`secretsmanager`, or a

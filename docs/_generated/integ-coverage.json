@@ -6171,6 +6171,7 @@
         "nested-stack-deep",
         "nested-stack-replace-guard",
         "nested-stack-secret",
+        "noecho-parameter-masking",
         "opensearch-domain-getatt",
         "output-never-resolved-diff",
         "outputs-only-export",
@@ -6376,6 +6377,10 @@
         ],
         "nested-stack-secret": [
           "l2",
+          "literal"
+        ],
+        "noecho-parameter-masking": [
+          "l1",
           "literal"
         ],
         "opensearch-domain-getatt": [

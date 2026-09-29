@@ -16,4 +16,4 @@ A provider's `properties` bag arrives RESOLVED, so a `{{resolve:secretsmanager:.
 
 The capability is a FUNCTION, not the PLAINTEXT-keyed `RecordedSecretValues` bag: every holder of that bag is a place `[...secrets.keys()]` can leak from. `NestedStackProvider` is the exception: it SEEDS a child `DeployEngine` with the parent's `plaintext -> {{resolve:...}}` map, read via `getCurrentResourceSecrets()` (`src/deployment/resource-secrets-scope.ts`), not by widening `CreateContext`. **Such a reader MUST NOT enumerate or log the KEYS** — they are secret plaintext, usable only as a redaction seed.
 
-Covers only the dynamic-reference model (`{{resolve:secretsmanager:...}}`, `SecureString` SSM). A `NoEcho: true` PARAMETER is outside it — the resolver never RECORDS the value, so no bag-derived masker can reach it; that residual is PERSISTED into `deployments/*.jsonl`.
+What it masks is the CALLER's decision: the dynamic-reference secrets, plus a `NoEcho: true` PARAMETER's value as a LOG-ONLY needle ([#1998](https://github.com/go-to-k/cdkd/issues/1998), [layout-deployment-secrets.md](layout-deployment-secrets.md)). A provider needs no change for either.
