@@ -252,7 +252,7 @@ export function safeRegion(value: string): string {
  * bare `,` inside a plain id still reads as two entries in a `', '`-joined list
  * — the residual go-to-k/cdkd#3179 records for every caller of the helper. That
  * is the answer go-to-k/cdkd#3317 recorded for
- * `namedPropertyBagsClause`; this is the same rule for the other lists, so two
+ * `namedPropertyBagsDiagnosis`; this is the same rule for the other lists, so two
  * sibling clauses in one module cannot give opposite answers.
  *
  * Capped at `IDENT_MAX_CODE_POINTS`, a logical id's own limit, rather than a
@@ -604,7 +604,7 @@ const WITHHELD_LISTING_POINTER =
  * `State for 'prod-api' (...)`, byte-identical to a HEALTHY sibling spelled
  * `prod-api`. An operator who then orphans "the record the line above names"
  * deletes the intact one. That is exactly the identity failure `displayIdent`
- * exists for and {@link namedPropertyBagsClause} applies to logical ids. So
+ * exists for and {@link namedPropertyBagsDiagnosis} applies to logical ids. So
  * the remedy sentence is GATED on the identity rendering EXACTLY: when it does
  * not, the text names no removal target at all and opens on
  * {@link stackClause}'s no-identity form, ending on
@@ -2550,7 +2550,7 @@ export function repairMalformedResourcePropertiesForReadOnly(state: StackState):
  * Both callers guard, but they are exported and a later one need not (review of
  * go-to-k/cdkd#3191).
  */
-function namedPropertyBagsClause(
+function namedPropertyBagsDiagnosis(
   stackName: string | undefined,
   region: string | undefined,
   logicalIds: readonly string[]
@@ -2569,7 +2569,24 @@ function namedPropertyBagsClause(
   return (
     `${stackClause(stackName, region)} holds ${logicalIds.length} resource ` +
     `record(s) whose 'properties' map cannot be read — ${named}${more} — because it is absent, ` +
-    `null, or not an object. The record is malformed or truncated. Comparing a template against ` +
+    `null, or not an object. The record is malformed or truncated.`
+  );
+}
+
+/**
+ * {@link namedPropertyBagsDiagnosis} plus what a TEMPLATE comparison makes of
+ * such a map — the clause the deploy, diff and orphan texts open with. The
+ * drift texts take the diagnosis alone: drift compares no template, so this
+ * sentence would describe a verdict that command never reaches (review of
+ * go-to-k/cdkd#3315).
+ */
+function namedPropertyBagsClause(
+  stackName: string | undefined,
+  region: string | undefined,
+  logicalIds: readonly string[]
+): string {
+  return (
+    `${namedPropertyBagsDiagnosis(stackName, region, logicalIds)} Comparing a template against ` +
     `one reports every property the template declares as ADDED (a string bag also invents one ` +
     `change per character), and a create-only property among them is a REPLACEMENT of the live ` +
     `resource.`
@@ -3205,6 +3222,101 @@ export function malformedResourcePropertiesWarning(
     `DELETE row shows an empty previous side instead of the stored one. ` +
     `Do NOT run 'cdkd deploy' against this record — it REFUSES on the same defect rather than ` +
     `acting on this preview. ${inspectClause(stackName, region)}See the stored values with: ${inspectCommand(stackName, region)}`
+  );
+}
+
+/**
+ * Why a `cdkd drift` text cannot borrow the deploy or diff one (issue
+ * [#3315](https://github.com/go-to-k/cdkd/issues/3315)): drift compares no
+ * template, so "previews as an addition" and "under '--dry-run' too" are false
+ * there — and so is the template sentence {@link namedPropertyBagsClause}
+ * appends, which is why they open with {@link namedPropertyBagsDiagnosis}. What
+ * the bag IS to drift is shared by both drift texts below, so it is
+ * spelled once: the BASELINE wherever no `observedProperties` is recorded, and
+ * the source of the secret positions the report masks either way. Read as
+ * empty, `calculateResourceDrift` walks the state side's keys only and so
+ * reports the resource CLEAN having compared nothing.
+ */
+const DRIFT_PROPERTIES_ROLE =
+  `To 'cdkd drift' this map is the baseline wherever no 'observedProperties' is recorded — a ` +
+  `stored string reads as one drifted key per character, and an EMPTY reading compares nothing ` +
+  `and reports the resource clean — and it is where cdkd finds the secret positions it must mask.`;
+
+/**
+ * The text {@link refuseMalformedResourcePropertiesForDrift} raises.
+ *
+ * `rawStackName` / `rawRegion` are the state KEY's identity `cdkd drift` listed
+ * the record under, never the body's self-report. Ends ON the read command, the
+ * shape every read-only remedy in this module takes.
+ */
+export function malformedDriftResourcePropertiesRefusalMessage(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[]
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${namedPropertyBagsDiagnosis(stackName, region, logicalIds)} 'cdkd drift --accept' and ` +
+    `'--revert' WRITE this record back, so they refuse rather than continuing. ` +
+    `${DRIFT_PROPERTIES_ROLE} Continuing would let '--accept' save, and '--revert' push to the ` +
+    `live resource, a verdict about properties this record does not hold. Nothing was written ` +
+    `and no AWS resource was modified. Repair or remove the record first; plain 'cdkd drift' ` +
+    `compares the rest of the stack and reports these resources as not compared. ` +
+    `${inspectClause(stackName, region)}Inspect the record with: ${inspectCommand(stackName, region)}`
+  );
+}
+
+/**
+ * For `cdkd drift --accept` / `--revert`: refuse a record whose resource
+ * entries carry a `properties` map that cannot be read (issue
+ * [#3315](https://github.com/go-to-k/cdkd/issues/3315)).
+ *
+ * The same predicate as {@link refuseMalformedResourceProperties}, and a
+ * separate entry point for the reason every split here has: that one's text
+ * describes a deploy's diff and a `--dry-run` this command does not have.
+ *
+ * CALL IT AT THE LOAD, after `refuseMalformedResourceEntries` (a typeless
+ * object with a torn map is named by both, and the entry refusal is the more
+ * precise one), above every walk — both write modes read the record the
+ * detection pass loaded, so one call there dominates them.
+ */
+export function refuseMalformedResourcePropertiesForDrift(
+  state: StackState,
+  stackName: string | undefined,
+  region: string | undefined
+): void {
+  const unreadable = unreadableResourcePropertyBags(state);
+  if (unreadable.length === 0) return;
+  // NOT `markNonRetryable`, for the reason `refuseMalformedState` gives for
+  // the same caller: `cdkd drift` raises it from its own flow, outside any
+  // `withRetry`. Named in the test file's UNMARKED table.
+  throw new CdkdError(
+    malformedDriftResourcePropertiesRefusalMessage(stackName, region, unreadable),
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
+/**
+ * The warning plain `cdkd drift` emits after
+ * {@link repairMalformedResourcePropertiesForReadOnly}. The caller ALSO reports
+ * each named id as not compared — the warning goes to stderr, and a repaired
+ * `{}` baseline would otherwise read as a clean resource.
+ */
+export function malformedDriftResourcePropertiesWarning(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[]
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${namedPropertyBagsDiagnosis(stackName, region, logicalIds)} ${DRIFT_PROPERTIES_ROLE} So ` +
+    `'cdkd drift' does NOT compare these resources: each is reported as not compared, and the ` +
+    `run does not exit clean. The rest of the stack is compared as usual. ` +
+    `'cdkd drift --accept' / '--revert' and 'cdkd deploy' REFUSE this record. ` +
+    `${inspectClause(stackName, region)}See the stored values with: ` +
+    `${inspectCommand(stackName, region)}`
   );
 }
 
