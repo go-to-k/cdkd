@@ -275,6 +275,37 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
   });
 
+  it('issue #4030: no recorded or template policy on a DBCluster takes the CFn default Snapshot', async () => {
+    await invokeDelete(makeEngine(), 'AWS::RDS::DBCluster', {});
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toMatch(/^phys-target-final-/);
+  });
+
+  it('issue #4030: no policy on a cluster-member DBInstance keeps the plain delete', async () => {
+    await invokeDelete(makeEngine(), 'AWS::RDS::DBInstance', {
+      properties: { DBClusterIdentifier: 'c1' },
+    });
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+  });
+
+  it('issue #4030: no policy on a cc-api-routed DBCluster is refused before any delete', async () => {
+    await expect(
+      invokeDelete(makeEngine(), 'AWS::RDS::DBCluster', { provisionedBy: 'cc-api' })
+    ).rejects.toMatchObject({
+      code: 'PROVISIONING_ERROR',
+      cause: expect.objectContaining({
+        code: 'FINAL_SNAPSHOT_UNSUPPORTED',
+        message: expect.stringContaining('cc-api'),
+      }),
+    });
+    expect(deleteProvider.delete as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('issue #4029: --skip-final-snapshot reaches the provider as skipFinalSnapshot', async () => {
+    await invokeDelete(makeEngine({ skipFinalSnapshot: true }), 'AWS::RDS::DBCluster', {});
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+    expect(deleteContextArg()['skipFinalSnapshot']).toBe(true);
+  });
+
   it('issue #3993: no recorded or template policy leaves deletionPolicy absent', async () => {
     await invokeDelete(makeEngine(), 'AWS::RDS::DBCluster', {});
     expect(deleteContextArg()).not.toHaveProperty('deletionPolicy');

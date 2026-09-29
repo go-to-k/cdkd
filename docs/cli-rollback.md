@@ -274,7 +274,8 @@ CloudFormation:
 | --- | --- |
 | `Retain` | Leaves the resource in AWS and moves it into a rollback-orphan record a later deploy can re-adopt. The plan labels it `orphan`. |
 | `Snapshot` | Takes the final snapshot, then deletes. A shape cdkd cannot snapshot is refused as a per-operation failure, and the journal is kept. |
-| `RetainExceptOnCreate`, `Delete`, absent | Deletes plainly. |
+| `RetainExceptOnCreate`, `Delete` | Deletes plainly. |
+| absent | CloudFormation's default: `Snapshot` for an `AWS::RDS::DBCluster` or a standalone `AWS::RDS::DBInstance`, otherwise a plain delete. |
 
 The plan preview says which of these will happen **before** you confirm. A shape
 cdkd cannot snapshot on the route the delete will take is labelled

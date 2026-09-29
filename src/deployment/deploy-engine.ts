@@ -155,6 +155,7 @@ import {
   buildFinalSnapshotIdentifier,
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
+  effectiveDeletionPolicy,
   unsupportedFinalSnapshotError,
   type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
@@ -9145,11 +9146,13 @@ export class DeployEngine {
 
         // Honor `DeletionPolicy: Snapshot` (issues #1352 / #1353) — see
         // prepareFinalSnapshotForDelete for the mechanism matrix.
+        // Issue #4030: an absent policy is CloudFormation's default, which is
+        // `Snapshot` for an RDS cluster or standalone instance.
         const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
           logicalId,
           resourceType,
           currentResource,
-          deletionPolicy
+          effectiveDeletionPolicy(resourceType, deletionPolicy, currentResource.properties)
         );
 
         // Schema v7+: route DELETE through the layer recorded on state
@@ -9177,6 +9180,7 @@ export class DeployEngine {
                   expectedRegion: this.stackRegion,
                   ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                   ...(deletionPolicy !== undefined && { deletionPolicy }),
+                  ...(this.options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
                 }
               ),
             logicalId,

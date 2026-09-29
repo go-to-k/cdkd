@@ -28,6 +28,11 @@
 # run fails if any manual snapshot of that cluster was created after it began;
 # cleanup deletes any such snapshot either way.
 #
+# #4030 (CloudFormation's default DeletionPolicy): the L1 SecurityCluster
+# declares no DeletionPolicy (asserted), whose CloudFormation default for a
+# DBCluster is Snapshot, so the phase-3 destroy must take exactly one
+# `<cluster id>-final-<UTC timestamp>` snapshot; cleanup deletes it.
+#
 # #2204 (--remove-protection compensation): phase 2b turns DeletionProtection
 # back ON out of band, adds an out-of-band member instance to the
 # SecurityCluster so DeleteDBCluster refuses TERMINALLY, runs
@@ -145,10 +150,14 @@ cleanup() {
     # --remove-protection: an aborted run can leave the phase-1
     # DeletionProtection=true live on the SecurityCluster (#1160 fixture
     # shape); idempotent when protection is already off.
+    # --skip-final-snapshot: the policy-less L1 resource defaults to Snapshot
+    # (#4030), and a cleanup snapshot would outlive the run (RUN_START is empty
+    # before the run) or be refused on a resource still `creating`.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --remove-protection \
+      --skip-final-snapshot \
       --yes
   fi
   if [ -n "${DB_CLUSTER_ID}" ]; then
@@ -163,6 +172,19 @@ cleanup() {
       --db-cluster-identifier "${DB_CLUSTER_ID}" \
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
+  fi
+  # Issue #4030: the SecurityCluster's final snapshot from this run's destroy.
+  # Older ones are not this run's to delete.
+  if [ -n "${DB_CLUSTER_ID}" ] && [ -n "${RUN_START}" ]; then
+    if ! SEC_SNAPS_TO_CLEAN=$(this_run_cluster_snapshots "${DB_CLUSTER_ID}"); then
+      echo "    WARN: cleanup could not list the manual snapshots of ${DB_CLUSTER_ID}; check for a leftover by hand" >&2
+      SEC_SNAPS_TO_CLEAN=""
+    fi
+    for snap in ${SEC_SNAPS_TO_CLEAN}; do
+      aws rds wait db-cluster-snapshot-available --db-cluster-snapshot-identifier "${snap}" --region "${REGION}"
+      aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
+        && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+    done
   fi
   # Issue #3993: a manual snapshot of the L2 cluster this run created (the
   # leak, or the reverted-fix proof). Older ones are not this run's to delete.
@@ -246,8 +268,9 @@ if [ "${AURORA_PROVISIONED_BY}" != "cc-api" ]; then
   exit 1
 fi
 echo "    OK: L2 AuroraCluster ${AURORA_CLUSTER_ID} is provisionedBy=cc-api (#3993 premise)"
-# The fix applies to a RECORDED `DeletionPolicy: Delete` only; an absent one
-# keeps the Cloud Control handler's snapshot on purpose.
+# Without --skip-final-snapshot the fix applies to a RECORDED
+# `DeletionPolicy: Delete` only; an absent one is CloudFormation's `Snapshot`
+# default, which the Cloud Control route refuses (#4030).
 AURORA_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.deletionPolicy // "absent"] | first // ""')
 if [ "${AURORA_DELETION_POLICY}" != "Delete" ]; then
   echo "FAIL: #3993 premise: the L2 AuroraCluster records DeletionPolicy '${AURORA_DELETION_POLICY}', expected 'Delete'" >&2
@@ -264,6 +287,15 @@ if [ "${CLUSTER_PROVISIONED_BY}" != "sdk" ]; then
   exit 1
 fi
 echo "    OK: SecurityCluster provisionedBy=sdk (no silent-drop CC-API flip)"
+
+# Issue #4030 premise: the L1 SecurityCluster declares NO DeletionPolicy, so
+# its destroy applies CloudFormation's default for a DBCluster, Snapshot.
+SEC_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.deletionPolicy // "absent"] | first // ""')
+if [ "${SEC_DELETION_POLICY}" != "absent" ]; then
+  echo "FAIL: #4030 premise: the SecurityCluster records DeletionPolicy '${SEC_DELETION_POLICY}', expected none" >&2
+  exit 1
+fi
+echo "    OK: SecurityCluster records no DeletionPolicy (#4030 premise)"
 
 # --- Assertions: DBCluster security props reached AWS -----------------
 CLUSTER=$(aws rds describe-db-clusters \
@@ -523,6 +555,21 @@ else
   echo "FAIL: SecurityCluster still in unexpected state after destroy: ${CLUSTER_STATUS}" >&2
   exit 1
 fi
+
+# Issue #4030: the phase-3 destroy of the policy-less SecurityCluster took
+# exactly one cdkd final snapshot (CloudFormation's default is Snapshot).
+# Before the fix it took none. Cleanup deletes it.
+if ! SEC_SNAPSHOTS=$(this_run_cluster_snapshots "${DB_CLUSTER_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${DB_CLUSTER_ID}" >&2
+  exit 1
+fi
+SEC_FINAL_COUNT=$(printf '%s\n' "${SEC_SNAPSHOTS}" | grep -c -- "^${DB_CLUSTER_ID}-final-[0-9]\{8\}-[0-9]\{6\}$" || true)
+SEC_OTHER=$(printf '%s\n' "${SEC_SNAPSHOTS}" | grep -v -- "^${DB_CLUSTER_ID}-final-" | grep -v '^$' || true)
+if [ "${SEC_FINAL_COUNT}" != "1" ] || [ -n "${SEC_OTHER}" ]; then
+  echo "FAIL: destroying the policy-less ${DB_CLUSTER_ID} took ${SEC_FINAL_COUNT} cdkd final snapshot(s), expected 1 (CloudFormation's default DeletionPolicy is Snapshot; #4030); this run's snapshots: $(printf '%s ' ${SEC_SNAPSHOTS})" >&2
+  exit 1
+fi
+echo "    OK: SecurityCluster destroy took the final snapshot $(printf '%s' "${SEC_SNAPSHOTS}") (#4030; cleanup deletes it)"
 
 # Issue #3993: phase 2b's destroy deleted the Cloud Control-routed L2 cluster.
 # Before the fix its registry handler left a manual final snapshot there.

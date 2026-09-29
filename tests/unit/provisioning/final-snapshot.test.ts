@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 import {
+  effectiveDeletionPolicy,
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
@@ -772,5 +773,28 @@ describe('createPreDeleteFinalSnapshot dispatcher', () => {
     await expect(
       createPreDeleteFinalSnapshot('AWS::Future::Type', 'x', 'X', clients, logger)
     ).rejects.toMatchObject({ code: 'FINAL_SNAPSHOT_FAILED' });
+  });
+});
+
+describe('effectiveDeletionPolicy (issue #4030)', () => {
+  it.each([
+    ['AWS::RDS::DBCluster', undefined, undefined, 'Snapshot'],
+    ['AWS::RDS::DBCluster', 'Delete', undefined, 'Delete'],
+    ['AWS::RDS::DBCluster', 'Retain', undefined, 'Retain'],
+    ['AWS::RDS::DBInstance', undefined, {}, 'Snapshot'],
+    ['AWS::RDS::DBInstance', undefined, undefined, 'Snapshot'],
+    ['AWS::RDS::DBInstance', undefined, { DBClusterIdentifier: 'c1' }, undefined],
+    ['AWS::RDS::DBInstance', 'Delete', {}, 'Delete'],
+    ['AWS::Neptune::DBCluster', undefined, undefined, undefined],
+    ['AWS::EC2::Volume', undefined, undefined, undefined],
+    ['AWS::S3::Bucket', undefined, undefined, undefined],
+  ] as const)('%s recorded %s, properties %j -> %s', (type, recorded, properties, expected) => {
+    expect(
+      effectiveDeletionPolicy(
+        type,
+        recorded as string | undefined,
+        properties as Record<string, unknown> | undefined
+      )
+    ).toBe(expected);
   });
 });

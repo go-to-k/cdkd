@@ -1372,16 +1372,19 @@ export class CloudControlProvider implements ResourceProvider {
       );
     }
 
-    // Issue #3993: under an explicit `DeletionPolicy: Delete`, an RDS cluster
-    // or instance is deleted through the SDK `RDSProvider`, never
+    // Issue #3993: under an explicit `DeletionPolicy: Delete`, or when the user
+    // opted out with `--skip-final-snapshot` (#4029), an RDS cluster or
+    // instance is deleted through the SDK `RDSProvider`, never
     // `DeleteResource`. The registry handler takes a final snapshot whenever
     // the request's `snapshotRequested` is null, and Cloud Control always
     // leaves it null, so every Cloud Control delete left an untagged
-    // `rds-snapshot-<random>` behind. An ABSENT policy keeps the handler: its
-    // snapshot is what CloudFormation's `Snapshot` default for these types
-    // takes. `DeletionPolicy: Snapshot` never reaches here (the fail-closed
-    // above).
-    if (context?.deletionPolicy === 'Delete' && RDS_SDK_DELETE_TYPES.has(resourceType)) {
+    // `rds-snapshot-<random>` behind. A `Snapshot` policy, explicit or
+    // CloudFormation's absent default (#4030), is refused on this route by the
+    // caller, or fails closed above.
+    if (
+      (context?.deletionPolicy === 'Delete' || context?.skipFinalSnapshot === true) &&
+      RDS_SDK_DELETE_TYPES.has(resourceType)
+    ) {
       if (deletesThroughRdsSdk(resourceType, _properties)) {
         const delegate = await this.rdsDeleteDelegateInCcRegion(
           resourceType,

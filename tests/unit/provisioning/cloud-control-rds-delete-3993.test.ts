@@ -141,6 +141,19 @@ describe('CloudControlProvider.delete sends RDS clusters and instances to the SD
     expect(mockRdsCtor).toHaveBeenCalledWith({ region: 'eu-west-1' });
   });
 
+  it.each([
+    ['absent policy', { skipFinalSnapshot: true }],
+    ['explicit Snapshot', { deletionPolicy: 'Snapshot', skipFinalSnapshot: true }],
+  ])(
+    '--skip-final-snapshot (%s) delegates: the opt-out must not get the handler snapshot (issue #4029)',
+    async (_label, context) => {
+      await provider.delete('Db', 'db-1', CLUSTER, {}, context);
+
+      expect(mockRdsDelete).toHaveBeenCalledTimes(1);
+      expect(ccCommandNames()).not.toContain('DeleteResourceCommand');
+    }
+  );
+
   it('refuses, before any delegate, when the Cloud Control client region is unresolvable', async () => {
     ccRegion.value = undefined;
 
@@ -154,7 +167,7 @@ describe('CloudControlProvider.delete sends RDS clusters and instances to the SD
 
   it.each([
     ['absent', {}],
-    ['Snapshot with --skip-final-snapshot (no identifier)', { deletionPolicy: 'Snapshot' }],
+    ['Snapshot with no identifier and no opt-out', { deletionPolicy: 'Snapshot' }],
     ['RetainExceptOnCreate', { deletionPolicy: 'RetainExceptOnCreate' }],
   ])(
     'a policy that is not an explicit Delete (%s) keeps Cloud Control and its snapshot',

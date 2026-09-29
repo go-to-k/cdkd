@@ -18,8 +18,10 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   #1160 reset-on-removal assertions: `DeletionProtection` +
   `EnableIAMDatabaseAuthentication` are set in phase 1 and DROPPED in the
   `CDKD_TEST_UPDATE=true` phase; verify.sh asserts both reset to their
-  CloudFormation defaults (false), and the final destroy runs WITHOUT
-  `--remove-protection` as proof the `DeletionProtection` reset landed.
+  CloudFormation defaults (false). Phase 2b turns the guard back on and proves
+  a failed `--remove-protection` destroy restores it (issue #2204). It
+  declares no `DeletionPolicy`, so its destroy takes CloudFormation's default
+  final snapshot, which verify.sh asserts and then deletes (issue #4030).
 
 ## Outputs
 

@@ -123,11 +123,21 @@ export interface DeleteContext {
    * resource removed from the template. Other delete sites leave it absent.
    *
    * Read by `CloudControlProvider.delete` alone (issue #3993): an RDS cluster
-   * or instance leaves Cloud Control's snapshotting delete handler only on an
-   * EXPLICIT `Delete`. Absent keeps the handler, whose snapshot matches
-   * CloudFormation's `Snapshot` default for these types.
+   * or instance leaves Cloud Control's snapshotting delete handler on an
+   * EXPLICIT `Delete` (or under {@link skipFinalSnapshot}). An absent policy
+   * means CloudFormation's `Snapshot` default for these types (issue #4030),
+   * which the caller refuses on the Cloud Control route before any delete.
    */
   deletionPolicy?: string | undefined;
+
+  /**
+   * The user passed `--skip-final-snapshot`: no final snapshot of any kind,
+   * whatever the policy. Set by the destroy, deploy-removal and rollback
+   * create deletes. `CloudControlProvider.delete` reads it to keep an RDS
+   * cluster or instance off the registry handler, which would otherwise take
+   * its own snapshot (issues #3993, #4029).
+   */
+  skipFinalSnapshot?: boolean | undefined;
 }
 
 /**

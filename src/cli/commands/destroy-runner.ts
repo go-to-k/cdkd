@@ -23,6 +23,7 @@ import {
   buildFinalSnapshotIdentifier,
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
+  effectiveDeletionPolicy,
   isFinalSnapshotError,
   unsupportedFinalSnapshotError,
 } from '../../provisioning/final-snapshot.js';
@@ -1676,11 +1677,17 @@ export async function runDestroyForStack(
           // atomic final-snapshot delete param for the SDK-routed Tier-A
           // types, pre-delete snapshot+wait for the CC-routed
           // `PRE_DELETE_SNAPSHOT_TYPES`, refusal otherwise (opt out with
-          // `--skip-final-snapshot`). Pre-v5 state has no recorded
-          // `deletionPolicy`, so legacy state keeps the plain-delete behavior
-          // until a redeploy records the attribute.
+          // `--skip-final-snapshot`). No recorded `deletionPolicy` (pre-v5
+          // state, or a template without the attribute) is CloudFormation's
+          // default: `Snapshot` for an RDS cluster or standalone instance
+          // (issue #4030), else a plain delete.
           let finalSnapshotIdentifier: string | undefined;
-          if (resource.deletionPolicy === 'Snapshot' && ctx.skipFinalSnapshot !== true) {
+          const policy = effectiveDeletionPolicy(
+            resource.resourceType,
+            resource.deletionPolicy,
+            resource.properties
+          );
+          if (policy === 'Snapshot' && ctx.skipFinalSnapshot !== true) {
             if (
               ATOMIC_FINAL_SNAPSHOT_TYPES.has(resource.resourceType) &&
               resource.provisionedBy !== 'cc-api'
@@ -1781,6 +1788,7 @@ export async function runDestroyForStack(
                       ...(resource.deletionPolicy !== undefined && {
                         deletionPolicy: resource.deletionPolicy,
                       }),
+                      ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
                     }
                   );
                   // Assign INSIDE the loop, not after it: the loop can

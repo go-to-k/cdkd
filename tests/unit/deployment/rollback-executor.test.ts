@@ -174,6 +174,25 @@ describe('classifyRollbackOp', () => {
     expect(classifyRollbackOp(op, state, new Set())).toBe('delete-with-final-snapshot');
   });
 
+  it.each([
+    ['a DBCluster', 'AWS::RDS::DBCluster', {}, 'delete-with-final-snapshot'],
+    ['a standalone DBInstance', 'AWS::RDS::DBInstance', {}, 'delete-with-final-snapshot'],
+    ['a cluster-member DBInstance', 'AWS::RDS::DBInstance', { DBClusterIdentifier: 'c1' }, 'delete'],
+    ['an S3 bucket', 'AWS::S3::Bucket', {}, 'delete'],
+  ])(
+    'CREATE with NO policy on %s → the CloudFormation default (issue #4030)',
+    (_label, resourceType, properties, expected) => {
+      const op: CompletedOperation = {
+        logicalId: 'Db',
+        changeType: 'CREATE',
+        resourceType,
+        physicalId: 'phys-db',
+      };
+      const state = { Db: res({ physicalId: 'phys-db', resourceType, properties }) };
+      expect(classifyRollbackOp(op, state, new Set())).toBe(expected);
+    }
+  );
+
   it('CREATE with RetainExceptOnCreate policy → delete (cleanup of failed create)', () => {
     const op: CompletedOperation = {
       logicalId: 'B',
@@ -2327,6 +2346,16 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
       ).toBe('delete-failed-create-with-final-snapshot');
     });
 
+    it.each([
+      ['AWS::RDS::DBCluster', 'delete-failed-create-with-final-snapshot'],
+      ['AWS::RDS::DBInstance', 'delete-failed-create-with-final-snapshot'],
+      ['AWS::EC2::Volume', 'delete-failed-create'],
+    ])('NO policy on %s → the CloudFormation default (issue #4030)', (type, expected) => {
+      expect(classifyFailedOp(failedCreate(type), stateWithPolicy(type, undefined))).toBe(
+        expected
+      );
+    });
+
     it('RetainExceptOnCreate → delete-failed-create (this IS the on-create case it opts out of)', () => {
       expect(
         classifyFailedOp(
@@ -2521,6 +2550,9 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
     expect(
       (del.mock.calls[0]![4] as Record<string, unknown>)['finalSnapshotIdentifier']
     ).toBeUndefined();
+    // Issue #4029: the opt-out reaches the provider, so a Cloud Control-routed
+    // RDS delete stays off the registry handler that snapshots on its own.
+    expect((del.mock.calls[0]![4] as Record<string, unknown>)['skipFinalSnapshot']).toBe(true);
     expect(state['Res']).toBeUndefined();
     // The outcome above is byte-identical to the PRE-#1362 policy-blind
     // delete, so it cannot bind on its own. The audit line is what says a

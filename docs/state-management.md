@@ -472,13 +472,13 @@ carry the attribute) into the resource record, and the next deploy's
 comparator has a real baseline to diff against. **`cdkd destroy` and
 `cdkd state destroy`** honor `state.deletionPolicy` for the
 `Retain` / `RetainExceptOnCreate` skip (the AWS resource is kept; the
-cdkd state record is dropped). `cdkd destroy` (synth-driven) falls
-back to the synth template's `DeletionPolicy` attribute when state has
-no recorded value, preserving pre-v5 back-compat mid-flight. `cdkd
-state destroy` is template-less by design and reads `state.deletionPolicy`
-only — pre-v5 state therefore behaves as before (every resource is
-deleted, since there is no signal to skip on; redeploy under v5 to
-populate the field). `DeletionPolicy: Snapshot` is honored on the same
+cdkd state record is dropped). Both read `state.deletionPolicy` only,
+never the template's attribute, so pre-v5 state has no signal to skip on
+(redeploy under v5 to populate the field). A deploy's DELETE of a resource
+removed from the template falls back to the template's `DeletionPolicy`
+when state has no recorded value. With no recorded policy, an `AWS::RDS::DBCluster` or a
+standalone `AWS::RDS::DBInstance` takes CloudFormation's default, `Snapshot`.
+`DeletionPolicy: Snapshot` is honored on the same
 paths: cdkd creates the final snapshot CloudFormation
 promises before deleting (see the "DeletionPolicy: Snapshot" section in
 [Destroy flags & guards](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics and the
