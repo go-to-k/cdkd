@@ -92,7 +92,10 @@ purely about naming policy.
 - The names are written into the bootstrap marker, and every consumer — the
   deploy-time redirect and template rewrite, publishing, verification,
   `cdkd state info`, teardown — reads them from the marker from then on.
-- A plain re-run of `cdkd bootstrap` keeps the marker's existing names.
+- A plain re-run of `cdkd bootstrap` keeps the marker's existing names. A
+  marker naming a bucket or repository these rules reject is treated as
+  malformed: the re-run warns, naming what it recorded, and rewrites it with
+  the default names, and every other command refuses it.
 - Re-bootstrapping a region with names that **differ** from its marker is a hard
   error (`ASSET_STORAGE_NAME_CONFLICT`): changing names would strand the
   existing storage and everything published to it. Run

@@ -326,6 +326,20 @@ describe('cdkd bootstrap --destroy', () => {
     expect(s3CommandNames()).not.toContain(CreateBucketCommand.name);
   });
 
+  it('refuses a marker naming an invalid bucket, deleting nothing (go-to-k/cdkd#4114)', async () => {
+    stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+      key === MARKER_KEY
+        ? JSON.stringify({ ...JSON.parse(MARKER_BODY), assetBucket: 'Some Other Bucket' })
+        : null
+    );
+
+    await expect(runDestroy(['--yes', '--force'])).rejects.toThrow(/is malformed/);
+
+    expect(s3CommandNames()).toEqual([]);
+    expect(mockEcrSend).not.toHaveBeenCalled();
+    expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalled();
+  });
+
   it('PURGES the marker key noncurrent versions after deleting it (issue #2346 site 6)', async () => {
     // The state bucket is VERSIONED, so `deleteRawObjects` only writes a
     // DELETE MARKER and the marker object's prior bodies stay readable via

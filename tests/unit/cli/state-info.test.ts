@@ -467,16 +467,24 @@ describe('cdkd state info', () => {
     });
 
     it('a body carrying the row separator cannot spoof the `: a / b` annotation', async () => {
+      // Such a name is not a valid bucket name, so the marker is refused as
+      // malformed and skipped with a warning (go-to-k/cdkd#4114): no row at
+      // all, forged or otherwise.
       scriptMarker('us-east-1', marker('evil / x\n  eu-west-1: a', 'repo (x)'));
       const out = await runStateInfo(['info']);
 
       expect(out.split('\n').filter((l) => l.startsWith('  eu-west-1'))).toEqual([]);
-      expect(out).toContain('  us-east-1: "evil / x   eu-west-1: a" / "repo (x)"');
+      expect(out).not.toContain('us-east-1:');
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('Skipping malformed/unreadable bootstrap marker');
+      expect(warned).toContain('is not a valid name');
     });
 
     it('--json escapes a planted C1 / separator character and round-trips it (go-to-k/cdkd#3163)', async () => {
       const planted = 'us-east-1\u009b[2J x';
-      scriptMarker(planted, marker('bucket‮evil', 'repo​'));
+      // The names are valid (a marker naming an invalid one is skipped,
+      // go-to-k/cdkd#4114); the planted characters ride in the region key.
+      scriptMarker(planted, marker('good-bucket', 'good-repo'));
       const out = await runStateInfo(['info', '--json']);
 
       expect(out.replace(/\n/g, '')).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
@@ -487,8 +495,8 @@ describe('cdkd state info', () => {
       expect(parsed.assetStorage).toHaveLength(1);
       expect(parsed.assetStorage[0]).toMatchObject({
         region: planted,
-        assetBucket: 'bucket‮evil',
-        containerRepo: 'repo​',
+        assetBucket: 'good-bucket',
+        containerRepo: 'good-repo',
       });
     });
 

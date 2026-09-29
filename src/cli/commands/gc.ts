@@ -475,9 +475,10 @@ function buildReferenceExtractors(marker: BootstrapMarker): {
   //   the marker's. Note the reason is the MARKER, not S3's naming rules:
   //   legacy pre-2018 `us-east-1` buckets could carry upper case, so
   //   "S3 forbids it" would be false — but the name gc compares against comes
-  //   from the bootstrap marker, and `validateAssetBucketName` holds that to
-  //   lower case, so an upper-cased spelling in a byte-compared position is
-  //   never this bucket. Matched EXACTLY.
+  //   from the bootstrap marker, and `parseBootstrapMarker` holds that to
+  //   `validateAssetBucketName`'s lower-case rule (go-to-k/cdkd#4114), so an
+  //   upper-cased spelling in a byte-compared position is never this bucket.
+  //   Matched EXACTLY.
   // - path-style `https://s3.<region>.<suffix>/<bucket>/<key>` — the bucket is
   //   a PATH segment, and S3 compares those byte for byte. Same conclusion, so
   //   also matched EXACTLY.

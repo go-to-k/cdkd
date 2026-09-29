@@ -413,12 +413,17 @@ export function validateAssetBucketName(name: string): void {
   }
 }
 
+/** The ECR repository name rule `validateContainerRepoName` and the marker parse share. */
+function isValidContainerRepoName(name: string): boolean {
+  return name.length >= 2 && name.length <= 256 && CONTAINER_REPO_NAME_PATTERN.test(name);
+}
+
 /**
  * Validate a custom container-asset ECR repository name
  * (`cdkd bootstrap --container-repo`). Throws before any AWS call.
  */
 export function validateContainerRepoName(name: string): void {
-  if (name.length < 2 || name.length > 256 || !CONTAINER_REPO_NAME_PATTERN.test(name)) {
+  if (!isValidContainerRepoName(name)) {
     throw new CdkdError(
       `--container-repo '${name}' is not a valid ECR repository name. Repository names ` +
         `must be 2-256 characters of lowercase letters and digits, optionally separated ` +
@@ -501,6 +506,38 @@ function shownName(value: string): string {
 }
 
 /**
+ * The names a malformed marker being rewritten recorded that the rewrite does
+ * NOT keep, for the rewrite warning (go-to-k/cdkd#4114): a marker with one
+ * invalid name loses its valid one too, so storage it tracked is no longer
+ * found by `cdkd gc` / `bootstrap --destroy` unless the operator is told which.
+ * A recorded name equal to the one written back is omitted, so the clause is
+ * never a false alarm. Rendered through `shownName`; empty when nothing is
+ * dropped.
+ */
+function droppedMarkerNames(body: string, assetBucket: string, containerRepo: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return '';
+  }
+  const fields = (parsed ?? {}) as { assetBucket?: unknown; containerRepo?: unknown };
+  const dropped = (value: unknown, kept: string): value is string =>
+    typeof value === 'string' && value !== '' && value !== kept;
+  const named = [
+    dropped(fields.assetBucket, assetBucket)
+      ? `asset bucket ${shownName(fields.assetBucket)}`
+      : undefined,
+    dropped(fields.containerRepo, containerRepo)
+      ? `container repository ${shownName(fields.containerRepo)}`
+      : undefined,
+  ].filter((n): n is string => n !== undefined);
+  return named.length === 0
+    ? ''
+    : ` It recorded ${named.join(' and ')}; storage under those names is no longer tracked by cdkd.`;
+}
+
+/**
  * `Asset bucket name '<name>'` for a plain name. The name can come from the
  * marker's body (`ensureAssetStorage` reuses it when no `--asset-bucket` is
  * passed, and `verifyAssetStorageExists` checks its region), so any other is
@@ -569,6 +606,23 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     throw new CdkdError(
       `${markerSubject(markerKey)} in the state bucket is malformed ` +
         `(missing assetBucket / containerRepo / assetSupportVersion). ` +
+        `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
+      'INVALID_BOOTSTRAP_MARKER'
+    );
+  }
+  // The names are held to the `--asset-bucket` / `--container-repo` rules, as
+  // every marker cdkd writes already is (go-to-k/cdkd#4114). The body is chosen
+  // by anyone with `s3:PutObject` on the state bucket, and every reader sends
+  // these names to S3 / ECR or deletes by them. A name no real bucket or
+  // repository can have is malformed, so `cdkd bootstrap` rewrites the marker
+  // and every other reader refuses.
+  if (
+    !ASSET_BUCKET_NAME_PATTERN.test(marker.assetBucket) ||
+    !isValidContainerRepoName(marker.containerRepo)
+  ) {
+    throw new CdkdError(
+      `${markerSubject(markerKey)} in the state bucket is malformed ` +
+        `(its asset bucket or container repository name is not a valid name). ` +
         `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER'
     );
@@ -768,6 +822,7 @@ export async function ensureAssetStorage(
   // lane; this read follows it, whichever spelling that lands on.
   const markerKey = getBootstrapMarkerKey(region);
   let existingMarker: BootstrapMarker | null = null;
+  let malformedBody: string | undefined;
   const existingBody = await stateBackend.getRawObject(markerKey);
   if (existingBody !== null) {
     try {
@@ -781,10 +836,9 @@ export async function ensureAssetStorage(
       }
       // Corrupt / malformed marker: re-running bootstrap is the documented
       // fix ("Re-run 'cdkd bootstrap' ... to rewrite it"), so treat it as
-      // absent and rewrite it below.
-      logger.warn(
-        `${markerSubject(markerKey)} is malformed — rewriting it as part of this bootstrap.`
-      );
+      // absent and rewrite it below. Warned once the names are resolved, so
+      // the warning names only what the rewrite actually drops.
+      malformedBody = existingBody;
     }
   }
 
@@ -825,6 +879,12 @@ export async function ensureAssetStorage(
     options.containerRepoName ??
     existingMarker?.containerRepo ??
     getCdkdContainerRepoName(accountId, region);
+  if (malformedBody !== undefined) {
+    logger.warn(
+      `${markerSubject(markerKey)} is malformed — rewriting it as part of this bootstrap.` +
+        droppedMarkerNames(malformedBody, assetBucket, containerRepo)
+    );
+  }
 
   // 1. Asset bucket.
   let bucketExists = false;
