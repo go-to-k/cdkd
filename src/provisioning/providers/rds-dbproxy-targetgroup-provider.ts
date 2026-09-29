@@ -32,11 +32,117 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { holdsSecretDerivedEntry, recordedPrincipalsRepair } from '../iam-policy-targets.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+
+/**
+ * A SUPERSET of an RDS DB cluster or DB instance identifier: a letter, then up
+ * to 62 letters, digits or hyphens, at RDS's 63-character cap. RDS also forbids
+ * a trailing hyphen and `--`, which this admits (AWS rejects those itself). An
+ * entry outside it names no proxy target.
+ */
+const RDS_TARGET_IDENTIFIER = /^[A-Za-z][A-Za-z0-9-]{0,62}$/;
+
+/** The two target lists, each passed as the caller's own read of its bag. */
+type TargetListValues = {
+  DBClusterIdentifiers: unknown;
+  DBInstanceIdentifiers: unknown;
+};
+type TargetListKind = keyof TargetListValues;
+
+/** What {@link readTargetLists} found: every well-formed list, and which were not. */
+interface TargetLists {
+  /** A well-formed list as its identifiers; an absent or malformed one as `[]`. */
+  lists: Record<TargetListKind, string[]>;
+  malformed: TargetListKind[];
+  /** The malformed kinds holding a dynamic reference or cdkd's mask. */
+  secretDerived: TargetListKind[];
+}
+
+/**
+ * Read `DBClusterIdentifiers` / `DBInstanceIdentifiers` before any call names a
+ * target (go-to-k/cdkd#3945). `undefined` / `null` is absent (no targets); a
+ * list whose every entry is an {@link RDS_TARGET_IDENTIFIER} is itself; ANY
+ * other value is malformed. The lists used to be cast to `string[]`, so a
+ * string was walked character by character: `new Set("prod-cluster")` made
+ * `update()` deregister the real target and register `p`, `r`, `o`, ... —
+ * one-letter identifiers an unrelated DB instance can carry. `create()` and
+ * `delete()` handed the value to the SDK, whose serializer sends NO list for a
+ * string, so the call named no target at all. A caller refuses a malformed
+ * list before any AWS call.
+ */
+function readTargetLists(values: TargetListValues): TargetLists {
+  const lists: Record<TargetListKind, string[]> = {
+    DBClusterIdentifiers: [],
+    DBInstanceIdentifiers: [],
+  };
+  const malformed: TargetListKind[] = [];
+  const secretDerived: TargetListKind[] = [];
+  for (const kind of ['DBClusterIdentifiers', 'DBInstanceIdentifiers'] as const) {
+    const value = values[kind];
+    if (value === undefined || value === null) continue;
+    if (
+      Array.isArray(value) &&
+      value.every((v) => typeof v === 'string' && RDS_TARGET_IDENTIFIER.test(v))
+    ) {
+      lists[kind] = value as string[];
+      continue;
+    }
+    malformed.push(kind);
+    if (holdsSecretDerivedEntry(value)) secretDerived.push(kind);
+  }
+  return { lists, malformed, secretDerived };
+}
+
+/**
+ * What an `update()` refusal says about a secret-derived recorded list: it is
+ * refused only while a DESIRED list is malformed too, since otherwise
+ * `update()` reads the recorded side from the proxy instead.
+ */
+const SECRET_DERIVED_TARGETS_REPAIR =
+  'cdkd reads it from the proxy instead once the desired lists are well-formed';
+
+/**
+ * A recorded or desired `DBProxyName`, or `undefined` when it is not a
+ * non-empty string. Never cast: the SDK sends `{}` as `[object Object]`, whose
+ * NotFound a delete would read as "already gone".
+ */
+function readProxyName(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/**
+ * The entries of `from` absent from `against`, compared case-insensitively:
+ * RDS stores identifiers lowercased, so `MyCluster` and `mycluster` name one
+ * target, and a case-only difference must not deregister and re-register it.
+ */
+function missingIdentifiers(from: readonly string[], against: readonly string[]): string[] {
+  const seen = new Set(against.map((id) => id.toLowerCase()));
+  const out: string[] = [];
+  for (const id of from) {
+    const key = id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(id);
+  }
+  return out;
+}
+
+/**
+ * The `ResourceDeleteResult.reason` for a delete whose recorded target list is
+ * malformed. Fixed wording: a reason is classified by SUBSTRING
+ * (`.claude/rules/provider-delete-path.md`).
+ */
+export const MALFORMED_TARGETS_SKIP_REASON =
+  'malformed target list in state — no target deregistered';
+
+/** The same, for a recorded `TargetGroupName` other than `default`. */
+export const NON_DEFAULT_GROUP_SKIP_REASON =
+  'target group name other than default in state — no target deregistered';
 
 /**
  * AWS RDS DBProxyTargetGroup Provider
@@ -66,12 +172,18 @@ import {
  *   `DescribeDBProxyTargetGroups` to recover the TargetGroupArn for state,
  *   then `AddTagsToResource` on that ARN when `Tags` is declared (the schema
  *   is `tagOnCreate: false`, so tagging is always a separate call).
- * - `update`: pool config, target and `Tags` diffs in place (see `update()`).
+ * - `update`: `ModifyDBProxyTargetGroup` for a pool config change, then
+ *   `DeregisterDBProxyTargets` / `RegisterDBProxyTargets` for the target
+ *   diff, then the `Tags` diff; a `DBProxyName` / `TargetGroupName` change is
+ *   rejected via `ResourceUpdateNotSupportedError`.
  * - `delete`: `DeregisterDBProxyTargets` for every registered target.
  *   `DBProxyNotFoundFault` / `DBProxyTargetGroupNotFoundFault` /
  *   `DBProxyTargetNotFoundFault` are treated as idempotent success
  *   (region-match-gated) — the parent DBProxy may already have been
  *   deleted by a sibling cdkd delete or by AWS CASCADE.
+ * - Every method that names a target reads both target lists through
+ *   `readTargetLists` first and refuses (or, on delete, skips) a malformed one
+ *   before any AWS call (go-to-k/cdkd#3945).
  * - `getAttribute`: `TargetGroupArn` returns the physicalId; `TargetGroupName`
  *   returns `'default'`.
  *
@@ -112,7 +224,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    const dbProxyName = properties['DBProxyName'] as string | undefined;
+    const dbProxyName = readProxyName(properties['DBProxyName']);
     if (!dbProxyName) {
       throw new ProvisioningError(
         `DBProxyName is required for AWS::RDS::DBProxyTargetGroup ${logicalId}`,
@@ -126,11 +238,26 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       'AWS::RDS::DBProxyTargetGroup TargetGroupName',
       replayWarn(this.logger, context)
     );
-    const dbClusterIdentifiers = properties['DBClusterIdentifiers'] as string[] | undefined;
-    const dbInstanceIdentifiers = properties['DBInstanceIdentifiers'] as string[] | undefined;
+    // go-to-k/cdkd#3945: refused before any call, the pool config included — a
+    // rollback's reverse-replacement create replays a state record here too.
+    const targets = readTargetLists({
+      DBClusterIdentifiers: properties['DBClusterIdentifiers'],
+      DBInstanceIdentifiers: properties['DBInstanceIdentifiers'],
+    });
+    if (targets.malformed.length > 0) {
+      throw new ProvisioningError(
+        `${targets.malformed.join(' / ')} of AWS::RDS::DBProxyTargetGroup ${logicalId} is not a ` +
+          `list of RDS DB identifiers — no target registered`,
+        resourceType,
+        logicalId
+      );
+    }
+    const dbClusterIdentifiers = targets.lists.DBClusterIdentifiers;
+    const dbInstanceIdentifiers = targets.lists.DBInstanceIdentifiers;
     const connectionPoolConfig = properties['ConnectionPoolConfigurationInfo'] as
       | Record<string, unknown>
       | undefined;
+    const mask = context?.maskSecrets ?? ((t: string) => t);
     // Refused before the first call: a malformed list would otherwise surface
     // only after the targets are registered. A state replay cannot fix its
     // record from the template, so there it warns and skips tagging, and the
@@ -138,7 +265,6 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     const tagRefusal = tagListRefusal(properties['Tags']);
     const skipTags = tagRefusal !== undefined && context?.replayingState === true;
     if (skipTags) {
-      const mask = context?.maskSecrets ?? ((t: string) => t);
       this.logger.warn(
         mask(
           safeMsg`${logicalId}: the recorded Tags ${tagRefusal}; re-creating the target group without tags.`
@@ -152,7 +278,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     const client = this.getClient();
 
     if (connectionPoolConfig) {
-      this.logger.debug(`Applying connection pool config to ${dbProxyName}/${targetGroupName}`);
+      this.logger.debug(
+        mask(`Applying connection pool config to ${dbProxyName}/${targetGroupName}`)
+      );
       try {
         await client.send(
           new ModifyDBProxyTargetGroupCommand({
@@ -171,22 +299,23 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       }
     }
 
-    if (
-      (dbClusterIdentifiers && dbClusterIdentifiers.length > 0) ||
-      (dbInstanceIdentifiers && dbInstanceIdentifiers.length > 0)
-    ) {
+    if (dbClusterIdentifiers.length > 0 || dbInstanceIdentifiers.length > 0) {
       this.logger.debug(
-        `Registering targets for ${dbProxyName}/${targetGroupName}: ` +
-          `clusters=[${dbClusterIdentifiers?.join(',') ?? ''}], ` +
-          `instances=[${dbInstanceIdentifiers?.join(',') ?? ''}]`
+        mask(
+          `Registering targets for ${dbProxyName}/${targetGroupName}: ` +
+            `clusters=[${dbClusterIdentifiers.map(mask).join(',')}], ` +
+            `instances=[${dbInstanceIdentifiers.map(mask).join(',')}]`
+        )
       );
       try {
         await client.send(
           new RegisterDBProxyTargetsCommand({
             DBProxyName: dbProxyName,
             TargetGroupName: targetGroupName,
-            DBClusterIdentifiers: dbClusterIdentifiers,
-            DBInstanceIdentifiers: dbInstanceIdentifiers,
+            DBClusterIdentifiers:
+              dbClusterIdentifiers.length > 0 ? dbClusterIdentifiers : undefined,
+            DBInstanceIdentifiers:
+              dbInstanceIdentifiers.length > 0 ? dbInstanceIdentifiers : undefined,
           })
         );
       } catch (error) {
@@ -280,7 +409,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    const dbProxyName = properties['DBProxyName'] as string | undefined;
+    const dbProxyName = readProxyName(properties['DBProxyName']);
     if (!dbProxyName) {
       throw new ProvisioningError(
         `DBProxyName is required for AWS::RDS::DBProxyTargetGroup ${logicalId} update`,
@@ -332,12 +461,85 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       }
     }
 
+    // go-to-k/cdkd#3945: both sides are read as target lists before ANY call,
+    // the pool config included. The previous side is the state record, and a
+    // rollback revert or `drift --revert` replays this method with a recorded
+    // bag as the DESIRED side, so neither is trusted to be a list. A refusal,
+    // not a warning, on every caller: a malformed list names no target, and
+    // any diff against it deregisters a real one or registers a stranger.
+    const next = readTargetLists({
+      DBClusterIdentifiers: properties['DBClusterIdentifiers'],
+      DBInstanceIdentifiers: properties['DBInstanceIdentifiers'],
+    });
+    let prev = readTargetLists({
+      DBClusterIdentifiers: previousProperties['DBClusterIdentifiers'],
+      DBInstanceIdentifiers: previousProperties['DBInstanceIdentifiers'],
+    });
+    const mask = context?.maskSecrets ?? ((t: string) => t);
+    // A recorded list cdkd keeps as a dynamic reference or its mask is read
+    // from the proxy instead, when the desired side is well-formed (the IAM
+    // `readPrincipalSides` rule, go-to-k/cdkd#3906). ADD-only: the live list
+    // is narrowed to the desired identifiers, so nothing is deregistered on
+    // its evidence — a target registered elsewhere stays, and is warned about.
+    if (
+      next.malformed.length === 0 &&
+      prev.malformed.length > 0 &&
+      prev.malformed.every((k) => prev.secretDerived.includes(k))
+    ) {
+      let live: Record<TargetListKind, string[]>;
+      try {
+        live = await this.readLiveTargets(dbProxyName, targetGroupName);
+      } catch (error) {
+        throw new ProvisioningError(
+          `the recorded ${prev.malformed.join(' / ')} of AWS::RDS::DBProxyTargetGroup ${logicalId} ` +
+            `is secret-derived and could not be read from the proxy — no target registered or ` +
+            `deregistered, and the connection pool left unchanged`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
+      const lists = { ...prev.lists };
+      for (const kind of prev.malformed) {
+        const extra = missingIdentifiers(live[kind], next.lists[kind]);
+        lists[kind] = missingIdentifiers(live[kind], extra);
+        if (extra.length > 0) {
+          this.logger.warn(
+            safeMsg`The recorded ${kind} of DB proxy target group ${logicalId} is secret-derived, so cdkd read it from the proxy; the proxy also holds ${extra.length} target(s) the template does not declare, which cdkd leaves registered.`
+          );
+        }
+      }
+      prev = { lists, malformed: [], secretDerived: [] };
+    }
+    if (next.malformed.length > 0 || prev.malformed.length > 0) {
+      const which = [
+        ...next.malformed.map((k) => `desired ${k}`),
+        ...prev.malformed.map((k) => `recorded ${k}`),
+      ];
+      throw new ProvisioningError(
+        `${which.join(' / ')} of AWS::RDS::DBProxyTargetGroup ${logicalId} is not a list of RDS ` +
+          `DB identifiers — no target registered or deregistered, and the connection pool ` +
+          `left unchanged` +
+          (prev.malformed.length > 0
+            ? `: ${recordedPrincipalsRepair(
+                prev.malformed,
+                prev.secretDerived,
+                'RDS DB identifiers',
+                SECRET_DERIVED_TARGETS_REPAIR
+              )}`
+            : ''),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
     // Tags removals are the gap between the two lists, so a malformed DESIRED
     // list read as empty would strip every live tag: refused on every path,
     // before any call (issue #3948). A malformed RECORDED list only hides
     // removals, and every add is idempotent, so it degrades to adds alone.
     const desiredTags = readTagList(properties['Tags'], resourceType, logicalId, physicalId);
-    const mask = context?.maskSecrets ?? ((t: string) => t);
     const recordedTags = readRecordedTagList(previousProperties['Tags'], (message) =>
       this.logger.warn(mask(safeMsg`${logicalId}: ${message}`))
     );
@@ -352,7 +554,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       | Record<string, unknown>
       | undefined;
     if (JSON.stringify(oldPool) !== JSON.stringify(newPool)) {
-      this.logger.debug(`Updating connection pool config for ${dbProxyName}/${targetGroupName}`);
+      this.logger.debug(
+        mask(`Updating connection pool config for ${dbProxyName}/${targetGroupName}`)
+      );
       try {
         await client.send(
           new ModifyDBProxyTargetGroupCommand({
@@ -370,20 +574,30 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
 
     // 2. Target diff: deregister removed, register added. Process clusters
     // and instances independently so the SDK call shape stays clean.
-    const oldClusters = new Set((previousProperties['DBClusterIdentifiers'] as string[]) ?? []);
-    const newClusters = new Set((properties['DBClusterIdentifiers'] as string[]) ?? []);
-    const oldInstances = new Set((previousProperties['DBInstanceIdentifiers'] as string[]) ?? []);
-    const newInstances = new Set((properties['DBInstanceIdentifiers'] as string[]) ?? []);
-
-    const clustersToRemove = [...oldClusters].filter((c) => !newClusters.has(c));
-    const clustersToAdd = [...newClusters].filter((c) => !oldClusters.has(c));
-    const instancesToRemove = [...oldInstances].filter((i) => !newInstances.has(i));
-    const instancesToAdd = [...newInstances].filter((i) => !oldInstances.has(i));
+    const clustersToRemove = missingIdentifiers(
+      prev.lists.DBClusterIdentifiers,
+      next.lists.DBClusterIdentifiers
+    );
+    const clustersToAdd = missingIdentifiers(
+      next.lists.DBClusterIdentifiers,
+      prev.lists.DBClusterIdentifiers
+    );
+    const instancesToRemove = missingIdentifiers(
+      prev.lists.DBInstanceIdentifiers,
+      next.lists.DBInstanceIdentifiers
+    );
+    const instancesToAdd = missingIdentifiers(
+      next.lists.DBInstanceIdentifiers,
+      prev.lists.DBInstanceIdentifiers
+    );
 
     if (clustersToRemove.length > 0 || instancesToRemove.length > 0) {
       this.logger.debug(
-        `Deregistering targets from ${dbProxyName}/${targetGroupName}: ` +
-          `clusters=[${clustersToRemove.join(',')}], instances=[${instancesToRemove.join(',')}]`
+        mask(
+          `Deregistering targets from ${dbProxyName}/${targetGroupName}: ` +
+            `clusters=[${clustersToRemove.map(mask).join(',')}], ` +
+            `instances=[${instancesToRemove.map(mask).join(',')}]`
+        )
       );
       try {
         await client.send(
@@ -405,8 +619,11 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
 
     if (clustersToAdd.length > 0 || instancesToAdd.length > 0) {
       this.logger.debug(
-        `Registering targets to ${dbProxyName}/${targetGroupName}: ` +
-          `clusters=[${clustersToAdd.join(',')}], instances=[${instancesToAdd.join(',')}]`
+        mask(
+          `Registering targets to ${dbProxyName}/${targetGroupName}: ` +
+            `clusters=[${clustersToAdd.map(mask).join(',')}], ` +
+            `instances=[${instancesToAdd.map(mask).join(',')}]`
+        )
       );
       try {
         await client.send(
@@ -478,41 +695,118 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       })
     );
     if (redactedSkip) return redactedSkip;
-    const dbProxyName = props['DBProxyName'] as string | undefined;
-    const targetGroupName = (props['TargetGroupName'] as string | undefined) ?? 'default';
-    const dbClusterIdentifiers = props['DBClusterIdentifiers'] as string[] | undefined;
-    const dbInstanceIdentifiers = props['DBInstanceIdentifiers'] as string[] | undefined;
+    // A non-string name is read as absent, not cast: the SDK sends `{}` as
+    // `[object Object]`, and the NotFound arm below would then read the miss as
+    // "already gone" and drop the record over the live targets. `default` is
+    // the only group name CloudFormation accepts.
+    const dbProxyName = readProxyName(props['DBProxyName']);
+    const targetGroupName = requireConfigString(
+      props['TargetGroupName'],
+      'default',
+      'AWS::RDS::DBProxyTargetGroup TargetGroupName',
+      { onUnusable: (message) => this.logger.warn(message) }
+    );
+    // go-to-k/cdkd#3945: a recorded list that is not a list of identifiers is
+    // skipped before any call rather than guessing which targets it names: the
+    // SDK sends no list for a string, so the Deregister below would name no
+    // target, and returning after it drops the record over the still-registered
+    // real one.
+    const targets = readTargetLists({
+      DBClusterIdentifiers: props['DBClusterIdentifiers'],
+      DBInstanceIdentifiers: props['DBInstanceIdentifiers'],
+    });
+    // A well-formed record naming no target has nothing to deregister, whatever
+    // its proxy or group name says: it finishes before either name is needed.
+    if (
+      targets.malformed.length === 0 &&
+      targets.lists.DBClusterIdentifiers.length === 0 &&
+      targets.lists.DBInstanceIdentifiers.length === 0
+    ) {
+      this.logger.debug(`No targets recorded for ${logicalId}; nothing to deregister`);
+      return;
+    }
+
+    // CloudFormation accepts only `default` here, so any other recorded name
+    // addresses no group this resource made: a NotFound for it proves nothing
+    // about the real `default` group's targets, and reading it as "already
+    // gone" (the Deregister catch below) would drop the record over them.
+    // Checked BEFORE the missing-DBProxyName remedy, which would otherwise
+    // paste the bogus name into a command. A parent proxy that is itself gone
+    // still finishes.
+    if (targetGroupName !== 'default') {
+      if (
+        dbProxyName &&
+        (await this.proxyConfirmedGone(
+          dbProxyName,
+          undefined,
+          resourceType,
+          logicalId,
+          physicalId,
+          context
+        ))
+      ) {
+        return;
+      }
+      this.logger.warn(
+        safeMsg`The state record for DB proxy target group ${logicalId} holds a TargetGroupName other than 'default', the only value CloudFormation accepts — skipping deletion rather than addressing a group this resource did not make. No deregistration is issued, so its targets stay REGISTERED on the proxy unless this run later deletes the parent DB proxy. The state record is KEPT: repair TargetGroupName in state.json to 'default' and re-run, or deregister the targets by hand. A deploy-side REPLACEMENT or rollback delete instead FAILS the resource (https://github.com/go-to-k/cdkd/issues/1762); there, deregister the targets by hand.`
+      );
+      return { outcome: 'skipped', reason: NON_DEFAULT_GROUP_SKIP_REASON };
+    }
 
     if (!dbProxyName) {
       // No way to deregister without DBProxyName. This shouldn't happen
       // when cdkd state was populated by this provider's create(), but
       // could occur on an imported / hand-edited state. Surface as a real
       // error rather than silently no-op so the user knows to clean up
-      // manually.
+      // manually. The group name is state-borne, so the command goes through
+      // `pasteableAwsCommand` (go-to-k/cdkd#3136). Only `default` reaches here
+      // — any other recorded name took the skip above — so the command never
+      // pastes a record-chosen name.
+      const aws = pasteableAwsCommand();
+      const command =
+        aws`aws rds deregister-db-proxy-targets --db-proxy-name '<proxy-name>' --target-group-name ${targetGroupName}`.render();
       throw new ProvisioningError(
         `DBProxyName missing from state.properties for AWS::RDS::DBProxyTargetGroup ${logicalId}; cannot deregister targets. ` +
-          `Manually run: aws rds deregister-db-proxy-targets --db-proxy-name <proxy-name> --target-group-name ${targetGroupName} ...`,
+          `Manually run ${command} ` +
+          `with --db-cluster-identifiers / --db-instance-identifiers naming the registered targets`,
         resourceType,
         logicalId,
         physicalId
       );
     }
 
-    const hasTargets =
-      (dbClusterIdentifiers && dbClusterIdentifiers.length > 0) ||
-      (dbInstanceIdentifiers && dbInstanceIdentifiers.length > 0);
-
-    if (!hasTargets) {
-      this.logger.debug(
-        `No targets registered for ${dbProxyName}/${targetGroupName}; nothing to deregister`
+    if (targets.malformed.length > 0) {
+      // Exhaust the live source before skipping: a proxy or group already
+      // gone (deleted earlier in this run, or by CASCADE) is a finished delete,
+      // not a skip that would repeat on every destroy. Any other probe outcome
+      // — the group exists, or the probe failed — keeps the skip.
+      if (
+        await this.proxyConfirmedGone(
+          dbProxyName,
+          targetGroupName,
+          resourceType,
+          logicalId,
+          physicalId,
+          context
+        )
+      ) {
+        return;
+      }
+      this.logger.warn(
+        safeMsg`The state record for DB proxy target group ${logicalId} holds a ${targets.malformed.join(' / ')} that is not a list of RDS DB identifiers — skipping deletion rather than guessing which targets it names. The target group still exists (or could not be checked) and no deregistration is issued, so the targets stay REGISTERED on the proxy unless this run later deletes the parent DB proxy (then only the record is stale). The state record is KEPT: on 'cdkd destroy' / 'cdkd state destroy' (which exits non-zero) and on the plain DELETE of a resource removed from the template during cdkd deploy, repair the recorded list in state.json to the identifiers the target group holds ('aws rds describe-db-proxy-targets' lists them) and re-run, or deregister the targets by hand. A deploy-side REPLACEMENT or rollback delete instead FAILS the resource (https://github.com/go-to-k/cdkd/issues/1762); there, deregister the targets by hand.`
       );
-      return;
+      return { outcome: 'skipped', reason: MALFORMED_TARGETS_SKIP_REASON };
     }
+    const dbClusterIdentifiers = targets.lists.DBClusterIdentifiers;
+    const dbInstanceIdentifiers = targets.lists.DBInstanceIdentifiers;
 
+    // Unmasked: `delete()` has no masker (provider-delete-path.md), and every
+    // identifier here passed `readTargetLists` after the redacted-address skip,
+    // so none is a reference, a mask, or anything but a plain RDS identifier.
     this.logger.debug(
       `Deregistering targets from ${dbProxyName}/${targetGroupName}: ` +
-        `clusters=[${dbClusterIdentifiers?.join(',') ?? ''}], ` +
-        `instances=[${dbInstanceIdentifiers?.join(',') ?? ''}]`
+        `clusters=[${dbClusterIdentifiers.join(',')}], ` +
+        `instances=[${dbInstanceIdentifiers.join(',')}]`
     );
 
     try {
@@ -520,8 +814,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         new DeregisterDBProxyTargetsCommand({
           DBProxyName: dbProxyName,
           TargetGroupName: targetGroupName,
-          DBClusterIdentifiers: dbClusterIdentifiers,
-          DBInstanceIdentifiers: dbInstanceIdentifiers,
+          DBClusterIdentifiers: dbClusterIdentifiers.length > 0 ? dbClusterIdentifiers : undefined,
+          DBInstanceIdentifiers:
+            dbInstanceIdentifiers.length > 0 ? dbInstanceIdentifiers : undefined,
         })
       );
     } catch (error) {
@@ -617,8 +912,13 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     _resourceType: string,
     properties: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
-    const dbProxyName = properties['DBProxyName'] as string | undefined;
-    const targetGroupName = (properties['TargetGroupName'] as string | undefined) ?? 'default';
+    const dbProxyName = readProxyName(properties['DBProxyName']);
+    const targetGroupName = requireConfigString(
+      properties['TargetGroupName'],
+      'default',
+      'AWS::RDS::DBProxyTargetGroup TargetGroupName',
+      { onUnusable: (message) => this.logger.warn(message) }
+    );
     if (!dbProxyName) {
       // No way to recover the AWS-side state without the parent name —
       // happens on imported / hand-edited state that lost DBProxyName.
@@ -652,28 +952,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       throw error;
     }
 
-    const dbClusterIdentifiers: string[] = [];
-    const dbInstanceIdentifiers: string[] = [];
+    let live: Record<TargetListKind, string[]>;
     try {
-      const targetsResp = await client.send(
-        new DescribeDBProxyTargetsCommand({
-          DBProxyName: dbProxyName,
-          TargetGroupName: targetGroupName,
-        })
-      );
-      for (const target of targetsResp.Targets ?? []) {
-        const id = target.RdsResourceId;
-        if (!id) continue;
-        if (target.Type === 'TRACKED_CLUSTER') {
-          dbClusterIdentifiers.push(id);
-        } else if (target.Type === 'RDS_INSTANCE') {
-          dbInstanceIdentifiers.push(id);
-        }
-        // `RDS_SERVERLESS_ENDPOINT` targets are silently skipped — the
-        // CFn `AWS::RDS::DBProxyTargetGroup` schema has no input slot for
-        // them (only `DBClusterIdentifiers` / `DBInstanceIdentifiers`),
-        // so they can't drift on a cdkd-managed target group.
-      }
+      live = await this.readLiveTargets(dbProxyName, targetGroupName);
     } catch (error) {
       if (
         error instanceof DBProxyNotFoundFault ||
@@ -685,11 +966,29 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       throw error;
     }
 
+    // RDS reports identifiers lowercased; a live id matching a recorded one
+    // case-insensitively is reported in the RECORDED spelling, so a template's
+    // `MyCluster` is not phantom drift against AWS's `mycluster` (the same
+    // equality `update()`'s diff uses).
+    const recorded = readTargetLists({
+      DBClusterIdentifiers: properties['DBClusterIdentifiers'],
+      DBInstanceIdentifiers: properties['DBInstanceIdentifiers'],
+    }).lists;
+    const inRecordedSpelling = (ids: string[], spellings: string[]): string[] => {
+      const byKey = new Map(spellings.map((s) => [s.toLowerCase(), s]));
+      return ids.map((id) => byKey.get(id.toLowerCase()) ?? id);
+    };
     const result: Record<string, unknown> = {
       DBProxyName: dbProxyName,
       TargetGroupName: targetGroupName,
-      DBClusterIdentifiers: dbClusterIdentifiers,
-      DBInstanceIdentifiers: dbInstanceIdentifiers,
+      DBClusterIdentifiers: inRecordedSpelling(
+        live.DBClusterIdentifiers,
+        recorded.DBClusterIdentifiers
+      ),
+      DBInstanceIdentifiers: inRecordedSpelling(
+        live.DBInstanceIdentifiers,
+        recorded.DBInstanceIdentifiers
+      ),
     };
     if (connectionPoolConfig !== undefined) {
       result['ConnectionPoolConfigurationInfo'] = connectionPoolConfig;
@@ -755,6 +1054,99 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         aws`aws rds deregister-db-proxy-targets --db-proxy-name ${dbProxyName} --target-group-name ${targetGroupName}${targets}`.render();
       return original;
     }
+  }
+
+  /**
+   * Whether `delete()` may read the parent as already gone, from
+   * `DescribeDBProxyTargetGroups`. With a `targetGroupName`, a missing proxy OR
+   * group counts; without one (the recorded name is not `default`, so a group
+   * NotFound would prove nothing), only a missing proxy does. A NotFound is
+   * region-gated like every other idempotent arm; any other outcome is `false`,
+   * and a failed probe is logged at debug so the skip that follows is
+   * traceable.
+   */
+  private async proxyConfirmedGone(
+    dbProxyName: string,
+    targetGroupName: string | undefined,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string,
+    context: DeleteContext | undefined
+  ): Promise<boolean> {
+    try {
+      await this.getClient().send(
+        new DescribeDBProxyTargetGroupsCommand({
+          DBProxyName: dbProxyName,
+          ...(targetGroupName !== undefined ? { TargetGroupName: targetGroupName } : {}),
+        })
+      );
+      return false;
+    } catch (error) {
+      if (
+        error instanceof DBProxyNotFoundFault ||
+        (targetGroupName !== undefined && error instanceof DBProxyTargetGroupNotFoundFault)
+      ) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(
+          `${dbProxyName}/${targetGroupName ?? '*'} is already gone; the record needs no deregistration`
+        );
+        return true;
+      }
+      this.logger.debug(
+        safeMsg`Could not confirm whether the proxy of DB proxy target group ${logicalId} still exists (${error instanceof Error ? error.name : 'unknown error'}); keeping the skip`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * The proxy target group's registered targets as the two CFn lists, from
+   * `DescribeDBProxyTargets`. Shared by `readCurrentState` and `update()`'s
+   * secret-derived recorded side; throws whatever the call throws.
+   */
+  private async readLiveTargets(
+    dbProxyName: string,
+    targetGroupName: string
+  ): Promise<Record<TargetListKind, string[]>> {
+    const live: Record<TargetListKind, string[]> = {
+      DBClusterIdentifiers: [],
+      DBInstanceIdentifiers: [],
+    };
+    let marker: string | undefined;
+    do {
+      const targetsResp = await this.getClient().send(
+        new DescribeDBProxyTargetsCommand({
+          DBProxyName: dbProxyName,
+          TargetGroupName: targetGroupName,
+          ...(marker ? { Marker: marker } : {}),
+        })
+      );
+      for (const target of targetsResp.Targets ?? []) {
+        const id = target.RdsResourceId;
+        if (!id) continue;
+        if (target.Type === 'TRACKED_CLUSTER') {
+          live.DBClusterIdentifiers.push(id);
+        } else if (target.Type === 'RDS_INSTANCE' && !target.TrackedClusterId) {
+          // A member instance of a registered cluster is listed as its own
+          // `RDS_INSTANCE` target carrying `TrackedClusterId`; it is the
+          // cluster's registration, not a `DBInstanceIdentifiers` entry.
+          live.DBInstanceIdentifiers.push(id);
+        }
+        // `RDS_SERVERLESS_ENDPOINT` targets are silently skipped — the
+        // CFn `AWS::RDS::DBProxyTargetGroup` schema has no input slot for
+        // them (only `DBClusterIdentifiers` / `DBInstanceIdentifiers`),
+        // so they can't drift on a cdkd-managed target group.
+      }
+      marker = targetsResp.Marker;
+    } while (marker);
+    return live;
   }
 
   private wrapError(

@@ -94,13 +94,19 @@ export class RdsAuroraStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // Create RDS Proxy for the Aurora cluster
+    // Create RDS Proxy for the Aurora cluster.
+    // go-to-k/cdkd#3945 UPDATE arm: phase 2 (CDKD_TEST_UPDATE=true) sets
+    // MaxConnectionsPercent, so the DBProxyTargetGroup goes through `update()`
+    // with a recorded AND a desired DBClusterIdentifiers list — both must read
+    // as well-formed, the pool change must land, and the cluster target must
+    // stay registered.
     const proxy = new rds.DatabaseProxy(this, 'AuroraProxy', {
       proxyTarget: rds.ProxyTarget.fromCluster(cluster),
       secrets: [cluster.secret!],
       vpc,
       securityGroups: [securityGroup],
       requireTLS: false,
+      ...(isUpdate ? { maxConnectionsPercent: 90 } : {}),
     });
 
     // Issue #4087: Tags on the proxy's DBProxyTargetGroup, keyed by

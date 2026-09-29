@@ -6783,11 +6783,11 @@
     },
     {
       "resourceType": "AWS::RDS::DBProxy",
-      "rationale": "rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time."
+      "rationale": "rds-aurora provisions it through the L2 rds.DatabaseProxy, whose type name never appears literally in the fixture, so the literal scan cannot credit it."
     },
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",
-      "rationale": "see DBProxy above — same rds-aurora-extend reasoning."
+      "rationale": "see DBProxy above; rds-aurora's phase 2 also drives its UPDATE path (go-to-k/cdkd#3945)."
     }
   ],
   "unknownTypesInIntegs": [
