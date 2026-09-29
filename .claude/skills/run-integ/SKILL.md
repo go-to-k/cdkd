@@ -38,9 +38,10 @@ verify, clean up.
    (not in state), so the deploy attempts CREATE and collides. **Pick the region
    first**: `us-east-1`, unless the fixture's `verify.sh` header names a
    constraint (`asset-bootstrap` needs a region with no cdkd asset storage,
-   #4063; its last ledger note shows a region that passed). Every resource-scan
-   `--region`, `AWS_REGION` and synth/deploy/destroy `--region` in steps 4-7 then uses
-   that region. Synth first (for the stack name and resource types), then scan:
+   #4063; its last ledger note shows a region that passed). Every
+   resource-scan `--region`, `AWS_REGION` and synth/deploy/destroy `--region`
+   in steps 4-7 then uses that region. Synth first (for the stack name and
+   resource types), then scan:
 
    ```bash
    # Always (cheap, broadly applicable):
