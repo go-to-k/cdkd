@@ -698,7 +698,16 @@ export async function resolveTemplateOutputs(
   // name recording a secret is decided from state here and published there.
   // Suppression, never a phantom row.
   let passResolvesSecret = false;
-  const spellsToken = (raw: unknown): boolean => JSON.stringify(raw ?? null).includes('{{resolve:');
+  // A leaf walk rather than `JSON.stringify`, which throws on a BigInt or a
+  // cycle, and would count a key NAME spelling a token.
+  const spellsToken = (raw: unknown): boolean => {
+    if (typeof raw === 'string') return raw.includes('{{resolve:');
+    if (Array.isArray(raw)) return raw.some(spellsToken);
+    if (raw !== null && typeof raw === 'object') {
+      return Object.values(raw as Record<string, unknown>).some(spellsToken);
+    }
+    return false;
+  };
   const pendingAliases: Array<{
     outputKey: string;
     exportName: string;
