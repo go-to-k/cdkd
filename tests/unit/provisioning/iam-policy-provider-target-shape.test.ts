@@ -48,15 +48,25 @@ const SECRET_DERIVED: Array<[string, Record<string, unknown>]> = [
   ['a dynamic reference in place of the list', { Users: '{{resolve:secretsmanager:users}}' }],
 ];
 
-/** The update refusal's secret-derived repair, pinned verbatim once. */
-const SECRET_DERIVED_REPAIR =
+/** The note every secret-derived kind carries, pinned verbatim once. */
+const SECRET_DERIVED_NOTE =
   'is secret-derived (cdkd keeps the dynamic reference or its mask in state), so do not write ' +
-  'the name into state.json; IAM does not list the principals that hold an inline policy, so ' +
-  'cdkd cannot diff it: detach the inline policy by hand from every principal it should no ' +
-  "longer be on, then drop this record with 'cdkd orphan <constructPath>' so the next deploy " +
-  're-attaches it from the template (an attachment left in place across the orphan is no ' +
-  'longer tracked by cdkd). The new record keeps the reference (or its mask) again, so a later change to ' +
+  'the name into state.json';
+
+/** The update refusal's orphan route, with the rename clause when the policy name changes. */
+const orphanRoute = (renamed: boolean): string =>
+  'IAM has no call that lists the principals holding an inline policy, so cdkd cannot diff ' +
+  'it: detach the inline policy by hand from every principal it should no longer be on' +
+  (renamed
+    ? ', and since this change renames the policy, also remove the OLD-named inline policy ' +
+      'from every principal that holds it (the re-created record names only the new one)'
+    : '') +
+  ", then drop this record with 'cdkd orphan <constructPath>' so the next deploy re-attaches " +
+  'it from the template (an attachment left in place across the orphan is no longer tracked ' +
+  'by cdkd). The new record keeps the reference (or its mask) again, so a later change to ' +
   'this policy is refused the same way';
+
+const SECRET_DERIVED_REPAIR = `${SECRET_DERIVED_NOTE}; ${orphanRoute(false)}`;
 
 const DESIRED_SIDE_NOTE =
   "(the desired side is the template's value on a deploy, and the recorded value being " +
@@ -137,14 +147,48 @@ describe('IAMPolicyProvider.update refuses a malformed principal list on EITHER 
     }
   );
 
-  it('names a plain and a secret-derived recorded kind apart, each with its own repair', async () => {
+  it('with a plain and a secret-derived recorded kind, offers only the orphan route', async () => {
+    // A state.json repair of Roles alone would still be refused over Users, so
+    // it is not offered beside the route that drops the whole record.
     const error = await new IAMPolicyProvider()
       .update('P', 'pol', TYPE, valid, { ...valid, Roles: 'AdminRole', Users: ['***'] })
       .catch((e: unknown) => e);
     expect((error as Error).message).toBe(
       'recorded Roles / recorded Users of IAM policy P is not a list of IAM names — no inline ' +
-        'policy was attached or detached: repair the recorded Roles in state.json to a list of ' +
-        `role / group / user names and re-run; the recorded Users ${SECRET_DERIVED_REPAIR}`
+        `policy was attached or detached: the recorded Users ${SECRET_DERIVED_NOTE}, and the ` +
+        'recorded Roles need not be repaired there either: the route below drops the whole ' +
+        `record; ${orphanRoute(false)}`
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('adds the old-name cleanup when the refused update also renames the policy', async () => {
+    // After the orphan, create() puts only the NEW name, so the old-named
+    // policy would stay on every recorded principal, untracked.
+    const error = await new IAMPolicyProvider()
+      .update('P', 'old-pol', TYPE, { ...valid, PolicyName: 'new-pol' }, {
+        ...valid,
+        PolicyName: 'old-pol',
+        Roles: ['{{resolve:secretsmanager:roles}}'],
+      })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe(
+      'recorded Roles of IAM policy P is not a list of IAM names — no inline policy was ' +
+        `attached or detached: the recorded Roles ${SECRET_DERIVED_NOTE}; ${orphanRoute(true)}`
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('gives a secret-derived DESIRED side its own next step', async () => {
+    // A replayed recorded bag cdkd could not resolve names no principal.
+    const error = await new IAMPolicyProvider()
+      .update('P', 'pol', TYPE, { ...valid, Groups: ['***'] }, valid)
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe(
+      'desired Groups of IAM policy P is not a list of IAM names — no inline policy was ' +
+        `attached or detached ${DESIRED_SIDE_NOTE}: the desired Groups ${SECRET_DERIVED_NOTE}; ` +
+        "this run could not resolve it to names, so re-run 'cdkd deploy', which resolves it " +
+        'from the template'
     );
     expect(mockSend).not.toHaveBeenCalled();
   });

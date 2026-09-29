@@ -916,6 +916,7 @@ describe('the round-2 fallbacks do not create a false delete (issue #1770 delta 
   it.each([
     ['a dynamic-reference entry', { Roles: ['{{resolve:secretsmanager:r:SecretString:n}}'] }],
     ['a masked entry', { Users: ['***'] }],
+    ['a dynamic reference in place of the list', { Users: '{{resolve:secretsmanager:u}}' }],
   ])('AWS::IAM::Policy: %s is skipped with the secret-derived way out', async (_what, properties) => {
     const kind = Object.keys(properties)[0]!;
     const result = await new IAMPolicyProvider().delete(
@@ -939,18 +940,36 @@ describe('the round-2 fallbacks do not create a false delete (issue #1770 delta 
     expect(text).not.toContain('{{resolve:');
   });
 
-  it('AWS::IAM::Policy: a plain and a secret-derived kind each get their own repair', async () => {
+  it('AWS::IAM::Policy: beside a secret-derived kind, a plain one gets no state.json repair', async () => {
+    // Repairing Roles alone would still skip over Groups, so it is not offered.
     await new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {
       Roles: 'AdminRole',
       Groups: ['***'],
     });
     const text = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(text).toContain('holds Roles / Groups that is not a list of IAM names');
     expect(text).toContain(
-      'Repair Roles in state.json to a list of role / group / user names and re-run'
+      'holds Roles / Groups that is not a list of IAM names — skipping deletion rather than ' +
+        'guessing which principals it names. No AWS call is issued, so the inline policy is ' +
+        'LEFT ATTACHED wherever it is. The recorded Groups is secret-derived (cdkd keeps the ' +
+        'dynamic reference or its mask in state), so do not write the name into state.json: ' +
+        'cdkd will keep skipping this record, whatever is repaired in the recorded Roles. ' +
+        'Remove the inline policy from its principals by hand (a principal this stack also ' +
+        'deletes takes its inline policies with it); on cdkd destroy every other resource is ' +
+        "still deleted, so once this is the stack's last record 'cdkd state orphan <stack> " +
+        "--stack-region <region>' clears it. NOTE this arm is ALSO reached from cdkd deploy."
     );
-    expect(text).toContain('The recorded Groups is secret-derived');
-    expect(text).not.toContain('Repair Roles / Groups');
+    expect(text).not.toContain('Repair Roles');
+  });
+
+  it('AWS::IAM::Policy: a secret-derived list beside a legacy id is skipped, never the legacy role', async () => {
+    const result = await new IAMPolicyProvider().delete(
+      'MyPolicy',
+      'MyPolicy:my-role',
+      'AWS::IAM::Policy',
+      { Roles: ['{{resolve:secretsmanager:r}}'] }
+    );
+    expect(result).toEqual({ outcome: 'skipped', reason: POLICY_MALFORMED_TARGET_SKIP_REASON });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('AWS::IAM::Policy: a plain malformed kind keeps the state.json repair', async () => {
