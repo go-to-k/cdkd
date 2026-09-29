@@ -14,6 +14,14 @@ bypass converted to opt-in). This fixture verifies, on real AWS, that:
 3. `cdkd destroy --remove-protection --force` flips the protection off
    and successfully deletes every resource.
 
+Before step 3, one more `--remove-protection` destroy runs against a user
+pool carrying an out-of-band hosted-UI domain, so `DeleteUserPool` refuses
+terminally. That destroy must fail, and the pool's `DeletionProtection`
+must be back to `ACTIVE` afterwards: cdkd turned it off, the delete
+failed, so cdkd puts it back (issue #2204). The log group has no such arm,
+because no terminal `DeleteLogGroup` refusal can be constructed from
+outside; its compensation is unit-tested only.
+
 ## What it covers
 
 One resource per supported protection mechanism (RDS deliberately out
@@ -63,5 +71,9 @@ leak ALB / EC2 / ASG / Cognito UserPool resources.
   scale-down to 0 keep the rest fast)
 - Negative destroy: ~30s (every per-resource delete fails fast with
   AWS's protection rejection)
-- Positive destroy: ~5 min (ALB delete is the long pole again)
-- Total: ~10-12 min per integ run
+- Compensation destroy: deletes everything but the user pool, so the ALB
+  delete is now its long pole
+- Positive destroy: deletes what the compensation destroy left (the user
+  pool, plus anything the IGW public-IP release lag held back)
+- Total: not yet re-measured since the compensation arm was added (it was
+  ~10-12 min before)

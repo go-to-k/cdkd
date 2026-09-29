@@ -39,6 +39,14 @@ import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-help
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import { toCfnInteger, toFiniteNumber } from '../dynamodb-warm-throughput.js';
 import { renderDisableCommand, UNNAMEABLE_ID_CLAUSE } from '../replacement-protection-advice.js';
+import {
+  ProtectionFlipRegistry,
+  deleteWithProtectionCompensation,
+  logGroupProtectionSite,
+  observeThenDisableProtection,
+  protectionFlipKey,
+  type ProtectionFlipRecord,
+} from './deletion-protection-compensation.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -213,6 +221,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
   private logsClient: CloudWatchLogsClient;
   private stsClient: STSClient;
   private logger = getLogger().child('LogsLogGroupProvider');
+  /** `--remove-protection` flips, keyed so a re-entered delete keeps them (#2204). */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1142,7 +1152,11 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
-   * Delete a CloudWatch Logs log group
+   * Delete a CloudWatch Logs log group.
+   *
+   * The compensation boundary (issue #2204): a `--remove-protection` flip whose
+   * delete then fails terminally is undone here, so a destroy that did not
+   * happen does not leave a live log group with its guard stripped.
    */
   async delete(
     logicalId: string,
@@ -1151,21 +1165,66 @@ export class LogsLogGroupProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
+    await deleteWithProtectionCompensation({
+      registry: this.protectionFlips,
+      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
+      run: (flip) => this.deleteOnce(logicalId, physicalId, resourceType, context, flip),
+      compensation: {
+        logicalId,
+        physicalId,
+        logger: this.logger,
+        site: logGroupProtectionSite(physicalId, context?.expectedRegion),
+        reEnable: async () => {
+          await this.logsClient.send(
+            new PutLogGroupDeletionProtectionCommand({
+              logGroupIdentifier: physicalId,
+              deletionProtectionEnabled: true,
+            })
+          );
+        },
+      },
+    });
+  }
+
+  private async deleteOnce(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    flip: ProtectionFlipRecord
+  ): Promise<void> {
     this.logger.debug(`Deleting log group ${logicalId}: ${physicalId}`);
 
     // `--remove-protection`: flip DeletionProtectionEnabled off before
     // delete. Idempotent — AWS accepts the call when protection is
     // already disabled. Non-fatal: log at debug if the flip-off itself
     // errors (NotFound / similar) so the actual delete attempt still
-    // runs and surfaces its own error message.
+    // runs and surfaces its own error message. The pre-flip readback is what
+    // lets a terminal failure restore ONLY a guard this run turned off.
     if (context?.removeProtection === true) {
       try {
-        await this.logsClient.send(
-          new PutLogGroupDeletionProtectionCommand({
-            logGroupIdentifier: physicalId,
-            deletionProtectionEnabled: false,
-          })
-        );
+        await observeThenDisableProtection({
+          flip,
+          logger: this.logger,
+          physicalId,
+          guardName: 'DeletionProtectionEnabled',
+          observe: async () => {
+            const resp = await this.logsClient.send(
+              new DescribeLogGroupsCommand({ logGroupNamePrefix: physicalId })
+            );
+            // A prefix match: only the EXACT name is this log group.
+            const found = resp.logGroups?.find((g) => g.logGroupName === physicalId);
+            return found?.deletionProtectionEnabled === true;
+          },
+          disable: async () => {
+            await this.logsClient.send(
+              new PutLogGroupDeletionProtectionCommand({
+                logGroupIdentifier: physicalId,
+                deletionProtectionEnabled: false,
+              })
+            );
+          },
+        });
         this.logger.debug(
           `Disabled DeletionProtectionEnabled on log group ${logicalId} before delete`
         );
@@ -1178,6 +1237,10 @@ export class LogsLogGroupProvider implements ResourceProvider {
 
     try {
       await this.logsClient.send(new DeleteLogGroupCommand({ logGroupName: physicalId }));
+      // AWS took the delete. `DeleteLogGroup` has no wait after it today, but
+      // the latch is what keeps a future one from re-enabling the guard on a
+      // log group that is already going.
+      flip.deleteAccepted = true;
       this.logger.debug(`Successfully deleted log group ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {

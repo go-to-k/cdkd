@@ -248,11 +248,16 @@ describe('LogsLogGroupProvider --remove-protection', () => {
 
   it('idempotent — flip-off is issued even when AWS reports already-disabled', async () => {
     const provider = new LogsLogGroupProvider();
-    // Both the flip and delete still resolve; verify both were issued.
+    // The pre-flip readback (issue #2204), the flip and the delete all
+    // resolve; verify all three were issued.
     await provider.delete('LG', '/aws/lambda/x', 'AWS::Logs::LogGroup', undefined, {
       removeProtection: true,
     });
-    expect(mockLogsSend).toHaveBeenCalledTimes(2);
+    expect(mockLogsSend.mock.calls.map((c) => (c[0] as object).constructor.name)).toEqual([
+      'DescribeLogGroupsCommand',
+      'PutLogGroupDeletionProtectionCommand',
+      'DeleteLogGroupCommand',
+    ]);
   });
 });
 
@@ -592,8 +597,15 @@ describe('ASGProvider --remove-protection', () => {
 });
 
 describe('Cognito UserPool --remove-protection', () => {
-  it('with removeProtection=true and templated DeletionProtection=ACTIVE, issues UpdateUserPool flip-off before DeleteUserPool (no Describe needed)', async () => {
-    mockCognitoSend.mockResolvedValue({});
+  it('with removeProtection=true, reads the LIVE flag even when the template says ACTIVE, then flips before DeleteUserPool', async () => {
+    // Issue #2204: the compensation may only restore a guard this run OBSERVED
+    // on, so the recorded `ACTIVE` no longer short-circuits the readback.
+    mockCognitoSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeUserPoolCommand) {
+        return Promise.resolve({ UserPool: { DeletionProtection: 'ACTIVE' } });
+      }
+      return Promise.resolve({});
+    });
     const provider = new CognitoUserPoolProvider();
     await provider.delete(
       'P',
@@ -603,9 +615,11 @@ describe('Cognito UserPool --remove-protection', () => {
       { removeProtection: true }
     );
     const cmds = mockCognitoSend.mock.calls.map((c) => c[0]);
+    const descIdx = cmds.findIndex((c) => c instanceof DescribeUserPoolCommand);
     const flipIdx = cmds.findIndex((c) => c instanceof UpdateUserPoolCommand);
     const delIdx = cmds.findIndex((c) => c instanceof DeleteUserPoolCommand);
-    expect(flipIdx).toBeGreaterThanOrEqual(0);
+    expect(descIdx).toBe(0);
+    expect(flipIdx).toBeGreaterThan(descIdx);
     expect(delIdx).toBeGreaterThan(flipIdx);
     const flipInput = (
       cmds[flipIdx] as unknown as {
@@ -614,8 +628,28 @@ describe('Cognito UserPool --remove-protection', () => {
     ).input;
     expect(flipInput.UserPoolId).toBe('us-east-1_abc');
     expect(flipInput.DeletionProtection).toBe('INACTIVE');
-    // Templated ACTIVE short-circuits the Describe round-trip.
-    expect(cmds.some((c) => c instanceof DescribeUserPoolCommand)).toBe(false);
+  });
+
+  it('with removeProtection=true, a template saying ACTIVE over a live INACTIVE pool issues no UpdateUserPool', async () => {
+    // The recorded value is stale (turned off out of band): the flip is skipped,
+    // because `UpdateUserPool` resets some members it omits.
+    mockCognitoSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeUserPoolCommand) {
+        return Promise.resolve({ UserPool: { DeletionProtection: 'INACTIVE' } });
+      }
+      return Promise.resolve({});
+    });
+    const provider = new CognitoUserPoolProvider();
+    await provider.delete(
+      'P',
+      'us-east-1_abc',
+      'AWS::Cognito::UserPool',
+      { DeletionProtection: 'ACTIVE' },
+      { removeProtection: true }
+    );
+    const cmds = mockCognitoSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof UpdateUserPoolCommand)).toBe(false);
+    expect(cmds.some((c) => c instanceof DeleteUserPoolCommand)).toBe(true);
   });
 
   it('with removeProtection=true and template lacking DeletionProtection, falls back to DescribeUserPool to check AWS-side flag', async () => {

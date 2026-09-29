@@ -1789,6 +1789,7 @@
     "--directory-id",
     "--directory-ids",
     "--distribution-config",
+    "--domain",
     "--duration-seconds",
     "--email-identity",
     "--enforce-consumer-deletion",
