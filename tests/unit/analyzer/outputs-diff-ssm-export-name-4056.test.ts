@@ -389,8 +389,8 @@ describe('the #1948 exoneration of a REMOVED output reads the same shape (issue 
   });
 
   it.each([
-    ['a whole secretsmanager token', '{{resolve:secretsmanager:A}}'],
     ['a whole SecureString ssm token', SSM_REF],
+    ['a mixed ssm expression with the desired literal parts', `app-${SSM_REF}`],
   ])('still exonerates the record for %s beside the removed key', (_label, token) => {
     const changes = computeOutputsDiff(
       { Gone: 'public-old', Sec: token, Keep: 'k' },
@@ -401,6 +401,25 @@ describe('the #1948 exoneration of a REMOVED output reads the same shape (issue 
     );
     expect(changes).toEqual([
       { name: 'Gone', changeType: 'REMOVE', oldValue: 'public-old', isExport: false },
+    ]);
+  });
+
+  it.each([
+    ['a whole secretsmanager token', '{{resolve:secretsmanager:A}}'],
+    ['a whole ssm-secure token', '{{resolve:ssm-secure:/a}}'],
+  ])('does not exonerate the record for %s alone (issue #4108)', (_label, token) => {
+    // A binary between the GHSA fix and #1901 stored this expression AND a
+    // SecureString parameter's plaintext, so the removed key stays withheld.
+    const changes = computeOutputsDiff(
+      { Gone: 'HUNTERSECURE', Sec: token, Keep: 'k' },
+      { Sec: token, Keep: 'k' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['Keep', 'Sec']), templateHasSecretReference: true }
+    );
+    expect(JSON.stringify(changes)).not.toContain('HUNTERSECURE');
+    expect(changes).toEqual([
+      expect.objectContaining({ name: 'Gone', changeType: 'REMOVE', oldValueRedacted: true }),
     ]);
   });
 });

@@ -419,7 +419,10 @@ break a consumer — was hidden the same way.
   output name plus every literal `Export.Name`) nor the resolved bag has its
   value withheld — gated on the template still proving a secret reference
   *anywhere*, `Resources` included, and exonerated when any stored value is
-  itself a secret expression in the shape above — never a reference beside
+  itself a plain `ssm` secret expression in the shape above (a
+  `secretsmanager` / `ssm-secure` one proves only a write after the GHSA fix,
+  and a binary before issue #1901 stored a `SecureString` plaintext beside it,
+  issue #4108) — never a reference beside
   other text, issue #4101 — (read as evidence the last write redacted the
   whole bag; a no-change deploy that carries a failed output's stored value
   refuses to create the one shape that breaks that reading, though a deploy

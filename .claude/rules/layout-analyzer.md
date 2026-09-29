@@ -69,8 +69,13 @@ in CI. THREE signals, each concluding something different:
    withheld — a REFUSAL, not a detection, since a plaintext is indistinguishable
    from an ordinary string there. Gated by `templateHasSecretReference` (does
    the template still prove a secret reference ANYWHERE, `Resources` included)
-   and EXONERATED when any stored value is itself a secret expression — in the
-   shape the per-key veto below accepts, never on a substring hit (#4101). This arm
+   and EXONERATED when any stored value is itself a plain `ssm` secret
+   expression — in the shape the per-key veto below accepts, never on a
+   substring hit (#4101). Only a plain `ssm` token proves the bag redacted: it
+   is stored only after #1901, while a `secretsmanager` / `ssm-secure` one
+   proves only post-GHSA, and a binary between the two stored a `SecureString`
+   plaintext beside it (#4108). Not the state schema version either: a
+   non-deploy rewrite restamps it while keeping the old bag. This arm
    withholds PER KEY, because it claims only that one key is undecidable.
 
 On RAW template text, "secret-bearing" is only the spellings that are secret regardless of target:

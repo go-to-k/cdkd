@@ -406,6 +406,13 @@ function keepsSecretReferenceToken(resolvedName: string): boolean {
   );
 }
 
+/** True when `value` carries a plain `{{resolve:ssm:...}}` token (issue #4108). */
+function holdsPlainSsmToken(value: string): boolean {
+  return dynamicReferenceTokens(value).some(
+    (token) => token.slice('{{resolve:'.length, -'}}'.length).split(':')[0] === 'ssm'
+  );
+}
+
 /**
  * True when a STORED value is exactly one secret-bearing token and nothing
  * else, so it holds no plaintext whatever produced it (issue #4056). Exported
@@ -1187,9 +1194,21 @@ export function computeOutputsDiff(
   // spelling test, so a stored `{{resolve:secretsmanager:A}}-<plaintext>` of a
   // REMOVED output exonerated its own record and printed on the REMOVE row.
   // That helper stays as-is for its deploy-side readers.
-  const recordProvesPostGhsa = Object.entries(currentBag).some(
+  //
+  // And only a plain `ssm` token earns it (issue #4108): a `secretsmanager` /
+  // `ssm-secure` expression proves the write came after the GHSA fix, not
+  // after #1901, and a binary between the two stored a `SecureString`
+  // parameter's PLAINTEXT beside that correctly redacted expression. A stored
+  // plain `ssm` token is written only after #1901 (before it, every plain ssm
+  // reference resolved), so it is the one expression that proves the whole
+  // bag redacted. A record with none keeps the unaccountable-key signal:
+  // fail-closed, costing a removed output's value in a `secretsmanager`-only
+  // stack.
+  const recordProvesPost1901 = Object.entries(currentBag).some(
     ([name, value]) =>
-      typeof value === 'string' && storedSecretTokenIsExpression(value, desired[name])
+      typeof value === 'string' &&
+      holdsPlainSsmToken(value) &&
+      storedSecretTokenIsExpression(value, desired[name])
   );
   const declaredKeys = unaccountableScan.declaredKeys ?? new Set<string>();
   // A key's OWN stored value can prove it unsafe whatever the record's verdict:
@@ -1228,7 +1247,7 @@ export function computeOutputsDiff(
   const unaccountable = (name: string): boolean =>
     !declaredKeys.has(name) &&
     !Object.prototype.hasOwnProperty.call(desired, name) &&
-    ((unaccountableScan.templateHasSecretReference === true && !recordProvesPostGhsa) ||
+    ((unaccountableScan.templateHasSecretReference === true && !recordProvesPost1901) ||
       ownValueHidesSecret(name));
 
   // THE KEY'S OWN VERDICT (issue #4015). A stored key is printed as a row
