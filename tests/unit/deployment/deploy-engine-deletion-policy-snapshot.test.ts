@@ -395,6 +395,18 @@ describe('UpdateReplacePolicy: Snapshot on the create-first cleanup delete (#135
       forceStatefulRecreation: true,
     });
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+    // Issue #4029: CloudFormation's UpdateReplacePolicy default, Delete.
+    expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
+    expect(deleteContextArg()).not.toHaveProperty('skipFinalSnapshot');
+  });
+
+  it('issue #4029: the governing UpdateReplacePolicy and the opt-out reach the cleanup delete', async () => {
+    await invokeReplacement('AWS::RDS::DBInstance', 'Snapshot', {
+      forceStatefulRecreation: true,
+      skipFinalSnapshot: true,
+    });
+    expect(deleteContextArg()['deletionPolicy']).toBe('Snapshot');
+    expect(deleteContextArg()['skipFinalSnapshot']).toBe(true);
   });
 
   it('a TRANSIENT snapshot failure SKIPS the delete — the old resource is never deleted un-snapshotted', async () => {
@@ -507,11 +519,15 @@ describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement 
   it('skipFinalSnapshot: true — plain replacement delete (opt-out polarity)', async () => {
     await invokeUpdateFallback({ skipFinalSnapshot: true }, { updateReplacePolicy: 'Snapshot' });
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+    // Issue #4029: the opt-out and the governing policy reach the provider.
+    expect(deleteContextArg()['skipFinalSnapshot']).toBe(true);
+    expect(deleteContextArg()['deletionPolicy']).toBe('Snapshot');
   });
 
   it('policy absent — plain replacement delete (default polarity unchanged)', async () => {
     await invokeUpdateFallback({}, {});
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+    expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
   });
 });
 });

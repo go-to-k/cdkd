@@ -256,18 +256,25 @@ The Cloud Control delete handler for `AWS::RDS::DBCluster` and
 `AWS::RDS::DBInstance` takes an untagged `rds-snapshot-<random>` final snapshot
 on every delete, because Cloud Control cannot tell it the policy. So a
 Cloud-Control-routed cluster or instance is deleted with RDS
-`DeleteDBCluster` / `DeleteDBInstance` (`SkipFinalSnapshot=true`) instead when
-its recorded policy is `Delete`, or when `--skip-final-snapshot` is passed. Both
-apply to `cdkd destroy`, `cdkd state destroy` and a deploy that removes it from
-the template; the flag also applies to a rollback of its creation. A
-`DeleteAutomatedBackups` in the template is sent with the delete.
+`DeleteDBCluster` / `DeleteDBInstance` (`SkipFinalSnapshot=true`) instead
+whenever the policy governing that delete is `Delete`, or `--skip-final-snapshot`
+opts out of a `Snapshot` one (except on a rollback's delete of a replacement's
+new copy, which the flag does not govern). A `DeleteAutomatedBackups` in the
+template is sent with the delete.
+
+| Delete | Governing policy |
+| --- | --- |
+| `cdkd destroy`, `cdkd state destroy`, a deploy that removes the resource | `DeletionPolicy` |
+| A rollback of its creation (automatic, `cdkd rollback`, `--revert-failed`) | `DeletionPolicy` |
+| A replacement's delete of the old copy, or a rollback's delete of a replacement's new copy | `UpdateReplacePolicy`, whose default is `Delete` for every type |
+
+These cases still go through Cloud Control:
 
 | Case | Delete |
 | --- | --- |
 | No `DeletionPolicy` | CloudFormation's default, `Snapshot`, applies: refused on the Cloud Control route unless `--skip-final-snapshot` (see [Which policy cdkd reads](#which-policy-cdkd-reads)). |
 | A cluster that sets `GlobalClusterIdentifier` | Through Cloud Control, whose handler removes it from the global cluster first; cdkd warns that the snapshot is left behind. |
-| A replacement delete, or a rollback's delete of a replacement's new resource | Through Cloud Control, which leaves its snapshot, with or without `--skip-final-snapshot`. |
-| A rollback of its creation without `--skip-final-snapshot` | Through Cloud Control, which leaves its snapshot, whatever the policy. |
+| A rollback's delete of a replacement's new copy under `UpdateReplacePolicy: Snapshot` | Through Cloud Control, whose handler takes the snapshot, with or without `--skip-final-snapshot`. |
 
 ### Which policy cdkd reads
 

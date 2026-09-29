@@ -103,6 +103,16 @@ export function effectiveDeletionPolicy<P extends string>(
 }
 
 /**
+ * The policy a REPLACEMENT's delete of the old resource honors, for
+ * `DeleteContext.deletionPolicy` (issue #4029): its `UpdateReplacePolicy`,
+ * whose CloudFormation default is `Delete` for every type (unlike
+ * {@link effectiveDeletionPolicy}'s RDS exception).
+ */
+export function replacementDeletePolicy(updateReplacePolicy: string | undefined): string {
+  return updateReplacePolicy ?? 'Delete';
+}
+
+/**
  * How a `Snapshot`-policy delete of a given (resourceType, routing layer) is
  * carried out — or why it cannot be.
  *

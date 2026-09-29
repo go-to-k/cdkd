@@ -113,7 +113,11 @@ export class RdsFullStackStack extends cdk.Stack {
     // The small single-AZ Postgres instance. CDK auto-creates a Secrets
     // Manager secret for the credentials (the realistic default). The
     // explicit subnetGroup + parameterGroup + securityGroup are all wired in.
+    // Issue 4029: CDKD_TEST_UPDATE=true renames the instance, which is
+    // create-only, so verify.sh's phase 1b forces a create-first replacement.
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const dbInstance = new rds.DatabaseInstance(this, 'Database', {
+      ...(isUpdate ? { instanceIdentifier: 'cdkd-rds-full-stack-replaced' } : {}),
       engine: rds.DatabaseInstanceEngine.postgres({
         version: rds.PostgresEngineVersion.VER_16_9,
       }),

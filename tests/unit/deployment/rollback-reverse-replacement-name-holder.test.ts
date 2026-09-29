@@ -261,6 +261,9 @@ describe('Route 53 TypeSwapRecord (the genuine holder, and its orphan twin) (#39
     expect(result.failures).toBe(0);
     expect(del).toHaveBeenCalledTimes(1);
     expect(del.mock.calls[0]?.[1]).toBe(newId);
+    // Issue #4029: the delete-new-first carries the NEW copy's
+    // UpdateReplacePolicy (none recorded -> CloudFormation's default, Delete).
+    expect(del.mock.calls[0]?.[4]).toEqual(expect.objectContaining({ deletionPolicy: 'Delete' }));
     expect(state['TypeSwapRecord']?.physicalId).toBe(CNAME_ID);
   });
 

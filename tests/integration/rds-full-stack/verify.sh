@@ -34,6 +34,11 @@
 #      only a real-AWS comparison can catch a wrong one. Pre-fix, this
 #      reference did not resolve wrongly: it HARD-FAILED the deploy on the
 #      resolver's *Arn shape guard (a subnet group's physicalId is its NAME).
+#   7. NO SNAPSHOT ON A REPLACEMENT (issue 4029): phase 1b renames the
+#      Cloud Control-routed instance (DBInstanceIdentifier is create-only), so
+#      cdkd replaces it and deletes the old one under UpdateReplacePolicy:
+#      Delete. Before the fix that delete went through the Cloud Control
+#      handler, which took an untagged snapshot of the old instance.
 #   6. NO FINAL SNAPSHOT (issue 3993): the DBInstance is routed via Cloud
 #      Control (asserted), whose registry delete handler took an untagged
 #      `rds-snapshot-<random>` on every delete despite DeletionPolicy: Delete.
@@ -111,6 +116,10 @@ DB_PARAM_GROUP=""
 # Issue 3993: when this run began (UTC, second precision, the prefix AWS's
 # SnapshotCreateTime is compared on).
 RUN_START=""
+# Issue 4029: the replacement instance's fixed name (lib/ sets it only under
+# CDKD_TEST_UPDATE=true). Cleanup deletes it by name, since a run can abort
+# after phase 1b created it.
+NEW_INSTANCE_ID="cdkd-rds-full-stack-replaced"
 
 # Print the manual snapshots of instance $1 created at or after RUN_START, one
 # id per line. Fails (rc != 0) when the listing or a timestamp is unreadable,
@@ -146,6 +155,16 @@ cleanup() {
   # BEFORE its DBSubnetGroup / DBParameterGroup can be deleted, and the SG /
   # VPC can only go after the instance releases its ENIs. So: delete the
   # instance first + wait for it to disappear, then the groups.
+  # The phase-1b replacement first: it holds the same subnet / parameter
+  # groups. Deleting an absent one is absorbed.
+  aws rds delete-db-instance \
+    --db-instance-identifier "${NEW_INSTANCE_ID}" \
+    --region "${REGION}" \
+    --skip-final-snapshot \
+    --delete-automated-backups >/dev/null 2>&1
+  aws rds wait db-instance-deleted \
+    --db-instance-identifier "${NEW_INSTANCE_ID}" \
+    --region "${REGION}" >/dev/null 2>&1
   if [ -n "${DB_INSTANCE_ID}" ]; then
     aws rds delete-db-instance \
       --db-instance-identifier "${DB_INSTANCE_ID}" \
@@ -172,14 +191,16 @@ cleanup() {
   # Issue 3993: a manual snapshot of the instance this run created (the leak,
   # or the reverted-fix proof). Older ones are not this run's to delete.
   if [ -n "${DB_INSTANCE_ID}" ] && [ -n "${RUN_START}" ]; then
-    if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${DB_INSTANCE_ID}"); then
-      echo "    WARN: cleanup could not list the manual snapshots of ${DB_INSTANCE_ID}; check for a leftover rds-snapshot-* by hand" >&2
-      SNAPS_TO_CLEAN=""
-    fi
-    for snap in ${SNAPS_TO_CLEAN}; do
-      aws rds wait db-snapshot-available --db-snapshot-identifier "${snap}" --region "${REGION}"
-      aws rds delete-db-snapshot --db-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
-        && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+    for id in "${DB_INSTANCE_ID}" "${NEW_INSTANCE_ID}"; do
+      if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${id}"); then
+        echo "    WARN: cleanup could not list the manual snapshots of ${id}; check for a leftover rds-snapshot-* by hand" >&2
+        SNAPS_TO_CLEAN=""
+      fi
+      for snap in ${SNAPS_TO_CLEAN}; do
+        aws rds wait db-snapshot-available --db-snapshot-identifier "${snap}" --region "${REGION}"
+        aws rds delete-db-snapshot --db-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
+          && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+      done
     done
   fi
   # The SSM parameters have deterministic names - clean them directly.
@@ -381,9 +402,42 @@ if [ "${SSM_SUBNET_ARN_VALUE}" != "${LIVE_SUBNET_GROUP_ARN}" ]; then
 fi
 echo "    OK: SSM parameter value == live DBSubnetGroupArn (issue 1824 GetAtt resolved from the create response)"
 
+# --- Phase 1b: replacement (issue 4029) --------------------------------
+# Renaming the instance forces a replacement; the OLD instance is deleted
+# under UpdateReplacePolicy: Delete. --force-stateful-recreation
+# is the consent cdkd requires to replace a stateful type.
+echo "==> Phase 1b: rename the DBInstance (replacement, issue 4029)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force-stateful-recreation \
+  --yes
+
+STATE_1B=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+REPLACED_ID=$(echo "${STATE_1B}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.physicalId] | first // ""')
+if [ "${REPLACED_ID}" != "${NEW_INSTANCE_ID}" ]; then
+  echo "FAIL: issue 4029 premise: after phase 1b the DBInstance is '${REPLACED_ID}', expected '${NEW_INSTANCE_ID}' (no replacement happened)" >&2
+  exit 1
+fi
+REPLACED_BY=$(echo "${STATE_1B}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.provisionedBy // "sdk"] | first // ""')
+if [ "${REPLACED_BY}" != "cc-api" ]; then
+  echo "FAIL: issue 4029 premise: the replacement is routed via '${REPLACED_BY}', expected 'cc-api'" >&2
+  exit 1
+fi
+assert_gone "the replaced instance ${DB_INSTANCE_ID} still exists after phase 1b" aws rds describe-db-instances --db-instance-identifier "${DB_INSTANCE_ID}" --region "${REGION}"
+if ! REPLACED_SNAPSHOTS=$(this_run_instance_snapshots "${DB_INSTANCE_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${DB_INSTANCE_ID}" >&2
+  exit 1
+fi
+if [ -n "${REPLACED_SNAPSHOTS}" ]; then
+  echo "FAIL: replacing the Cloud Control-routed ${DB_INSTANCE_ID} (UpdateReplacePolicy: Delete) left manual snapshot(s): $(printf '%s ' ${REPLACED_SNAPSHOTS})(issue 4029)" >&2
+  exit 1
+fi
+echo "    OK: ${DB_INSTANCE_ID} replaced by ${NEW_INSTANCE_ID} with no manual snapshot (issue 4029)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy (RDS delete is slow - allow a few minutes)"
-node "${LOCAL_DIST}" destroy "${STACK}" \
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --force
@@ -392,12 +446,14 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
-# DBInstance must be gone or in 'deleting'. RDS Delete* is async; cdkd's delete
-# path waits for the terminal NotFound, so a clean destroy leaves it gone.
-if gone_probe aws rds describe-db-instances --db-instance-identifier "${DB_INSTANCE_ID}" --region "${REGION}"; then
+# The destroy deletes the phase-1b replacement (phase 1b already asserted the
+# original gone). It must be gone or in 'deleting'. RDS Delete* is async;
+# cdkd's delete path waits for the terminal NotFound, so a clean destroy
+# leaves it gone.
+if gone_probe aws rds describe-db-instances --db-instance-identifier "${NEW_INSTANCE_ID}" --region "${REGION}"; then
   INSTANCE_STATUS="gone"
 elif ! INSTANCE_STATUS=$(aws rds describe-db-instances \
-    --db-instance-identifier "${DB_INSTANCE_ID}" \
+    --db-instance-identifier "${NEW_INSTANCE_ID}" \
     --region "${REGION}" \
     --query 'DBInstances[0].DBInstanceStatus' --output text 2>&1); then
   # TOCTOU: the instance can vanish between gone_probe and this requery.
@@ -429,16 +485,16 @@ assert_gone "SSM parameter ${SSM_SUBNET_ARN_PARAM_NAME} still exists after destr
 echo "    OK: SSM DBSubnetGroupArn parameter is gone"
 
 # Issue 3993: before the fix the Cloud Control delete handler left a manual
-# final snapshot of the instance here.
-if ! LEAKED_SNAPSHOTS=$(this_run_instance_snapshots "${DB_INSTANCE_ID}"); then
-  echo "FAIL: could not list the manual snapshots of ${DB_INSTANCE_ID}" >&2
+# final snapshot of the destroyed instance (the phase-1b replacement) here.
+if ! LEAKED_SNAPSHOTS=$(this_run_instance_snapshots "${NEW_INSTANCE_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${NEW_INSTANCE_ID}" >&2
   exit 1
 fi
 if [ -n "${LEAKED_SNAPSHOTS}" ]; then
-  echo "FAIL: destroying the Cloud Control-routed ${DB_INSTANCE_ID} (DeletionPolicy: Delete) left manual snapshot(s): $(printf '%s ' ${LEAKED_SNAPSHOTS})(issue 3993)" >&2
+  echo "FAIL: destroying the Cloud Control-routed ${NEW_INSTANCE_ID} (DeletionPolicy: Delete) left manual snapshot(s): $(printf '%s ' ${LEAKED_SNAPSHOTS})(issue 3993)" >&2
   exit 1
 fi
-echo "    OK: no manual snapshot of ${DB_INSTANCE_ID} since ${RUN_START}Z (issue 3993)"
+echo "    OK: no manual snapshot of ${NEW_INSTANCE_ID} since ${RUN_START}Z (issue 3993)"
 
 echo ""
 echo "[verify] PASS"
