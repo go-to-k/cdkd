@@ -69,11 +69,13 @@ Re-run the checks, `git push --force-with-lease`. If the harness denies it,
 conflict: keep both, `vp run integ-ledger-normalize`, commit), push plainly:
 lossless under the squash merge (#3813).
 
-**Re-run the SUITE after the rebase, and rebuild first**: a pre-rebase green
-attests to a tree that no longer exists, and `dist/` staleness is the usual
-failure (the `version` test reads `dist/` against a release commit's
-`package.json`). **Re-run the generators too**, since
-`docs/_generated/**` derives from the TREE.
+**Re-run the SUITE after the rebase, after `pnpm install --frozen-lockfile`
+and a rebuild**: a pre-rebase green attests to a tree that no longer exists.
+`dist/` staleness is the usual failure (the `version` test reads it against a
+release commit's `package.json`); a dependency bump is the other, which
+`[ -d node_modules ]` pre-flights skip (#3951's cdk-local bump failed two
+unrelated cases). **Re-run the generators too**: `docs/_generated/**` derives
+from the TREE.
 
 **A clean merge is not evidence that there was no collision**: disjoint hunks in
 one file merge cleanly, and a peer PR adding a **repo-wide check** gains

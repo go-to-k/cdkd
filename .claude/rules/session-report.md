@@ -80,8 +80,8 @@ pays the edit alone.
   a review named — are the hottest context there is and are `now`. Writing a NEW
   integ fixture is `Effort: large`, a cost to record, never a reason to defer.
 - **`next`** — ONLY one of: (a) external input (a quota, an upstream fix,
-  credentials this host lacks, a file held by another lane's OPEN PR, a
-  maintainer decision already asked through `AskUserQuestion` and unanswered); or
+  credentials this host lacks, a file an OPEN PR holds (name that PR by number),
+  a maintainer decision already asked through `AskUserQuestion` and unanswered); or
   (b) the work is COLD AND HEAVY — nothing the fix touches or must read was read
   this session, no `now` criterion fires, AND doing it here is clearly WORSE than
   fresh, not merely as costly. Cold alone is not (b) — a small cold fix is `now`.

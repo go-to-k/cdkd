@@ -14,7 +14,10 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
+import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type { CreateContext, UpdateContext } from '../../types/resource.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 import type {
   ResourceProvider,
@@ -23,6 +26,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 
 /**
  * How far before an attempt's start a key's `CreateDate` may fall and still be
@@ -140,7 +144,13 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM access key ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
+    // shape), handed to every helper this create runs under the user lock.
+    // `UserName` comes out of the resolved `properties` bag and reaches several
+    // warnings, most of them carrying a paste-ready `aws iam` command. Absent
+    // context means identity.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    log.debug(`Creating IAM access key ${logicalId}`);
 
     const userName = properties['UserName'] as string | undefined;
     if (!userName) {
@@ -154,11 +164,11 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       properties['Status'],
       'Active',
       'AWS::IAM::AccessKey Status',
-      replayWarn(this.logger, context)
+      replayWarn(log, context)
     );
 
     return this.withUserCreateLock(userName, () =>
-      this.createAccessKeyUnderUserLock(logicalId, resourceType, userName, status)
+      this.createAccessKeyUnderUserLock(logicalId, resourceType, userName, status, log)
     );
   }
 
@@ -171,15 +181,18 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     userName: string,
-    status: string
+    status: string,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
+    const { value: v } = log;
+    const aws = pasteableAwsCommand(log.mask);
     // The baseline is taken per ATTEMPT, immediately before the create, and is
     // consumed by the reconcile in this same attempt's catch. It deliberately
     // does NOT survive into the next attempt: a snapshot that spans the whole
     // retry schedule describes a window many seconds wide, and everything that
     // appears in it looks equally like my orphan.
     const attemptStartMs = Date.now() - CREATE_DATE_SKEW_MARGIN_MS;
-    const baseline = await this.tryListAccessKeyIds(userName, logicalId);
+    const baseline = await this.tryListAccessKeyIds(userName, logicalId, log);
 
     try {
       const response = await this.iamClient.send(
@@ -198,8 +211,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
               new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
             );
           } catch (cleanupError) {
-            this.logger.warn(
-              `Failed to clean up IAM access key ${logicalId} (${accessKeyId}) minted by a partial CreateAccessKey response: ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+            log.warn(
+              `Failed to clean up IAM access key ${logicalId} (${v(accessKeyId)}) minted by a partial CreateAccessKey response: ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
             );
           }
         }
@@ -220,19 +233,21 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             await this.iamClient.send(
               new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
             );
-            this.logger.debug(
-              `Cleaned up partially-created IAM access key ${logicalId} (${accessKeyId}) after status wiring failure`
+            log.debug(
+              `Cleaned up partially-created IAM access key ${logicalId} (${v(accessKeyId)}) after status wiring failure`
             );
           } catch (cleanupError) {
-            this.logger.warn(
-              `Failed to clean up partially-created IAM access key ${logicalId} (${accessKeyId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+            log.warn(
+              `Failed to clean up partially-created IAM access key ${logicalId} (${v(accessKeyId)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
             );
           }
-          throw innerError;
+          // The resource itself was created: an "already exists" from its wiring
+          // is an auxiliary object's, not this resource's name collision (#3826).
+          throw markAuxiliaryFailure(innerError, logicalId);
         }
       }
 
-      this.logger.debug(`Successfully created IAM access key ${logicalId}: ${accessKeyId}`);
+      log.debug(`Successfully created IAM access key ${logicalId}: ${v(accessKeyId)}`);
 
       // Recorded before returning: from here on this key is cdkd's, and no
       // reconcile — this resource's or a sibling's — may delete it.
@@ -252,10 +267,10 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     } catch (error) {
       // Still under the user lock: whatever appeared since `baseline` did so
       // during THIS attempt, and no sibling create could have run inside it.
-      await this.deleteOrphanFromFailedAttempt(userName, logicalId, baseline, attemptStartMs);
+      await this.deleteOrphanFromFailedAttempt(userName, logicalId, baseline, attemptStartMs, log);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM access key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create IAM access key ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -340,12 +355,15 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     userName: string,
     logicalId: string,
     baseline: ReadonlySet<string> | undefined,
-    attemptStartMs: number
+    attemptStartMs: number,
+    log: MaskedLogSinks
   ): Promise<void> {
+    const { value: v } = log;
+    const aws = pasteableAwsCommand(log.mask);
     if (baseline === undefined) {
       return;
     }
-    const current = await this.tryListAccessKeyMetadata(userName, logicalId);
+    const current = await this.tryListAccessKeyMetadata(userName, logicalId, log);
     if (!current) {
       return;
     }
@@ -358,21 +376,21 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         // Newer than the baseline but not attributable to this attempt. Say
         // exactly that -- claiming it as "created by an earlier attempt at
         // <logicalId>" would assert an attribution nothing here established.
-        this.logger.warn(
-          `IAM access key ${accessKeyId} appeared on user ${userName} while creating ${logicalId}, but cdkd cannot attribute it to this attempt (created ${key.createDateMs === undefined ? 'at an unknown time' : new Date(key.createDateMs).toISOString()}, attempt started ${new Date(attemptStartMs).toISOString()}). Leaving it in place. If it is an orphan of a failed cdkd deploy, delete it with: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+        log.warn(
+          `IAM access key ${v(accessKeyId)} appeared on user ${v(userName)} while creating ${logicalId}, but cdkd cannot attribute it to this attempt (created ${key.createDateMs === undefined ? 'at an unknown time' : new Date(key.createDateMs).toISOString()}, attempt started ${new Date(attemptStartMs).toISOString()}). Leaving it in place. If it is an orphan of a failed cdkd deploy, delete it with: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
         );
         continue;
       }
-      this.logger.warn(
-        `IAM access key ${accessKeyId} was minted on user ${userName} by this failed attempt at ${logicalId} and its secret was lost with the response, so it is unusable and unrecorded; deleting it before the retry`
+      log.warn(
+        `IAM access key ${v(accessKeyId)} was minted on user ${v(userName)} by this failed attempt at ${logicalId} and its secret was lost with the response, so it is unusable and unrecorded; deleting it before the retry`
       );
       try {
         await this.iamClient.send(
           new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
         );
       } catch (error) {
-        this.logger.warn(
-          `Failed to delete the orphaned IAM access key ${accessKeyId} for user ${userName}: ${describeAwsFailure(error).detail}. Manual deletion may be required: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+        log.warn(
+          `Failed to delete the orphaned IAM access key ${v(accessKeyId)} for user ${v(userName)}: ${v(describeAwsFailure(error).detail)}. Manual deletion may be required: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
         );
       }
     }
@@ -387,17 +405,21 @@ export class IAMAccessKeyProvider implements ResourceProvider {
    */
   private async tryListAccessKeyIds(
     userName: string,
-    logicalId: string
+    logicalId: string,
+    log: MaskedLogSinks
   ): Promise<ReadonlySet<string> | undefined> {
-    const metadata = await this.tryListAccessKeyMetadata(userName, logicalId);
+    const metadata = await this.tryListAccessKeyMetadata(userName, logicalId, log);
     return metadata && new Set(metadata.map((key) => key.accessKeyId));
   }
 
   /** `ListAccessKeys` with its `CreateDate`s, or `undefined` when the read failed. */
   private async tryListAccessKeyMetadata(
     userName: string,
-    logicalId: string
+    logicalId: string,
+    log: MaskedLogSinks
   ): Promise<{ accessKeyId: string; createDateMs: number | undefined }[] | undefined> {
+    const { value: v } = log;
+    const aws = pasteableAwsCommand(log.mask);
     const keys: { accessKeyId: string; createDateMs: number | undefined }[] = [];
     let marker: string | undefined;
     try {
@@ -420,8 +442,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       // at default verbosity). Disarming this reconcile means a retried create
       // can leave an ACTIVE, untracked credential behind, which is exactly the
       // outcome a silent line would hide.
-      this.logger.warn(
-        `Could not list existing access keys for user ${userName} while creating ${logicalId}: ${describeAwsFailure(error).detail}. Orphan detection is DISABLED for this create, so a retried attempt may leave an unusable but ACTIVE access key on the user. Grant iam:ListAccessKeys, or check the user's keys after the deploy: aws iam list-access-keys --user-name ${userName}`
+      log.warn(
+        `Could not list existing access keys for user ${v(userName)} while creating ${logicalId}: ${v(describeAwsFailure(error).detail)}. Orphan detection is DISABLED for this create, so a retried attempt may leave an unusable but ACTIVE access key on the user. Grant iam:ListAccessKeys, or check the user's keys after the deploy: ${aws`aws iam list-access-keys --user-name ${userName}`.render()}`
       );
       return undefined;
     }
@@ -449,7 +471,10 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM access key ${logicalId}: ${physicalId}`);
+    // Issue #2177 -- see `create()`.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const { value: v } = log;
+    log.debug(`Updating IAM access key ${logicalId}: ${v(physicalId)}`);
 
     const userName = properties['UserName'] as string | undefined;
     // Split on the ORIGIN of the desired bag (issue #3740, the #3728 shape).
@@ -493,14 +518,14 @@ export class IAMAccessKeyProvider implements ResourceProvider {
               properties['Status'],
               previousStatus,
               'AWS::IAM::AccessKey Status',
-              stateBorneDesired ? { onUnusable: (message) => this.logger.warn(message) } : {}
+              stateBorneDesired ? { onUnusable: (message) => log.warn(message) } : {}
             )
       ) as StatusType;
     } catch (error) {
       // Outside the `try` below, so the refusal is not re-labelled as an AWS
       // update failure.
       throw new ProvisioningError(
-        `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
+        `${v(error instanceof Error ? error.message : String(error))}. Nothing was applied to ` +
           `access key ${logicalId}; fix the template value`,
         resourceType,
         logicalId,
@@ -518,7 +543,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully updated IAM access key ${logicalId}`);
+      log.debug(`Successfully updated IAM access key ${logicalId}`);
 
       // No `attributes`: the create-time SecretAccessKey cached in state must
       // survive (a partial attribute set would replace, not merge).
@@ -529,7 +554,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM access key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update IAM access key ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -557,7 +582,13 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     this.logger.debug(`Deleting IAM access key ${logicalId}: ${physicalId}`);
 
     try {
-      let userName = properties?.['UserName'] as string | undefined;
+      // go-to-k/cdkd#3952: a redacted UserName names no user, so it takes the
+      // same GetAccessKeyLastUsed lookup an absent one does.
+      const recordedUserName = properties?.['UserName'];
+      let userName =
+        typeof recordedUserName === 'string' && !isRedactedRecordedValue(recordedUserName)
+          ? recordedUserName
+          : undefined;
       if (!userName) {
         const lastUsed = await this.iamClient.send(
           new GetAccessKeyLastUsedCommand({ AccessKeyId: physicalId })

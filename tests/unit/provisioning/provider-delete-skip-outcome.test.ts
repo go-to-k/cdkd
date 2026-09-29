@@ -82,11 +82,13 @@ import {
   IAMPolicyProvider,
   POLICY_NAME_SKIP_REASON,
   POLICY_NO_TARGET_SKIP_REASON,
+  POLICY_MALFORMED_TARGET_SKIP_REASON,
 } from '../../../src/provisioning/providers/iam-policy-provider.js';
 import {
   IAMUserGroupProvider,
   MEMBERSHIP_NO_PROPERTIES_SKIP_REASON,
   MEMBERSHIP_MISSING_FIELDS_SKIP_REASON,
+  MEMBERSHIP_MALFORMED_USERS_SKIP_REASON,
 } from '../../../src/provisioning/providers/iam-user-group-provider.js';
 
 const LAMBDA_ARN = 'arn:aws:lambda:us-east-1:111122223333:function:my-handler';
@@ -167,6 +169,16 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       // Pre-existing zero-AWS-call hole: every branch is skipped and delete()
       // used to fall out returning `undefined`, i.e. DELETED.
       run: () => new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {}),
+    },
+    {
+      name: 'AWS::IAM::Policy — a target list that is not a list of IAM names',
+      reason: POLICY_MALFORMED_TARGET_SKIP_REASON,
+      warnContains: 'holds Roles that is not a list of IAM names',
+      // go-to-k/cdkd#3878: a string used to be walked character by character.
+      run: () =>
+        new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {
+          Roles: 'AdminRole',
+        }),
     },
     {
       name: 'Custom::Thing — no properties in state',
@@ -290,6 +302,15 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
         ),
     },
     {
+      name: 'AWS::Lambda::Permission — no StatementId',
+      head: 'has no StatementId in its physicalId',
+      qualifier: 'UNLESS the function itself is part of this stack',
+      run: () =>
+        new LambdaPermissionProvider().delete('MyPerm', 'my-fn|', 'AWS::Lambda::Permission', {
+          FunctionName: 'my-fn',
+        }),
+    },
+    {
       name: 'AWS::IAM::Policy — no policy name',
       head: "and no PolicyName in the state record's",
       qualifier: 'UNLESS the role / group / user it is attached to is itself part of this stack',
@@ -340,9 +361,36 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       // so a qualifier lifted from a sibling cannot satisfy both.
       expect(text).toContain(head);
       expect(text).toContain(qualifier);
-      expect(text).toContain('cdkd state orphan');
+      // Region-scoped: without --stack-region the command drops that stack
+      // name's record in EVERY region; and it drops every record in that
+      // region, not just this one (go-to-k/cdkd#3996).
+      expect(text).toContain(
+        "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region"
+      );
     }
   );
+
+  it('AWS::Lambda::Permission: a line break planted in the record cannot forge a warning line (go-to-k/cdkd#3996)', async () => {
+    // Both skip arms interpolate the record's logicalId / physicalId, which
+    // `safeMsg` flattens to one line.
+    await new LambdaPermissionProvider().delete(
+      'My\nPerm',
+      'my-fn\n[forged] cdkd state orphan X|',
+      'AWS::Lambda::Permission',
+      { FunctionName: 'my-fn' }
+    );
+    await new LambdaPermissionProvider().delete(
+      'My\nPerm',
+      '|AllowInvoke',
+      'AWS::Lambda::Permission',
+      {}
+    );
+    const text = warnText();
+    expect(text).toContain('has no StatementId in its physicalId');
+    expect(text).toContain('FunctionName not available for Lambda permission');
+    expect(text).not.toMatch(/\n\[forged\]/);
+    expect(text).not.toContain('My\nPerm');
+  });
 
   it('the arms with NO in-stack parent do NOT carry the qualifier', async () => {
     // A Lambda layer version and a Custom Resource's external side effects are
@@ -373,9 +421,11 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       CR_NO_SERVICE_TOKEN_SKIP_REASON,
       POLICY_NAME_SKIP_REASON,
       POLICY_NO_TARGET_SKIP_REASON,
+      POLICY_MALFORMED_TARGET_SKIP_REASON,
       PERMISSION_STATEMENT_ID_SKIP_REASON,
       MEMBERSHIP_NO_PROPERTIES_SKIP_REASON,
       MEMBERSHIP_MISSING_FIELDS_SKIP_REASON,
+      MEMBERSHIP_MALFORMED_USERS_SKIP_REASON,
     ];
     for (const reason of reasons) {
       expect(reason.length).toBeLessThanOrEqual(64);
@@ -810,5 +860,68 @@ describe('the round-2 fallbacks do not create a false delete (issue #1770 delta 
     const input = send.mock.calls[0]![0].input as Record<string, unknown>;
     expect(input['RoleName']).toBe('my-role');
     expect(input['PolicyName']).toBe('MyPolicy');
+  });
+
+  // go-to-k/cdkd#3878: a PRESENT target list must be a list of IAM names, or
+  // the delete refuses before ANY call — never a character walk, never a
+  // half-detached record.
+  it.each([
+    ['a string', { Roles: 'AdminRole' }],
+    ['an object beside a valid list', { Roles: ['r1'], Groups: {} }],
+    ['a non-string entry', { Users: ['u1', 7] }],
+    ['a name outside IAM\'s character set', { Roles: ['r 1'] }],
+    ['a name past 128 characters', { Groups: ['g'.repeat(129)] }],
+  ])('AWS::IAM::Policy: %s is refused with no AWS call', async (_what, properties) => {
+    const result = await new IAMPolicyProvider().delete(
+      'MyPolicy',
+      'MyPolicy',
+      'AWS::IAM::Policy',
+      properties
+    );
+    expect(result).toEqual({ outcome: 'skipped', reason: POLICY_MALFORMED_TARGET_SKIP_REASON });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a string', 'my-role'],
+    // Falsy but not null: it used to read as absent and route to the legacy role.
+    ['an empty string', ''],
+  ])(
+    'AWS::IAM::Policy: %s is refused even beside a legacy "<policyName>:<roleName>" id',
+    async (_what, roles) => {
+      // The legacy role must not stand in for a list that is present but broken.
+      const result = await new IAMPolicyProvider().delete(
+        'MyPolicy',
+        'MyPolicy:my-role',
+        'AWS::IAM::Policy',
+        { Roles: roles }
+      );
+      expect(result).toEqual({ outcome: 'skipped', reason: POLICY_MALFORMED_TARGET_SKIP_REASON });
+      expect(send).not.toHaveBeenCalled();
+    }
+  );
+
+  it('AWS::IAM::Policy: the refusal names the kind but echoes none of its content', async () => {
+    await new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {
+      Users: ['u1', 'x\nPlanted line'],
+    });
+    const text = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toContain('holds Users that is not a list of IAM names');
+    expect(text).not.toContain('Planted line');
+  });
+
+  it('AWS::IAM::Policy: valid lists still delete from exactly the listed principals', async () => {
+    send.mockResolvedValue({});
+    await expect(
+      new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {
+        Roles: ['r1'],
+        Groups: null,
+        Users: ['u.1+a=b,c@d-e_f'],
+      })
+    ).resolves.toBeUndefined();
+    expect(send.mock.calls.map((c) => c[0].input)).toEqual([
+      { RoleName: 'r1', PolicyName: 'MyPolicy' },
+      { UserName: 'u.1+a=b,c@d-e_f', PolicyName: 'MyPolicy' },
+    ]);
   });
 });

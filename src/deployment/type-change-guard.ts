@@ -38,6 +38,60 @@
 
 import type { ResourceChange, ResourceState } from '../types/state.js';
 import { isCustomResource } from '../provisioning/provider-registry.js';
+import { carriesSecretMask } from './secret-redaction.js';
+import { segmentAfterAnchor } from '../provisioning/composite-id.js';
+
+/**
+ * Do two records of ONE type that carry the SAME physical id nonetheless name
+ * two DIFFERENT resources? (issue [#3892](https://github.com/go-to-k/cdkd/issues/3892))
+ *
+ * For almost every type an id is self-describing, so no — and this answers
+ * `false`, leaving every caller's id-equality reading byte-for-byte as it was.
+ * `AWS::Glue::Table` is the exception: its id `<databaseName>|<tableName>` is
+ * placed by the recorded `DatabaseName`, and since both names may contain `|`,
+ * table `db|orders` in database `my` and table `orders` in database `my|db`
+ * share the id `my|db|orders`. A replacement that changes both names can
+ * therefore create a genuinely NEW table under the old id, and reading the
+ * equal id as "the create returned the existing resource" would strand it
+ * (deploy) or refuse to restore the old one (rollback).
+ *
+ * Answers `true` only when BOTH records' `DatabaseName` ANCHOR the shared id —
+ * the id starts with `<DatabaseName>|` on each side, so each is the database
+ * that record's readers will address — and the two differ: two databases, so
+ * two tables. (Two anchors of one id are equal or one extends the other past a
+ * `|`, so no case folding can make two different anchors one database.) A `DatabaseName` that does not anchor the id says nothing about the
+ * table the id names: `cdkd import` can record `a|b` beside a template
+ * `DatabaseName` of `x`, and its readers then address `a.b` by the two-segment
+ * reading, so comparing `x` with a corrected `a` would call one table two.
+ * Anything it cannot place — a non-anchoring value, an unresolved intrinsic, a
+ * `{{resolve:...}}` expression, a redaction mask, an absent bag — answers
+ * `false`, the pre-#3892 reading. That is the SAFE direction: `false` keeps the
+ * name-idempotent refusals, whereas a wrong `true` would let the engine delete
+ * "the old resource" by an id that is in fact the one it just created.
+ */
+export function equalIdNamesDifferentResources(input: {
+  resourceType: string;
+  /** The id both records carry (the call sites act only where the two are equal). */
+  physicalId: string | undefined;
+  oldProperties: Record<string, unknown> | undefined;
+  newProperties: Record<string, unknown> | undefined;
+}): boolean {
+  if (input.resourceType !== 'AWS::Glue::Table' || input.physicalId === undefined) return false;
+  const oldDb = input.oldProperties?.['DatabaseName'];
+  const newDb = input.newProperties?.['DatabaseName'];
+  if (typeof oldDb !== 'string' || typeof newDb !== 'string') return false;
+  if (carriesSecretMask(oldDb) || carriesSecretMask(newDb)) return false;
+  if (
+    segmentAfterAnchor(input.physicalId, oldDb) === undefined ||
+    segmentAfterAnchor(input.physicalId, newDb) === undefined
+  ) {
+    return false;
+  }
+  // Both anchor the SAME id, so they are equal or one is a strict prefix of
+  // the other plus `|` (`my` and `my|db` on `my|db|orders`). Case folding
+  // cannot make two such strings one database: an anchor matches exactly.
+  return oldDb !== newDb;
+}
 
 /**
  * Does an EQUAL physical id on the two halves of a replacement name the SAME
@@ -69,8 +123,23 @@ export function equalIdNamesSameResource(input: {
   newType: string;
   /** The layer the CREATE half of this operation routes through. */
   createLayer: 'sdk' | 'cc-api' | undefined;
+  /**
+   * The two halves' property bags, for a type whose id is not self-describing
+   * ({@link equalIdNamesDifferentResources}). Absent keeps the type-only verdict.
+   */
+  oldProperties?: Record<string, unknown> | undefined;
+  newProperties?: Record<string, unknown> | undefined;
+  /** The shared id the bags must anchor (see {@link equalIdNamesDifferentResources}). */
+  physicalId?: string | undefined;
 }): boolean {
-  if (input.oldType === input.newType) return true;
+  if (input.oldType === input.newType) {
+    return !equalIdNamesDifferentResources({
+      resourceType: input.oldType,
+      physicalId: input.physicalId,
+      oldProperties: input.oldProperties,
+      newProperties: input.newProperties,
+    });
+  }
   return (
     isCustomResource(input.oldType) &&
     isCustomResource(input.newType) &&

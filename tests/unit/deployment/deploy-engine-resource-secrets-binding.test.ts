@@ -36,6 +36,7 @@ import type { ResourceChange, ResourceState } from '../../../src/types/state.js'
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -233,6 +234,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
     };
     mockStateBackend = {
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),
@@ -326,6 +328,38 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     expect(mockProvider.create).toHaveBeenCalledOnce();
     expect(seenCreate).toEqual([EXPECTED_BAG]);
     expectBoundBagsAreResolverBags();
+  });
+
+  it('the REAL CustomResourceProvider refuses the bag this site binds (issue #4009, nested route)', async () => {
+    // The engine binds the bag it builds for this resource (the resolver is
+    // mocked in this file, so the recorded pair is the mock's) and the real
+    // provider refuses before invoking; recording by the real resolver is not
+    // what this case proves.
+    // The invoke is stubbed to a sentinel so reaching it would be visible.
+    const real = new CustomResourceProvider();
+    const invoke = vi.fn().mockRejectedValue(new Error('reached-invoke'));
+    (real as unknown as { invokeCustomResourceWithRetry: unknown }).invokeCustomResourceWithRetry =
+      invoke;
+    let refusal: unknown;
+    mockProvider.create!.mockImplementation(
+      async (id: string, type: string, props: Record<string, unknown>, ctx: unknown) => {
+        try {
+          return await real.create(id, type, { ServiceToken: 'arn:aws:lambda:us-east-1:111122223333:function:h', ...props }, ctx as never);
+        } catch (error) {
+          refusal = error;
+          throw error;
+        }
+      }
+    );
+    primeCreate();
+    await engine()
+      .deploy(STACK, template)
+      .catch(() => undefined);
+    expect(String((refusal as Error | undefined)?.message)).toMatch(
+      /Custom resource ChildRes: Value resolved to the value of a secret/
+    );
+    expect(String((refusal as Error).message)).not.toContain(SECRET_PLAINTEXT);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('site 2 — ordinary UPDATE (the #1903 arm: a nested stack that ALREADY exists)', async () => {

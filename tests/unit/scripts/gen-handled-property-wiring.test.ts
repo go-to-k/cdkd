@@ -34,9 +34,16 @@ import {
   type PropertyClassification,
   type HandledPropertyWiringReport,
 } from '../../../scripts/gen-handled-property-wiring.js';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 const REPO_ROOT = process.cwd();
 const PROVIDERS_DIR = resolve(REPO_ROOT, 'src/provisioning/providers');
+// The real providers tree, walked ONCE at collection time (no per-case bound
+// applies there) and shared by every case that grades the SHIPPED tree
+// (go-to-k/cdkd#3607). Cases must not mutate it: one that alters a report
+// spreads a copy. Still the SHIPPED `loadReport()`, never a test-local re-walk
+// (see 'real-repo coverage floors').
+const SHIPPED_REPORT = loadReport(PROVIDERS_DIR);
 const SCRIPT = resolve(REPO_ROOT, 'scripts/gen-handled-property-wiring.ts');
 const providerSource = (file: string): string =>
   readFileSync(resolve(PROVIDERS_DIR, file), 'utf8');
@@ -802,7 +809,7 @@ describe('handledProperties parsing', () => {
 // the directory: a floor computed by a private re-implementation would keep
 // passing after the shipped entry point broke.
 describe('real-repo coverage floors', () => {
-  const report = loadReport(PROVIDERS_DIR);
+  const report = SHIPPED_REPORT;
   const classes = report.classes;
   const allProps = classes.flatMap((c) => c.properties);
   const propsWith = (shape: string): number =>
@@ -1072,7 +1079,7 @@ export class BorrowerProvider {
     // this single-file parse never sees, so it would read as stale for an
     // unrelated reason.
     const allow = new Map([[key, HANDLED_WIRING_ALLOW_LIST.get(key)!]]);
-    const anchor = 'this.logger.debug(`Creating IAM access key ${logicalId}`);';
+    const anchor = "log.debug(`Creating IAM access key ${logicalId}`);";
     expect(realIamAccessKey).toContain(anchor);
     const wired = realIamAccessKey.replace(
       anchor,
@@ -1246,7 +1253,7 @@ describe('evidence-loss verdict (#1842)', () => {
     // allow-list), so a same-name class in two provider files would mis-pair.
     // 84/84 distinct today; this makes a future collision loud rather than a
     // silent wrong comparison.
-    const names = loadReport(PROVIDERS_DIR).classes.map((c) => c.className);
+    const names = SHIPPED_REPORT.classes.map((c) => c.className);
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -1309,7 +1316,7 @@ describe('evidence-loss verdict (#1842)', () => {
       // "no comparison" rather than an exception. The REFUSAL that stops the run
       // from proceeding on it is `main`'s, fenced separately.
       expect(() =>
-        findEvidenceLosses(loadBaseline(truncated), loadReport(PROVIDERS_DIR))
+        findEvidenceLosses(loadBaseline(truncated), SHIPPED_REPORT)
       ).not.toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1322,7 +1329,7 @@ describe('evidence-loss verdict (#1842)', () => {
     expect(
       findEvidenceLosses(
         loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json')),
-        loadReport(PROVIDERS_DIR)
+        SHIPPED_REPORT
       )
     ).toEqual([]);
   });
@@ -1356,7 +1363,7 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
   // in-code comment says so) — which is issue #1842 in one line, and why the
   // anchor is asserted unique rather than assumed.
   const DELEGATED_READ =
-    "  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);";
+    "  return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);";
 
   it('the fixture still discriminates: the real read carries delegated evidence', () => {
     // Without this the two probes below could both pass vacuously — a property
@@ -1388,7 +1395,7 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
     // unfollowable spelling (a computed key with no literal table behind it).
     const degraded = realDdb.replace(
       DELEGATED_READ,
-      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && isSendableWarmThroughput(properties[k]);"
+      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && wasSentWarmThroughput(properties[k]);"
     );
     expect(degraded).not.toBe(realDdb);
     const losses = findEvidenceLosses(analyze(realDdb), analyze(degraded));
@@ -1396,7 +1403,9 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
       'DynamoDBTableProvider#WarmThroughput',
     ]);
     expect(losses[0]?.lostShapes).toEqual(['delegated']);
-    expect(losses[0]?.lostSeeds).toEqual(['getDriftUnknownPaths', 'readCurrentState']);
+    // `readCurrentState` keeps its seed: it also reads the bag directly for the
+    // per-member readback (issue #3777), which this degradation does not touch.
+    expect(losses[0]?.lostSeeds).toEqual(['getDriftUnknownPaths']);
     // The property is STILL `wired` and the class still reports no gap — which
     // is precisely why the gap verdict could not see this.
     expect(analyze(degraded).classes.flatMap((c) => c.gaps)).toEqual([]);
@@ -1411,8 +1420,11 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
 // AST walk, so 5s (Vitest's default) is not a safe budget under a loaded
 // parallel run — two of these flaked on timeout while the suite was otherwise
 // green. The generous per-test budget is about machine load, not about any of
-// them being slow enough to be worth optimizing.
-const SPAWN_TIMEOUT_MS = 60_000;
+// them being slow enough to be worth optimizing. 60 s was not generous enough:
+// `every malformed FIELD gets a STRUCTURED refusal` took 11.8 s alone and 80.6 s
+// with another session's suite running (go-to-k/cdkd#3607), so the budget is the
+// shared contended-case bound.
+const SPAWN_TIMEOUT_MS = CONTENDED_CASE_TIMEOUT_MS;
 
 describe('the shipped --check command', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'cdkd-hpw-'));
@@ -1463,6 +1475,10 @@ describe('the shipped --check command', () => {
     const proc = spawnSync(process.execPath, [SCRIPT, ...args], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
+      // A case's Vitest bound cannot fire while `spawnSync` blocks the worker,
+      // so a hung critic is bounded here; it surfaces as `proc.error`
+      // (ETIMEDOUT) on the line below.
+      timeout: SPAWN_TIMEOUT_MS,
     });
     expect(proc.error, 'the critic must be spawnable').toBeUndefined();
     return { status: proc.status ?? -1, stderr: proc.stderr };
@@ -1497,12 +1513,12 @@ describe('the shipped --check command', () => {
   // in-code comment says so) — which is issue #1842 in one line, and why the
   // anchor is asserted unique rather than assumed.
   const DELEGATED_READ =
-    "  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);";
+    "  return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);";
   const degradeWarmThroughput = (src: string): string => {
     expect(src.split(DELEGATED_READ).length - 1, 'probe anchor must be unique').toBe(1);
     return src.replace(
       DELEGATED_READ,
-      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && isSendableWarmThroughput(properties[k]);"
+      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && wasSentWarmThroughput(properties[k]);"
     );
   };
 
@@ -1539,7 +1555,7 @@ describe('the shipped --check command', () => {
     const dir = join(scratch, 'providers-stale');
     cpSync(PROVIDERS_DIR, dir, { recursive: true });
     const accessKey = join(dir, 'iam-access-key-provider.ts');
-    const anchor = 'this.logger.debug(`Creating IAM access key ${logicalId}`);';
+    const anchor = "log.debug(`Creating IAM access key ${logicalId}`);";
     const accessKeySource = readFileSync(accessKey, 'utf8');
     expect(accessKeySource, 'the stale probe needs its anchor').toContain(anchor);
     writeFileSync(
@@ -1578,7 +1594,7 @@ describe('the shipped --check command', () => {
     // seeds (leaving only the property name) cannot pass.
     expect(stderr).toContain(
       'DynamoDBTableProvider#WarmThroughput \u2014 lost evidence [delegated] ' +
-        'and seeded-by [getDriftUnknownPaths, readCurrentState]'
+        'and seeded-by [getDriftUnknownPaths]'
     );
     // Not a gap. If this ever starts matching, the probe stopped exercising the
     // degradation-under-a-surviving-read case that the gap verdict is blind to.
@@ -1846,7 +1862,11 @@ describe('the shipped --check command', () => {
   }, SPAWN_TIMEOUT_MS);
 
   it('--help prints usage and writes nothing', () => {
-    const proc = spawnSync(process.execPath, [SCRIPT, '--help'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    const proc = spawnSync(process.execPath, [SCRIPT, '--help'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: SPAWN_TIMEOUT_MS,
+    });
     expect(proc.status).toBe(0);
     expect(proc.stdout).toContain('Usage: node scripts/gen-handled-property-wiring.ts');
     expect(proc.stdout).toContain(ACCEPT_LOSS_FLAG);
@@ -2321,7 +2341,7 @@ describe('unusable-baseline refusal predicate (#1842)', () => {
 });
 
 describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
-  const live = loadReport(PROVIDERS_DIR);
+  const live = SHIPPED_REPORT;
   const pair = (className: string, name: string) => ({
     file: 'p.ts',
     className,

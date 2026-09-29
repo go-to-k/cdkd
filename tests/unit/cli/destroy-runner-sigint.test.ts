@@ -389,8 +389,8 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
  * cascading child destroy never consults stdin and is unaffected.
  *
  * The guard is the same non-interactive REFUSAL issue #2247 chose for the
- * `state destroy --all` BATCH prompt one layer up, and it is fenced the same
- * way: the probe reproduces the PRODUCTION SYMPTOM as a TIMEOUT, not as an
+ * `state destroy --all` BATCH prompt one layer up (removed with that option,
+ * go-to-k/cdkd#3865), and it is fenced the same way: the probe reproduces the PRODUCTION SYMPTOM as a TIMEOUT, not as an
  * assertion about a mock. Remove the guard and the first case below hangs on a
  * question that never settles, exactly as CI did, and the 5 s per-case timeout
  * is what reds it.
@@ -469,8 +469,8 @@ describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => 
   );
 
   it('READS other stacks before refusing, but locks and deletes nothing', async () => {
-    // The docs contrast this refusal against the batch prompt's "nothing is
-    // read, locked or deleted". The READ half is real -- a state record WITH
+    // The docs say this refusal locks and deletes nothing but may READ other
+    // stacks' records. The READ half is real -- a state record WITH
     // outputs triggers the strong-reference scan, which lists stacks and reads
     // their records -- and no case pinned it, because every fixture here uses
     // `outputs: {}` and so skips the scan entirely.

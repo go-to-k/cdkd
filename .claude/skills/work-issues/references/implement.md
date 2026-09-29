@@ -11,8 +11,9 @@ Never edit in the main checkout — it is shared across parallel agents. Per
 lane:
 
 ```bash
-# MAIN-CHECKOUT only; IN-PLACE creates NO worktree and skips these two lines
-# (mode probe: references/launch-mode.md).
+# MAIN-CHECKOUT only; an IN-PLACE lane in the launch tree skips these two lines,
+# a CONCURRENT one runs them with absolute paths: launch-mode.md row 1's
+# `git -C <MAIN_CHECKOUT> worktree add ...`, then `cd <MAIN_CHECKOUT>/.claude/worktrees/<b>`.
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp will not resolve
@@ -66,8 +67,7 @@ done                                                               # RIGHT
   `verify.sh` greps pin wording the unit suite cannot see (go-to-k/cdkd#3706).
   A change that REFUSES what it used to accept (warn → refuse) also greps the
   property through `tests/integration/*/{lib,verify.sh}` before claiming "no
-  fixture impact": fixtures deploy malformed values ON PURPOSE (4 failed on
-  go-to-k/cdkd#3780).
+  fixture impact": fixtures deploy malformed values ON PURPOSE (go-to-k/cdkd#3780).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
   a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
 - A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f).
@@ -129,10 +129,13 @@ rounds means change instrument.
 
 You may fan out **one subagent per lane** (disjoint files): give each its
 tree, allowed files, "do NOT touch other lanes' files; STOP and report
-if the fix needs a forbidden one", and **the REPORT SHAPE — the report IS the
-deliverable**, since a lane's tool output never reaches you. Never wait on a
-quiet lane: list the agents and resume any already `completed` with "REPORT
-ONLY". A subagent's Bash bypasses the PreToolUse hooks; the parent merges.
+if the fix needs a forbidden one", and **the REPORT SHAPE — the FINAL report IS
+the deliverable**, since a lane's tool output never reaches you. **Name the
+parent's `SendMessage` address, `main`** (a guessed one fails), and say a
+mid-task report ends NOTHING: the lane goes on to its next step unless the
+parent SAYS stop.
+Never wait on a quiet lane: list the agents and resume any already `completed`
+with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
 
 **Guardrails every lane prompt must carry:**
 
@@ -140,10 +143,9 @@ ONLY". A subagent's Bash bypasses the PreToolUse hooks; the parent merges.
   concurrent suites the 600s watchdog kills lanes with timeouts in untouched
   files. Each agent runs `vp test run <its own suite>`.
 - A lane is killed at 600s of silence inside a tool call: background long runs
-  via `run_in_background` with a log redirect and wake on ITS exit (one
-  notification) — never a per-line watcher (`tail -F`, a line-emitting
-  `Monitor`), whose every line re-wakes the lane and pings the parent with a
-  no-op. A turn ended with nothing in the background is final.
+  via `run_in_background` with a log redirect and wake on ITS exit — never a
+  per-line watcher (`tail -F`, a line-emitting `Monitor`), which re-wakes the
+  lane on every line. A turn ended with nothing in the background is final.
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP if the branch carries work you did not write.
 - **Reviewers probe by edit-and-restore-from-`HEAD`, and collide with each

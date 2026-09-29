@@ -773,8 +773,16 @@ function mixedRenderLines(
     // fragment. An inert conjunct reads as a guard and fences nothing.
     const dropsAsArtifact = (e: string): boolean =>
       operands.includes(e) && !/[A-Za-z0-9_$]/.test(e);
+    // `safeMsg` is the TAG of a template, left behind when `concatOperands`
+    // strips the literal it tags; it renders no value of its own.
+    const isSafeMsgTag = (e: string): boolean => operands.includes(e) && e.trim() === 'safeMsg';
     const raw = exprs.filter(
-      (e) => !safe(e) && e.trim() !== '' && !/^\d+$/.test(e.trim()) && !dropsAsArtifact(e)
+      (e) =>
+        !safe(e) &&
+        e.trim() !== '' &&
+        !/^\d+$/.test(e.trim()) &&
+        !dropsAsArtifact(e) &&
+        !isSafeMsgTag(e)
     );
     if (sanitized.length > 0 && raw.length > 0) {
       out.push({ line: i + 1, raw, exempt: annotationAbove(lines, i, MIXED_ANNOTATION) });

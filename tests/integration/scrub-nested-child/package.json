@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-scrub-nested-child",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd scrub repairs a nested-stack child record, seeded with a pre-fix plaintext, through its parent",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -24,9 +24,9 @@ paths:
   `tests/unit/provisioning/route53-provider.test.ts`); reached via
   `getAwsClients()` → mock `src/utils/aws-clients.js`. Copy the package name from
   the fence's message — a mis-named `vi.mock` is silently INERT.
-- **A test that SPAWNS a subprocess declares its own timeout** as `it`'s third
-  argument (`}, 60_000);`): Vitest's 5 s default is an IN-PROCESS bound, and a
-  spawned `.ts` entry point pays Node startup plus type-stripping.
+- **A test that SPAWNS declares its own timeout** (5 s is in-process); one that
+  walks or copies the real tree uses `tests/contended-case-timeout.ts`, on
+  `spawnSync` too.
 
 ### A `*Once` primer must be consumed by the test that primed it (mandatory)
 

@@ -366,6 +366,27 @@ afterEach(() => {
   setStdinIsTty(originalIsTTY);
 });
 
+/** `orphanCommandFor`'s note for a stack name that is not a string (go-to-k/cdkd#3924 M4). */
+const NONSTRING_STACK_NOTE =
+  "The next line's command names neither value, because its record's stack name is not a " +
+  "string. List the records as stored with 'cdkd state list --json' and act on the one whose " +
+  'stackName and region match, replacing each quoted hole, quotes included, with the ' +
+  'shell-quoted value.';
+
+/** `orphanCommandFor`'s note for a region that is not a string (go-to-k/cdkd#3924 M4). */
+const NONSTRING_NOTE =
+  "The next line's command names neither value, because its record's region is not a " +
+  "string. List the records as stored with 'cdkd state list --json' and act on the one whose " +
+  'stackName and region match, replacing each quoted hole, quotes included, with the ' +
+  'shell-quoted value.';
+
+/** `orphanCommandFor`'s note for a region `displaySafe` alters (go-to-k/cdkd#3436). */
+const REGION_ALT_NOTE =
+  "The next line's command names neither value, because its record's region does NOT " +
+  'render exactly (another record may render identically). List the records as stored with ' +
+  "'cdkd state list --json' and act on the one whose stackName and region match, replacing " +
+  'each quoted hole, quotes included, with the shell-quoted value.';
+
 describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', () => {
   beforeEach(() => {
     infoSpy.mockReset();
@@ -543,6 +564,197 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
     // ...and it is on its own labelled line rather than inside a prose quoted
     // span, which is the other half of the same rule.
     expect(summary).toMatch(/^Recover with: cdkd state orphan '<stack>' --stack-region '<region>'$/m);
+    // The per-failure warn ends on its command, alone on a labelled line
+    // after the sentence (go-to-k/cdkd#3436): on the sentence's own line an
+    // apostrophe would flip the shell quote around a shell-quoted name.
+    const warnLine = warnSpy.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((w) => w.startsWith('Failed to delete cdkd state'))!;
+    expect(
+      warnLine.endsWith(
+        'The stack IS CFn-managed; clean up its state record.\n' +
+          'Clean up with: cdkd state orphan Root --stack-region us-east-1'
+      )
+    ).toBe(true);
+  });
+
+  it('puts the gate reason BEFORE the withheld orphan command in the state-deletion warn (go-to-k/cdkd#3436)', async () => {
+    // A region `displaySafe` alters (a zero-width space) is WITHHELD, so the
+    // warn carries a non-empty note, which must precede the command line.
+    const region = 'us-east-1\u200b';
+    const root = makeState({
+      stackName: 'Root',
+      region,
+      resources: { MyBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'my-bucket-123' } },
+    });
+    const { backend: stateBackend } = buildStateBackend({ [`Root|${region}`]: root }, () => {
+      throw new Error('denied');
+    });
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient } = buildCfnClient();
+    await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
+      rootStackName: 'Root',
+      rootRegion: region,
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree: { stackName: 'Root', region, state: root, nestedChildren: new Map() },
+      rootTemplate: {
+        Resources: {
+          MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket-123' } },
+        },
+      },
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: true,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    }).catch((e: unknown) => e);
+
+    const warnLine = warnSpy.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((w) => w.startsWith('Failed to delete cdkd state'))!;
+    expect(
+      warnLine.endsWith(
+        'The stack IS CFn-managed; clean up its state record. ' +
+          REGION_ALT_NOTE +
+          '\n' +
+          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>'"
+      )
+    ).toBe(true);
+  });
+
+  it('fails CLOSED on a non-string region in the state-deletion warn, without throwing out of the cleanup loop (go-to-k/cdkd#3924 M4)', async () => {
+    // A NUMERIC region (body content is unvalidated): the gate withholds it,
+    // and nothing on the warn path may throw, or the leaf-first cleanup loop
+    // would stop before its aggregate refusal.
+    const region = 123 as unknown as string;
+    const root = makeState({
+      stackName: 'Root',
+      region,
+      resources: { MyBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'my-bucket-123' } },
+    });
+    const { backend: stateBackend } = buildStateBackend({ [`Root|${region}`]: root }, () => {
+      throw new Error('denied');
+    });
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient } = buildCfnClient();
+    const thrown = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
+      rootStackName: 'Root',
+      rootRegion: region,
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree: { stackName: 'Root', region, state: root, nestedChildren: new Map() },
+      rootTemplate: {
+        Resources: {
+          MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket-123' } },
+        },
+      },
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: true,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    }).catch((e: unknown) => e);
+    // The loop ran ON past this warn to its end: the aggregate refusal is
+    // what it throws after every record, not a TypeError from the warn.
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toContain('1 cdkd state record(s) could not be deleted');
+
+    const warnLine = warnSpy.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((w) => w.startsWith('Failed to delete cdkd state'))!;
+    expect(
+      warnLine.endsWith(
+        'The stack IS CFn-managed; clean up its state record. ' +
+          NONSTRING_NOTE +
+          '\n' +
+          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>'"
+      )
+    ).toBe(true);
+  });
+
+  it('fails CLOSED on a non-string STACK NAME in the state-deletion warn, without throwing out of the cleanup loop (go-to-k/cdkd#3924 M4)', async () => {
+    // A NUMERIC stack name, reachable here only through a CFn-name override
+    // (`cdkd2cfnStackName` would refuse it): the leading-`-` check must not
+    // call `.startsWith` on it inside the warn's `catch`.
+    const region = 'us-east-1';
+    const stack = 123 as unknown as string;
+    const root = makeState({
+      stackName: stack,
+      region,
+      resources: { MyBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'my-bucket-123' } },
+    });
+    const { backend: stateBackend } = buildStateBackend({ [`${stack}|${region}`]: root }, () => {
+      throw new Error('denied');
+    });
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient } = buildCfnClient();
+    const thrown = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
+      rootStackName: stack,
+      rootRegion: region,
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree: { stackName: stack, region, state: root, nestedChildren: new Map() },
+      rootTemplate: {
+        Resources: {
+          MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket-123' } },
+        },
+      },
+      cfnStackNameOverrides: { root: 'RootCfn', childMap: new Map() },
+      rootParameters: [],
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: true,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    }).catch((e: unknown) => e);
+    // The loop ran ON past this warn to its end: the aggregate refusal is
+    // what it throws after every record, not a TypeError from the warn.
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toContain('1 cdkd state record(s) could not be deleted');
+
+    const warnLine = warnSpy.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((w) => w.startsWith('Failed to delete cdkd state'))!;
+    expect(
+      warnLine.endsWith(
+        'The stack IS CFn-managed; clean up its state record. ' +
+          NONSTRING_STACK_NOTE +
+          '\n' +
+          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>'"
+      )
+    ).toBe(true);
   });
 });
 
@@ -1112,7 +1324,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
             recreateImportUnsupported: true,
           },
         })
-      ).rejects.toThrow(/Could not acquire lock for nested-stack child 'Root~Child'/);
+      ).rejects.toThrow(/Could not acquire lock for nested-stack child Root~Child/);
 
       // No AWS write happened.
       expect(calls.filter((c) => c.name === 'CreateChangeSet')).toEqual([]);
@@ -2030,7 +2242,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
           recreateImportUnsupported: true,
         },
       })
-    ).rejects.toThrow(/DescribeStacks returned no StackId for 'Root'/);
+    ).rejects.toThrow(/Reading its CloudFormation stack failed for cdkd stack 'Root'[^\n]*DescribeStacks returned no StackId/);
 
     // The failure is post-IMPORT but pre-state-deletion — no state removed.
     expect(deleted).toEqual([]);
@@ -2370,7 +2582,10 @@ describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', ()
     );
     const message = (caught as Error).message;
 
-    expect(message).not.toMatch(CONTROL);
+    // ONE newline is cdkd's own: the remedy's labelled command line
+    // (go-to-k/cdkd#3436). Every other control character would be the value's.
+    expect(message.split('\nDrop it with: ')).toHaveLength(2);
+    expect(message.replace('\nDrop it with: ', ' Drop it with: ')).not.toMatch(CONTROL);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     // Not vacuous: it is the missing-child refusal, still naming the child.
     expect(message).toContain('missing nested-child');

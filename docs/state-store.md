@@ -16,15 +16,17 @@ resources to delete.
 The consequence worth knowing is that this store is addressable on its own.
 CloudFormation ties every operation to a stack you name; the cdkd state store
 holds the whole estate in one place, so `cdkd state` can enumerate it, act on
-several stacks at once, or — with `cdkd state destroy --all` and
-`cdkd state refresh-observed --all` — act on every stack in the bucket:
+several stacks at once, or — with `cdkd state refresh-observed --all` — act on
+every stack in the bucket. Destroying is deliberately narrower: the bucket is
+shared by every CDK app in the account, so `cdkd state destroy` deletes only
+the stacks you name.
 
 ```bash
 cdkd state info                     # which bucket cdkd is using, and how much is in it
 cdkd state list                     # every stack in the bucket, not just this app's
 cdkd state list --tree              # nested-stack parents and children
 cdkd state show MyStack             # one record in full, including resource properties
-cdkd state destroy --all --yes      # tear the entire estate down in one command
+cdkd state destroy StackA StackB    # destroy named stacks without the CDK app
 ```
 
 ## No CDK app required

@@ -91,6 +91,7 @@ import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-c
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -101,6 +102,7 @@ import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
@@ -426,7 +428,7 @@ export class ECSProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     switch (resourceType) {
       case 'AWS::ECS::Cluster':
         return this.deleteCluster(logicalId, physicalId, resourceType, context);
@@ -1735,11 +1737,25 @@ export class ECSProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting ECS service ${logicalId}: ${physicalId}`);
     const client = this.getClient();
 
-    const cluster = properties?.['Cluster'] as string | undefined;
+    // go-to-k/cdkd#3952: a redacted Cluster names no cluster, and the
+    // not-found arms below read a miss as "already deleted". The long-format
+    // service ARN (the physicalId) carries the cluster name, so that is used
+    // first; only a short-format ARN, which does not, leaves nothing to address.
+    const recordedCluster = properties?.['Cluster'];
+    let cluster: string | undefined;
+    if (isRedactedRecordedValue(recordedCluster)) {
+      cluster = clusterNameFromServiceArn(physicalId);
+      if (cluster === undefined) {
+        const skip = redactedDeleteAddressSkip(this.logger, logicalId, 'ECS service', ['Cluster']);
+        if (skip) return skip;
+      }
+    } else {
+      cluster = recordedCluster as string | undefined;
+    }
 
     try {
       // First scale down to 0

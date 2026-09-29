@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 
@@ -8,15 +9,13 @@ import type { Construct } from 'constructs';
  * Fixture for issue #1682 — the reverse-replacement replay-CREATE must record
  * the provider's `effectiveProperties`.
  *
- * Why `AWS::EC2::Route` and not the `AWS::S3::Bucket` the issue names: both
- * providers substitute on a state replay, but a bucket's reverse-replacement
- * re-create has to re-acquire a just-deleted GLOBALLY unique name, whose
- * release is not immediate — the fixture would be flaky for a reason that has
- * nothing to do with what it tests. A route's identity is
+ * The route is the ENGINE subject: its identity is
  * `<RouteTableId>|<Destination>`, scoped to this stack's own route table, so
- * the re-create is deterministic.
+ * its re-create is deterministic. The tables and the bucket below are the
+ * PER-PROVIDER subjects (issues #1724 / #1726 / #1741 / #1706).
  *
- * Two env knobs drive the phases (see verify.sh):
+ * Two env knobs drive the phases (see verify.sh; the per-resource names and
+ * the phase-5b knobs are documented where each resource is declared):
  *
  * - `ROUTE_DEST` flips the route's destination CIDR. It is create-only, so the
  *   second deploy classifies the route as a REPLACEMENT — which is the op
@@ -68,23 +67,24 @@ export class RollbackReplayStack extends cdk.Stack {
     // attached to the VPC.
     route.addDependency(attachment);
 
-    // ── The per-PROVIDER replay-CREATE subjects: two GlobalTables ─────────
+    // ── The per-PROVIDER replay-CREATE subjects ────────────────────────────
     //
-    // Issues #1724 / #1726. The route above proves the ENGINE honours a
-    // returned `effectiveProperties` on the reverse-replacement create; these
-    // two tables prove the GlobalTable ARMS answer with the right bag, which is
-    // per-provider coverage the route cannot give (issue #1706). Both arms fire
+    // The route above proves the ENGINE honours a returned
+    // `effectiveProperties` on the reverse-replacement create; the resources
+    // below prove each provider's ARMS answer with the right bag, which is
+    // per-provider coverage the route cannot give (issue #1706). The first two
+    // tables carry issues #1724 / #1726; both of those arms fire
     // only under `CreateContext.replayingState`, i.e. only on this rollback
     // path — which is why they had no live coverage and why the
     // `dynamodb-globaltable` fixture (UPDATE-only) cannot reach them.
     //
-    // TWO tables because the two arms need INCOMPATIBLE state: #1726 needs a
+    // TWO tables for those two arms because they need INCOMPATIBLE state: #1726 needs a
     // real GSI carrying real per-index capacity, and #1724 needs the GSI blob
     // replaced by a malformed string. One table cannot be both.
     //
     // `TableName` is create-only, so flipping it classifies each table as a
     // REPLACEMENT — the same op class as the route, and the reason the failure
-    // below DependsOn both: the replacements must COMPLETE before the deploy
+    // below DependsOn every one of them: the replacements must COMPLETE before the deploy
     // fails, or rollback classifies plain CREATEs instead.
     //
     // ONE replica each, in the deploy region. A cross-region replica adds
@@ -186,6 +186,46 @@ export class RollbackReplayStack extends cdk.Stack {
       replicas: [localReplica()],
     });
 
+    // #1706 arm 1: the `StreamSpecification` replay-CREATE substitution. A
+    // THIRD table rather than a key on the capacity table, because phase 5b
+    // diffs this record against the template per resource, and the capacity
+    // and omit tables legitimately diff (their records describe what the
+    // replay SENT, not what the template declares).
+    //
+    // KEYS_ONLY in the deployed template, NOT the NEW_AND_OLD_IMAGES the
+    // substitution falls back to: phase 4 reads the live view type, and only a
+    // baseline that differs from the default can show that the replay sent the
+    // SUBSTITUTED value rather than the one v1 was created with.
+    // `GT_STREAM_VIEW` exists for phase 5b alone, which renders the template
+    // that describes the live table and asserts it diffs clean.
+    const streamTable = new dynamodb.CfnGlobalTable(this, 'StreamTable', {
+      tableName: process.env['GT_STREAM_TABLE_NAME'] || 'cdkd-rollback-replay-gts-v1',
+      billingMode: 'PAY_PER_REQUEST',
+      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      streamSpecification: { streamViewType: process.env['GT_STREAM_VIEW'] || 'KEYS_ONLY' },
+      replicas: [localReplica()],
+    });
+
+    // #1706 arm 2: `AWS::S3::Bucket`'s create-path `applyEffectiveOverrides`.
+    // `BucketName` is create-only, so flipping it is the replacement trigger,
+    // exactly like `TableName` above. Re-acquiring the just-deleted v1 name on
+    // the rollback is what kept a bucket out of this fixture originally; the
+    // reverse-replacement create now waits out S3's `conflicting conditional
+    // operation` through the name-cooldown retry (issue #2116). That retry's
+    // budget is bounded, so a name release slower than it would still fail
+    // phase 3, whose failure message names this resource.
+    //
+    // Versioning is the subject because its replay downgrade is a SKIP: the
+    // restored bucket comes up unversioned, so the record must DROP the key.
+    // `BUCKET_VERSIONING=off` exists for phase 5b alone, like `GT_STREAM_VIEW`.
+    const bucket = new s3.CfnBucket(this, 'ReplayBucket', {
+      bucketName: process.env['BUCKET_NAME'] || 'cdkd-rollback-replay-b-v1',
+      ...(process.env['BUCKET_VERSIONING'] === 'off'
+        ? {}
+        : { versioningConfiguration: { status: 'Enabled' } }),
+    });
+
     // #1741, second instance: the CROSS-REGION arm. Opt-in behind
     // `CDKD_INTEG_MULTI_REGION=1` (the name the `dynamodb-globaltable` fixture
     // already uses for the same cost): a cross-region replica is created,
@@ -248,6 +288,8 @@ export class RollbackReplayStack extends cdk.Stack {
       failing.addDependency(route);
       failing.addDependency(capacityTable);
       failing.addDependency(gsiOmitTable);
+      failing.addDependency(streamTable);
+      failing.addDependency(bucket);
       if (crossRegionTable) failing.addDependency(crossRegionTable);
     }
   }

@@ -503,8 +503,12 @@ target only in that stack. Resources that live inside a nested stack
   to trigger the initial destroy and recreate.
 - **NOT** compatible with cross-account or cross-region migration. The flag
   operates within the current deploy's environment only.
-- **NOT** compatible with Tier 3 (`NON_PROVISIONABLE`) types — Cloud Control
-  cannot handle them either, and the Tier 3 rejection fires first.
+- **NOT** available for a type Cloud Control cannot create: a
+  `NON_PROVISIONABLE` type (such as `AWS::CodeBuild::Project` or
+  `AWS::IAM::Policy`, which cdkd manages through its SDK provider), or a type
+  whose SDK provider opts out of the Cloud Control fallback. The recreate
+  deletes the existing resource before creating it through Cloud Control, so
+  cdkd refuses the deploy before anything is touched. There is no bypass flag.
 - **NOT** compatible with multi-region types such as
   `AWS::DynamoDB::GlobalTable`. See
   [Multi-region types are refused outright](#multi-region-types-are-refused-outright).
@@ -724,7 +728,7 @@ shapes hit this, and both name `--replace` in their error text:
 
 | Failure | What happened | Without `--replace` | With `--replace` |
 | --- | --- | --- | --- |
-| `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name |
+| `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name — unless [another resource holds the new name](#when-the-new-name-belongs-to-another-resource) |
 | `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The Create API is name-idempotent, so the create returned the OLD resource's physical id instead of a new one — for example `CreateQueue` with an unchanged `QueueName` | Deploy fails rather than deleting the resource it just reported as created | Same delete-first path |
 
 `cdkd rollback` raises `NAMED_REPLACEMENT_COLLISION` too, and neither column
@@ -740,6 +744,20 @@ that one resource alone and let the rest of the rollback finish, re-run with
 The resource is briefly unavailable while it is deleted and recreated. The
 alternative remedy in both messages is to rename the resource so the
 create-first order has a free name to take.
+
+#### When the new name belongs to another resource
+
+A replacement that also **changes** the physical name can collide with a
+resource that is not the one being replaced — for example, you renamed a
+function to a name another stack already uses. Deleting the old resource first
+cannot free that name, so cdkd does not offer `--replace` there:
+
+- It compares the name your template declares with the name the old resource
+  holds, from state and its physical id.
+- When they differ, the deploy fails with `NAMED_REPLACEMENT_COLLISION` saying
+  the name is held by another resource. **Even with `--replace`, nothing is
+  deleted.**
+- Pick a free name, or delete the resource holding it if it is yours.
 
 `UpdateReplacePolicy: Retain` hard-fails in both shapes **regardless of
 `--replace`**: with Retain the old resource keeps the name, so a same-name
@@ -900,6 +918,13 @@ equal id is the existing resource, and the replacement is refused with
 `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` rather than deleting what it just created
 (`--replace` deletes the old resource first instead, as for any name-idempotent
 create).
+Within one type an equal id is the same resource, with one exception: two
+`AWS::Glue::Table` records in DIFFERENT databases can share an id when either
+name contains `|` (table `db|orders` in database `my`, table `orders` in
+database `my|db`). When both records' `DatabaseName` prefix the shared id and
+differ, cdkd treats them as two tables, so such a replacement keeps the new
+table and deletes the old one through its own record, and a rollback reverses
+it.
 When the new resource's create collides on a name instead, the error says that
 the holder may be an unrelated resource of the new type, which `--replace`
 cannot free.
@@ -1145,7 +1170,11 @@ than missing from the app: ENOENT reading assembly-MyStage/manifest.json
 
 The same sentence is appended when the app has no other stacks to list, and
 when you run with no stack argument at all — the case where every stack in the
-app lives under the Stage that failed.
+app lives under the Stage that failed. `cdkd scrub` and `cdkd import` print the same message.
+`cdkd destroy` appends it to its own
+empty-selection messages, to its `Could not determine which stacks belong to
+this app` refusal, and to the refusal of `--all` or a wildcard pattern over an
+app that synthesized no stacks.
 
 A pattern without a `/` matches the physical stack name, which carries no stage
 path, so the sentence is then prefixed `Possibly unrelated:` rather than

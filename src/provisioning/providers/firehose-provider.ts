@@ -48,6 +48,37 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+
+/**
+ * `true` for `undefined` / `null` (ABSENT, the empty list) or a list of tag
+ * objects each carrying a non-empty string `Key`. Anything else is malformed:
+ * the Tags diff derives its `UntagDeliveryStream` keys from the gap between the
+ * two sides, so reading a malformed side as empty would untag every key the
+ * other side holds (go-to-k/cdkd#3948).
+ */
+function isReadableTagList(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (t) =>
+        typeof t === 'object' &&
+        t !== null &&
+        !Array.isArray(t) &&
+        typeof (t as { Key?: unknown }).Key === 'string' &&
+        (t as { Key: string }).Key.length > 0 &&
+        // A dynamic reference or its mask names no tag key the stream holds.
+        // Refused on BOTH sides, unlike the Auto Scaling group's recorded side:
+        // Firehose's documented TagKey pattern admits neither `{` nor `:`, so an
+        // UntagDeliveryStream of a recorded `{{resolve:...}}` key is rejected
+        // rather than ignored, and the update never converged anyway.
+        !holdsSecretDerivedEntry((t as { Key: string }).Key)
+    )
+  );
+}
 
 /**
  * CFn destination property names that this provider can apply
@@ -69,6 +100,15 @@ const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
   'SnowflakeDestinationConfiguration',
   'SplunkDestinationConfiguration',
 ]);
+
+/**
+ * Poll cadence and cap for the post-delete gone-wait (issue #3872). The
+ * DELETING window measured ~103-107s (us-east-1), so the cap is generous
+ * headroom, not an estimate, and sits well under the 30-min per-resource
+ * deadline.
+ */
+const FIREHOSE_DELETE_POLL_INTERVAL_MS = 5_000;
+const FIREHOSE_DELETE_MAX_WAIT_MS = 10 * 60 * 1000;
 
 /**
  * SDK Provider for AWS Kinesis Firehose resources
@@ -128,6 +168,19 @@ export class FirehoseProvider implements ResourceProvider {
     const deliveryStreamName = properties['DeliveryStreamName'] as string | undefined;
     const deliveryStreamType =
       (properties['DeliveryStreamType'] as string | undefined) || 'DirectPut';
+
+    // The same Tags read the update path uses: a malformed list would reach
+    // `tags.map` below (go-to-k/cdkd#3948).
+    if (!isReadableTagList(properties['Tags'])) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Tags of Firehose delivery stream ${logicalId} is not a list of tags with a Key — the ` +
+            `delivery stream was not created`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
 
     try {
       const input: CreateDeliveryStreamCommandInput = {
@@ -605,6 +658,31 @@ export class FirehoseProvider implements ResourceProvider {
     // destination type but must not run BEFORE the rejection branches —
     // otherwise a partial AWS write strands tags on a stream whose
     // destination diff was rejected).
+    const nextTagsOk = isReadableTagList(properties['Tags']);
+    const prevTagsOk = isReadableTagList(previousProperties['Tags']);
+    if (!nextTagsOk || !prevTagsOk) {
+      // Names the side only, never record content. A recorded value holding a
+      // dynamic reference or its mask must not be answered with "write the
+      // value into state.json"; `[]` removes nothing and re-applies the tags.
+      const recordedSecret = !prevTagsOk && holdsSecretDerivedEntry(previousProperties['Tags']);
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${[!nextTagsOk && 'desired Tags', !prevTagsOk && 'recorded Tags'].filter(Boolean).join(' / ')} ` +
+            `of Firehose delivery stream ${logicalId} is not a list of tags with a Key — no tag ` +
+            `was added or removed` +
+            (prevTagsOk
+              ? ''
+              : recordedSecret
+                ? ': the recorded Tags is secret-derived (cdkd keeps the dynamic reference or its ' +
+                  'mask in state), so do not write the value into state.json; set it to [] in ' +
+                  'state.json and re-run, which removes nothing'
+                : ': repair the recorded Tags in state.json to a list of tags with a Key and re-run'),
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
     await this.applyTagsDiff(physicalId, properties['Tags'], previousProperties['Tags']);
 
     if (activeDest === 'ExtendedS3DestinationConfiguration') {
@@ -742,8 +820,9 @@ export class FirehoseProvider implements ResourceProvider {
   private async applyTagsDiff(physicalId: string, next: unknown, prev: unknown): Promise<void> {
     if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
     type CfnTag = { Key?: string; Value?: string };
-    const nextEntries = (Array.isArray(next) ? next : []) as CfnTag[];
-    const prevEntries = (Array.isArray(prev) ? prev : []) as CfnTag[];
+    // Both sides were validated by the caller: absent reads as the empty list.
+    const nextEntries = (next ?? []) as CfnTag[];
+    const prevEntries = (prev ?? []) as CfnTag[];
     const nextByKey = new Map<string, CfnTag>();
     for (const t of nextEntries) {
       if (t.Key) nextByKey.set(t.Key, t);
@@ -832,7 +911,6 @@ export class FirehoseProvider implements ResourceProvider {
           DeliveryStreamName: physicalId,
         })
       );
-      this.logger.debug(`Successfully deleted Firehose delivery stream ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.getClient().config.region();
@@ -856,6 +934,51 @@ export class FirehoseProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+
+    // Issue #3872: the delivery stream keeps its NAME while it is DELETING
+    // (~100s measured), and a CreateDeliveryStream of that name is refused with
+    // the same `already exists` text a live stream gets, so the delete is
+    // complete only once the stream is gone. Outside the try: the wait's only
+    // throw is the DELETING_FAILED error below, which must not be re-wrapped.
+    await waitForGoneAfterDelete({
+      what: `Firehose delivery stream ${physicalId}`,
+      resourceType,
+      describe: () => this.readDeliveryStreamStatusForDelete(physicalId),
+      // DELETING_FAILED is terminal: Firehose could not finish the delete
+      // (typically a customer-managed KMS key it can no longer use) and keeps
+      // the stream until a forced delete. Returning would drop the state
+      // record of a live stream, so this one exit throws and keeps it.
+      failedStatus: (status) =>
+        status === 'DELETING_FAILED'
+          ? new ProvisioningError(
+              `Firehose delivery stream ${logicalId} entered DELETING_FAILED after the delete ` +
+                `was accepted, so AWS will not finish it on its own (commonly a customer-managed ` +
+                `KMS key the stream can no longer use). Fix the key and re-run, or delete the ` +
+                `stream outside cdkd with AllowForceDelete (cdkd never sends it); the state ` +
+                `record is kept.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          : undefined,
+      logger: this.logger,
+      pollIntervalMs: FIREHOSE_DELETE_POLL_INTERVAL_MS,
+      maxWaitMs: FIREHOSE_DELETE_MAX_WAIT_MS,
+    });
+    this.logger.debug(`Successfully deleted Firehose delivery stream ${logicalId}`);
+  }
+
+  /** The delivery stream's status, or `undefined` once `DescribeDeliveryStream` reports it gone. */
+  private async readDeliveryStreamStatusForDelete(streamName: string): Promise<string | undefined> {
+    try {
+      const response = await this.getClient().send(
+        new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
+      );
+      return response.DeliveryStreamDescription?.DeliveryStreamStatus ?? 'UNKNOWN';
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return undefined;
+      throw error;
     }
   }
 

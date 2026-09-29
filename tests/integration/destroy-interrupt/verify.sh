@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh - cdkd destroy-interrupt integ.
 #
-# Exercises TWO behaviors that previously had ZERO integ coverage:
+# Exercises FOUR behaviors that previously had ZERO integ coverage:
 #
 #   #816 graceful SIGINT on destroy:
 #       A first Ctrl-C mid-destroy must STOP scheduling new deletes, let
@@ -9,6 +9,16 @@
 #       incremental state, RELEASE the stack lock, and exit non-zero.
 #       Pre-fix the process died mid-destroy: the lock was stranded for
 #       its 30-minute TTL and the finally cleanup never ran.
+#
+#   #3839 no app scope without a synthesized app (Phase 1b):
+#       With an app that cannot be synthesized, `destroy --all` and a
+#       wildcard are refused (exit 1, synth error surfaced) and leave the
+#       deployed stack untouched; an exact name still reaches state.
+#
+#   #3865 `cdkd state destroy --all` is removed (Phase 1c):
+#       `--all`, alone or beside a stack name, exits 1 with cdkd's own
+#       refusal rather than commander's unknown-option error; an exact
+#       name alone still reaches the state listing.
 #
 #   #804 Custom-Resource replay fail-fast:
 #       On a re-run after a first interrupted/partial destroy, replaying
@@ -188,6 +198,184 @@ echo "    resolved IAM role: ${ROLE_NAME}"
 echo "    resolved SecurityGroup: ${SG_ID}"
 echo "    resolved SSM parameters:"
 echo "${PARAM_NAMES}" | sed 's/^/      - /'
+
+# --- Phase 1b: no synthesized app, no app scope (go-to-k/cdkd#3839) -----
+#
+# With an app that cannot be synthesized, `destroy --all` and a wildcard used
+# to fall back to EVERY stack record in the state bucket, other apps' included.
+# Both must now exit 1 before any prompt, lock or delete, naming the synth
+# error; an exact name must still reach the state fallback.
+#
+# Blast radius if this ever regresses: the wildcard arm runs against the real
+# prefix, so its pattern is this stack's own name plus `*` -- a regression
+# destroys only this fixture's stack, and the intact-stack asserts fail. The
+# `--all` arm and the exact-name control run under a fresh, EMPTY state prefix:
+# a regressed `--all` over the shared prefix would destroy every stack in the
+# bucket, so it is never given one.
+echo "==> Phase 1b: an unsynthesizable app refuses --all and wildcards"
+BROKEN_APP="sh -c 'echo cdkd-3839-broken-app >&2; exit 3'"
+EMPTY_PREFIX="cdkd-3839-empty-${RANDOM}${RANDOM}"
+# Emptiness is read as the FIRST key, not a count: `KeyCount` under
+# `--output text` prints `None` for an empty listing and applies per PAGE.
+# `None` is the only accepted answer, and the call's own exit code is checked
+# first, so an AWS error cannot read as "empty".
+set +e
+EMPTY_FIRST_KEY=$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" --prefix "${EMPTY_PREFIX}/" \
+  --max-items 1 --query 'Contents[0].Key' --output text 2>&1)
+EMPTY_LIST_RC=$?
+set -e
+if [ "${EMPTY_LIST_RC}" -ne 0 ]; then
+  echo "FAIL: could not list state prefix ${EMPTY_PREFIX}/ (rc=${EMPTY_LIST_RC}): ${EMPTY_FIRST_KEY}" >&2
+  exit 1
+fi
+if [ "${EMPTY_FIRST_KEY}" != "None" ]; then
+  echo "FAIL: state prefix ${EMPTY_PREFIX}/ is not empty (first key: ${EMPTY_FIRST_KEY}); the --all arm needs an empty one" >&2
+  exit 1
+fi
+# The intact-stack assert below probes this function; an empty name would hand
+# the AWS CLI an empty argument.
+if [ -z "${FN_NAME}" ] || [ "${FN_NAME}" = "null" ]; then
+  echo "FAIL: no backing Lambda resolved from state, so Phase 1b cannot prove the stack intact" >&2
+  exit 1
+fi
+ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ -z "${ETAG_BEFORE}" ]; then
+  echo "FAIL: could not read the state object's ETag before Phase 1b" >&2
+  exit 1
+fi
+
+# (a) wildcard over the real prefix, where this stack IS in state.
+set +e
+WILDCARD_OUT=$(node "${LOCAL_DIST}" destroy "${STACK}*" --app "${BROKEN_APP}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)
+WILDCARD_RC=$?
+set -e
+printf '%s\n' "${WILDCARD_OUT}"
+if [ "${WILDCARD_RC}" -ne 1 ]; then
+  echo "FAIL: destroy '${STACK}*' with an unsynthesizable app exited ${WILDCARD_RC}, expected 1" >&2
+  exit 1
+fi
+if ! printf '%s' "${WILDCARD_OUT}" | grep -qF "${STACK}* selects among the stacks this app synthesizes, and the app could not be synthesized; refusing to fall back to every stack in state"; then
+  echo "FAIL: the wildcard refusal did not name the pattern and the failed synth" >&2
+  exit 1
+fi
+if ! printf '%s' "${WILDCARD_OUT}" | grep -qF "Caused by: CDK app exited with code 3"; then
+  echo "FAIL: the wildcard refusal did not surface the synth error" >&2
+  exit 1
+fi
+ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
+  echo "FAIL: state object changed across a refused destroy (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  exit 1
+fi
+if lock_exists; then
+  echo "FAIL: a refused destroy left a lock object at ${LOCK_KEY}" >&2
+  exit 1
+fi
+if gone_probe aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"; then
+  echo "FAIL: backing Lambda ${FN_NAME} is gone after a refused destroy" >&2
+  exit 1
+fi
+echo "    OK: wildcard refused (rc=1, synth error surfaced); state, lock and Lambda untouched"
+
+# (b) --all, under the empty prefix.
+set +e
+ALL_OUT=$(node "${LOCAL_DIST}" destroy --all --app "${BROKEN_APP}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${EMPTY_PREFIX}" --region "${REGION}" --force 2>&1)
+ALL_RC=$?
+set -e
+printf '%s\n' "${ALL_OUT}"
+if [ "${ALL_RC}" -ne 1 ]; then
+  echo "FAIL: destroy --all with an unsynthesizable app exited ${ALL_RC}, expected 1" >&2
+  exit 1
+fi
+if ! printf '%s' "${ALL_OUT}" | grep -qF -- "--all selects among the stacks this app synthesizes, and the app could not be synthesized; refusing to fall back to every stack in state"; then
+  echo "FAIL: the --all refusal did not name --all and the failed synth" >&2
+  exit 1
+fi
+if ! printf '%s' "${ALL_OUT}" | grep -qF "Caused by: CDK app exited with code 3"; then
+  echo "FAIL: the --all refusal did not surface the synth error" >&2
+  exit 1
+fi
+echo "    OK: --all refused (rc=1, synth error surfaced)"
+
+# (c) control: an exact name is not refused -- it reaches the state fallback,
+# which finds nothing under the empty prefix and exits 0.
+set +e
+EXACT_OUT=$(node "${LOCAL_DIST}" destroy "${STACK}" --app "${BROKEN_APP}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${EMPTY_PREFIX}" --region "${REGION}" --force 2>&1)
+EXACT_RC=$?
+set -e
+printf '%s\n' "${EXACT_OUT}"
+if [ "${EXACT_RC}" -ne 0 ]; then
+  echo "FAIL: destroy of an exact name with an unsynthesizable app exited ${EXACT_RC}, expected 0" >&2
+  exit 1
+fi
+if ! printf '%s' "${EXACT_OUT}" | grep -qF "No matching stacks found in state"; then
+  echo "FAIL: the exact-name control did not reach the state fallback" >&2
+  exit 1
+fi
+if printf '%s' "${EXACT_OUT}" | grep -qF "selects among the stacks this app synthesizes"; then
+  echo "FAIL: an exact name was refused like a wildcard" >&2
+  exit 1
+fi
+echo "    OK: exact name reached the state fallback"
+
+# --- Phase 1c: `cdkd state destroy --all` is removed (go-to-k/cdkd#3865) ----
+#
+# `--all` destroyed every stack in the state bucket, which every CDK app in the
+# account shares. It must now exit 1 with cdkd's own refusal -- not commander's
+# unknown-option error -- before anything is read, also when a stack name is
+# given beside it. Both arms run under the EMPTY prefix proved above: before
+# the fix they listed nothing there and exited 0 ("No stacks found in state"),
+# so they discriminate, and a regressed `--all` can never reach the shared
+# prefix, where it would destroy every stack in the bucket.
+echo "==> Phase 1c: state destroy refuses --all"
+STATE_ALL_REFUSAL="no longer accepts --all: it destroyed every stack in the state bucket"
+for STATE_ALL_ARGS in "--all" "${STACK} --all"; do
+  set +e
+  # Word-split on purpose: the arm's arguments are two fixed shapes, and the
+  # stack name is a plain identifier.
+  # shellcheck disable=SC2086
+  STATE_ALL_OUT=$(node "${LOCAL_DIST}" state destroy ${STATE_ALL_ARGS} --yes \
+    --state-bucket "${STATE_BUCKET:-}" --state-prefix "${EMPTY_PREFIX}" --region "${REGION}" 2>&1)
+  STATE_ALL_RC=$?
+  set -e
+  printf '%s\n' "${STATE_ALL_OUT}"
+  if [ "${STATE_ALL_RC}" -ne 1 ]; then
+    echo "FAIL: state destroy ${STATE_ALL_ARGS} --yes exited ${STATE_ALL_RC}, expected 1" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${STATE_ALL_OUT}" | grep -qF -- "${STATE_ALL_REFUSAL}"; then
+    echo "FAIL: state destroy ${STATE_ALL_ARGS} did not print the --all removal refusal" >&2
+    exit 1
+  fi
+  if printf '%s' "${STATE_ALL_OUT}" | grep -qiF "unknown option"; then
+    echo "FAIL: state destroy ${STATE_ALL_ARGS} hit commander's unknown-option error instead of the refusal" >&2
+    exit 1
+  fi
+  echo "    OK: state destroy ${STATE_ALL_ARGS} refused (rc=1)"
+done
+
+# Control: an exact name alone is not refused -- it reaches the state listing,
+# which has no record under the empty prefix.
+set +e
+STATE_EXACT_OUT=$(node "${LOCAL_DIST}" state destroy "${STACK}" --yes \
+  --state-bucket "${STATE_BUCKET:-}" --state-prefix "${EMPTY_PREFIX}" --region "${REGION}" 2>&1)
+STATE_EXACT_RC=$?
+set -e
+printf '%s\n' "${STATE_EXACT_OUT}"
+if [ "${STATE_EXACT_RC}" -ne 1 ] || ! printf '%s' "${STATE_EXACT_OUT}" | grep -qF "No state found for stack(s): ${STACK}"; then
+  echo "FAIL: state destroy of an exact name did not reach the state listing (rc=${STATE_EXACT_RC})" >&2
+  exit 1
+fi
+if printf '%s' "${STATE_EXACT_OUT}" | grep -qF -- "${STATE_ALL_REFUSAL}"; then
+  echo "FAIL: an exact state destroy name was refused like --all" >&2
+  exit 1
+fi
+echo "    OK: exact name reached the state listing"
 
 # --- Phase 2: first Ctrl-C (graceful SIGINT, #816) --------------------
 #

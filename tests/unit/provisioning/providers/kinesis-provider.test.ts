@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -185,12 +185,22 @@ describe('KinesisStreamProvider', () => {
   });
 
   describe('delete', () => {
+    const notFound = () =>
+      new ResourceNotFoundException({ $metadata: {}, message: 'Stream not found' });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      // The cap cases install a DELETING-forever implementation, which
+      // clearAllMocks() does not remove.
+      mockSend.mockReset();
+    });
+
     it('should delete stream with EnforceConsumerDeletion', async () => {
-      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({}).mockRejectedValueOnce(notFound());
 
       await provider.delete('MyStream', 'test-stream', 'AWS::Kinesis::Stream');
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
 
       const deleteCall = mockSend.mock.calls[0];
       expect(deleteCall[0]).toBeInstanceOf(DeleteStreamCommand);
@@ -198,6 +208,58 @@ describe('KinesisStreamProvider', () => {
         StreamName: 'test-stream',
         EnforceConsumerDeletion: true,
       });
+    });
+
+    // Issue #3872: the stream holds its NAME while DELETING, and a create of
+    // that name is refused with the live-stream text, so delete() must not
+    // return until DescribeStreamSummary reports the stream gone.
+    it('waits through DELETING until DescribeStreamSummary reports the stream gone', async () => {
+      vi.useFakeTimers();
+      const summary = { StreamDescriptionSummary: { StreamStatus: 'DELETING' } };
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce(summary)
+        .mockResolvedValueOnce(summary)
+        .mockRejectedValueOnce(notFound());
+
+      let settled = false;
+      const done = provider.delete('MyStream', 'test-stream', 'AWS::Kinesis::Stream').then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await done;
+
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      for (const call of mockSend.mock.calls.slice(1)) {
+        expect(call[0]).toBeInstanceOf(DescribeStreamSummaryCommand);
+        expect(call[0].input).toEqual({ StreamName: 'test-stream' });
+      }
+    });
+
+    it('stops waiting at its cap without throwing when the stream never disappears', async () => {
+      vi.useFakeTimers();
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof DescribeStreamSummaryCommand
+          ? Promise.resolve({ StreamDescriptionSummary: { StreamStatus: 'DELETING' } })
+          : Promise.resolve({})
+      );
+
+      let settled = false;
+      const done = provider.delete('MyStream', 'test-stream', 'AWS::Kinesis::Stream').then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000 - 2_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await done;
+
+      const describes = mockSend.mock.calls.filter(
+        (call: unknown[]) => call[0] instanceof DescribeStreamSummaryCommand
+      );
+      // One poll every 2s across the 5-minute cap, plus the one at the cap.
+      expect(describes).toHaveLength(151);
     });
 
     it('should not throw when stream does not exist', async () => {
@@ -212,6 +274,7 @@ describe('KinesisStreamProvider', () => {
         provider.delete('MyStream', 'test-stream', 'AWS::Kinesis::Stream')
       ).resolves.not.toThrow();
 
+      // Already gone: no gone-wait follows the idempotent arm.
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });

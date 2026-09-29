@@ -123,6 +123,15 @@ import type {
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { displayIdent } from '../../utils/display-safe.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  isRedactedRecordedValue,
+  REDACTED_DELETE_ADDRESS_SKIP_REASON,
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { deleteSkipReason } from '../../deployment/delete-outcome.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
 const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
@@ -1022,7 +1031,9 @@ export class EC2Provider implements ResourceProvider {
             `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created VPC ${logicalId}: ${vpcId}`);
@@ -1324,7 +1335,9 @@ export class EC2Provider implements ResourceProvider {
             `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created Subnet ${logicalId}: ${subnetId}`);
@@ -1748,6 +1761,9 @@ export class EC2Provider implements ResourceProvider {
 
     let allocationId: string;
     let publicIp: string;
+    // Set once the create call returns: a later failure is an auxiliary
+    // call's (the association), not this address's (#3826).
+    let created = false;
     try {
       const response = await this.ec2Client.send(
         new AllocateAddressCommand({
@@ -1762,6 +1778,7 @@ export class EC2Provider implements ResourceProvider {
         })
       );
 
+      created = true;
       allocationId = response.AllocationId!;
       publicIp = response.PublicIp!;
 
@@ -1804,6 +1821,7 @@ export class EC2Provider implements ResourceProvider {
 
       this.logger.debug(`Successfully created EIP ${logicalId}: ${allocationId} (${publicIp})`);
     } catch (error) {
+      if (created) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create EIP ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2995,7 +3013,9 @@ export class EC2Provider implements ResourceProvider {
             `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
       this.logger.debug(`Successfully created SecurityGroup ${logicalId}: ${groupId}`);
@@ -3629,12 +3649,34 @@ export class EC2Provider implements ResourceProvider {
 
     // SecurityGroupIngress updates require replacement: revoke old, authorize new
     try {
-      await this.deleteSecurityGroupIngress(
+      const revoked = await this.deleteSecurityGroupIngress(
         logicalId,
         physicalId,
         resourceType,
         previousProperties
       );
+      // go-to-k/cdkd#3952: delete-then-create must ABORT when the revoke was
+      // skipped (provider-delete-path.md): authorizing the new rule would leave
+      // the old one live beside it with no record of it.
+      const revokeSkip = deleteSkipReason(revoked);
+      if (revokeSkip !== undefined) {
+        const why =
+          revokeSkip === REDACTED_DELETE_ADDRESS_SKIP_REASON
+            ? 'its recorded permission is redacted in state'
+            : 'its delete was skipped';
+        throw markNonRetryable(
+          new ProvisioningError(
+            `Cannot update SecurityGroupIngress ${logicalId}: the previous rule could not be ` +
+              `revoked because ${why}, so the new rule was ` +
+              `NOT authorized. Revoke the old rule by hand, then clear the stack's records with ` +
+              `'cdkd state orphan <stack>' — that command drops EVERY record for the stack, not ` +
+              `just this one — and re-deploy.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
       const createResult = await this.createSecurityGroupIngress(
         logicalId,
         resourceType,
@@ -3681,13 +3723,31 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * `permission` with every `Description` whose value cdkd redacted removed
+   * (go-to-k/cdkd#3952). A revoke does not match on the description, so
+   * leaving it out addresses the same rule without sending the redaction.
+   */
+  private withoutRedactedDescription<T>(value: T): T {
+    if (Array.isArray(value)) {
+      return value.map((item: unknown) => this.withoutRedactedDescription(item)) as T;
+    }
+    if (value === null || typeof value !== 'object') return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'Description' && isRedactedRecordedValue(child)) continue;
+      out[key] = this.withoutRedactedDescription(child);
+    }
+    return out as T;
+  }
+
   private async deleteSecurityGroupIngress(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
     // Parse composite physicalId: GroupId|Protocol|FromPort|ToPort
@@ -3704,8 +3764,31 @@ export class EC2Provider implements ResourceProvider {
     const [groupId, ipProtocol, fromPortStr, toPortStr] = parts;
 
     // Build IpPermission from properties if available, otherwise from physicalId
+    // go-to-k/cdkd#3952: RevokeSecurityGroupIngress matches the rule by its
+    // permission, and a not-found below reads as "already deleted". NOT
+    // `Description`: a revoke does not match on it, so a redacted one is
+    // simply left out of the permission below rather than blocking the delete.
+    if (properties) {
+      const redactedSkip = redactedDeleteAddressSkip(
+        this.logger,
+        logicalId,
+        'SecurityGroupIngress',
+        redactedDeleteAddressFields({
+          IpProtocol: properties['IpProtocol'],
+          FromPort: properties['FromPort'],
+          ToPort: properties['ToPort'],
+          CidrIp: properties['CidrIp'],
+          CidrIpv6: properties['CidrIpv6'],
+          SourceSecurityGroupId: properties['SourceSecurityGroupId'],
+          SourceSecurityGroupOwnerId: properties['SourceSecurityGroupOwnerId'],
+          SourcePrefixListId: properties['SourcePrefixListId'],
+        })
+      );
+      if (redactedSkip) return redactedSkip;
+    }
+
     const ipPermission = properties
-      ? this.buildIpPermission(properties)
+      ? this.withoutRedactedDescription(this.buildIpPermission(properties))
       : {
           IpProtocol: ipProtocol,
           FromPort: fromPortStr !== '-1' ? Number(fromPortStr) : undefined,
@@ -4016,7 +4099,9 @@ export class EC2Provider implements ResourceProvider {
             `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${describeAwsFailure(cleanupError).detail}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;

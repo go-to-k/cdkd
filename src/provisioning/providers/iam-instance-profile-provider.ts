@@ -15,7 +15,18 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
+import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  onlySecretDerived,
+  readPrincipalLists,
+  recordedPrincipalsRepair,
+  SECRET_DERIVED_READ_LIVE,
+} from '../iam-policy-targets.js';
 import type {
+  CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -47,17 +58,41 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating IAM instance profile ${logicalId}`);
-
+    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
+    // shape), and every bag-derived value masked RAW as well. Absent context
+    // means identity.
     const instanceProfileName = generateResourceNameWithFallback(
       properties['InstanceProfileName'] as string | undefined,
       logicalId,
       { maxLength: 128 }
     );
+    // The physical name is REWRITTEN from the template value (stack prefix,
+    // charset folding, truncation), so the masker cannot recognise it by
+    // itself: add it as a needle when the value it came from is a secret.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[properties['InstanceProfileName'], instanceProfileName]]
+    );
+    const { value: v } = log;
+    log.debug(`Creating IAM instance profile ${logicalId}`);
     const path = (properties['Path'] as string | undefined) || '/';
-    const roles = properties['Roles'] as string[] | undefined;
+    // Read before any call (go-to-k/cdkd#3906): a string `Roles` was skipped
+    // here but walked by character in `update()`, and a rollback's
+    // reverse-replacement create passes a recorded bag.
+    const principals = readPrincipalLists({ Roles: properties['Roles'] });
+    if ('malformed' in principals) {
+      throw new ProvisioningError(
+        `Roles of IAM instance profile ${logicalId} is not a list of IAM role names — no ` +
+          `instance profile was created`,
+        resourceType,
+        logicalId
+      );
+    }
+    const roles = principals.lists.Roles;
 
     try {
       // Create instance profile
@@ -68,7 +103,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Created IAM instance profile: ${instanceProfileName}`);
+      log.debug(`Created IAM instance profile: ${v(instanceProfileName)}`);
 
       // CreateInstanceProfileCommand has succeeded — AWS has now
       // committed the InstanceProfile. The subsequent
@@ -93,7 +128,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
               })
             );
             attachedRoles.push(roleName);
-            this.logger.debug(`Added role ${roleName} to instance profile ${instanceProfileName}`);
+            log.debug(`Added role ${v(roleName)} to instance profile ${v(instanceProfileName)}`);
           }
         }
       } catch (innerError) {
@@ -113,26 +148,30 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           await this.iamClient.send(
             new DeleteInstanceProfileCommand({ InstanceProfileName: instanceProfileName })
           );
-          this.logger.debug(
-            `Cleaned up partially-created IAM instance profile ${logicalId} (${instanceProfileName}) after wiring failure`
+          log.debug(
+            `Cleaned up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}) after wiring failure`
           );
         } catch (cleanupError) {
-          // The name in the commands below is left BARE on purpose (issue
-          // #3136): it is `generateResourceNameWithFallback`'s output, whose
+          // The name is `generateResourceNameWithFallback`'s output, whose
           // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-          // and trims leading and trailing `-`, so no template spelling reaches
-          // the shell as anything but one plain word. Pinned by this type's
-          // partial-create cleanup test.
+          // (issue #3136), so it renders BARE -- but it can still BE a resolved
+          // secret, so every command goes through `pasteableAwsCommand` with the
+          // masker (issue #2177): a masked name is WITHHELD rather than printed
+          // as `***`, which would act on a different profile. Pinned by this
+          // type's partial-create cleanup test.
           // The `<name>` hole is QUOTED: bare, it is two shell redirections.
-          this.logger.warn(
-            `Failed to clean up partially-created IAM instance profile ${logicalId} (${instanceProfileName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: remove every role (aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name '<name>') then aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`
+          const aws = pasteableAwsCommand(log.mask);
+          log.warn(
+            `Failed to clean up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: remove every role (${aws`aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name '<name>'`.render()}) then ${aws`aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`.render()}`
           );
         }
-        throw innerError;
+        // The resource itself was created: an "already exists" from its wiring
+        // is an auxiliary object's, not this resource's name collision (#3826).
+        throw markAuxiliaryFailure(innerError, logicalId);
       }
 
-      this.logger.debug(
-        `Successfully created IAM instance profile ${logicalId}: ${instanceProfileName}`
+      log.debug(
+        `Successfully created IAM instance profile ${logicalId}: ${v(instanceProfileName)}`
       );
 
       return {
@@ -144,7 +183,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create IAM instance profile ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create IAM instance profile ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         instanceProfileName,
@@ -163,12 +202,76 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating IAM instance profile ${logicalId}: ${physicalId}`);
+    // Issue #2177 -- see `create()`, including the derived-name needle: the
+    // recorded name is paired with the value it was derived from. The name is
+    // immutable, so the desired value derives the same name.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [
+        [properties['InstanceProfileName'], physicalId],
+        [previousProperties['InstanceProfileName'], physicalId],
+      ]
+    );
+    const { value: v } = log;
+    log.debug(`Updating IAM instance profile ${logicalId}: ${v(physicalId)}`);
 
-    const newRoles = (properties['Roles'] as string[] | undefined) || [];
-    const oldRoles = (previousProperties['Roles'] as string[] | undefined) || [];
+    // BOTH sides before any call (go-to-k/cdkd#3906). A recorded string was
+    // walked by character: the real role was removed (`.includes` on a string
+    // is a substring test) and a one-letter role ADDED, swapping the
+    // credentials every instance using the profile receives. A rollback revert
+    // or `drift --revert` replays this with a recorded bag as the desired side.
+    const newPrincipals = readPrincipalLists({ Roles: properties['Roles'] });
+    let oldPrincipals = readPrincipalLists({ Roles: previousProperties['Roles'] });
+    // A recorded list cdkd redacted (a dynamic reference or its mask) cannot be
+    // repaired in state, so with a well-formed desired side the old side is
+    // read from IAM, where `delete()` reads it too (go-to-k/cdkd#3906).
+    if (!('malformed' in newPrincipals) && onlySecretDerived(oldPrincipals)) {
+      try {
+        const response = await this.iamClient.send(
+          new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
+        );
+        const live = (response.InstanceProfile?.Roles ?? [])
+          .map((r) => r.RoleName)
+          .filter((n): n is string => !!n);
+        oldPrincipals = { lists: { Roles: live } };
+      } catch (error) {
+        throw new ProvisioningError(
+          `the recorded Roles of IAM instance profile ${logicalId} is secret-derived and the ` +
+            `profile's roles could not be read from IAM — no role was added or removed`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
+    }
+    if ('malformed' in newPrincipals || 'malformed' in oldPrincipals) {
+      const which = [
+        ...('malformed' in newPrincipals ? ['desired Roles'] : []),
+        ...('malformed' in oldPrincipals ? ['recorded Roles'] : []),
+      ];
+      throw new ProvisioningError(
+        `${which.join(' / ')} of IAM instance profile ${logicalId} is not a list of IAM role ` +
+          `names — no role was added or removed` +
+          ('malformed' in oldPrincipals
+            ? `: ${recordedPrincipalsRepair(
+                oldPrincipals.malformed,
+                oldPrincipals.secretDerived,
+                'role names',
+                SECRET_DERIVED_READ_LIVE
+              )}`
+            : ''),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const newRoles = newPrincipals.lists.Roles ?? [];
+    const oldRoles = oldPrincipals.lists.Roles ?? [];
 
     try {
       // Remove old roles that are no longer in the list
@@ -181,14 +284,12 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
                 RoleName: roleName,
               })
             );
-            this.logger.debug(`Removed role ${roleName} from instance profile ${physicalId}`);
+            log.debug(`Removed role ${v(roleName)} from instance profile ${v(physicalId)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
             }
-            this.logger.debug(
-              `Role ${roleName} already removed from instance profile ${physicalId}`
-            );
+            log.debug(`Role ${v(roleName)} already removed from instance profile ${v(physicalId)}`);
           }
         }
       }
@@ -202,11 +303,11 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
               RoleName: roleName,
             })
           );
-          this.logger.debug(`Added role ${roleName} to instance profile ${physicalId}`);
+          log.debug(`Added role ${v(roleName)} to instance profile ${v(physicalId)}`);
         }
       }
 
-      this.logger.debug(`Successfully updated IAM instance profile ${logicalId}`);
+      log.debug(`Successfully updated IAM instance profile ${logicalId}`);
 
       // Get updated instance profile info for attributes
       const getResponse = await this.iamClient.send(
@@ -223,7 +324,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update IAM instance profile ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update IAM instance profile ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,

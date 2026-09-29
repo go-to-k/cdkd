@@ -334,7 +334,9 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
     });
 
     it('fails with state-orphan guidance when the state record has no properties', async () => {
-      await expect(provider.delete('Detector', 'pid', TYPE)).rejects.toThrow('cdkd state orphan');
+      await expect(provider.delete('Detector', 'pid', TYPE)).rejects.toThrow(
+        "'cdkd state orphan <stack> --stack-region <region>' to drop the record (that command drops every record the stack has in that region)"
+      );
       expect(mockSend).not.toHaveBeenCalled();
     });
 

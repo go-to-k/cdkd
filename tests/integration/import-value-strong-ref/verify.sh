@@ -64,12 +64,18 @@ PRODUCER_STATE_KEY="${STATE_KEY_PREFIX}/${PRODUCER}/${AWS_REGION}/state.json"
 CONSUMER_STATE_KEY="${STATE_KEY_PREFIX}/${CONSUMER}/${AWS_REGION}/state.json"
 INDEX_KEY="${STATE_KEY_PREFIX}/_index/${AWS_REGION}/exports.json"
 
+# Lambda creates `/aws/lambda/<producer>-CustomS3AutoDeleteObjects...` when the
+# producer bucket's auto-delete custom resource runs, and nothing in the stack
+# owns it, so destroy leaves it behind (#3885). Only the producer has one.
+. ../cr-log-groups.sh
+
 cleanup() {
   local rc=$?
   echo ""
   echo "==> Cleanup (errors during this block are tolerated)"
   ${CDKD} destroy ${CONSUMER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   ${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
+  sweep_stack_lambda_log_groups "${PRODUCER}" "${AWS_REGION}"
   exit ${rc}
 }
 trap cleanup EXIT
@@ -259,3 +265,4 @@ echo "    all state files removed (✓)"
 echo ""
 echo "==> All import-value-strong-ref smoke tests passed"
 trap - EXIT INT TERM
+sweep_stack_lambda_log_groups "${PRODUCER}" "${AWS_REGION}"

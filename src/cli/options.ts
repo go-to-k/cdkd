@@ -5,6 +5,7 @@ import {
 } from '../deployment/deploy-engine.js';
 import { getLogger } from '../utils/logger.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
+import { isIamRoleArn } from '../utils/role-arn.js';
 import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { removeProtectionTypeList } from '../provisioning/remove-protection-types.js';
@@ -912,7 +913,8 @@ export const recreateViaCcApiOption = new Option(
     'destroy-and-recreate cost is acknowledged for each target. Stateful resource ' +
     'types (RDS, DynamoDB, S3, EFS, ...) refuse unless --force-stateful-recreation ' +
     'is ALSO passed (two-flag protection). Cannot be combined with ' +
-    '--prefer-sdk-route on the same resource type and property.'
+    '--prefer-sdk-route on the same resource type and property. Refused, with ' +
+    'no bypass, for a type Cloud Control cannot create (NON_PROVISIONABLE).'
 ).argParser(parseRecreateViaCcApiToken);
 
 /**
@@ -1217,7 +1219,7 @@ export const deployOptions = [
       '"X", { roleName: "my-role" })` → AWS resource named `MyStack-my-role` ' +
       'instead of `my-role`). Since v0.94.0 the default is to NOT prefix ' +
       'user-supplied names — this flag restores the pre-v0.94.0 behavior on ' +
-      'Pattern B providers (IAM Role / User / Group / InstanceProfile / ELBv2 ' +
+      'Pattern B providers (IAM Role / User / Group / InstanceProfile / ManagedPolicy / ELBv2 ' +
       'LoadBalancer / TargetGroup). Enable via this flag, ' +
       'CDKD_PREFIX_USER_SUPPLIED_NAMES=true, or ' +
       'cdk.json context.cdkd.prefixUserSuppliedNames=true. Applies to ' +
@@ -1293,23 +1295,6 @@ export interface AssumeRoleOption {
 }
 
 /**
- * ANCHORED AT THE START ONLY, and that is what makes the renders below a
- * display boundary rather than a formality (issue
- * [#3397](https://github.com/go-to-k/cdkd/issues/3397)).
- *
- * A value CLEARING this test is constrained in its first ~30 characters and in
- * nothing after `role/` — `arn:aws:iam::1:role/` followed by an ESC, a
- * newline, or 10 MB of anything is a PASS. So `normalizeStartApiAssumeRole`'s
- * mutual-exclusion error, which renders an ARN this regex already accepted,
- * needs sanitizing exactly as much as the three REFUSALS that render one it
- * rejected. Tightening the regex instead was considered and is the wrong tool:
- * `src/utils/role-arn.ts`'s `IAM_ROLE_ARN_RE` is the strict parse, it runs
- * later and on a different path, and a stricter argparse here would start
- * refusing role-name shapes the deploy path accepts.
- */
-const IAM_ROLE_ARN_REGEX = /^arn:[^:]+:iam::\d+:role\//;
-
-/**
  * Argparse for the repeatable `--assume-role` flag.
  *
  * Validates that:
@@ -1317,13 +1302,25 @@ const IAM_ROLE_ARN_REGEX = /^arn:[^:]+:iam::\d+:role\//;
  *   - `<LogicalId>=<arn>` left-hand sides look like a CFn logical ID
  *     (alphanumeric, no separators);
  *   - the right-hand side ARN is well-shaped.
+ *
+ * Both ARN forms are checked by `isIamRoleArn` (`src/utils/role-arn.ts`), the
+ * one predicate every `AssumeRoleCommand` send site also enforces (issue
+ * [#2348](https://github.com/go-to-k/cdkd/issues/2348)). This file used to own a
+ * START-anchored `/^arn:[^:]+:iam::\d+:role\//`, which passed anything after
+ * `role/` — an ESC, a newline, or megabytes. Both forms are `.trim()`med before
+ * the check: the `LogicalId=<arn>` form always was, and the bare form now is
+ * too, because the anchored pattern would otherwise start refusing a
+ * copy-pasted ARN with trailing whitespace.
  */
 export function parseAssumeRoleToken(
   raw: string,
   previous: AssumeRoleOption | undefined
 ): AssumeRoleOption {
-  const acc: AssumeRoleOption = previous ?? { perLambda: {} };
-  if (!acc.perLambda) acc.perLambda = {};
+  // Null-prototype map (issue #2348 security review): `constructor` /
+  // `toString` are legal CloudFormation logical ids, and a plain `{}` answered
+  // them with an inherited FUNCTION in `effectiveAssumeRoleArn`.
+  const acc: AssumeRoleOption = previous ?? { perLambda: nullPrototypeRecord<string>() };
+  if (!acc.perLambda) acc.perLambda = nullPrototypeRecord<string>();
 
   // Every render below is ARGV — the most untrusted text cdkd handles — and all
   // three are REFUSALS, so the value reaching them is by construction one no
@@ -1337,14 +1334,18 @@ export function parseAssumeRoleToken(
   // happens to be called `arn` and leaving its neighbours raw would be the
   // "guard defeated by its own neighbour" shape on one line.
   const shownRaw = displayIdent(raw, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
-  const eqIndex = raw.indexOf('=');
+  // A value that STARTS as an ARN is the bare form even when it contains `=`:
+  // IAM role names allow `=` (`role/a=b`), and a logical id can never start
+  // with `arn:` (no `:` in one), so the two forms cannot be confused.
+  const eqIndex = raw.trim().startsWith('arn:') ? -1 : raw.indexOf('=');
   if (eqIndex === -1) {
-    if (!IAM_ROLE_ARN_REGEX.test(raw)) {
+    const bare = raw.trim();
+    if (!isIamRoleArn(bare)) {
       throw new Error(
         `Invalid --assume-role value "${shownRaw}": expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
       );
     }
-    acc.globalArn = raw;
+    acc.globalArn = bare;
     return acc;
   }
 
@@ -1355,7 +1356,7 @@ export function parseAssumeRoleToken(
       `Invalid --assume-role value "${shownRaw}": left-hand side "${displayIdent(logicalId)}" must be a CloudFormation logical ID (alphanumeric, leading letter).`
     );
   }
-  if (!IAM_ROLE_ARN_REGEX.test(arn)) {
+  if (!isIamRoleArn(arn)) {
     throw new Error(
       `Invalid --assume-role value "${shownRaw}": right-hand side "${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}" must be an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
     );
@@ -1389,13 +1390,16 @@ export function normalizeStartApiAssumeRole(
   autoResolve: boolean
 ): AssumeRoleOption | undefined {
   if (raw === undefined) {
-    return autoResolve ? { perLambda: {}, bareAutoResolve: true } : undefined;
+    return autoResolve
+      ? { perLambda: nullPrototypeRecord<string>(), bareAutoResolve: true }
+      : undefined;
   }
   if (autoResolve && raw.globalArn) {
     throw new Error(
-      // `globalArn` CLEARED `IAM_ROLE_ARN_REGEX`, which constrains nothing past
-      // `role/` — see that constant's note. So this is the same untrusted value
-      // as the refusals above, one branch later (issue go-to-k/cdkd#3397).
+      // `globalArn` CLEARED `isIamRoleArn` (issue #2348), which bounds it to
+      // printable ASCII of at most 2048 characters — still argv, and still
+      // longer than a line should carry, so it is rendered through the same
+      // capped helper as the refusals above (issue go-to-k/cdkd#3397).
       `--assume-role-auto auto-resolves EACH routed Lambda's own execution role, ` +
         `but --assume-role ${displayIdent(raw.globalArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} also names a single global default. ` +
         `These are mutually exclusive on the global slot. Either drop the global ARN ` +
@@ -1417,7 +1421,10 @@ export function effectiveAssumeRoleArn(
   opt: AssumeRoleOption | undefined
 ): string | undefined {
   if (!opt) return undefined;
-  return opt.perLambda?.[logicalId] ?? opt.globalArn;
+  // OWN keys only, whatever prototype the map was built with.
+  const perLambda = opt.perLambda;
+  if (perLambda && Object.hasOwn(perLambda, logicalId)) return perLambda[logicalId];
+  return opt.globalArn;
 }
 
 /**

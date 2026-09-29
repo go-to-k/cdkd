@@ -17,7 +17,13 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import {
+  applyRoleArnIfSet,
+  assertSendableRoleArn,
+  explicitRoleArnOrThrow,
+  isIamRoleArn,
+  sendableAssumeRoleCommand,
+} from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
   Synthesizer,
@@ -25,7 +31,7 @@ import {
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
-import { readCdkPathOrUndefined } from '../cdk-path.js';
+import { readCdkPathOrUndefined, stackForConstructPath } from '../cdk-path.js';
 import {
   createLocalStateProvider,
   isCfnFlagPresent,
@@ -96,7 +102,7 @@ import {
   type ResolvedLambdaLayer,
 } from '../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
-import { resolveExecutionRoleArnFromState, resolveInlineCodeFilePath } from './local-invoke.js';
+import { classifyExecutionRoleArnFromState, resolveInlineCodeFilePath } from './local-invoke.js';
 import { matchStacks } from '../stack-matcher.js';
 import {
   buildCorsConfigByApiId,
@@ -362,6 +368,12 @@ async function localStartApiCommand(
   }
 
   warnIfDeprecatedRegion(options);
+  // Refuse a malformed or empty `--layer-role-arn` at boot, like
+  // `--assume-role`'s parse-time refusal, rather than at the first request
+  // that materializes an ARN layer (issue #2348).
+  if (options.layerRoleArn !== undefined) {
+    explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn);
+  }
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Issue #256 Option 1: compose `--assume-role` (value-form
@@ -493,8 +505,7 @@ async function localStartApiCommand(
     // shape and uses it as a third fallback for stack selection. Targets
     // without a `/` separator (bare logical id) leave this undefined so
     // the existing single-stack auto-pick path is untouched.
-    const targetStackPrefix =
-      target?.includes('/') === true ? target.slice(0, target.indexOf('/')) : undefined;
+    const targetStackPrefix = targetStackHint(target, stacks);
     const targetStacks = pickTargetStacks(
       stacks,
       options.stack,
@@ -1353,6 +1364,29 @@ async function localStartApiCommand(
 }
 
 /**
+ * The stack pattern a positional start-api target implies, or `undefined`
+ * when the target has no `/` (a bare logical id leaves the single-stack
+ * auto-pick untouched).
+ *
+ * It is the STACK whose display path is the LONGEST prefix of the target: a
+ * stack under a CDK Stage displays as `MyStage/Api`, so the target's first
+ * segment is the Stage id and never names a stack (go-to-k/cdkd#3953). The
+ * stack itself is returned, not its name: re-matching a physical name could
+ * select a second stack sharing it (a Stage deployed to two environments).
+ * A head no stack path prefixes -- a wildcard -- is still returned as a
+ * pattern for `matchStacks`.
+ *
+ * @internal exported for unit tests.
+ */
+export function targetStackHint(
+  target: string | undefined,
+  stacks: readonly StackInfo[]
+): StackInfo | string | undefined {
+  if (target?.includes('/') !== true) return undefined;
+  return stackForConstructPath(target, stacks) ?? target.slice(0, target.indexOf('/'));
+}
+
+/**
  * Match the `--stack` pattern (or single-stack auto-detect) to a list
  * of stacks the route-discovery walks. Mirrors the deploy/diff matcher
  * routing rules.
@@ -1363,18 +1397,20 @@ export function pickTargetStacks(
   stacks: StackInfo[],
   pattern: string | undefined,
   cfnStackFallback?: string,
-  targetFallback?: string
+  targetFallback?: StackInfo | string
 ): StackInfo[] {
   // Resolution chain (first non-empty wins):
   //   1. `--stack <pattern>`                            (explicit)
   //   2. `--from-cfn-stack <explicit-name>`             (PR #44 mirror)
   //   3. positional target's stack-name prefix          (PR #45 mirror)
-  //      e.g. `cdkd local start-api MyStack/MyApi` infers `MyStack`.
+  //      e.g. `cdkd local start-api MyStack/MyApi` infers `MyStack`;
+  //      `targetStackHint` passes the prefix-matched stack itself.
   //
   // CDK apps typically deploy each synth stack under its own stack-name,
   // so any of the three values identifies the synth target unambiguously
   // without the user having to repeat themselves via `--stack`.
   const effective = pattern ?? cfnStackFallback ?? targetFallback;
+  if (effective !== undefined && typeof effective !== 'string') return [effective];
   if (effective) {
     return matchStacks(stacks, [effective]);
   }
@@ -1667,17 +1703,35 @@ export function resolveStartApiAssumeRoleArn(args: {
   // Bare-auto-resolve: try the synthesized template's literal-ARN
   // `Properties.Role` first (most CDK apps render this as an intrinsic,
   // but explicit-ARN refs DO surface here), then the deployed state.
+  //
+  // `isIamRoleArn`, not `startsWith('arn:')` (issue #2348): the template and
+  // the state record are both off-process text and the value is SENT to STS.
+  // A value that EXISTS but is malformed is REFUSED at startup, never read as a
+  // miss: a failed assume here has always been a hard error (there is no
+  // fallback around `assumeLambdaExecutionRole` below), and quietly handing the
+  // container the developer's shell credentials instead would widen what the
+  // user asked to narrow. Only a true miss falls through to the warn below.
   const roleProp = (lambdaResource.Properties ?? {})['Role'];
-  if (typeof roleProp === 'string' && roleProp.startsWith('arn:')) {
+  if (typeof roleProp === 'string' && isIamRoleArn(roleProp)) {
     return roleProp;
   }
+  if (typeof roleProp === 'string' && roleProp.startsWith('arn:')) {
+    throw malformedAutoRoleError(
+      logicalId,
+      `the template Role for '${displayIdent(logicalId)}' is not a well-formed IAM role ARN: ` +
+        displayIdent(roleProp, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
+    );
+  }
   if (stateBundle) {
-    const fromState = resolveExecutionRoleArnFromState(stateBundle.state, logicalId);
-    if (fromState) {
+    const fromState = classifyExecutionRoleArnFromState(stateBundle.state, logicalId);
+    if (fromState.kind === 'malformed') {
+      throw malformedAutoRoleError(logicalId, fromState.description);
+    }
+    if (fromState.kind === 'ok') {
       getLogger().info(
-        `--assume-role: auto-resolved execution role for '${logicalId}' from state: ${fromState}`
+        `--assume-role: auto-resolved execution role for '${displayIdent(logicalId)}' from state: ${displayIdent(fromState.arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
       );
-      return fromState;
+      return fromState.arn;
     }
   }
 
@@ -1686,13 +1740,29 @@ export function resolveStartApiAssumeRoleArn(args: {
   // The same shape `cdkd local invoke --assume-role` produces when state /
   // template ARN can't recover the role.
   getLogger().warn(
-    `--assume-role: could not auto-resolve the execution role ARN for '${logicalId}'. ` +
+    `--assume-role: could not auto-resolve the execution role ARN for '${displayIdent(logicalId)}'. ` +
       `Pair --assume-role-auto with --from-state or --from-cfn-stack ` +
       `so the deployed Role's ARN can be looked up, OR pin the ARN explicitly with ` +
-      `--assume-role ${logicalId}=<arn>. ` +
+      `--assume-role ${displayIdent(logicalId)}=<arn>. ` +
       "Falling back to the developer's shell credentials for this Lambda."
   );
   return undefined;
+}
+
+/**
+ * The startup refusal for a malformed auto-resolved role ARN (issue #2348).
+ * `detail` is already sanitized by its builder.
+ */
+function malformedAutoRoleError(logicalId: string, detail: string): Error {
+  return new Error(
+    // cdkd-raw-beside-safe: `detail` is built by this function's two callers
+    // entirely from `displayIdent` renders and fixed prose (the template arm
+    // here, `classifyExecutionRoleArnFromState`'s `description`), so it is
+    // already-sanitized text rather than a raw value.
+    `--assume-role-auto: ${detail}. Refusing to start rather than fall back to your shell ` +
+      `credentials for this Lambda. Fix the deployed role ARN, or pin one explicitly with ` +
+      `--assume-role ${displayIdent(logicalId)}=<arn>.`
+  );
 }
 
 /**
@@ -2163,7 +2233,11 @@ export async function materializeLambdaLayers(
       continue;
     }
     const dir = await materializeLayerFromArn(layer, {
-      ...(layerRoleArn !== undefined && { roleArn: layerRoleArn }),
+      // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
+      // cdk-local reads `roleArn` by truthiness and would pull as the caller.
+      ...(layerRoleArn !== undefined && {
+        roleArn: explicitRoleArnOrThrow('--layer-role-arn', layerRoleArn),
+      }),
     });
     layerTmpDirs.add(dir);
     flat.push({ logicalId: layer.arn, assetPath: dir });
@@ -2896,7 +2970,8 @@ async function assumeLambdaExecutionRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
+  assertSendableRoleArn(roleArn);
+  const { STSClient } = await import('@aws-sdk/client-sts');
   // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
@@ -2906,7 +2981,7 @@ async function assumeLambdaExecutionRole(
   });
   try {
     const response = await sts.send(
-      new AssumeRoleCommand({
+      sendableAssumeRoleCommand({
         RoleArn: roleArn,
         RoleSessionName: `cdkd-local-start-api-${Date.now()}`,
         DurationSeconds: 3600,
@@ -3359,6 +3434,11 @@ async function loadStateForRoutedStacks(
  * `${AWS::AccountId}`, the `${AWS::URLSuffix}` / `${AWS::Partition}`
  * derivation, and the `${AWS::Region}` value itself.
  *
+ * `${AWS::AccountId}` follows the SOURCE the stack was read from (issue
+ * go-to-k/cdkd#3230): under `--from-state` it is the account of the identity
+ * that read the state record — the `--role-arn` role when one is published —
+ * and under `--from-cfn-stack` it stays the caller's own.
+ *
  * @internal exported for unit tests.
  */
 export async function resolvePseudoParametersForStartApi(
@@ -3369,16 +3449,35 @@ export async function resolvePseudoParametersForStartApi(
   const region = canonicalizeRegion(
     options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stateRegion
   );
+  // Both state sources reach this resolver, so its warnings name the one in use.
+  const sourceFlag = options.fromState ? '--from-state' : '--from-cfn-stack';
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    // `ignoreAssumedRole` -- this resolves the `${AWS::AccountId}` the emulated function sees,
-    // so it must be the caller's own identity, never a `--role-arn` assumed
-    // for cdkd's own calls. See that option's JSDoc.
-    const sts = new STSClient({
-      ...awsClientDefaults({ ignoreAssumedRole: true }),
-      ...(region && { region }),
-    });
+    let sts: InstanceType<typeof STSClient>;
+    if (options.fromState) {
+      // cdkd-local-role-identity: `--from-state` read the state record through
+      // `awsClientDefaults`, so as a `--role-arn` role when one is published,
+      // and `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account
+      // — the account the stack lives in (issue go-to-k/cdkd#3230). Only the
+      // account ID is taken; no credential reaches the emulated function.
+      sts = new STSClient({
+        ...awsClientDefaults({ profile: options.profile }),
+        ...(region && { region }),
+        // `--profile` is the identity both state sources read through when no
+        // role is published, so the account must be asked as it too.
+        ...(options.profile && { profile: options.profile }),
+      });
+    } else {
+      // `ignoreAssumedRole` -- under `--from-cfn-stack` the `${AWS::AccountId}` the
+      // emulated function sees stays the caller's own, never a `--role-arn`
+      // assumed for cdkd's own calls. See that option's JSDoc.
+      sts = new STSClient({
+        ...awsClientDefaults({ profile: options.profile, ignoreAssumedRole: true }),
+        ...(region && { region }),
+        ...(options.profile && { profile: options.profile }),
+      });
+    }
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;
@@ -3387,7 +3486,7 @@ export async function resolvePseudoParametersForStartApi(
     }
   } catch (err) {
     logger.warn(
-      `--from-state: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `${sourceFlag}: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
         'Substitution will be skipped for AWS::AccountId; affected env entries will be dropped with per-key warnings.'
     );
   }

@@ -64,9 +64,11 @@ export function setCurrentStackName(stackName: string): void {
  *
  * Scoped via AsyncLocalStorage so that `--stack-concurrency > 1` runs
  * cannot cross-contaminate — each deploy's body is wrapped in its own
- * `withSkipPrefix(...)` scope (the deploy CLI plumbs the resolved
- * `--no-prefix-user-supplied-names` value through here). Default
- * `false` preserves pre-PR behavior when the flag is not set.
+ * `withSkipPrefix(...)` scope (the deploy CLI plumbs the value
+ * `resolveSkipPrefix` resolved through here, the deploy engine records it on
+ * each rollback-journal segment, and `cdkd rollback` replays each segment
+ * under the recorded value — issue #4018). Outside any scope it reads
+ * `false`, i.e. prefix.
  */
 const skipPrefixStore = new AsyncLocalStorage<boolean>();
 
@@ -329,9 +331,9 @@ export function looksLikeCdkdGeneratedName(
  * the prefix for cross-stack uniqueness.
  *
  * Use at every Pattern B provider call site (currently IAM Role, IAM
- * User, IAM Group, IAM InstanceProfile, ELBv2 LoadBalancer, ELBv2
- * TargetGroup) so the `--no-prefix-user-supplied-names` flag controls
- * those types consistently. Pattern A providers (Lambda, S3, SNS,
+ * User, IAM Group, IAM InstanceProfile, IAM ManagedPolicy, ELBv2
+ * LoadBalancer, ELBv2 TargetGroup) so the `--prefix-user-supplied-names`
+ * flag controls those types consistently. Pattern A providers (Lambda, S3, SNS,
  * SQS, DynamoDB, etc.) do NOT need this helper — they already
  * short-circuit the user-supplied name out of the
  * `generateResourceName` call entirely, so the prefix is never

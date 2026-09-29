@@ -187,6 +187,77 @@ checked (2 only partially compared), 1 unsupported` — so the bracketed figure
 accounts for exactly the gap between the two numbers rather than reading as a
 third share of `M`.
 
+### What the human report does to a malformed value
+
+The report prints values it reads out of the state record, out of the S3 key
+the record was listed under and out of the AWS readback: the stack name and
+region in every heading (from the key — from the record body only for a legacy
+region-less record's region), each row's logical id and resource type and the
+state side of each change (from the record, which a hand edit can fill with
+anything `JSON.parse` accepts), each changed property's path, and the AWS side
+of each change (whatever the service returns). The report treats all of them
+as untrusted text, the way the [`cdkd state` human
+views](cli-state.md#what-the-human-views-do-to-a-malformed-record) do:
+
+- **No field passes terminal control to the terminal.** That covers a
+  newline, a C0 control, an escape sequence, LINE SEPARATOR and the bidi
+  overrides. The output is line-oriented, and this report is exactly the text a
+  reader trusts to say whether a stack matches AWS, so a newline in a logical id
+  would invent a `✓ ... no drift detected` row and an override could reorder a
+  changed-property line. In an IDENTIFIER (a stack name, region, logical id,
+  resource type or property path) a control character is replaced by a space,
+  and so is the ESC of a sequence cdkd does not parse (`ESC 7`, an OSC with no
+  terminator), leaving the rest as text; a CSI sequence (a cursor move, a
+  screen clear) and a terminated OSC (a terminal link) are removed whole, with
+  the characters around them kept. One allowance: an identifier spelling one of
+  the styling codes cdkd's own output uses (`ESC[31m` and its sibling colours,
+  bold, dim and reset) keeps it, the same allowance every logger line has, and
+  any other colour code becomes a reset. Such an identifier can set a colour
+  or a style — for the rows after it too, if it never resets it — but cannot
+  move the cursor, clear the screen or plant a link. A property VALUE is
+  handled by the next rule instead.
+- **A property value that carries a control character, has whitespace at
+  either end, or starts with `"` is shown as its JSON string.** A control
+  character here is any of C0 (newline, tab and ESC among them), DEL, C1,
+  LINE SEPARATOR, PARAGRAPH SEPARATOR and the bidi overrides, so a value
+  carrying even one of cdkd's own colour codes is quoted. So is a value
+  carrying an unpaired surrogate, which the output's UTF-8 encoding would
+  otherwise turn into the replacement character `�`. It prints as
+  `"abc\n"`, `"a\tb"`, `" value "`, `"x\u001b[2Jy"`: JSON escapes the C0
+  range, and the characters it leaves literal are written as `\uXXXX` escapes
+  too, so none of them is left between the quotes and a colour code prints as
+  escape text rather than as colour. Two strings that differ in one of those
+  characters, or in whether they have whitespace at an edge, therefore print
+  differently: a drift that differs only by a trailing newline, a tab or
+  padding still shows two visibly different sides. That is the whole
+  guarantee — a string that differs only by another invisible character (a
+  zero-width space), by one kind of space for another (a no-break space for a
+  space) or by a look-alike letter, and a string and a number or an object
+  spelling the same text, can still print alike, as before. Any other string
+  prints unquoted, exactly as it always did. A structured value (an object or
+  a list) is JSON-encoded as before and escaped the same way, so a newline, an
+  escape byte or a LINE SEPARATOR nested inside it arrives as `\n` /
+  `\u001b` / `\u2028` escape text.
+- **An identifier is cut with a `...` mark past 255 characters** (the stack
+  name past the longer bound a nested `Parent~Child` name legitimately needs),
+  which bounds how much of the screen a planted multi-kilobyte name can take —
+  a bound, not a guarantee that the rows after it stay in view, since a name
+  can still wrap within it. A property value is never cut, and neither an
+  identifier nor a value is trimmed.
+
+The plans `--accept` and `--revert` print before they ask for confirmation
+(and under `--dry-run`) follow the same three rules for the same fields: each
+heading's stack name and region, each resource's logical id and type, each
+change's path and both of its values, and the readback tag keys and paths the
+revert plan lists as preserved or left untouched. A readback key is masked for
+secrets first and only then cut and sanitized, so the cut can never leave part
+of a secret unmasked. A plan line prints `<path>: <from> -> <to>`, so a string
+value that itself contains `->` is quoted there too: no unquoted value carries
+an arrow, so the only one outside quotes after the path is the separator. (The
+path itself is not quoted, as in the report.)
+
+`--json` is untouched — a consumer of that mode wants the stored value.
+
 ## Exit codes
 
 | Code | Meaning |

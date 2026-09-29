@@ -36,6 +36,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
  * SDK Provider for AWS KMS resources
@@ -169,6 +170,9 @@ export class KMSProvider implements ResourceProvider {
       | boolean
       | undefined;
 
+    // Set once CreateKey returns: a later failure is an auxiliary call's, not
+    // this key's collision (#3826).
+    let keyCreated = false;
     try {
       const result = await this.getClient().send(
         new CreateKeyCommand({
@@ -187,6 +191,7 @@ export class KMSProvider implements ResourceProvider {
         })
       );
 
+      keyCreated = true;
       const keyId = result.KeyMetadata!.KeyId!;
       const keyArn = result.KeyMetadata!.Arn!;
 
@@ -221,6 +226,7 @@ export class KMSProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (keyCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create KMS Key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,

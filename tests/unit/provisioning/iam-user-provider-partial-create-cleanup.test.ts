@@ -111,8 +111,9 @@ describe('IAMUserGroupProvider createUser partial-create cleanup (Issue #376)', 
   describe('the recovery commands name the user BARE, by provenance (issue #3136)', () => {
     // The name is `generateResourceNameWithFallback`'s output, which rewrites
     // everything outside `[A-Za-z0-9-]`: a forged template name reaches the
-    // command only as one plain word, so the site does not route through
-    // `pasteableAwsCommand`. If the generator ever stops sanitizing, these fail.
+    // command only as one plain word, which `pasteableAwsCommand` (routed through
+    // for the masker since issue #2177) leaves BARE. If the generator ever stops
+    // sanitizing, these fail.
     it.each([FORGED_QUOTE, FORGED_CTRL])('a forged UserName reaches the commands as a plain word', async (forged) => {
       mockSend.mockResolvedValueOnce({ User: { Arn: 'arn:aws:iam::123:user/MyUser' } }); // CreateUserCommand
       mockSend.mockRejectedValueOnce(new Error('PutUserPermissionsBoundary boom')); // original

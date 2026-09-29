@@ -55,6 +55,11 @@ fi
 # when the CLI exited non-zero, with the error text already gone (#3126).
 CLI_ERR="$(mktemp)"
 
+# Lambda creates `/aws/lambda/<stack>-CustomS3AutoDeleteObjects...` when the S3
+# auto-delete custom resource runs, and nothing in the stack owns it, so destroy
+# leaves it behind (#3885).
+. ../cr-log-groups.sh
+
 cleanup() {
   rc=$?
   rm -f "${CLI_ERR}"
@@ -62,6 +67,7 @@ cleanup() {
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
   fi
+  sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   exit "${rc}"
 }
 trap cleanup EXIT

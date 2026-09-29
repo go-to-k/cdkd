@@ -5,6 +5,7 @@ exports.handler = async (event) => {
   return {
     bucketName: process.env.BUCKET_NAME ?? 'unset',
     staticValue: process.env.STATIC_VALUE ?? 'unset',
+    accountTag: process.env.ACCOUNT_TAG ?? 'unset',
     event,
   };
 };

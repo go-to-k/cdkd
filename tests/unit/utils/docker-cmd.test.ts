@@ -276,6 +276,16 @@ describe('a sensitive key named __proto__ (#3515)', () => {
     expect(env['__proto__']).toBe(SECRET);
     expect(env['PATH']).toBe(process.env['PATH']);
   });
+
+  // The `local invoke --env-vars` shape: a NON-sensitive `__proto__` is
+  // container env only and renders inline on the argv, like any plain key.
+  it('partitionSensitiveEnv renders a non-sensitive one inline as -e __proto__=<value>', () => {
+    const env = JSON.parse('{"__proto__": "proto-plain", "PLAIN": "p"}') as Record<string, string>;
+    const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(env, new Set());
+    expect(flags).toEqual(['-e', '__proto__=proto-plain', '-e', 'PLAIN=p']);
+    expect(Object.keys(sensitiveEnv)).toEqual([]);
+    expect(collisions).toEqual([]);
+  });
 });
 
 describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {

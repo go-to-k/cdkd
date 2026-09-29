@@ -70,7 +70,9 @@ environment variable or your AWS profile.
 | Bare name, single-stack apps only | `MyTaskDef` |
 
 Path matching is prefix-based, so an L2 path such as `MyStack/MyService/TaskDef`
-resolves to the synthesized L1 child `MyStack/MyService/TaskDef/Resource`.
+resolves to the synthesized L1 child `MyStack/MyService/TaskDef/Resource`. A
+stack inside a CDK `Stage` is addressed by its full display path
+(`MyStage/MyStack/MyService/TaskDef`).
 
 ## Networking model
 

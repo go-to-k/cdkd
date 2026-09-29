@@ -53,6 +53,7 @@ import { maskDeep } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -62,6 +63,18 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import {
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
+
+/** The ApiGatewayV2 types whose delete addresses the child through `ApiId`. */
+const API_ID_ADDRESSED_TYPES: ReadonlySet<string> = new Set([
+  'AWS::ApiGatewayV2::Stage',
+  'AWS::ApiGatewayV2::Integration',
+  'AWS::ApiGatewayV2::Route',
+  'AWS::ApiGatewayV2::Authorizer',
+]);
 
 /**
  * AWS API Gateway V2 (HTTP API) Provider
@@ -341,7 +354,18 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
+    // go-to-k/cdkd#3952: see the ApiGateway provider -- the recorded ApiId is
+    // the address, and a not-found on it reads as "already deleted".
+    if (API_ID_ADDRESSED_TYPES.has(resourceType)) {
+      const skip = redactedDeleteAddressSkip(
+        this.logger,
+        logicalId,
+        resourceType,
+        redactedDeleteAddressFields({ ApiId: properties?.['ApiId'] })
+      );
+      if (skip) return skip;
+    }
     switch (resourceType) {
       case 'AWS::ApiGatewayV2::Api':
         return this.deleteApi(logicalId, physicalId, resourceType, context);

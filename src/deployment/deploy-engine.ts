@@ -1,7 +1,8 @@
 import { getLogger } from '../utils/logger.js';
-import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
+  equalIdNamesDifferentResources,
   equalIdNamesSameResource,
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
@@ -23,7 +24,7 @@ import {
   ResourceUpdateNotSupportedError,
   CdkdError,
 } from '../utils/error-handler.js';
-import { displayIdent, displaySafe, isPasteableIdent } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, isPasteableIdent, safeMsg } from '../utils/display-safe.js';
 import { shellQuote } from '../state/lock-contention-message.js';
 import {
   refuseMalformedOutputs,
@@ -41,6 +42,7 @@ import {
   applyDefaultNameForFallback,
   withoutGeneratedFallbackName,
   getCurrentStackName,
+  getCurrentSkipPrefix,
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
@@ -99,6 +101,10 @@ import {
   makeSiblingClaimReader,
 } from './orphan-adoption.js';
 import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
+import {
+  renderNameHeldElsewhere,
+  replacementRequestsDifferentName,
+} from './replacement-name-holder.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   shouldRetainResource,
@@ -2015,7 +2021,8 @@ export class DeployEngine {
    * `Provider` samples encourage — makes `Data.X` equal the resource's own
    * `ServiceToken`, and registering that rewrites `properties.ServiceToken` to
    * `***` in the record `CustomResourceProvider.delete` reads it back from,
-   * where the mask is a truthy string that passes both of that method's guards.
+   * which can then no longer address the handler and skips the delete
+   * (go-to-k/cdkd#3938).
    * A value already present in the template is not handler-GENERATED, so
    * excluding it gives up no secrecy — and where the template value IS a
    * resolved secret it already carries a real EXPRESSION needle, which
@@ -2148,10 +2155,10 @@ export class DeployEngine {
      *
      * TRACED, not assumed. `CustomResourceProvider.import` returns
      * `{ physicalId, attributes: {} }` unconditionally; `import.ts`'s
-     * `rowAttributes` normalises an empty bag to `undefined` and the coalesce
-     * behind it CARRIES FORWARD the prior record's attributes whenever the
-     * physical id matches — which it does, since the command is run with that
-     * very id. So the masked bag is copied back verbatim and the refusal
+     * `reimportedAttributes` CARRIES FORWARD the prior record's attributes
+     * for an empty bag whenever the physical id matches — which it does,
+     * since the command is run with that very id. So the masked bag is copied
+     * back verbatim (the import now warns that it was) and the refusal
      * repeats, forever.
      *
      * This is the NoEcho population — arm (1) of the refusal's own message —
@@ -2450,8 +2457,9 @@ export class DeployEngine {
     // `GetResource` again yields no usable model, `import()` returns
     // `attributes: {}`, and `buildStackState`'s same-physical-id carry-over
     // keeps the PREVIOUS masked bag rather than replacing it — so the refusal
-    // repeats. Tracked as issue
-    // [#2927](https://github.com/go-to-k/cdkd/issues/2927).
+    // repeats. Deliberately: dropping the mask would make the read resolve to
+    // the physical id instead. The import warns naming each kept key (issue
+    // [#2927](https://github.com/go-to-k/cdkd/issues/2927)).
     throw new ProvisioningError(
       `Cannot resolve ${reads.map((read) => read.display).join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
         `redaction mask there, and the value is not recoverable from state. There are two ways a ` +
@@ -3043,7 +3051,7 @@ export class DeployEngine {
         // keep 'Error'
       }
       this.logger.debug(
-        `Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
+        safeMsg`Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
       );
       return { failure: 'read-failed' };
     } finally {
@@ -3544,7 +3552,7 @@ export class DeployEngine {
         producerRegions = producerRegionsFromState(crossStackReads);
       } catch {
         this.logger.debug(
-          `Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read (issue #3595).`
+          safeMsg`Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read (issue #3595).`
         );
         masked.length = 0;
       }
@@ -3608,7 +3616,7 @@ export class DeployEngine {
       if (secrets === undefined || secrets.size === 0) {
         // The CLASS only: never a reference, a value or an error's text.
         this.logger.debug(
-          `Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values (issue #3595).`
+          safeMsg`Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values (issue #3595).`
         );
         return undefined;
       }
@@ -3623,16 +3631,18 @@ export class DeployEngine {
       const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
       if (recaptured === undefined) {
         this.logger.debug(
-          `Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records (issue #3595).`
+          safeMsg`Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records (issue #3595).`
         );
         return undefined;
       }
       this.recapturedBaselines.set(recaptured, previous);
-      this.logger.debug(`Re-captured the masked observed baseline of ${logicalId} (issue #3595).`);
+      this.logger.debug(
+        safeMsg`Re-captured the masked observed baseline of ${logicalId} (issue #3595).`
+      );
       return recaptured;
     })().catch(() => {
       this.logger.debug(
-        `Masked observed baseline of ${logicalId} kept: the re-capture failed (issue #3595).`
+        safeMsg`Masked observed baseline of ${logicalId} kept: the re-capture failed (issue #3595).`
       );
       return undefined;
     });
@@ -4035,7 +4045,7 @@ export class DeployEngine {
       // the legacy PR #608 fail-fast was reversed by #614 to a default-on
       // auto-route — but this step CAN still refuse, and the comment said
       // it could not until issue #3028. A drop on a type the Cloud Control
-      // route cannot serve (`isNonProvisionable`, or a provider declaring
+      // route cannot serve (`hasNoCloudControlHandlers`, or a provider declaring
       // `disableCcApiFallback`) has nowhere to be auto-routed, so
       // `ProviderRegistry.reportSilentDropDecisions` throws rather than
       // letting the route fail later with an opaque error. That refusal
@@ -5124,19 +5134,28 @@ export class DeployEngine {
       // journal segment so the interrupted deploy is REVERTIBLE (not just
       // resumable), and let the caller exit.
       //
-      // `InterruptedError` is this module's own and is NOT exported, so it can
-      // only ever be raised HERE — by the engine's own interrupt poll between
-      // operations. An interrupt raised inside a provider's wait (issues #2053
-      // / #1952 thread one into every `withRetry` under
-      // `src/provisioning/**`) arrives as an `InterruptedWaitError`, and by the
-      // time it reaches this catch it is WRAPPED: every provider catch
-      // re-throws AWS failures as a `ProvisioningError` threading the original
-      // as `cause` (issue #2040). Matching only the private class meant a
-      // Ctrl-C during a provider backoff read as a genuine resource failure and
-      // rolled the whole stack back automatically — strictly worse than the
-      // unresponsiveness the threading removes. `isInterruptedWaitError` walks
-      // the cause chain to a bounded depth for exactly that reason.
-      if (error instanceof InterruptedError || isInterruptedWaitError(error)) {
+      // A user interrupt reaches this catch in three shapes, and all three must
+      // take this branch — the other one rolls the stack back on a Ctrl-C:
+      //
+      //  - the engine's own `InterruptedError`, raised by its between-ops poll;
+      //  - an `InterruptedWaitError` from a provider's wait, WRAPPED by the
+      //    provider's `ProvisioningError` (issue #2040), which
+      //    `isInterruptedWaitError` finds on the cause chain;
+      //  - an `InterruptedError` WRAPPED by `provisionResource`'s own
+      //    `ProvisioningError`: one raised by this engine's retry backoff
+      //    (`onInterrupted`), or by a NESTED child engine's poll, which reaches
+      //    the parent through `NestedStackProvider` (go-to-k/cdkd#3875).
+      //
+      // The last shape is keyed on this engine's own `interruptCause`, not on
+      // the class: `InterruptedError` does not carry its cause, and a child's
+      // `'sibling-failure'` one must still roll back. The SIGINT handler sets
+      // `'user'` before any poll or backoff can observe the signal, and a row
+      // failure's `??= 'sibling-failure'` never overwrites it.
+      if (
+        error instanceof InterruptedError ||
+        isInterruptedWaitError(error) ||
+        this.interruptCause === 'user'
+      ) {
         await this.writeRollbackJournalSegment(
           stackName,
           completedOperations,
@@ -5164,8 +5183,9 @@ export class DeployEngine {
         );
         this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
         this.logger.warn(
-          "Partial state has been saved. Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, " +
-            'or destroy to clean up.'
+          safeMsg`Partial state has been saved. ${this.recoveryHint(
+            "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+          )}`
         );
       } else {
         // Automatic in-process rollback. Write a journal segment FIRST so a
@@ -5608,7 +5628,7 @@ export class DeployEngine {
         completedOperations,
         stateResources,
         stackName,
-        this.rollbackExecutorContext(previousState)
+        this.rollbackExecutorContext(previousState, stackName)
       ),
       run: scope,
     }));
@@ -5733,8 +5753,10 @@ export class DeployEngine {
       await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
     } catch (err) {
       this.logger.warn(
-        `Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
-          `The journal keeps the full segment; a later 'cdkd rollback' replay is idempotent.`
+        safeMsg`Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
+          // No command named: a nested child's stack-less `cdkd rollback` would
+          // resolve to the top-level stack (go-to-k/cdkd#3864).
+          `The journal keeps the full segment; a later rollback replay is idempotent.`
       );
       return false;
     }
@@ -5782,8 +5804,30 @@ export class DeployEngine {
     });
   }
 
+  /**
+   * The recovery sentence a `--no-rollback` failure ends on. A NESTED child
+   * engine does not name a command: a stack-less `cdkd rollback` resolves to
+   * the top-level stack, and the child's failure fails the parent's row, whose
+   * engine (sharing `noRollback` through the option spread) prints its own
+   * `--no-rollback` message right after (go-to-k/cdkd#3864). NOT used on the
+   * interrupted path: a child's poll `InterruptedError` reaches the parent
+   * wrapped and is not recognised as an interrupt there (go-to-k/cdkd#3875),
+   * so no message of the parent's can be promised to follow.
+   */
+  private recoveryHint(topLevel: string): string {
+    const parent = this.options.parentStackInfo;
+    if (parent === undefined) return topLevel;
+    return (
+      `This is a nested stack: recover it through its top-level stack ` +
+      `${quotedOrDescribed(parent.parentStack.split('~')[0]!, 'stack name')}, whose own message follows.`
+    );
+  }
+
   /** Build the {@link RollbackExecutorContext} from the engine's fields. */
-  private rollbackExecutorContext(previousState: StackState): RollbackExecutorContext {
+  private rollbackExecutorContext(
+    previousState: StackState,
+    stackName: string
+  ): RollbackExecutorContext {
     return {
       providerRegistry: this.providerRegistry,
       region: this.stackRegion,
@@ -5794,6 +5838,10 @@ export class DeployEngine {
       // opt-out the engine's own delete sites use.
       finalSnapshotClients: this.options.finalSnapshotClients,
       skipFinalSnapshot: this.options.skipFinalSnapshot,
+      // A nested child's own rollback: its segment is replayed only by a
+      // rollback of the CHILD, so the refusals' `--orphan` command names it
+      // (go-to-k/cdkd#3859).
+      ...(this.options.parentStackInfo && { nestedChildStack: stackName }),
       // Issue #2057: the producer regions this stack reads across, so the
       // replay refuses a region-LESS `{{resolve:...}}` expression rather than
       // re-resolving it here and writing a same-named foreign secret to a live
@@ -5856,6 +5904,9 @@ export class DeployEngine {
         initialDeploy,
         ...(this.options.roleArn && { roleArn: this.options.roleArn }),
         cdkdVersion: getCdkdVersion(),
+        // Issue #4018: the prefix flag this deploy's providers derived names
+        // under, so `cdkd rollback` replays the segment in the same scope.
+        skipPrefix: getCurrentSkipPrefix(),
         operations: redactedCompleted,
         ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
         ...(nestedPending?.previousOutputs && { previousOutputs: nestedPending.previousOutputs }),
@@ -7028,7 +7079,9 @@ export class DeployEngine {
           const attrSummary = attributeChanges
             .map((a) => `${a.attribute}: ${a.oldValue ?? '(unset)'} → ${a.newValue ?? '(unset)'}`)
             .join(', ');
-          this.logger.info(`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`);
+          this.logger.info(
+            safeMsg`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`
+          );
           stateResources[logicalId] = {
             ...currentResource,
             ...this.extractTemplateAttributes(template, logicalId),
@@ -7038,7 +7091,7 @@ export class DeployEngine {
           const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
           renderer.removeTask(logicalId);
           this.logger.info(
-            `${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
+            safeMsg`${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
           );
         };
         if (
@@ -7165,13 +7218,13 @@ export class DeployEngine {
                 // replacement, and a `Replacing` label must never be
                 // unexplained. The id, the path and the class only.
                 this.logger.warn(
-                  `${logicalId}.${pc.path} carries a NoEcho value that AWS could not confirm unchanged (${verdict}): replacement kept.`
+                  safeMsg`${logicalId}.${pc.path} carries a NoEcho value that AWS could not confirm unchanged (${verdict}): replacement kept.`
                 );
                 lowered.push(pc);
                 continue;
               }
               this.logger.debug(
-                `${logicalId}.${pc.path} carries a NoEcho value AWS already holds: not replaced.`
+                safeMsg`${logicalId}.${pc.path} carries a NoEcho value AWS already holds: not replaced.`
               );
               noEchoHeldPaths.add(pc.path);
             }
@@ -7208,7 +7261,7 @@ export class DeployEngine {
           )
         ) {
           this.logger.debug(
-            `Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
+            safeMsg`Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
           );
           // Nothing was attempted, as on the skip above the refusal.
           this.attemptedResolvedProps.delete(logicalId);
@@ -7381,6 +7434,27 @@ export class DeployEngine {
             }
           }
 
+          // Issue #3899: `--recreate-via-cc-api` deletes the old resource FIRST
+          // and then creates through Cloud Control, pinned by `forceCcApi`
+          // below, which the registry honours before it consults whether Cloud
+          // Control can create the type at all. `validateRecreateTargets`
+          // refuses such a type pre-flight (#3887); this is the same verdict
+          // at the delete, so a caller that skips the validator cannot delete
+          // a resource that is then never recreated.
+          if (recreateViaCcApi) {
+            const noCcRoute = this.providerRegistry.ccRouteUnavailableReason(resourceType);
+            if (noCcRoute !== undefined) {
+              throw markNonRetryable(
+                new CdkdError(
+                  `--recreate-via-cc-api cannot recreate ${logicalId} (${resourceType}): Cloud ` +
+                    `Control API cannot create this type (${noCcRoute}). Nothing was deleted. ` +
+                    `Drop ${logicalId} from --recreate-via-cc-api.`,
+                  'RECREATE_TARGETS_INVALID'
+                )
+              );
+            }
+          }
+
           // Resource replacement: DELETE old → CREATE new
           let replacementReason: string;
           if (recreateViaCcApi) {
@@ -7479,6 +7553,11 @@ export class DeployEngine {
             oldType: oldResourceType,
             newType: resourceType,
             createLayer: replaceDecision.provisionedBy,
+            // Issue #3892: a Glue table's id is placed by DatabaseName, so an
+            // equal id can be a genuinely new table in another database.
+            oldProperties: currentResource.properties,
+            newProperties: resolvedProps,
+            physicalId: currentResource.physicalId,
           });
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
@@ -7704,6 +7783,45 @@ export class DeployEngine {
                   `being replaced — then deleting the old resource first cannot free it, and the ` +
                   `fix is a different name.`
                 : '';
+              // Issue #3808: every message below, and the `--replace`
+              // delete-first retry, presume the old resource holds the name.
+              // When the template's explicit name says otherwise, the holder
+              // is another resource: refuse under every flag and policy, since
+              // deleting the old resource first would only destroy it and hit
+              // the same collision. Nothing has been deleted at this point.
+              const nameHeldElsewhere = replacementRequestsDifferentName({
+                oldResourceType,
+                newResourceType: resourceType,
+                desiredProperties: resolvedProps,
+                recorded: currentResource.properties,
+                observed: currentResource.observedProperties,
+                physicalId: currentResource.physicalId,
+              });
+              if (nameHeldElsewhere !== undefined) {
+                // Marked: a template value and a recorded name decide it, and
+                // the message quotes the create's collision text, which the
+                // recreate retry classifier treats as retryable.
+                throw markNonRetryable(
+                  new CdkdError(
+                    `${logicalId} (${resourceType}) requires replacement, but the create-first ` +
+                      `attempt collided: ${createMsg}. ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
+                      (this.options.replace === true
+                        ? ` — so --replace was NOT applied and nothing was deleted.`
+                        : updateReplacePolicy === 'Retain'
+                          ? ` — so removing UpdateReplacePolicy: Retain and re-running with ` +
+                            `\`cdkd deploy --replace\` would delete this resource and still collide.`
+                          : ` — so \`cdkd deploy --replace\` would delete this resource and still ` +
+                            `collide.`) +
+                      ` Choose a name no other resource holds, or delete the resource holding it if ` +
+                      `it is yours.`,
+                    'NAMED_REPLACEMENT_COLLISION',
+                    // Chained like the fallback twin, so the persisted event
+                    // names the AWS rejection; safe because the refusal is
+                    // marked, which the retry classifiers read first.
+                    createError instanceof Error ? createError : undefined
+                  )
+                );
+              }
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but its physical name ` +
@@ -8548,6 +8666,32 @@ export class DeployEngine {
                 // only rewrites the error text — nothing destructive follows
                 // either branch here, because this arm never deletes.
                 if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
+                // Issue #3808, as on the property-driven path: when the
+                // template's explicit name is not the one the retained resource
+                // holds, "remove Retain so cdkd deletes the old resource first"
+                // would destroy it and still collide.
+                const nameHeldElsewhere = replacementRequestsDifferentName({
+                  oldResourceType: resourceType,
+                  newResourceType: resourceType,
+                  desiredProperties: resolvedProps,
+                  recorded: currentResource.properties,
+                  observed: currentResource.observedProperties,
+                  physicalId: currentResource.physicalId,
+                });
+                if (nameHeldElsewhere !== undefined) {
+                  throw markNonRetryable(
+                    new CdkdError(
+                      `${logicalId} (${resourceType}) requires replacement because the ` +
+                        `provisioning layer cannot update it in place, but the create collided. ` +
+                        `${renderNameHeldElsewhere(nameHeldElsewhere)} — so removing ` +
+                        `UpdateReplacePolicy: Retain would delete this resource and still ` +
+                        `collide. Choose a name no other resource holds, or delete the resource ` +
+                        `holding it if it is yours.`,
+                      'NAMED_REPLACEMENT_COLLISION',
+                      createError instanceof Error ? createError : undefined
+                    )
+                  );
+                }
                 const nameOrigin = this.replacementNameOrigin(
                   logicalId,
                   currentResource.physicalId
@@ -8595,7 +8739,16 @@ export class DeployEngine {
                 // without the new properties ever being applied — so fail
                 // before any state bookkeeping runs. The property-driven twin
                 // makes the same call with the same code.
-                if (createResult.physicalId === currentResource.physicalId) {
+                if (
+                  createResult.physicalId === currentResource.physicalId &&
+                  // Issue #3892: an equal id can still be a NEW table (Glue).
+                  !equalIdNamesDifferentResources({
+                    resourceType,
+                    physicalId: currentResource.physicalId,
+                    oldProperties: currentResource.properties,
+                    newProperties: resolvedProps,
+                  })
+                ) {
                   const idempotentNameOrigin = this.replacementNameOrigin(
                     logicalId,
                     currentResource.physicalId
@@ -9919,7 +10072,7 @@ export class DeployEngine {
      * export blocker DO recognise. Firing there would silently change the
      * pre-existing issue #2274 behaviour (an output that published `'***'`
      * would vanish) for no safety gain, and would render this message's
-     * "would publish the resource's raw physical id" over a read for which
+     * "would publish a value cdkd cannot confirm" over a read for which
      * there is no physical-id fall-through — the wrong-advice class this PR
      * has spent three rounds removing.
      *
@@ -9955,8 +10108,9 @@ export class DeployEngine {
       throw markNonRetryable(
         new Error(
           `Cannot resolve ${added.map((read) => read.display).join(', ')} for output ${outputKey}: cdkd's recorded state ` +
-            `holds only the redaction mask there, so this output would publish the resource's ` +
-            `raw physical id instead of the value CloudFormation's Ref returns — a wrong value ` +
+            `holds only the redaction mask there, so this output would publish a value cdkd ` +
+            `cannot confirm (for most such types the resource's raw physical id) instead of the ` +
+            `value CloudFormation's Ref returns — a possibly wrong value ` +
             `that a consuming stack's Fn::ImportValue would accept and send to AWS. The output ` +
             `is not published. ${DeployEngine.maskedRecordRemedyFor(added, context.resources)}`
         )

@@ -1954,10 +1954,10 @@ describe('IntrinsicFunctionResolver - Fn::Sub ${!Literal} escape', () => {
 
 describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', () => {
   // cdkd has no stack-notification-ARN concept, so AWS::NotificationARNs is
-  // always an empty list — which CloudFormation resolves to an empty string
-  // in an Fn::Sub / Ref string context. Before the fix it resolved to
-  // `undefined`, which left the literal `${AWS::NotificationARNs}` placeholder
-  // in an Fn::Sub body (the pseudo branch was skipped on `undefined`).
+  // always an empty list, which a bare Ref resolves to (`[]`, issue #3809;
+  // it used to be ''). Inside Fn::Sub it is REFUSED: CloudFormation rejects the template with
+  // "variable AWS::NotificationARNs in Fn::Sub expression does not resolve to
+  // a string" (measured by a CreateStack A/B). Before #3809 cdkd rendered ''.
   let resolver: IntrinsicFunctionResolver;
 
   beforeEach(() => {
@@ -1970,25 +1970,50 @@ describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', (
     resources: {},
   };
 
-  it('substitutes ${AWS::NotificationARNs} to an empty string in Fn::Sub', async () => {
-    const result = await resolver.resolve(
-      { 'Fn::Sub': '${AWS::NotificationARNs}' },
-      context
+  it('refuses ${AWS::NotificationARNs} in Fn::Sub as a list, non-retryable', async () => {
+    const error = await resolver
+      .resolve({ 'Fn::Sub': 'notif=${AWS::NotificationARNs};done' }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect((error as Error).message).toContain(
+      'Fn::Sub: the variable ${AWS::NotificationARNs} resolves to a list'
     );
-    expect(result).toBe('');
   });
 
-  it('substitutes ${AWS::NotificationARNs} embedded in a surrounding Fn::Sub string', async () => {
-    const result = await resolver.resolve(
-      { 'Fn::Sub': 'notif=${AWS::NotificationARNs};done' },
-      context
-    );
-    expect(result).toBe('notif=;done');
-  });
-
-  it('resolves a bare Ref: AWS::NotificationARNs to an empty string', async () => {
+  it('resolves a bare Ref: AWS::NotificationARNs to an empty LIST', async () => {
     const result = await resolver.resolve({ Ref: 'AWS::NotificationARNs' }, context);
-    expect(result).toBe('');
+    expect(result).toEqual([]);
+  });
+
+  it('evaluates the Fn::Equals-over-Fn::Join "no notification ARNs" idiom to TRUE', async () => {
+    // With the Ref a string, the inner Fn::Join threw and `evaluateConditions`
+    // downgraded the condition to false; it now matches CloudFormation.
+    const conditions = await resolver.evaluateConditions({
+      ...context,
+      template: {
+        Resources: {},
+        Conditions: {
+          NoArns: {
+            'Fn::Equals': [{ 'Fn::Join': ['', { Ref: 'AWS::NotificationARNs' }] }, ''],
+          },
+        },
+      } as never,
+    });
+    expect(conditions['NoArns']).toBe(true);
+  });
+
+  it('renders Fn::Join over Ref AWS::NotificationARNs as an empty string, as CloudFormation does', async () => {
+    // Measured: CloudFormation renders `n=` for this template. Before #3809
+    // the Ref was '' and Fn::Join refused it as "resolved to string".
+    const result = await resolver.resolve(
+      { 'Fn::Join': ['', ['n=', { 'Fn::Join': [',', { Ref: 'AWS::NotificationARNs' }] }]] },
+      context
+    );
+    expect(result).toBe('n=');
   });
 });
 
@@ -4480,6 +4505,95 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
   it('cfnRefValueFromPhysicalId leaves a pipe-free AWS::Glue::Table id untouched', () => {
     expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'my_table')).toBe('my_table');
     expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|my_table')).toBe('my_table');
+  });
+
+  // Issue #1672: a Glue table name may itself contain `|` (AWS accepts `a|b`;
+  // CloudFormation manages it and its `Ref` is `a|b`). cdkd records
+  // `mydb|a|b`, so after-LAST-pipe would hand consumers `b`. The table name is
+  // everything after the recorded DatabaseName — the same anchor the provider's
+  // decode sites use — falling back to after-the-FIRST-pipe, which is exact for
+  // a two-segment id and a guess for a longer id no current writer produces
+  // without an anchor (a database name may carry `|` since #3892).
+  describe('AWS::Glue::Table Ref with a `|` in the table name (issue #1672)', () => {
+    function glueContext(
+      physicalId: string,
+      properties: Record<string, unknown>
+    ): ResolverContext {
+      return {
+        template: { Resources: { MyTable: { Type: 'AWS::Glue::Table', Properties: {} } } },
+        resources: {
+          MyTable: {
+            physicalId,
+            resourceType: 'AWS::Glue::Table',
+            properties,
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      };
+    }
+
+    it('resolves the whole table name, not the segment after the last pipe', async () => {
+      const result = await resolver.resolve(
+        { Ref: 'MyTable' },
+        glueContext('mydb|a|b', { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } })
+      );
+      expect(result).toBe('a|b');
+    });
+
+    // The case where the anchor and the first-pipe fallback DISAGREE: a record
+    // whose database name carries the separator, which a create writes since
+    // #3892. Without the anchor this reads `db|orders`.
+    it('anchors on the recorded DatabaseName when the database name carries the separator', async () => {
+      const result = await resolver.resolve(
+        { Ref: 'MyTable' },
+        glueContext('my|db|orders', { DatabaseName: 'my|db', TableInput: { Name: 'orders' } })
+      );
+      expect(result).toBe('orders');
+    });
+
+    // Without a usable anchor the first `|` is the boundary. Each of these
+    // returned `b` before the fix.
+    it.each([
+      ['no DatabaseName', {}],
+      ['an unresolved DatabaseName', { DatabaseName: { Ref: 'Db' } }],
+      ['a DatabaseName that does not prefix the id', { DatabaseName: 'elsewhere' }],
+    ])('falls back to everything after the first pipe with %s', async (_n, properties) => {
+      const result = await resolver.resolve(
+        { Ref: 'MyTable' },
+        glueContext('mydb|a|b', properties)
+      );
+      expect(result).toBe('a|b');
+    });
+
+    // An ordinary table's `Ref` must read nothing but its id: a two-segment id
+    // has one reading, so consulting state could only add a way to fail.
+    it('never consults state for a two-segment id', () => {
+      const lookup = vi.fn(() => 'mydb');
+      expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|my_table', lookup)).toBe(
+        'my_table'
+      );
+      expect(lookup).not.toHaveBeenCalled();
+    });
+
+    // Issue #3892: `importTable` records the probed database as an attribute,
+    // for a record whose `DatabaseName` property stays an unresolved intrinsic.
+    it('anchors on the DatabaseName attribute when the property is unresolved', async () => {
+      const context = glueContext('x|y|t', { DatabaseName: { Ref: 'Db' } });
+      context.resources['MyTable']!.attributes = { DatabaseName: 'x|y' };
+      const result = await resolver.resolve({ Ref: 'MyTable' }, context);
+      expect(result).toBe('t');
+    });
+
+    it('takes everything after the first pipe when no state lookup is supplied', () => {
+      expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|a|b')).toBe('a|b');
+    });
+
+    it('consults only the DatabaseName key for a longer id', () => {
+      const lookup = vi.fn((_keys: readonly string[], _options?: unknown) => 'mydb');
+      expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|a|b', lookup)).toBe('a|b');
+      expect(lookup.mock.calls).toEqual([[['DatabaseName'], { preferCleanValue: true }]]);
+    });
   });
 
   // Issue #1681, INTERIOR-segment mechanism. `Route53Provider` stores

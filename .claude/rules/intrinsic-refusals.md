@@ -20,8 +20,10 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
   RE-RAISES it. Refusing arms: `guardedPhysicalIdFallback`'s `*Arn` / `*Url`
   shape hard-fail, `--strict-getatt`, `rejectPlaceholderArnAttribute`, the
   fabricated-account guard, a declared resource, and an unbound declared
-  parameter with no `Default`. An UNDECLARED head still warns, as does a bound
-  or defaulted parameter. `resolveSplit`'s two refusals,
+  parameter with no `Default`; an UNDECLARED head, or a bound or defaulted
+  parameter, warns. `resolveSub`'s own LIST refusal (#3809) is thrown only
+  after the walk and its final dynamic-reference pass, so a later reference
+  still records its needle. `resolveSplit`'s two refusals,
   `refuseCoercedInheritedSecret` and the unsupported-service arm — for a
   `{{resolve:...}}` token holding a SECRET, on the TEMPLATE route only
   ([#2743](https://github.com/go-to-k/cdkd/issues/2743)); an untainted one, and

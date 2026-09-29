@@ -94,6 +94,11 @@ if [ ! -d node_modules ]; then
   vp install
 fi
 
+# Lambda creates `/aws/lambda/<stack>-CustomS3AutoDeleteObjects...` when the S3
+# auto-delete custom resource runs, and nothing in the stack owns it, so destroy
+# leaves it behind (#3885).
+. ../cr-log-groups.sh
+
 cleanup() {
   rc=$?
   # `:-` is required on STATE_TMP: it is created late (step 6b) while `set -u`
@@ -103,6 +108,7 @@ cleanup() {
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
   fi
+  sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   exit "${rc}"
 }
 trap cleanup EXIT
@@ -291,4 +297,5 @@ echo "[verify] step 7: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
 trap - EXIT INT TERM
+sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
 echo "[verify] PASS"

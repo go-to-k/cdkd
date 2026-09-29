@@ -74,7 +74,7 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   not degrade to advice because the stack sits inside a Stage. **The SCOPE of
   the `try` is the classifier**; do not widen it, and do not replace it with a
   test on the error's type or message. `readAssembly` returns those records and
-  `renderNoStackMatch` (`src/cli/stack-matcher.ts`) reports them, so a selection
+  `renderNoStackMatch` (`src/cli/stack-matcher.ts`) and `destroy` report them, so a selection
   failure names the Stage instead of answering "not found".
 - **synthesizer.ts** orchestrates the context-provider loop, then routes any
   template `containsMacro` flags through `macro-expander.ts` BEFORE the analyzer

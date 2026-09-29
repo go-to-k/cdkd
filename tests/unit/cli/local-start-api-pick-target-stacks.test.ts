@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   pickTargetStacks,
+  targetStackHint,
   shouldEmitFromCfnRedundancyTip,
   tryEmitFromCfnRedundancyTipOnce,
 } from '../../../src/cli/commands/local-start-api.js';
@@ -184,5 +185,53 @@ describe('tryEmitFromCfnRedundancyTipOnce', () => {
     tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], refB, emitB);
     expect(emitB).toHaveBeenCalledTimes(1);
     expect(refB.value).toBe(true);
+  });
+});
+
+describe('targetStackHint: a start-api target under a CDK Stage (go-to-k/cdkd#3953)', () => {
+  const staged = (stackName: string, displayName: string): StackInfo =>
+    ({ stackName, displayName, template: { Resources: {} } }) as unknown as StackInfo;
+  const api = staged('MyStage-Api', 'MyStage/Api');
+  const v2 = staged('MyStage-ApiV2', 'MyStage/ApiV2');
+  const outer = staged('Outer', 'Outer');
+  const inner = staged('Outer-Inner-Api', 'Outer/Inner/Api');
+
+  it('returns the Stage stack itself, which pickTargetStacks then selects alone', () => {
+    const hint = targetStackHint('MyStage/Api/HttpApi', [api, v2]);
+    expect(hint).toBe(api);
+    expect(pickTargetStacks([api, v2], undefined, undefined, hint)).toEqual([api]);
+  });
+
+  it('selects the stack the target names when another shares its physical name', () => {
+    // A Stage deployed twice with an explicit stackName: both stacks carry
+    // `Shared`. Re-matching the NAME goes through matchStacks, which keeps
+    // the first stack by name -- `West` here, for a target under `East`.
+    const east = staged('Shared', 'East/Api');
+    const west = staged('Shared', 'West/Api');
+    const hint = targetStackHint('East/Api/HttpApi', [west, east]);
+    expect(pickTargetStacks([west, east], undefined, undefined, hint)).toEqual([east]);
+  });
+
+  it('keeps --stack and --from-cfn-stack ahead of the target stack', () => {
+    const hint = targetStackHint('MyStage/Api/HttpApi', [api, v2]);
+    expect(pickTargetStacks([api, v2], 'MyStage-ApiV2', undefined, hint)).toEqual([v2]);
+    expect(pickTargetStacks([api, v2], undefined, 'MyStage-ApiV2', hint)).toEqual([v2]);
+  });
+
+  it('picks the longest prefix under a nested Stage', () => {
+    expect(targetStackHint('Outer/Inner/Api/HttpApi', [outer, inner])).toBe(inner);
+  });
+
+  it('does not let a stack claim a sibling whose name it prefixes', () => {
+    expect(targetStackHint('MyStage/ApiV2/HttpApi', [api, v2])).toBe(v2);
+  });
+
+  it('falls back to the first segment when no stack path prefixes the target', () => {
+    expect(targetStackHint('My*/HttpApi', [api, v2])).toBe('My*');
+  });
+
+  it('is undefined for a target with no slash', () => {
+    expect(targetStackHint('HttpApi', [api])).toBeUndefined();
+    expect(targetStackHint(undefined, [api])).toBeUndefined();
   });
 });

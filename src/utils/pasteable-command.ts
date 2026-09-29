@@ -18,10 +18,15 @@
  *    CLOSES that wrapper when the span is pasted WITH its quotes and the rest
  *    runs as shell: `'cdkd state orphan S --state-bucket 'b; printf X; #''`
  *    printed `X`. Quoting the value does not help — the wrapper is what
- *    inverts. So a command is printed UNWRAPPED on its own labelled line, and
+ *    inverts. So a command is printed UNWRAPPED on a line of its own, and
  *    this module returns the text for exactly that.
  *
- *    **UNWRAPPED always; LAST only when the message prints ONE command.** A
+ *    **UNWRAPPED always; on its OWN line always; LAST only when the message
+ *    prints ONE command.** A message LISTING several records' commands
+ *    (`cli/commands/export.ts`'s nested resume tail) prints one per line, each
+ *    withheld one after a note naming its record, and may carry prose after
+ *    the list — a single-root failure there prints a one-item list followed by
+ *    prose, which is why the count of commands alone does not decide it. A
  *    message offering a READ and a DESTRUCTIVE template prints one command per
  *    LINE, and there the read ends a line while the TEMPLATE is last — the
  *    rule `.claude/rules/state-malformed-containers.md` states for
@@ -39,7 +44,7 @@
  *    quote that closes at the value's own opening quote, leaving the value
  *    bare. This module cannot reach that one — a value in prose is not a
  *    command — which is why the rule it belongs to is "a shell-quoted value
- *    goes on a labelled trailing line, never inside a sentence", and why
+ *    goes on a line of its own, never inside a sentence", and why
  *    deleting apostrophes is NOT the remedy (the next sentence re-opens it).
  *
  * What this module owns is the ARGUMENT side of shape 1 and shape 2: every
@@ -59,13 +64,12 @@
  * Re-derive the members with that issue's greps rather than trusting a list:
  * these are kinds of site, and each kind has more members than the examples.
  *
- * - **Its own copy of the gate.** `buildForceUnlockCommand`
- *   (`state/lock-contention-message.ts`), the `cdkd orphan` properties refusal
- *   (`state/malformed-resources-bag.ts`), `orphanCommandFor` (`cli/commands/
- *   export.ts`), and others in `deployment/deploy-engine.ts`,
- *   `deployment/rollback-executor.ts` and `cli/commands/gc.ts`. They behave the
- *   same way; they are not this function, so a rule change reaches them only by
- *   hand.
+ * - **Its own copy of the gate.** Others in `deployment/deploy-engine.ts` and
+ *   `deployment/rollback-executor.ts` (`cli/commands/gc.ts`,
+ *   `buildForceUnlockCommand`, `cli/commands/export.ts`'s `orphanCommandFor`
+ *   and the `cdkd orphan` properties refusal in `state/malformed-resources-bag.ts`
+ *   left this list in go-to-k/cdkd#3436's second half). They behave the same way; they are not this function, so a rule
+ *   change reaches them only by hand.
  * - **A command in prose quotes with a RAW value**, outside the modules
  *   migrated here — `provisioning/providers/**` (Route 53, DynamoDB),
  *   `cli/config-loader.ts` and `cli/commands/orphan.ts` are where the greps land
@@ -185,6 +189,19 @@ export interface ValueGateOptions {
    * so ONE predicate decides both lines.
    */
   readonly plainIdent?: boolean;
+  /**
+   * The cap this value is DISPLAYED at in the caller's own prose, when it is
+   * not `STACK_REF_MAX_CODE_POINTS`. A command must not name a value its
+   * message renders truncated — `.claude/rules/state-malformed-containers.md`'s
+   * "borrowing a gate across sites is safe only DOWNWARD" — and a REGION is
+   * displayed at 128 (`safeRegion`) where a stack name is displayed at 1152, so
+   * the two `--stack-region` callers that folded onto this gate in
+   * go-to-k/cdkd#3436's second half pass 128 here rather than re-spelling the
+   * cap as a gate of their own. Without it a fold-in widens the cap to 1152
+   * silently: `'r'.repeat(200)` is named in full under a clause that displays
+   * it cut.
+   */
+  readonly maxCodePoints?: number;
 }
 
 /**
@@ -206,7 +223,7 @@ export type WithholdReason =
   | 'altered'
   /** Empty: an empty argument is not "not supplied" to every reader. */
   | 'empty'
-  /** Past `STACK_REF_MAX_CODE_POINTS`. */
+  /** Past the caller's `maxCodePoints`, or `STACK_REF_MAX_CODE_POINTS` when none was given. */
   | 'too-long'
   /**
    * A leading `-`, refused CONSERVATIVELY rather than by parsing. `--all` and
@@ -238,15 +255,20 @@ export interface WithheldValue {
 /** What {@link pasteableCommand} returns. */
 export interface PasteableCommand {
   /**
-   * The command, ready to print UNWRAPPED on a labelled line of its own. Never
-   * put it back inside quotes — that is the shape this module exists to close.
+   * The command, ready to print UNWRAPPED on a line of its own — labelled in a
+   * single-command message. Never put it back inside quotes — that is the
+   * shape this module exists to close.
    *
    * LAST is a property of the MESSAGE, not of this string. A message printing
-   * one command prints it last; a message offering a read AND a destructive
-   * template gives each its own line and ends on the TEMPLATE, so the READ is
-   * legitimately not last (go-to-k/cdkd#3516, and M17 of go-to-k/cdkd#3499's
-   * review — this JSDoc is what a caller building the `Inspect it with:` line
-   * reads, and telling them LAST there is the wrong ordering).
+   * one command prints it last; a message LISTING records' commands
+   * (`cli/commands/export.ts`'s nested resume tail) prints one per line, each
+   * withheld one after a note naming its record, and may carry prose after
+   * the list, even a one-item list (go-to-k/cdkd#3436); a message offering a
+   * read AND a destructive template gives each its own line and ends on the
+   * TEMPLATE, so the READ is legitimately not last (go-to-k/cdkd#3516, and M17
+   * of go-to-k/cdkd#3499's review — this JSDoc is what a caller building the
+   * `Inspect it with:` line reads, and telling them LAST there is the wrong
+   * ordering).
    */
   readonly command: string;
   /**
@@ -265,17 +287,26 @@ export interface PasteableCommand {
    * itself, and also when the caller asked for one — see `withheld` for the
    * narrower question of what the GATE refused.
    *
-   * **Every caller in `src/` prints the hole.** The field exists for the
+   * **Every caller in `src/` prints the hole, bar the two exceptions recorded
+   * below.** The field exists for the
    * SENTENCE around it — a message that wants to say why it could not name the
    * record — not as a licence to suppress the command at one site and print it
    * at another. Per-site judgement about what is safe *here* is what kept
    * re-introducing this defect (M5 of the go-to-k/cdkd#3499 review), and the
    * fold-in of the older builders should land on that answer rather than
-   * re-open the choice. The two older builders that
-   * made that choice by hand — `buildForceUnlockCommand` and the `cdkd orphan`
-   * properties refusal in `state/malformed-resources-bag.ts` — still carry
-   * their own copies of this logic and do NOT consume this field yet; folding
-   * them in is part of go-to-k/cdkd#3436's remaining half.
+   * re-open the choice. Two callers read this field to SUPPRESS a command
+   * rather than print the hole, and both are recorded exceptions, not a
+   * licence — each command WRITES, so a hole filled from the prose beside it is
+   * the harm one step later. `reportDriftBaselineGaps` (`cli/commands/export.ts`)
+   * suppresses `cdkd state refresh-observed` (M3 of the go-to-k/cdkd#3764
+   * review): it locks a record and rewrites its baseline, so a filled hole could
+   * rewrite a different stack's; the site renders its sentence from `withheld`,
+   * and its `cdkd state show` line, a read, prints the hole.
+   * `buildForceUnlockCommand` suppresses `cdkd force-unlock`, which deletes
+   * another process's lock, where a filled hole is the wrong-lock harm. The
+   * `cdkd orphan` properties refusal in `state/malformed-resources-bag.ts` and
+   * `cli/commands/export.ts`'s `orphanCommandFor` print the hole, and read
+   * `withheld` for the sentence around it.
    */
   readonly exact: boolean;
 }
@@ -340,7 +371,17 @@ function withholdReason(
   if (value === '') return 'empty';
   const safe = displaySafe(value, { asciiOnly: true });
   if (safe !== value) return 'altered';
-  if (truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated) return 'too-long';
+  // Floored at 1 and defaulted when not finite, as `displayIdent` treats its
+  // own cap: a `0` would make every value too long, and `NaN` or `Infinity`
+  // would reach `truncateCodePoints` unasked (both unreachable from the
+  // constant callers). No rounding clause: a fractional cap already behaves
+  // as its integer part inside `truncateCodePoints`, so one would be an
+  // equivalent mutation, stated rather than pinned.
+  const cap =
+    opts?.maxCodePoints !== undefined && Number.isFinite(opts.maxCodePoints)
+      ? Math.max(1, opts.maxCodePoints)
+      : STACK_REF_MAX_CODE_POINTS;
+  if (truncateCodePoints(safe, cap).truncated) return 'too-long';
   // See `WithholdReason`'s `'option-shaped'` member for why this refuses on the
   // LEADING `-` rather than on whether the value parses as an option. In short:
   // `--all` does parse as the flag — quoting stops the shell, not Commander,

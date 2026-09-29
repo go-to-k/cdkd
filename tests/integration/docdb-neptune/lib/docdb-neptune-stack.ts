@@ -37,12 +37,12 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * #1160 fix AWS would keep the baseline values — and
  * DeletionProtection=true would then make the destroy fail. verify.sh
  * asserts the live values return to the CFn defaults (false / 1 /
- * false), and the destroy succeeding WITHOUT --remove-protection is
- * itself proof the DeletionProtection reset landed.
+ * false).
  *
- * Every L1 resource has `RemovalPolicy: DESTROY`, and the removal-phase
- * template carries NO DeletionProtection, so the post-removal
- * `cdkd destroy --force` succeeds without `--remove-protection`.
+ * Every L1 resource has `RemovalPolicy: DESTROY`. verify.sh then turns
+ * DeletionProtection back ON out of band for its issue #2204 arm (a
+ * `--remove-protection` destroy that fails terminally must restore it),
+ * so the final destroy passes `--remove-protection`.
  * SkipFinalSnapshot on cluster delete is unconditional (set inside the
  * providers).
  *
@@ -119,6 +119,13 @@ export class DocdbNeptuneStack extends cdk.Stack {
     });
     docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     docdbCluster.addDependency(docdbSubnetGroup);
+    // Issue #3866 refusal phase (verify.sh step 1b): `CopyTagsToSnapshot` is a
+    // property the SDK provider does not handle, on a type Cloud Control has
+    // no handlers for, so cdkd must refuse the deploy pre-flight rather than
+    // route the cluster to Cloud Control. Never set on a deploy that succeeds.
+    if (process.env.CDKD_TEST_NONPROV_REFUSAL === 'true') {
+      docdbCluster.addPropertyOverride('CopyTagsToSnapshot', true);
+    }
 
     const docdbInstance = new docdb.CfnDBInstance(this, 'DocdbInstance', {
       dbClusterIdentifier: docdbCluster.ref,

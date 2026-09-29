@@ -46,6 +46,7 @@ import { RDSDBProxyProvider } from './providers/rds-dbproxy-provider.js';
 import { RDSDBProxyEndpointProvider } from './providers/rds-dbproxy-endpoint-provider.js';
 import { RDSDBProxyTargetGroupProvider } from './providers/rds-dbproxy-targetgroup-provider.js';
 import { DocDBProvider } from './providers/docdb-provider.js';
+import { DocDBSubnetGroupProvider } from './providers/docdb-subnet-group-provider.js';
 import { NeptuneProvider } from './providers/neptune-provider.js';
 import { Route53Provider } from './providers/route53-provider.js';
 import { WAFv2WebACLProvider } from './providers/wafv2-provider.js';
@@ -206,9 +207,11 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::RDS::DBProxyEndpoint', new RDSDBProxyEndpointProvider());
   registry.register('AWS::RDS::DBProxyTargetGroup', new RDSDBProxyTargetGroupProvider());
 
-  // DocumentDB (RDS-shaped API)
+  // DocumentDB (RDS-shaped API). The subnet group has a provider of its own:
+  // the cluster and instance are NON_PROVISIONABLE and their provider opts out
+  // of the Cloud Control fallback, which the subnet group must keep (#3866).
+  registry.register('AWS::DocDB::DBSubnetGroup', new DocDBSubnetGroupProvider());
   const docdbProvider = new DocDBProvider();
-  registry.register('AWS::DocDB::DBSubnetGroup', docdbProvider);
   registry.register('AWS::DocDB::DBCluster', docdbProvider);
   registry.register('AWS::DocDB::DBInstance', docdbProvider);
 

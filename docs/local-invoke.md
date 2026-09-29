@@ -73,7 +73,9 @@ The positional `<target>` accepts two forms:
 
 - **CDK display path** — `MyStack/MyApi/Handler`. An L2 path resolves to the
   synthesized L1 child (`MyStack/MyApi/Handler/Resource`), the same prefix rule
-  `cdkd orphan` uses.
+  `cdkd orphan` uses. For a stack inside a CDK `Stage` the path starts with
+  the Stage (`MyStage/MyStack/MyApi/Handler`): the stack is the one whose
+  display path is the longest prefix of the target.
 - **Stack-qualified logical ID** — `MyStack:MyApiHandler1234ABCD`. The colon is
   unambiguous, because logical IDs can contain neither `/` nor `:`.
 
@@ -336,7 +338,7 @@ IAM-permission bug shows up locally.
 
 | Form | Behaviour |
 | --- | --- |
-| `--assume-role <arn>` | Assumes the explicit ARN. Takes precedence over anything resolved from state. |
+| `--assume-role <arn>` | Assumes the explicit ARN. Takes precedence over anything resolved from state. A value that is not a well-formed role ARN (`arn:<partition>:iam::<account>:role/<name>`, at most 2048 characters) is an error. |
 | `--assume-role` (bare) | Reads the function's `Properties.Role` from cdkd state, resolves `Fn::GetAtt: [<RoleId>, 'Arn']` shapes against the sibling IAM Role's recorded `Arn` attribute, and assumes that. Requires `--from-state`. |
 | flag omitted | Your shell credentials are forwarded unchanged. |
 | `--no-assume-role` | Explicitly declines. Your shell credentials are forwarded and the "re-run with `--assume-role`" hint below is suppressed — which is what makes it different from omitting the flag. |
@@ -346,7 +348,9 @@ role ARN once, so you can re-run with the flag. Pass `--no-assume-role` to
 silence that line when you meant to use your own credentials.
 
 An STS failure — insufficient permissions, trust-policy mismatch — degrades to a
-warn plus a fallback to your shell credentials. This is a developer-loop tool,
+warn plus a fallback to your shell credentials. So does a role ARN read from
+state that is not a well-formed role ARN: cdkd warns and ignores it rather than
+sending it to STS. This is a developer-loop tool,
 not a security boundary.
 
 ## Asset resolution

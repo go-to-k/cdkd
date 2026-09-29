@@ -46,9 +46,14 @@ export class DynamodbGsiUpdateStack extends cdk.Stack {
       //
       // Set via addPropertyOverride rather than an L2 prop so the fixture does
       // not pin a minimum aws-cdk-lib version for a one-line probe.
+      //
+      // ONE member only (issue #3777): AWS reports both members for every
+      // table, so a declared block naming only `ReadUnitsPerSecond` is what
+      // proves the readback emits the members cdkd sends and no others
+      // (verify.sh Phase 2f). The decrease guard compares declared members, so
+      // this still drives the Phase 2a skip.
       (table.node.defaultChild as dynamodb.CfnTable).addPropertyOverride('WarmThroughput', {
         ReadUnitsPerSecond: 6000,
-        WriteUnitsPerSecond: 2000,
       });
       // Issue #1768, the EMIT half: a PER-INDEX WarmThroughput that cdkd must
       // actually SEND. `applyGsiUpdates` used to drop it from both of its arms,
