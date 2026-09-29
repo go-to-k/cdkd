@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -151,6 +152,24 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     // Only the successfully-created A is in the segment.
     expect(seg.operations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['A']);
   });
+
+  // Issue #4018: `cdkd rollback` replays the segment under the prefix flag the
+  // deploy's providers derived names with, so the segment must carry the flag
+  // of the deploy's OWN scope -- both values, since either default would pass
+  // one of them.
+  it.each([true, false])(
+    'records the deploy scope skip-prefix flag (%s) on the segment',
+    async (skip) => {
+      const changes = new Map([
+        ['A', makeChange('A')],
+        ['B', makeChange('B')],
+      ]);
+      const engine = buildEngine({ changes, deps: { A: [], B: [] }, failOn: new Set(['B']), noRollback: true, currentEtag: 'e0' });
+      await expect(withSkipPrefix(skip, () => engine.deploy(stackName, template))).rejects.toThrow();
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+      expect(journal.appendRollbackJournalSegment.mock.calls[0]![2].skipPrefix).toBe(skip);
+    }
+  );
 
   it('marks initialDeploy true when the failed deploy was the first deploy', async () => {
     const changes = new Map([

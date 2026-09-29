@@ -59,7 +59,11 @@ import {
   withNestedStackContext,
   type NestedStackProviderContext,
 } from '../provisioning/nested-stack-context.js';
-import { withStackName } from '../provisioning/resource-name.js';
+import {
+  getCurrentSkipPrefix,
+  withSkipPrefix,
+  withStackName,
+} from '../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
 
 /** The segment reason a nested engine records on success. */
@@ -521,19 +525,25 @@ export async function revertNestedChildFromJournal(args: {
     const settledBelow: SettledNestedRows = new Map();
     for (let s = segments.length - 1; s >= 0; s--) {
       const segment = segments[s]!;
+      // Issue #4018: the child's segment was written by the same deploy run as
+      // the parent's, under the prefix flag it records; a segment an older cdkd
+      // wrote keeps the enclosing scope (the parent replay's).
+      const skipPrefix = segment.skipPrefix ?? getCurrentSkipPrefix();
       const result = await withNestedStackContext(childCtx, () =>
-        withStackName(childStackName, () =>
-          withNestedRevertRun(runId, async (inner) => {
-            const replayed = await replayRollback(
-              segment.operations,
-              stateResources,
-              childStackName,
-              execCtx,
-              { afterOp: save, onOrphan: (record) => mintedOrphans.push(record) }
-            );
-            for (const [id, below] of inner.settled) settledBelow.set(id, below);
-            return { ...replayed, warnings: replayed.warnings + inner.warnings };
-          })
+        withSkipPrefix(skipPrefix, () =>
+          withStackName(childStackName, () =>
+            withNestedRevertRun(runId, async (inner) => {
+              const replayed = await replayRollback(
+                segment.operations,
+                stateResources,
+                childStackName,
+                execCtx,
+                { afterOp: save, onOrphan: (record) => mintedOrphans.push(record) }
+              );
+              for (const [id, below] of inner.settled) settledBelow.set(id, below);
+              return { ...replayed, warnings: replayed.warnings + inner.warnings };
+            })
+          )
         )
       );
       failures += result.failures;

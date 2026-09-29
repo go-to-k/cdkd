@@ -79,6 +79,17 @@ export interface RollbackJournalSegment {
   roleArn?: string;
   /** The cdkd version that recorded the segment. */
   cdkdVersion?: string;
+  /**
+   * Issue #4018: the "skip the stack-name prefix on user-supplied physical
+   * names" flag the failed deploy ran under (`getCurrentSkipPrefix()` at write
+   * time, i.e. `--prefix-user-supplied-names` / its env / cdk.json resolved by
+   * `resolveSkipPrefix`). `cdkd rollback` replays the segment inside
+   * `withSkipPrefix(<this>)`, so a re-create sends the name the deploy's
+   * in-process rollback would have sent. ADDITIVE, no `journalVersion` bump:
+   * absent on a segment an older cdkd wrote, where the replay falls back to
+   * `resolveSkipPrefix()` and warns.
+   */
+  skipPrefix?: boolean;
   /** `CompletedOperation[]`, serialized verbatim, in completion order. */
   operations: CompletedOperation[];
   /**
@@ -396,6 +407,14 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
       refuseMalformed(
         shownStack,
         `segments[${s}].runId must be a string when present (got ${kind(seg['runId'])}).`
+      );
+    }
+    // Issue #4018: this flag picks the physical NAME a re-create asks AWS for,
+    // so a non-boolean (a truthy `"false"`) is refused rather than coerced.
+    if (seg['skipPrefix'] !== undefined && typeof seg['skipPrefix'] !== 'boolean') {
+      refuseMalformed(
+        shownStack,
+        `segments[${s}].skipPrefix must be a boolean when present (got ${kind(seg['skipPrefix'])}).`
       );
     }
     const reads: unknown = seg['previousCrossStackReads'];

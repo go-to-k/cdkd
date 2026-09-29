@@ -1219,7 +1219,7 @@ export const deployOptions = [
       '"X", { roleName: "my-role" })` → AWS resource named `MyStack-my-role` ' +
       'instead of `my-role`). Since v0.94.0 the default is to NOT prefix ' +
       'user-supplied names — this flag restores the pre-v0.94.0 behavior on ' +
-      'Pattern B providers (IAM Role / User / Group / InstanceProfile / ELBv2 ' +
+      'Pattern B providers (IAM Role / User / Group / InstanceProfile / ManagedPolicy / ELBv2 ' +
       'LoadBalancer / TargetGroup). Enable via this flag, ' +
       'CDKD_PREFIX_USER_SUPPLIED_NAMES=true, or ' +
       'cdk.json context.cdkd.prefixUserSuppliedNames=true. Applies to ' +

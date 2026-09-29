@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-rollback-explicit-name-rewrite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Exercises cdkd rollback re-creating an explicitly named IAM Role under the name its deploy sent (the recorded user-supplied-name prefix flag, #4018) and the rewritten-name holder refusal (#4010) against real AWS",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

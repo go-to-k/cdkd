@@ -42,6 +42,7 @@ import {
   applyDefaultNameForFallback,
   withoutGeneratedFallbackName,
   getCurrentStackName,
+  getCurrentSkipPrefix,
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
@@ -5903,6 +5904,9 @@ export class DeployEngine {
         initialDeploy,
         ...(this.options.roleArn && { roleArn: this.options.roleArn }),
         cdkdVersion: getCdkdVersion(),
+        // Issue #4018: the prefix flag this deploy's providers derived names
+        // under, so `cdkd rollback` replays the segment in the same scope.
+        skipPrefix: getCurrentSkipPrefix(),
         operations: redactedCompleted,
         ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
         ...(nestedPending?.previousOutputs && { previousOutputs: nestedPending.previousOutputs }),

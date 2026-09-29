@@ -297,6 +297,7 @@
         "retain-orphan-secret",
         "rollback-command",
         "rollback-cross-region-secret",
+        "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-replacement-retain",
         "rollback-replay-effective-props",
@@ -411,6 +412,7 @@
         "nested-stack-rollback",
         "rollback-command",
         "rollback-cross-region-secret",
+        "rollback-explicit-name-rewrite",
         "rollback-sqs-cooldown",
         "s3-analytics-inventory",
         "s3-lifecycle",
@@ -632,6 +634,7 @@
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
+        "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
@@ -707,6 +710,12 @@
         "nested-stack-replace-guard",
         "sdk-to-cc-autoroute",
         "unrecognized-key-autoroute"
+      ]
+    },
+    {
+      "flag": "--prefix-user-supplied-names",
+      "integs": [
+        "rollback-explicit-name-rewrite"
       ]
     },
     {
@@ -945,6 +954,7 @@
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
+        "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
@@ -1291,6 +1301,7 @@
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
+        "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
@@ -1671,7 +1682,6 @@
     "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
-    "--prefix-user-supplied-names",
     "--strict"
   ],
   "unknownFlagsInIntegs": [

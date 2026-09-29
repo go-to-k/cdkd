@@ -237,7 +237,7 @@ nested-stack	2026-09-27T23:57:37Z	PASS	61	verify.sh	PR #3884 head 79249f310: rc 
 nested-stack-3level	2026-09-26T02:11:41Z	PASS	176	verify.sh	PR #3813 (71f818c44): rc 0, orphans clean
 nested-stack-deep	2026-09-26T02:11:41Z	PASS	110	verify.sh	PR #3813 (71f818c44): rc 0, orphans clean
 nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
-nested-stack-rollback	2026-09-28T08:49:34Z	PASS	105	verify.sh	rc ok, orph clean (#3828)
+nested-stack-rollback	2026-09-28T23:40:01Z	PASS	100	verify.sh	PR #4025 (#4018) @aeffb5ee on a2d1068d; rc ok, orph clean
 nested-stack-secret	2026-09-26T12:53:35Z	PASS	191	verify.sh	#3809 final sha (rebased); rc ok, orph clean
 nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 24 deleted 0 errors, 0 orphans (VPC/ENI clean)
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -263,14 +263,15 @@ replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #26
 replacement-immutable-name	2026-09-28T16:33:26Z	PASS	131	verify.sh	PR #3983 (#3978 ambiguous-create latch) @0307f604 on c3826dbd; rc ok, 6 types replaced, 7 deleted 0 errors, orph clean
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
-rollback-command	2026-09-28T17:39:59Z	PASS	160	verify.sh	rc ok, orph clean (#3950 lane B)
+rollback-command	2026-09-28T23:38:21Z	PASS	150	verify.sh	PR #4025 (#4018) @aeffb5ee on a2d1068d; rc ok, orph clean
 rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph clean (#3595 lane)
 rollback-deletion-policy-snapshot	2026-09-24T07:08:06Z	PASS	106	verify.sh	#3455 fix round 2: rc ok, orph clean
+rollback-explicit-name-rewrite	2026-09-28T23:30:36Z	PASS	150	verify.sh	PR #4025 (#4018) @aeffb5ee on a2d1068d; rc ok, squatter refusal names sent cdkd-integ-rbrw-a, in-place revert keeps RoleId, prefix-kept negative control, orph clean; pre-fix rollback.ts probe RED at step 3 (rollback re-created the prefixed name over the squatter)
 rollback-failure-injection	2026-09-19T18:00:07Z	PASS	333	verify.sh	rc ok, orph clean; #2668 type-change routing
 rollback-replacement-retain	2026-09-28T22:10:42Z	PASS	70	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, 2 deleted / 1 retained by policy (fixture-cleaned), 0 errors, no name-holder refusal, orph clean
 rollback-replay-cc-generated-name	2026-09-28T22:10:42Z	PASS	155	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, IAM Role replacement reversed to generated name (no collision, guard not reached), no name-holder refusal, orph clean
 rollback-replay-effective-props	2026-09-27T19:24:50Z	PASS	255	verify.sh	rc ok, orph clean (#1706)
-rollback-sqs-cooldown	2026-09-28T22:10:42Z	PASS	170	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, rollback reverse-replacement retried through SQS 60s cooldown, no name-holder refusal, orph clean
+rollback-sqs-cooldown	2026-09-28T23:35:51Z	PASS	171	verify.sh	PR #4025 (#4018) @aeffb5ee on a2d1068d; rc ok, orph clean
 route53	2026-09-28T22:10:42Z	PASS	416	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, 2.7c rollback delete-new-first (collided line) + A deleted + CNAME restored, no name-holder refusal, 9 deleted 0 errors, orph clean
 s3-analytics-inventory	2026-09-28T08:58:07Z	PASS	171	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
@@ -323,7 +324,7 @@ stream-delete-redeploy	2026-09-27T18:06:09Z	PASS	296	verify.sh	rc ok, orph clean
 synthetics-canary	2026-07-26T19:25:15Z	PASS	144	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 tags-propagation	2026-07-26T18:49:34Z	PASS	63	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 throttle-wide-dag	2026-09-28T10:21:55Z	PASS	191	verify.sh	#3939 PR #3947 rebased head 06245f7f7, stdin /dev/null; deploy Created: 100 + destroy (100 deleted, 0 errors) summaries printed (probe copy), no stall-guard line; rc ok, orph clean
-type-change-replacement	2026-09-28T22:10:42Z	PASS	200	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, 3 type-change replacements reversed (auto + cdkd rollback), no name-holder refusal, orph clean
+type-change-replacement	2026-09-28T23:43:17Z	PASS	196	verify.sh	PR #4025 (#4018) @aeffb5ee on a2d1068d; rc ok, orph clean
 unrecognized-key-autoroute	2026-09-25T10:33:55Z	PASS	105	verify.sh	rc ok, orph clean; sha 9b61a0dd0 (#3713, post-rebase)
 update-policy-mutations	2026-09-05T03:27:04Z	PASS	71	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (property-driven Retain)
 update-replace	2026-09-23T17:27:53Z	PASS	82	verify.sh	rc ok, orph clean (#3566 context lookup path)
