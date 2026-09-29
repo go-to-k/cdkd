@@ -133,7 +133,7 @@ if the fix needs a forbidden one", and **the REPORT SHAPE — the FINAL report I
 the deliverable**, since a lane's tool output never reaches you. **Name the
 parent's `SendMessage` address, `main`** (a guessed one fails), and say a
 mid-task report ends NOTHING: the lane goes on to its next step unless the
-parent SAYS stop (lanes stopped mid-run, one citing a hand-back nobody ordered).
+parent SAYS stop.
 Never wait on a quiet lane: list the agents and resume any already `completed`
 with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
 

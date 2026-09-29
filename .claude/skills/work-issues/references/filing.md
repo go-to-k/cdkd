@@ -88,8 +88,8 @@ condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
 <repo>`), never as a state of the lane ("the files are cold", "the session
 ended"). Check it before writing EITHER value: a fix that must edit a file an
 open PR holds (§2's `gh pr list ... files`; a fork PR, its hunks) is `next`
-(a), never `now` — and the reason names THAT PR's number from the query, never
-"a lane of this run", which the query does not show (#3959).
+(a), never `now`, and the reason names THAT PR's number, never "a lane of this
+run" (#3959).
 
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
 write from filing whatever sat at that path, and heredoc → file → `--body-file`
