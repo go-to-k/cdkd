@@ -34,15 +34,20 @@
 #            1652 — state there already held the old names.
 #   Phase 7: destroy everything, sweep log groups, delete marker + storage.
 #
-# SAFETY NOTE (issue #1052): this fixture opts the region into cdkd asset
-# storage and DELETES the default-named storage on exit. A pre-run guard
-# fails fast when the region already carries a cdkd bootstrap marker —
-# that marker belongs to live storage (real assets may live there since
-# #1002 PR 2) that this fixture must not delete; pick a marker-free region
-# via AWS_REGION. The guard makes the EXIT-trap cleanup safe: any
-# marker/bucket/repo present at exit was created by THIS run (assets are
-# content-addressed and re-publishable, and no deployed stack survives the
-# run). The pre-run cleanup pass only deletes stack-scoped leftovers.
+# SAFETY NOTE (issue #4063): this fixture opts the region into cdkd asset
+# storage and DELETES the default-named storage (marker
+# cdkd-bootstrap/{region}.json, bucket cdkd-assets-{account}-{region}, repo
+# cdkd-container-assets-{account}-{region}) on exit, so it must only run in a
+# region that has none of the three (pick one via AWS_REGION). `cleanup`
+# deletes that storage only while STORAGE_OWNED=1, and the only line setting it sits
+# directly after the ownership guard has PASSED: all three probed absent
+# through the tri-state gone_probe, so a throttled or denied probe refuses the
+# run instead of reading as "absent". Every exit before that point runs no trap at
+# all (the traps are armed after the guard); only the explicit `cleanup
+# prerun` pass runs before it, stack-scoped.
+# The guard cannot see storage another actor creates in the region after it
+# passes, so never run a second copy of this fixture, or a deploy that may
+# auto-create asset storage, in the same region concurrently.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -103,12 +108,13 @@ CDK_BUCKET="cdk-hnb659fds-assets-${ACCOUNT_ID}-${REGION}"
 CDKD_BUCKET="cdkd-assets-${ACCOUNT_ID}-${REGION}"
 CDKD_REPO="cdkd-container-assets-${ACCOUNT_ID}-${REGION}"
 
+# 1 only once the ownership guard below has passed (see the SAFETY NOTE).
+STORAGE_OWNED=0
+
 cleanup() {
-  # $1 = "prerun" skips the asset-storage deletion: a marker/bucket/repo
-  # that exists BEFORE this run is live storage we must not delete (the
-  # marker guard below fails fast on it instead). Without the arg (EXIT
-  # trap), asset storage is cleaned too — the guard guarantees anything
-  # present at exit was created by this run (issue #1052).
+  # The asset-storage deletion runs only when the ownership guard has passed
+  # (STORAGE_OWNED=1) AND this is not the "prerun" pass; every other call
+  # cleans stack-scoped leftovers only.
   echo "==> Cleanup: dropping stacks${1:+ (stack-scoped only)}"
   set +eu
   [ -n "${DIFF_JSON_FILE:-}" ] && rm -f "${DIFF_JSON_FILE}"
@@ -184,7 +190,7 @@ cleanup() {
       [ -n "${key}" ] && aws s3 rm "s3://${STATE_BUCKET}/${key}" >/dev/null 2>&1
     done
   fi
-  if [ "${1:-}" != "prerun" ]; then
+  if [ "${1:-}" != "prerun" ] && [ "${STORAGE_OWNED}" = "1" ]; then
     if [ -n "${STATE_BUCKET:-}" ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
     fi
@@ -202,13 +208,8 @@ cleanup() {
   set -eu
 }
 
-# The traps are armed BELOW the own-marker guard, not here. See the note there:
-# the EXIT trap's cleanup deletes this region's marker, asset bucket and ECR
-# repo, which is only safe once the guard has established that any such storage
-# belongs to THIS run. Arming here made every `exit 1` between this point and
-# the guard — an unset STATE_BUCKET, an unbuilt dist/cli.js, a failed
-# `pnpm install` — destroy another run's live storage on the way out. Nothing
-# is created before the guard, so the trap buys nothing here anyway.
+# The traps are armed BELOW the ownership guard, not here: nothing is created
+# before it, so an earlier trap would protect nothing (see the SAFETY NOTE).
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -235,21 +236,12 @@ export PATH="${PWD}/node_modules/.bin:${PATH}"
 echo "==> Pre-run cleanup (stack-scoped only)"
 cleanup prerun
 
-# Own-marker guard (issue #1052): this fixture opts the region in and then
-# deletes the default-named asset storage — never proceed over a
-# pre-existing marker (it belongs to live storage).
-#
-# This guard is what makes the EXIT trap safe to arm, which is why the trap is
-# armed BELOW it rather than at the top of the script. Cleanup without the
-# `prerun` argument deletes the region's marker, `rb --force`s the cdkd asset
-# bucket and force-deletes the ECR repo; that is only correct once this guard
-# has established that any such storage was created by THIS run. With the trap
-# armed earlier, EVERY `exit 1` above — an unset STATE_BUCKET, an unbuilt
-# dist/cli.js, a failed `pnpm install`, and (in an earlier revision of this
-# file) a region without the CDK bootstrap — destroyed another run's live
-# storage on the way out. Nothing is created before this point, so arming
-# earlier protected nothing.
-if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+# Ownership guard (issues #1052, #4063): this fixture opts the region in and
+# then deletes the default-named asset storage, so any of the three existing
+# already means it belongs to someone else — never proceed over it. Each probe
+# is tri-state: "absent" is only a not-found answer, and any other failure
+# exits here, before STORAGE_OWNED is set and before the traps are armed.
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"; then
   echo "FAIL: region ${REGION} already has a cdkd bootstrap marker (live asset storage)." >&2
   echo "      This fixture bootstraps AND deletes the region's default-named storage;" >&2
   echo "      run it in a CDK-bootstrapped region without a cdkd marker (via AWS_REGION)." >&2
@@ -257,6 +249,19 @@ if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
   echo "      up first: node dist/cli.js bootstrap --destroy --region ${REGION} --yes" >&2
   exit 1
 fi
+if ! gone_probe aws s3api head-bucket --bucket "${CDKD_BUCKET}" --region "${REGION}"; then
+  echo "FAIL: asset bucket ${CDKD_BUCKET} already exists (no marker) — not this run's to delete." >&2
+  echo "      Run in another region via AWS_REGION, or remove the bucket by hand once it is" >&2
+  echo "      confirmed to be a leftover of this fixture." >&2
+  exit 1
+fi
+if ! gone_probe aws ecr describe-repositories --repository-names "${CDKD_REPO}" --region "${REGION}"; then
+  echo "FAIL: container repo ${CDKD_REPO} already exists (no marker) — not this run's to delete." >&2
+  echo "      Run in another region via AWS_REGION, or remove the repo by hand once it is" >&2
+  echo "      confirmed to be a leftover of this fixture." >&2
+  exit 1
+fi
+STORAGE_OWNED=1
 
 trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
@@ -265,8 +270,7 @@ trap '(exit 143); cleanup; exit 143' TERM
 # Fail-closed pre-flight for phase 6: its upstream `cdk deploy` needs the CDK
 # bootstrap ROLES, not just the asset bucket phases 1-4 rely on. Checked here
 # rather than at phase 6 so a region missing them fails in seconds instead of
-# after the ~30 minutes phases 1-5 take — but BELOW the marker guard, per the
-# note above.
+# after the ~30 minutes phases 1-5 take.
 if ! aws cloudformation describe-stacks --region "${REGION}" \
   --stack-name CDKToolkit >/dev/null 2>&1; then
   echo "FAIL: region ${REGION} has no CDKToolkit stack — phase 6 deploys with the" >&2
