@@ -13,8 +13,9 @@
 #      describe-notifications-for-budget / describe-subscribers-for-notification).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: BudgetLimit 1 -> 2 USD
 #      (UpdateBudget in place), notification threshold 80 -> 90 (reconciler
-#      delete-old + create-new), and a second email subscriber. Assert all
-#      three reached AWS and that the budget was NOT replaced (its
+#      delete-old + create-new), a second email subscriber, and ResourceTags
+#      env=dev, team=platform -> env=prod (team untagged; issue #3989). Assert
+#      all four reached AWS and that the budget was NOT replaced (its
 #      LastUpdatedTime moves but the budget name-addressed entity persists;
 #      replacement would be visible as a delete+create window and a reset
 #      notification set — asserted via the exact expected notification set).
@@ -146,6 +147,19 @@ if [ "${SUBSCRIBERS_P1}" != '["cdkd-integ@example.com"]' ]; then
 fi
 echo "    subscriber cdkd-integ@example.com present"
 
+BUDGET_ARN="arn:aws:budgets::${ACCOUNT_ID}:budget/${BUDGET_NAME}"
+resource_tags() {
+  # Every tag on the budget as sorted key=value pairs (issue #3989).
+  aws budgets list-tags-for-resource --resource-arn "${BUDGET_ARN}" \
+    --query 'sort_by(ResourceTags, &Key)[].join(`=`, [Key, Value])' --output json | tr -d ' \n'
+}
+TAGS_P1="$(resource_tags)"
+if [ "${TAGS_P1}" != '["env=dev","team=platform"]' ]; then
+  echo "FAIL: expected ResourceTags [env=dev, team=platform] after Phase 1, got ${TAGS_P1}" >&2
+  exit 1
+fi
+echo "    ResourceTags env=dev, team=platform present"
+
 # --- Phase 2: in-place UPDATE ------------------------------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (limit 2 USD, threshold 90, +1 subscriber)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -175,6 +189,13 @@ if [ "${SUBSCRIBERS_P2}" != '["cdkd-integ-2@example.com","cdkd-integ@example.com
   exit 1
 fi
 echo "    both subscribers present on the new notification"
+
+TAGS_P2="$(resource_tags)"
+if [ "${TAGS_P2}" != '["env=prod"]' ]; then
+  echo "FAIL: expected ResourceTags [env=prod] after Phase 2 (team untagged), got ${TAGS_P2}" >&2
+  exit 1
+fi
+echo "    ResourceTags reconciled: env=prod, team untagged"
 
 # The budget must route via the SDK provider (catch a silent routing flip).
 PROVISIONED_BY="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \

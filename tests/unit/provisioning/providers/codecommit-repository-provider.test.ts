@@ -194,7 +194,7 @@ describe('CodeCommitRepositoryProvider', () => {
       ).rejects.toBeInstanceOf(ProvisioningError);
     });
 
-    it('coerces tag-value edge shapes: number/boolean stringified, invalid keys skipped, nullish value -> empty string', async () => {
+    it('coerces tag-value edge shapes: number/boolean stringified, nullish / object value -> empty string', async () => {
       mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() });
 
       await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
@@ -203,8 +203,6 @@ describe('CodeCommitRepositoryProvider', () => {
           { Key: 'num', Value: 42 },
           { Key: 'bool', Value: true },
           { Key: 'nullish', Value: null },
-          { Key: '', Value: 'dropped' },
-          { Value: 'no-key' },
           { Key: 'obj', Value: { Ref: 'X' } },
         ],
       });
@@ -213,12 +211,12 @@ describe('CodeCommitRepositoryProvider', () => {
       expect(cmd.input.tags).toEqual({ num: '42', bool: 'true', nullish: '', obj: '' });
     });
 
-    it('omits the tags field entirely when every entry is invalid', async () => {
+    it('omits the tags field entirely when Tags is an empty list', async () => {
       mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() });
 
       await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
         RepositoryName: 'my-repo',
-        Tags: [{ Value: 'no-key' }],
+        Tags: [],
       });
 
       expect('tags' in mockSend.mock.calls[0][0].input).toBe(false);
@@ -452,7 +450,7 @@ describe('CodeCommitRepositoryProvider', () => {
       });
     });
 
-    it('coerces non-string trigger field shapes (number/boolean scalar -> string; object -> "")', async () => {
+    it('coerces non-string trigger field shapes (number/boolean scalar -> string; object CustomData -> "")', async () => {
       mockSend
         .mockResolvedValueOnce({ repositoryMetadata: metadata() })
         .mockResolvedValueOnce({ configurationId: 'cfg-1' });
@@ -462,7 +460,8 @@ describe('CodeCommitRepositoryProvider', () => {
         Triggers: [
           {
             Name: 42, // number -> '42'
-            DestinationArn: { Ref: 'Topic' }, // object -> ''
+            DestinationArn: 'arn:aws:sns:us-east-1:123456789012:topic',
+            CustomData: { Ref: 'X' }, // object -> ''
             Branches: ['main', 7], // mixed -> ['main', '7']
             Events: ['all', true], // boolean -> 'true'
           },
@@ -471,9 +470,10 @@ describe('CodeCommitRepositoryProvider', () => {
 
       expect(mockSend.mock.calls[1][0].input.triggers[0]).toEqual({
         name: '42',
-        destinationArn: '',
+        destinationArn: 'arn:aws:sns:us-east-1:123456789012:topic',
         events: ['all', 'true'],
         branches: ['main', '7'],
+        customData: '',
       });
     });
 

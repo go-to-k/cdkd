@@ -249,13 +249,13 @@ describe('BudgetsBudgetProvider', () => {
       );
     });
 
-    it('coerces ResourceTags values and skips entries without a string Key', async () => {
+    it('coerces ResourceTags values to strings', async () => {
       await provider.create('MyBudget', TYPE, {
         ...budgetProps('rt'),
         ResourceTags: [
           { Key: 'num', Value: 7 },
           { Key: 'bool', Value: true },
-          { Value: 'no-key' },
+          { Key: 'obj', Value: { Ref: 'X' } },
         ],
       });
 
@@ -263,6 +263,7 @@ describe('BudgetsBudgetProvider', () => {
       expect(input['ResourceTags']).toEqual([
         { Key: 'num', Value: '7' },
         { Key: 'bool', Value: 'true' },
+        { Key: 'obj', Value: '' },
       ]);
     });
 

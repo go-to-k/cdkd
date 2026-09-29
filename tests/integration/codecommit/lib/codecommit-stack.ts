@@ -28,9 +28,10 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
  *   mark RepositoryName "Update requires: No interruption" — the provider
  *   must issue UpdateRepositoryName, NOT delete+create), change the
  *   description, change `env` to `prod`, and REMOVE the `team` tag (the
- *   ECR #981 untag regression class). The `Code` seed + `Triggers` are
- *   unchanged (Code is create-only; the trigger set is identical) and must
- *   survive the rename.
+ *   ECR #981 untag regression class), and ADD a second trigger
+ *   (`branch-notify`), so the update's `PutRepositoryTriggers` must carry the
+ *   whole set, the kept `commit-notify` included (issue #3989). The `Code`
+ *   seed is create-only and must survive the rename.
  */
 export class CodeCommitStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -80,6 +81,15 @@ export class CodeCommitStack extends cdk.Stack {
       name: 'commit-notify',
       events: [codecommit.RepositoryEventTrigger.ALL],
     });
+    // Phase 2 adds a second trigger (issue #3989): a full-set replace that
+    // dropped the first one would still pass a check for the new one alone.
+    if (isUpdate) {
+      repo.notify(topic.topicArn, {
+        name: 'branch-notify',
+        events: [codecommit.RepositoryEventTrigger.CREATE_REF],
+        branches: ['main'],
+      });
+    }
     // Ensure the topic policy is in place before the trigger is put.
     repo.node.addDependency(topicPolicy);
 

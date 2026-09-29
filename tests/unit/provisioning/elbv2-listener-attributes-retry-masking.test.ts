@@ -117,23 +117,6 @@ const SECRET_EXPR = '{{resolve:secretsmanager:alb-attrs:SecretString:token::}}';
 /** The masker a real caller (deploy engine / rollback / drift) would thread. */
 const maskSecrets = createSecretMasker(new Map([[SECRET_PLAINTEXT, SECRET_EXPR]]));
 
-/**
- * A JSON-DOCUMENT secret — the commonest real Secrets Manager shape, and the
- * ONLY fixture that can discriminate mask-before-stringify from
- * mask-after-stringify. `JSON.stringify` escapes the inner quotes, so the
- * document no longer OCCURS in the stringified text and a mask applied
- * afterwards passes it through verbatim. A scalar secret passes under BOTH
- * orderings and would give a false green.
- *
- * The assertions below therefore key on {@link SECRET_JSON_INNER}, not on the
- * whole document: after the escaping, the document itself is absent from the
- * leaked text while the password inside it is plainly readable.
- */
-const SECRET_JSON_INNER = 'tg-target-json-secret-a71f';
-const SECRET_JSON_DOC = `{"password":"${SECRET_JSON_INNER}","user":"admin"}`;
-const SECRET_JSON_EXPR = '{{resolve:secretsmanager:prod/db:SecretString::}}';
-const maskSecretsJson = createSecretMasker(new Map([[SECRET_JSON_DOC, SECRET_JSON_EXPR]]));
-
 const ATTR_KEY = 'routing.http.request.x_amzn_mtls_clientcert.header_name';
 
 /**
@@ -418,89 +401,57 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
     });
   });
 
-  describe('malformed-Targets drop warning is secret-masked (#2050 review round 2)', () => {
-    it('masks the stringified rejected entry on the create path', async () => {
-      mockSend.mockImplementation((command: unknown) => {
-        if (command instanceof CreateTargetGroupCommand) {
-          return Promise.resolve({ TargetGroups: [{ TargetGroupArn: TG_ARN }] });
-        }
-        if (command instanceof RegisterTargetsCommand) return Promise.resolve({});
-        return Promise.resolve({});
-      });
+  // The malformed-Targets drop WARNING (#2050 review round 2) stringified the
+  // rejected entry; since go-to-k/cdkd#3989 a malformed Targets is REFUSED
+  // instead, and the refusal names only the property, never the entry, so no
+  // masker is needed for it to stay clean.
+  describe('malformed-Targets refusal renders no entry content (#3989)', () => {
+    const JSON_INNER = 'tg-target-json-secret-a71f';
+    const JSON_DOC = `{"password":"${JSON_INNER}","user":"admin"}`;
 
-      // `Id` is a NUMBER, so the entry is dropped and the whole element is
-      // stringified into a default-verbosity warn. The secret rides in a
-      // sibling key, exactly as a resolved property would.
-      await provider.create(
-        'TG',
-        TARGET_GROUP_TYPE,
-        {
+    it.each([
+      ['a scalar secret', SECRET_PLAINTEXT, SECRET_PLAINTEXT],
+      ['a JSON-document secret', JSON_DOC, JSON_INNER],
+    ])('create: %s beside a non-string Id reaches neither the error nor a warning', async (_label, value, needle) => {
+      const err = await provider
+        .create('TG', TARGET_GROUP_TYPE, {
           Name: 'my-tg',
           Port: 80,
           Protocol: 'HTTP',
           VpcId: 'vpc-1',
-          Targets: [{ Id: 12345, AvailabilityZone: SECRET_PLAINTEXT }],
-        },
-        { maskSecrets }
-      );
+          Targets: [{ Id: 12345, AvailabilityZone: value }],
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
 
-      const warned = warnLines();
-      // Non-vacuity: the drop branch really did fire.
-      expect(warned).toContain('Dropping malformed TargetGroup Targets entry');
-      expect(warned).toContain(SECRET_MASK);
-      expect(warned).not.toContain(SECRET_PLAINTEXT);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('Targets of TargetGroup TG is not a list of');
+      expect((err as Error).message).not.toContain(needle);
+      expect(warnLines()).not.toContain(needle);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('leaves the entry untouched when the caller threads no masker', async () => {
-      mockSend.mockImplementation((command: unknown) => {
-        if (command instanceof CreateTargetGroupCommand) {
-          return Promise.resolve({ TargetGroups: [{ TargetGroupArn: TG_ARN }] });
-        }
-        return Promise.resolve({});
-      });
+    it('update: the same entry on the desired side is refused with nothing rendered or sent', async () => {
+      const err = await provider
+        .update(
+          'TG',
+          TG_ARN,
+          TARGET_GROUP_TYPE,
+          { Port: 80, Targets: [{ Id: 12345, AvailabilityZone: SECRET_PLAINTEXT }] },
+          { Port: 80, Targets: [{ Id: '10.0.0.1' }] },
+          { maskSecrets }
+        )
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
 
-      await provider.create('TG', TARGET_GROUP_TYPE, {
-        Name: 'my-tg',
-        Port: 80,
-        Protocol: 'HTTP',
-        VpcId: 'vpc-1',
-        Targets: [{ Id: 12345, AvailabilityZone: SECRET_PLAINTEXT }],
-      });
-
-      const warned = warnLines();
-      expect(warned).toContain('Dropping malformed TargetGroup Targets entry');
-      expect(warned).toContain(SECRET_PLAINTEXT);
-    });
-
-    it('masks a JSON-DOCUMENT secret, which only mask-BEFORE-stringify catches', async () => {
-      mockSend.mockImplementation((command: unknown) => {
-        if (command instanceof CreateTargetGroupCommand) {
-          return Promise.resolve({ TargetGroups: [{ TargetGroupArn: TG_ARN }] });
-        }
-        return Promise.resolve({});
-      });
-
-      await provider.create(
-        'TG',
-        TARGET_GROUP_TYPE,
-        {
-          Name: 'my-tg',
-          Port: 80,
-          Protocol: 'HTTP',
-          VpcId: 'vpc-1',
-          Targets: [{ Id: 12345, AvailabilityZone: SECRET_JSON_DOC }],
-        },
-        { maskSecrets: maskSecretsJson }
-      );
-
-      const warned = warnLines();
-      // Non-vacuity: the drop branch really did fire.
-      expect(warned).toContain('Dropping malformed TargetGroup Targets entry');
-      expect(warned).toContain(SECRET_MASK);
-      // THE discriminator. Masking after `JSON.stringify` leaves the escaped
-      // document in place, and the password inside it is readable even though
-      // the document as a literal is not — so assert on the inner token.
-      expect(warned).not.toContain(SECRET_JSON_INNER);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).not.toContain(SECRET_PLAINTEXT);
+      expect(warnLines()).not.toContain(SECRET_PLAINTEXT);
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

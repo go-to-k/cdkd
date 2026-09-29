@@ -138,12 +138,16 @@ hand-editing the state file.
 **A list whose removals are the gap between the two sides is the exception**
 (issue [#3948](https://github.com/go-to-k/cdkd/issues/3948)): Auto Scaling
 group attachment and entry lists (tags, metrics, lifecycle hooks, traffic
-sources, notifications), Firehose tags. There, reading a malformed
+sources, notifications), Firehose tags, an ELBv2 target group's `Targets`,
+Budgets `NotificationsWithSubscribers` / `ResourceTags`, and CodeCommit
+`Triggers` / `Tags` (issue [#3989](https://github.com/go-to-k/cdkd/issues/3989)).
+There, reading a malformed
 DESIRED side as empty detaches or deletes everything the record holds, so it
 is refused before any call on every path, a state replay included. A malformed
-RECORDED side only misses removals: read it from the live resource ADD-only
-where you can (keep the live entries the desired side names, warn about the
-rest), otherwise refuse it with a repair that never asks for a secret in
+RECORDED side only misses removals: apply it ADD-only where you can — read
+the live resource (keep the live entries the desired side names, warn about
+the rest), or, where every add is idempotent (an upsert, or a create
+whose duplicate is success), send only the adds and warn — otherwise refuse it with a repair that never asks for a secret in
 state.json. `undefined` / `null` stays the empty list.
 
 A **top-level** read takes two further decisions, both per site (issue

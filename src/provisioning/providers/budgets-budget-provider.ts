@@ -39,6 +39,140 @@ import type {
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+
+// ─── List reads (go-to-k/cdkd#3989) ─────────────────────────────────
+//
+// `reconcileNotifications` / `reconcileResourceTags` derive their DELETES from
+// the gap between the desired and the recorded list. Reading a present-but-
+// malformed value (or dropping a malformed entry) as empty therefore deleted
+// every notification (with its subscribers) / untagged every key the other
+// side holds: on a rollback or `drift --revert`, where the desired side is a
+// recorded bag, `NotificationsWithSubscribers: {}` stripped the budget of its
+// alerts. So `undefined` / `null` is ABSENT (an empty list), and anything else
+// that is not a list of well-formed entries is MALFORMED. A malformed DESIRED
+// side is refused before any call; a malformed RECORDED side is applied
+// ADD-only (see `update`).
+
+type BudgetListKind = 'NotificationsWithSubscribers' | 'ResourceTags';
+type BudgetListSide = 'desired' | 'recorded';
+
+type BudgetListRead =
+  | { kind: 'list'; items: Record<string, unknown>[] }
+  // `onlySecret`: well-shaped, and malformed ONLY because an identity member
+  // holds a dynamic reference or its mask.
+  | { kind: 'malformed'; onlySecret: boolean };
+
+const BUDGET_LIST_WHAT: Record<BudgetListKind, string> = {
+  NotificationsWithSubscribers:
+    'entries with a Notification (NotificationType, ComparisonOperator, numeric Threshold) ' +
+    'and Subscribers (SubscriptionType, Address)',
+  ResourceTags: 'tags with a string Key',
+};
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/** A finite number, or a string holding one (CFn coerces scalars). */
+function isThreshold(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  return typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value));
+}
+
+/**
+ * `side` matters for identity members only. A DESIRED notification or
+ * subscriber Address (or tag Key) holding a dynamic reference or its mask names
+ * nothing Budgets holds, so it is malformed. A RECORDED one is what cdkd writes
+ * for a value that came from a secret (cdkd keeps the reference in state): it
+ * is read, and `removableRecorded` keeps it out of the delete set.
+ */
+function isWellFormedBudgetEntry(
+  kind: BudgetListKind,
+  entry: unknown,
+  side: BudgetListSide,
+  ignoreSecrets = false
+): boolean {
+  if (!isPlainRecord(entry)) return false;
+  const checkSecret = side === 'desired' && !ignoreSecrets;
+  if (kind === 'ResourceTags') {
+    if (!isNonEmptyString(entry['Key'])) return false;
+    // A `Value` keeps its existing coercion (a non-scalar sends `''`): only the
+    // Key decides what is untagged.
+    return !(checkSecret && holdsSecretDerivedEntry(entry['Key']));
+  }
+  const notification = entry['Notification'];
+  if (
+    !isPlainRecord(notification) ||
+    !isNonEmptyString(notification['NotificationType']) ||
+    !isNonEmptyString(notification['ComparisonOperator']) ||
+    !isThreshold(notification['Threshold']) ||
+    (notification['ThresholdType'] != null && !isNonEmptyString(notification['ThresholdType']))
+  ) {
+    return false;
+  }
+  if (checkSecret && holdsSecretDerivedEntry(notification)) return false;
+  const subscribers = entry['Subscribers'];
+  if (subscribers == null) return true;
+  return (
+    Array.isArray(subscribers) &&
+    subscribers.every(
+      (s) =>
+        isPlainRecord(s) &&
+        isNonEmptyString(s['SubscriptionType']) &&
+        isNonEmptyString(s['Address']) &&
+        !(checkSecret && holdsSecretDerivedEntry(s['Address']))
+    )
+  );
+}
+
+/** Read one list property; ABSENT (`undefined` / `null`) reads as the empty list. */
+function readBudgetList(
+  kind: BudgetListKind,
+  value: unknown,
+  side: BudgetListSide
+): BudgetListRead {
+  if (value === undefined || value === null) return { kind: 'list', items: [] };
+  if (Array.isArray(value) && value.every((e) => isWellFormedBudgetEntry(kind, e, side))) {
+    return { kind: 'list', items: value as Record<string, unknown>[] };
+  }
+  return {
+    kind: 'malformed',
+    onlySecret:
+      Array.isArray(value) && value.every((e) => isWellFormedBudgetEntry(kind, e, side, true)),
+  };
+}
+
+/**
+ * A recorded list minus every secret-derived identity: a notification whose
+ * block holds one, a subscriber whose Address does, a tag whose Key does. The
+ * reconciler would otherwise send a delete naming a literal `{{resolve:...}}`.
+ * Dropping it only misses that one removal, the safe direction.
+ */
+function removableRecorded(
+  kind: BudgetListKind,
+  items: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  if (kind === 'ResourceTags') return items.filter((t) => !holdsSecretDerivedEntry(t['Key']));
+  return items
+    .filter((e) => !holdsSecretDerivedEntry(e['Notification']))
+    .map((e) =>
+      Array.isArray(e['Subscribers'])
+        ? {
+            ...e,
+            Subscribers: (e['Subscribers'] as Record<string, unknown>[]).filter(
+              (s) => !holdsSecretDerivedEntry(s['Address'])
+            ),
+          }
+        : e
+    );
+}
 
 /**
  * SDK Provider for AWS::Budgets::Budget (issue #1041).
@@ -294,30 +428,21 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   }
 
   /**
-   * Parse the CFn `NotificationsWithSubscribers` property into SDK shape.
-   * Tolerates absent / non-array values (returns `[]`).
+   * Map well-formed `NotificationsWithSubscribers` entries (see
+   * {@link readBudgetList}) to the SDK shape.
    */
-  private toSdkNotificationsWithSubscribers(raw: unknown): NotificationWithSubscribers[] {
-    if (!Array.isArray(raw)) return [];
-    const out: NotificationWithSubscribers[] = [];
-    for (const item of raw) {
-      if (item === null || typeof item !== 'object') continue;
-      const entry = item as Record<string, unknown>;
-      const notification = entry['Notification'];
+  private toSdkNotificationsWithSubscribers(
+    items: Record<string, unknown>[]
+  ): NotificationWithSubscribers[] {
+    return items.map((entry) => {
       const subscribers = entry['Subscribers'];
-      out.push({
-        Notification:
-          notification && typeof notification === 'object'
-            ? this.toSdkNotification(notification as Record<string, unknown>)
-            : undefined,
+      return {
+        Notification: this.toSdkNotification(entry['Notification'] as Record<string, unknown>),
         Subscribers: Array.isArray(subscribers)
-          ? subscribers
-              .filter((s): s is Record<string, unknown> => s !== null && typeof s === 'object')
-              .map((s) => this.toSdkSubscriber(s))
+          ? (subscribers as Record<string, unknown>[]).map((s) => this.toSdkSubscriber(s))
           : undefined,
-      });
-    }
-    return out;
+      };
+    });
   }
 
   /**
@@ -341,26 +466,20 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     return JSON.stringify([s.SubscriptionType, s.Address]);
   }
 
-  /** Normalize the CFn `ResourceTags` property (`{Key,Value}[]`). */
-  private toSdkResourceTags(raw: unknown): ResourceTag[] {
-    if (!Array.isArray(raw)) return [];
-    const out: ResourceTag[] = [];
-    for (const item of raw) {
-      if (item === null || typeof item !== 'object') continue;
-      const tag = item as Record<string, unknown>;
-      if (typeof tag['Key'] !== 'string') continue;
+  /** Map well-formed `ResourceTags` entries (see {@link readBudgetList}) to the SDK shape. */
+  private toSdkResourceTags(items: Record<string, unknown>[]): ResourceTag[] {
+    return items.map((tag) => {
       const value = tag['Value'];
-      out.push({
-        Key: tag['Key'],
+      return {
+        Key: tag['Key'] as string,
         Value:
           typeof value === 'string'
             ? value
             : typeof value === 'number' || typeof value === 'boolean'
               ? String(value)
               : '',
-      });
-    }
-    return out;
+      };
+    });
   }
 
   /**
@@ -398,12 +517,24 @@ export class BudgetsBudgetProvider implements ResourceProvider {
             allowedPattern: /[^a-zA-Z0-9\-_.]/g,
           });
 
+    // go-to-k/cdkd#3989: refused before any call, so a malformed list never
+    // creates a budget missing the alerts or tags the template declares.
+    const lists = this.readDesiredLists(
+      logicalId,
+      resourceType,
+      {
+        NotificationsWithSubscribers: properties['NotificationsWithSubscribers'],
+        ResourceTags: properties['ResourceTags'],
+      },
+      undefined
+    );
+
     try {
       const accountId = await this.resolveAccountId();
       const notifications = this.toSdkNotificationsWithSubscribers(
-        properties['NotificationsWithSubscribers']
+        lists.NotificationsWithSubscribers
       );
-      const resourceTags = this.toSdkResourceTags(properties['ResourceTags']);
+      const resourceTags = this.toSdkResourceTags(lists.ResourceTags);
 
       await this.getClient().send(
         new CreateBudgetCommand({
@@ -452,6 +583,23 @@ export class BudgetsBudgetProvider implements ResourceProvider {
 
     this.logger.debug(`Updating budget ${logicalId}: ${physicalId}`);
 
+    // go-to-k/cdkd#3989: a malformed desired list is refused before any call.
+    const next = this.readDesiredLists(
+      logicalId,
+      resourceType,
+      {
+        NotificationsWithSubscribers: properties['NotificationsWithSubscribers'],
+        ResourceTags: properties['ResourceTags'],
+      },
+      physicalId
+    );
+    const prevNotifications = readBudgetList(
+      'NotificationsWithSubscribers',
+      previousProperties['NotificationsWithSubscribers'],
+      'recorded'
+    );
+    const prevTags = readBudgetList('ResourceTags', previousProperties['ResourceTags'], 'recorded');
+
     try {
       const accountId = await this.resolveAccountId();
 
@@ -471,19 +619,63 @@ export class BudgetsBudgetProvider implements ResourceProvider {
         })
       );
 
-      await this.reconcileNotifications(
-        accountId,
-        physicalId,
-        this.toSdkNotificationsWithSubscribers(previousProperties['NotificationsWithSubscribers']),
-        this.toSdkNotificationsWithSubscribers(properties['NotificationsWithSubscribers'])
+      const newNotifications = this.toSdkNotificationsWithSubscribers(
+        next.NotificationsWithSubscribers
       );
+      if (prevNotifications.kind === 'list') {
+        await this.reconcileNotifications(
+          accountId,
+          physicalId,
+          this.toSdkNotificationsWithSubscribers(
+            removableRecorded('NotificationsWithSubscribers', prevNotifications.items)
+          ),
+          newNotifications
+        );
+      } else {
+        try {
+          await this.addNotificationsOnly(accountId, physicalId, newNotifications);
+        } catch (error) {
+          // Nothing was deleted first, so the budget's existing notifications
+          // still count toward its limits (5 notifications, 10 email
+          // subscribers each): name what was being added beside them.
+          throw new ProvisioningError(
+            `Failed to update budget ${logicalId}: adding ${newNotifications.length} desired ` +
+              `notification(s) beside every notification the budget already holds (the recorded ` +
+              `NotificationsWithSubscribers is not a list cdkd can read, so none was deleted; a ` +
+              `budget allows at most 5 notifications and 10 email subscribers each): ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          );
+        }
+        this.logger.warn(
+          safeMsg`The recorded NotificationsWithSubscribers of budget ${logicalId} is not a list cdkd can read, so cdkd deleted no notification or subscriber and only added the desired ones. Delete any the template no longer names yourself.`
+        );
+      }
 
-      await this.reconcileResourceTags(
-        accountId,
-        physicalId,
-        this.toSdkResourceTags(previousProperties['ResourceTags']),
-        this.toSdkResourceTags(properties['ResourceTags'])
-      );
+      const newTags = this.toSdkResourceTags(next.ResourceTags);
+      if (prevTags.kind === 'list') {
+        await this.reconcileResourceTags(
+          accountId,
+          physicalId,
+          this.toSdkResourceTags(removableRecorded('ResourceTags', prevTags.items)),
+          newTags
+        );
+      } else {
+        if (newTags.length > 0) {
+          await this.getClient().send(
+            new TagResourceCommand({
+              ResourceARN: await this.budgetArn(accountId, physicalId),
+              ResourceTags: newTags,
+            })
+          );
+        }
+        this.logger.warn(
+          safeMsg`The recorded ResourceTags of budget ${logicalId} is not a list cdkd can read, so cdkd removed no tag and only applied the desired ones. Untag any key the template no longer names yourself.`
+        );
+      }
 
       this.logger.debug(`Successfully updated budget ${logicalId}`);
       return {
@@ -502,6 +694,103 @@ export class BudgetsBudgetProvider implements ResourceProvider {
         logicalId,
         physicalId,
         cause
+      );
+    }
+  }
+
+  /**
+   * Read the DESIRED lists of a create or update, refusing a malformed one
+   * before any call (go-to-k/cdkd#3989). The caller passes its own literal read
+   * of each property so the handled-property wiring walk still sees which
+   * property feeds the calls. `physicalId` is set on the update path.
+   */
+  private readDesiredLists(
+    logicalId: string,
+    resourceType: string,
+    values: Record<BudgetListKind, unknown>,
+    physicalId: string | undefined
+  ): Record<BudgetListKind, Record<string, unknown>[]> {
+    const kinds: BudgetListKind[] = ['NotificationsWithSubscribers', 'ResourceTags'];
+    const out = {} as Record<BudgetListKind, Record<string, unknown>[]>;
+    const bad: BudgetListKind[] = [];
+    const secret: BudgetListKind[] = [];
+    for (const kind of kinds) {
+      const read = readBudgetList(kind, values[kind], 'desired');
+      if (read.kind === 'list') {
+        out[kind] = read.items;
+      } else {
+        bad.push(kind);
+        if (read.onlySecret) secret.push(kind);
+      }
+    }
+    if (bad.length === 0) return out;
+    const updating = physicalId !== undefined;
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${updating ? 'desired ' : ''}${bad.join(' / ')} of budget ${logicalId} is not a list ` +
+          `of ${bad.map((k) => BUDGET_LIST_WHAT[k]).join(' / ')}` +
+          (secret.length > 0
+            ? ` (${secret.join(' / ')} holds a dynamic reference or its mask where an ` +
+              `identifying value belongs, which names nothing Budgets holds)`
+            : '') +
+          ` — the budget was not ${updating ? 'updated' : 'created'}`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
+   * The ADD-only arm for a recorded `NotificationsWithSubscribers` cdkd cannot
+   * read (go-to-k/cdkd#3989): create every desired notification (see
+   * {@link createNotificationOrSubscribers}). Nothing is deleted, so a
+   * notification or subscriber the desired side omits stays in place.
+   */
+  private async addNotificationsOnly(
+    accountId: string,
+    budgetName: string,
+    list: NotificationWithSubscribers[]
+  ): Promise<void> {
+    for (const nws of list) {
+      await this.createNotificationOrSubscribers(accountId, budgetName, nws);
+    }
+  }
+
+  /**
+   * Create a notification with its subscribers; on one that already exists
+   * (`DuplicateRecordException` — a retry, or a notification the old side did
+   * not list) create each desired subscriber instead, so none is skipped.
+   */
+  private async createNotificationOrSubscribers(
+    accountId: string,
+    budgetName: string,
+    nws: NotificationWithSubscribers
+  ): Promise<void> {
+    const key = this.notificationKey(nws.Notification as Notification);
+    try {
+      await this.getClient().send(
+        new CreateNotificationCommand({
+          AccountId: accountId,
+          BudgetName: budgetName,
+          Notification: nws.Notification,
+          Subscribers: nws.Subscribers,
+        })
+      );
+      return;
+    } catch (error) {
+      if (!(error instanceof DuplicateRecordException)) throw error;
+      this.logger.debug(safeMsg`Notification ${key} already exists, creating its subscribers`);
+    }
+    for (const subscriber of nws.Subscribers ?? []) {
+      await this.sendCreateIdempotent(
+        new CreateSubscriberCommand({
+          AccountId: accountId,
+          BudgetName: budgetName,
+          Notification: nws.Notification,
+          Subscriber: subscriber,
+        }),
+        `Subscriber ${this.subscriberKey(subscriber)} on notification ${key}`
       );
     }
   }
@@ -602,18 +891,11 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       this.logger.debug(`Deleted notification ${key} from budget ${budgetName}`);
     }
 
-    // Added notifications (created with their full subscriber list).
+    // Added notifications (created with their full subscriber list; one that
+    // already exists gets its desired subscribers instead).
     for (const [key, nws] of newByKey) {
       if (oldByKey.has(key)) continue;
-      await this.sendCreateIdempotent(
-        new CreateNotificationCommand({
-          AccountId: accountId,
-          BudgetName: budgetName,
-          Notification: nws.Notification,
-          Subscribers: nws.Subscribers,
-        }),
-        `Notification ${key} on budget ${budgetName}`
-      );
+      await this.createNotificationOrSubscribers(accountId, budgetName, nws);
       this.logger.debug(`Created notification ${key} on budget ${budgetName}`);
     }
 

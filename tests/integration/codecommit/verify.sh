@@ -14,7 +14,8 @@
 #      marks RepositoryName "Update requires: No interruption" — must be an
 #      in-place UpdateRepositoryName, NOT delete+create: the repository ID
 #      must survive), the description changed, env changed to prod, team
-#      REMOVED (the ECR #981 untag regression class).
+#      REMOVED (the ECR #981 untag regression class), and a second trigger
+#      ADDED (PutRepositoryTriggers must carry the whole set, issue #3989).
 #   3. Destroy + assert the repo is gone and the cdkd state file is removed.
 #
 # NOTE: CodeCommit returned to GA on 2025-11-24. If Phase 1's CreateRepository
@@ -211,6 +212,14 @@ echo "    tags (Phase 2): env=${ENVTAG2} team=${TEAMTAG2}"
 [ "${TEAMTAG2}" = "None" ] || { echo "FAIL: expected team tag to be UNTAGGED after update, still present as '${TEAMTAG2}'" >&2; exit 1; }
 echo "    removed tag untagged + changed tag updated on AWS"
 
+# Triggers (issue #3989): the update's PutRepositoryTriggers is a full-set
+# replace, so BOTH the kept and the added trigger must be on the renamed repo.
+TRIGGERS2="$(aws codecommit get-repository-triggers --repository-name "${REPO_RENAMED}" \
+  --region "${REGION}" --query 'sort(triggers[].name)' --output json | tr -d ' \n')"
+echo "    triggers (Phase 2): ${TRIGGERS2}"
+[ "${TRIGGERS2}" = '["branch-notify","commit-notify"]' ] || { echo "FAIL: expected triggers [branch-notify, commit-notify] after update, got ${TRIGGERS2}" >&2; exit 1; }
+echo "    added trigger applied, kept trigger preserved (full-set PutRepositoryTriggers)"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -226,4 +235,4 @@ echo "    SNS trigger topic deleted"
 assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — CodeCommit repository create (desc+tags+Ref id parity+Code seed+SNS trigger), in-place rename + tag untag on update, clean destroy, 3 phases passed"
+echo "[verify] PASS — CodeCommit repository create (desc+tags+Ref id parity+Code seed+SNS trigger), in-place rename + tag untag + trigger add on update, clean destroy, 3 phases passed"

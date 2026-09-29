@@ -4,6 +4,7 @@ import {
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   GetRepositoryCommand,
+  GetRepositoryTriggersCommand,
   ListTagsForResourceCommand,
   PutRepositoryTriggersCommand,
   TagResourceCommand,
@@ -36,6 +37,9 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 
 /**
  * CFn `Tags` entry shape (`[{Key, Value}]`). CodeCommit's SDK tag APIs use a
@@ -125,9 +129,7 @@ function scalarToString(value: unknown): string {
  * string arrays.
  */
 function toSdkTriggers(triggers: CfnTrigger[] | undefined): RepositoryTrigger[] {
-  // CFn always resolves `Triggers` to a list, but guard defensively against a
-  // non-array (hand-written / malformed template) so update()'s unguarded call
-  // site can't hit a raw `.map is not a function` TypeError.
+  // Every caller passes a list `readRepoList` accepted (go-to-k/cdkd#3989).
   if (!Array.isArray(triggers) || triggers.length === 0) return [];
   return triggers.map((t) => {
     const events: unknown[] = Array.isArray(t?.Events) ? t.Events : [];
@@ -156,6 +158,88 @@ function toSdkTriggers(triggers: CfnTrigger[] | undefined): RepositoryTrigger[] 
  */
 function triggersEqual(a: RepositoryTrigger[], b: RepositoryTrigger[]): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// ─── List reads (go-to-k/cdkd#3989) ─────────────────────────────────
+//
+// `PutRepositoryTriggers` REPLACES the whole trigger set, and the tag diff
+// untags every recorded key the desired map lacks. Reading a present-but-
+// malformed desired value (or dropping a malformed entry) as empty therefore
+// cleared every trigger / untagged every key: on a rollback or
+// `drift --revert`, where the desired side is a recorded bag, `Triggers: {}`
+// sent `triggers: []`. So `undefined` / `null` is ABSENT (an empty list), and
+// anything else that is not a list of well-formed entries is MALFORMED. A
+// malformed DESIRED side is refused before any call; a malformed RECORDED side
+// is applied ADD-only (see `update`).
+
+type RepoListKind = 'Triggers' | 'Tags';
+type RepoListSide = 'desired' | 'recorded';
+
+type RepoListRead =
+  | { kind: 'list'; items: Record<string, unknown>[] }
+  // `onlySecret`: well-shaped, and malformed ONLY because an identity member
+  // holds a dynamic reference or its mask.
+  | { kind: 'malformed'; onlySecret: boolean };
+
+const REPO_LIST_WHAT: Record<RepoListKind, string> = {
+  Triggers: 'triggers with a Name, a string DestinationArn and list-valued Events / Branches',
+  Tags: 'tags with a string Key',
+};
+
+function isScalar(value: unknown): boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/** Absent, or a list of scalars (coerced to strings on the wire). */
+function isScalarList(value: unknown): boolean {
+  return value == null || (Array.isArray(value) && value.every(isScalar));
+}
+
+/**
+ * An entry is checked for what a removal or an empty reading turns on: its
+ * identity (a trigger's `Name` and `DestinationArn`, a tag's `Key`) and a
+ * trigger's `Events` / `Branches`, whose empty reading means ALL branches.
+ * Scalar values (`CustomData`, a tag `Value`) keep their existing coercion.
+ *
+ * `side` matters for identity members only. A DESIRED one holding a dynamic
+ * reference or its mask names nothing CodeCommit holds, so it is malformed. A
+ * RECORDED one is what cdkd writes for a value that came from a secret (cdkd
+ * keeps the reference in state): it is read, and only differs from the desired
+ * side.
+ */
+function isWellFormedRepoEntry(
+  kind: RepoListKind,
+  entry: unknown,
+  side: RepoListSide,
+  ignoreSecrets = false
+): boolean {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+  const e = entry as Record<string, unknown>;
+  // A trigger `Name` is coerced like the rest (`scalarToString`), so a number
+  // names a trigger too.
+  const identity = kind === 'Tags' ? [e['Key']] : [scalarToString(e['Name']), e['DestinationArn']];
+  if (!identity.every(isNonEmptyString)) return false;
+  if (side === 'desired' && !ignoreSecrets && identity.some((v) => holdsSecretDerivedEntry(v))) {
+    return false;
+  }
+  return kind === 'Tags' || (isScalarList(e['Events']) && isScalarList(e['Branches']));
+}
+
+/** Read one list property; ABSENT (`undefined` / `null`) reads as the empty list. */
+function readRepoList(kind: RepoListKind, value: unknown, side: RepoListSide): RepoListRead {
+  if (value === undefined || value === null) return { kind: 'list', items: [] };
+  if (Array.isArray(value) && value.every((e) => isWellFormedRepoEntry(kind, e, side))) {
+    return { kind: 'list', items: value as Record<string, unknown>[] };
+  }
+  return {
+    kind: 'malformed',
+    onlySecret:
+      Array.isArray(value) && value.every((e) => isWellFormedRepoEntry(kind, e, side, true)),
+  };
 }
 
 /**
@@ -250,8 +334,17 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       (properties['RepositoryName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 100 });
 
+    // go-to-k/cdkd#3989: refused before CreateRepository, so a malformed list
+    // never creates a repository missing the triggers or tags it declares.
+    const lists = this.readDesiredLists(
+      logicalId,
+      resourceType,
+      { Triggers: properties['Triggers'], Tags: properties['Tags'] },
+      undefined
+    );
+
     try {
-      const tags = toSdkTagMap(properties['Tags'] as CfnTag[] | undefined);
+      const tags = toSdkTagMap(lists.Tags as CfnTag[]);
       const description = properties['RepositoryDescription'] as string | undefined;
       const kmsKeyId = properties['KmsKeyId'] as string | undefined;
 
@@ -281,8 +374,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         if (code) {
           await this.seedInitialCommit(createdName, code);
         }
-        const triggers = properties['Triggers'] as CfnTrigger[] | undefined;
-        if (Array.isArray(triggers) && triggers.length > 0) {
+        const triggers = lists.Triggers as CfnTrigger[];
+        if (triggers.length > 0) {
           await this.getClient().send(
             new PutRepositoryTriggersCommand({
               repositoryName: createdName,
@@ -343,11 +436,37 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CodeCommit Repository ${logicalId} (${physicalId})`);
+
+    // go-to-k/cdkd#3989: a malformed desired list is refused before any call,
+    // the rename included.
+    const next = this.readDesiredLists(
+      logicalId,
+      resourceType,
+      { Triggers: properties['Triggers'], Tags: properties['Tags'] },
+      physicalId
+    );
+    const prevTriggers = readRepoList('Triggers', previousProperties['Triggers'], 'recorded');
+    const prevTags = readRepoList('Tags', previousProperties['Tags'], 'recorded');
+    // A recorded Triggers cdkd cannot read is replaced by the live set, read
+    // before the rename so a failed read changes nothing. A retry after a
+    // rename that already landed finds the repository under the NEW name.
+    const renameTo = properties['RepositoryName'];
+    const liveTriggers =
+      prevTriggers.kind === 'malformed'
+        ? await this.readLiveTriggers(
+            logicalId,
+            physicalId,
+            typeof renameTo === 'string' && renameTo.length > 0 && renameTo !== physicalId
+              ? renameTo
+              : undefined,
+            resourceType
+          )
+        : undefined;
 
     // Rename first so every subsequent call targets the current name.
     // `previousProperties.RepositoryName` is not consulted — the physical id
@@ -416,12 +535,29 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // The diff compares the SDK-shaped tag MAPS (key-sorted by
       // construction order-independence) so a pure re-order of the CFn
       // `Tags` list does not trigger needless API churn.
-      const newTags = properties['Tags'] as CfnTag[] | undefined;
-      const oldTags = previousProperties['Tags'] as CfnTag[] | undefined;
-      const newTagMap = toSdkTagMap(newTags) ?? {};
-      const oldTagMap = toSdkTagMap(oldTags) ?? {};
+      //
+      // A recorded `Tags` cdkd cannot read is applied ADD-only
+      // (go-to-k/cdkd#3989): nothing is untagged, and the desired map is
+      // tagged whenever it is non-empty. A recorded Key holding a dynamic
+      // reference or its mask is left out of the untag set.
+      const newTagMap = toSdkTagMap(next.Tags as CfnTag[]) ?? {};
+      const oldTagMap =
+        prevTags.kind === 'list'
+          ? (toSdkTagMap(
+              prevTags.items.filter((t) => !holdsSecretDerivedEntry(t['Key'])) as CfnTag[]
+            ) ?? {})
+          : {};
+      if (prevTags.kind === 'malformed') {
+        this.logger.warn(
+          safeMsg`The recorded Tags of CodeCommit Repository ${logicalId} is not a list cdkd can read, so cdkd removed no tag and only applied the desired ones. Untag any key the template no longer names yourself.`
+        );
+      }
       let metadata: RepositoryMetadata | undefined;
-      if (!tagMapsEqual(newTagMap, oldTagMap)) {
+      if (
+        prevTags.kind === 'malformed'
+          ? Object.keys(newTagMap).length > 0
+          : !tagMapsEqual(newTagMap, oldTagMap)
+      ) {
         metadata = await this.getRepositoryMetadata(currentName);
         const repoArn = metadata?.Arn;
         if (repoArn) {
@@ -456,17 +592,52 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // handled by putting the new set (empty array = clear all). `Code` is
       // create-only seed content and is intentionally NOT re-applied here
       // (CFn ignores `Code` on update).
-      const newSdkTriggers = toSdkTriggers(properties['Triggers'] as CfnTrigger[] | undefined);
-      const oldSdkTriggers = toSdkTriggers(
-        previousProperties['Triggers'] as CfnTrigger[] | undefined
-      );
-      if (!triggersEqual(newSdkTriggers, oldSdkTriggers)) {
-        await this.getClient().send(
-          new PutRepositoryTriggersCommand({
-            repositoryName: currentName,
-            triggers: newSdkTriggers,
-          })
+      //
+      // A recorded `Triggers` cdkd cannot read is applied ADD-only
+      // (go-to-k/cdkd#3989): the set put is the desired triggers plus every
+      // live trigger whose name the desired side does not use, so nothing is
+      // cleared on the strength of a record cdkd could not read.
+      let newSdkTriggers = toSdkTriggers(next.Triggers as CfnTrigger[]);
+      let oldSdkTriggers: RepositoryTrigger[] | undefined;
+      let retainedCount = 0;
+      if (liveTriggers === undefined) {
+        oldSdkTriggers = toSdkTriggers(
+          (prevTriggers.kind === 'list' ? prevTriggers.items : []) as CfnTrigger[]
         );
+      } else {
+        const names = new Set(newSdkTriggers.map((t) => t.name));
+        const retained = liveTriggers.filter((t) => !names.has(t.name));
+        if (retained.length > 0) {
+          this.logger.warn(
+            safeMsg`The recorded Triggers of CodeCommit Repository ${logicalId} is not a list cdkd can read, so cdkd read the triggers from CodeCommit; the repository holds ${retained.length} trigger(s) the desired Triggers does not name, and cdkd kept them. They stay only until the next change to Triggers, which replaces the whole set; list them with \`aws codecommit get-repository-triggers --repository-name\` and this repository's name, and remove any that are no longer wanted.`
+          );
+        }
+        retainedCount = retained.length;
+        newSdkTriggers = [...newSdkTriggers, ...retained];
+        oldSdkTriggers = liveTriggers;
+      }
+      if (!triggersEqual(newSdkTriggers, oldSdkTriggers)) {
+        try {
+          await this.getClient().send(
+            new PutRepositoryTriggersCommand({
+              repositoryName: currentName,
+              triggers: newSdkTriggers,
+            })
+          );
+        } catch (error) {
+          if (retainedCount === 0) throw error;
+          // The kept live triggers count toward CodeCommit's per-repository
+          // limit (10), so name them: removing them is the way out. A plain
+          // Error carrying the AWS one as `cause`: the catch below wraps it,
+          // and the retry classifies through the chain.
+          throw new Error(
+            `PutRepositoryTriggers failed with ${retainedCount} live trigger(s) the desired ` +
+              `Triggers does not name kept beside the desired ones (the recorded Triggers is ` +
+              `not a list cdkd can read; CodeCommit allows at most 10 triggers per ` +
+              `repository): ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error }
+          );
+        }
         this.logger.debug(
           `Updated triggers for ${currentName} (${newSdkTriggers.length} trigger(s))`
         );
@@ -485,10 +656,94 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update CodeCommit Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        _resourceType,
+        resourceType,
         logicalId,
         physicalId,
         cause
+      );
+    }
+  }
+
+  /**
+   * Read the DESIRED lists of a create or update, refusing a malformed one
+   * before any call (go-to-k/cdkd#3989). The caller passes its own literal read
+   * of each property so the handled-property wiring walk still sees which
+   * property feeds the calls. `physicalId` is set on the update path.
+   */
+  private readDesiredLists(
+    logicalId: string,
+    resourceType: string,
+    values: Record<RepoListKind, unknown>,
+    physicalId: string | undefined
+  ): Record<RepoListKind, Record<string, unknown>[]> {
+    const kinds: RepoListKind[] = ['Triggers', 'Tags'];
+    const out = {} as Record<RepoListKind, Record<string, unknown>[]>;
+    const bad: RepoListKind[] = [];
+    const secret: RepoListKind[] = [];
+    for (const kind of kinds) {
+      const read = readRepoList(kind, values[kind], 'desired');
+      if (read.kind === 'list') {
+        out[kind] = read.items;
+      } else {
+        bad.push(kind);
+        if (read.onlySecret) secret.push(kind);
+      }
+    }
+    if (bad.length === 0) return out;
+    const updating = physicalId !== undefined;
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${updating ? 'desired ' : ''}${bad.join(' / ')} of CodeCommit Repository ${logicalId} ` +
+          `is not a list of ${bad.map((k) => REPO_LIST_WHAT[k]).join(' / ')}` +
+          (secret.length > 0
+            ? ` (${secret.join(' / ')} holds a dynamic reference or its mask where a name ` +
+              `belongs, which names nothing CodeCommit holds)`
+            : '') +
+          ` — the repository was not ${updating ? 'updated' : 'created'}`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
+   * The live trigger set, for a recorded `Triggers` cdkd cannot read
+   * (go-to-k/cdkd#3989). A failed read throws before any write; it is not
+   * marked non-retryable, since a throttled read is worth the retry.
+   */
+  private async readLiveTriggers(
+    logicalId: string,
+    repositoryName: string,
+    renamedTo: string | undefined,
+    resourceType: string
+  ): Promise<RepositoryTrigger[]> {
+    try {
+      // A retry after the rename already landed finds the old name gone
+      // (`undefined` here), so it reads under the new one.
+      const first = await this.getClient()
+        .send(new GetRepositoryTriggersCommand({ repositoryName }))
+        .catch((error: unknown) => {
+          if (renamedTo === undefined || !(error instanceof RepositoryDoesNotExistException)) {
+            throw error;
+          }
+          return undefined;
+        });
+      const resp =
+        first ??
+        (await this.getClient().send(
+          new GetRepositoryTriggersCommand({ repositoryName: renamedTo as string })
+        ));
+      return resp.triggers ?? [];
+    } catch (error) {
+      throw new ProvisioningError(
+        `the recorded Triggers of CodeCommit Repository ${logicalId} is not a list cdkd can ` +
+          `read, and the triggers could not be read from CodeCommit instead — the repository ` +
+          `was not updated`,
+        resourceType,
+        logicalId,
+        repositoryName,
+        error instanceof Error ? error : undefined
       );
     }
   }
