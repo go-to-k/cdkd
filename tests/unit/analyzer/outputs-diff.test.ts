@@ -1553,13 +1553,15 @@ describe('unaccountable stored key withholding (issue #1948)', () => {
     expect(removed?.oldValueRedacted).toBeUndefined();
   });
 
-  it('is EXONERATED when any stored value is a secret expression (the last write redacted)', () => {
+  it('is EXONERATED when a stored value is a plain ssm expression (the last write redacted)', () => {
     // `resolveOutputs` rewrites the whole bag on every deploy, so one redacted
-    // key proves the bag as a whole is post-GHSA — including the deleted key's
-    // value, which is therefore an ordinary string.
+    // key proves the bag as a whole redacted -- including the deleted key's
+    // value, which is therefore an ordinary string. Only a plain ssm token
+    // proves it: that is stored only after #1901 (issue #4108).
+    const SSM_EXPR = '{{resolve:ssm:/prod/db/password}}';
     const changes = computeOutputsDiff(
-      { Removed: 'arn:aws:s3:::gone', DbPassword: SECRET_EXPR },
-      { DbPassword: SECRET_EXPR },
+      { Removed: 'arn:aws:s3:::gone', DbPassword: SSM_EXPR },
+      { DbPassword: SSM_EXPR },
       new Set(),
       new Set(),
       { declaredKeys: new Set(['DbPassword']), templateHasSecretReference: true }
@@ -1568,6 +1570,23 @@ describe('unaccountable stored key withholding (issue #1948)', () => {
     const removed = changes.find((c) => c.name === 'Removed');
     expect(removed?.oldValue).toBe('arn:aws:s3:::gone');
     expect(removed?.oldValueRedacted).toBeUndefined();
+  });
+
+  it('is NOT exonerated by a secretsmanager expression alone (issue #4108)', () => {
+    // A binary between the GHSA fix and #1901 stored this expression correctly
+    // AND a SecureString parameter's plaintext, so it proves the write came
+    // after GHSA, not that every value was redacted. The removed key stays
+    // withheld.
+    const changes = computeOutputsDiff(
+      { Removed: 'HUNTERSECURE', DbPassword: SECRET_EXPR },
+      { DbPassword: SECRET_EXPR },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['DbPassword']), templateHasSecretReference: true }
+    );
+
+    expect(JSON.stringify(changes)).not.toContain('HUNTERSECURE');
+    expect(changes.find((c) => c.name === 'Removed')?.oldValueRedacted).toBe(true);
   });
 
   it('leaves a DECLARED-but-condition-skipped key alone — the template accounts for it', () => {

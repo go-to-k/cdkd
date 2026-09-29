@@ -88,15 +88,26 @@ export function isSecretBearingReferenceString(value: unknown): boolean {
 }
 
 /**
- * True when any TOP-LEVEL value of `bag` is itself a secret-bearing expression
- * string. Leaf granularity on purpose: a container holding an expression next
+ * True when any TOP-LEVEL value of `bag` is itself a secret expression string.
+ * Leaf granularity on purpose: a container holding an expression next
  * to a plaintext leaf is exactly the partially redacted residue `cdkd scrub`
  * admits it can leave, and it must not earn the exoneration. `null` is admitted
  * because a hand-edited state record can hold one where the type says a bag.
+ *
+ * Unlike {@link isSecretBearingReferenceString}, a plain `ssm` token counts
+ * here (issue #4108). Both readers compare a REDACTED bag: a deploy resolves a
+ * `String` parameter to its value and leaves a plain `ssm` token only for a
+ * `SecureString`, and a record before issue #1901 holds none. Excluding it let
+ * a no-change merge write a SecureString's token beside a carried pre-#1901
+ * plaintext, a bag `cdkd diff` then reads as redacted throughout.
  */
 export function bagHoldsSecretExpression(bag: Record<string, unknown> | null | undefined): boolean {
   if (bag === undefined || bag === null) return false;
-  return Object.values(bag).some((value) => isSecretBearingReferenceString(value));
+  return Object.values(bag).some(
+    (value) =>
+      isSecretBearingReferenceString(value) ||
+      (typeof value === 'string' && value.includes('{{resolve:ssm:'))
+  );
 }
 
 /** Why {@link mergeNoChangeOutputs} kept the whole previous bag. */

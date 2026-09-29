@@ -376,7 +376,7 @@ These refusal gates decide this:
 | --- | --- | --- |
 | Redacted-expression mismatch | The template side is still a `{{resolve:...}}` expression while state is not — exactly what `cdkd scrub` repairs. A stored value counts as the expression only when it is one whole reference (and the template side is one too, or absent) or matches the template side's text around each reference, so a reference stored beside other text does not. | Record-wide |
 | Template-declared dynamic reference | The template declares the output's value as a dynamic reference. Also covers an output that was condition-skipped, which has no template side left to compare. | Record-wide |
-| Unaccountable stored key | A stored key today's template cannot account for — no declared output name, no literal `Export.Name`, not in the resolved bag — i.e. an output deleted from the template. | Per-key |
+| Unaccountable stored key | A stored key today's template cannot account for — no declared output name, no literal `Export.Name`, not in the resolved bag — i.e. an output deleted from the template. Skipped when the stored record holds a plain `ssm` reference, which only a cdkd that redacts every secret writes (or a `cdkd scrub` that could not name every value, the caveat below); a `secretsmanager` reference alone does not prove that. | Per-key |
 | Stored secret beside other text | The stored value holds a `{{resolve:...}}` secret reference beside other text in a shape the expression rule above rejects (in any string leaf of an array or object) — what an older deploy wrote around a plaintext. One whole reference is never withheld here. Checked for every key, whatever the record's other evidence or the template says. | Per-key |
 | Carried value in the merge preview | The no-change merge preview carried a value from state for a failed output, an alias included, that is not one whole secret reference. | Record-wide |
 
@@ -388,8 +388,9 @@ that is not a secret reference cannot rule that out.
 
 The per-key gate is narrower on purpose, since deleting an output is an
 ordinary refactor. It fires **only** when the template still proves a secret
-reference somewhere, and **not** when any stored value is itself a secret
-expression — the latter is read as evidence that the last write already
+reference somewhere, and **not** when any stored value is itself a plain `ssm` secret
+expression (a `secretsmanager` one does not count: an older cdkd stored it
+correctly beside a `SecureString` plaintext) — the latter is read as evidence that the last write already
 redacted the whole bag, which holds for a full deploy and is not guaranteed for
 every earlier write. Those two conditions are what keep the refusal off stacks
 that handle no secrets at all.
