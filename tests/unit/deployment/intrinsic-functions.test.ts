@@ -1814,11 +1814,57 @@ describe('IntrinsicFunctionResolver - per-type Arn handler sweep', () => {
     expect(result).toBe('Z123LIVE');
   });
 
-  it('Namespace HostedZoneId resolves to undefined (not physicalId) when the fetch fails', async () => {
+  // Issue #4077: no answer is never `undefined` (a `Fn::Join` rendered it as
+  // the text "undefined") nor the namespace id — the reference is refused.
+  it('Namespace HostedZoneId is REFUSED, retryably, when the fetch fails', async () => {
     sdMockSend.mockRejectedValueOnce(new Error('transient'));
     const ctx = makeContext('AWS::ServiceDiscovery::PrivateDnsNamespace', 'ns-abc123');
-    const result = await resolver.resolve({ 'Fn::GetAtt': ['Target', 'HostedZoneId'] }, ctx);
-    expect(result).toBeUndefined();
+    const error = await resolver
+      .resolve({ 'Fn::Join': ['', ['zone-', { 'Fn::GetAtt': ['Target', 'HostedZoneId'] }]] }, ctx)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((error as Error).message).toContain('GetNamespace failed (Error)');
+    // A failed live read is time-dependent: a later attempt can succeed.
+    expect(isMarkedNonRetryable(error)).toBe(false);
+  });
+
+  it('Namespace HostedZoneId is REFUSED when GetNamespace reports none', async () => {
+    sdMockSend.mockResolvedValueOnce({ Namespace: { Properties: {} } });
+    const ctx = makeContext('AWS::ServiceDiscovery::PublicDnsNamespace', 'ns-abc123');
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Target', 'HostedZoneId'] }, ctx)
+    ).rejects.toThrow(/GetNamespace reported no DnsProperties\.HostedZoneId/);
+  });
+
+  it('HttpNamespace HostedZoneId is refused with no AWS call: CloudFormation defines no such attribute', async () => {
+    const ctx = makeContext('AWS::ServiceDiscovery::HttpNamespace', 'ns-abc123');
+    const sendsBefore = sdMockSend.mock.calls.length;
+    const error = await resolver.resolve({ 'Fn::GetAtt': ['Target', 'HostedZoneId'] }, ctx).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect((error as Error).message).toContain(
+      'CloudFormation defines no such attribute for this type (its attributes: Arn, Id)'
+    );
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(sdMockSend.mock.calls.length).toBe(sendsBefore);
+  });
+
+  it('IAM Policy PolicyId is refused: CloudFormation defines only Id for AWS::IAM::Policy', async () => {
+    const ctx = makeContext('AWS::IAM::Policy', 'my-policy');
+    const error = await resolver
+      .resolve({ 'Fn::Sub': 'p-${Target.PolicyId}' }, ctx)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    // Re-raised by `Fn::Sub`, never rendered as the text "undefined".
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((error as Error).message).toContain('(its attributes: Id)');
+    expect(isMarkedNonRetryable(error)).toBe(true);
   });
 });
 

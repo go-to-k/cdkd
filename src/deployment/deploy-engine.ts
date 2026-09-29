@@ -15,6 +15,7 @@ import {
   isOutputSuppressedByCondition,
   secretBearingExportNameWarning,
 } from './outputs-export-alias.js';
+import { refuseNoValueOutputs } from './output-value-preflight.js';
 import { bold, cyan, gray, green, red, yellow } from '../utils/colors.js';
 import { formatResourceLine } from '../utils/resource-line.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
@@ -3990,6 +3991,10 @@ export class DeployEngine {
       this.logger.debug(
         `Evaluated ${Object.keys(conditions).length} conditions: ${Object.keys(conditions).join(', ')}`
       );
+      // CloudFormation rejects an Output whose Value evaluates to
+      // AWS::NoValue before it creates anything (issue #4077), so refuse it
+      // here, before provisioning, rather than publishing nothing after it.
+      refuseNoValueOutputs(template.Outputs, conditions);
 
       // 2.7. Prune resources whose `Condition:` key evaluated false (issue
       // #840). CFn does not strip condition-gated resources at synth time —
@@ -10314,12 +10319,13 @@ export class DeployEngine {
             redactedAttributeReads: ownReads,
           });
           refuseMaskedOutputReads(outputKey, ownReads);
-          // A resolution that RETURNS `undefined` (a `Fn::GetAtt` arm with
-          // nothing to construct, e.g. `RoleId`) is as unresolved as one that
+          // A resolution that RETURNS `undefined` is as unresolved as one that
           // throws, so under `--strict-getatt` it takes the same failure arm
-          // (issue #3168). Marked non-retryable: the error carries no AWS text
-          // (the Cloud Map `HostedZoneId` arm swallows its lookup error), only
-          // the template-controlled output key, which a substring classifier
+          // (issue #3168). No `Fn::GetAtt` arm answers `undefined` any more —
+          // each refuses instead (issue #4077) — so this is the backstop for a
+          // malformed value such as a two-argument `Fn::If`. Marked
+          // non-retryable: the error carries no AWS text, only the
+          // template-controlled output key, which a substring classifier
           // can misread as transient — a key containing `AlreadyExists` in a
           // nested child being replaced would re-run the whole child deploy
           // (the #1874 hazard). `handleOutputResolutionFailure` threads this

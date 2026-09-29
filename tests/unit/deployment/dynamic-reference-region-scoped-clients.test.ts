@@ -621,7 +621,7 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
             getAtt(
               resolver,
               `Ns${i}`,
-              'AWS::ServiceDiscovery::HttpNamespace',
+              'AWS::ServiceDiscovery::PrivateDnsNamespace',
               `ns-conc${i}`,
               'HostedZoneId'
             )

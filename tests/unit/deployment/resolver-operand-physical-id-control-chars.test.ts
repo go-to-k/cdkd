@@ -310,20 +310,42 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
     });
   });
 
-  it("sanitizes ServiceDiscovery HostedZoneId's failure WARN: the id AND its echo", async () => {
+  it("sanitizes ServiceDiscovery HostedZoneId's failed-read REFUSAL and its --verbose echo", async () => {
+    // Since issue #4077 a failed read refuses instead of warning and answering
+    // `undefined`: the id renders in the refusal, AWS's echo of it on the
+    // debug line `describeFailureObserved` writes.
     aws.sd = async (command) => {
       throw echoing(command.input?.['Id']);
     };
     const type = 'AWS::ServiceDiscovery::PrivateDnsNamespace';
-    const got = await getAtt(type, 'HostedZoneId', `ns-${EVIL}`);
-    const warn = line(got, 'Failed to fetch HostedZoneId for namespace ');
-    expectSanitized(warn, 'the HostedZoneId warn');
-    expect(renders(warn)).toBe(2);
+    const refused = async (id: string): Promise<{ lines: string[]; message: string }> => {
+      let message = '';
+      const lines = await capture(() =>
+        resolver()
+          .resolve({ 'Fn::GetAtt': ['Thing', 'HostedZoneId'] }, {
+            template: { Resources: { Thing: { Type: type } } },
+            resources: {
+              Thing: { physicalId: id, resourceType: type, properties: {}, dependencies: [] },
+            },
+          } as unknown as ResolverContext)
+          .catch((e: unknown) => {
+            message = e instanceof Error ? e.message : String(e);
+          })
+      );
+      expect(message, 'the HostedZoneId read did not refuse').toMatch(
+        /^Cannot resolve Fn::GetAtt \[Thing, HostedZoneId\]/
+      );
+      return { lines, message };
+    };
 
-    const control = await getAtt(type, 'HostedZoneId', 'ns-0abc');
-    expect(control).toContain(
-      "Failed to fetch HostedZoneId for namespace ns-0abc: The ID 'ns-0abc' does not exist"
-    );
+    const got = await refused(`ns-${EVIL}`);
+    expectSanitized(got.message, 'the HostedZoneId refusal');
+    const debug = line(got.lines, 'GetNamespace failed (Error): ');
+    expectSanitized(debug, 'the GetNamespace debug line');
+
+    const control = await refused('ns-0abc');
+    expect(control.message).toContain('The physical id "ns-0abc" is not a usable HostedZoneId');
+    expect(control.lines).toContain("GetNamespace failed (Error): The ID 'ns-0abc' does not exist");
   });
 
   it("sanitizes LaunchTemplate's DescribeLaunchTemplates failure WARN", async () => {

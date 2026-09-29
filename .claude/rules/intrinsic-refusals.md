@@ -19,8 +19,11 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
 - Refusals throw `IntrinsicResolutionRefusalError` and the `Fn::Sub` catch
   RE-RAISES it. Refusing arms: `guardedPhysicalIdFallback`'s `*Arn` / `*Url`
   shape hard-fail, `--strict-getatt`, `rejectPlaceholderArnAttribute`, the
-  fabricated-account guard, a declared resource, and an unbound declared
-  parameter with no `Default`; an UNDECLARED head, or a bound or defaulted
+  fabricated-account guard, a declared resource, an unbound declared
+  parameter with no `Default`, and an `Fn::GetAtt` cdkd cannot build or
+  CloudFormation does not define (`refuseUnconstructibleAttribute` /
+  `refuseUndefinedAttribute`, [#4077](https://github.com/go-to-k/cdkd/issues/4077) —
+  never answer `undefined`, which `Fn::Join` / `Fn::Sub` render as text); an UNDECLARED head, or a bound or defaulted
   parameter, warns. `resolveSub`'s own LIST refusal (#3809) is thrown only
   after the walk and its final dynamic-reference pass, so a later reference
   still records its needle. `resolveSplit`'s two refusals,
