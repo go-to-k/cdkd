@@ -1320,9 +1320,10 @@ export interface ResourceProvider {
    * passes its DESIRED bag (the recorded baseline) through it against the raw
    * readback and sends the returned baseline. So complete a legacy baseline
    * from the readback rather than drop from the readback: a member missing
-   * from the desired side is a REMOVAL to `update()`. The one exception is a
+   * from the desired side is a REMOVAL to `update()`. The exception is a
    * member whose absence the provider's `update()` provably never treats as a
-   * removal (`AWS::DynamoDB::Table` `WarmThroughput`, issue #3777; see
+   * removal (`AWS::DynamoDB::Table` `WarmThroughput`, issue #3777; an ELBv2
+   * attribute key absent from the readback too, issue #4144; see
    * docs/provider-rules.md).
    *
    * MUST be NON-MUTATING, and return BOTH inputs by identity when nothing
