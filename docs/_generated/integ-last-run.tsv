@@ -177,7 +177,7 @@ lambda-destinations	2026-08-10T05:50:57Z	PASS	70	verify.sh	0810 P2 sweep b10; rc
 lambda-durable-replacement	2026-09-29T02:37:41Z	PASS	155	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, #3808 held-name rename refused without deleting, orph clean
 lambda-env-removal	2026-08-10T11:50:46Z	PASS	62	verify.sh	0810 P0/P1 sweep b1; nested-map-key env removal, 3 phases, orph clean
 lambda-esm-self-managed-kafka	2026-09-27T12:27:25Z	PASS	120	verify.sh	rc ok, orph clean; schema-registry add + removal phases (#3861)
-lambda-event-invoke-config-update	2026-09-25T20:11:20Z	PASS	86	verify.sh	rc ok, orph clean (#3740 final sha)
+lambda-event-invoke-config-update	2026-09-29T14:50:06Z	PASS	85	verify.sh	rc ok, orph clean; #4091 CC identifier parity + seeded cc-api in-place flip
 lambda-layer-version-update	2026-07-26T21:13:17Z	PASS	82	verify.sh	re-run post review fixes (tab-safe version list); account clean
 lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 lambda-microvm-image	2026-09-29T11:33:01Z	PASS	596	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
