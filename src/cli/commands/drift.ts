@@ -58,9 +58,19 @@ import { stripCcApiAwsManagedFields } from '../../analyzer/cc-api-strip.js';
 // The own-key rule this command applies at every rebuild / membership site
 // (issues #2899 / #3124), shared with the analyzer-side canonicalizers since
 // issue #3121 — ONE spelling, from a LEAF module no suite mocks.
-import { defineOwnKey, hasOwnKey, hasPlainPrototype, ownValue } from '../../utils/own-keys.js';
+import {
+  defineOwnKey,
+  hasOwnKey,
+  hasPlainPrototype,
+  nullPrototypeRecord,
+  ownValue,
+} from '../../utils/own-keys.js';
 import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
-import { withStackName } from '../../provisioning/resource-name.js';
+import {
+  PATTERN_B_NAME_PROPERTIES,
+  derivesPatternBName,
+  withStackName,
+} from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
   IDENT_MAX_CODE_POINTS,
@@ -3142,7 +3152,15 @@ async function runDriftForStack(
               resource.properties ?? {}
             )
           : canonicalized;
-        const changes = calculateResourceDrift(paired.baseline, paired.aws, {
+        // Issue #4081: a declared Pattern B name the live one is DERIVED from
+        // (the legacy stack-name prefix, a sanitize rewrite) is the same name.
+        // Inside this function's `withStackName` scope, which the check needs.
+        const nameBaseline = canonicalizeDerivedPatternBName(
+          resource.resourceType,
+          paired.baseline,
+          paired.aws
+        );
+        const changes = calculateResourceDrift(nameBaseline, paired.aws, {
           ignorePaths: observedIgnorePaths.length
             ? [...ignorePaths, ...observedIgnorePaths]
             : ignorePaths,
@@ -3506,6 +3524,43 @@ export function buildReadCurrentStateContext(
     };
   }
   return { siblings };
+}
+
+/**
+ * The comparison baseline with a Pattern B resource's declared name replaced
+ * by the live one, when the live name is what the provider derives from it
+ * (issue [#4081](https://github.com/go-to-k/cdkd/issues/4081)).
+ *
+ * A record with no `observedProperties` compares its TEMPLATE bag, whose
+ * `RoleName` / `ManagedPolicyName` / ELBv2 `Name` / ... is the declared name.
+ * The IAM and ELBv2 providers create under `generateResourceNameWithFallback`'s
+ * output instead, which on a stack deployed with the legacy
+ * `--prefix-user-supplied-names` is `<stack>-<name>`: a name difference on
+ * every run, and an exit 1, with nothing drifted. {@link derivesPatternBName}
+ * decides it under either prefix setting, in the CALLER's `withStackName`
+ * scope, so a live name it does not reproduce (another stack's prefix, a
+ * different name) stays reported.
+ *
+ * Only the COMPARISON copy is rewritten, like the other canonicalizers here:
+ * `--accept` writes nothing for a name that no longer differs, and `--revert`
+ * sends the live name, which no drifted subtree overlays. Returns `baseline`
+ * by identity when nothing applies; the rewrite is onto a null-prototype
+ * record, so an own `__proto__` key survives it.
+ */
+export function canonicalizeDerivedPatternBName(
+  resourceType: string,
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>
+): Record<string, unknown> {
+  if (!hasOwnKey(PATTERN_B_NAME_PROPERTIES, resourceType)) return baseline;
+  const property = PATTERN_B_NAME_PROPERTIES[resourceType]!;
+  const declared = ownValue(baseline, property);
+  const live = ownValue(aws, property);
+  if (declared === live || !derivesPatternBName(resourceType, declared, live)) return baseline;
+  const out = nullPrototypeRecord();
+  for (const [key, value] of Object.entries(baseline)) out[key] = value;
+  out[property] = live;
+  return out;
 }
 
 /**

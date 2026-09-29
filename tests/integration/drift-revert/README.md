@@ -61,4 +61,7 @@ The full resource list is in the stack's doc comment
 `CDKD_PREFIX_USER_SUPPLIED_NAMES=true` (the legacy prefixing), their observed baselines are stripped, and
 `--revert` must update the prefixed resources in place rather than replace
 them under the bare template names. On failure `cleanup` also deletes any
-copies left under those bare names.
+copies left under those bare names. Step 6f (issue
+[#4081](https://github.com/go-to-k/cdkd/issues/4081)) then runs a plain
+`cdkd drift --json` on the same records and requires neither to report a name
+drift, since the live name is the prefixed form of the recorded one.

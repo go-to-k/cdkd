@@ -181,6 +181,41 @@ export const PATTERN_B_NAME_OPTIONS: Readonly<Record<string, ResourceNameOptions
 };
 
 /**
+ * Is `live` the name a Pattern B provider creates for the declared name
+ * `declared`, under EITHER user-supplied-name prefix setting? (issue #4081)
+ *
+ * `cdkd drift` compares a record's declared name against the name AWS holds,
+ * and on a stack deployed with the legacy `--prefix-user-supplied-names` the
+ * two differ by the stack-name prefix (`my-role` against `MyStack-my-role`)
+ * with nothing drifted. Neither the prefix flag nor the stack a deploy ran
+ * under is recorded, so both settings are tried, through the same
+ * sanitize / truncate pipeline the provider ran. Call it inside the stack's
+ * {@link withStackName} scope: with no stack name in scope the prefixed arm
+ * derives the bare name, and only a sanitize rewrite (`my_role` -> `my-role`)
+ * is recognized.
+ *
+ * Exact comparison, own-key lookup: a type outside the Pattern B tables, a
+ * non-string or empty value, or a name neither setting reproduces answers
+ * `false`, so the difference stays reported.
+ */
+export function derivesPatternBName(
+  resourceType: string,
+  declared: unknown,
+  live: unknown
+): boolean {
+  if (!Object.prototype.hasOwnProperty.call(PATTERN_B_NAME_OPTIONS, resourceType)) return false;
+  if (typeof declared !== 'string' || declared === '') return false;
+  if (typeof live !== 'string' || live === '') return false;
+  const options = PATTERN_B_NAME_OPTIONS[resourceType]!;
+  return [true, false].some(
+    (skip) =>
+      withSkipPrefix(skip, () =>
+        generateResourceName(declared, { ...options, userSupplied: true })
+      ) === live
+  );
+}
+
+/**
  * Options for generating a resource name.
  */
 export interface ResourceNameOptions {
