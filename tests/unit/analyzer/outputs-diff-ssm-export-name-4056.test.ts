@@ -319,6 +319,44 @@ describe('the #1948 exoneration of a REMOVED output reads the same shape (issue 
   });
 
   it.each([
+    // The writer that stored the mixed value also stored the sibling's whole
+    // token, so the record IS exonerated; the key's own shape still refuses it.
+    ['a sibling whole token exonerates the record', { templateHasSecretReference: true }],
+    // Nor does it wait for the template to prove a secret reference.
+    ['the template proves no secret reference', { templateHasSecretReference: false }],
+  ])('withholds a removed mixed secret value when %s', (_label, gate) => {
+    const changes = computeOutputsDiff(
+      { Sec: '{{resolve:secretsmanager:S}}', Gone: '{{resolve:secretsmanager:A}}-GONEPLAINTEXT' },
+      { Sec: '{{resolve:secretsmanager:S}}' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['Sec']), ...gate }
+    );
+    expect(JSON.stringify(changes)).not.toContain('GONEPLAINTEXT');
+    expect(changes).toEqual([
+      expect.objectContaining({ name: 'Gone', changeType: 'REMOVE', oldValueRedacted: true }),
+    ]);
+  });
+
+  it('withholds a DECLARED key whose stored mixed secret value now faces public text', () => {
+    // The template turned the output public, so pass 1 sees no secret on the
+    // desired side; the stored value's own shape is the only evidence left.
+    const changes = computeOutputsDiff(
+      { Out: '{{resolve:secretsmanager:A}}-PLAINLEAK', Keep: 'k1' },
+      { Out: 'public', Keep: 'k2' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['Out', 'Keep']), templateHasSecretReference: false }
+    );
+    expect(JSON.stringify(changes)).not.toContain('PLAINLEAK');
+    // Per key: the sibling keeps its previous value.
+    expect(changes).toEqual([
+      { name: 'Out', changeType: 'MODIFY', newValue: 'public', isExport: false, oldValueRedacted: true },
+      { name: 'Keep', changeType: 'MODIFY', oldValue: 'k1', newValue: 'k2', isExport: false },
+    ]);
+  });
+
+  it.each([
     ['a whole secretsmanager token', '{{resolve:secretsmanager:A}}'],
     ['a whole SecureString ssm token', SSM_REF],
   ])('still exonerates the record for %s beside the removed key', (_label, token) => {

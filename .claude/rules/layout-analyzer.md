@@ -85,7 +85,10 @@ check in `diff-recursive.ts` — accept a secret token of any spelling only as o
 whole token (for the veto and exoneration, where the desired side is one whole
 token too or has no string), or under exactly the desired side's literal parts
 (not the carried check); never on a substring hit, which a pre-#1901 deploy
-wrote beside a plaintext (#4101).
+wrote beside a plaintext (#4101). A stored value failing that shape is also
+withheld PER KEY on its own (`ownValueHidesSecret`), declared or not, whatever
+the record verdict, the exoneration or `templateHasSecretReference` say: the
+same pre-#1901 write stored a sibling's whole token, which exonerates the record.
 
 Outputs ROW names print only `secretSafeKeyDisplay`'s verdict (#4015): an
 older binary could store an `Export.Name` holding a secret. The diff fetches

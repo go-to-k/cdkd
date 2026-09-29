@@ -1192,11 +1192,29 @@ export function computeOutputsDiff(
       typeof value === 'string' && storedSecretTokenIsExpression(value, desired[name])
   );
   const declaredKeys = unaccountableScan.declaredKeys ?? new Set<string>();
+  // A key's OWN stored value can prove it unsafe whatever the record's verdict:
+  // a secret token outside the shape `storedSecretTokenIsExpression` accepts
+  // is what a pre-#1901 deploy wrote around a plaintext (issue #4101), and that
+  // same deploy stored a sibling's whole token, which exonerates the record.
+  // So this refusal is per key, for a declared key too (its template value may
+  // since have turned public, so pass 1 has no desired-side signal), and is
+  // gated by neither the exoneration nor the template.
+  const ownValueHidesSecret = (name: string): boolean => {
+    const value = currentBag[name];
+    return (
+      typeof value === 'string' &&
+      (isSecretDynamicReference(value) || keepsSecretReferenceToken(value)) &&
+      !storedSecretTokenIsExpression(
+        value,
+        Object.prototype.hasOwnProperty.call(desired, name) ? desired[name] : undefined
+      )
+    );
+  };
   const unaccountable = (name: string): boolean =>
-    unaccountableScan.templateHasSecretReference === true &&
-    !recordProvesPostGhsa &&
     !declaredKeys.has(name) &&
-    !Object.prototype.hasOwnProperty.call(desired, name);
+    !Object.prototype.hasOwnProperty.call(desired, name) &&
+    ((unaccountableScan.templateHasSecretReference === true && !recordProvesPostGhsa) ||
+      ownValueHidesSecret(name));
 
   // THE KEY'S OWN VERDICT (issue #4015). A stored key is printed as a row
   // name, and a binary from before issue #1919 (or #2889) could publish an
@@ -1296,7 +1314,10 @@ export function computeOutputsDiff(
 
   const push = (change: OutputChange): void => {
     const shown: OutputChange = { ...change, ...nameDisplay(change.name) };
-    if (change.changeType !== 'ADD' && (legacyRecord || unaccountable(change.name))) {
+    if (
+      change.changeType !== 'ADD' &&
+      (legacyRecord || unaccountable(change.name) || ownValueHidesSecret(change.name))
+    ) {
       const { oldValue: _dropped, ...rest } = shown;
       changes.push({ ...rest, oldValueRedacted: true });
       return;
