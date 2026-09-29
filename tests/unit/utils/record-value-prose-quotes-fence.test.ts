@@ -42,8 +42,6 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'src/deployment/intrinsic-function-resolver.ts':
     "open row of go-to-k/cdkd#3950 (the resolver's displayMasked / displayLeaf renders inside single quotes; they keep `'`). While listed, the two sites #4052 fixed here rely on their paste cases, not this fence",
   'src/cli/options.ts': 'open row of go-to-k/cdkd#3950 (--assume-role parse errors, displayIdent inside double quotes)',
-  'src/deployment/replacement-name-holder.ts':
-    'open row of go-to-k/cdkd#3950 (displaySafe inside double quotes; PR #4010 holds the file)',
 };
 
 function sourceFiles(dir: string): string[] {

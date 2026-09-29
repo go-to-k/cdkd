@@ -49,7 +49,7 @@ import {
   getCurrentSkipPrefix,
   withSkipPrefix,
 } from '../provisioning/resource-name.js';
-import { displayIdent, displaySafe } from '../utils/display-safe.js';
+import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { SECRET_MASK } from './secret-redaction.js';
 
 export interface ReplacementNameChange {
@@ -1235,17 +1235,51 @@ export function replacementOldHoldsSentName(input: {
  * The shared diagnosis sentence. Each caller appends its own remedy, since what
  * deleting the old resource first means differs per site (`--replace`, or
  * removing `UpdateReplacePolicy: Retain`).
+ *
+ * The names are template text and `state.json` values, and the remedy names
+ * `cdkd deploy --replace`, so none goes inside cdkd's own `"..."` unless it is
+ * a plain identifier (go-to-k/cdkd#3950): a `"` in it closed the quote, and
+ * `$( )` or a backtick runs inside double quotes regardless. Any other value
+ * is described.
  */
 export function renderNameHeldElsewhere(change: ReplacementNameChange): string {
-  const desired = displaySafe(change.desiredName);
+  const property = change.property;
+  const desiredPlain = isPlainName(change.desiredName);
+  const asksFor = desiredPlain
+    ? `asks for ${property} "${change.desiredName}"`
+    : `asks for a ${property} that is not a plain identifier`;
+  const heldProperty = change.heldProperty ?? property;
   const held =
-    change.heldName !== undefined
-      ? `holds ${change.heldProperty ?? change.property} "${displaySafe(change.heldName)}"`
-      : `does not hold that name`;
+    change.heldName === undefined
+      ? `does not hold that name`
+      : isPlainName(change.heldName)
+        ? `holds ${heldProperty} "${change.heldName}"`
+        : `holds a ${heldProperty} that is not a plain identifier`;
+  const replaced =
+    change.physicalId === ''
+      ? 'the resource being replaced, which has no recorded id,'
+      : isPlainName(change.physicalId)
+        ? `the resource being replaced (${change.physicalId})`
+        : 'the resource being replaced, whose recorded id is not a plain identifier,';
+  // The desired name's second mention: `"name"` when plain, else `the
+  // requested name`, which cannot bind to a described held name nearer to it.
   return (
-    `The replacement asks for ${change.property} "${desired}", but the resource being ` +
-    `replaced (${displaySafe(change.physicalId)}) ${held} — so "${desired}" is held by ` +
-    `ANOTHER existing resource, not by the one being replaced, and deleting the old ` +
-    `resource first cannot free it`
+    `The replacement ${asksFor}, but ${replaced} ${held} — so ` +
+    `${desiredPlain ? `"${change.desiredName}"` : 'the requested name'} is held by ANOTHER existing ` +
+    `resource, not by the one being replaced, and deleting the old resource first cannot free it`
+  );
+}
+
+/**
+ * True when `value` has no whitespace and `displayIdent` renders it unchanged:
+ * only characters that are literal inside double quotes. The whitespace test
+ * comes FIRST because the round-trip alone admits a value that ends in
+ * `displayIdent`'s own cut marker (`<1152 plain characters> [cut: N more
+ * characters withheld]` renders as itself). The cap is the stack-ref one, so a
+ * long ARN physical id is not cut.
+ */
+function isPlainName(value: string): boolean {
+  return (
+    !/\s/.test(value) && displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value
   );
 }

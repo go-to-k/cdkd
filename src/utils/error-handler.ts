@@ -5,7 +5,7 @@ import {
   quotedOrDescribed,
   withheldTargetClause,
 } from './pasteable-command.js';
-import { displayAwsMessage } from './display-safe.js';
+import { displayAwsMessage, isPasteableIdent } from './display-safe.js';
 import { getLogger } from './logger.js';
 
 /**
@@ -1025,6 +1025,34 @@ export interface NormalizeAwsErrorContext {
 }
 
 /**
+ * The three spellings of {@link normalizeAwsError}'s bucket: `'name'` when it
+ * is a plain identifier, a description otherwise (see that function's JSDoc).
+ * An absent name keeps the `'<unknown bucket>'` literal cdkd writes itself.
+ */
+function bucketNames(bucket: string | undefined): {
+  subject: string;
+  object: string;
+  quoted: string;
+} {
+  if (bucket === undefined) {
+    return {
+      subject: "Bucket '<unknown bucket>'",
+      object: "bucket '<unknown bucket>'",
+      quoted: "'<unknown bucket>'",
+    };
+  }
+  if (isPasteableIdent(bucket)) {
+    return { subject: `Bucket '${bucket}'`, object: `bucket '${bucket}'`, quoted: `'${bucket}'` };
+  }
+  const described = 'a bucket whose name is not a plain identifier';
+  return {
+    subject: 'A bucket whose name is not a plain identifier',
+    object: described,
+    quoted: described,
+  };
+}
+
+/**
  * Convert AWS SDK v3's synthetic `Unknown` / `UnknownError` exception into
  * an actionable `Error` keyed off `$metadata.httpStatusCode`.
  *
@@ -1047,6 +1075,15 @@ export interface NormalizeAwsErrorContext {
  *     - 404 → `Bucket '<name>' does not exist.`
  *     - other / unknown → `S3 error during <operation> on '<bucket>' (HTTP
  *       <status>).`
+ *
+ * The bucket name comes from a CLI flag, the state bucket's config, or a
+ * bootstrap marker's body, which anyone who can `s3:PutObject` on the state
+ * bucket chooses. So it goes inside cdkd's own `'...'` only when it is a plain
+ * identifier, and is described otherwise (go-to-k/cdkd#3950): a `'` in it
+ * closed the quote, and the rest of a pasted sentence ran as shell. S3's
+ * naming rules (letters, digits, `.`, `-`, `_` for a legacy name, starting
+ * with a letter or digit) fit `isPasteableIdent`, so a real name reads as
+ * before.
  */
 export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContext = {}): Error {
   if (!(err instanceof Error)) {
@@ -1061,7 +1098,7 @@ export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContex
 
   const meta = (err as { $metadata?: { httpStatusCode?: number } }).$metadata;
   const status = meta?.httpStatusCode;
-  const bucket = context.bucket ?? '<unknown bucket>';
+  const bucket = bucketNames(context.bucket);
   const operation = context.operation ?? 'operation';
 
   switch (status) {
@@ -1074,20 +1111,18 @@ export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContex
         responseHeaders?.['x-amz-bucket-region'] ?? responseHeaders?.['X-Amz-Bucket-Region'];
       const where = region ? ` (in ${region})` : '';
       return new Error(
-        `Bucket '${bucket}'${where} is in a different region than the client. ` +
+        `${bucket.subject}${where} is in a different region than the client. ` +
           `cdkd resolves this automatically; if you see this message, please report it.`
       );
     }
     case 403:
-      return new Error(
-        `Access denied to bucket '${bucket}'. Verify credentials and bucket policy.`
-      );
+      return new Error(`Access denied to ${bucket.object}. Verify credentials and bucket policy.`);
     case 404:
-      return new Error(`Bucket '${bucket}' does not exist.`);
+      return new Error(`${bucket.subject} does not exist.`);
     default: {
       const statusStr = status !== undefined ? `HTTP ${status}` : 'unknown HTTP status';
       return new Error(
-        `S3 error during ${operation} on '${bucket}' (${statusStr}). ` +
+        `S3 error during ${operation} on ${bucket.quoted} (${statusStr}). ` +
           `See CloudTrail for details.`
       );
     }

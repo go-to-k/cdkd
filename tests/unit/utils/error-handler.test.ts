@@ -14,6 +14,7 @@ import {
   StateError,
   withErrorHandling,
 } from '../../../src/utils/error-handler.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from './paste-harness.js';
 
 /**
  * Build the AWS SDK v3 synthetic Unknown error shape that this helper is
@@ -135,6 +136,59 @@ describe('normalizeAwsError', () => {
     const result = normalizeAwsError(err);
 
     expect(result.message).toMatch(/'<unknown bucket>'/);
+  });
+
+  /**
+   * go-to-k/cdkd#3950: every arm printed the bucket RAW inside cdkd's own
+   * `'...'`. The asset-storage paths pass a bootstrap marker's `assetBucket`,
+   * which anyone who can `s3:PutObject` on the state bucket chooses, so a `'`
+   * in it closed the quote and pasting the sentence ran the payload. A name
+   * that is not a plain identifier is now described, in every arm.
+   */
+  describe('a bucket name that is not a plain identifier (go-to-k/cdkd#3950)', () => {
+    const DESCRIBED = /[Aa] bucket whose name is not a plain identifier/;
+    /** Each arm's own spelling, in `arms()` order: 301, 403, 404, other. */
+    const DESCRIBED_BY_ARM = [
+      'A bucket whose name is not a plain identifier (in us-west-2) is in a different region',
+      'Access denied to a bucket whose name is not a plain identifier. Verify',
+      'A bucket whose name is not a plain identifier does not exist.',
+      'S3 error during HeadBucket on a bucket whose name is not a plain identifier (HTTP 500).',
+    ];
+    const arms = (bucket: string) =>
+      [
+        makeUnknownError(301, { $response: { headers: { 'x-amz-bucket-region': 'us-west-2' } } }),
+        makeUnknownError(403),
+        makeUnknownError(404),
+        makeUnknownError(500),
+      ].map((err) => normalizeAwsError(err, { bucket, operation: 'HeadBucket' }).message);
+
+    it('keeps a plain name quoted in every arm, a legacy one included', () => {
+      // `My_Bucket`: a pre-2018 us-east-1 name may carry upper case and `_`.
+      for (const name of ['my-bucket.v2', 'My_Bucket']) {
+        for (const message of arms(name)) {
+          expect(message).toContain(`'${name}'`);
+          expect(message).not.toMatch(DESCRIBED);
+        }
+      }
+    });
+
+    it("spells each arm's description for its position in the sentence", () => {
+      expect(arms('x y')).toEqual(
+        DESCRIBED_BY_ARM.map((d) => expect.stringContaining(d))
+      );
+    });
+
+    it('describes every payload in every arm, names none of it, and no pasted span runs', () => {
+      withPasteDir((dir) => {
+        for (const { value } of PASTE_PAYLOADS) {
+          for (const message of arms(value)) {
+            expect(message, value).toMatch(DESCRIBED);
+            expect(message, value).not.toContain(value);
+            expect(spansThatRun(message, dir), value).toEqual([]);
+          }
+        }
+      });
+    }, 120_000);
   });
 });
 
