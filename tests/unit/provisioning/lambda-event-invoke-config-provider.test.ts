@@ -141,6 +141,55 @@ describe('LambdaEventInvokeConfigProvider', () => {
     });
   });
 
+  describe('physical id after an in-place update (issue #4118)', () => {
+    const T = 'AWS::Lambda::EventInvokeConfig';
+    const arn = (name: string) => `arn:aws:lambda:us-east-1:123456789012:function:${name}`;
+
+    it('keeps the id when FunctionName is only re-spelled as the ARN', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'Cfg',
+        'my-fn|$LATEST',
+        T,
+        { FunctionName: arn('my-fn'), Qualifier: '$LATEST', MaximumRetryAttempts: 2 },
+        { FunctionName: 'my-fn', Qualifier: '$LATEST', MaximumRetryAttempts: 2 }
+      );
+      expect(result.physicalId).toBe('my-fn|$LATEST');
+    });
+
+    it('names the new function when the Put landed on a renamed one', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'Cfg',
+        'my-fn|$LATEST',
+        T,
+        { FunctionName: arn('my-fn-2'), Qualifier: '$LATEST', MaximumRetryAttempts: 1 },
+        { FunctionName: 'my-fn', Qualifier: '$LATEST', MaximumRetryAttempts: 1 }
+      );
+      expect(result.physicalId).toBe('my-fn-2|$LATEST');
+    });
+
+    it('keeps an id recorded in ARN spelling when the name is unchanged', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'Cfg',
+        `${arn('my-fn')}|$LATEST`,
+        T,
+        { FunctionName: 'my-fn', Qualifier: '$LATEST', MaximumRetryAttempts: 3 },
+        { FunctionName: arn('my-fn'), Qualifier: '$LATEST', MaximumRetryAttempts: 2 }
+      );
+      expect(result.physicalId).toBe(`${arn('my-fn')}|$LATEST`);
+    });
+
+    it('drift compares a re-spelled FunctionName by name', () => {
+      expect(
+        provider.canonicalizeDriftProperties(T, { FunctionName: arn('my-fn'), Qualifier: '$LATEST' })
+      ).toEqual({ FunctionName: 'my-fn', Qualifier: '$LATEST' });
+      const plain = { FunctionName: 'my-fn' };
+      expect(provider.canonicalizeDriftProperties(T, plain)).toBe(plain);
+    });
+  });
+
   describe('delete', () => {
     it('parses the compound physical id and calls DeleteFunctionEventInvokeConfig', async () => {
       mockSend.mockResolvedValueOnce({});

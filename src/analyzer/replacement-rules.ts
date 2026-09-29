@@ -9,6 +9,7 @@
  */
 
 import { getLogger } from '../utils/logger.js';
+import { canonicalLambdaFunctionName } from '../utils/lambda-function-name.js';
 
 /**
  * Resource replacement rule
@@ -75,16 +76,16 @@ export function durableConfigPresenceToggled(oldValue: unknown, newValue: unknow
  * direction, which can over-report a replacement but never skip one. An ARN of
  * another account or region with the same name reads as the same function;
  * Lambda refuses such a Put, so that case fails loudly instead of replacing.
+ *
+ * A call with NO value on either side (`undefined`, `undefined`) is the diff's
+ * promoted-dependent probe -- the function this config points at is being
+ * replaced, so the value WILL move once it resolves -- and answers `true`; the
+ * engine's replacement ceiling lowers it when the value turns out unmoved.
  */
 export function eventInvokeConfigFunctionChanged(oldValue: unknown, newValue: unknown): boolean {
-  const canonical = (value: unknown): unknown => {
-    if (typeof value !== 'string') return JSON.stringify(value);
-    const full = /^arn:[^:]+:lambda:[^:]+:\d{12}:function:([^:]+)$/.exec(value);
-    if (full) return full[1];
-    const partial = /^\d{12}:function:([^:]+)$/.exec(value);
-    if (partial) return partial[1];
-    return value;
-  };
+  if (oldValue === undefined && newValue === undefined) return true;
+  const canonical = (value: unknown): unknown =>
+    typeof value === 'string' ? canonicalLambdaFunctionName(value) : JSON.stringify(value);
   return canonical(oldValue) !== canonical(newValue);
 }
 

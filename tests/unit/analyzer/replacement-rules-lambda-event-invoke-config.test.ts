@@ -59,6 +59,10 @@ describe('ReplacementRulesRegistry — Lambda EventInvokeConfig', () => {
       expect(registry.requiresReplacement(EIC, 'FunctionName', oldValue, newValue)).toBe(true);
     });
 
+    it('answers the promoted-dependent probe (no value on either side) with a replacement', () => {
+      expect(registry.requiresReplacement(EIC, 'FunctionName', undefined, undefined)).toBe(true);
+    });
+
     it('does not replace on two equal intrinsics', () => {
       const ref = { Ref: 'Fn' };
       expect(registry.requiresReplacement(EIC, 'FunctionName', ref, { Ref: 'Fn' })).toBe(false);

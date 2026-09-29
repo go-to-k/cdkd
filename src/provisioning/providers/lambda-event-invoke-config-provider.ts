@@ -7,6 +7,7 @@ import {
   type DestinationConfig,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
+import { canonicalLambdaFunctionName } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -93,6 +94,29 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
    * `[a-zA-Z0-9-_]+` and a function ARN contains no `|`, so the separator can
    * never appear inside the FunctionName segment.
    */
+  /**
+   * The id the config is addressed by AFTER an in-place Put (issue #4118). A
+   * re-spelling of the same function keeps `physicalId`. When the function
+   * NAME itself moved -- the config was classified in place against the
+   * PRE-deploy value of a `Ref` / `Fn::GetAtt` whose function is being
+   * replaced in the same deploy -- the Put landed on the new function, so the
+   * id must name it, or drift and a later delete address the old one.
+   */
+  private physicalIdAfterUpdate(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>
+  ): string {
+    const next = properties['FunctionName'];
+    if (typeof next !== 'string') return physicalId;
+    const nextName = canonicalLambdaFunctionName(next);
+    const { functionName: recorded, qualifier } = this.parsePhysicalId(physicalId);
+    if (canonicalLambdaFunctionName(recorded) === nextName) return physicalId;
+    const nextQualifier =
+      typeof properties['Qualifier'] === 'string' ? properties['Qualifier'] : qualifier;
+    return this.buildPhysicalId(logicalId, nextName, nextQualifier);
+  }
+
   private parsePhysicalId(physicalId: string): { functionName: string; qualifier: string } {
     const sep = physicalId.indexOf('|');
     if (sep === -1) {
@@ -275,7 +299,11 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
         new PutFunctionEventInvokeConfigCommand(this.buildPutInput(properties))
       );
       this.logger.debug(`Successfully updated Lambda EventInvokeConfig ${logicalId}`);
-      return { physicalId, wasReplaced: false, attributes: {} };
+      return {
+        physicalId: this.physicalIdAfterUpdate(logicalId, physicalId, properties),
+        wasReplaced: false,
+        attributes: {},
+      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -409,8 +437,13 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     _resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
-    const dest = properties['DestinationConfig'];
-    if (dest === null || typeof dest !== 'object' || Array.isArray(dest)) return properties;
+    // A re-spelled FunctionName (name <-> unqualified ARN) names one function,
+    // and the readback emits the NAME from the physical id (issue #4118).
+    const fn = properties['FunctionName'];
+    const fnName = typeof fn === 'string' ? canonicalLambdaFunctionName(fn) : fn;
+    const base = fnName === fn ? properties : { ...properties, FunctionName: fnName };
+    const dest = base['DestinationConfig'];
+    if (dest === null || typeof dest !== 'object' || Array.isArray(dest)) return base;
     const members = dest as Record<string, unknown>;
     const empty = (key: string): boolean => {
       const m = members[key];
@@ -422,11 +455,11 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       );
     };
     const stripped = ['OnSuccess', 'OnFailure'].filter((key) => key in members && empty(key));
-    if (stripped.length === 0) return properties;
+    if (stripped.length === 0) return base;
     const kept = Object.fromEntries(
       Object.entries(members).filter(([key]) => !stripped.includes(key))
     );
-    const out = { ...properties };
+    const out = { ...base };
     if (Object.keys(kept).length === 0) delete out['DestinationConfig'];
     else out['DestinationConfig'] = kept;
     return out;
