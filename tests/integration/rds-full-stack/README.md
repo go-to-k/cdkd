@@ -62,7 +62,10 @@ asserts the SSM parameter value equals the live DB endpoint (the computed
 live `DBSubnetGroupArn` (issue 1824), then destroys and asserts the instance,
 subnet group, parameter group, both SSM parameters, and state file are all gone
 with 0 orphans. It also asserts the instance is routed via Cloud Control and that
-its destroy left no manual snapshot (issue 3993). The cleanup trap deletes in the RDS-safe order (instance first +
+its destroy left no manual snapshot (issue 3993). Before the destroy, a
+`CDKD_TEST_UPDATE=true` deploy renames the instance, forcing a replacement, and
+asserts the old instance's delete left no manual snapshot
+either (issue 4029). The cleanup trap deletes in the RDS-safe order (instance first +
 wait, then groups, then SG / VPC).
 
 ## Cost / runtime notes

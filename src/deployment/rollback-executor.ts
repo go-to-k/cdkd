@@ -76,6 +76,7 @@ import {
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
   effectiveDeletionPolicy,
+  replacementDeletePolicy,
   finalSnapshotMechanism,
   unsupportedFinalSnapshotError,
   type PreDeleteSnapshotClients,
@@ -2830,6 +2831,9 @@ async function replaySingle(
             expectedRegion: ctx.region,
             ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
             ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+            // Issue #4029: the classified policy, so a Cloud Control-routed
+            // RDS delete under `Delete` avoids the registry handler's snapshot.
+            deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
           }
         );
         throwIfDeleteSkipped(
@@ -2941,6 +2945,8 @@ async function replaySingle(
             {
               expectedRegion: ctx.region,
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+              // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
+              deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
             }
           );
           // Issue #1762: BEFORE the state re-point, so a skip cannot leave
@@ -3525,6 +3531,7 @@ async function replaySingle(
               {
                 expectedRegion: ctx.region,
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+                deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
               }
             );
             // Issue #1762: this delete exists to release the name the
@@ -3755,6 +3762,7 @@ async function replaySingle(
               {
                 expectedRegion: ctx.region,
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+                deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
               }
             );
             // Issue #1762: the old resource is already re-created and state
@@ -4360,6 +4368,7 @@ export async function replayFailedOperations(
               expectedRegion: ctx.region,
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+              deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
             }
           );
           // Issue #1762: the partially-created resource is still there, so

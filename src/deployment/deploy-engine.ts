@@ -156,6 +156,7 @@ import {
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
   effectiveDeletionPolicy,
+  replacementDeletePolicy,
   unsupportedFinalSnapshotError,
   type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
@@ -6437,6 +6438,23 @@ export class DeployEngine {
   }
 
   /**
+   * What a replacement's delete of the OLD resource tells the provider
+   * (issue #4029): the governing `UpdateReplacePolicy`, and the
+   * `--skip-final-snapshot` opt-out. `CloudControlProvider.delete` reads both
+   * to keep an RDS cluster or instance off the registry handler, which would
+   * otherwise take an untagged snapshot of its own.
+   */
+  private replacementDeleteContext(updateReplacePolicy: string | undefined): {
+    deletionPolicy: string;
+    skipFinalSnapshot?: true;
+  } {
+    return {
+      deletionPolicy: replacementDeletePolicy(updateReplacePolicy),
+      ...(this.options.skipFinalSnapshot === true && { skipFinalSnapshot: true as const }),
+    };
+  }
+
+  /**
    * The `Snapshot`-policy gate every engine delete site runs BEFORE its
    * delete (issues #1352 / #1353 / #1354). Given the resource's effective
    * policy for THIS delete (`DeletionPolicy` on the destroy / removal paths,
@@ -6553,6 +6571,7 @@ export class DeployEngine {
           // guard (issue #1340).
           forceDataDelete: this.options.forceStatefulRecreation === true,
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          ...this.replacementDeleteContext(updateReplacePolicy),
         }
       );
     } catch (deleteError) {
@@ -7620,6 +7639,7 @@ export class DeployEngine {
                     ...(recreateFinalSnapshotId !== undefined && {
                       finalSnapshotIdentifier: recreateFinalSnapshotId,
                     }),
+                    ...this.replacementDeleteContext(updateReplacePolicy),
                   }
                 );
               } catch (deleteError) {
@@ -8088,6 +8108,7 @@ export class DeployEngine {
                       ...(cleanupFinalSnapshotId !== undefined && {
                         finalSnapshotIdentifier: cleanupFinalSnapshotId,
                       }),
+                      ...this.replacementDeleteContext(updateReplacePolicy),
                     }
                   );
                 } catch (deleteError) {
@@ -8554,12 +8575,14 @@ export class DeployEngine {
                 // the state fallback cannot reintroduce it — `??` only fires
                 // when the template omits the attribute entirely, which is
                 // exactly when `retainOldOnReplace` is false.
+                const fallbackUpdateReplacePolicy =
+                  template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                  currentResource.updateReplacePolicy;
                 const fallbackFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
                   logicalId,
                   resourceType,
                   currentResource,
-                  template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
-                    currentResource.updateReplacePolicy
+                  fallbackUpdateReplacePolicy
                 );
                 // Initialized because the catch below can leave it unassigned.
                 let fallbackDeleteResult: void | ResourceDeleteResult = undefined;
@@ -8575,6 +8598,7 @@ export class DeployEngine {
                       ...(fallbackFinalSnapshotId !== undefined && {
                         finalSnapshotIdentifier: fallbackFinalSnapshotId,
                       }),
+                      ...this.replacementDeleteContext(fallbackUpdateReplacePolicy),
                     }
                   );
                 } catch (deleteError) {

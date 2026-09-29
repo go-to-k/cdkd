@@ -509,6 +509,8 @@ describe('replayRollback', () => {
     const state = { B: res({ physicalId: 'phys-B' }) };
     const result = await replayRollback(ops, state, 'S', ctx);
     expect(del).toHaveBeenCalledOnce();
+    // Issue #4029: a plain CREATE rollback delete is governed by `Delete`.
+    expect((del.mock.calls[0][4] as Record<string, unknown>)['deletionPolicy']).toBe('Delete');
     expect(state.B).toBeUndefined();
     expect(result.failures).toBe(0);
     const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
@@ -582,6 +584,8 @@ describe('replayRollback', () => {
     expect(del.mock.calls[0][4]).toEqual(
       expect.objectContaining({
         finalSnapshotIdentifier: expect.stringMatching(/^new-db-final-\d{8}-\d{6}$/),
+        // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
+        deletionPolicy: 'Snapshot',
       })
     );
   });
@@ -615,6 +619,8 @@ describe('replayRollback', () => {
     expect(
       (del.mock.calls[0][4] as Record<string, unknown>)['finalSnapshotIdentifier']
     ).toBeUndefined();
+    // Issue #4029: no UpdateReplacePolicy -> CloudFormation's default, Delete.
+    expect((del.mock.calls[0][4] as Record<string, unknown>)['deletionPolicy']).toBe('Delete');
   });
 
   it('orphans a Retain CREATE without calling delete', async () => {
@@ -866,7 +872,10 @@ describe('replayRollback', () => {
       replayingState: true,
       maskSecrets: expect.any(Function),
     });
-    expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, { expectedRegion: 'us-east-1' });
+    expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, {
+      expectedRegion: 'us-east-1',
+      deletionPolicy: 'Delete',
+    });
     expect(state.B).toMatchObject({ physicalId: 'phys-old-2', properties: { a: 1 }, attributes: { Arn: 'arn:old' } });
     expect(result.failures).toBe(0);
     expect(afterOp).toHaveBeenCalledWith('B');
@@ -1583,7 +1592,10 @@ describe('replayRollback', () => {
     };
     const result = await replayRollback(ops, state, 'S', ctx);
     expect(create).not.toHaveBeenCalled();
-    expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::S3::Bucket', { a: 2 }, { expectedRegion: 'us-east-1' });
+    expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::S3::Bucket', { a: 2 }, {
+      expectedRegion: 'us-east-1',
+      deletionPolicy: 'Delete',
+    });
     expect(state.B).toBe(prev);
     expect(result.failures).toBe(0);
     expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
@@ -1792,7 +1804,10 @@ describe('replayFailedOperations (#1198)', () => {
     ];
     const state: Record<string, ResourceState> = { C: resT({ physicalId: 'pC' }) };
     const result = await replayFailedOperations(failedOps, state, 'S', ctx);
-    expect(del).toHaveBeenCalledWith('C', 'pC', 'T', undefined, { expectedRegion: 'us-east-1' });
+    expect(del).toHaveBeenCalledWith('C', 'pC', 'T', undefined, {
+      expectedRegion: 'us-east-1',
+      deletionPolicy: 'Delete',
+    });
     expect(state.C).toBeUndefined();
     expect(result.failures).toBe(0);
   });
@@ -2553,6 +2568,7 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
     // Issue #4029: the opt-out reaches the provider, so a Cloud Control-routed
     // RDS delete stays off the registry handler that snapshots on its own.
     expect((del.mock.calls[0]![4] as Record<string, unknown>)['skipFinalSnapshot']).toBe(true);
+    expect((del.mock.calls[0]![4] as Record<string, unknown>)['deletionPolicy']).toBe('Snapshot');
     expect(state['Res']).toBeUndefined();
     // The outcome above is byte-identical to the PRE-#1362 policy-blind
     // delete, so it cannot bind on its own. The audit line is what says a
@@ -2618,6 +2634,7 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
     expect(result.failures).toBe(0);
     expect(del).toHaveBeenCalledWith('Res', 'phys-res', 'AWS::EC2::Volume', { Size: 1 }, {
       expectedRegion: 'us-east-1',
+      deletionPolicy: 'Delete',
     });
     expect(state['Res']).toBeUndefined();
   });

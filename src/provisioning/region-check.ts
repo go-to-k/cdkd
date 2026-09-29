@@ -118,9 +118,12 @@ export interface DeleteContext {
   finalSnapshotIdentifier?: string;
 
   /**
-   * The resource's recorded `DeletionPolicy`, from a caller that knows it:
+   * The policy that governs THIS delete: the recorded `DeletionPolicy` on
    * `cdkd destroy` / `cdkd state destroy` and the deploy engine's DELETE of a
-   * resource removed from the template. Other delete sites leave it absent.
+   * resource removed from the template; the `UpdateReplacePolicy` (default
+   * `Delete`) on a replacement's delete of the old or new copy; `Snapshot` or
+   * `Delete` as classified on a rollback's delete of a created resource
+   * (issue #4029). A caller that cannot say leaves it absent.
    *
    * Read by `CloudControlProvider.delete` alone (issue #3993): an RDS cluster
    * or instance leaves Cloud Control's snapshotting delete handler on an

@@ -304,6 +304,9 @@ describe('deploy --replace proves the old resource holds the SENT name before de
     expect(del).toHaveBeenCalledTimes(1);
     expect(del.mock.calls[0]?.[1]).toBe(GENERATED);
     expect(sent).toEqual([GENERATED, GENERATED]);
+    // Issue #4029: the delete-first carries its governing UpdateReplacePolicy
+    // (none declared -> CloudFormation's default, Delete).
+    expect(del.mock.calls[0]?.[4]).toEqual(expect.objectContaining({ deletionPolicy: 'Delete' }));
   });
 });
 

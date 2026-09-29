@@ -365,6 +365,7 @@
         "loggroup-class-guard",
         "loggroup-never-expire-guard",
         "nested-stack-replace-guard",
+        "rds-full-stack",
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "replace-squatter-refusal",

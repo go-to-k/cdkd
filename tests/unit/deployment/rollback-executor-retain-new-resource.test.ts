@@ -149,6 +149,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
 
       expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, {
         expectedRegion: 'us-east-1',
+        deletionPolicy: 'Delete',
       });
       expect(result.warnings).toBe(0);
     });

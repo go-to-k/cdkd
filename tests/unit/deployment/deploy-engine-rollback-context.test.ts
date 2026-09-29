@@ -186,6 +186,8 @@ describe('DeployEngine rollback context threading (#1363)', () => {
       /^phys-target-final-\d{8}-\d{6}$/
     );
     expect(deleteContextArg()).not.toHaveProperty('skipFinalSnapshot');
+    // Issue #4029: the classified policy reaches the provider.
+    expect(deleteContextArg()['deletionPolicy']).toBe('Snapshot');
   });
 
   it('skipFinalSnapshot: true also reaches the pre-delete snapshot types', async () => {

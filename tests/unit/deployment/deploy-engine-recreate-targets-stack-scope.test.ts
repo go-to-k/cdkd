@@ -252,6 +252,11 @@ describe('recreate targets apply only to the stack they were validated against (
       expect(provider.delete).toHaveBeenCalled();
       expect(provider.create).toHaveBeenCalled();
       expect(provider.update).not.toHaveBeenCalled();
+      // Issue #4029: the recreate delete carries its governing UpdateReplacePolicy
+      // (none declared -> CloudFormation's default, Delete).
+      expect((provider.delete as ReturnType<typeof vi.fn>).mock.calls[0]?.[4]).toEqual(
+        expect.objectContaining({ deletionPolicy: 'Delete' })
+      );
     });
 
     it(`${flag}: the SAME id in a nested CHILD stack is not a target — the update stays in place`, async () => {

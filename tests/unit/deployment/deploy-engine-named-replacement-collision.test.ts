@@ -251,7 +251,7 @@ describe('DeployEngine — custom-named replacement collision', () => {
       'my-pipe',
       TYPE,
       { Name: 'my-pipe', Source: 'arn:a' },
-      { expectedRegion: 'us-east-1', forceDataDelete: false }
+      { expectedRegion: 'us-east-1', forceDataDelete: false, deletionPolicy: 'Delete' }
     );
   });
 
