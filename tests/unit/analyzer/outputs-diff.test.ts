@@ -1178,7 +1178,8 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     // disagreed in BOTH directions on a literal name for a full round). Each
     // side keeps its own predicate here, because they answer the same question
     // from different information: deploy resolves the name and asks what was
-    // substituted; the diff never substitutes and asks how the name is SPELLED,
+    // substituted; the diff never substitutes and asks whether the resolved
+    // name still carries a secret's `{{resolve:...}}` TOKEN (issue #4056),
     // gated on the name being intrinsic. Losing either arm reds this.
     const twin = readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/analyzer/outputs-diff.ts'),
@@ -1203,7 +1204,7 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     for (const arg of ['outputKey', 'exportName', 'exposure', 'context.recordedSecretValues']) {
       expect(callArgs).toContain(arg);
     }
-    expect(twin).toContain('declaredExportIsIntrinsic && isSecretDynamicReference(exportName)');
+    expect(twin).toContain('declaredExportIsIntrinsic && keepsSecretReferenceToken(exportName)');
     // ...and the LITERAL arm, which is what keeps the diff from publishing an
     // alias deploy refuses without being able to see the secret.
     expect(twin).toContain('!declaredExportIsIntrinsic && secretSourceKeys.size > 0');

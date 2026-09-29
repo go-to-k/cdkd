@@ -372,6 +372,37 @@ export function templateUsesSub(templateValue: unknown): boolean {
  */
 
 /**
+ * The dynamic-reference services the resolver RESOLVES on the deploy path. A
+ * token of any other service is left as written on BOTH paths (the resolver
+ * warns and substitutes nothing), so it is never a sign of a secret.
+ */
+const DEPLOY_RESOLVED_REFERENCE_SERVICES: ReadonlySet<string> = new Set([
+  'secretsmanager',
+  'ssm',
+  'ssm-secure',
+]);
+
+/**
+ * True when a name RESOLVED by this module's `skipDynamicReferences` pass
+ * still carries a token of a service the deploy resolves (issue
+ * [#4056](https://github.com/go-to-k/cdkd/issues/4056)).
+ *
+ * Only a SECRET keeps its token through that pass: `secretsmanager` and
+ * `ssm-secure` by spelling, and a plain `ssm` one whose parameter the lookup
+ * finds to be a `SecureString`; a `String` / `StringList` parameter resolves
+ * to its value and leaves no token. So on RESOLVED text the token scan, not
+ * {@link isSecretDynamicReference}'s spelling test, is what says "the deploy
+ * substitutes a secret here". The spelling test stays right for its other
+ * readers, which read RAW template or STORED text, where a plain `ssm` token
+ * says nothing about the parameter's type.
+ */
+function keepsSecretReferenceToken(resolvedName: string): boolean {
+  return dynamicReferenceTokens(resolvedName).some((token) =>
+    DEPLOY_RESOLVED_REFERENCE_SERVICES.has(token.slice('{{resolve:'.length).split(':')[0] ?? '')
+  );
+}
+
+/**
  * The same question asked of a whole template VALUE, walking every string leaf.
  *
  * The leaf predicate answers `false` for a non-string, and an output's `Value`
@@ -632,8 +663,9 @@ export async function resolveTemplateOutputs(
    * `isSecretDynamicReference` knows: a plain `{{resolve:ssm:...}}` to a
    * `SecureString` parameter stays a token too (measured), while a public
    * `String` one resolves to its value and carries none. So the token scan,
-   * not the spelling, decides (issue #4015). Corpus only -- which alias this
-   * preview publishes is decided below as before.
+   * not the spelling, decides (issue #4015). Corpus only: which alias this
+   * preview publishes is decided below by `keepsSecretReferenceToken`, which
+   * reads the same scan narrowed to the services the deploy resolves (#4056).
    */
   const recordTokenBearingExportName = (name: string): void => {
     if (dynamicReferenceTokens(name).length > 0) secretBearingExportNames.push(name);
@@ -757,11 +789,14 @@ export async function resolveTemplateOutputs(
         // collision — so a name matching both is attributed the same way on
         // both sides. See `outputs-export-alias.ts`'s parity table for the full
         // row-by-row correspondence this block is written against.
-        if (declaredExportIsIntrinsic && isSecretDynamicReference(exportName)) {
-          // An INTRINSIC name that still carries a `{{resolve:...}}` spelling
+        if (declaredExportIsIntrinsic && keepsSecretReferenceToken(exportName)) {
+          // An INTRINSIC name that still carries a `{{resolve:...}}` token
           // after this resolver's `skipDynamicReferences` pass is one the deploy
           // WILL substitute plaintext into, and then refuse (the name would be a
-          // state KEY, which no redaction pass walks). Gated on INTRINSIC
+          // state KEY, which no redaction pass walks). The TOKEN decides, not
+          // the `secretsmanager` / `ssm-secure` spelling: a plain `ssm` token
+          // to a `SecureString` survives the pass too, and the spelling test
+          // published its alias as a phantom ADD (issue #4056). Gated on INTRINSIC
           // deliberately: for a LITERAL name the deploy substitutes nothing —
           // it uses the string verbatim as the key — so it publishes, and
           // refusing here would be a phantom REMOVE on every run. That gate is
