@@ -139,9 +139,9 @@ glue-update-hardening	2026-09-28T10:53:21Z	PASS	246	verify.sh	rc ok, orph clean;
 healthimaging-stateful-update-fallback	2026-09-27T20:36:35Z	PASS	296	verify.sh	rc ok, orph clean (#2515)
 iam-access-key	2026-09-27T14:13:26Z	PASS	85	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 iam-managed-policy	2026-09-28T09:54:14Z	PASS	100	verify.sh	PR #3944 merge-gate run; rc ok, orph clean
-iam-oidc-provider	2026-09-29T09:16:07Z	PASS	100	verify.sh	PR #4061 (#3907) parent-review round @4de35d4f; rc ok, 0 errors, orph clean
-iam-propagation-stress	2026-09-29T09:16:07Z	PASS	96	verify.sh	PR #4061 (#3907) parent-review round @4de35d4f; rc ok, 0 errors, orph clean; swept the runtime-created WorkerFn log group
-iam-role-policies-drift-clean	2026-09-29T09:16:07Z	PASS	105	verify.sh	PR #4061 (#3907) parent-review round @4de35d4f; rc ok, 0 errors, orph clean
+iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
+iam-propagation-stress	2026-09-29T09:52:03Z	PASS	116	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean; swept the runtime-created WorkerFn log group
+iam-role-policies-drift-clean	2026-09-29T09:52:03Z	PASS	90	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-role-prefixed-name-update	2026-09-29T04:41:47Z	PASS	65	verify.sh	PR #4035 (#4024) @56b33129 on 11c8d52d (gate fix); rc ok, 3 deploys without -y not flagged by the prefix-migration gate; orph clean
 iam-secret-derived-principals	2026-09-28T17:37:17Z	PASS	156	verify.sh	rc ok, orph clean (#3996, after merging main)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
@@ -168,7 +168,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
 kinesis-stream-mode-switch	2026-09-27T18:06:09Z	PASS	110	verify.sh	rc ok, orph clean; #3881 follow-up
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-29T09:16:07Z	PASS	135	verify.sh	PR #4061 (#3907) parent-review round @4de35d4f; rc ok, 0 errors, orph clean
+lambda	2026-09-29T09:52:03Z	PASS	125	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
