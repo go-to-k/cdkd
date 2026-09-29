@@ -208,6 +208,24 @@ export class DiffCalculator {
   private parser = new TemplateParser();
 
   /**
+   * {@link ReplacementRulesRegistry.conditionalReplacementVerdict}, for the
+   * deploy engine's replacement-ceiling lowering (issue #4134).
+   */
+  conditionalReplacementVerdict(
+    resourceType: string,
+    propertyPath: string,
+    oldValue: unknown,
+    newValue: unknown
+  ): boolean | undefined {
+    return this.replacementRules.conditionalReplacementVerdict(
+      resourceType,
+      propertyPath,
+      oldValue,
+      newValue
+    );
+  }
+
+  /**
    * Calculate changes needed to reach desired state
    *
    * @param currentState Current stack state (use existing state or create a new StackState with empty resources for new stacks)

@@ -220,6 +220,83 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
     expect(labelsFor('Reader')).toEqual(['Updating Reader (AWS::SNS::Topic)']);
   });
 
+  describe("a moved value the type's conditional rule reads as in place (issue #4134)", () => {
+    const FN_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:my-fn';
+    function eicTemplate(): CloudFormationTemplate {
+      return {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+          Eic: {
+            Type: 'AWS::Lambda::EventInvokeConfig',
+            Properties: {
+              FunctionName: { 'Fn::GetAtt': ['Cr', 'Fn'] },
+              Qualifier: '$LATEST',
+              MaximumRetryAttempts: 2,
+            },
+          },
+        },
+      };
+    }
+    function eicState(): StackState {
+      const eic = { FunctionName: 'my-fn', Qualifier: '$LATEST', MaximumRetryAttempts: 1 };
+      return {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        region: REGION,
+        stackName: STACK,
+        resources: {
+          Cr: {
+            physicalId: 'cr-1',
+            resourceType: 'Custom::Thing',
+            properties: { ServiceToken: TOKEN, Seed: 'a' },
+            attributes: { Fn: 'my-fn' },
+            dependencies: [],
+          },
+          Eic: {
+            physicalId: 'my-fn|$LATEST',
+            resourceType: 'AWS::Lambda::EventInvokeConfig',
+            properties: eic,
+            observedProperties: eic,
+            attributes: {},
+            dependencies: ['Cr'],
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      };
+    }
+    function crReturnsFn(fn: string): void {
+      provider.update.mockImplementation((logicalId: string, physicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Cr'
+            ? { physicalId, wasReplaced: false, attributes: { Fn: fn } }
+            : { physicalId, wasReplaced: false }
+        )
+      );
+    }
+
+    it('updates an EventInvokeConfig in place when its FunctionName moves to the same function ARN', async () => {
+      stateBackend.getState.mockResolvedValue({ state: eicState(), etag: 'etag-old' });
+      crReturnsFn(FN_ARN);
+
+      await makeEngine().deploy(STACK, eicTemplate());
+
+      const updates = callsFor(provider.update, 'Eic');
+      expect(updates).toHaveLength(1);
+      expect((updates[0]![3] as Record<string, unknown>)['FunctionName']).toBe(FN_ARN);
+      expect(callsFor(provider.create, 'Eic')).toHaveLength(0);
+      expect(callsFor(provider.delete, 'Eic')).toHaveLength(0);
+    });
+
+    it('still REPLACES it when the FunctionName moves to another function (the control)', async () => {
+      stateBackend.getState.mockResolvedValue({ state: eicState(), etag: 'etag-old' });
+      crReturnsFn('other-fn');
+
+      await makeEngine().deploy(STACK, eicTemplate());
+
+      expect(callsFor(provider.create, 'Eic')).toHaveLength(1);
+    });
+  });
+
   it('still REPLACES the reader when the handler returned a different value (the control)', async () => {
     crReturns('topic-b');
 

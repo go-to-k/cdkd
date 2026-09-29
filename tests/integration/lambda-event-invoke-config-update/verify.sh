@@ -20,6 +20,8 @@
 #      pre-fix) and AWS now reports MaxAge 300 / Retries 2 / the same DLQ.
 #   2b. Re-spell FunctionName as the function ARN (CDKD_TEST_FN_ARN=true).
 #      It must update in place and the config must survive (issue #4118).
+#   2c/2d. Feed FunctionName from a custom resource, then flip it name -> ARN:
+#      the propagated replacement ceiling must lower to in place (issue #4134).
 #   3. Destroy + assert the function is gone and the cdkd state file is removed.
 #
 # Issue #4091 (EventInvokeConfig is a cc-broken sticky exemption): before
@@ -82,12 +84,17 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Phase 2's and 2b's captured deploy output (issues #4091, #4118), removed by cleanup too.
 DEPLOY_P2_LOG=""
 DEPLOY_2B_LOG=""
+DEPLOY_2D_LOG=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   [ -n "${DEPLOY_P2_LOG}" ] && rm -f "${DEPLOY_P2_LOG}"
   [ -n "${DEPLOY_2B_LOG}" ] && rm -f "${DEPLOY_2B_LOG}"
+  [ -n "${DEPLOY_2D_LOG}" ] && rm -f "${DEPLOY_2D_LOG}"
+  aws lambda delete-function --function-name cdkd-event-invoke-config-update-test-cr --region "${REGION}" >/dev/null 2>&1 || true
+  aws logs delete-log-group --log-group-name /aws/lambda/cdkd-event-invoke-config-update-test-cr \
+    --region "${REGION}" >/dev/null 2>&1 || true
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -278,12 +285,62 @@ case "${ONFAIL_2B}" in
 esac
 echo "    OK: the re-spelled FunctionName updated in place and the config survived (#4118)"
 
+# --- Phase 2c/2d: a PROPAGATED ceiling on a same-function move (issue #4134)
+# 2c0 adds a custom resource that returns the function's NAME, unwired (the
+# config keeps 2b's ARN spelling). 2c wires FunctionName to it: the value the
+# diff resolves from state is the name, the same function as the recorded
+# ARN, so an in-place update. 2d flips the CR to return the ARN: the CR updates
+# in place, the diff raises a replacement ceiling on the config, and the
+# resolved FunctionName moves name -> ARN of the SAME function. The engine
+# must lower the ceiling to in place; a replacement would Put the config and
+# then delete it from the same function.
+echo "==> Phase 2c0: add the custom resource (returns the NAME), not yet wired"
+CDKD_TEST_UPDATE=true CDKD_TEST_FN_ARN=true CDKD_TEST_FN_VIA_CR=name node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+echo "==> Phase 2c: feed FunctionName from the custom resource (the NAME)"
+CDKD_TEST_UPDATE=true CDKD_TEST_FN_ARN=true CDKD_TEST_FN_VIA_CR=name CDKD_TEST_FN_WIRE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+RECORDED_2C=$(eic_record .properties.FunctionName)
+[ "${RECORDED_2C}" = "${FN_NAME}" ] || { echo "FAIL: #4134 premise: after 2c the record's FunctionName is '${RECORDED_2C}', expected '${FN_NAME}'" >&2; exit 1; }
+MAXAGE_2C="$(eic_field 'MaximumEventAgeInSeconds')"
+[ "${MAXAGE_2C}" = "300" ] || { echo "FAIL: #4134 premise: after 2c the async-invoke config is MaxAge=${MAXAGE_2C}, expected 300" >&2; exit 1; }
+echo "==> Phase 2d: flip the custom resource to return the ARN (propagated ceiling)"
+DEPLOY_2D_LOG="$(mktemp)"
+if ! CDKD_TEST_UPDATE=true CDKD_TEST_FN_ARN=true CDKD_TEST_FN_VIA_CR=arn CDKD_TEST_FN_WIRE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${DEPLOY_2D_LOG}" 2>&1; then
+  cat "${DEPLOY_2D_LOG}" >&2
+  rm -f "${DEPLOY_2D_LOG}"
+  echo "FAIL: #4134: the propagated re-spelling deploy failed" >&2
+  exit 1
+fi
+DEPLOY_2D_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_2D_LOG}")"
+rm -f "${DEPLOY_2D_LOG}"
+DEPLOY_2D_LOG=""
+printf '%s\n' "${DEPLOY_2D_PLAIN}"
+if grep -F "${EIC_LOGICAL}" <<<"${DEPLOY_2D_PLAIN}" | grep -qi 'replac'; then
+  echo "FAIL: #4134: the propagated re-spelling REPLACED ${EIC_LOGICAL}:" >&2
+  grep -F "${EIC_LOGICAL}" <<<"${DEPLOY_2D_PLAIN}" | grep -i 'replac' >&2
+  exit 1
+fi
+RECORDED_2D=$(eic_record .properties.FunctionName)
+case "${RECORDED_2D}" in
+  arn:*":function:${FN_NAME}") ;;
+  *) echo "FAIL: #4134: after 2d the record's FunctionName is '${RECORDED_2D}', expected the function ARN (the CR flip did not reach the config)" >&2; exit 1 ;;
+esac
+MAXAGE_2D="$(eic_field 'MaximumEventAgeInSeconds')"
+RETRIES_2D="$(eic_field 'MaximumRetryAttempts')"
+[ "${MAXAGE_2D}" = "300" ] && [ "${RETRIES_2D}" = "2" ] || { echo "FAIL: #4134: the async-invoke config is MaxAge=${MAXAGE_2D} Retries=${RETRIES_2D} after the propagated move, expected 300 / 2" >&2; exit 1; }
+echo "    OK: the propagated same-function move updated the config in place and it survived (#4134)"
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "function ${FN_NAME} still exists after destroy" aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}"
 echo "    function deleted"
+assert_gone "custom-resource handler still exists after destroy" aws lambda get-function-configuration --function-name cdkd-event-invoke-config-update-test-cr --region "${REGION}"
+echo "    custom-resource handler deleted (its log group is removed by cleanup)"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

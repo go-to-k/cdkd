@@ -49,13 +49,48 @@ export class LambdaEventInvokeConfigUpdateStack extends cdk.Stack {
       onFailure: new destinations.SqsDestination(dlq),
     });
 
+    const eic = fn.node.findChild('EventInvokeConfig').node
+      .defaultChild as lambda.CfnEventInvokeConfig;
+
     // Issue #4118: CDKD_TEST_FN_ARN=true re-spells the SAME function as its
     // ARN. That must stay an in-place update; a replacement would Put the
     // config and then delete it from the same function.
     if (process.env.CDKD_TEST_FN_ARN === 'true') {
-      const eic = fn.node.findChild('EventInvokeConfig').node
-        .defaultChild as lambda.CfnEventInvokeConfig;
       eic.addPropertyOverride('FunctionName', fn.functionArn);
+    }
+
+    // Issue #4134: CDKD_TEST_FN_VIA_CR=name|arn adds a custom resource whose
+    // Data returns the function's name or ARN; CDKD_TEST_FN_WIRE=true feeds
+    // FunctionName from it. Flipping name -> arn updates the CR in place, which
+    // the diff propagates to the config as a replacement CEILING; the moved
+    // value is the same function, so the engine must lower it to in place.
+    const fnViaCr = process.env.CDKD_TEST_FN_VIA_CR;
+    if (fnViaCr !== undefined && fnViaCr !== '') {
+      const handler = new lambda.Function(this, 'FnSpellHandler', {
+        functionName: 'cdkd-event-invoke-config-update-test-cr',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        handler: 'index.handler',
+        timeout: cdk.Duration.seconds(30),
+        code: lambda.Code.fromInline(`
+exports.handler = async (event) => {
+  const props = event.ResourceProperties || {};
+  if (event.RequestType === 'Delete') {
+    return { Status: 'SUCCESS', PhysicalResourceId: event.PhysicalResourceId || 'fn-spell' };
+  }
+  return {
+    PhysicalResourceId: 'fn-spell',
+    Data: { Fn: props.Spell === 'arn' ? props.FnArn : props.FnName },
+  };
+};
+`),
+      });
+      const spell = new cdk.CustomResource(this, 'FnSpell', {
+        serviceToken: handler.functionArn,
+        properties: { FnName: fn.functionName, FnArn: fn.functionArn, Spell: fnViaCr },
+      });
+      if (process.env.CDKD_TEST_FN_WIRE === 'true') {
+        eic.addPropertyOverride('FunctionName', spell.getAttString('Fn'));
+      }
     }
 
     new cdk.CfnOutput(this, 'FnName', { value: fn.functionName });
