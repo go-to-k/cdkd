@@ -1111,6 +1111,40 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(summary).not.toContain('Would scrub 1');
   });
 
+  it('CI GATE: a state KEY holding the secret split by a NONSPACING mark fails --dry-run --fail (#2889)', async () => {
+    // The key renders as the plaintext (the mark has zero advance width) but
+    // does not contain it in the printed space. Before #2889 scrub called
+    // this state clean.
+    const mark = String.fromCharCode(0x09bc);
+    const splitKey = `pre-${UNPINNED_PLAINTEXT.slice(0, 6)}${mark}${UNPINNED_PLAINTEXT.slice(6)}`;
+    synthStacks.length = 0;
+    synthStacks.push(
+      makeStackInfo({
+        Exporter: {
+          Value: PUBLIC_VALUE,
+          Export: { Name: { 'Fn::Sub': `pre-${UNPINNED_EXPR}` } as never },
+        },
+        Leaky: { Value: UNPINNED_EXPR },
+      })
+    );
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState({ [splitKey]: 'some-value' }),
+      etag: 'etag-1',
+    });
+
+    await expect(
+      scrubCommand([], commandOptions({ dryRun: true, fail: true }))
+    ).rejects.toBeInstanceOf(ScrubNeededError);
+
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+    const logged = [...commandLogger.info.mock.calls, ...commandLogger.warn.mock.calls]
+      .map((c) => String(c[0]))
+      .join('\n');
+    expect(logged).toContain('cannot rewrite');
+    expect(logged).not.toContain(splitKey);
+    expect(logged).not.toContain(UNPINNED_PLAINTEXT.slice(6));
+  });
+
   it('THE OTHER COST: two DISTINCT secrets sharing one plaintext can name the wrong one', async () => {
     // Stated because an earlier revision of this rationale called the fallback's
     // residual a lost precision bound. It is not: the value map is keyed by

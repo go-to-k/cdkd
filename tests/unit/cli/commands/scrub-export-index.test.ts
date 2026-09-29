@@ -1093,6 +1093,94 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(out).toContain('Converged exports index entry (masked:');
   });
 
+  it('a NON-ASCII export name is withheld in index messages, not blanked after the verdict', async () => {
+    // `displayIdent` turns a non-ASCII character into a space AFTER the
+    // secret verdict, so a name spelling `correct` + U+09BC + `horse` beside
+    // a recorded `correct horse` printed the passphrase (#2889 review). The
+    // index lines now withhold any non-ASCII name, whatever its verdict, as
+    // `maskedLabel` does for the deploy warnings. A mark-bearing name with no
+    // secret is enough to show the rule: it is `safe`, and still withheld.
+    const markName = `alias-plain${String.fromCharCode(0x09bc)}name`;
+    const info = makeStackInfo('MyStack');
+    info.template.Outputs = { Db: { Value: SECRET_EXPR, Export: { Name: markName } } };
+    synthStacks.push(info);
+    commandStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 9,
+        region: 'us-east-1',
+        stackName: 'MyStack',
+        resources: {
+          Db: {
+            physicalId: 'db-1',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+          },
+        },
+        outputs: { Db: SECRET_EXPR, [markName]: SECRET_EXPR },
+        exportNames: [markName],
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-1',
+    });
+    const region = slot({
+      entries: new Map([[markName, entry('legacy-index-value', 'MyStack', 'us-east-1')]]),
+    });
+    indexFake.regions.set('us-east-1', region);
+
+    await scrubCommand([], commandOptions());
+
+    expect(region.patches.map((p) => p.exportName)).toEqual([markName]);
+    const out = logLines();
+    expect(out).toContain(
+      'Converged exports index entry (name withheld: it carries characters this line cannot show as tested)'
+    );
+    expect(out).not.toContain('alias-plain name');
+    expect(out).not.toContain(markName);
+  });
+
+  it('a MASKED name that still carries non-ASCII is withheld, not printed as (masked: ...)', async () => {
+    // The `masked` arm is the disclosure path: the recorded secret is masked,
+    // and `displayIdent` would then blank the remaining non-ASCII character
+    // after the re-test -- e.g. an NBSP-spelled passphrase beside it printed
+    // as the plain passphrase. So the rule covers `masked` as well as `safe`.
+    const markName = `alias-${SECRET_PLAINTEXT}-na${String.fromCharCode(0x09bc)}me`;
+    const info = makeStackInfo('MyStack');
+    info.template.Outputs = { Db: { Value: SECRET_EXPR, Export: { Name: markName } } };
+    synthStacks.push(info);
+    commandStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 9,
+        region: 'us-east-1',
+        stackName: 'MyStack',
+        resources: {
+          Db: {
+            physicalId: 'db-1',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+          },
+        },
+        outputs: { Db: SECRET_EXPR, [markName]: SECRET_EXPR },
+        exportNames: [markName],
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-1',
+    });
+    const region = slot({
+      entries: new Map([[markName, entry('legacy-index-value', 'MyStack', 'us-east-1')]]),
+    });
+    indexFake.regions.set('us-east-1', region);
+
+    await scrubCommand([], commandOptions());
+
+    expect(region.patches.map((p) => p.exportName)).toEqual([markName]);
+    const out = logLines();
+    expect(out).toContain(
+      'Converged exports index entry (name withheld: it carries characters this line cannot show as tested)'
+    );
+    expect(out).not.toContain('Converged exports index entry (masked:');
+    expect(out).not.toContain(SECRET_PLAINTEXT);
+  });
+
   it('a masked name reaches the FAILURE message too, not just the log', async () => {
     const leakyName = `alias-${SECRET_PLAINTEXT}-suffix`;
     const info = makeStackInfo('MyStack');

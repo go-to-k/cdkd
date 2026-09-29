@@ -1309,6 +1309,106 @@ if jq -e '.outputs | has("ServiceSpanLegacy")' "${SPAN_DROPPED}" >/dev/null; the
 fi
 aws s3 cp "${SPAN_DROPPED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
 
+# --- Phase 1b6: an Export.Name holding the password split by a nonspacing mark (issue #2889)
+# `CDKD_TEST_MARK_SPLIT_EXPORT=true` declares `MarkSplitExport`, whose VALUE
+# resolves the password (so this pass records it) and whose `Export.Name`
+# resolves to the password with U+09BC (BENGALI SIGN NUKTA) inserted. An
+# `Fn::Sub` over literals: CDK refuses a literal non-ASCII name at synth. That
+# mark renders at zero width, so the name READS as the password. The export-
+# name containment test used to miss it and PUBLISH the name as a state key and
+# into the exports index; it now tests a detection space with nonspacing marks
+# removed, refuses the alias and warns without printing the name. A no-change
+# deploy apart from the one output, so only the outputs pass does work. Its own
+# deploy, and the output is dropped from state afterwards for the reason
+# Phase 1b states (the unchanged-stack `diff --fail` guard later).
+echo "==> Phase 1b6: CDKD_TEST_MARK_SPLIT_EXPORT probe deploy (issue #2889)"
+# U+09BC as UTF-8 bytes: bash 3.2 has no unicode escape in $'...'.
+MARK_SPLIT_NAME="cdkd-dynref-mark-split-${EXPECTED_PASSWORD:0:13}"$'\xe0\xa6\xbc'"${EXPECTED_PASSWORD:13}"
+MARK_SPLIT_STATE=$(mktemp)
+MARK_SPLIT_INDEX=$(mktemp)
+MARK_SPLIT_DROPPED=$(mktemp)
+SCRATCH_FILES+=("${MARK_SPLIT_STATE}" "${MARK_SPLIT_INDEX}" "${MARK_SPLIT_DROPPED}")
+if ! DEPLOY_OUT_MARK=$(CDKD_TEST_MARK_SPLIT_EXPORT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the CDKD_TEST_MARK_SPLIT_EXPORT probe deploy exited non-zero -- a refused export alias is warned about and skipped, and the deploy exits 0 (issue #2889)" >&2
+  diag_output "${DEPLOY_OUT_MARK}"
+  exit 1
+fi
+# Premise: the synthesized `Fn::Sub` resolves to the password with the mark
+# INSIDE it, and the literal password is NOT in it -- otherwise the pre-#2889 arms catch it
+# and this phase proves nothing about the mark.
+MARK_SPLIT_SHAPE=$(jq -r --arg name "${MARK_SPLIT_NAME}" --arg pw "${EXPECTED_PASSWORD}" \
+  '.Outputs.MarkSplitExport.Export.Name
+   | if . == null then "absent"
+     elif type != "object" or (.["Fn::Sub"] | type) != "array" then "not-an-Fn::Sub"
+     else .["Fn::Sub"] as [$body, $vars]
+       | ($body | gsub("\\$\\{Head\\}"; $vars.Head) | gsub("\\$\\{Mark\\}"; $vars.Mark)
+          | gsub("\\$\\{Tail\\}"; $vars.Tail)) as $resolved
+       | if $resolved == $name and (($body + ($vars | tostring)) | contains($pw) | not)
+         then "split" else "other" end
+     end' "${SYNTH_TEMPLATE}")
+if [ "${MARK_SPLIT_SHAPE}" != "split" ]; then
+  echo "FAIL: premise: MarkSplitExport's Export.Name synthesized as '${MARK_SPLIT_SHAPE}', not the password split by U+09BC -- the #2889 arm is not what this deploy exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: MarkSplitExport's Export.Name is the password split by U+09BC"
+# THE DISCRIMINATING ASSERTION: before #2889 no warn was emitted and the alias
+# was published.
+if [[ "${DEPLOY_OUT_MARK}" != *"Output MarkSplitExport has an Export.Name that resolves to a value containing a secret"* ]]; then
+  echo "FAIL: the probe deploy did not refuse MarkSplitExport's Export.Name -- a password split by a nonspacing mark was treated as safe (issue #2889)" >&2
+  diag_output "${DEPLOY_OUT_MARK}"
+  exit 1
+fi
+# `mark-split` is unique to this export name, so it catches the name in ANY
+# rendering (the mark blanked to a space, escaped, or stripped), not just raw.
+if [[ "${DEPLOY_OUT_MARK}" == *"mark-split"* ]] || [[ "${DEPLOY_OUT_MARK}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: the probe deploy's log prints the mark-split name (in some rendering) or the password (issue #2889)" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${MARK_SPLIT_STATE}" --quiet
+# Positive first: the output itself WAS persisted, so the negative below cannot
+# pass because the whole outputs pass failed.
+if ! jq -e '.outputs | has("MarkSplitExport")' "${MARK_SPLIT_STATE}" >/dev/null; then
+  echo "FAIL: premise: state.outputs has no MarkSplitExport after the probe deploy -- the outputs pass did not persist it (issue #2889)" >&2
+  exit 1
+fi
+if jq -e --arg name "${MARK_SPLIT_NAME}" '.outputs | has($name)' "${MARK_SPLIT_STATE}" >/dev/null; then
+  echo "FAIL: state.outputs carries the mark-split export name as a KEY -- the password was published into state.json (issue #2889)" >&2
+  exit 1
+fi
+# Whole document too: the name has no legitimate home ANYWHERE in state
+# (`exportNames` included), so a field the key check does not read cannot hide it.
+# `mark-split` too: it is unique to this name, so it also catches a writer that
+# ESCAPES the mark in JSON, which the raw-bytes needle would miss.
+if grep -qF -- "${MARK_SPLIT_NAME}" "${MARK_SPLIT_STATE}" || grep -qF -- "mark-split" "${MARK_SPLIT_STATE}"; then
+  echo "FAIL: state.json carries the mark-split export name somewhere (issue #2889)" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/cdkd/_index/${REGION}/exports.json" "${MARK_SPLIT_INDEX}" --quiet
+# Premise: this is the index this stack publishes into -- its ordinary export
+# is there, so an absent key below is not an unread or foreign index.
+if ! jq -e --arg ok "${STACK}-function-name" '.exports | has($ok)' "${MARK_SPLIT_INDEX}" >/dev/null; then
+  echo "FAIL: premise: the exports index lacks ${STACK}-function-name -- the absence check below would read the wrong document (issue #2889)" >&2
+  exit 1
+fi
+if jq -e --arg name "${MARK_SPLIT_NAME}" '.exports | has($name)' "${MARK_SPLIT_INDEX}" >/dev/null; then
+  echo "FAIL: the exports index carries the mark-split export name -- the password was published there (issue #2889)" >&2
+  exit 1
+fi
+if grep -qF -- "${MARK_SPLIT_NAME}" "${MARK_SPLIT_INDEX}" || grep -qF -- "mark-split" "${MARK_SPLIT_INDEX}"; then
+  echo "FAIL: the exports index carries the mark-split export name somewhere (issue #2889)" >&2
+  exit 1
+fi
+echo "    OK: the mark-split Export.Name was refused, and neither state.json nor the exports index carries it (#2889)"
+jq 'del(.outputs.MarkSplitExport)' "${MARK_SPLIT_STATE}" > "${MARK_SPLIT_DROPPED}"
+if jq -e '.outputs | has("MarkSplitExport")' "${MARK_SPLIT_DROPPED}" >/dev/null; then
+  echo "FAIL: could not drop MarkSplitExport from the persisted outputs -- the diff --fail guard later would red on it" >&2
+  exit 1
+fi
+aws s3 cp "${MARK_SPLIT_DROPPED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+
 # --- Assertion: dynamic references resolved on the deployed Lambda ----
 echo "==> Reading consumer Lambda env vars from AWS (GetFunctionConfiguration)"
 FN_NAME=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \

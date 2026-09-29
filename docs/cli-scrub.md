@@ -430,10 +430,14 @@ cannot rewrite. Four shapes qualify, and all four are also reported in words:
   A key counts when it **renders** a secret, not only when it contains one
   literally. An `Export.Name` is a resolved, template-controlled string, so it
   can carry invisible characters — control bytes, bidi marks, zero-width
-  joiners — and one placed inside a secret splits the plaintext so a literal
-  scan misses it while a reader of the log sees the secret unbroken. Such a
-  key is now reported and the run exits `1`; an earlier cdkd passed over it
-  silently. **If this starts firing on a state that used to pass, the key was
+  joiners, and zero-width combining marks (nonspacing diacritics) — and one
+  placed inside a secret splits the plaintext so a literal scan misses it
+  while a reader of the log sees the secret unbroken. Such a key is now
+  reported and the run exits `1`; an earlier cdkd passed over it silently. A
+  key caught only through a combining mark, or through a precomposed letter
+  standing for its decomposed spelling (the two render identically), is
+  reported with its name withheld, since the printed text keeps a name's own
+  diacritics. **If this starts firing on a state that used to pass, the key was
   already leaking** — the change is what cdkd can see, not what the state
   holds. Rotate the secret and change the `Export.Name`.
 
@@ -962,7 +966,9 @@ do not affect the exit code.
 - **An entry it could not write.** S3 refused the `PutObject`, or a concurrent
   writer exhausted the If-Match retry budget. The run fails with
   `SCRUB_EXPORT_INDEX_INCOMPLETE`, naming each entry and its region, because
-  such an entry keeps the value it holds. Re-run the same command once the
+  such an entry keeps the value it holds. An entry whose name holds a secret
+  this run recorded, or carries any character outside printable ASCII, is
+  named as withheld rather than printed. Re-run the same command once the
   cause is cleared: an entry already matching `state.outputs` is left alone, so
   the re-run writes the remainder.
 - **An owned entry whose name is not a key of `state.outputs`.** There is no

@@ -889,6 +889,26 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(savedStateJson).not.toContain(PLAINTEXT_A);
   });
 
+  it('a LITERAL export name holding a secret split by a NONSPACING mark is refused (#2889)', async () => {
+    // `U+09BC` renders at zero advance width, so the name READS as the
+    // plaintext. It is not in the printed-space class, so before #2889 the
+    // name was PUBLISHED into state and the exports index.
+    const split = `pre-${PLAINTEXT_A.slice(0, 6)}\u09bc${PLAINTEXT_A.slice(6)}-post`;
+    const { saved, indexed, savedStateJson } = await deployOutputs({
+      SecretAlpha: { Value: EXPR_A },
+      Exporter: { Value: PUBLIC_B, Export: { Name: split } },
+    });
+
+    const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).not.toContain(PLAINTEXT_A.slice(6));
+    expect(refusals[0]).not.toContain(split);
+    expect(refusals[0]).not.toContain(`pre-${PLAINTEXT_A.slice(0, 6)}`);
+    expect(Object.keys(saved).sort()).toEqual(['Exporter', 'SecretAlpha']);
+    expect(Object.hasOwn(indexed, split)).toBe(false);
+    expect(savedStateJson).not.toContain(split);
+  });
+
   it('masking is LONGEST-FIRST, so a nested secret cannot leave the longer one in fragments', async () => {
     // `PLAINTEXT_SHORT` is a prefix of `PLAINTEXT_NESTED`. Masking shortest-first
     // consumes the prefix and leaves the remainder of the longer secret in the
