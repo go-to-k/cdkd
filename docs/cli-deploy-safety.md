@@ -509,6 +509,11 @@ target only in that stack. Resources that live inside a nested stack
   whose SDK provider opts out of the Cloud Control fallback. The recreate
   deletes the existing resource before creating it through Cloud Control, so
   cdkd refuses the deploy before anything is touched. There is no bypass flag.
+- **NOT** available for a type whose Cloud Control handler cannot manage it
+  (`AWS::Scheduler::Schedule`, `AWS::RDS::DBProxyTargetGroup`,
+  `AWS::Lambda::EventInvokeConfig`). cdkd always keeps these on their SDK
+  provider, so the recreate would only delete the resource and create it again
+  on the same route. cdkd refuses the deploy before anything is touched.
 - **NOT** compatible with multi-region types such as
   `AWS::DynamoDB::GlobalTable`. See
   [Multi-region types are refused outright](#multi-region-types-are-refused-outright).

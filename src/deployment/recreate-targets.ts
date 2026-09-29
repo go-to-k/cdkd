@@ -61,6 +61,7 @@ import {
   NO_CC_HANDLERS_REASON,
 } from '../provisioning/unsupported-types.js';
 import { assertRegionMatch } from '../provisioning/region-check.js';
+import { CC_BROKEN_REASON, ccBrokenReason } from '../provisioning/provider-registry.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { getLogger } from '../utils/logger.js';
 import type { Logger } from '../types/config.js';
@@ -186,6 +187,14 @@ export interface RecreateTargetsValidation {
    */
   blockedNoCcRoute: Array<RecreateTarget & { templateType: string; reason: string }>;
   /**
+   * Issue [#4119]: `--recreate-via-cc-api` named a resource whose TEMPLATE
+   * type is a `'cc-broken'` sticky exemption. Routing ignores the flag for it,
+   * so the recreate would delete the resource and create it again on the SDK
+   * route, announced as a migration to Cloud Control. Refused before anything
+   * is touched.
+   */
+  blockedCcBroken: Array<RecreateTarget & { templateType: string }>;
+  /**
    * #651: logical id named in BOTH `--recreate-via-cc-api` AND
    * `--recreate-via-sdk-provider`. Ambiguous — pick one direction.
    */
@@ -307,6 +316,7 @@ export function validateRecreateTargets(input: {
   const blockedAlreadyCcApi: RecreateTarget[] = [];
   const blockedNoSdkProvider: RecreateTarget[] = [];
   const blockedNoCcRoute: RecreateTargetsValidation['blockedNoCcRoute'] = [];
+  const blockedCcBroken: RecreateTargetsValidation['blockedCcBroken'] = [];
   const ccRouteUnavailableReason =
     input.ccRouteUnavailableReason ??
     ((resourceType: string): string | undefined =>
@@ -417,6 +427,8 @@ export function validateRecreateTargets(input: {
           templateType: templateResource.Type,
           reason: noCcRoute,
         });
+      } else if (!nestedStackRow && ccBrokenReason(templateResource.Type) !== undefined) {
+        blockedCcBroken.push({ ...target, templateType: templateResource.Type });
       }
 
       // Ambiguous-intent overlap with --prefer-sdk-route.
@@ -505,6 +517,7 @@ export function validateRecreateTargets(input: {
     blockedAlreadyCcApi,
     blockedNoSdkProvider,
     blockedNoCcRoute,
+    blockedCcBroken,
     conflictingDirections,
     nestedStackLogicalIds: Object.entries(input.template.Resources ?? {})
       .filter(([, resource]) => resource?.Type === NESTED_STACK_RESOURCE_TYPE)
@@ -755,6 +768,23 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `through Cloud Control, which would fail and leave the resource deleted. ` +
         `None of these resources was touched. Fix: remove --recreate-via-cc-api <id> ` +
         `for these resources; they stay on their current route. There is no bypass flag.`
+    );
+  }
+
+  if (validation.blockedCcBroken.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `--recreate-via-cc-api named ${validation.blockedCcBroken.length} ` +
+        `resource(s) of types cdkd never runs on Cloud Control (${CC_BROKEN_REASON}):`
+    );
+    for (const blocked of validation.blockedCcBroken) {
+      lines.push(`  - ${blocked.logicalId} (${blocked.templateType})`);
+    }
+    lines.push(
+      `  cdkd keeps these types on their SDK provider whatever the flag says, so the ` +
+        `recreate would delete each resource and create it again on the same SDK route. ` +
+        `None of these resources was touched. Fix: remove --recreate-via-cc-api <id> ` +
+        `for these resources.`
     );
   }
 

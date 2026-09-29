@@ -288,6 +288,21 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
   ],
 ]);
 
+/** Why a `'cc-broken'` type cannot be routed to Cloud Control, as users read it. */
+export const CC_BROKEN_REASON = "Cloud Control's handler cannot manage this type correctly";
+
+/**
+ * {@link CC_BROKEN_REASON} for a `'cc-broken'` sticky-exempt type, else
+ * `undefined`. Deliberately NOT part of `ProviderRegistry.ccRouteUnavailableReason`:
+ * that one also gates the schema-known silent-drop auto-route, which a
+ * `'cc-broken'` type keeps (see `getProviderFor`).
+ */
+export function ccBrokenReason(resourceType: string): string | undefined {
+  return STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode === 'cc-broken'
+    ? CC_BROKEN_REASON
+    : undefined;
+}
+
 /**
  * Would a resource recorded as `provisionedBy: 'cc-api'` return to its SDK
  * provider on its next mutating deploy?
@@ -1256,7 +1271,7 @@ export class ProviderRegistry {
     const unroutable =
       this.ccRouteUnavailableReason(resourceType) ??
       (STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode === 'cc-broken'
-        ? "Cloud Control's handler cannot manage this type correctly"
+        ? CC_BROKEN_REASON
         : coverage?.ccRouteUnavailable === true
           ? "the type's SDK provider opts out of the Cloud Control fallback (disableCcApiFallback)"
           : undefined);
