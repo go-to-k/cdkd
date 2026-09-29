@@ -1162,6 +1162,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['Tags', ['Key']],
     ]),
   ],
+  ['AWS::RDS::DBProxyTargetGroup', new Map<string, readonly string[]>([['Tags', ['Key']]])],
   ['AWS::RDS::DBSubnetGroup', new Map<string, readonly string[]>([['Tags', ['Key']]])],
   [
     'AWS::Route53::HostedZone',

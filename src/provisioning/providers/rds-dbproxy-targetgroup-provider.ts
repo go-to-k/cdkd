@@ -5,15 +5,19 @@ import {
   DescribeDBProxyTargetGroupsCommand,
   DescribeDBProxyTargetsCommand,
   ModifyDBProxyTargetGroupCommand,
+  AddTagsToResourceCommand,
+  RemoveTagsFromResourceCommand,
+  ListTagsForResourceCommand,
   DBProxyNotFoundFault,
   DBProxyTargetGroupNotFoundFault,
   DBProxyTargetNotFoundFault,
+  type Tag,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
-import type { CreateContext } from '../../types/resource.js';
+import type { CreateContext, UpdateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -23,8 +27,12 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -55,10 +63,10 @@ import {
  * **Lifecycle**:
  * - `create`: optionally `ModifyDBProxyTargetGroup` (connection pool), then
  *   `RegisterDBProxyTargets` (cluster IDs and / or instance IDs), then
- *   `DescribeDBProxyTargetGroups` to recover the TargetGroupArn for state.
- * - `update`: rejected via `ResourceUpdateNotSupportedError` in MVP. The
- *   per-property update surface (add/remove targets, pool config rewrites)
- *   is a follow-up.
+ *   `DescribeDBProxyTargetGroups` to recover the TargetGroupArn for state,
+ *   then `AddTagsToResource` on that ARN when `Tags` is declared (the schema
+ *   is `tagOnCreate: false`, so tagging is always a separate call).
+ * - `update`: pool config, target and `Tags` diffs in place (see `update()`).
  * - `delete`: `DeregisterDBProxyTargets` for every registered target.
  *   `DBProxyNotFoundFault` / `DBProxyTargetGroupNotFoundFault` /
  *   `DBProxyTargetNotFoundFault` are treated as idempotent success
@@ -83,6 +91,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         'DBClusterIdentifiers',
         'DBInstanceIdentifiers',
         'ConnectionPoolConfigurationInfo',
+        'Tags',
       ]),
     ],
   ]);
@@ -122,6 +131,23 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     const connectionPoolConfig = properties['ConnectionPoolConfigurationInfo'] as
       | Record<string, unknown>
       | undefined;
+    // Refused before the first call: a malformed list would otherwise surface
+    // only after the targets are registered. A state replay cannot fix its
+    // record from the template, so there it warns and skips tagging, and the
+    // key is dropped from what gets recorded.
+    const tagRefusal = tagListRefusal(properties['Tags']);
+    const skipTags = tagRefusal !== undefined && context?.replayingState === true;
+    if (skipTags) {
+      const mask = context?.maskSecrets ?? ((t: string) => t);
+      this.logger.warn(
+        mask(
+          safeMsg`${logicalId}: the recorded Tags ${tagRefusal}; re-creating the target group without tags.`
+        )
+      );
+    }
+    const tags = skipTags
+      ? []
+      : readTagList(properties['Tags'], resourceType, logicalId, undefined);
 
     const client = this.getClient();
 
@@ -184,15 +210,48 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       );
       targetGroupArn = describeResponse.TargetGroups?.[0]?.TargetGroupArn;
     } catch (error) {
-      throw this.wrapError(error, 'CREATE (describe)', resourceType, logicalId, undefined);
+      // Every throw from here on leaves the registration above live with
+      // nothing recorded, so each retires it first.
+      throw await this.retireRegistrationAfterFailedCreate(
+        this.wrapError(error, 'CREATE (describe)', resourceType, logicalId, undefined),
+        dbProxyName,
+        targetGroupName,
+        dbClusterIdentifiers,
+        dbInstanceIdentifiers,
+        context?.maskSecrets
+      );
     }
 
     if (!targetGroupArn) {
-      throw new ProvisioningError(
-        `Failed to recover TargetGroupArn for ${dbProxyName}/${targetGroupName} after create`,
-        resourceType,
-        logicalId
+      throw await this.retireRegistrationAfterFailedCreate(
+        new ProvisioningError(
+          `Failed to recover TargetGroupArn for ${dbProxyName}/${targetGroupName} after create`,
+          resourceType,
+          logicalId
+        ),
+        dbProxyName,
+        targetGroupName,
+        dbClusterIdentifiers,
+        dbInstanceIdentifiers,
+        context?.maskSecrets
       );
+    }
+
+    if (tags.length > 0) {
+      try {
+        await client.send(
+          new AddTagsToResourceCommand({ ResourceName: targetGroupArn, Tags: tags })
+        );
+      } catch (error) {
+        throw await this.retireRegistrationAfterFailedCreate(
+          this.wrapError(error, 'CREATE (add tags)', resourceType, logicalId, undefined),
+          dbProxyName,
+          targetGroupName,
+          dbClusterIdentifiers,
+          dbInstanceIdentifiers,
+          context?.maskSecrets
+        );
+      }
     }
 
     return {
@@ -201,6 +260,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         TargetGroupArn: targetGroupArn,
         TargetGroupName: targetGroupName,
       },
+      ...(skipTags && { effectiveProperties: withoutKey(properties, 'Tags') }),
     };
   }
 
@@ -217,7 +277,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const dbProxyName = properties['DBProxyName'] as string | undefined;
     if (!dbProxyName) {
@@ -270,6 +331,16 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         );
       }
     }
+
+    // Tags removals are the gap between the two lists, so a malformed DESIRED
+    // list read as empty would strip every live tag: refused on every path,
+    // before any call (issue #3948). A malformed RECORDED list only hides
+    // removals, and every add is idempotent, so it degrades to adds alone.
+    const desiredTags = readTagList(properties['Tags'], resourceType, logicalId, physicalId);
+    const mask = context?.maskSecrets ?? ((t: string) => t);
+    const recordedTags = readRecordedTagList(previousProperties['Tags'], (message) =>
+      this.logger.warn(mask(safeMsg`${logicalId}: ${message}`))
+    );
 
     const client = this.getClient();
 
@@ -348,6 +419,35 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         );
       } catch (error) {
         throw this.wrapError(error, 'UPDATE (register)', resourceType, logicalId, physicalId);
+      }
+    }
+
+    // 3. Tags diff, addressed by the physicalId (the TargetGroupArn).
+    const desiredByKey = new Map(desiredTags.map((t) => [t.Key!, t.Value ?? '']));
+    const tagsToRemove =
+      recordedTags === undefined
+        ? []
+        : recordedTags.filter((t) => !desiredByKey.has(t.Key!)).map((t) => t.Key!);
+    const recordedByKey = new Map((recordedTags ?? []).map((t) => [t.Key!, t.Value ?? '']));
+    const tagsToAdd = desiredTags.filter(
+      (t) => recordedTags === undefined || recordedByKey.get(t.Key!) !== (t.Value ?? '')
+    );
+    if (tagsToRemove.length > 0) {
+      try {
+        await client.send(
+          new RemoveTagsFromResourceCommand({ ResourceName: physicalId, TagKeys: tagsToRemove })
+        );
+      } catch (error) {
+        throw this.wrapError(error, 'UPDATE (remove tags)', resourceType, logicalId, physicalId);
+      }
+    }
+    if (tagsToAdd.length > 0) {
+      try {
+        await client.send(
+          new AddTagsToResourceCommand({ ResourceName: physicalId, Tags: tagsToAdd })
+        );
+      } catch (error) {
+        throw this.wrapError(error, 'UPDATE (add tags)', resourceType, logicalId, physicalId);
       }
     }
 
@@ -474,9 +574,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
   /**
    * Adopt an existing DBProxyTargetGroup into cdkd state.
    *
-   * **Explicit override only.** The TargetGroup itself has no tags
-   * (the parent DBProxy carries the cdkd path tag, not the wiring child),
-   * so there is no `aws:cdk:path`-based auto-lookup. Users must pass
+   * **Explicit override only.** AWS rejects `aws:`-prefixed tag writes, so
+   * no `aws:cdk:path` tag exists to look the target group up by. Users must pass
    * `--resource <logicalId>=<TargetGroupArn>`.
    */
   // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
@@ -513,7 +612,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
    * resource), not a crash.
    */
   async readCurrentState(
-    _physicalId: string,
+    physicalId: string,
     _logicalId: string,
     _resourceType: string,
     properties: Record<string, unknown>
@@ -595,7 +694,67 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     if (connectionPoolConfig !== undefined) {
       result['ConnectionPoolConfigurationInfo'] = connectionPoolConfig;
     }
+    // Omitted, not `[]`, when the tag read fails: "could not read" must not
+    // read as "has no tags".
+    try {
+      const tagResp = await client.send(
+        new ListTagsForResourceCommand({ ResourceName: physicalId })
+      );
+      result['Tags'] = normalizeAwsTagsToCfn(tagResp.TagList ?? []);
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`ListTagsForResource failed for ${physicalId}: ${describeAwsFailure(error).detail}`
+      );
+    }
     return result;
+  }
+
+  /**
+   * Deregister what a failing `create()` registered, then hand back the
+   * ORIGINAL error — with the manual command appended when the cleanup
+   * itself fails.
+   */
+  private async retireRegistrationAfterFailedCreate(
+    original: ProvisioningError,
+    dbProxyName: string,
+    targetGroupName: string,
+    dbClusterIdentifiers: string[] | undefined,
+    dbInstanceIdentifiers: string[] | undefined,
+    maskSecrets: ((text: string) => string) | undefined
+  ): Promise<ProvisioningError> {
+    const clusters = dbClusterIdentifiers?.length ? dbClusterIdentifiers : undefined;
+    const instances = dbInstanceIdentifiers?.length ? dbInstanceIdentifiers : undefined;
+    if (!clusters && !instances) return original;
+    try {
+      await this.getClient().send(
+        new DeregisterDBProxyTargetsCommand({
+          DBProxyName: dbProxyName,
+          TargetGroupName: targetGroupName,
+          DBClusterIdentifiers: clusters,
+          DBInstanceIdentifiers: instances,
+        })
+      );
+      return original;
+    } catch (cleanupError) {
+      // Template-chosen names, so the command renders through
+      // `pasteableAwsCommand` (issue #3136) and is withheld rather than
+      // printed inexactly.
+      const aws = pasteableAwsCommand(maskSecrets);
+      let targets = aws``;
+      if (clusters) {
+        targets = aws`${targets} --db-cluster-identifiers`;
+        for (const id of clusters) targets = aws`${targets} ${id}`;
+      }
+      if (instances) {
+        targets = aws`${targets} --db-instance-identifiers`;
+        for (const id of instances) targets = aws`${targets} ${id}`;
+      }
+      original.message +=
+        ` The targets this create registered are still registered and could not be ` +
+        `deregistered (${describeAwsFailure(cleanupError).detail}). Manual cleanup: ` +
+        aws`aws rds deregister-db-proxy-targets --db-proxy-name ${dbProxyName} --target-group-name ${targetGroupName}${targets}`.render();
+      return original;
+    }
   }
 
   private wrapError(
@@ -615,4 +774,75 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       cause
     );
   }
+}
+
+/**
+ * Why a CFn `Tags` value cannot be sent, or `undefined` when it can. Absent
+ * (`undefined` / `null`) is an empty list; anything else must be an array of
+ * `{ Key: <non-empty string>, Value?: <string> }`.
+ */
+function tagListRefusal(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (!Array.isArray(value)) return `must be a list of { Key, Value } (got ${typeof value})`;
+  for (const [index, entry] of value.entries()) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      return `entry ${index} must be a { Key, Value } object`;
+    }
+    const { Key: key, Value: tagValue } = entry as Record<string, unknown>;
+    if (typeof key !== 'string' || key.length === 0) {
+      return `entry ${index} needs a non-empty string Key`;
+    }
+    if (tagValue != null && typeof tagValue !== 'string') {
+      return `entry ${index} (${key}) has a non-string Value`;
+    }
+  }
+  return undefined;
+}
+
+function toSdkTags(value: unknown): Tag[] {
+  if (!Array.isArray(value)) return [];
+  return (value as Array<{ Key: string; Value?: string | null }>).map((t) => ({
+    Key: t.Key,
+    Value: t.Value ?? '',
+  }));
+}
+
+/** The DESIRED `Tags`, refused before any call when malformed. */
+function readTagList(
+  value: unknown,
+  resourceType: string,
+  logicalId: string,
+  physicalId: string | undefined
+): Tag[] {
+  const refusal = tagListRefusal(value);
+  if (refusal !== undefined) {
+    throw new ProvisioningError(
+      safeMsg`${resourceType} ${logicalId}: Tags ${refusal}. Nothing was changed.`,
+      resourceType,
+      logicalId,
+      physicalId
+    );
+  }
+  return toSdkTags(value);
+}
+
+/**
+ * The RECORDED `Tags`: `undefined` when malformed, which the caller reads as
+ * "removals unknown" and answers with adds alone.
+ */
+function readRecordedTagList(value: unknown, warn: (message: string) => void): Tag[] | undefined {
+  const refusal = tagListRefusal(value);
+  if (refusal !== undefined) {
+    warn(
+      `the recorded Tags ${refusal}; applying the desired tags without removing any, ` +
+        `so a tag the template dropped may remain on the target group.`
+    );
+    return undefined;
+  }
+  return toSdkTags(value);
+}
+
+function withoutKey(bag: Record<string, unknown>, key: string): Record<string, unknown> {
+  const { [key]: _dropped, ...rest } = bag;
+  return rest;
 }

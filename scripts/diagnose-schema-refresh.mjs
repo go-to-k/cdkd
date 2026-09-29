@@ -3244,9 +3244,9 @@ export function renderChangelogFragment({
       `On ${routedNames.join(' / ')}, no SDK provider writes ${routedCount === 1 ? 'it' : 'them'} ` +
         `yet (\`not yet implemented by cdkd\`), so pre-flight classifies each as a silent drop and the ` +
         `issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route sends a resource whose ` +
-        `template carries one through Cloud Control, which forwards the full property map. Until this ` +
-        `refresh the same key post-dated the committed snapshot, so a resource on the SDK route with no ` +
-        `other actionable drop and no \`provisionedBy: 'cc-api'\` record warned and dropped it.`,
+        `template carries one through Cloud Control, which forwards the full property map. Since issue ` +
+        `#3713 a key absent from the snapshot already routed so, unless the state record held it with ` +
+        `the declared value; such a resource moves on its next deploy.`,
       EXPLANATION
     );
   }

@@ -40,6 +40,17 @@
 # is back ON — cdkd turned it off and the delete failed, so cdkd must restore
 # it. The phase-3 destroy then passes --remove-protection too.
 #
+# #4087 (DBProxyTargetGroup is cc-broken): Cloud Control's read and delete
+# handlers cannot address the type by its TargetGroupArn. Phase 1b deploys Tags
+# on the proxy's target group (CDKD_TEST_TG_TAGS=v1) and asserts they reach AWS
+# on the SDK route. Phase 1c rewrites the record to provisionedBy=cc-api (what a
+# pre-fix binary recorded when an unhandled key routed it), then redeploys with
+# changed Tags (v2): the record must flip back to sdk with the SAME physicalId,
+# without a replacement, and the tag diff must land. Phase 2 drops Tags (all
+# removed). Before phase 2b's destroy the record is seeded to cc-api again, so
+# that destroy only passes the failure-set check if the target group is deleted
+# through the SDK provider.
+#
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
 # to the Cloud Control path (which would make the SDK-provider verification
@@ -106,6 +117,8 @@ OOB_INSTANCE_ID=""
 # Phase 2b's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the phase's own `rm`.
 DESTROY_2B_LOG=""
+# Phase 1c's captured deploy output (issue #4087), removed by cleanup likewise.
+DEPLOY_1C_LOG=""
 # Issue #3993: the L2 cluster's identifier, and when this run began (UTC,
 # second precision, the prefix AWS's SnapshotCreateTime is compared on).
 AURORA_CLUSTER_ID=""
@@ -133,6 +146,30 @@ delete_oob_instance() { # usage: delete_oob_instance <instance id>
   aws rds wait db-instance-deleted --db-instance-identifier "$1" --region "${REGION}"
 }
 
+# Issue #4087 helpers. The target group's logical id, from state.
+TG_TYPE="AWS::RDS::DBProxyTargetGroup"
+tg_field() { # usage: tg_field <jq path under the resource, e.g. .physicalId>
+  local state
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  echo "${state}" | jq -r --arg t "${TG_TYPE}" "[.resources | to_entries[] | select(.value.resourceType == \$t) | .value${1}] | first // \"\""
+}
+# The target group's user tags as sorted `k=v` pairs, space-joined.
+tg_tags() { # usage: tg_tags <target group arn>
+  aws rds list-tags-for-resource --resource-name "$1" --region "${REGION}" \
+    --query "join(' ', sort(TagList[?!starts_with(Key, 'aws:')].join('=', [Key, Value]) || \`[]\`))" \
+    --output text
+}
+# Rewrite the target group's record to provisionedBy=cc-api, the record a
+# pre-fix binary wrote when an unhandled key auto-routed it to Cloud Control.
+seed_tg_cc_api() {
+  local state seeded
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  seeded=$(echo "${state}" | jq --arg t "${TG_TYPE}" \
+    '.resources |= with_entries(if .value.resourceType == $t then .value.provisionedBy = "cc-api" else . end)') || return 1
+  printf '%s\n' "${seeded}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null || return 1
+  [ "$(tg_field .provisionedBy)" = "cc-api" ] || { echo "FAIL: seeding the target group record to cc-api did not stick" >&2; return 1; }
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS RDS resources"
   # Do NOT silence stderr on `state destroy` — a partial-failure (e.g. a VPC
@@ -143,6 +180,7 @@ cleanup() {
   # calls are expected to NotFound after state destroy succeeds.
   set +eu
   [ -n "${DESTROY_2B_LOG}" ] && rm -f "${DESTROY_2B_LOG}"
+  [ -n "${DEPLOY_1C_LOG}" ] && rm -f "${DEPLOY_1C_LOG}"
   if [ -n "${OOB_INSTANCE_ID}" ]; then
     delete_oob_instance "${OOB_INSTANCE_ID}" || true
   fi
@@ -365,6 +403,82 @@ if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
 fi
 echo "    OK: DBCluster MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
+# --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
+TG_ARN=$(tg_field .physicalId)
+TG_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${TG_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
+case "${TG_ARN}" in
+  arn:aws:rds:*:target-group:*) ;;
+  *) echo "FAIL: could not resolve the DBProxyTargetGroup TargetGroupArn from state (got '${TG_ARN}')" >&2; exit 1 ;;
+esac
+[ -n "$(tg_tags "${TG_ARN}")" ] && { echo "FAIL: #4087 premise: the target group already carries user tags before phase 1b: $(tg_tags "${TG_ARN}")" >&2; exit 1; }
+
+echo "==> Phase 1b: deploy Tags on the proxy target group (CDKD_TEST_TG_TAGS=v1)"
+CDKD_TEST_TG_TAGS=v1 node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+TG_LAYER=$(tg_field .provisionedBy)
+if [ "${TG_LAYER}" != "sdk" ]; then
+  echo "FAIL: #4087: Tags routed the target group via '${TG_LAYER}', expected sdk (Cloud Control cannot delete this type)" >&2
+  exit 1
+fi
+TAGS=$(tg_tags "${TG_ARN}")
+if [ "${TAGS}" != "cdkd-drop=me cdkd-team=db" ]; then
+  echo "FAIL: #4087: target group tags are '${TAGS}', expected 'cdkd-drop=me cdkd-team=db'" >&2
+  exit 1
+fi
+echo "    OK: Tags reached the target group on the SDK route (${TAGS})"
+
+# --- Phase 1c: a cc-api record returns to the SDK provider (issue #4087) --
+echo "==> Phase 1c: seed provisionedBy=cc-api, then redeploy with changed Tags (CDKD_TEST_TG_TAGS=v2)"
+seed_tg_cc_api
+DEPLOY_1C_LOG="$(mktemp)"
+if ! CDKD_TEST_TG_TAGS=v2 node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${DEPLOY_1C_LOG}" 2>&1; then
+  cat "${DEPLOY_1C_LOG}" >&2
+  rm -f "${DEPLOY_1C_LOG}"
+  echo "FAIL: #4087: the redeploy over a cc-api target group record failed" >&2
+  exit 1
+fi
+DEPLOY_1C_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_1C_LOG}")"
+rm -f "${DEPLOY_1C_LOG}"
+DEPLOY_1C_LOG=""
+printf '%s\n' "${DEPLOY_1C_PLAIN}"
+TG_LAYER=$(tg_field .provisionedBy)
+TG_ARN_AFTER=$(tg_field .physicalId)
+if [ "${TG_LAYER}" != "sdk" ]; then
+  echo "FAIL: #4087: the cc-api record did not flip back (provisionedBy=${TG_LAYER}, expected sdk)" >&2
+  exit 1
+fi
+if [ "${TG_ARN_AFTER}" != "${TG_ARN}" ]; then
+  echo "FAIL: #4087: the flip changed the physicalId (${TG_ARN} -> ${TG_ARN_AFTER})" >&2
+  exit 1
+fi
+# The witness that the flip was an in-place update: no replacement line for
+# the target group, and the flip announced itself. The ARN check above is
+# weaker than it looks -- the proxy's `default` group keeps its ARN even
+# across a replacement on the same proxy -- so the `Replacing` grep is the
+# real witness, trusted because the flip line at the same info level must
+# match. The announcement's
+# sentinel is the flipped record above: a flip with no line means the wording
+# drifted, not the behavior.
+if grep -qE "Replacing ${TG_LOGICAL} " <<<"${DEPLOY_1C_PLAIN}"; then
+  echo "FAIL: #4087: the flip REPLACED ${TG_LOGICAL} instead of updating it in place" >&2
+  exit 1
+fi
+if ! grep -qF "${TG_LOGICAL} (${TG_TYPE}): moving to the SDK provider" <<<"${DEPLOY_1C_PLAIN}"; then
+  echo "FAIL: #4087: the record flipped to sdk, but no 'moving to the SDK provider' line names ${TG_LOGICAL} -- the wording drifted" >&2
+  exit 1
+fi
+TAGS=$(tg_tags "${TG_ARN}")
+if [ "${TAGS}" != "cdkd-team=platform" ]; then
+  echo "FAIL: #4087: after the v2 update the target group tags are '${TAGS}', expected 'cdkd-team=platform' (one changed, one removed)" >&2
+  exit 1
+fi
+echo "    OK: the cc-api record returned to the SDK provider in place (${TG_ARN}); tag diff applied (${TAGS})"
+
 # --- Phase 2: UPDATE pass (#1160 reset-on-removal) --------------------
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -399,6 +513,14 @@ if [ -z "${RESET_OK}" ]; then
   exit 1
 fi
 echo "    OK: after removal, AWS reset DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (#1160 silent-drop CLOSED)"
+
+# Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
+TAGS=$(tg_tags "${TG_ARN}")
+if [ -n "${TAGS}" ]; then
+  echo "FAIL: #4087: the template dropped Tags but the target group still carries '${TAGS}'" >&2
+  exit 1
+fi
+echo "    OK: dropping Tags from the template removed them from the target group (#4087)"
 
 # --- Phase 2b: --remove-protection compensation (issue #2204) ---------
 # The failure has to be TERMINAL (a retryable one is retried, and a sequence
@@ -459,6 +581,11 @@ aws rds create-db-instance --db-instance-identifier "${OOB_INSTANCE_ID}" \
 # delete an available member anyway.
 aws rds wait db-instance-available --db-instance-identifier "${OOB_INSTANCE_ID}" --region "${REGION}"
 
+# Issue #4087: destroy a target group recorded cc-api. It must be deleted
+# through the SDK provider: Cloud Control's delete fails for the type, and the
+# failure-set check below admits no DBProxyTargetGroup.
+seed_tg_cc_api
+
 DESTROY_2B_LOG="$(mktemp)"
 if node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -514,6 +641,17 @@ if ! grep -qF -- "--remove-protection had turned DeletionProtection off, so it w
   exit 1
 fi
 echo "    OK: SecurityCluster DeletionProtection restored after the terminal delete failure (#2204)"
+
+# Issue #4087: the target group seeded to cc-api must have been DELETED, not
+# merely absent from the failure set -- a skipped or never-attempted delete
+# prints no failure line and keeps its record. State survives this destroy
+# (the SecurityCluster failed), so the record's absence is readable.
+TG_LEFT=$(tg_field .physicalId)
+if [ -n "${TG_LEFT}" ]; then
+  echo "FAIL: #4087: the cc-api DBProxyTargetGroup record survived the phase 2b destroy (${TG_LEFT}); it was not deleted through the SDK provider" >&2
+  exit 1
+fi
+echo "    OK: the cc-api target group record was deleted through the SDK provider (#4087)"
 
 delete_oob_instance "${OOB_INSTANCE_ID}"
 OOB_INSTANCE_ID=""

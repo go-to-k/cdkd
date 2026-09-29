@@ -249,7 +249,7 @@ outputs-only-export	2026-09-28T07:22:06Z	PASS	115	verify.sh	#3885 log-group swee
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-09-29T06:54:20Z	PASS	5294	verify.sh	rc ok, orph clean (#4030 PR #4040: policy-less SecurityCluster final snapshot taken and deleted; #3993 arm green)
+rds-aurora	2026-09-29T13:40:32Z	PASS	4734	verify.sh	rc ok, orph clean; #4087 tag + cc-api flip + cc-api destroy arms
 rds-dbinstance-backfill	2026-09-29T06:54:20Z	PASS	801	verify.sh	rc ok, orph clean (#4030 PR #4040: policy-less L1 instance took its final snapshot, deleted; fix-reverted run RED at the assertion)
 rds-full-stack	2026-09-29T08:18:12Z	PASS	1016	verify.sh	rc ok, orph clean (#4029 PR #4072: replacement of the CC-routed instance left no snapshot; fix-reverted run RED at phase 1b, its snapshot deleted)
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
