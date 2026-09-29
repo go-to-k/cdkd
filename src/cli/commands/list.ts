@@ -16,7 +16,7 @@ import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
 import { matchStacks, renderNoStackMatch } from '../stack-matcher.js';
 import { toYaml } from '../../utils/yaml.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, stringifyJsonPayload } from '../../utils/display-safe.js';
 
 /**
  * Long-form stack record matching CDK CLI's `cdk list --long` shape.
@@ -321,10 +321,20 @@ function formatDisplayId(stack: StackInfo): string {
 /**
  * Emit a structured payload as either YAML (default, CDK CLI parity) or
  * JSON. Routed via stdout so `cdkd list` output is pipeable.
+ *
+ * The JSON branch goes through `stringifyJsonPayload` like every other
+ * `--json` payload (go-to-k/cdkd#4045). The values already passed
+ * `displaySafe`, so what it escapes here is that helper's residual: the
+ * zero-width characters and the bidi marks, which reached the terminal raw.
+ * The payload is still NOT lossless -- `displaySafe` has already replaced
+ * characters, with the collision recorded at `toLongRecord` -- because
+ * dropping it is the open helper-choice row on
+ * [#3479](https://github.com/go-to-k/cdkd/issues/3479). The YAML branch is a
+ * separate encoding and is not escaped this way.
  */
-function emitStructured(payload: unknown, asJson: boolean): void {
+function emitStructured(payload: object, asJson: boolean): void {
   if (asJson) {
-    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    process.stdout.write(`${stringifyJsonPayload(payload)}\n`);
     return;
   }
   // Issue #2421 decided the leading-newline contract inside `toYaml`: it

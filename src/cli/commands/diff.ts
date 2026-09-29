@@ -14,6 +14,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
+import { stringifyJsonPayload } from '../../utils/display-safe.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -375,8 +376,11 @@ async function diffCommand(
     }
 
     // 5. Emit results — JSON payload (nested when --recursive) or human blocks.
+    // Escaped, not sanitised (go-to-k/cdkd#4045): a state value carrying DEL,
+    // C1, a line separator or a bidi control is written as `\uXXXX`, so the
+    // payload parses back unchanged and cannot drive the terminal.
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(trees.map(diffTreeToJson), null, 2)}\n`);
+      process.stdout.write(`${stringifyJsonPayload(trees.map(diffTreeToJson))}\n`);
     } else {
       for (const tree of trees) {
         // `countBlocking` too, not `treeHasChanges` alone. The renderer is

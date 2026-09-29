@@ -482,6 +482,34 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     expect(stdout).not.toContain('--dry-run: state will NOT be written.');
   });
 
+  /**
+   * go-to-k/cdkd#4045: the payload is ESCAPED, not sanitised. A stored value
+   * carrying a C1 CSI and a LINE SEPARATOR reaches stdout as `\uXXXX` escape
+   * text, and still parses back to the stored value.
+   */
+  it('--json escapes a planted CSI in a stored value and round-trips it', async () => {
+    const planted = 'Enabled\u009b[2J\u2028FAKE';
+    mockGetState.mockResolvedValue(
+      makeState({
+        Bucket1: resource(BUCKET, { VersioningConfiguration: { Status: planted } }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue(DRIFTED_PROVIDER);
+
+    const { stdout } = await runDrift([...ARGS, '--json']);
+
+    expect(stdout).not.toContain('\u009b');
+    expect(stdout).not.toContain('\u2028');
+    expect(stdout).toContain('\\u009b');
+    expect(stdout).toContain('\\u2028');
+    const payload = JSON.parse(stdout) as Array<{
+      drifted: Array<{ changes: Array<{ path: string; stateValue: unknown }> }>;
+    }>;
+    expect(payload[0]?.drifted[0]?.changes).toContainEqual(
+      expect.objectContaining({ path: 'VersioningConfiguration.Status', stateValue: planted })
+    );
+  });
+
   it('--json --revert --dry-run puts the whole revert plan on stderr', async () => {
     mockGetState.mockResolvedValue(driftedState());
     mockRegistryGetProvider.mockReturnValue(DRIFTED_PROVIDER);
