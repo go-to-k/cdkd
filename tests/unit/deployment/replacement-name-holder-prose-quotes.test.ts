@@ -16,7 +16,7 @@ import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harne
  * deploy engine's remedy and fed WHOLE to the paste harness.
  */
 
-const NAME_DESCRIBED = 'a name that is not a plain identifier';
+const NAME_DESCRIBED = 'a FunctionName that is not a plain identifier';
 const ID_DESCRIBED = 'whose recorded id is not a plain identifier';
 
 const base: ReplacementNameChange = {
@@ -80,7 +80,38 @@ describe('renderNameHeldElsewhere never puts a name inside cdkd quotes (go-to-k/
 
   it('does not repeat a described desired name as if it were the name', () => {
     const text = renderNameHeldElsewhere({ ...base, desiredName: 'x"y' });
-    expect(text).toContain(`asks for FunctionName ${NAME_DESCRIBED}, but`);
-    expect(text).toContain('— so that name is held by ANOTHER');
+    expect(text).toContain(`asks for ${NAME_DESCRIBED}, but`);
+    expect(text).toContain('— so the requested name is held by ANOTHER');
+  });
+
+  it('keeps the second mention on the DESIRED name when both names are described', () => {
+    // `that name` would have bound to the described held name nearer to it.
+    const text = renderNameHeldElsewhere({ ...base, desiredName: 'x"y', heldName: 'a"b' });
+    expect(text).toBe(
+      `The replacement asks for ${NAME_DESCRIBED}, but the resource being replaced (my-fn) ` +
+        `holds ${NAME_DESCRIBED} — so the requested name is held by ANOTHER existing resource, ` +
+        'not by the one being replaced, and deleting the old resource first cannot free it'
+    );
+  });
+
+  it("describes a name that ends in displayIdent's own cut marker, which round-trips unchanged", () => {
+    // `displayIdent` cuts at the stack-ref cap and appends exactly this
+    // suffix, so the round-trip alone reads the value as plain.
+    const forged = `${'a'.repeat(1152)} [cut: 35 more characters withheld]`;
+    for (const change of [
+      { ...base, desiredName: forged },
+      { ...base, heldName: forged },
+      { ...base, physicalId: forged },
+    ]) {
+      const text = renderNameHeldElsewhere(change);
+      expect(text).not.toContain('[cut:');
+      expect(text).not.toContain('a'.repeat(1152));
+    }
+  });
+
+  it('says an empty recorded id is absent rather than not plain', () => {
+    expect(renderNameHeldElsewhere({ ...base, physicalId: '' })).toContain(
+      'the resource being replaced, which has no recorded id, holds FunctionName "my-fn"'
+    );
   });
 });

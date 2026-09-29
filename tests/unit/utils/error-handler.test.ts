@@ -147,6 +147,13 @@ describe('normalizeAwsError', () => {
    */
   describe('a bucket name that is not a plain identifier (go-to-k/cdkd#3950)', () => {
     const DESCRIBED = /[Aa] bucket whose name is not a plain identifier/;
+    /** Each arm's own spelling, in `arms()` order: 301, 403, 404, other. */
+    const DESCRIBED_BY_ARM = [
+      'A bucket whose name is not a plain identifier (in us-west-2) is in a different region',
+      'Access denied to a bucket whose name is not a plain identifier. Verify',
+      'A bucket whose name is not a plain identifier does not exist.',
+      'S3 error during HeadBucket on a bucket whose name is not a plain identifier (HTTP 500).',
+    ];
     const arms = (bucket: string) =>
       [
         makeUnknownError(301, { $response: { headers: { 'x-amz-bucket-region': 'us-west-2' } } }),
@@ -155,11 +162,20 @@ describe('normalizeAwsError', () => {
         makeUnknownError(500),
       ].map((err) => normalizeAwsError(err, { bucket, operation: 'HeadBucket' }).message);
 
-    it('keeps a plain name quoted in every arm', () => {
-      for (const message of arms('my-bucket.v2')) {
-        expect(message).toContain("'my-bucket.v2'");
-        expect(message).not.toMatch(DESCRIBED);
+    it('keeps a plain name quoted in every arm, a legacy one included', () => {
+      // `My_Bucket`: a pre-2018 us-east-1 name may carry upper case and `_`.
+      for (const name of ['my-bucket.v2', 'My_Bucket']) {
+        for (const message of arms(name)) {
+          expect(message).toContain(`'${name}'`);
+          expect(message).not.toMatch(DESCRIBED);
+        }
       }
+    });
+
+    it("spells each arm's description for its position in the sentence", () => {
+      expect(arms('x y')).toEqual(
+        DESCRIBED_BY_ARM.map((d) => expect.stringContaining(d))
+      );
     });
 
     it('describes every payload in every arm, names none of it, and no pasted span runs', () => {

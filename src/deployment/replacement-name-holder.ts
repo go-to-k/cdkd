@@ -1243,33 +1243,43 @@ export function replacementOldHoldsSentName(input: {
  * is described.
  */
 export function renderNameHeldElsewhere(change: ReplacementNameChange): string {
+  const property = change.property;
   const desiredPlain = isPlainName(change.desiredName);
-  const desired = desiredPlain
-    ? `"${change.desiredName}"`
-    : 'a name that is not a plain identifier';
+  const asksFor = desiredPlain
+    ? `asks for ${property} "${change.desiredName}"`
+    : `asks for a ${property} that is not a plain identifier`;
+  const heldProperty = change.heldProperty ?? property;
   const held =
-    change.heldName !== undefined
-      ? `holds ${change.heldProperty ?? change.property} ${
-          isPlainName(change.heldName)
-            ? `"${change.heldName}"`
-            : 'a name that is not a plain identifier'
-        }`
-      : `does not hold that name`;
-  const replaced = isPlainName(change.physicalId)
-    ? `the resource being replaced (${change.physicalId})`
-    : 'the resource being replaced, whose recorded id is not a plain identifier,';
+    change.heldName === undefined
+      ? `does not hold that name`
+      : isPlainName(change.heldName)
+        ? `holds ${heldProperty} "${change.heldName}"`
+        : `holds a ${heldProperty} that is not a plain identifier`;
+  const replaced =
+    change.physicalId === ''
+      ? 'the resource being replaced, which has no recorded id,'
+      : isPlainName(change.physicalId)
+        ? `the resource being replaced (${change.physicalId})`
+        : 'the resource being replaced, whose recorded id is not a plain identifier,';
+  // The desired name's second mention: `"name"` when plain, else `the
+  // requested name`, which cannot bind to a described held name nearer to it.
   return (
-    `The replacement asks for ${change.property} ${desired}, but ${replaced} ${held} — so ` +
-    `${desiredPlain ? desired : 'that name'} is held by ANOTHER existing resource, not by the ` +
-    `one being replaced, and deleting the old resource first cannot free it`
+    `The replacement ${asksFor}, but ${replaced} ${held} — so ` +
+    `${desiredPlain ? `"${change.desiredName}"` : 'the requested name'} is held by ANOTHER existing ` +
+    `resource, not by the one being replaced, and deleting the old resource first cannot free it`
   );
 }
 
 /**
- * True when `displayIdent` renders `value` unchanged, which admits only
- * characters that are literal inside double quotes and never whitespace. The
- * cap is the stack-ref one, so a long ARN physical id is not cut.
+ * True when `value` has no whitespace and `displayIdent` renders it unchanged:
+ * only characters that are literal inside double quotes. The whitespace test
+ * comes FIRST because the round-trip alone admits a value that ends in
+ * `displayIdent`'s own cut marker (`<1152 plain characters> [cut: N more
+ * characters withheld]` renders as itself). The cap is the stack-ref one, so a
+ * long ARN physical id is not cut.
  */
 function isPlainName(value: string): boolean {
-  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value;
+  return (
+    !/\s/.test(value) && displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value
+  );
 }
