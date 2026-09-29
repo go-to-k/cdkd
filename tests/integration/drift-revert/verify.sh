@@ -46,15 +46,15 @@ fi
 . ../cr-log-groups.sh
 
 # Set to 1 only when step 2's deploy was refused on another process's lock: this
-# run then deployed nothing, the stack under ${STACK} is that PEER's, and a
-# destroy from `cleanup` would delete it once the peer releases its lock.
+# run then created no stack resources, the stack under ${STACK} is that PEER's,
+# and a destroy from `cleanup` would delete it once the peer releases its lock.
 PEER_HOLDS_STACK=0
 
 cleanup() {
   rc=$?
   rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}"
   if [ "${PEER_HOLDS_STACK}" = 1 ]; then
-    echo "[verify] FAIL (exit ${rc}) — destroy and log-group sweep SKIPPED: ${STACK} belongs to the peer holding its lock"
+    echo "[verify] FAIL (exit ${rc}) — destroy and log-group sweep SKIPPED: this run deployed nothing to ${STACK}"
     exit "${rc}"
   fi
   if [ "${rc}" -ne 0 ]; then
@@ -70,20 +70,22 @@ trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy"
 # The lock is the FIRST thing deploy takes (deploy-engine.ts), so a refusal on it
-# means this run created nothing; any other deploy failure may have created
-# resources, and `cleanup` still destroys them. The head is the parsed marker;
+# means this run created no stack resources (assets and event logs are not
+# destroy's to remove); any other deploy failure may have created resources, and
+# `cleanup` still destroys them. `tee -i`: a Ctrl-C must not kill tee first, or
+# deploy's interrupt notice hits a closed pipe and it exits without saving state. The head is the parsed marker;
 # the recovery clause, built separately and printed on the same line, is the
 # sentinel: seen without the head, the wording drifted, and the destroy is
 # skipped too rather than risk a peer's stack.
 DEPLOY_LOG="$(mktemp)"
 set +e
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${DEPLOY_LOG}"
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee -i "${DEPLOY_LOG}"
 deploy_rc=${PIPESTATUS[0]}
 set -e
 if [ "${deploy_rc}" -ne 0 ]; then
   if grep -qF "Failed to acquire lock for stack ${STACK} " "${DEPLOY_LOG}"; then
     PEER_HOLDS_STACK=1
-    echo "[verify] FAIL step 2: deploy was refused on another process's lock on ${STACK}; re-run once it is released" >&2
+    echo "[verify] FAIL step 2: deploy failed acquiring the lock on ${STACK} (a peer's lock, or an S3 error on it); nothing was deployed, so the destroy is skipped" >&2
   elif grep -qF "If you are certain no other process is active" "${DEPLOY_LOG}"; then
     PEER_HOLDS_STACK=1
     echo "[verify] FAIL step 2: the lock-recovery clause printed without the 'Failed to acquire lock for stack' head this fixture keys on; update verify.sh for the new wording" >&2
