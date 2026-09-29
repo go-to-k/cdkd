@@ -144,7 +144,7 @@ iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final 
 iam-propagation-stress	2026-09-29T09:52:03Z	PASS	116	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean; swept the runtime-created WorkerFn log group
 iam-role-policies-drift-clean	2026-09-29T09:52:03Z	PASS	90	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-role-prefixed-name-update	2026-09-29T12:17:37Z	PASS	105	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
-iam-secret-derived-principals	2026-09-29T21:14:20Z	FAIL	165	verify.sh	PR #4151 (#4064) @b907f2b3: fixture expectation bug, not cdkd - the update and #4064 markers passed, but Step 5's user_groups(MEMBER) omitted AdditionGroup, which SecretGroupAddition now adds MEMBER to; cleanup left the two #4150-skipped records in state, orphaned by hand; AWS clean
+iam-secret-derived-principals	2026-09-29T21:21:39Z	PASS	205	verify.sh	PR #4151 (#4064) @fcb9bc62: rc ok, #4064 inline Policy + UserToGroupAddition arms updated, destroy clean, no plaintext in any state version, AWS clean
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)

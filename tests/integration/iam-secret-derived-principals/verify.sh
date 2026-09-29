@@ -178,13 +178,19 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
     # Both skip the SecretInlinePolicy / SecretGroupAddition records while
     # they hold a secret reference (go-to-k/cdkd#4150), leaving the stack's
-    # state behind for the next run's pre-flight to refuse. Drop what is left;
-    # a no-op once the state is gone. Their AWS side is covered below and by
-    # the destroy: the seeded role and user lose the inline policy and the
-    # membership in delete_seeded_role / delete_seeded_user, and the stack's
-    # own AddedRole, SecretMember and AdditionGroup deletes remove theirs.
-    node "${LOCAL_DIST}" state orphan "${STACK}" --stack-region "${REGION}" \
-      --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+    # state behind for the next run's pre-flight to refuse. Orphan ONLY those
+    # two, one call each (a path already gone fails alone), so a record left
+    # for any OTHER reason still blocks the next pre-flight rather than
+    # hiding a live resource. Then retry the state teardown. Their AWS side is
+    # covered below and by the destroy: the seeded role and user lose the
+    # inline policy and the membership in delete_seeded_role /
+    # delete_seeded_user, and the stack's own AddedRole, SecretMember and
+    # AdditionGroup deletes remove theirs.
+    for path in SecretInlinePolicy SecretGroupAddition; do
+      AWS_REGION="${REGION}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/${path}" \
+        --state-bucket "${STATE_BUCKET:-}" --stack-region "${REGION}" --yes >/dev/null 2>&1
+    done
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
   [ "${SEEDED_ROLE}" = "1" ] && delete_seeded_role "${EXT_ROLE}"
   [ "${SEEDED_ELSE_ROLE}" = "1" ] && delete_seeded_role "${ELSE_ROLE}"
@@ -585,7 +591,7 @@ assert_gone "IAM user ${MEMBER} still exists after destroy" \
   aws iam get-user --user-name "${MEMBER}"
 assert_gone "IAM group ${ADDITION_GROUP} still exists after destroy" \
   aws iam get-group --group-name "${ADDITION_GROUP}"
-echo "    OK: 0 orphans (state, policy, added role and group, user all gone)"
+echo "    OK: 0 orphans (state, policy, added role and group, user, addition group all gone)"
 
 echo "==> Step 8 (LOAD-BEARING): no surviving state version carries either name"
 assert_no_plaintext_in_versions "${EXT_ROLE}" "the secret-named role"
@@ -622,4 +628,4 @@ echo "==> Step 10: sweep every object version under the stack's state prefix"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 echo ""
-echo "==> iam-secret-derived-principals test passed: the secret-derived lists were read from IAM ADD-only (ManagedPolicy / User) or from the deploy's resolution (inline Policy / UserToGroupAddition), the added principals joined, the secret-named ones stayed, destroy clean, no plaintext in any state version"
+echo "==> iam-secret-derived-principals test passed: the secret-derived lists were read from IAM ADD-only (ManagedPolicy / User) or with the unchanged reference dropped from the recorded side (inline Policy / UserToGroupAddition), the added principals joined, the secret-named ones stayed, destroy clean, no plaintext in any state version"
