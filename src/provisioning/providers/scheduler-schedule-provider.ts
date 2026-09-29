@@ -24,8 +24,9 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
-import { displaySafe } from '../../utils/display-safe.js';
-import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
+import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
+import { shellQuote } from '../../state/lock-contention-message.js';
+import { hasClauseBreak } from '../../utils/pasteable-command.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import {
   redactedDeleteAddressFields,
@@ -380,20 +381,32 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       // would remove a DIFFERENT schedule. It was previously interpolated
       // UNQUOTED, so a name carrying a space split the arguments.
       const safeId = displaySafe(physicalId, { asciiOnly: true });
-      const manualHint =
-        safeId && safeId === physicalId
-          ? `If the schedule lives in a custom group, delete it manually: ` +
-            `aws scheduler delete-schedule --name ${shellQuote(safeId)} --group-name '<group>'`
-          : `If the schedule lives in a custom group, delete it manually via the console: the ` +
-            `name recorded for it cannot be reproduced safely on a command line.`;
+      // A clause break in the name (`: `, `. `, ...) lets a pasted selection
+      // start INSIDE the shell quotes, so such a name is never printed, in the
+      // command or in the prose (go-to-k/cdkd#3950).
+      const nameShowable = !!safeId && safeId === physicalId && !hasClauseBreak(safeId);
+      const manualHint = nameShowable
+        ? `If the schedule lives in a custom group, delete it manually: ` +
+          `aws scheduler delete-schedule --name ${shellQuote(safeId)} --group-name '<group>'`
+        : `If the schedule lives in a custom group, delete it manually via the console: the ` +
+          `name recorded for it cannot be reproduced safely on a command line.`;
+      // Neither value goes inside a hand-written `'...'` unless it is a plain
+      // identifier (go-to-k/cdkd#3950): `safeId` keeps `'`, `;` and `$( )`, so
+      // a `'` in it closed cdkd's quote. A name the manual hint can print is
+      // shown the way the hint prints it, through `shellQuote`, so the two
+      // agree; anything else, including an empty or unrenderable name, is
+      // described. The logical id is a `state.json` key, described likewise.
+      const shownName = isPasteableIdent(physicalId)
+        ? `'${physicalId}'`
+        : nameShowable
+          ? shellQuote(safeId)
+          : 'a schedule whose recorded name is not a plain identifier';
+      const subject = isPasteableIdent(logicalId)
+        ? `State record for Schedule ${logicalId}`
+        : 'The state record of a Schedule whose logical id is not a plain identifier';
       this.logger.warn(
-        // `safeId`, not a second `displaySafe(physicalId, ...)` call: one
-        // sanitization, one value. `|| UNRENDERABLE` matches
-        // `lock-manager.ts`'s treatment of the same case -- a fully
-        // unrenderable id must not render as an empty `''`, which reads as a
-        // schedule with no name rather than as one that cannot be named.
-        `State record for Schedule ${logicalId} carries no properties — deleting ` +
-          `'${safeId || UNRENDERABLE}' from the default group. ${manualHint}`
+        `${subject} carries no properties — deleting ${shownName} from the default group. ` +
+          manualHint
       );
     }
 

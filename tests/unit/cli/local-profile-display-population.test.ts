@@ -285,8 +285,14 @@ function isRoleArnSite(expression: string): boolean {
  * `displayAssemblyPath` (go-to-k/cdkd#3509) joined on the same terms: it runs
  * `displaySafe` first and then either returns that result unchanged or puts it
  * in an escaped JSON boundary, so it too cannot be weaker than `displaySafe`.
+ *
+ * `plainOrDescribed` / `quotedOrDescribed` (go-to-k/cdkd#3950) print the value
+ * only when `isPasteableIdent` admits it, which requires `displayIdent` to
+ * return it unchanged, and print a fixed description otherwise. So neither
+ * can be weaker than `displayIdent` at any input.
  */
-const SANITIZER_CALL = /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath)\s*\(/;
+const SANITIZER_CALL =
+  /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath|plainOrDescribed|quotedOrDescribed)\s*\(/;
 
 /**
  * A local holding an ALREADY-sanitized profile, as `safeProfile` / `shownProfile`

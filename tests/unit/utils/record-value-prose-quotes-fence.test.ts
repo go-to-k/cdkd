@@ -8,10 +8,11 @@
  * shell. The value goes through its own boundary instead (`displayIdent` /
  * `displayStackName`, with no quotes around the call).
  *
- * BOUND: the pattern sees a sanitizer CALLED inside the quote, so a sanitized
- * value hoisted into a variable first (`'${safeId}'`) is invisible to it, and
- * so is a site split across a continuation line. Those are covered per site by
- * paste cases, not here.
+ * BOUND: the pattern sees a sanitizer CALLED inside the quote, or a hoisted
+ * sanitized value whose variable is named `safe*` (`'${safeId}'`,
+ * `'${safeId || UNRENDERABLE}'`). A hoisted value under any other name is
+ * invisible to it, and so is a site split across a continuation line. Those
+ * are covered per site by paste cases, not here.
  *
  * The allow-list is per FILE, so a new site in a listed file is invisible
  * while the file sits on it. It has no stale check on purpose: its rows are
@@ -28,24 +29,18 @@ import { describe, expect, it } from 'vite-plus/test';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 /**
- * A sanitizer call opened straight after a hand-written `'` or `"`. A `"`
- * fails the same way: a `"` in the value closes it, and `$( )` runs inside it
- * regardless.
+ * A sanitizer call, or a hoisted `safe*` value, opened straight after a
+ * hand-written `'` or `"`. A `"` fails the same way: a `"` in the value closes
+ * it, and `$( )` runs inside it regardless.
  */
 const HAND_QUOTED =
-  /['"]\$\{(?:safeSegment|displaySafe|safe|safeId|safeStack|displayIdent|displayStackName|showId)\(/;
+  /['"]\$\{(?:(?:safeSegment|displaySafe|safe|safeId|safeStack|displayIdent|displayStackName|showId|(?:this\.)?displayMasked|(?:this\.)?displayLeaf)\(|safe[A-Za-z]*\s*(?:\}|\|\|))/;
 
 /** Files whose sites go-to-k/cdkd#3950 still lists as open, each with its reason. */
 const ALLOWED: Readonly<Record<string, string>> = {
   'src/cli/commands/export.ts': 'open row of go-to-k/cdkd#3950 (other lanes hold this file)',
-  'src/cli/commands/state.ts': 'open row of go-to-k/cdkd#3950 (a parallel lane)',
-  'src/cli/commands/local-invoke.ts': 'open row of go-to-k/cdkd#3950 (displayIdent inside quotes)',
-  'src/cli/commands/local-invoke-agentcore.ts':
-    'open row of go-to-k/cdkd#3950 (displayIdent inside quotes)',
-  'src/cli/commands/local-start-api.ts':
-    'open row of go-to-k/cdkd#3950 (displayIdent inside quotes)',
   'src/deployment/intrinsic-function-resolver.ts':
-    'open row of go-to-k/cdkd#3950 (displayIdent inside single and double quotes)',
+    "open row of go-to-k/cdkd#3950 (the resolver's displayMasked / displayLeaf renders inside single quotes; they keep `'`). While listed, the two sites #4052 fixed here rely on their paste cases, not this fence",
   'src/cli/options.ts': 'open row of go-to-k/cdkd#3950 (--assume-role parse errors, displayIdent inside double quotes)',
   'src/deployment/replacement-name-holder.ts':
     'open row of go-to-k/cdkd#3950 (displaySafe inside double quotes; PR #4010 holds the file)',
@@ -88,6 +83,12 @@ describe('no sanitized value inside a hand-written quote (go-to-k/cdkd#3950)', (
     expect(hits('x.ts', "`for run '${displayIdent(run)}'`")).toEqual(['x.ts:1']);
     expect(hits('x.ts', '`value "${displayIdent(v)}": expected`')).toEqual(['x.ts:1']);
     expect(hits('x.ts', "`so '${showId(identifier)}' is looked up`")).toEqual(['x.ts:1']);
+    expect(hits('x.ts', "`deleting '${safeId || UNRENDERABLE}' from`")).toEqual(['x.ts:1']);
+    expect(hits('x.ts', "`deleting '${safeName}' from`")).toEqual(['x.ts:1']);
+    expect(hits('x.ts', "`mapping '${this.displayMasked(mapName, context)}' not found`")).toEqual([
+      'x.ts:1',
+    ]);
+    expect(hits('x.ts', "`deleting ${quotedOrDescribed(id, 'name')} from`")).toEqual([]);
     expect(hits('x.ts', '`Roll back ${safeStack(stackName)} (${safe(region)})?`')).toEqual([]);
   });
 });

@@ -657,19 +657,22 @@ describe('a template-declared PARAMETER or CONDITION name is sanitized too (#343
     expect(got.error, `did not reach the arm: ${JSON.stringify(got)}`).toContain(
       'Unsupported CloudFormation intrinsic function'
     );
-    // `il X`, not `ilX`: see `expectSanitized`'s note -- this is the one site
-    // rendered by `displayIdent`, whose ASCII pass turns `U+202E` into a space
-    // as well.
-    expectSanitized(got.error ?? '', 'the unsupported-intrinsic throw', 'il X');
-    // ...and the BOUNDARY is visible. The needle is `""Fn::Prod`, a DOUBLE
-    // quote character, not a single `"`: the sentence carries hand-written
-    // quotes around the call, so `toContain('"')` could not fail (measured in
-    // review round 3 -- it passed against a bare render). What the doubled
-    // needle asserts is `displayIdent`'s OWN JSON quoting, which fires here
-    // precisely because sanitization altered this id, and which is ABSENT for
-    // the ordinary `Fn::Length` keys seven cases in
-    // `intrinsic-functions.test.ts` pin.
-    expect(got.error).toContain(`""Fn::Prod`);
+    // A key that is not a plain identifier is DESCRIBED, not rendered
+    // (go-to-k/cdkd#3950): inside the hand-written `"..."` a `"` in it closed
+    // the quote. So the SANITIZED skeleton is absent by design, and what is
+    // pinned instead is that no forbidden character survives, the description
+    // is there, and the key still reaches the reader through the issue
+    // link's percent-encoding.
+    const text = got.error ?? '';
+    for (const [ch, name] of FORBIDDEN) {
+      expect(text.includes(ch), `the throw still carries ${name}`).toBe(false);
+    }
+    expect(text).toContain(
+      'Unsupported CloudFormation intrinsic function whose name is not a plain identifier: '
+    );
+    // Only the link carries it: no rendered `Fn::Prod` anywhere in the prose.
+    expect(text).not.toContain('Fn::Prod');
+    expect(text).toContain(encodeURIComponent(`Support intrinsic Fn::${EVIL}`));
   });
 
   it("sanitizes Fn::Split's source clause, which two THROWS carry", async () => {

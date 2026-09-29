@@ -126,6 +126,20 @@ import {
   isRetryableTransientError,
 } from '../../../src/deployment/retryable-errors.js';
 import { clearCrossAccountCredentialsCache } from '../../../src/utils/role-arn.js';
+import {
+  CLAUSE_BREAK_PAYLOAD,
+  PASTE_PAYLOADS,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
+
+/** Every family, the opt-in clause break included (go-to-k/cdkd#3950). */
+const PAYLOADS = [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD];
+import {
+  hasClauseBreak,
+  shellQuote,
+  UNSHOWABLE_VALUE,
+} from '../../../src/utils/pasteable-command.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 import {
   ambientCredentialConfig,
@@ -239,6 +253,64 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
     ).rejects.toThrow(/not a valid IAM role ARN/);
     expect(mockStsSend).not.toHaveBeenCalled();
   });
+
+  /**
+   * go-to-k/cdkd#3950: the refused value used to print as
+   * `'${displayIdent(roleArn)}'`, so a `'` in it closed cdkd's quote. A plain
+   * value keeps the quotes; any other is shown, because the operator needs it
+   * to fix the template, as its JSON render shell-quoted
+   * (`shellBoundedDisplay`). Bare JSON would let `$( )` and a backtick run,
+   * which the old single quotes had stopped, so every span must be inert.
+   */
+  it('never puts a refused RoleArn inside cdkd quotes (go-to-k/cdkd#3950)', async () => {
+    const refusal = async (roleArn: string): Promise<string> => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      try {
+        await resolver.resolve(
+          { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'BucketArn', RoleArn: roleArn } },
+          buildContext(),
+        );
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error('expected a refusal');
+    };
+    expect(await refusal('not-a-valid-arn')).toMatch(
+      /^Fn::GetStackOutput: RoleArn 'not-a-valid-arn' is not a valid IAM role ARN\. /,
+    );
+    const messages: Array<{ value: string; message: string }> = [];
+    for (const { value } of PAYLOADS) {
+      const message = await refusal(value);
+      // A render holding a clause break is described: quoting cannot stop a
+      // selection that starts inside the quotes.
+      expect(message, value).toContain(
+        hasClauseBreak(JSON.stringify(value))
+          ? `Fn::GetStackOutput: the RoleArn argument (${UNSHOWABLE_VALUE}) is not a valid IAM role ARN.`
+          : `RoleArn ${shellQuote(JSON.stringify(value))} is not a valid IAM role ARN.`,
+      );
+      // The pre-fix spelling, which a `'` in the value closed.
+      if (value.includes("'")) expect(message, value).not.toContain(`'${JSON.stringify(value)}'`);
+      messages.push({ value, message });
+    }
+    // A value with nothing renderable left prints the `UNRENDERABLE` token,
+    // quoted: bare, its `<` and `>` are two redirections when pasted.
+    const unrenderable = await refusal('\u0001');
+    expect(unrenderable).toContain("RoleArn '<unrenderable>' is not a valid IAM role ARN.");
+    messages.push({ value: '\u0001', message: unrenderable });
+    // The contributor's reproduction on #4052: the break sits inside a value
+    // that otherwise looks like an ARN, and pasting the clause after `arn:x: `
+    // used to run `touch OWNED`.
+    const reported = await refusal('arn:x: touch OWNED; # : y');
+    expect(reported).toContain(
+      `Fn::GetStackOutput: the RoleArn argument (${UNSHOWABLE_VALUE}) is not a valid IAM role ARN.`,
+    );
+    expect(reported).not.toContain('touch OWNED');
+    messages.push({ value: 'arn:x: touch OWNED; # : y', message: reported });
+    withPasteDir((dir) => {
+      for (const { value, message } of messages) expect(spansThatRun(message, dir), value).toEqual([]);
+    });
+    expect(mockStsSend).not.toHaveBeenCalled();
+  }, 60_000);
 
   it('rejects an IAM user ARN with the parser error (only roles permitted)', async () => {
     const resolver = new IntrinsicFunctionResolver('us-east-1');

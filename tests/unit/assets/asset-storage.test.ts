@@ -87,6 +87,15 @@ import {
   type BootstrapMarker,
 } from '../../../src/assets/asset-storage.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import {
+  CLAUSE_BREAK_PAYLOAD,
+  PASTE_PAYLOADS,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
+
+/** Every family, the opt-in clause break included (go-to-k/cdkd#3950). */
+const PAYLOADS = [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD];
 
 const ACCOUNT = '123456789012';
 const REGION = 'us-east-1';
@@ -1795,4 +1804,231 @@ describe('raw bootstrap-marker key reachability (issue #2021)', () => {
     const [key] = putRawObject.mock.calls[0]! as [string, string];
     expect(key).toBe(`cdkd-bootstrap/${REGION_UPPER}.json`);
   });
+});
+
+/**
+ * go-to-k/cdkd#3950: the marker refusals printed the marker KEY, and the
+ * storage refusals the marker's bucket and repository names, inside cdkd's
+ * own `'...'`. The key comes from an S3 listing and the names from the
+ * marker's body, so whoever can `s3:PutObject` on the state bucket chooses
+ * them, and a `'` closed the quote. A plain value keeps its quotes; any other
+ * is described, since these sentences name `cdkd bootstrap`. Every message is
+ * pasted whole.
+ */
+describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)', () => {
+  async function messagesFor(value: string): Promise<Array<{ site: string; message: string }>> {
+    const out: Array<{ site: string; message: string }> = [];
+    const key = `${BOOTSTRAP_MARKER_PREFIX}${value}.json`;
+    const thrown = async (fn: () => unknown): Promise<string> => {
+      try {
+        await fn();
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error('expected a throw');
+    };
+    out.push({ site: 'not JSON', message: await thrown(() => parseBootstrapMarker('{', key)) });
+    out.push({
+      site: 'malformed',
+      message: await thrown(() => parseBootstrapMarker(JSON.stringify({ assetSupportVersion: 1 }), key)),
+    });
+    out.push({
+      site: 'newer version',
+      message: await thrown(() =>
+        parseBootstrapMarker(
+          JSON.stringify({ ...validMarker(), assetSupportVersion: ASSET_SUPPORT_VERSION + 1 }),
+          key
+        )
+      ),
+    });
+    mockS3Send.mockRejectedValueOnce(awsError('NotFound', 404));
+    out.push({
+      site: 'bucket missing',
+      message: await thrown(() =>
+        verifyAssetStorageExists({ ...validMarker(), assetBucket: value }, ACCOUNT, REGION)
+      ),
+    });
+    mockS3Send.mockRejectedValueOnce(awsError('Forbidden', 403));
+    out.push({
+      site: 'foreign bucket',
+      message: await thrown(() =>
+        verifyAssetStorageExists({ ...validMarker(), assetBucket: value }, ACCOUNT, REGION)
+      ),
+    });
+    mockEcrSend.mockRejectedValueOnce(awsError('RepositoryNotFoundException'));
+    out.push({
+      site: 'repo missing',
+      message: await thrown(() =>
+        verifyAssetStorageExists({ ...validMarker(), containerRepo: value }, ACCOUNT, REGION)
+      ),
+    });
+    // `assertAssetBucketRegion`, reached from the verify path's HeadBucket
+    // redirect: once with the bucket's region known, once with the probe
+    // failing.
+    mockS3Send.mockRejectedValueOnce(awsErrorInRegion('Unknown', 301, 'ap-northeast-1'));
+    out.push({
+      site: 'verify: bucket in another region',
+      message: await thrown(() =>
+        verifyAssetStorageExists({ ...validMarker(), assetBucket: value }, ACCOUNT, REGION)
+      ),
+    });
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      Promise.reject(
+        cmd._type === 'HeadBucket' ? awsError('PermanentRedirect', 301) : awsError('AccessDenied', 403)
+      )
+    );
+    out.push({
+      site: 'verify: bucket region unknown',
+      message: await thrown(() =>
+        verifyAssetStorageExists({ ...validMarker(), assetBucket: value }, ACCOUNT, REGION)
+      ),
+    });
+    mockS3Send.mockResolvedValue({});
+    // `ensureAssetStorage` reuses the marker's bucket when no `--asset-bucket` is passed.
+    const reuse = (body: string) => ({
+      s3Client: new S3Client({ region: REGION }) as S3Client,
+      ecrClient: new ECRClient({}) as ECRClient,
+      stateBackend: {
+        putRawObject: vi.fn(),
+        getRawObject: vi.fn().mockResolvedValue(body),
+      } as unknown as S3StateBackend,
+      accountId: ACCOUNT,
+      region: REGION,
+      force: false,
+    });
+    const reused = JSON.stringify({ ...validMarker(), assetBucket: value });
+    mockS3Send.mockRejectedValueOnce(awsError('Forbidden', 403));
+    out.push({
+      site: 'ensure: bucket name taken (403)',
+      message: await thrown(() => ensureAssetStorage(reuse(reused))),
+    });
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket'
+        ? Promise.reject(awsError('NotFound', 404))
+        : cmd._type === 'CreateBucket'
+          ? Promise.reject(awsError('BucketAlreadyExists', 409))
+          : Promise.resolve({})
+    );
+    out.push({
+      site: 'ensure: bucket name taken (BucketAlreadyExists)',
+      message: await thrown(() => ensureAssetStorage(reuse(reused))),
+    });
+    mockS3Send.mockResolvedValue({});
+    const existing = JSON.stringify({ ...validMarker(), assetBucket: value, containerRepo: value });
+    out.push({
+      site: 'name conflict',
+      message: await thrown(() =>
+        ensureAssetStorage({
+          s3Client: new S3Client({ region: REGION }) as S3Client,
+          ecrClient: new ECRClient({}) as ECRClient,
+          stateBackend: {
+            putRawObject: vi.fn(),
+            getRawObject: vi.fn().mockResolvedValue(existing),
+          } as unknown as S3StateBackend,
+          accountId: ACCOUNT,
+          region: REGION,
+          force: false,
+          assetBucketName: 'my-org-cdkd-assets',
+          containerRepoName: 'my-org/cdkd-assets',
+        })
+      ),
+    });
+    return out;
+  }
+
+  it('keeps a plain value quoted, byte-identical to before', async () => {
+    const messages = await messagesFor('plain-value');
+    expect(messages).toHaveLength(11);
+    const bySite = Object.fromEntries(messages.map((m) => [m.site, m.message]));
+    const key = `'${BOOTSTRAP_MARKER_PREFIX}plain-value.json'`;
+    expect(bySite['not JSON']).toContain(`Bootstrap marker ${key} in the state bucket is not valid JSON.`);
+    expect(bySite['malformed']).toContain(`Bootstrap marker ${key} in the state bucket is malformed`);
+    expect(bySite['newer version']).toContain(`Bootstrap marker ${key} has assetSupportVersion`);
+    expect(bySite['bucket missing']).toContain("but the asset bucket 'plain-value' is missing.");
+    expect(bySite['foreign bucket']).toContain("Asset bucket 'plain-value' exists but is not owned");
+    expect(bySite['repo missing']).toContain("ECR repository 'plain-value' is missing.");
+    expect(bySite['name conflict']).toContain(
+      "already bootstrapped with asset bucket 'plain-value' (requested 'my-org-cdkd-assets') and " +
+        "container repo 'plain-value' (requested 'my-org/cdkd-assets')."
+    );
+    expect(bySite['verify: bucket in another region']).toContain(
+      "Asset bucket name 'plain-value' resolves to a bucket in ap-northeast-1"
+    );
+    expect(bySite['verify: bucket region unknown']).toContain(
+      "Asset bucket 'plain-value' is claimed by an existing bucket"
+    );
+    expect(bySite['ensure: bucket name taken (403)']).toContain(
+      "Asset bucket name 'plain-value' is already taken by a bucket this account"
+    );
+    expect(bySite['ensure: bucket name taken (BucketAlreadyExists)']).toContain(
+      "Asset bucket name 'plain-value' is already taken by another AWS account."
+    );
+    // A real repository name carries `/`, which a plain name admits.
+    mockEcrSend.mockRejectedValueOnce(awsError('RepositoryNotFoundException'));
+    await expect(
+      verifyAssetStorageExists({ ...validMarker(), containerRepo: 'my-org/cdkd-assets' }, ACCOUNT, REGION)
+    ).rejects.toThrowError("ECR repository 'my-org/cdkd-assets' is missing.");
+    // The corrupt-marker rewrite warning names the key it rewrites.
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+    mockLoggerWarn.mockClear();
+    await ensureAssetStorage({
+      s3Client: new S3Client({ region: REGION }) as S3Client,
+      ecrClient: new ECRClient({}) as ECRClient,
+      stateBackend: {
+        putRawObject: vi.fn().mockResolvedValue(undefined),
+        getRawObject: vi.fn().mockResolvedValue('{'),
+      } as unknown as S3StateBackend,
+      accountId: ACCOUNT,
+      region: REGION,
+      force: false,
+    });
+    expect(mockLoggerWarn.mock.calls.map((c) => String(c[0]))).toContain(
+      `Bootstrap marker '${getBootstrapMarkerKey(REGION)}' is malformed — rewriting it as part of this bootstrap.`
+    );
+  });
+
+  it('describes every non-plain payload, names none of it, and no pasted span runs', async () => {
+    const rendered: Array<{ value: string; site: string; message: string }> = [];
+    for (const { value } of PAYLOADS) {
+      for (const m of await messagesFor(value)) rendered.push({ value, ...m });
+    }
+    expect(rendered).toHaveLength(PAYLOADS.length * 11);
+    withPasteDir((dir) => {
+      for (const { value, site, message } of rendered) {
+        const label = `${site}: ${value}`;
+        expect(message, label).not.toContain(value);
+        expect(message, label).not.toContain(JSON.stringify(value));
+        expect(spansThatRun(message, dir), label).toEqual([]);
+      }
+    });
+    const first = (site: string): string => rendered.find((r) => r.site === site)!.message;
+    expect(first('not JSON')).toContain(
+      'A bootstrap marker whose key is not a plain identifier in the state bucket is not valid JSON.'
+    );
+    expect(first('bucket missing')).toContain('but the asset bucket named by its marker is missing.');
+    expect(first('foreign bucket')).toMatch(/^The asset bucket named by the marker exists but/);
+    expect(first('repo missing')).toContain('ECR repository named by its marker is missing.');
+    expect(first('verify: bucket in another region')).toMatch(
+      /^An asset bucket name that is not a plain identifier resolves to a bucket in ap-northeast-1/
+    );
+    expect(first('verify: bucket region unknown')).toMatch(
+      /^An asset bucket whose name is not a plain identifier is claimed by an existing bucket/
+    );
+    expect(first('ensure: bucket name taken (403)')).toMatch(
+      /^An asset bucket name that is not a plain identifier is already taken by a bucket this account/
+    );
+    expect(first('ensure: bucket name taken (BucketAlreadyExists)')).toMatch(
+      /^An asset bucket name that is not a plain identifier is already taken by another AWS account\./
+    );
+    expect(first('name conflict')).toContain(
+      'asset bucket with a name that is not a plain identifier (requested'
+    );
+  }, 120_000);
 });

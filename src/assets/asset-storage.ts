@@ -22,6 +22,7 @@ import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { buildDenyExternalAccessPolicy } from '../utils/deny-external-access-policy.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { pasteableCommand } from '../utils/pasteable-command.js';
+import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 
 /**
  * cdkd-owned asset storage — naming, bootstrap marker, and deploy-time
@@ -225,7 +226,7 @@ export async function assertAssetBucketRegion(
         // text already in the throw, so the line would only repeat it.
         if (failure.redacted) {
           getLogger().debug(
-            `GetBucketLocation failed for asset bucket '${bucketName}' while confirming it ` +
+            `GetBucketLocation failed for asset bucket ${quotedIfPlain(bucketName, 'with a name that is not a plain identifier')} while confirming it ` +
               `belongs to ${want}: ${failure.detail}`
           );
         }
@@ -244,7 +245,7 @@ export async function assertAssetBucketRegion(
         // runs inside any of the three message classifiers, and AWS's own text
         // is already reachable at `debug` above.
         throw new CdkdError(
-          `Asset bucket '${bucketName}' is claimed by an existing bucket, but cdkd ` +
+          `${isPlainName(bucketName) ? `Asset bucket '${bucketName}'` : 'An asset bucket whose name is not a plain identifier'} is claimed by an existing bucket, but cdkd ` +
             `could not determine which region that bucket is in, so it cannot confirm ` +
             `it belongs to ${want}. Refusing to adopt it. ` +
             `(region probe failed: ${failure.summary}) ` +
@@ -264,7 +265,7 @@ export async function assertAssetBucketRegion(
     // 400 path ownership was never established (only the 409
     // `BucketAlreadyOwnedByYou` proves it). Saying otherwise would tell a user
     // cdkd owns a bucket somebody else may hold.
-    `Asset bucket name '${bucketName}' resolves to a bucket in ${actual}, ` +
+    `${bucketNameSubject(bucketName)} resolves to a bucket in ${actual}, ` +
       `while this operation targets ${want}. S3 bucket names are globally unique, and ` +
       `both 'BucketAlreadyOwnedByYou' and a cross-region redirect report ACCOUNT ` +
       `ownership rather than the bucket's region, so cdkd cannot treat it as ` +
@@ -458,6 +459,49 @@ export interface BootstrapMarker {
 export type AssetMode = { mode: 'legacy' } | { mode: 'cdkd-assets'; marker: BootstrapMarker };
 
 /**
+ * A marker-side name for a sentence (go-to-k/cdkd#3950): `'value'` when it is
+ * a plain identifier, and `description` otherwise.
+ *
+ * `cdkd state info` takes the marker key from an S3 listing (the other callers
+ * build it from a region), and the bucket / repository names come from the
+ * marker's body, so anyone with `s3:PutObject` on the state bucket can choose
+ * them. Inside cdkd's own `'...'` a `'` in such a value closes the
+ * quote, and a JSON-quoted `$( )` would still run in a sentence that names
+ * `cdkd bootstrap`, so a value that is not plain is described, not shown.
+ * "Plain" is `displayIdent` returning the value unchanged: that admits only
+ * `[A-Za-z0-9:_@./+=,~-]`, nothing a shell acts on mid-word, and it takes the
+ * `/` every marker key carries, which `isPasteableIdent` refuses. The cap is
+ * the stack-ref one, above S3's 1024-byte key limit, so a legitimate key is
+ * never cut.
+ */
+function quotedIfPlain(value: string, description: string): string {
+  return isPlainName(value) ? `'${value}'` : description;
+}
+
+function isPlainName(value: string): boolean {
+  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value;
+}
+
+/**
+ * `Asset bucket name '<name>'` for a plain name. The name can come from the
+ * marker's body (`ensureAssetStorage` reuses it when no `--asset-bucket` is
+ * passed, and `verifyAssetStorageExists` checks its region), so any other is
+ * described.
+ */
+function bucketNameSubject(bucketName: string): string {
+  return isPlainName(bucketName)
+    ? `Asset bucket name '${bucketName}'`
+    : 'An asset bucket name that is not a plain identifier';
+}
+
+/** The subject of the marker refusals: the marker named by its key when that is plain. */
+function markerSubject(markerKey: string): string {
+  return isPlainName(markerKey)
+    ? `Bootstrap marker '${markerKey}'`
+    : 'A bootstrap marker whose key is not a plain identifier';
+}
+
+/**
  * Parse and validate a bootstrap marker body.
  *
  * Throws on malformed JSON or missing required fields — a corrupt marker is
@@ -471,7 +515,7 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     parsed = JSON.parse(body);
   } catch (error) {
     throw new CdkdError(
-      `Bootstrap marker '${markerKey}' in the state bucket is not valid JSON. ` +
+      `${markerSubject(markerKey)} in the state bucket is not valid JSON. ` +
         `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER',
       error as Error
@@ -491,7 +535,7 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     // destination — hard error instead (the marker is the user's explicit
     // opt-in, so silent legacy fallback is equally wrong here).
     throw new CdkdError(
-      `Bootstrap marker '${markerKey}' has assetSupportVersion ` +
+      `${markerSubject(markerKey)} has assetSupportVersion ` +
         `${marker.assetSupportVersion}, but this cdkd only understands up to ` +
         `${ASSET_SUPPORT_VERSION}. Upgrade cdkd to deploy in this region.`,
       'UNSUPPORTED_BOOTSTRAP_MARKER_VERSION'
@@ -505,7 +549,7 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     typeof marker.assetSupportVersion !== 'number'
   ) {
     throw new CdkdError(
-      `Bootstrap marker '${markerKey}' in the state bucket is malformed ` +
+      `${markerSubject(markerKey)} in the state bucket is malformed ` +
         `(missing assetBucket / containerRepo / assetSupportVersion). ` +
         `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER'
@@ -573,13 +617,13 @@ export async function verifyAssetStorageExists(
       if (err.name === 'NotFound' || err.name === 'NoSuchBucket') {
         throw new CdkdError(
           `cdkd asset storage is bootstrapped for region '${region}' but the asset bucket ` +
-            `'${marker.assetBucket}' is missing. ${rebootstrapHint}`,
+            `${quotedIfPlain(marker.assetBucket, 'named by its marker')} is missing. ${rebootstrapHint}`,
           'ASSET_STORAGE_MISSING'
         );
       }
       if (err.$metadata?.httpStatusCode === 403) {
         throw new CdkdError(
-          `Asset bucket '${marker.assetBucket}' exists but is not owned by account ` +
+          `${isPlainName(marker.assetBucket) ? `Asset bucket '${marker.assetBucket}'` : 'The asset bucket named by the marker'} exists but is not owned by account ` +
             `${accountId} (or access is denied). Refusing to use it. ${rebootstrapHint}`,
           'ASSET_STORAGE_FOREIGN_BUCKET',
           error as Error
@@ -618,7 +662,7 @@ export async function verifyAssetStorageExists(
       if (err.name === 'RepositoryNotFoundException') {
         throw new CdkdError(
           `cdkd asset storage is bootstrapped for region '${region}' but the container-asset ` +
-            `ECR repository '${marker.containerRepo}' is missing. ${rebootstrapHint}`,
+            `ECR repository ${quotedIfPlain(marker.containerRepo, 'named by its marker')} is missing. ${rebootstrapHint}`,
           'ASSET_STORAGE_MISSING'
         );
       }
@@ -721,7 +765,7 @@ export async function ensureAssetStorage(
       // fix ("Re-run 'cdkd bootstrap' ... to rewrite it"), so treat it as
       // absent and rewrite it below.
       logger.warn(
-        `Bootstrap marker '${markerKey}' is malformed — rewriting it as part of this bootstrap.`
+        `${markerSubject(markerKey)} is malformed — rewriting it as part of this bootstrap.`
       );
     }
   }
@@ -730,12 +774,12 @@ export async function ensureAssetStorage(
     const conflicts: string[] = [];
     if (options.assetBucketName && options.assetBucketName !== existingMarker.assetBucket) {
       conflicts.push(
-        `asset bucket '${existingMarker.assetBucket}' (requested '${options.assetBucketName}')`
+        `asset bucket ${quotedIfPlain(existingMarker.assetBucket, 'with a name that is not a plain identifier')} (requested '${options.assetBucketName}')`
       );
     }
     if (options.containerRepoName && options.containerRepoName !== existingMarker.containerRepo) {
       conflicts.push(
-        `container repo '${existingMarker.containerRepo}' (requested '${options.containerRepoName}')`
+        `container repo ${quotedIfPlain(existingMarker.containerRepo, 'with a name that is not a plain identifier')} (requested '${options.containerRepoName}')`
       );
     }
     if (conflicts.length > 0) {
@@ -778,7 +822,7 @@ export async function ensureAssetStorage(
       // Will create below.
     } else if (err.$metadata?.httpStatusCode === 403) {
       throw new CdkdError(
-        `Asset bucket name '${assetBucket}' is already taken by a bucket this account ` +
+        `${bucketNameSubject(assetBucket)} is already taken by a bucket this account ` +
           `does not own (or access is denied). Refusing to adopt it — resolve the ` +
           `naming conflict before re-running 'cdkd bootstrap'.`,
         'ASSET_STORAGE_FOREIGN_BUCKET',
@@ -833,7 +877,7 @@ export async function ensureAssetStorage(
         logger.info(`Asset bucket ${assetBucket} already exists`);
       } else if (err.name === 'BucketAlreadyExists') {
         throw new CdkdError(
-          `Asset bucket name '${assetBucket}' is already taken by another AWS account. ` +
+          `${bucketNameSubject(assetBucket)} is already taken by another AWS account. ` +
             `Refusing to adopt it — resolve the naming conflict before re-running ` +
             `'cdkd bootstrap'.`,
           'ASSET_STORAGE_FOREIGN_BUCKET',
