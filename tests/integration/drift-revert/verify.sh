@@ -18,6 +18,8 @@
 #  6e. issue #4023: --revert on a legacy-prefixed NAMED role / managed policy
 #      with a template-only baseline updates them in place, never under the
 #      bare template name
+#  6f. issue #4081: plain `cdkd drift --json` reports no name drift on those
+#      two records (still template-only, bare names)
 #   7. cdkd destroy --force
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
@@ -113,7 +115,7 @@ sweep_bare_iam_names() { (
 
 cleanup() {
   rc=$?
-  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}" "${STEP6E_ERR:-}"
+  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}" "${STEP6E_ERR:-}" "${STEP6F_JSON:-}"
   if [ "${PEER_HOLDS_STACK}" = 1 ]; then
     echo "[verify] FAIL (exit ${rc}) — destroy and log-group sweep SKIPPED: this run deployed nothing to ${STACK}"
     exit "${rc}"
@@ -390,6 +392,35 @@ assert_gone "--revert created a policy under the bare template name ${BARE_POLIC
   aws iam get-policy --policy-arn "${BARE_POLICY_ARN}"
 rm -f "${STEP6E_ERR}"
 echo "[verify] step 6e ok: role ${ROLE_ID_BEFORE} and policy reverted in place, no bare-name copies"
+
+# Issue #4081: detection on the same records. They still hold the BARE template
+# names with no observed baseline while AWS holds the prefixed ones, which
+# `cdkd drift` reported as a name drift on every run (the revert above leaves
+# the name alone and records nothing). Both preconditions are asserted first,
+# or a clean result would prove nothing. The two resources must be COMPARED
+# (drifted or clean, not skipped) and neither may carry a name change; other
+# resources' verdicts are not this step's subject, so the exit code is only
+# required to be a verdict (0 / 1 / 2).
+echo "[verify] step 6f: issue #4081 — no name drift on a legacy-prefixed name"
+${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const r=(JSON.parse(b).state??JSON.parse(b)).resources;for(const [p,t,k,n] of [["DriftNamedRole","AWS::IAM::Role","RoleName",process.argv[1]],["DriftNamedPolicy","AWS::IAM::ManagedPolicy","ManagedPolicyName",process.argv[2]]]){const ids=Object.keys(r).filter(id=>id.startsWith(p)&&r[id].resourceType===t);if(ids.length!==1)throw new Error(`expected one ${t} ${p}, found ${ids.length}`);const rec=r[ids[0]];if(rec.observedProperties!==undefined)throw new Error(`${ids[0]} has observedProperties again: the name check below would be vacuous`);if(rec.properties?.[k]!==n)throw new Error(`${ids[0]} records ${k}=${JSON.stringify(rec.properties?.[k])}, expected the bare template name ${n}`);}})' \
+  "${BARE_ROLE}" "${BARE_POLICY}"
+STEP6F_JSON="$(mktemp)"
+set +e
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --json >"${STEP6F_JSON}"
+rc=$?
+set -e
+case "${rc}" in
+  0 | 1 | 2) ;;
+  *)
+    echo "[verify] FAIL step 6f: cdkd drift --json exited ${rc}" >&2
+    exit 1
+    ;;
+esac
+node -e 'const fs=require("fs");const [s]=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const all=[...s.drifted.map(d=>({...d,kind:"drifted"})),...s.clean.map(c=>({...c,changes:[],kind:"clean"}))];for(const [p,t,k] of [["DriftNamedRole","AWS::IAM::Role","RoleName"],["DriftNamedPolicy","AWS::IAM::ManagedPolicy","ManagedPolicyName"]]){const hits=all.filter(o=>o.logicalId.startsWith(p)&&o.type===t);if(hits.length!==1)throw new Error(`expected ${p} (${t}) compared exactly once, found ${hits.length}: ${JSON.stringify(s)}`);const named=hits[0].changes.filter(c=>c.path===k||c.path.startsWith(k+"."));if(named.length>0)throw new Error(`${hits[0].logicalId} reports a ${k} drift: ${JSON.stringify(named)}`);console.log(`[verify] step 6f: ${hits[0].logicalId} ${hits[0].kind}, no ${k} change`);}' \
+  "${STEP6F_JSON}"
+rm -f "${STEP6F_JSON}"
+echo "[verify] step 6f ok: no name drift for the legacy-prefixed role / policy"
 
 echo "[verify] step 7: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force

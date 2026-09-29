@@ -813,14 +813,24 @@ is a provider-reported narrowing, below.
 #### A revert does not rename an IAM Role or ManagedPolicy
 
 Their names cannot change in place, so `--revert` keeps the name the live
-resource has. On a stack deployed with `--prefix-user-supplied-names`, a record
-with no `observedProperties` holds the template's name (`my-role`) while AWS
-holds `MyStack-my-role`, so `cdkd drift` reports the name as drifted.
-`--revert` reverts the other drifted properties on the live role or policy and
-warns that its name was left as it is. `cdkd drift` keeps reporting the name
-until `cdkd drift --accept` records the live one; only a deploy renames the
-resource. A drifted `Path` (or a managed policy's `Description`), which also
-cannot change in place, fails that resource's revert instead of replacing it.
+resource has. When a name is reported as drifted, `--revert` reverts the other
+drifted properties on the live role or policy and warns that its name was left
+as it is. `cdkd drift` keeps reporting the name until `cdkd drift --accept`
+records the live one; only a deploy renames the resource. A drifted `Path` (or
+a managed policy's `Description`), which also cannot change in place, fails
+that resource's revert instead of replacing it.
+
+#### A stack-name-prefixed name is not drift
+
+On a stack deployed with `--prefix-user-supplied-names`, a record with no
+`observedProperties` holds the template's name (`my-role`) while AWS holds
+`MyStack-my-role`. For an IAM Role, User, Group, InstanceProfile or
+ManagedPolicy and an ELBv2 LoadBalancer or TargetGroup, `cdkd drift` treats the
+two as the same name when the live one is what cdkd derives from the template
+name, with or without the stack-name prefix. The name is then not reported, and
+neither `--accept` nor `--revert` touches it. A live name cdkd would not derive
+from the template's, such as another stack's prefix or a different name, is
+still reported as drift.
 
 #### Tags a revert preserves
 
