@@ -265,7 +265,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'NeptuneProvider',
   'RDSDBProxyEndpointProvider',
   'RDSDBProxyProvider',
-  'RDSDBProxyTargetGroupProvider',
   'RDSProvider',
   'S3BucketPolicyProvider',
   'S3DirectoryBucketProvider',
