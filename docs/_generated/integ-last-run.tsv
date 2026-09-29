@@ -158,7 +158,7 @@ import-nested-stack	2026-09-28T18:28:27Z	PASS	140	verify.sh	PR #4007 merge-gate 
 import-reimport-masked-attrs	2026-09-28T18:03:10Z	PASS	186	verify.sh	PR #4007 merge-gate run; new fixture; pre-fix binary red at phase 2; rc ok, orph clean
 import-retain-destroy	2026-09-24T12:30:44Z	PASS	65	verify.sh	rc ok, orph clean; import.ts at origin/main deletes the Retain param
 import-secret-observed	2026-09-28T18:34:46Z	PASS	146	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
-import-value-strong-ref	2026-09-29T04:30:11Z	PASS	145	verify.sh	rc ok, orph clean, rebased head (#4014)
+import-value-strong-ref	2026-09-29T06:42:58Z	PASS	146	verify.sh	rc ok, orph clean, rebased head (#4059)
 importvalue-chain	2026-09-15T17:56:40Z	PASS	116	verify.sh	rc ok, 3 stacks destroyed 0 err, exports index purged, orph clean (#3176 review round 2)
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
@@ -291,7 +291,7 @@ schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-09-24T15:24:57Z	FAIL	138	verify.sh	stale fixture: v9 phase expects state.version 9, binary writes 10; AWS clean (#3658, tooling-backlog row)
-schema-v9-to-v10-migration	2026-09-29T04:25:48Z	PASS	170	verify.sh	rc ok, orph clean, rebased head (#4014)
+schema-v9-to-v10-migration	2026-09-29T06:42:58Z	PASS	215	verify.sh	rc ok, orph clean, rebased head (#4059)
 scrub-nested-child	2026-09-29T02:39:47Z	PASS	136	verify.sh	PR #4003 (#2889) run; rc ok, orph clean
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
