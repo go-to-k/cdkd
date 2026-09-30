@@ -1393,22 +1393,59 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     expect(saved.outputs).not.toHaveProperty(DROPPED);
     expect(saved.exportNames).toEqual(['MyStack:Db']);
     // WITHHELD, as the Dropped line withheld the same alias-shaped name.
-    expect(logLines()).toContain('Exports index entry (name withheld: it may carry a secret)');
+    expect(logLines()).toContain(
+      'Exports index entry (name withheld: an export name, which may carry a secret)'
+    );
     expect(logLines()).not.toContain(LEFTOVER);
   });
 
   it('masks an index entry a PREVIOUS scrub left without its key, by the entry own value', async () => {
+    // An ALPHANUMERIC name, which the alias rule below does not withhold, so
+    // only the entry's own value can mask it.
+    const name = `k${LEFTOVER}`;
     synthStacks.push(makeStackInfo('MyStack'));
     records.set('MyStack', makeState('MyStack', 'us-east-1', true)); // the key is already gone
     indexFake.regions.set(
       'us-east-1',
-      slot({ entries: new Map([[DROPPED, entry(LEFTOVER, 'MyStack', 'us-east-1')]]) })
+      slot({ entries: new Map([[name, entry(LEFTOVER, 'MyStack', 'us-east-1')]]) })
     );
 
     await scrubCommand([], commandOptions());
 
-    expect(logLines()).toContain('Exports index entry (masked: "k-***")');
+    expect(logLines()).toContain('Exports index entry (masked: "k***")');
     expect(logLines()).not.toContain(LEFTOVER);
+  });
+
+  it('WITHHOLDS an alias-shaped ABSENT entry name on a later run, whatever this run planned', async () => {
+    // `db-hunter2-url`: withheld when an earlier run dropped its key; its
+    // entry stays until the producer redeploys, and no corpus this run holds
+    // contains `hunter2`. Its value is not a recorded secret either.
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', makeState('MyStack', 'us-east-1', true));
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['db-hunter2-url', entry('postgres://h', 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions({ dryRun: true, fail: true }));
+
+    expect(logLines()).toContain(
+      'Exports index entry (name withheld: an export name, which may carry a secret)'
+    );
+    expect(logLines()).not.toContain('hunter2');
+  });
+
+  it('summarises an absent entry holding a recorded secret in the singular', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', makeState('MyStack', 'us-east-1', true));
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['OldUrl', entry(`u:${SECRET_PLAINTEXT}`, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions()).catch(() => undefined);
+
+    expect(logLines()).toContain('One such entry still holds a secret this run recorded');
   });
 
   it('--dry-run --fail exits 1 over a pending drop, and says it WOULD drop', async () => {

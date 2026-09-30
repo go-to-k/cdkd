@@ -1413,6 +1413,17 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // rewrite (issue #1919). `--dry-run --fail` prints these lines on every
       // run of the documented CI gate, into CI logs, so a raw name here would
       // disclose on a schedule.
+      // An ABSENT entry's name is an export name by definition, and the key
+      // that could have vouched for it is gone — typically dropped by an
+      // earlier run, whose own line withheld it (go-to-k/cdkd#4120). So in a
+      // stack that records a secret, a name carrying a character an Output
+      // logical id cannot is WITHHELD on every run, the rule `cdkd diff`'s
+      // `withholdsAliasName` applies, rather than masked only by this run's
+      // corpus.
+      const absentNamed = (exportName: string, entryValue: unknown): string =>
+        scrubbed.secretsFound > 0 && /[^A-Za-z0-9]/.test(exportName)
+          ? '(name withheld: an export name, which may carry a secret)'
+          : named(exportName, entryValue);
       const named = (exportName: string, alsoMask?: unknown): string =>
         renderStateKeyForLine(
           scrubbed.exportNameDisplay(exportName, alsoMask),
@@ -1478,7 +1489,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
             indexAbsentWithSecret++;
             totalIndexEntriesAbsentWithSecret++;
             logger.warn(
-              safeMsg`Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) ` +
+              safeMsg`Exports index entry ${absentNamed(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) ` +
                 `still holds a secret this run recorded, in plaintext, and scrub cannot rewrite ` +
                 safeMsg`it: ${shownStack}'s state.outputs has no key of that name to converge it to. ` +
                 safeMsg`Redeploy ${shownStack} to rewrite the index, and ROTATE the secret.`
@@ -1486,7 +1497,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
             continue;
           }
           logger.warn(
-            `Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) is ` +
+            `Exports index entry ${absentNamed(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) is ` +
               `published by ${shownStack}, whose state.outputs ${options.dryRun ? '(as a real run would leave it) ' : ''}` +
               `has no key of that name — nothing ${options.dryRun ? 'would be' : 'was'} written for it and ` +
               `it keeps the value it holds. Redeploy ` +
@@ -1871,9 +1882,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     }
     if (totalIndexEntriesAbsentWithSecret > 0) {
       parts.push(
-        ` ${totalIndexEntriesAbsentWithSecret} of ${totalIndexEntriesAbsent === 1 ? 'it' : 'them'} still ` +
-          `hold${totalIndexEntriesAbsentWithSecret === 1 ? 's' : ''} a secret this run recorded — see the ` +
-          `warnings above.`
+        ` ${totalIndexEntriesAbsentWithSecret === 1 ? 'One such entry still holds' : `${totalIndexEntriesAbsentWithSecret} such entries still hold`} ` +
+          `a secret this run recorded — see the warnings above.`
       );
     }
     if (totalIndexEntriesUnexamined > 0) {
