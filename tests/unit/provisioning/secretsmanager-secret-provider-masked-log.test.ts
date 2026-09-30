@@ -209,15 +209,16 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
 
   it('masks a ROTATED recorded name the deploy has no plaintext for (previous Name is a reference)', async () => {
     // The recorded ARN names the OLD secret value, which is in no bag of this
-    // deploy; state kept the Name as its reference.
-    await fullUpdate(LONG, '{{resolve:secretsmanager:old-name}}', ROTATED_OLD);
+    // deploy; state kept the Name as its reference. The desired Name is an
+    // ordinary one, so only the PREVIOUS value can mark the ARN secret.
+    await fullUpdate('plain-name', '{{resolve:secretsmanager:old-name}}', ROTATED_OLD);
     expect(transcript()).not.toContain(ROTATED_OLD);
     expect(transcript()).not.toContain(arnOf(ROTATED_OLD));
     expect(debugLines()).toContain('Updating secret Secret: ***');
   });
 
   it('masks a recorded name whose previous Name was persisted as the bare mask', async () => {
-    await fullUpdate(LONG, '***', ROTATED_OLD);
+    await fullUpdate('plain-name', '***', ROTATED_OLD);
     expect(transcript()).not.toContain(ROTATED_OLD);
     expect(debugLines()).toContain('Updating secret Secret: ***');
   });
@@ -263,12 +264,30 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
         'Secret',
         arnOf(ROTATED_OLD),
         TYPE,
-        { Name: LONG, SecretString: 'new' },
+        { Name: 'plain-name', SecretString: 'new' },
         { Name: '{{resolve:secretsmanager:old-name}}', SecretString: 'old' },
         { maskSecrets }
       )
     );
     expect(err.message).not.toContain(ROTATED_OLD);
+    expect(err.message).toBe('Failed to update secret Secret: Access denied to ***');
+  });
+
+  it('masks the full ARN of a 2-character secret Name an UpdateSecret failure quotes back', async () => {
+    // Below the needle floor, the name alone is no needle: the ARN built from
+    // it is, so AWS text quoting the ARN is still masked. The record carries
+    // no Name (an imported record, say), so only the DESIRED Name can mark it.
+    mockSend.mockRejectedValue(new Error(`Access denied to ${arnOf(TINY)}`));
+    const err = await thrown(() =>
+      provider.update(
+        'Secret',
+        arnOf(TINY),
+        TYPE,
+        { Name: TINY, SecretString: 'new' },
+        { SecretString: 'old' },
+        { maskSecrets }
+      )
+    );
     expect(err.message).toBe('Failed to update secret Secret: Access denied to ***');
   });
 
