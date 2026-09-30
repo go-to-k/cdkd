@@ -202,9 +202,20 @@ CONSUMER's bag only for an attribute listed in `noEchoAttributeResources`
 alone, a consumer of `Fn::GetAtt NoEchoConsumer.Value` would persist the
 plaintext on its first deploy, then read the producer's persisted `***` and be
 refused by `refuseRedactedAttributeReads` (`deploy-engine.ts:2462`) on every
-later one. So at the producer's create or update site, an attribute whose leaf
-equals or embeds a fresh `NoEcho` needle of the producer's bag is added to
-`noEchoAttributeResources` for that logical id, the existing #2274 mechanism.
+later one. So at the producer's create or update site, an attribute is added
+to `noEchoAttributeResources` for that logical id, the existing #2274
+mechanism, when its leaf matches a fresh value of the producer. A match is
+either of two things:
+
+- it equals or embeds a fresh string needle of the producer's bag;
+- it equals the RESOLVED leaf at one of the producer's position-keyed fresh
+  coordinates (section 3.1), compared with `keyOrderFreeJson`. This covers a
+  `Number` or 1-3 character value, which registers no needle.
+
+The CONSUMER's positional arm also treats a `Fn::GetAtt` (or `${X.Attr}`)
+whose target attribute is declared this way as a position that reads the
+parameter. So the consumer's leaf persists `***` whatever the value's type or
+length.
 That covers the run in which the producer is created or updated. On a LATER
 deploy the producer is `held` and skipped, so its record holds
 `attributes.Value = '***'`, and the consumer's `Fn::GetAtt` would be refused
@@ -217,19 +228,20 @@ So a `held` producer serves the declared attributes through a SIDE map for
 this run:
 
 - **Source.** The #1852 read primitive, `provider.import({ knownPhysicalId })`
-  (`deploy-engine.ts:2703-2712`). It is read-only, memoized per record per
+  (`deploy-engine.ts:2695-2703`). It is read-only, memoized per record per
   deploy, and it returns the ATTRIBUTE map. The `held` readback
   (`readCurrentState`, `src/types/resource.ts:1142-1148`) returns properties,
   whose keys coincide with attribute names only by accident (SSM `Value`, but
   not an SNS `TopicArn`).
 - **Served only where it matches.** A declared attribute is served only when
-  the imported value equals or embeds a fresh needle of the producer's bag.
+  the imported value matches a fresh value of the producer by the same two
+  rules as the declaration above.
   Otherwise the consumer is refused.
 - **Never in the record.** The resolver's `Fn::GetAtt` reads the side map the
   way it reads the `attributeHealer` channel (`ResolverContext.attributeHealer`,
   `intrinsic-function-resolver.ts:1667`). It never goes through
   `healedAttributes` / `withHealedAttributes`, which the persist merge reads
-  (`deploy-engine.ts:2801`). So `stateResources[producer].attributes` is never
+  (`deploy-engine.ts:2799`). So `stateResources[producer].attributes` is never
   written by this path. This matters for a `Number` or 1-3 character value,
   which the value arm would not re-mask on the way out.
 - **Fresh in the consumer.** Each served value is registered as a fresh needle
@@ -700,6 +712,8 @@ lanes once B merges.
     `held`; with a NUMBER echoed attribute, the persisted producer record
     still holds `***` (or nothing) at that key after the `held` deploy, which a
     string case cannot discriminate because the value arm re-masks a string;
+    and the CONSUMER's record holds `***` at its `Fn::GetAtt` leaf, on the
+    first deploy and on the `held` one;
   - the same consumer of a `not-readable` producer is refused on the next
     deploy with the remedy.
 - **B, migration.** A v10 fixture record gets `version: 11`, `***` at every
