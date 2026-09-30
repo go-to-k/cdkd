@@ -101,7 +101,7 @@ describe('the DESTROY withhold arms carry the account on the listing and the ins
           );
         }
       // ...and that unqualified text still names the listing in prose.
-      expect(build('S ', 'us-east-1')).toContain("'cdkd state list --json', which writes each");
+      expect(build('S ', 'us-east-1')).toContain("'cdkd state list --json', which prints each");
     });
   }
 
@@ -261,11 +261,11 @@ describe('the inspect-command family carries the account too (go-to-k/cdkd#3909)
       const text = build('a b', 'us-east-1', RECOVERY);
       expect(text).toContain(
         "Take the values from 'cdkd state list --json' run with the same account flags as the " +
-          'command at the end of this line, which writes each name raw'
+          'command at the end of this line, which prints each name as a JSON string'
       );
       // CONTROL: unqualified, the pointer is the bare listing.
       expect(build('a b', 'us-east-1')).toContain(
-        "Take the values from 'cdkd state list --json', which writes each name raw"
+        "Take the values from 'cdkd state list --json', which prints each name as a JSON string"
       );
       expect(build('a b', 'us-east-1', {})).toBe(build('a b', 'us-east-1'));
     });
