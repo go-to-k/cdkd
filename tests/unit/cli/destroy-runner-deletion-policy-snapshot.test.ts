@@ -152,6 +152,15 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     });
   });
 
+  it('go-to-k/cdkd#4156: a destroy of an AWS::IAM::Policy is handed no inline-policy claim predicate', async () => {
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ P: res({ resourceType: 'AWS::IAM::Policy' }) }),
+      makeCtx()
+    );
+    expect(Object.keys(deleteContextArg())).not.toContain('inlinePolicyClaimed');
+  });
+
   it('a transient secret-resolution failure is retried, and when retries run out the record stays', async () => {
     const transient = () =>
       new Error(TRANSIENT_RESOLUTION_MESSAGE, {

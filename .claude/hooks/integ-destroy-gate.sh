@@ -129,7 +129,8 @@ cd "$target_dir" 2>/dev/null || exit 0
 # Heuristic:
 # - "strict-delete" files (dag-builder.ts, implicit-delete-deps.ts,
 #   lambda-vpc-deps.ts, retry.ts, retryable-errors.ts,
-#   rollback-executor.ts, provider-registry.ts): any change at all is
+#   rollback-executor.ts, provider-registry.ts, inline-policy-claims.ts):
+#   any change at all is
 #   delete-touching. These are small high-stakes analyzer files where a
 #   typical addition is an array entry like `'AWS::Foo': ['AWS::Bar']`
 #   whose text does NOT contain the delete-symbol vocabulary, so the
@@ -141,6 +142,8 @@ cd "$target_dir" 2>/dev/null || exit 0
 #   directly.
 #   `rollback-executor.ts` is here because its every path is a DELETE or
 #   a re-CREATE of a real resource, so the hunk filter buys nothing.
+#   `inline-policy-claims.ts` decides whether an IAM::Policy update or
+#   delete SKIPS a removal (go-to-k/cdkd#4156), in words the filter misses.
 #   `provider-registry.ts` joined for the same reason (issue #2720): its
 #   `getProviderFor` picks the provider that DELETES a resource --
 #   `deploy-engine.ts`'s plain delete and its replacement old-delete,
@@ -209,7 +212,7 @@ if [ -n "$diff_base" ]; then
   # Strict files — any change triggers (small high-stakes analyzer
   # files plus the retry classifier / rollback executor; see header
   # comment for rationale).
-  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor)\.ts$|^src/provisioning/provider-registry\.ts$'
+  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor|inline-policy-claims)\.ts$|^src/provisioning/provider-registry\.ts$'
   # Hunk-filtered files — only delete-symbol changes trigger.
   filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine(-options|-name-collision)?\.ts|src/deployment/(label-routing|deploy-value-equality)\.ts)$'
   provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'

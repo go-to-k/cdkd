@@ -131,6 +131,9 @@ gates:
       - "src/deployment/deploy-engine-options.ts"
       - "src/deployment/deploy-value-equality.ts"
       - "src/deployment/label-routing.ts"
+      # Decides whether an IAM::Policy update / delete SKIPS removing an
+      # inline policy name (go-to-k/cdkd#4156).
+      - "src/deployment/inline-policy-claims.ts"
       - "src/analyzer/dag-builder.ts"
       - "src/analyzer/implicit-delete-deps.ts"
       - "src/analyzer/lambda-vpc-deps.ts"
