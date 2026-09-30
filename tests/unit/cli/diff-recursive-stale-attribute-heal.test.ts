@@ -586,4 +586,74 @@ describe('a denied re-read during the diff is worded as the preview (go-to-k/cdk
     expect(warned[0]).not.toContain('tried to re-read');
     expect(warned[0]).not.toContain('retries the read on every deploy');
   });
+
+  // The nested walk hands `attributeHealerFor` to each child's own
+  // `buildDiffTree`: a wrapper there would drop `readOnly` for every child.
+  it("words a nested child's denied re-read as the preview too", async () => {
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-4163-nested-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Resources: {
+            Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
+            Endpoint: {
+              Type: 'AWS::SSM::Parameter',
+              Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+            },
+          },
+        })
+      );
+      const node = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Resources: {
+            Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+          },
+        },
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: fakeBackend({
+          S: st('S', {
+            Child: { physicalId: 'child-arn', resourceType: NESTED, properties: {}, attributes: {} },
+          }),
+          'S~Child': st('S~Child', {
+            Db: {
+              physicalId: DENIED,
+              resourceType: 'AWS::RDS::DBInstance',
+              properties: { Engine: 'postgres' },
+              attributes: {},
+            },
+            Endpoint: {
+              physicalId: 'endpoint-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Type: 'String', Value: DENIED },
+              attributes: {},
+            },
+          }),
+        }),
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        attributeHealerFor: healerFor(),
+      });
+      // The CHILD's record was read, keyed to the child stack, and failed.
+      expect(importCalls).toEqual([{ logicalId: 'Db', knownPhysicalId: DENIED, stackName: 'S~Child' }]);
+      const child = node.children.find((c) => c.stackName === 'S~Child');
+      expect(child?.changes.get('Endpoint')?.changeType).toBe('NO_CHANGE');
+      const warned = warn.mock.calls.map((call) => String(call[0])).filter((l) => l.includes('holds no'));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain(
+        'This preview re-read the attributes from AWS, but the provider read failed (AccessDeniedException, HTTP 403)'
+      );
+      expect(warned[0]).not.toContain('tried to re-read');
+      expect(warned[0]).not.toContain('retries the read on every deploy');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

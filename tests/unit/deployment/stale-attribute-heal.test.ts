@@ -456,6 +456,34 @@ describe('stale attribute heal — resolver (#1852)', () => {
       );
     });
 
+    it('READ with no usable value: the preview does not speak of healing the record', async () => {
+      const refuse = (readOnly: boolean): Promise<Error> =>
+        refusalOf(
+          resolver.resolve(
+            { 'Fn::GetAtt': ['Ds', 'DataSourceArn'] },
+            mkContext(
+              {
+                Ds: {
+                  physicalId: 'abc|ds',
+                  resourceType: 'AWS::AppSync::DataSource',
+                  properties: {},
+                  attributes: { DataSourceArn: 'arn:aws:appsync:*:*:apis/abc/datasources/ds' },
+                },
+              },
+              healerOf({ kind: 'read', attributes: {} }, readOnly)
+            )
+          )
+        );
+      const preview = (await refuse(true)).message;
+      expect(preview).toContain(
+        'This preview re-read the resource from AWS and the read reports no usable value for this attribute either; change any property'
+      );
+      expect(preview).not.toContain('heal');
+      expect((await refuse(false)).message).toContain(
+        'so there is nothing to heal the record with; change any property'
+      );
+    });
+
     // The other `staleRecordRemedy` sites: the DBProxy `VpcId` refusal and an
     // attribute cdkd cannot build (`refuseUnconstructibleAttribute`).
     it.each([
@@ -503,7 +531,8 @@ describe('stale attribute heal — resolver (#1852)', () => {
       const PREVIEW_WITHHELD =
         'This preview re-read the resource through Cloud Control, but withheld the value';
       const PREVIEW_GRANT =
-        'Grant the credentials the preview runs with cloudformation:DescribeType and run it again; ' +
+        'Grant the credentials the preview runs with cloudformation:DescribeType and run the diff ' +
+        "again (a deploy's own read needs the same permission); " +
         'if they already have it, the name is a writable property rather than an attribute — ' +
         'reference the value the template sets instead.';
       const DEPLOY_GRANT = 'Grant the deploy role cloudformation:DescribeType and deploy again';

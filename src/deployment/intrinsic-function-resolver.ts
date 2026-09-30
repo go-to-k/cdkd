@@ -5868,10 +5868,11 @@ export class IntrinsicFunctionResolver {
         );
       case 'read':
         if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy(context);
-        return (
-          `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
-          `attribute either, so there is nothing to heal the record with; ${touch}.`
-        );
+        return preview
+          ? `This preview re-read the resource from AWS and the read reports no usable value ` +
+              `for this attribute either; ${touch}.`
+          : `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
+              `attribute either, so there is nothing to heal the record with; ${touch}.`;
       case 'not-attempted':
         return (
           // No reason in the preview: "written by this deploy" is false there,
@@ -5947,7 +5948,8 @@ export class IntrinsicFunctionResolver {
       return (
         `This preview re-read the resource through Cloud Control, but withheld the value: ` +
         `${confirm} Grant the credentials the preview runs with cloudformation:DescribeType ` +
-        `and run it again; if they already have it, the name is a writable property rather ` +
+        `and run the diff again (a deploy's own read needs the same permission); if they ` +
+        `already have it, the name is a writable property rather ` +
         `than an attribute — reference the value the template sets instead.`
       );
     }
