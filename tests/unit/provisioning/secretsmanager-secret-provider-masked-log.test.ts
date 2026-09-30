@@ -186,7 +186,7 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
   });
 
   it('restores a long trailing run of dots in linear time', async () => {
-    const dots = '.'.repeat(100_000);
+    const dots = '.'.repeat(300_000);
     const started = Date.now();
     expect(await createFailureFor(`${arnOf(TINY)}${dots}a`)).toBe('***');
     expect(await createFailureFor(`${arnOf(TINY)}${dots}`)).toBe(`***${dots}`);
