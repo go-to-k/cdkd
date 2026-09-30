@@ -1,4 +1,5 @@
 import { ProvisioningError } from '../utils/error-handler.js';
+import type { SecretPrincipalRetryMemo } from './secret-principal-resolution.js';
 
 /**
  * Context passed to provider delete operations.
@@ -134,6 +135,32 @@ export interface DeleteContext {
    * which the caller refuses on the Cloud Control route before any delete.
    */
   deletionPolicy?: string | undefined;
+
+  /**
+   * Set by a top-level or cascading DESTROY (`cdkd destroy` / `cdkd state
+   * destroy`), which vouches that nothing else in its run can have attached
+   * the same inline policy name or group membership to the principals this
+   * record names (go-to-k/cdkd#4150). The `AWS::IAM::Policy` and
+   * `AWS::IAM::UserToGroupAddition` deletes then resolve a principal list
+   * recorded as secret references to the names the CURRENT secret value holds,
+   * instead of skipping. `importedProducerRegions` is the stack's
+   * `producerRegionsFromState(state)`, so a region-less reference a
+   * cross-region import recorded stays unresolved (`ambiguous`).
+   *
+   * A DEPLOY must never set it, including through the destroy runner (a
+   * nested stack's removal reaches it from `cdkd deploy`): its
+   * template-removal DELETEs run after every CREATE, so on a logical-id move
+   * the new resource's attachment lands first and this delete would strip it;
+   * a rollback of a failed create has the same shape. Absent means skip, as
+   * before.
+   *
+   * `retryMemo` is ONE object per resource, shared by the runner's retries of
+   * that delete, so a retry reuses the first resolution and does not read its
+   * own earlier detach as a rotated secret.
+   */
+  resolveSecretDerivedPrincipals?:
+    | { importedProducerRegions: readonly string[]; retryMemo?: SecretPrincipalRetryMemo }
+    | undefined;
 
   /**
    * The user passed `--skip-final-snapshot`: no final snapshot of any kind,

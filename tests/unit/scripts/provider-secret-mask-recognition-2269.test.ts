@@ -850,6 +850,10 @@ const NOT_A_MESSAGE_FACTORY: ReadonlyMap<string, string> = new Map([
     'marks an EXISTING error object as an auxiliary call\'s failure (#3826); its argument is that error, never a message',
   ],
   [
+    'maskError',
+    "resolveSecretDerivedPrincipals' error masker (#4150): its argument is an EXISTING error, returned as a clone with its chain masked, never a message",
+  ],
+  [
     'onInterrupted',
     "the interrupt watch's own error builder; it takes no caller-supplied message",
   ],

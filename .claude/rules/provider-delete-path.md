@@ -13,8 +13,8 @@ Region check: [layout-provisioning.md](layout-provisioning.md). Masking: [provid
 - `expectedRegion` — the region recorded in state at create time. Call `assertRegionMatch()` before treating a `*NotFound` error as idempotent delete success. Also on `UpdateContext`; a no-op when absent.
 - `forceDataDelete` — consent to destroy contained DATA, set only by the engine's replacement / recreate deletes under `--force-stateful-recreation`, never by `cdkd destroy`. Gate force-cleanup on it or a template-borne opt-in (`data-delete-intent.ts`), else surface AWS's not-empty error. Never unconditional — verify CFn's behavior by live A/B.
 - `finalSnapshotIdentifier` — `DeletionPolicy: Snapshot`; the provider MUST create that snapshot. Only `ATOMIC_FINAL_SNAPSHOT_TYPES` receive the field, `PRE_DELETE_SNAPSHOT_TYPES` are snapshotted engine-side, and other Snapshot-tagged shapes are refused before any delete. Extend those sets (`final-snapshot.ts`); never ignore the field.
-
 - `deletionPolicy` — set only by destroy and the deploy's template-removal DELETE; absent elsewhere, so never read absence as `Delete` ([#3993](https://github.com/go-to-k/cdkd/issues/3993)).
+- `resolveSecretDerivedPrincipals` — a top-level or cascading DESTROY's vouch that nothing else in the run attached the same inline policy / membership, so a secret-reference principal list may be resolved against its producer regions; a RESOLVED principal without the grant is a skip, never success (the value may have rotated; `RemoveUserFromGroup` SUCCEEDS for a non-member, so membership is read first), unless this delete's own earlier attempt detached it (`retryMemo`, one per resource across the runner's retries) ([#4150](https://github.com/go-to-k/cdkd/issues/4150)). A deploy (its nested-stack removal included) or rollback never sets it.
 
 A delete bag CAN carry plaintext and `delete()` has no masker: thread one before logging a property value (#2007).
 
