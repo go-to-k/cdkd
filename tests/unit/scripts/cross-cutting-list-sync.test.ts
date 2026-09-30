@@ -109,6 +109,7 @@ const DESTROY_SCOPE_PIN = [
   'src/analyzer/lambda-vpc-deps.ts',
   'src/cli/commands/destroy-runner.ts',
   'src/cli/commands/destroy.ts',
+  'src/deployment/deploy-engine-masking.ts',
   'src/deployment/deploy-engine-name-collision.ts',
   'src/deployment/deploy-engine-observed-capture.ts',
   'src/deployment/deploy-engine-options.ts',
