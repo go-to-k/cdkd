@@ -1185,26 +1185,27 @@ describe('--force over an unreadable state.attributes cache', () => {
   }
 
   it('CONTROL: an OWN key of a readable cache is still served', async () => {
+    // A VPC's `Ipv6CidrBlocks` is declined by the recorded-first read
+    // (go-to-k/cdkd#4186), so this reaches the fallback's own-key read.
+    const getAttribute = vi.fn(async () => undefined);
     const state = baseState({
-      Bucket: {
-        physicalId: 'b',
-        resourceType: 'AWS::S3::Bucket',
+      Vpc: {
+        physicalId: 'vpc-1',
+        resourceType: 'AWS::EC2::VPC',
         properties: {},
-        attributes: { Arn: 'arn-cached' },
+        attributes: { Ipv6CidrBlocks: ['2600:1f18::/56'] },
       },
       Other: {
         physicalId: 'o',
         resourceType: 'AWS::Lambda::Function',
-        properties: { A: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+        properties: { A: { 'Fn::GetAtt': ['Vpc', 'Ipv6CidrBlocks'] } },
       },
     });
-    const result = await rewriteResourceReferences(
-      state,
-      ['Bucket'],
-      fakeRegistry(vi.fn(async () => undefined)),
-      { force: true }
-    );
-    expect(result.state.resources['Other']?.properties).toEqual({ A: 'arn-cached' });
+    const result = await rewriteResourceReferences(state, ['Vpc'], fakeRegistry(getAttribute), {
+      force: true,
+    });
+    expect(getAttribute).toHaveBeenCalledTimes(1);
+    expect(result.state.resources['Other']?.properties).toEqual({ A: ['2600:1f18::/56'] });
   });
 
   it('CONTROL: an absent cache still reads as holding nothing, with its own warning', async () => {
@@ -1469,4 +1470,96 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       'live-value'
     );
   });
+
+  it('serves a recorded value WITHOUT --force where the provider has no getAttribute or none routes', async () => {
+    // The recorded read sits ABOVE the provider lookup: a Cloud-Control-routed
+    // orphan (no `getAttribute`) was unresolvable without `--force` before.
+    const noGetAttribute = await rewriteResourceReferences(
+      repoState({ KmsKeyId: RECORDED }),
+      ['Repo'],
+      fakeRegistry()
+    );
+    expect(noGetAttribute.unresolvable).toEqual([]);
+    expect((noGetAttribute.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      RECORDED
+    );
+    const throwing = {
+      getProviderFor: vi.fn(() => {
+        throw new Error('no provider');
+      }),
+    } as unknown as ProviderRegistry;
+    const noProvider = await rewriteResourceReferences(
+      repoState({ KmsKeyId: RECORDED }),
+      ['Repo'],
+      throwing
+    );
+    expect(noProvider.unresolvable).toEqual([]);
+    expect((noProvider.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      RECORDED
+    );
+  });
+
+  it("serves an empty legacy NameServers string as [], the resolver's shape", async () => {
+    const result = await rewriteResourceReferences(
+      repoState({ NameServers: '' }, 'NameServers', 'AWS::Route53::HostedZone'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => ['ns-foreign']))
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toEqual([]);
+  });
+
+  it('reads live when a nested walk meets a null, instead of throwing', async () => {
+    const getAttribute = vi.fn(async () => 'live-port');
+    const result = await rewriteResourceReferences(
+      repoState({ Endpoint: null }, 'Endpoint.Port', 'AWS::RDS::DBCluster'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-port'
+    );
+  });
+
+  // A recorded value that may be a SECRET PLAINTEXT is never substituted on
+  // the default path: the audit table prints every substituted value.
+  it('does not serve a credential-named attribute (IAM AccessKey SecretAccessKey)', async () => {
+    const SECRET = 'PLAINTEXT-SECRET-ACCESS-KEY';
+    // The provider refuses the attribute live, as `IAMAccessKeyProvider` does.
+    const getAttribute = vi.fn(async () => {
+      throw new Error('SecretAccessKey is only available at create time');
+    });
+    const result = await rewriteResourceReferences(
+      repoState({ SecretAccessKey: SECRET }, 'SecretAccessKey', 'AWS::IAM::AccessKey'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect(JSON.stringify(result.rewrites)).not.toContain(SECRET);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(SECRET);
+    expect(result.unresolvable).toHaveLength(3);
+    // The live read decided, as before #4186 (a failed read is not memoized).
+    expect(getAttribute).toHaveBeenCalledWith('my-repo', 'AWS::IAM::AccessKey', 'SecretAccessKey');
+  });
+
+  it('CONTROL: a credential-looking name ending in an identifier suffix IS served', async () => {
+    const ARN = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:s-AbCdEf';
+    const result = await rewriteResourceReferences(
+      repoState({ 'MasterUserSecret.SecretArn': ARN }, 'MasterUserSecret.SecretArn', 'AWS::RDS::DBInstance'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live'))
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(ARN);
+  });
+
+  for (const type of ['AWS::CloudFormation::CustomResource', 'Custom::Thing']) {
+    it(`does not serve a recorded custom-resource value (${type})`, async () => {
+      const PLAIN = 'legacy-noecho-plaintext';
+      const result = await rewriteResourceReferences(
+        repoState({ Token: PLAIN }, 'Token', type),
+        ['Repo'],
+        fakeRegistry()
+      );
+      expect(JSON.stringify(result.rewrites)).not.toContain(PLAIN);
+      expect(result.unresolvable).toHaveLength(3);
+    });
+  }
 });

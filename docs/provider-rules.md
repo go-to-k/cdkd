@@ -1746,7 +1746,10 @@ the `cdkd orphan` per-resource flow, which splices each referenced attribute
 into sibling references. It takes the orphan's **recorded** attribute
 whenever cdkd's own `Fn::GetAtt` resolution would serve that value, and reads
 live only when the record lacks it or holds a value that cannot be spliced (a
-redaction mask, a `{{resolve:...}}` reference, a stale placeholder). A live
+redaction mask, a `{{resolve:...}}` reference, a stale placeholder ARN, a VPC's
+`Ipv6CidrBlocks`, an impossible empty value). A credential-named attribute
+(`SecretAccessKey`) and any custom-resource attribute are never taken from the
+record, since the value may be a plaintext secret. A live
 read addresses the resource by its recorded name, so after the resource was
 deleted and another one took that name it describes the newcomer; the recorded
 value describes the resource the siblings were deployed against.

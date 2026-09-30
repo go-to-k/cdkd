@@ -18,12 +18,22 @@ const SENSITIVE_ATTRIBUTE_NAME = /secret|password|credential/i;
 const NON_SENSITIVE_SUFFIX = /(arn|id|name|url|alias|status)$/i;
 
 /**
+ * Whether an attribute NAME looks credential-bearing (see
+ * {@link SENSITIVE_ATTRIBUTE_NAME}) — the one predicate behind
+ * {@link stringifyAttributeForLog}, shared so a reader deciding whether to
+ * SERVE such a value cannot disagree with the one deciding whether to print it.
+ */
+export function isSensitiveAttributeName(attributeName: string): boolean {
+  return SENSITIVE_ATTRIBUTE_NAME.test(attributeName) && !NON_SENSITIVE_SUFFIX.test(attributeName);
+}
+
+/**
  * Render an attribute value for a debug log line, redacting values whose
  * attribute name looks credential-bearing (see
  * {@link SENSITIVE_ATTRIBUTE_NAME}).
  */
 export function stringifyAttributeForLog(attributeName: string, value: unknown): string {
-  if (SENSITIVE_ATTRIBUTE_NAME.test(attributeName) && !NON_SENSITIVE_SUFFIX.test(attributeName)) {
+  if (isSensitiveAttributeName(attributeName)) {
     return '<redacted>';
   }
   return stringifyValue(value);

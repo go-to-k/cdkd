@@ -13,6 +13,11 @@
 #   1. Deploy an IAM role with a fixed name and an SSM parameter whose value is
 #      `Fn::GetAtt [Role, RoleId]`. Assert the recorded RoleId equals the live
 #      one and the parameter holds it.
+#   1b. A deploy persists RESOLVED properties, so the parameter row holds the
+#      id, not the intrinsic. The rewrite acts on a row whose intrinsic
+#      SURVIVED (a `cdkd import` that could not resolve it, a pre-v3 record),
+#      so the row is put in that shape by hand: its `Value` becomes
+#      `{"Fn::GetAtt": [<role>, "RoleId"]}` again.
 #   2. Take the name over: delete the role out of band and create another under
 #      the same name. Assert its RoleId DIFFERS from the recorded one (premise).
 #   3. `cdkd orphan <stack>/Role`.
@@ -70,6 +75,9 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG="${TMPDIR:-/tmp}/cdkd-4186-orphan.$$.log"
 
 DEPLOYED=0
+# Set only once the pre-flight proved the role name free, so an early exit
+# never deletes a role this run did not create (a concurrent run's included).
+ROLE_OWNED=0
 
 # Best-effort, subshell under `set +eu` so the trap never re-arms strict mode.
 delete_role_best_effort() {
@@ -93,7 +101,7 @@ cleanup() {
   fi
   # The fixed name covers the stack's role AND the takeover role: at most one
   # of them exists at a time.
-  delete_role_best_effort
+  [ "${ROLE_OWNED}" = "1" ] && delete_role_best_effort
   rm -f "${LOG}" 2>/dev/null
   set -e
   exit "${rc}"
@@ -137,6 +145,7 @@ fi
 
 echo "==> Phase 1: deploy"
 DEPLOYED=1
+ROLE_OWNED=1
 AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" --state-bucket "${STATE_BUCKET}" > "${LOG}" 2>&1 || {
   echo "FAIL: deploy failed" >&2
@@ -161,6 +170,17 @@ if [ "${PARAM_VALUE}" != "${RECORDED_ID}" ]; then
   echo "FAIL: the parameter holds '${PARAM_VALUE}', expected the role's id '${RECORDED_ID}'" >&2
   exit 1
 fi
+echo "    OK: RoleId ${RECORDED_ID} recorded, live, and deployed into the parameter"
+
+echo "==> Phase 1b: put the parameter row back into its unresolved-intrinsic shape"
+STATE_BODY="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+printf '%s' "${STATE_BODY}" | node -e '
+  let s = ""; process.stdin.on("data", (c) => (s += c)).on("end", () => {
+    const st = JSON.parse(s);
+    st.resources[process.argv[1]].properties.Value = { "Fn::GetAtt": [process.argv[2], "RoleId"] };
+    process.stdout.write(JSON.stringify(st));
+  });' "${PARAM_LID}" "${ROLE_LID}" > "${LOG}"
+aws s3 cp "${LOG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
 PARAM_BEFORE="$(state_query "JSON.stringify(st.resources['${PARAM_LID}'].properties.Value)")"
 case "${PARAM_BEFORE}" in
   *Fn::GetAtt*) ;;
@@ -169,7 +189,7 @@ case "${PARAM_BEFORE}" in
     exit 1
     ;;
 esac
-echo "    OK: RoleId ${RECORDED_ID} recorded, live, and deployed into the parameter"
+echo "    OK: ${PARAM_LID}.Value = ${PARAM_BEFORE}"
 
 echo "==> Phase 2: take the role's name over out of band"
 aws iam delete-role --role-name "${ROLE_NAME}"

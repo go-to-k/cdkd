@@ -10,6 +10,8 @@ import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
+import { isSensitiveAttributeName } from '../utils/stringify.js';
+import { isCustomResourceType } from '../provisioning/custom-resource-secure-references.js';
 import { injectiveKey } from '../state/record-keys.js';
 import { isReadableBag } from '../types/state.js';
 import { isReadableResourceEntry } from '../state/malformed-resources-bag.js';
@@ -166,6 +168,15 @@ export interface OrphanRewriteOptions {
  * - a value carrying a `{{resolve:...}}` reference (a nested stack's redacted
  *   output, issue #2055), which the resolver re-resolves in a context this
  *   analyzer pass does not have.
+ *
+ * And two classes whose recorded value may be a SECRET PLAINTEXT, so the
+ * default path must not substitute it — the rewrite audit table prints every
+ * substituted value at default verbosity. Both keep their pre-#4186 outcome:
+ * - an attribute whose NAME is credential-bearing (`isSensitiveAttributeName`,
+ *   the predicate the resolver's log redaction uses): `AWS::IAM::AccessKey`
+ *   records `SecretAccessKey` in plaintext, and no mask covers it;
+ * - every attribute of a custom resource, whose `Data` names certify nothing
+ *   and which a record written before `NoEcho` masking holds in plaintext.
  * The one reshaping the resolver applies is applied too: a legacy
  * comma-joined Route 53 `NameServers` string becomes the list it stands for.
  * The dotted-path walk over a nested `attributes` object (issue #381) is the
@@ -175,7 +186,11 @@ function servableRecordedAttribute(
   orphan: ResourceState,
   attribute: string
 ): { served: true; value: unknown } | { served: false } {
-  if (orphan.resourceType === 'AWS::EC2::VPC' && attribute === 'Ipv6CidrBlocks') {
+  if (
+    (orphan.resourceType === 'AWS::EC2::VPC' && attribute === 'Ipv6CidrBlocks') ||
+    isSensitiveAttributeName(attribute) ||
+    isCustomResourceType(orphan.resourceType)
+  ) {
     return { served: false };
   }
   const bag: unknown = orphan.attributes;
