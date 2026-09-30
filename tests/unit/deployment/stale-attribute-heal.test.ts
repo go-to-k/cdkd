@@ -373,7 +373,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
       expect(preview).toContain('This preview re-read the attributes from AWS, but the provider read failed');
       expect(preview).toContain('AccessDeniedException, HTTP 403');
       expect(preview).toContain(
-        "A preview writes nothing to state; 'cdkd deploy' issues the same read and heals the record once it succeeds. " +
+        "A preview writes nothing to state; 'cdkd deploy' issues the same read and records the attribute once the read returns it. " +
           'Fix the read (a missing read permission is the usual cause), or change any property of the resource'
       );
       for (const phrase of [...DEPLOY_ONLY, 'tried to re-read']) expect(preview).not.toContain(phrase);

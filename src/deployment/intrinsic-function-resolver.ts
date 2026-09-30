@@ -5853,8 +5853,8 @@ export class IntrinsicFunctionResolver {
           `${attempted}, but ` +
           `${this.describeFailureObserved('the provider read', outcome.error, context)}. ` +
           (preview
-            ? `A preview writes nothing to state; 'cdkd deploy' issues the same read and heals ` +
-              `the record once it succeeds. Fix the read (a missing read permission is the ` +
+            ? `A preview writes nothing to state; 'cdkd deploy' issues the same read and records ` +
+              `the attribute once the read returns it. Fix the read (a missing read permission is the ` +
               `usual cause), or ${touch}.`
             : `Fix that (a missing read permission is the usual cause) and deploy again — cdkd ` +
               `retries the read on every deploy until the record is healed — or ${touch}.`)
