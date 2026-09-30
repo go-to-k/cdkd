@@ -4,6 +4,8 @@ import {
   pasteableCommand,
   type CommandArg,
   type PasteableCommand,
+  SHELL_ACTIVE_WHY,
+  isInertUnquoted,
   type WithholdReason,
 } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
@@ -3752,6 +3754,8 @@ function safeSegment(value: unknown): string {
  * and holds no whitespace, so a plain value cannot close the quote or put a
  * clause break inside it, and it prints exactly as it did. The cap is the
  * stack-ref one, so a legitimate multi-level nested-child name is not cut.
+ * The value must also be inert with its quotes stripped (go-to-k/cdkd#4205):
+ * `displayIdent`'s plain set admits `~root`, `=a`, `a=~b` and `a:~b`.
  */
 function quotedOrNotShown(value: unknown): string {
   // An empty string prints as `''`: it closes nothing, and an empty id is
@@ -3759,7 +3763,8 @@ function quotedOrNotShown(value: unknown): string {
   return value === '' ||
     (typeof value === 'string' &&
       !/\s/.test(value) &&
-      displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value)
+      displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value &&
+      isInertUnquoted(value))
     ? `'${String(value)}'`
     : '(not shown: it is not a plain identifier)';
 }
@@ -4384,6 +4389,10 @@ export function orphanWithholdWhy(reason: WithholdReason, positional: boolean): 
     // does: a throw here would escape the state-deletion warn's `catch`.
     case 'pattern-shaped':
       return `cannot be printed as an argument to 'cdkd state orphan'`;
+    // Unreachable: `orphanCommandFor` passes `plainIdent`, which answers
+    // `not-plain` for every value this arm would take.
+    case 'shell-active':
+      return SHELL_ACTIVE_WHY;
     default: {
       const _exhaustive: never = reason;
       throw new Error(`orphanWithholdWhy: unhandled WithholdReason ${String(_exhaustive)}`);
@@ -6569,6 +6578,11 @@ function refreshWithheldReason(built: PasteableCommand): string {
         `'_', '.' or '-'), the only shape named in a command here, since a name outside it ` +
         `can run as shell or read as a line of this message once the terminal wraps.`
       );
+    // Unreachable: `refArgs` passes `plainIdent`, which answers `not-plain` for
+    // every value this arm would take; answered on purpose, as `pattern-shaped`
+    // is below.
+    case 'shell-active':
+      return `${what} ${SHELL_ACTIVE_WHY}.`;
     case 'pattern-shaped':
       // Unreachable — `refArgs` passes no `patternMatched`, since this
       // command resolves by exact name — and answered on purpose, because the
@@ -8403,7 +8417,9 @@ export async function runPerStackImportLoop(args: {
       const completed = perStackPlans.slice(0, i);
       const notYetImported = perStackPlans
         .slice(i + 1)
-        .map((p) => safeSegment(p.cdkdName))
+        // `quotedOrNotShown`, not the raw `safeSegment` (go-to-k/cdkd#4205
+        // review): selecting the clause after `: ` ran a planted cdkd name.
+        .map((p) => quotedOrNotShown(p.cdkdName))
         .join(', ');
       // One command per line of its own, and a withheld plan's note on the line
       // ABOVE its command (go-to-k/cdkd#3436): printing `.command` alone would
@@ -8801,10 +8817,17 @@ export async function runPerStackImportLoop(args: {
             // stacks before it are CFn stacks too, standalone or already
             // adopted by their own parents. cdkd state is preserved across
             // the tree so the user can recover.
+            // Each name through `quotedOrNotShown`, not the raw `safeSegment`
+            // spelling (go-to-k/cdkd#4205 review): a planted cdkd name such as
+            // `Root~A; touch OWNED; #` ran here once text pasted above the
+            // message flipped the quote parity.
             const importedSummary =
               importedStacks.length > 0
                 ? importedStacks
-                    .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
+                    .map(
+                      (s) =>
+                        `${quotedOrNotShown(s.cdkdStackName)} → ${quotedOrNotShown(s.cfnStackName)}`
+                    )
                     .join(', ')
                 : '(none)';
             throw new Error(
@@ -8881,7 +8904,10 @@ export async function runPerStackImportLoop(args: {
               // policy name or ApiId back, and nothing above this renders it.
               const msg = err instanceof Error ? err.message : String(err);
               const importedSummary = importedStacks
-                .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
+                .map(
+                  (s) =>
+                    `${quotedOrNotShown(s.cdkdStackName)} → ${quotedOrNotShown(s.cfnStackName)}`
+                )
                 .join(', ');
               throw new Error(
                 `Phase 1 (IMPORT) succeeded for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn ` +
@@ -8985,7 +9011,7 @@ export async function runPerStackImportLoop(args: {
           const orphan = orphanCommandFor(node.stackName, node.region);
           logger.warn(
             `Failed to delete cdkd state for ${quotedOrNotShown(node.stackName)} ` +
-              `(${safeSegment(node.region)}): ` +
+              `(${quotedOrNotShown(node.region)}): ` +
               // `safeDetail`, not `safeSegment`: an SDK message is FREE-FORM
               // text, which `display-safe.ts` says takes `displaySafe` directly
               // (the identifier helper's contract is a record field or a key
@@ -9008,7 +9034,10 @@ export async function runPerStackImportLoop(args: {
               // MULTI-LINE block: a planted newline forges extra `  - cdkd/...`
               // rows naming a healthy stack, and the sentence below tells the
               // operator to orphan every record listed (review round 4).
-              `  - cdkd/${safeSegment(f.stackName)}/${safeSegment(f.region)}/state.json: ` +
+              // The whole key through `quotedOrNotShown` (go-to-k/cdkd#4205
+              // review): raw `safeSegment` segments ran a planted name when
+              // the row was pasted.
+              `  - ${quotedOrNotShown(`cdkd/${f.stackName}/${f.region}/state.json`)}: ` +
               `${safeDetail(f.reason)}`
           )
           .join('\n');

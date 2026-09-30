@@ -156,12 +156,18 @@ deliberate divergence, the same one the secret refusal takes.
   it.
 - **When a name is refused.** The name is refused when it equals the value.
   It is also refused when it contains the value and the value is 4 or more
-  characters long. The Unicode folding above applies.
+  characters long. The same holds for a piece of the value that an
+  `Fn::Split` over it produced, and in a nested child for an element of a list
+  parameter split out of it
+  ([#4049](https://github.com/go-to-k/cdkd/issues/4049)), so a name built
+  from `Fn::Select` over that split is refused too. The Unicode folding above
+  applies.
 - **What is still published:**
   - a value only a resource reads, or only a later output's `Export.Name`;
   - a value that reaches the name through an attribute, a nested stack
-    output, `Fn::ImportValue` or a `Fn::Select` fragment;
-  - a 1-3 character value inside a longer name;
+    output or `Fn::ImportValue`;
+  - a 1-3 character value, `Fn::Split` piece or list element inside a longer
+    name;
   - the alias of an output that fails to resolve on a deploy with no resource
     change, which is carried forward from the previous record.
 - **Preview.** `cdkd diff` previews the same verdict, so a refused alias is

@@ -1,5 +1,10 @@
 import { getLogger } from '../utils/logger.js';
-import { commandHole, pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
+import {
+  commandHole,
+  pasteableCommand,
+  quotedOrDescribed,
+  shellQuote,
+} from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
   inheritProducerRegions,
@@ -33,6 +38,7 @@ import {
 import {
   displayAwsMessage,
   displayIdent,
+  displayStackName,
   displaySafe,
   isPasteableIdent,
   safeMsg,
@@ -88,6 +94,7 @@ import {
   wholeStringLeavesOf,
   TEMPLATE_SOURCED_RULES,
   recordLogOnlyParameterValue,
+  literalSplitDelimitersOf,
   createUnionSecretMasker,
   unionOfSecretBags,
   type RecordedSecretValues,
@@ -1188,9 +1195,17 @@ export class DeployEngine {
   ): SecretMasker {
     const inherited = this.options.inheritedSecrets;
     const noEchoValues: RecordedSecretValues = new Map();
+    // The pieces of every literal `Fn::Split` over a `NoEcho` value too
+    // (go-to-k/cdkd#4049), for a property that stopped reading one.
+    const noEchoNames = new Set(
+      Object.entries(template.Parameters ?? {})
+        .filter(([, definition]) => definition?.NoEcho === true)
+        .map(([name]) => name)
+    );
+    const splitDelimiters = literalSplitDelimitersOf(template, noEchoNames);
     for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
       if (definition?.NoEcho === true && Object.hasOwn(parameterValues, name)) {
-        recordLogOnlyParameterValue(noEchoValues, parameterValues[name]);
+        recordLogOnlyParameterValue(noEchoValues, parameterValues[name], splitDelimiters);
       }
     }
     return createUnionSecretMasker([diffSecrets, noEchoValues, inherited]);
@@ -1743,11 +1758,16 @@ export class DeployEngine {
         for (const id of pasteable) {
           // The old form wrapped the whole command in prose quotes AND left
           // `<stack>` / `<physicalId>` bare, which pasted as two redirections.
+          // A LITERAL, not a gated value (go-to-k/cdkd#4205): the gate would
+          // withhold `Tbl=<physicalId>` whole for the `<` and `>` of the hole
+          // cdkd itself wrote into it (a mid-word `=` it admits), and the
+          // command would no longer name the record. The only untrusted part is `id`, which `pasteableHere`
+          // already held to `isPasteableIdent`, inert with no quotes at all.
           commandLines.push(
             `Re-import with: ${
               pasteableCommand('cdkd import', [
                 { hole: 'stack' },
-                { flag: '--resource', value: `${id}=<physicalId>`, hole: 'resource' },
+                { literal: `--resource ${shellQuote(`${id}=<physicalId>`)}` },
                 { literal: '--force' },
               ]).command
             }`
@@ -3312,7 +3332,7 @@ export class DeployEngine {
             journal.segments.some((s) => (s.failedOperations?.length ?? 0) > 0);
           this.logger.info(
             failedOnly
-              ? `A previous deploy of '${stackName}' failed and was automatically rolled back. ` +
+              ? `A previous deploy of ${displayStackName(stackName)} failed and was automatically rolled back. ` +
                   `The failed resource may be partially applied — revert it, or continue ` +
                   `deploying to fix forward (${
                     // Issue #3754: a nested child's journal is cleared by its
@@ -3327,7 +3347,7 @@ export class DeployEngine {
                       { literal: '--revert-failed' },
                     ]).command
                   }`
-              : `A previous deploy of '${stackName}' failed or was interrupted. Revert it, ` +
+              : `A previous deploy of ${displayStackName(stackName)} failed or was interrupted. Revert it, ` +
                   `or continue deploying to fix forward.` +
                   `\nRevert it with: ${
                     pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command

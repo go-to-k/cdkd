@@ -10,9 +10,11 @@ import {
   truncateCodePoints,
 } from '../utils/display-safe.js';
 import {
+  isInertUnquoted,
   pasteableCommand,
   type CommandArg,
   type WithheldValue,
+  SHELL_ACTIVE_WHY,
   type WithholdReason,
 } from '../utils/pasteable-command.js';
 import { sanitizeRecoveryValue, shellQuote } from './lock-contention-message.js';
@@ -695,6 +697,11 @@ function accountReason(reason: WithholdReason): string {
     // Unreachable: `accountArgs` passes no `patternMatched`.
     case 'pattern-shaped':
       return 'would be read as a pattern';
+    // Unreachable: `accountArgs` passes `plainIdent`, which answers `not-plain`
+    // for every value this arm would take. A sentence rather than a throw, for
+    // the reason the `empty` arm gives.
+    case 'shell-active':
+      return SHELL_ACTIVE_WHY;
     case 'not-plain':
       return (
         `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or ` +
@@ -2270,8 +2277,28 @@ function stackClause(
   kind = ''
 ): string {
   if (stackName === undefined) return 'The state record this command loaded';
-  const where = region === undefined ? '' : ` (${shellQuote(safeRegion(region))})`;
-  return `State for ${kind ? `${kind} ` : ''}${shellQuote(safeStackName(stackName))}${where}`;
+  const where =
+    region === undefined
+      ? ''
+      : ` (${proseIdentity(region, safeRegion, 'a region that cannot be shown safely here')})`;
+  return `State for ${kind ? `${kind} ` : ''}${proseIdentity(stackName, safeStackName, 'a stack whose name cannot be shown safely here')}${where}`;
+}
+
+/**
+ * An identity for {@link stackClause}'s PROSE: `shellQuote`d, as it always was,
+ * while its sanitized spelling is inert with its quotes stripped, and otherwise DESCRIBED
+ * (go-to-k/cdkd#4205). A `shellQuote`d value in a sentence runs once the quote
+ * parity above it flips, which an apostrophe in a line pasted with it does;
+ * `displayIdent`'s JSON boundary would stop `;` and `'` but still run `$( )`
+ * and a backtick (the display residual go-to-k/cdkd#3950 tracks), so a
+ * description, which runs nothing, is the spelling here. The command lines
+ * name the value as a hole in the same case, and say where to read it.
+ */
+function proseIdentity(value: string, safe: (v: string) => string, description: string): string {
+  // Judged on the SANITIZED spelling, the text that is actually printed; the
+  // `UNRENDERABLE` token is cdkd's own and stays quoted, as it always was.
+  const shown = safe(value);
+  return shown === UNRENDERABLE || isInertUnquoted(shown) ? shellQuote(shown) : description;
 }
 
 /**
@@ -2318,7 +2345,9 @@ function stackClause(
  * and the caller says where to take the name from instead
  * ({@link orphanIdentityVerdict} is the test, shared with the inspect line and
  * the withheld-identity clause; the object path keeps {@link rendersExactly},
- * since a key segment beginning with `-` is still that record's key).
+ * since a key segment beginning with `-` is still that record's key, and also
+ * holds the stack segment to `isInertUnquoted`, printing `<stack>` otherwise,
+ * go-to-k/cdkd#4205).
  *
  * `recovery` qualifies EVERY arm, the no-identity template included, the way
  * {@link buildForceUnlockCommand} is qualified, through {@link accountArgs}: `cdkd state orphan`
@@ -2372,9 +2401,12 @@ function dropRecordCommand(
  * measures the cap itself and says `too-long`. The stack name keeps
  * `STACK_REF_MAX_CODE_POINTS`; the region now takes `SHORT_NAME_MAX_CODE_POINTS`,
  * the cap its prose renders at (see `orphanRegionArg`), where the copy used
- * 1152 for both. No `plainIdent`: that would withhold the
- * go-to-k/cdkd#3359 path from `It's Legacy`, which go-to-k/cdkd#3523 records as
- * the reason this message is not gated like the template sites.
+ * 1152 for both. No `plainIdent`, but the gate's DEFAULT now withholds any
+ * value that would not be inert with its quotes stripped (go-to-k/cdkd#4205),
+ * so `It's Legacy` is a hole here too: the go-to-k/cdkd#3359 path that named
+ * such a name exactly (kept by go-to-k/cdkd#3523) is retired on purpose, since
+ * a quoted name runs as shell once anything pasted before it flips the quote
+ * parity, and cdkd cannot control what that is.
  */
 function orphanIdentityVerdict(
   stackName: string,
@@ -2448,12 +2480,10 @@ function orphanRegionArg(region: string): CommandArg {
  * It is NOT the module's gate for a DESTRUCTIVE remedy and must not be unified
  * with one: the three messages that offer a hole TEMPLATE are all stricter,
  * adding {@link isPasteableIdent} (go-to-k/cdkd#3516). The orphan refusal's
- * commands are weaker on purpose — {@link orphanIdentityVerdict} passes no
- * `plainIdent` — and the gap is tracked rather than closed (go-to-k/cdkd#3523):
- * {@link dropRecordCommand} SUBSTITUTES, so tightening it withholds the
- * drop command from a legacy record whose name merely needs quoting — the very
- * path go-to-k/cdkd#3359 built, where `cdkd state show` refuses outright and
- * this command is the way out. Measured: `It's Legacy` loses it.
+ * commands pass no `plainIdent`, so a name such as `Parent~Child.v2` that is
+ * inert unquoted still substitutes; a name that needs quoting does not
+ * (go-to-k/cdkd#4205 retired go-to-k/cdkd#3523's `It's Legacy` exception): its
+ * drop command prints the hole, filled from `cdkd state list --json`.
  *
  * **The ONE spelling of the exactness test in this module** (go-to-k/cdkd#3388).
  * The two DESTROY gates measure through it too, each at the cap its own clause
@@ -2578,6 +2608,11 @@ function inspectWithheldPart(
         `'_', '.' or '-'), the only shape the command at the end of this line names, since it sits beside a ` +
         `labelled line`
       );
+    // Unreachable: `inspectGate` passes `plainIdent`, which answers
+    // `not-plain` for every value this arm would take; a sentence rather than
+    // a throw, because this renders inside a refusal.
+    case 'shell-active':
+      return `${what} ${SHELL_ACTIVE_WHY}`;
     // Unreachable: `inspectGate` passes no `patternMatched`.
     case 'pattern-shaped':
       throw new Error(
@@ -3211,6 +3246,15 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
       `this message`
     );
   }
+  // Rendered exactly but not inert unquoted (go-to-k/cdkd#4205): "did not
+  // render exactly" would be false of `It's Legacy`, which the head shows whole.
+  if (!reasons.includes('altered') && reasons.includes('shell-active')) {
+    return (
+      ` — the stack name or region above ${SHELL_ACTIVE_WHY}, so take them from the ` +
+      `'Find the exact name' command below — replace each quoted hole, quotes included, with ` +
+      `the shell-quoted value — rather than from this message`
+    );
+  }
   return (
     ` — the stack name or region above did not render exactly, so take them from the ` +
     `'Find the exact name' command below — replace each quoted hole, quotes included, with ` +
@@ -3431,7 +3475,18 @@ function orphanInspectClause(
     (exactPrefix !== '' && !exactPrefix.split('/').every((seg) => isPasteableIdent(seg)))
       ? undefined
       : exactPrefix;
-  const key = shellQuote(`${prefix ?? '<prefix>'}/${stackName}/state.json`);
+  // The stack SEGMENT is held to `isInertUnquoted` as a command value is
+  // (go-to-k/cdkd#4205): the key is `shellQuote`d, which a flipped quote parity
+  // above this line turns inside out. A segment that is not inert becomes the
+  // `<stack>` hole, filled from the listing.
+  const stackShown = isInertUnquoted(stackName);
+  const key = shellQuote(
+    `${prefix ?? '<prefix>'}/${stackShown ? stackName : '<stack>'}/state.json`
+  );
+  const stackFill = stackShown
+    ? ''
+    : ` The stack name ${SHELL_ACTIVE_WHY}, so the key shows the hole '<stack>' in its place; ` +
+      `take the name from 'cdkd state list --json' and put it there, inside the outer quotes.`;
   // The fill-in note only when no prefix was SUPPLIED: one that was supplied but
   // did not render exactly is not the default, so the note would mislead.
   // Its OWN sentence rather than a second parenthetical: appended to `where`'s
@@ -3460,7 +3515,7 @@ function orphanInspectClause(
           `'<prefix>' where it belongs; put your own value there, inside the outer quotes.`
         : '';
   return {
-    sentence: `${lead}: the 'Object key' line below names it${where}.${fill}`,
+    sentence: `${lead}: the 'Object key' line below names it${where}.${fill}${stackFill}`,
     locations: [`Object key: ${key}`, ...locations],
   };
 }

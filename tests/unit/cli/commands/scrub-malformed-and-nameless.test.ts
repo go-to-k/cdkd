@@ -1094,13 +1094,22 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       // can be forged in a terminal or a JSON log viewer.
       expect(warned).not.toContain('\u0000');
       expect(warned).not.toContain("\u001b[31m");
+      // Its sanitized spelling holds spaces, so the prose describes it
+      // (go-to-k/cdkd#4205); the cap is measured on a plain name below.
+      expect(warned).toContain('a stack whose name cannot be shown safely here');
+      logger.warn.mockClear();
+      await run(withOutputs('abcdef'), {
+        dryRun: true,
+        stack: { stackName: `Evil${'q'.repeat(5000)}`, template: stackInfo().template } as never,
+      });
+      const capped = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
       // Capped: the 5,000-character name is truncated rather than rendered —
       // at the STACK cap (1152 code points over the whole name, prefix
       // included), since a legitimate nested `Parent~Child` name is that long.
       // A range rather than the exact value: the every-builder cap case in
       // `malformed-resources-bag.test.ts` pins exactly 1152 for this builder.
-      expect(warned).not.toContain('q'.repeat(1152));
-      expect(warned).toContain('q'.repeat(1100));
+      expect(capped).not.toContain('q'.repeat(1152));
+      expect(capped).toContain('q'.repeat(1100));
     });
 
     it('refuses on the outputs bag while the RESOURCES refusal stays silent', () => {

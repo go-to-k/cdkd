@@ -64,6 +64,7 @@ import {
   logOnlyValueCount,
   printingCorpusOf,
   recordLogOnlyParameterValue,
+  literalSplitDelimitersOf,
   recordLogOnlyValue,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
@@ -865,19 +866,29 @@ function isWholeDynamicReferenceValue(value: unknown): boolean {
  * needle the resolver records mid-walk (an `Fn::Base64` encoding) still lands
  * on the next call. Sound because a pass's bags only grow.
  */
-function createDiffPrintingMasker(bags: ReadonlyArray<RecordedSecretValues | undefined>): {
+function createDiffPrintingMasker(
+  bags: ReadonlyArray<RecordedSecretValues | undefined>,
+  /** Masked with, but left out of `corpus()` (go-to-k/cdkd#4049). */
+  maskOnly: ReadonlyArray<RecordedSecretValues>
+): {
   mask: MaskerFn;
   corpus: () => RecordedSecretValues;
+  /** `corpus()` plus the mask-only bags: for this node's own printing only. */
+  maskCorpus: () => RecordedSecretValues;
 } {
   const present = bags.filter((bag): bag is RecordedSecretValues => bag !== undefined);
   let stamp: string | undefined;
   let corpus: RecordedSecretValues = new Map();
+  let maskCorpus: RecordedSecretValues = new Map();
   let masker: MaskerFn = (text) => text;
   const refresh = (): void => {
-    const now = present.map((bag) => `${bag.size}:${logOnlyValueCount(bag)}`).join(',');
+    const now = [...present, ...maskOnly]
+      .map((bag) => `${bag.size}:${logOnlyValueCount(bag)}`)
+      .join(',');
     if (now === stamp) return;
     corpus = diffPrintingSecrets(present);
-    masker = createUnionSecretMasker([corpus]);
+    maskCorpus = diffPrintingSecrets([...present, ...maskOnly]);
+    masker = createUnionSecretMasker([maskCorpus]);
     stamp = now;
   };
   return {
@@ -888,6 +899,10 @@ function createDiffPrintingMasker(bags: ReadonlyArray<RecordedSecretValues | und
     corpus: () => {
       refresh();
       return corpus;
+    },
+    maskCorpus: () => {
+      refresh();
+      return maskCorpus;
     },
   };
 }
@@ -1340,6 +1355,22 @@ export async function computeStackDiff(
   // (`Fn::Base64`), since `skipDynamicReferences` resolves no secret, and the
   // INHERITED bag handed to the resolver below has an empty map.
   const diffSecrets: RecordedSecretValues = new Map();
+  // The pieces of every literal `Fn::Split` over a `NoEcho` value too
+  // (go-to-k/cdkd#4049), for a property that stopped reading one. A bag of
+  // their OWN that this node's masker reads and its corpus leaves out: the
+  // corpus is a nested child's inherited bag, whose carry would move a piece
+  // into the child's Outputs pass and refuse an alias its deploy publishes.
+  const splitPieces: RecordedSecretValues = new Map();
+  const splitDelimiters = literalSplitDelimitersOf(
+    template,
+    new Set(
+      Object.entries(template.Parameters ?? {})
+        .filter(
+          ([, definition]) => (definition as { NoEcho?: unknown } | undefined)?.NoEcho === true
+        )
+        .map(([name]) => name)
+    )
+  );
   for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
     if (
       (definition as { NoEcho?: unknown } | undefined)?.NoEcho === true &&
@@ -1351,6 +1382,7 @@ export async function computeStackDiff(
       !isWholeDynamicReferenceValue(mergedParameters[name])
     ) {
       recordLogOnlyParameterValue(diffSecrets, mergedParameters[name]);
+      recordLogOnlyParameterValue(splitPieces, mergedParameters[name], splitDelimiters);
     }
   }
   // ONE cached masker for the `--verbose` replacement line and the final pass
@@ -1361,11 +1393,10 @@ export async function computeStackDiff(
   // shares its log-only set and forwards its entries into it). Printing reads
   // it too, for an encoding an output derives from one (`Fn::Base64`).
   const outputsPassSecrets: RecordedSecretValues = new Map();
-  const printing = createDiffPrintingMasker([
-    diffSecrets,
-    inheritedForResolver,
-    outputsPassSecrets,
-  ]);
+  const printing = createDiffPrintingMasker(
+    [diffSecrets, inheritedForResolver, outputsPassSecrets],
+    [splitPieces]
+  );
   const maskForLog: MaskerFn = printing.mask;
 
   const resolveRecordingInto =
@@ -1895,7 +1926,8 @@ export async function computeStackDiff(
         maskResourceChangeForDisplay(change, mask),
       ])
     );
-    const nameCorpus = printingCorpusOf(printingSecrets);
+    // With the up-front split pieces (go-to-k/cdkd#4049): display only.
+    const nameCorpus = printingCorpusOf(printing.maskCorpus());
     shownOutputChanges = outputChanges.map((change) =>
       maskOutputChangeForDisplay(change, mask, nameCorpus)
     );

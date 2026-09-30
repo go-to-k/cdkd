@@ -1142,15 +1142,19 @@ instead of a `cdkd state show` command that cannot read it.
 The refusal prints its commands at the end, each on a line of its own after a
 label; copy the command after the label. For the legacy record, the object's
 key and bucket are printed the same way, on `Object key:` and `State bucket:`
-lines. The `cdkd state orphan` and `cdkd state show`
+lines; a stack name that would not be inert with its quotes stripped shows as
+`'<stack>'` in the key, to be filled from `cdkd state list --json`. The `cdkd state orphan` and `cdkd state show`
 commands carry the
 `--profile`, `--state-bucket` and non-default `--state-prefix` the run was
 given, so pasting them reaches the same bucket. If the stack name would not
-survive display unchanged, both become templates with the name left as a hole;
-if the region would not, the name and the region are both left as holes. The
+survive display unchanged, or would not be inert with its quotes stripped
+(whitespace, or a character a shell acts on, such as `'`, `;` or `$`), both
+become templates with the name left as a hole; if the region would not, the
+name and the region are both left as holes. The
 account flags stay either way, and the message says where to take the exact
 name from. A `--profile`, `--state-bucket` or `--state-prefix` value that would
-not survive display unchanged is itself printed as a hole (`'<profile>'`,
+not survive display unchanged, or would not be inert with its quotes stripped,
+is itself printed as a hole (`'<profile>'`,
 `'<bucket>'`, `'<prefix>'` — quoted, so a pasted hole is one literal argument
 rather than a shell redirection), the message says so and tells you to fill it
 from the value you passed, and the object path then names neither that bucket

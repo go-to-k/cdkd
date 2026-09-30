@@ -596,13 +596,32 @@ the bucket-wide exports index, which any stack's reader can list.
   | --- | --- |
   | A name holding a value that only a LATER output's `Export.Name` reads | Phase B: pass 2 resolves every name first, then decides every alias (`deploy-engine.ts`), and the diff follows |
   | A 1-3 character value embedded in a longer name, even one substituted into it | Phase B: the positional twin above |
-  | A value reaching the name without a `Ref`: an echoed attribute, a nested output, `Fn::ImportValue`, an `Fn::Select` fragment | Phase B: the declared-attribute mechanism (section 3.3), the cross-stack recovery (section 4.7) and the positional twin |
+  | A value reaching the name without a `Ref`: an echoed attribute, a nested output, `Fn::ImportValue` | Phase B: the declared-attribute mechanism (section 3.3) and the cross-stack recovery (section 4.7) |
   | A failed output's alias the no-change merge carries forward (`no-change-outputs-merge.ts`) | Phase B: the merge re-runs this verdict over each carried alias name |
   | A LITERAL name spelling a value only a resource reads | Phase B: the verdict is seeded with every `NoEcho` parameter value, at the #1919 floor (maintainer decision on #4043); the cost is that an unrelated name containing a short or common value is refused |
   | `cdkd diff`: a #2740-skipped output is resolved into the Outputs bag to record its needles, which issues its lookups and can over-refuse where the deploy's value pass fails before the `NoEcho` `Ref` | Accepted bound of the preview; revisited with Phase B's seeding, which makes it moot |
-  | `cdkd diff` of a nested child: a value reaching the child through the parent's printing corpus rather than its own row is recorded by the child's Outputs pass, so the preview can refuse an alias the child's deploy publishes | Phase B, with the echo residual above: the child's verdict then holds the value either way |
+  | `cdkd diff` of a nested child: a value reaching the child through the parent's printing corpus rather than its own row is recorded by the child's Outputs pass, so the preview can refuse an alias the child's deploy publishes. That corpus also holds the pieces of an `Fn::Split` the parent's diff resolved over the value (#4049), so a piece can be refused the same way | Phase B, with the echo residual above: the child's verdict then holds the value either way |
   | `cdkd scrub` keeping an unnamed possible-alias key when a declared alias is refused (fail-safe) | Phase C, with scrub's key report |
   | A nested child's rollback re-persisting a pre-run alias an older binary wrote (`nested-child-journal.ts`) | Phase C, with the rollback replay |
+- **An `Fn::Split` piece of a value is a log-only needle too** (#4049): the
+  resolver records each piece's share of the value, so a name built from one
+  (`Fn::Select` over the split) is refused at the same floor as the value. A
+  1-3 character piece embedded in a longer name is the positional-twin row
+  above. The cost is the value's own, now per piece, and pass-wide: `admin:hunter2`
+  split on `:` refuses any name containing `admin`, and a URL split by `:`
+  makes its scheme name and port needles too, so `cdkd diff` over-masks rows
+  (a short piece masks every equal leaf, and a masked new side withholds the
+  old side of a real change). An `Fn::Split` by an EMPTY delimiter masks its
+  own line, but an `Fn::Join` / `Fn::Sub` rejoining the characters with a
+  separator prints them: registering each character as a log twin would feed
+  the `Fn::Base64` persist detector and move state. A deploy's and a `cdkd diff`'s up-front record of each `NoEcho` value
+  splits it by the literal delimiter of every `Fn::Split` over it in the
+  template, for a stored piece a property stopped reading, into a print-only
+  bag no verdict or nested child reads; a piece no remaining split produces
+  still prints on the diff's `old:` side and replacement line. That record
+  sees only the NEW template's splits, none in a CDK nested child (which
+  declares no `NoEcho`), and not a split reading the value through
+  `Fn::GetAtt` / `Fn::FindInMap` whose diff resolution fails.
 - **A stack that is never redeployed** keeps a published alias in `outputs`,
   `exportNames` and the exports index. `cdkd scrub` cannot rewrite a key
   (`.claude/rules/layout-scrub.md`). It reports the key, and the remedy is a

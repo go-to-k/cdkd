@@ -189,11 +189,12 @@ DESTROY refusals via `mayNameTargetWithDestructiveRemedy` (region at 128), and
 `divergentRecordRegionRefusalMessage`, which spells its own because it renders a
 KEY region at the state-record cap (go-to-k/cdkd#3328).
 
-`dropRecordCommand` is the EXCEPTION and it is open: it SUBSTITUTES rather than
-templating and gates through the shared `pasteableCommand` gate WITHOUT
-`plainIdent` — a trade-off, not an oversight (go-to-k/cdkd#3523 carries why, and
-the behaviour is pinned). The gate withholds an altered, capped or
-leading-`-` name; a label-spelling name still substitutes. Its `cdkd state show`
+`dropRecordCommand` is the EXCEPTION: it SUBSTITUTES rather than templating
+and gates through the shared `pasteableCommand` gate WITHOUT `plainIdent`. The
+gate withholds an altered, capped or leading-`-` name, and by default any name
+not inert with its quotes stripped (`shell-active`, go-to-k/cdkd#4205, which
+retired go-to-k/cdkd#3523's `It's Legacy` exception); a label-spelling name
+carries a space, so it is a hole too. Its `cdkd state show`
 line and withheld-identity clause read the SAME verdict, and a name beginning
 with `-` is never to be filled back in (go-to-k/cdkd#3436). It serves every
 refusal built on `orphanRefusal`: `cdkd orphan`'s `properties`, entry,

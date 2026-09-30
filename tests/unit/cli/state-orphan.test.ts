@@ -804,31 +804,40 @@ describe('cdkd state orphan', () => {
       // listed under (pinned in `tests/unit/cli/orphan.test.ts`) — AND the
       // recovery context the binary always threads, so the argv is the one
       // production prints rather than a bare form it never emits. The stack
-      // name carries a SPACE and a QUOTE, so an unquoted rendering splits into
-      // different argv and names a different stack, and the quote exercises
-      // `shellQuote`'s `'\\''` spelling; the argv is split the way a shell would
+      // name carries a medial `~`, the one character the gate admits that
+      // `shellQuote` still quotes, so the argv is split the way a shell would
       // (m9 of go-to-k/cdkd#3363's review). The case above is the other half: the
       // synthesized region the refusal used to print selects nothing.
+      //
+      // `It's Legacy`, which this case used to drive, is a HOLE since
+      // go-to-k/cdkd#4205: a name that needs quoting is not inert once text
+      // pasted before the command flips the quote parity. That retires the
+      // go-to-k/cdkd#3359 / go-to-k/cdkd#3523 "name it exactly" behaviour on
+      // purpose; the operator fills the hole from `cdkd state list --json`.
+      const recovery = { profile: 'prod', stateBucket: 'test-bucket', statePrefix: 'custom' };
+      expect(
+        malformedOrphanResourcePropertiesRefusalMessage("It's Legacy", undefined, ['Other'], recovery)
+      ).toMatch(/^Drop the record: cdkd state orphan '<stack>' --profile prod /m);
       const message = malformedOrphanResourcePropertiesRefusalMessage(
-        "It's Legacy",
+        'Old~Legacy',
         undefined,
         ['Other'],
-        { profile: 'prod', stateBucket: 'test-bucket', statePrefix: 'custom' }
+        recovery
       );
       const m = /^Drop the record: (cdkd state orphan .*)$/m.exec(message);
       expect(m, 'the drop remedy is no longer rendered in the expected shape').not.toBeNull();
-      expect(m![1]!).toContain("cdkd state orphan 'It'\\''s Legacy' --profile prod");
+      expect(m![1]!).toContain("cdkd state orphan 'Old~Legacy' --profile prod");
       const argv = shellWords(m![1]!);
       expect(argv).toEqual([
-        'cdkd', 'state', 'orphan', "It's Legacy",
+        'cdkd', 'state', 'orphan', 'Old~Legacy',
         '--profile', 'prod', '--state-bucket', 'test-bucket', '--state-prefix', 'custom',
       ]);
-      mockListStacks.mockResolvedValue([{ stackName: "It's Legacy" }]);
+      mockListStacks.mockResolvedValue([{ stackName: 'Old~Legacy' }]);
       mockIsLocked.mockResolvedValue(false);
 
       await runStateOrphan([...argv.slice(2), '--yes']);
 
-      expect(mockDeleteLegacyState).toHaveBeenCalledWith("It's Legacy");
+      expect(mockDeleteLegacyState).toHaveBeenCalledWith('Old~Legacy');
       expect(mockDeleteState).not.toHaveBeenCalled();
       // The prefix the pasted flags carried is the one the backend was built with.
       const config = vi.mocked(S3StateBackend).mock.calls.at(-1)?.[1] as { prefix?: string };

@@ -22,7 +22,7 @@ import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { buildDenyExternalAccessPolicy } from '../utils/deny-external-access-policy.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { pasteableCommand } from '../utils/pasteable-command.js';
-import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
+import { displayIdent, plainIdentOr, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 
 /**
  * cdkd-owned asset storage — naming, bootstrap marker, and deploy-time
@@ -170,6 +170,10 @@ export async function assertAssetBucketRegion(
   cause: Error
 ): Promise<void> {
   const want = canonicalizeRegion(expectedRegion);
+  // The PROSE names a region only when it is a plain identifier (go-to-k/cdkd#4205):
+  // the region can come from a stack's `env.region`, and a raw value in a
+  // sentence runs when pasted, with no quote parity needed.
+  const wantShown = plainIdentOr(want, 'this deploy region');
   // The command rides a trailing labelled line, never the sentence: pasting a
   // prose span WITH its quotes is what let an interpolated value run
   // (go-to-k/cdkd#3436). The `<name>` hole is quoted for the same reason — bare,
@@ -179,7 +183,7 @@ export async function assertAssetBucketRegion(
     { flag: '--asset-bucket', hole: 'name' },
   ]);
   const remedy =
-    `Either bootstrap ${want} with an asset-bucket name unique to it, or run this ` +
+    `Either bootstrap ${wantShown} with an asset-bucket name unique to it, or run this ` +
     `against the bucket's own region.` +
     `\nBootstrap with: ${bootstrapUnique.command}`;
 
@@ -227,7 +231,7 @@ export async function assertAssetBucketRegion(
         if (failure.redacted) {
           getLogger().debug(
             `GetBucketLocation failed for asset bucket ${quotedIfPlain(bucketName, 'with a name that is not a plain identifier')} while confirming it ` +
-              `belongs to ${want}: ${failure.detail}`
+              `belongs to ${wantShown}: ${failure.detail}`
           );
         }
         // Deliberately NOT stamped with `markRedactedCause`, unlike
@@ -247,7 +251,7 @@ export async function assertAssetBucketRegion(
         throw new CdkdError(
           `${isPlainName(bucketName) ? `Asset bucket '${bucketName}'` : 'An asset bucket whose name is not a plain identifier'} is claimed by an existing bucket, but cdkd ` +
             `could not determine which region that bucket is in, so it cannot confirm ` +
-            `it belongs to ${want}. Refusing to adopt it. ` +
+            `it belongs to ${wantShown}. Refusing to adopt it. ` +
             `(region probe failed: ${failure.summary}) ` +
             `${remedy}`,
           'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
@@ -258,6 +262,9 @@ export async function assertAssetBucketRegion(
   }
 
   if (actual === want) return;
+  // Defence in depth: `actual` is S3's own redirect header, not a planted
+  // value, so no test drives a hostile one here (go-to-k/cdkd#4205 review).
+  const actualShown = plainIdentOr(actual, 'another region');
 
   throw new CdkdError(
     // NOT "owned by this account": a cross-region redirect is emitted by the
@@ -265,12 +272,12 @@ export async function assertAssetBucketRegion(
     // 400 path ownership was never established (only the 409
     // `BucketAlreadyOwnedByYou` proves it). Saying otherwise would tell a user
     // cdkd owns a bucket somebody else may hold.
-    `${bucketNameSubject(bucketName)} resolves to a bucket in ${actual}, ` +
-      `while this operation targets ${want}. S3 bucket names are globally unique, and ` +
+    `${bucketNameSubject(bucketName)} resolves to a bucket in ${actualShown}, ` +
+      `while this operation targets ${wantShown}. S3 bucket names are globally unique, and ` +
       `both 'BucketAlreadyOwnedByYou' and a cross-region redirect report ACCOUNT ` +
       `ownership rather than the bucket's region, so cdkd cannot treat it as ` +
-      `${want}'s asset bucket. cdkd asset storage is per-region by design: adopting ` +
-      `it would publish ${want}'s assets into ${actual} and apply ${want}'s bucket ` +
+      `${wantShown}'s asset bucket. cdkd asset storage is per-region by design: adopting ` +
+      `it would publish ${wantShown}'s assets into ${actualShown} and apply ${wantShown}'s bucket ` +
       `configuration there. ${remedy}`,
     'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
     cause
@@ -846,17 +853,20 @@ export async function ensureAssetStorage(
     const conflicts: string[] = [];
     if (options.assetBucketName && options.assetBucketName !== existingMarker.assetBucket) {
       conflicts.push(
-        `asset bucket ${quotedIfPlain(existingMarker.assetBucket, 'with a name that is not a plain identifier')} (requested '${options.assetBucketName}')`
+        // The requested name is the operator's own, validated by
+        // `bootstrap.ts` before it reaches here; described anyway as defence
+        // in depth (go-to-k/cdkd#4205 review).
+        `asset bucket ${quotedIfPlain(existingMarker.assetBucket, 'with a name that is not a plain identifier')} (requested ${quotedIfPlain(options.assetBucketName, 'a name that is not a plain identifier')})`
       );
     }
     if (options.containerRepoName && options.containerRepoName !== existingMarker.containerRepo) {
       conflicts.push(
-        `container repo ${quotedIfPlain(existingMarker.containerRepo, 'with a name that is not a plain identifier')} (requested '${options.containerRepoName}')`
+        `container repo ${quotedIfPlain(existingMarker.containerRepo, 'with a name that is not a plain identifier')} (requested ${quotedIfPlain(options.containerRepoName, 'a name that is not a plain identifier')})`
       );
     }
     if (conflicts.length > 0) {
       throw new CdkdError(
-        `Region '${region}' is already bootstrapped with ${conflicts.join(' and ')}. ` +
+        `Region ${quotedIfPlain(region, 'that is not a plain identifier')} is already bootstrapped with ${conflicts.join(' and ')}. ` +
           `Changing asset storage names would strand the existing storage and every ` +
           `published asset in it — tear the region's asset storage down first, then ` +
           `re-run bootstrap with the new names.` +
@@ -1229,7 +1239,7 @@ export class AssetModeResolver {
         // fires — opt-in is per deploy region, keyed by each stack's
         // env.region, not the shell's default region.
         this.logger.info(
-          `Assets for region '${region}' are published to the CDK bootstrap bucket/repo, which 'cdk gc' may ` +
+          `Assets for region ${quotedIfPlain(region, 'that is not a plain identifier')} are published to the CDK bootstrap bucket/repo, which 'cdk gc' may ` +
             `garbage-collect (cdkd-deployed stacks have no CloudFormation stack for gc to scan). ` +
             `Create cdkd-owned asset storage that 'cdk gc' never touches:` +
             `\nBootstrap with: ${
@@ -1316,7 +1326,7 @@ export class AssetModeResolver {
       // wherever it worked before.
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
-        `Failed to auto-create cdkd asset storage for region '${region}': ${message} ` +
+        `Failed to auto-create cdkd asset storage for region ${quotedIfPlain(region, 'that is not a plain identifier')}: ${message} ` +
           `Falling back to the CDK bootstrap destinations for this run — opt the region ` +
           `in with S3/ECR create permissions.` +
           `\nBootstrap with: ${

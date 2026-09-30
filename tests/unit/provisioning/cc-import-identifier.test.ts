@@ -14,6 +14,7 @@ import {
   expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
   spansThatRun,
+  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -346,6 +347,14 @@ describe('toCloudControlIdentifier', () => {
     };
 
     /** Every message one payload reaches, with the boundary it must show. */
+    /**
+     * The exact composite displays these messages render around a value, each
+     * JSON-quoted: the harness sets aside only an EXACT display under its
+     * OPERATOR_FLIP, so the site names the composites it prints.
+     */
+    const compositeDisplays = (v: string): string[] =>
+      [`${v}|b`, `a|${v}|c`, `${v}|b|c`].map((c) => JSON.stringify(c));
+
     function messagesFor(v: string): Array<{ site: string; message: string; shown: string }> {
       const out: Array<{ site: string; message: string; shown: string }> = [];
       out.push({
@@ -442,11 +451,18 @@ describe('toCloudControlIdentifier', () => {
           expect(message, label).not.toContain(`'${JSON.stringify(value)}'`);
           // The five S1 refusals skip the default block rule until their fix
           // lands; their own case below asserts it.
+          // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+          // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
           expectOnlyDisplayResidual(
             message,
             dir,
             value,
-            S1_SITES.has(site) ? { unfixedS1Row: `go-to-k/cdkd#3950 composite-id ${site}` } : {}
+            {
+              // The site's exact display, which can hold the value inside a
+              // composite (`"<value>|b"`).
+              displays: compositeDisplays(value),
+              ...(S1_SITES.has(site) ? { unfixedS1Row: `go-to-k/cdkd#3950 composite-id ${site}` } : {}),
+            }
           );
         }
       });
@@ -491,7 +507,13 @@ describe('toCloudControlIdentifier', () => {
       expect(refusals).toHaveLength(PASTE_PAYLOADS.length * 3);
       withPasteDir((dir) => {
         for (const { value, site, message } of refusals) {
-          expect(spansThatRun(message, dir), `${site}: ${value}`).toEqual([]);
+          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
+          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
+          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
+          expect(
+            spansThatRunBesideTheDisplay(message, dir, value, {}, compositeDisplays(value)),
+            `${site}: ${value}`
+          ).toEqual([]);
         }
       });
     }, 120_000);

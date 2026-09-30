@@ -187,6 +187,15 @@ rotated-away secret, and a cross-region reference cdkd refuses to resolve in
 the consumer's region because that would compare against — and under
 `--revert`, write — a different region's same-named secret.
 
+A nested stack (`<parent>~<child>`) is judged with the cross-region reads of
+every stack above it as well as its own, because a value its parent read from
+another region reaches it as a Parameter and is recorded without a region.
+cdkd reads those parent records from state. When they cannot be established
+(a parent record is missing or unreadable, or a record's parent link disagrees
+with its key), every secret reference that names no region is refused rather
+than resolved in the stack's own region: make the parent state readable or
+repair the record, or spell the reference as a full ARN.
+
 ### What "drift unknown" excludes from the count
 
 A resource nothing was read for is **excluded from the summary's "checked"

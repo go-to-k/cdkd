@@ -15,8 +15,22 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vite-plus/test';
 import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
-import { commandHole, pasteableCommand, rendersExactly, shellQuote, withheldTargetClause } from '../../../src/utils/pasteable-command.js';
+import {
+  SHELL_ACTIVE,
+  SHELL_ACTIVE_WHY,
+  commandHole,
+  isInertUnquoted,
+  pasteableCommand,
+  shellQuote,
+  withheldTargetClause,
+} from '../../../src/utils/pasteable-command.js';
 import type { PasteableCommand } from '../../../src/utils/pasteable-command.js';
+
+/**
+ * `SHELL_ACTIVE` without whitespace and `,`, which any English sentence has
+ * and neither of which runs anything outside a `{...}`.
+ */
+const SHELL_ACTIVE_NO_SPACE = new RegExp(SHELL_ACTIVE.source.replace('\\s', '').replace(',', ''));
 
 
 /** What the gate must say about each hostile value the loop below drives. */
@@ -28,28 +42,24 @@ const expectedReason = (value: string): string =>
       : 'altered';
 
 describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
-  it('names a value that renders exactly, shell-quoted as ONE argument', () => {
+  it('names a value that renders exactly and is inert unquoted, as ONE argument', () => {
     // The control: without it every withholding case below is satisfied by a
-    // builder that emits a hole unconditionally. A printable `;` or quote is
-    // NOT a hazard — quoting is what makes it safe — so both must be NAMED.
+    // builder that emits a hole unconditionally.
     expect(pasteableCommand('cdkd deploy', [{ value: 'My-App-Stack', hole: 'stack' }])).toEqual({
       command: 'cdkd deploy My-App-Stack',
       exact: true,
       withheld: [],
     });
-    expect(pasteableCommand('cdkd deploy', [{ value: 'a; printf X; #', hole: 'stack' }])).toEqual({
-      command: "cdkd deploy 'a; printf X; #'",
-      exact: true,
-      withheld: [],
-    });
+    // Every character `shellQuote` leaves bare, which is also every printable
+    // ASCII character outside `SHELL_ACTIVE`: an ARN-shaped value is named.
     expect(
       pasteableCommand('cdkd drift', [
-        { value: "it's", hole: 'stack' },
+        { value: 'arn:aws:x:us-east-1:123:a/b.c@d+e_f-g', hole: 'stack' },
         { literal: '--revert' },
         { flag: '--stack-region', value: 'us-east-1', hole: 'region' },
       ])
     ).toEqual({
-      command: "cdkd drift 'it'\\''s' --revert --stack-region us-east-1",
+      command: 'cdkd drift arn:aws:x:us-east-1:123:a/b.c@d+e_f-g --revert --stack-region us-east-1',
       exact: true,
       withheld: [],
     });
@@ -209,14 +219,83 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
         patterned
       ).toEqual([{ hole: 'stack', reason: 'pattern-shaped' }]);
     }
-    // The same two names are fine for a command that matches EXACTLY — both,
-    // or a mutant refusing `/` whatever `patternMatched` says survives.
+    // The same two names for a command that matches EXACTLY: `/` is named, or
+    // a mutant refusing it whatever `patternMatched` says survives. `*` is
+    // withheld anyway, as a glob character, by the default arm
+    // (go-to-k/cdkd#4205), not as a pattern.
     expect(pasteableCommand('cdkd state refresh-observed', [{ value: 'Prod*', hole: 'stack' }])).toEqual(
-      { command: "cdkd state refresh-observed 'Prod*'", exact: true, withheld: [] }
+      {
+        command: "cdkd state refresh-observed '<stack>'",
+        exact: false,
+        withheld: [{ hole: 'stack', reason: 'shell-active' }],
+      }
     );
     expect(
       pasteableCommand('cdkd state refresh-observed', [{ value: 'Stage/Prod', hole: 'stack' }])
     ).toEqual({ command: 'cdkd state refresh-observed Stage/Prod', exact: true, withheld: [] });
+  });
+
+  it('withholds, by default, every value that is not inert with its quotes stripped (go-to-k/cdkd#4205)', () => {
+    // The measured `PASTE_ARG_UNSAFE` semantics (go-to-k/cdkd#4198), one case
+    // per member, so dropping any one character or position rule reds its own
+    // case. `shellQuote` is safe only while the quote parity before the value
+    // is even, and whatever the operator pastes above the command sets it: with
+    // the parity odd the value's opening quote CLOSES a quote and the value
+    // runs bare. A space runs nothing itself, but bare it splits the value and
+    // a later word (`--all`) becomes an option, so it counts.
+    const hole = (value: string, reason: string) => ({
+      command: "cdkd deploy '<stack>'",
+      exact: false,
+      withheld: [{ hole: 'stack', reason }],
+    });
+    const gate = (value: string) => pasteableCommand('cdkd deploy', [{ value, hole: 'stack' }]);
+    // Anywhere in the word. A TAB is rewritten by `displaySafe`, so it
+    // reports `altered` first, and is withheld all the same.
+    const anywhere = [
+      ' ', '\t', "'", '"', '`', '$', ';', '&', '|', '<', '>', '(', ')', '*', '?', '[', ']',
+      '{', '}', '!', '\\',
+    ];
+    for (const c of anywhere) {
+      expect(gate(`a${c}b`), JSON.stringify(c)).toEqual(
+        hole(`a${c}b`, c === '\t' ? 'altered' : 'shell-active')
+      );
+    }
+    // Only at the START of a word: `#` (a comment) and `=` (zsh's `=cmd`), and
+    // `~` at the start or right after `=` or `:`.
+    for (const v of ['#a', '=a', '~root', 'a=~b', 'a:~b']) {
+      expect(gate(v), v).toEqual(hole(v, 'shell-active'));
+    }
+    // Mid-word they are literal, so the value is NAMED, shell-quoted (the
+    // bare set has none of them): a log group `/app#blue`, an IAM name with
+    // `=` or `,`, and every nested-stack child name `Parent~Child`.
+    for (const v of ['a#b', 'a=b', 'a,b', 'a%b', 'a^b', 'Parent~Child', 'a/~b']) {
+      expect(gate(v), v).toEqual({ command: `cdkd deploy ${shellQuote(v)}`, exact: true, withheld: [] });
+    }
+    // A value with none of these is named, bare.
+    for (const plain of ['MyStack', 'us-east-1', 'arn:aws:iam::123456789012:role/a.b@c+d_e-f']) {
+      expect(gate(plain), plain).toEqual({ command: `cdkd deploy ${plain}`, exact: true, withheld: [] });
+    }
+    // Every arm runs BEFORE it: an option-shaped value keeps its own reason.
+    expect(pasteableCommand('cdkd deploy', [{ value: '--x;y', hole: 'stack' }]).withheld).toEqual([
+      { hole: 'stack', reason: 'option-shaped' },
+    ]);
+    // And the sentence, through the shared renderer. It spells no shell
+    // character, since it is pasted with the rest of the message.
+    const clause = withheldTargetClause(
+      pasteableCommand('cdkd deploy', [{ value: 'a;b', hole: 'stack' }]),
+      'stack',
+      'cdkd deploy'
+    );
+    expect(clause).toContain(`This record's name ${SHELL_ACTIVE_WHY} — so it is not named`);
+    expect(SHELL_ACTIVE_WHY).not.toMatch(SHELL_ACTIVE_NO_SPACE);
+  });
+
+  it('isInertUnquoted is the same test, for the builders outside pasteableCommand', () => {
+    expect(isInertUnquoted('arn:aws:x:1:2:a/b')).toBe(true);
+    expect(isInertUnquoted('Parent~Child')).toBe(true);
+    expect(isInertUnquoted('')).toBe(true);
+    expect(isInertUnquoted('a~/b')).toBe(true);
+    for (const v of ['a b', "it's", 'x$(id)', '~a', 'a:~b', '#a']) expect(isInertUnquoted(v), v).toBe(false);
   });
 
   it('holds, under plainIdent, a value isPasteableIdent refuses -- and reports it LAST in the order', () => {
@@ -227,11 +306,14 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     // lets a caller ask for that rule from the gate itself, so the SENTENCE
     // beside the hole comes from the gate's reason rather than from a second
     // predicate at the site (M11 of go-to-k/cdkd#3499's review, again).
+    // Since go-to-k/cdkd#4205 the DEFAULT arm withholds it too, as
+    // `shell-active`; `plainIdent` REPLACES that arm with `not-plain`, so a
+    // `plainIdent` caller keeps its sentence.
     const injected = '$(printf INJECTED)';
     expect(pasteableCommand('cdkd deploy', [{ value: injected, hole: 'stack' }])).toEqual({
-      command: "cdkd deploy '$(printf INJECTED)'",
-      exact: true,
-      withheld: [],
+      command: "cdkd deploy '<stack>'",
+      exact: false,
+      withheld: [{ hole: 'stack', reason: 'shell-active' }],
     });
     expect(
       pasteableCommand('cdkd deploy', [{ value: injected, hole: 'stack', opts: { plainIdent: true } }])
@@ -255,7 +337,12 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     // apostrophe and a `;` are the two spellings go-to-k/cdkd#3307's plan
     // asked to still EMIT, shell-quoted; a leading `:` is the option-adjacent
     // shape the allow-list's first character refuses. Each renders exactly,
-    // starts with no `-` and holds no `*` or `/`, so only this arm sees it.
+    // starts with no `-` and holds no `*` or `/`. `:Label` holds no
+    // `SHELL_ACTIVE` character either, so without `plainIdent` it is NAMED:
+    // only this arm refuses it.
+    expect(pasteableCommand('cdkd deploy', [{ value: ':Label', hole: 'stack' }]).command).toBe(
+      'cdkd deploy :Label'
+    );
     for (const spaceFree of ["it's", 'a;b', ':Label']) {
       expect(
         pasteableCommand('cdkd deploy', [
@@ -472,10 +559,7 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     }
   });
 
-  it('rendersExactly compares against the RAW value, so it cannot pass vacuously', () => {
-    expect(rendersExactly('plain')).toBe(true);
-    expect(rendersExactly('a\u001bb')).toBe(false);
-    expect(rendersExactly('')).toBe(false);
+  it('shellQuote and commandHole spell the pair the gate is built from', () => {
     // The pair the gate is built from, asserted directly: a second sanitizing
     // pass would compare two sanitized spellings and be satisfied by anything.
     expect(shellQuote("it's")).toBe("'it'\\''s'");
@@ -489,29 +573,38 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     // dropped quoting on a value with no metacharacter, so it would catch
     // quote-removal but not re-splitting — which is the property this case
     // claims (m9 of the go-to-k/cdkd#3499 review).
+    // A shell-active value is a HOLE since go-to-k/cdkd#4205, so each payload
+    // pastes as the one literal `<stack>` argument. The named values are the
+    // ones the gate admits: a bare ARN, and a medial `~` (quoted).
     const cases: Array<{ built: PasteableCommand; argv: string[] }> = [
       {
         built: pasteableCommand('cdkd deploy', [{ value: 'a; touch OWNED; #', hole: 'stack' }]),
-        argv: ['deploy', 'a; touch OWNED; #'],
+        argv: ['deploy', '<stack>'],
       },
       {
         built: pasteableCommand('cdkd deploy', [{ value: '$(touch OWNED)', hole: 'stack' }]),
-        argv: ['deploy', '$(touch OWNED)'],
+        argv: ['deploy', '<stack>'],
       },
       {
         built: pasteableCommand('cdkd deploy', [{ value: '`touch OWNED`', hole: 'stack' }]),
-        argv: ['deploy', '`touch OWNED`'],
+        argv: ['deploy', '<stack>'],
       },
       {
         built: pasteableCommand('cdkd deploy', [{ value: "x'; touch OWNED; #", hole: 'stack' }]),
-        argv: ['deploy', "x'; touch OWNED; #"],
+        argv: ['deploy', '<stack>'],
       },
       {
-        // A value with a SPACE and no metacharacter: this is the one that
-        // catches re-splitting, and the one a re-parse of the output could
-        // never catch.
+        // A value with a SPACE and no metacharacter: bare it would split, so
+        // it is withheld as well.
         built: pasteableCommand('cdkd deploy', [{ value: 'two words', hole: 'stack' }]),
-        argv: ['deploy', 'two words'],
+        argv: ['deploy', '<stack>'],
+      },
+      {
+        built: pasteableCommand('cdkd deploy', [
+          { value: 'Root~Child', hole: 'stack' },
+          { flag: '--stack-region', value: 'arn:aws:x:1:2:a/b@c+d', hole: 'region' },
+        ]),
+        argv: ['deploy', 'Root~Child', '--stack-region', 'arn:aws:x:1:2:a/b@c+d'],
       },
       {
         built: pasteableCommand(
@@ -651,29 +744,6 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     expect(optionPattern.withheld).toEqual([{ hole: 'stack', reason: 'option-shaped' }]);
   });
 
-  describe('rendersExactly', () => {
-    it('is about RENDERING only, so an option-shaped name is still exact', () => {
-      // The compatibility exception M11 had to make explicit. `rendersExactly`
-      // answers "does sanitizing leave this value alone", and `--all` survives
-      // sanitizing untouched — so `true` is the honest answer and was the
-      // answer before the rewrite. Expressing the predicate through
-      // `withholdReason` would have silently changed it to `false`, because
-      // that function ALSO refuses an option; the `option-shaped` exception is
-      // what preserves the original meaning, and this case is what pins it.
-      // Nothing else can: the command builder applies both rules at once, so a
-      // mutant deleting the exception is invisible through `pasteableCommand`.
-      expect(rendersExactly('--all')).toBe(true);
-      expect(rendersExactly('-x')).toBe(true);
-      // ...and the rendering half still refuses, so the exception did not
-      // widen the predicate to "anything goes".
-      expect(rendersExactly('')).toBe(false);
-      expect(rendersExactly('Prod\u00a0Stack')).toBe(false);
-      expect(rendersExactly('A'.repeat(STACK_REF_MAX_CODE_POINTS + 1))).toBe(false);
-      // A pattern is a COMMAND-level judgement, not a rendering one, so this
-      // predicate must not take it either.
-      expect(rendersExactly('*')).toBe(true);
-    });
-  });
 
 });
 

@@ -465,9 +465,10 @@ CloudFormation change set prints `****`. This covers a property's `old:` /
 `new:` lines, an Outputs value, an export row name, `--json`'s
 `propertyChanges` and `outputChanges`, and the `--verbose` lines (the
 `requires replacement` line and the resolver's own). It also covers an
-encoding the diff derives from the value (an `Fn::Base64`), and a nested child
-that receives the parent's value through a parameter it does not itself declare
-`NoEcho`. When the new side carries the value, the old side is shown whole as
+encoding the diff derives from the value (an `Fn::Base64`), each piece of an
+`Fn::Split` over it, and a nested child that receives the parent's value through
+a parameter it does not itself declare `NoEcho`, a list parameter split out of
+it included. When the new side carries the value, the old side is shown whole as
 `***` too, because state keeps the previous value in the clear. For an object
 this hides the rest of its old side as well. The change is still reported. A
 `NoEcho` parameter fed a SECRET `{{resolve:...}}` reference
@@ -475,15 +476,32 @@ this hides the rest of its old side as well. The change is still reported. A
 expression, like every secret reference here.
 
 Limits:
-- A value of 1-3 characters is masked only where it is a whole value, not
-  where it is embedded in a longer string. The whole-value match can also
+- A value, `Fn::Split` piece or split-out list element of 1-3 characters is
+  masked only where it is a whole value, not where it is embedded in a longer
+  string. The whole-value match can also
   over-mask: an unrelated value that happens to EQUAL a short `NoEcho` value
   (a `1`, a `true`) prints as `***` too.
+- A piece is a needle for the whole node, like the value it came from. A short
+  piece (the `1` of `dbuser,1`) masks every leaf EQUAL to it, and a piece of 4
+  or more characters (a port such as `5432`) masks it inside any text. A URL
+  split by `:` makes its scheme name, port and words needles. So a row can
+  print `***` for an unrelated value, and when its new side is masked the old
+  side is withheld too, hiding a real non-secret change behind `***`.
+- The up-front record of a stored piece (above) sees only the `Fn::Split`s in
+  the NEW template. A CDK nested child declares no `NoEcho`, so it records
+  nothing up front and relies on the pieces its own resolution records. And a
+  split that reads the value indirectly (`Fn::GetAtt`, `Fn::FindInMap`) leaves
+  its pieces unrecorded when its diff resolution fails.
+- An `Fn::Split` by an EMPTY delimiter over a `NoEcho` value prints its pieces
+  as `***` on its own line, but an `Fn::Join` or `Fn::Sub` putting them back
+  together with a separator prints them character by character.
 - Only the CURRENT value is known. A previous value still in state prints
   where the new side no longer carries the current one: a property or output
   REMOVED in the same deploy that rotated the value, or a property that
   switched away from a `NoEcho` parameter in that deploy. The stored previous
-  plaintext prints as its `old:` side.
+  plaintext prints as its `old:` side. Likewise a stored `Fn::Split` piece of
+  the current value prints once no `Fn::Split` over the value by that delimiter
+  is left in the template.
 - A `NoEcho` parameter fed a plain `{{resolve:ssm:...}}` reference to a
   `String` parameter prints its resolved value where an `Fn::Sub` / `Fn::Join`
   embeds the reference, and the expression where a bare `Ref` serves it: a

@@ -133,10 +133,12 @@
  *   `Export.Name` in declaration order. So these are published: a name holding
  *   a value only a RESOURCE reads, or only a LATER output's `Export.Name`; a
  *   value that reaches the name without a `Ref` (an echoed `Fn::GetAtt`
- *   attribute, a nested child's output, an `Fn::ImportValue`, an
- *   `Fn::Select` fragment); and, by containment alone, a 1-3 character value
- *   embedded in a longer name, even one the resolver substituted into THIS
- *   name, since the name's log-only set is the pass's. A failed output's
+ *   attribute, a nested child's output, an `Fn::ImportValue`); and, by
+ *   containment alone, a 1-3 character value, or a 1-3 character
+ *   `Fn::Split` piece of a value (go-to-k/cdkd#4049), embedded in a longer
+ *   name, even one the resolver
+ *   substituted into THIS name, since the name's log-only set is the pass's.
+ *   A 4+ character piece is refused like the value. A failed output's
  *   alias the no-change merge carries forward is not re-decided either.
  *   `cdkd diff` previews exactly this verdict. Which phase closes each of
  *   these, or why one stays, is listed in section 5 of

@@ -223,6 +223,34 @@ describe('ELBv2 LoadBalancer immutable-property refusal (site 1)', () => {
     expect(message).toContain('Key=deletion_protection.enabled,Value=false');
   });
 
+  it('routes a planted ARN through the gate: withheld, and nothing runs when pasted (go-to-k/cdkd#4205)', async () => {
+    // One of the five `protectedReplacementAdvice` callers; the builder's own
+    // paste case is above. This pins that the caller hands the state-borne id
+    // to the gate rather than printing it some other way.
+    const protectedAttrs = {
+      Name: 'old-name',
+      Scheme: 'internet-facing',
+      LoadBalancerAttributes: [{ Key: 'deletion_protection.enabled', Value: 'true' }],
+    };
+    const messages: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      const message = await refusalMessage(() =>
+        provider.update(
+          'Lb',
+          `${arn}${value}`,
+          'AWS::ElasticLoadBalancingV2::LoadBalancer',
+          { Name: 'new-name', Scheme: 'internal' },
+          protectedAttrs
+        )
+      );
+      expect(message, label).toContain(UNNAMEABLE_ID_CLAUSE);
+      messages.push([label, message]);
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+    });
+  }, 120_000);
+
   it('keeps the short advice when protection is off', async () => {
     const message = await run({
       LoadBalancerAttributes: [
@@ -304,6 +332,37 @@ describe('EMR Cluster immutable-property refusals (sites 2 and 3)', () => {
       expect(message).toContain(`--cluster-id ${clusterId} --no-termination-protected`);
     });
 
+    it(`${label}: routes a planted cluster id through the gate (go-to-k/cdkd#4205)`, async () => {
+      const messages: Array<[string, string]> = [];
+      for (const { label: payload, value } of PASTE_PAYLOADS) {
+        const prev = { TerminationProtected: true };
+        const message = await refusalMessage(() =>
+          site === instancesSite
+            ? provider.update(
+                'Cluster',
+                `${clusterId}${value}`,
+                'AWS::EMR::Cluster',
+                { Instances: { ...prev, MasterInstanceType: 'm5.2xlarge' } },
+                { Instances: { ...prev, MasterInstanceType: 'm5.xlarge' } }
+              )
+            : provider.update(
+                'Cluster',
+                `${clusterId}${value}`,
+                'AWS::EMR::Cluster',
+                { ReleaseLabel: 'emr-7.0.0', Instances: prev },
+                { ReleaseLabel: 'emr-6.0.0', Instances: prev }
+              )
+        );
+        expect(message, payload).toContain(UNNAMEABLE_ID_CLAUSE);
+        messages.push([payload, message]);
+      }
+      withPasteDir((dir) => {
+        for (const [payload, message] of messages) {
+          expect(spansThatRun(message, dir), payload).toEqual([]);
+        }
+      });
+    }, 120_000);
+
     it(`${label}: keeps the short advice when protection is off`, async () => {
       const message = await site({ TerminationProtected: false });
       expect(message).toContain('Re-deploy with cdkd deploy --replace --force-stateful-recreation');
@@ -382,6 +441,26 @@ describe('AutoScalingGroup name-change refusal (site 8)', () => {
     expect(message).toContain('cdkd deploy has no --remove-protection flag');
     expect(message).toContain('--auto-scaling-group-name my-asg --deletion-protection none');
   });
+
+  it('routes a planted group name through the gate (go-to-k/cdkd#4205)', async () => {
+    const messages: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      const message = await refusalMessage(() =>
+        provider.update(
+          'Asg',
+          `my-asg${value}`,
+          'AWS::AutoScaling::AutoScalingGroup',
+          { AutoScalingGroupName: 'new-asg' },
+          { AutoScalingGroupName: `my-asg${value}`, DeletionProtection: 'prevent-all-deletion' }
+        )
+      );
+      expect(message, label).toContain(UNNAMEABLE_ID_CLAUSE);
+      messages.push([label, message]);
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+    });
+  }, 120_000);
 
   it("keeps the SHORT advice for 'prevent-force-deletion' — it blocks only a FORCE delete", async () => {
     // The deploy engine's replacement issues `ForceDelete: false`, so this

@@ -45,6 +45,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
+import { UNNAMEABLE_ID_CLAUSE } from '../../../src/provisioning/replacement-protection-advice.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const TYPE = 'AWS::Cognito::UserPool';
 const POOL_ID = 'us-east-1_ABCdef123';
@@ -55,13 +57,14 @@ const POOL_ID = 'us-east-1_ABCdef123';
  */
 async function schemaRefusal(
   extraDesired: Record<string, unknown>,
-  extraPrevious: Record<string, unknown>
+  extraPrevious: Record<string, unknown>,
+  poolId: string = POOL_ID
 ): Promise<string> {
   const provider = new CognitoUserPoolProvider();
   try {
     await provider.update(
       'Pool',
-      POOL_ID,
+      poolId,
       TYPE,
       { PoolName: 'pool', Schema: [], ...extraDesired },
       {
@@ -114,6 +117,19 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
     expect(spans.some((s) => s.includes('omitted member'))).toBe(false);
     expect(message).toContain('cdkd deploy --replace --force-stateful-recreation');
   });
+
+  it('routes a planted pool id through the gate: withheld, and nothing runs when pasted (go-to-k/cdkd#4205)', async () => {
+    const messages: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      const message = await schemaRefusal({ DeletionProtection: 'ACTIVE' }, {}, `${POOL_ID}${value}`);
+      expect(message, label).toContain(UNNAMEABLE_ID_CLAUSE);
+      expect(message, label).not.toContain('update-user-pool');
+      messages.push([label, message]);
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+    });
+  }, 120_000);
 
   it('falls back to the RECORDED bag when the desired value is absent', async () => {
     // Absent desired => `if (properties['DeletionProtection'])` never sends it

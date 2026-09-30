@@ -81,6 +81,7 @@ import { withSkipPrefix, withStackName } from '../../../src/provisioning/resourc
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const STACK = 'MyStack';
 const ROLE = 'AWS::IAM::Role';
@@ -1554,4 +1555,34 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       }
     }
   );
+});
+
+describe('the live-resource warning names no shell-active value (go-to-k/cdkd#4205)', () => {
+  it('holes a payload stack name or region in `Inspect it with:`, and no pasted span runs', async () => {
+    // The warning carries `resource's` and `'cdkd deploy'` on the line above
+    // its command, so a shell-quoted payload ran once the two lines were
+    // pasted as one block. The stack name comes from the journal key, the
+    // region from the rollback context.
+    const messages: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      for (const [stack, region, expected] of [
+        [value, 'us-east-1', "cdkd drift '<stack>' --stack-region us-east-1"],
+        [STACK, value, `cdkd drift ${STACK} --stack-region '<region>'`],
+      ] as const) {
+        const create = vi.fn(async () => ({ physicalId: 'live-role', attributes: {} }));
+        const { ctx, lines } = makeCtx({ create, delete: vi.fn() });
+        const { op, state } = replacement('old-role', 'same-name', 'live-role', 'same-name');
+        await withSkipPrefix(false, () =>
+          withStackName(stack, () => replayRollback([op], state, stack, { ...ctx, region }))
+        );
+        const message = lines.find((l) => l.includes('the re-create returned the LIVE new'));
+        expect(message, label).toBeDefined();
+        expect(message!.split('\n').at(-1), label).toBe(`Inspect it with: ${expected}`);
+        messages.push([`${label} ${stack === STACK ? 'region' : 'stack'}`, message!]);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+    });
+  }, 120_000);
 });

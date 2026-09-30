@@ -19,6 +19,12 @@ import { getNestedRevertRun } from '../../../src/deployment/nested-child-journal
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import type { RollbackJournalSegment } from '../../../src/types/rollback-journal.js';
+import {
+  PASTE_PAYLOADS,
+  expectNothingRunsButTheDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 const logs = vi.hoisted(() => ({ info: [] as string[] }));
 
@@ -101,7 +107,9 @@ function build(opts: {
   childState?: StackState | null;
   failCreateOf?: string;
   levels?: string[][];
+  stackName?: string;
 }): Harness {
+  const stack = opts.stackName ?? STACK;
   const provider = {
     create: vi.fn().mockImplementation((logicalId: string) =>
       logicalId === opts.failCreateOf
@@ -116,7 +124,7 @@ function build(opts: {
   };
   const currentState: StackState = {
     version: 8,
-    stackName: STACK,
+    stackName: stack,
     region: REGION,
     resources: opts.resources,
     outputs: opts.outputs ?? {},
@@ -126,7 +134,7 @@ function build(opts: {
   const backend = {
     getState: vi.fn().mockImplementation((name: string) =>
       Promise.resolve(
-        name === STACK
+        name === stack
           ? { state: currentState, etag: 'e0' }
           : opts.childState
             ? { state: opts.childState, etag: 'c0' }
@@ -140,7 +148,7 @@ function build(opts: {
       .fn()
       .mockImplementation((name: string) =>
         Promise.resolve(
-          name === STACK
+          name === stack
             ? (opts.journal ?? null)
             : { segments: [{ runId: RUN, reason: 'nested-pending-parent', operations: [] }] }
         )
@@ -593,6 +601,74 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       expect(note.includes('(a successful deploy clears this note)')).toBe(!nested);
     }
   });
+
+  it('the previous-deploy notes display a payload stack name bounded, hole it in the command, and run nothing else (go-to-k/cdkd#4205)', async () => {
+    // Both notes wrapped the raw name in cdkd's own `'...'`, so
+    // `x'$(touch OWNED)` closed that quote and ran from the first line alone;
+    // the name now renders through `displayStackName`. The command below it
+    // holes the name. The prose display is still a JSON boundary, which a
+    // `$( )` or backtick runs inside (the display residual go-to-k/cdkd#3950 tracks).
+    const notes: Array<[string, string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      for (const [kind, reason, operations, failed] of [
+        ['failed-only', 'auto-rollback-clean', [], [{ logicalId: 'Q', resourceType: TYPE, changeType: 'UPDATE' }]],
+        ['generic', 'no-rollback-failure', [{ logicalId: 'Q', resourceType: TYPE, changeType: 'CREATE' }], undefined],
+      ] as const) {
+        logs.info.length = 0;
+        const { engine } = build({
+          nested: false,
+          changes: new Map(),
+          resources: { Q: record('Q') },
+          journal: {
+            segments: [
+              {
+                reason,
+                operations: operations as never,
+                ...(failed && { failedOperations: failed as never }),
+              },
+            ],
+          },
+          stackName: value,
+        });
+        await engine.deploy(value, templateOf(['Q']));
+        const note = logs.info.find((l) => l.includes('A previous deploy of')) ?? '';
+        expect(note, `${kind} ${label}`).toContain(`A previous deploy of ${JSON.stringify(value)} failed`);
+        expect(note, `${kind} ${label}`).not.toContain(`'${value}'`);
+        expect(note.split('\n').at(-1), `${kind} ${label}`).toMatch(/^Revert it with: cdkd rollback '<stack>'/);
+        notes.push([`${kind} ${label}`, value, note]);
+      }
+    }
+    withPasteDir((dir) => {
+      // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+      // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
+      for (const [label, value, note] of notes) expectNothingRunsButTheDisplay(note, dir, value, label);
+    });
+  }, 120_000);
+
+  it('the clean automatic rollback note holes a payload stack name, and no pasted span runs (go-to-k/cdkd#4205)', async () => {
+    // `resource's` on the line above its `Revert it with:` command flipped the
+    // quote parity of a shell-quoted name pasted as one block. The note does
+    // not display the name, so nothing may run at all.
+    const notes: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      logs.info.length = 0;
+      const { engine } = build({
+        nested: false,
+        changes: new Map([['B', createChange('B')]]),
+        resources: {},
+        failCreateOf: 'B',
+        stackName: value,
+      });
+      await expect(engine.deploy(value, templateOf(['B']))).rejects.toThrow();
+      const note = logs.info.find((l) => l.includes('restored the pre-deploy state'));
+      expect(note, label).toBeDefined();
+      expect(note!.split('\n').at(-1), label).toBe("Revert it with: cdkd rollback '<stack>' --revert-failed");
+      notes.push([label, note!]);
+    }
+    withPasteDir((dir) => {
+      for (const [label, note] of notes) expect(spansThatRun(note, dir), label).toEqual([]);
+    });
+  }, 120_000);
 
   it('CONTROL: a failure segment beside it still prints the note', async () => {
     const { engine } = build({

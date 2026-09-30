@@ -5,14 +5,11 @@ import {
   buildForceUnlockCommand,
   buildLockContentionMessage,
   forceQuitRecoveryClause,
+  recoveryCommandFlags,
 } from '../../../src/state/lock-contention-message.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
-import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import {
   PASTE_PAYLOADS,
-  expectNoCommandBesideDisplay,
-  itUnderZsh,
-  expectZshRunsTheDisplay,
   expectOnlyDisplayResidual,
   spansThatRun,
   withPasteDir,
@@ -67,23 +64,64 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
     expect(cmd).toBe('cdkd force-unlock MyStack --stack-region us-east-1');
   });
 
-  it('quotes a value that would otherwise truncate when pasted', () => {
-    const cmd = buildForceUnlockCommand('MyStack', 'us-east-1', { profile: 'my prod' });
-    expect(cmd).toContain(`--profile 'my prod'`);
+  it('emits NO command for a recovery value that is not inert with its quotes stripped (go-to-k/cdkd#4205)', () => {
+    // `recoveryCommandFlags`' own gate: the stack and region are clean, so
+    // only the flag a profile, bucket or prefix builds can suppress here.
+    // Quoted, `--profile 'my prod'` pasted fine only while the quote parity
+    // before the command was even.
+    for (const field of ['profile', 'stateBucket', 'statePrefix'] as const) {
+      for (const value of ['my prod', "it's", 'x$(id)', 'a;b']) {
+        expect(
+          buildForceUnlockCommand('MyStack', 'us-east-1', { [field]: value }),
+          `${field}: ${value}`
+        ).toBe('');
+      }
+    }
+    // The flag itself becomes the hole, and `exact` says so.
+    expect(recoveryCommandFlags({ profile: 'my prod', stateBucket: 'b' })).toEqual({
+      flags: [`--profile '<profile>'`, '--state-bucket b'],
+      exact: false,
+    });
+    // An inert value is still named: a medial `~` shell-quoted, and an empty
+    // prefix as `''`.
+    expect(recoveryCommandFlags({ profile: 'a~b', statePrefix: '' })).toEqual({
+      flags: [`--profile 'a~b'`, `--state-prefix ''`],
+      exact: true,
+    });
   });
 
-  it('quotes any tilde — the class deliberately does not carry it', () => {
+  it('runs nothing when the message is pasted with a payload recovery value (go-to-k/cdkd#4205)', async () => {
+    const messages: Array<[string, string]> = [];
+    for (const field of ['profile', 'stateBucket', 'statePrefix'] as const) {
+      for (const { label, value } of PASTE_PAYLOADS) {
+        const message = await buildLockContentionMessage({
+          lockManager: lockManagerReturning(null),
+          stackName: 'MyStack',
+          region: 'us-east-1',
+          recovery: { [field]: value },
+        });
+        expect(message, `${field}: ${label}`).not.toContain('cdkd force-unlock');
+        expect(message, `${field}: ${label}`).toContain('No recovery command can be shown');
+        messages.push([`${field}: ${label}`, message]);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+    });
+  }, 120_000);
+
+  it('quotes a medial tilde and withholds a leading one — the bare class deliberately does not carry it', () => {
     // `~` was briefly in the safe class for `Parent~Child` (every nested-stack
     // child name). It came back OUT: that widening was only needed while the
     // command was wrapped in `'...'`, and with the wrapper gone a quoted
     // `'Root~Child'` pastes fine — so the class bought nothing while exposing
-    // tilde expansion on a value an S3 key can carry.
+    // tilde expansion on a value an S3 key can carry. A LEADING `~` is the
+    // expanding position, so that name is not inert unquoted and suppresses
+    // the command (go-to-k/cdkd#4205).
     expect(buildForceUnlockCommand('Root~Child', 'us-east-1')).toContain(
       `cdkd force-unlock 'Root~Child'`
     );
-    expect(buildForceUnlockCommand('~Child', 'us-east-1')).toContain(
-      `cdkd force-unlock '~Child'`
-    );
+    expect(buildForceUnlockCommand('~Child', 'us-east-1')).toBe('');
   });
 
   it('emits NO command when sanitization ALTERED the value', () => {
@@ -134,17 +172,16 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
     expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: ' ' })).toBe('');
   });
 
-  it('leaves an EXACT profile alone, including one needing quotes', () => {
+  it('leaves an EXACT, inert profile alone, including one needing quotes', () => {
     // The other direction, without which the case above is satisfied by a
-    // function that suppresses everything. A space is not a control character:
-    // it survives `displaySafe` unchanged, so the value is EXACT and quoting
-    // (not suppression) is the right answer -- the behaviour the pre-existing
-    // `'my prod'` case pins, restated here as the paired floor.
+    // function that suppresses everything. A space is EXACT but not inert
+    // unquoted, so it suppresses (go-to-k/cdkd#4205); a medial `~` is both,
+    // so it is named, quoted.
     expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: 'prod' })).toBe(
       'cdkd force-unlock MyStack --stack-region us-east-1 --profile prod'
     );
-    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: 'my prod' })).toContain(
-      `--profile 'my prod'`
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: 'my~prod' })).toContain(
+      `--profile 'my~prod'`
     );
     // And an EMPTY profile still means "none": it emits no fragment and must
     // NOT take the whole command down with it.
@@ -246,10 +283,10 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
   });
 
 
-  it('escapes an embedded single quote instead of ending the quoted run', () => {
-    const cmd = buildForceUnlockCommand('MyStack', 'us-east-1', { statePrefix: `it's` });
-    // The POSIX close-escape-reopen form; pasting this yields the literal value.
-    expect(cmd).toContain(`--state-prefix 'it'\\''s'`);
+  it('suppresses an embedded single quote rather than quoting it (go-to-k/cdkd#4205)', () => {
+    // The POSIX close-escape-reopen form pasted as the literal value only
+    // while the parity before it was even; the value is not inert bare.
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { statePrefix: `it's` })).toBe('');
   });
 });
 
@@ -334,8 +371,9 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
     // unrenderable.
     for (const text of [message, UNREPRODUCIBLE_LOCK_CLAUSE]) {
       expect(text).toContain(
-        "(changed by sanitizing, unrenderable, empty, too long, or beginning with '-', " +
-          'which cdkd refuses rather than risk it parsing as an option)'
+        "(changed by sanitizing, unrenderable, empty, too long, beginning with '-', " +
+          'which cdkd refuses rather than risk it parsing as an option, or holding whitespace ' +
+          'or a character a shell treats specially)'
       );
     }
   });
@@ -357,83 +395,40 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
         stackName,
         region: 'us-east-1',
       });
-    // Every payload family renders EXACTLY (printable ASCII, no leading `-`),
-    // so each is NAMED. Its withheld twins are the two refusals that print the
-    // no-command sentence instead: option-shaped (a leading `-`) and over-cap.
-    const named: Array<{ value: string; message: string }> = [];
+    // Every payload family is shell-active, so the gate WITHHOLDS each
+    // (go-to-k/cdkd#4205), beside its two twins that are withheld for another
+    // reason: option-shaped (a leading `-`) and over-cap.
     const withheld: Array<{ value: string; message: string }> = [];
     for (const { value } of PASTE_PAYLOADS) {
-      named.push({ value, message: await messageFor(value) });
-      for (const twin of [`-${value}`, `${'q'.repeat(1152)}${value}`]) {
+      for (const twin of [value, `-${value}`, `${'q'.repeat(1152)}${value}`]) {
         withheld.push({ value: twin, message: await messageFor(twin) });
       }
     }
     withPasteDir((dir) => {
       expect(spansThatRun(plain, dir)).toEqual([]);
-      // A NAMED payload's block also carries the command, so it is an S1 row
-      // (go-to-k/cdkd#3950): under BASH the ` (us-east-1)` stops the head and
-      // nothing runs, pinned here; under zsh it does not, which the S1 case
-      // below pins.
-      for (const { value, message } of named) {
-        expect(spansThatRun(message, dir, { shells: ['bash'] }), value).toEqual([]);
-        expect(message, value).toContain(
-          `run: cdkd force-unlock ${shellQuote(value)} --stack-region us-east-1`
-        );
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = withheld.find((w) => w.value === value)!.message;
         // The head's boundary is pinned DIRECTLY, not only through the paste:
-        // a shell-quoted head (`'x; touch OWNED; #'`) is inert under every
-        // family here too, so the harness alone would let it back (proxy
-        // pass). `displayStackName` JSON-quotes a non-plain value.
+        // `displayStackName` JSON-quotes a non-plain value, never cdkd's own
+        // single quotes.
         expect(message, value).toContain(`for stack ${JSON.stringify(value)} (us-east-1)`);
         expect(message, value).not.toContain(`for stack '${value}'`);
       }
       // A WITHHELD payload's block carries no command, so under zsh its
-      // head's display may run and the residual criterion is what holds.
+      // head's display may run and the residual criterion is what holds. That
+      // is the go-to-k/cdkd#3950 S1 lock-head row's block rule, which every
+      // payload family now satisfies: the row printed a command beside the
+      // display only for a value the gate NAMED, and it names none of these.
       for (const { value, message } of withheld) {
         expect(message, value).not.toContain('cdkd force-unlock');
         expect(message, value).toContain('No recovery command can be shown');
+        // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+        // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
         expectOnlyDisplayResidual(message, dir, value);
       }
     });
   }, 120_000);
 
-  // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until this row's
-  // source fix lands, which flips both cases: a named payload's block displays
-  // the name (JSON) AND carries `run: cdkd force-unlock …`, and under zsh the
-  // ` (us-east-1)` no longer stops a pasted line, so the head's `$( )` runs.
-  const namedPayloadMessages = async (): Promise<Array<{ value: string; message: string }>> => {
-    const out: Array<{ value: string; message: string }> = [];
-    for (const { value } of PASTE_PAYLOADS) {
-      const message = await buildLockContentionMessage({
-        lockManager: lockManagerReturning(null),
-        stackName: value,
-        region: 'us-east-1',
-      });
-      // The row itself, found before the rule is asked: a message that lost
-      // its command would satisfy the rule for the wrong reason.
-      expect(message, value).toContain(`run: cdkd force-unlock ${shellQuote(value)}`);
-      out.push({ value, message });
-    }
-    return out;
-  };
-
-  it('S1 lock head: a named payload block still carries a command (block rule)', async () => {
-    for (const { value, message } of await namedPayloadMessages()) {
-      expect(() => expectNoCommandBesideDisplay(message, value), value).toThrow(
-        /also carries a pasteable command/
-      );
-    }
-  });
-
-  itUnderZsh(
-    'S1 lock head: under zsh a named payload head runs its display (paste)',
-    async () => {
-      const messages = await namedPayloadMessages();
-      withPasteDir((dir) => {
-        for (const { value, message } of messages) expectZshRunsTheDisplay(message, dir, value);
-      });
-    },
-    120_000
-  );
 });
 
 describe('buildLockContentionMessage (issue #2170)', () => {
@@ -643,18 +638,17 @@ describe('buildLockContentionMessage (issue #2170)', () => {
 
   it('stays pastable when a value needs shell quoting', async () => {
     // The composition defect: with the command wrapped in `'...'`, a quoted
-    // value produced `run 'cdkd force-unlock 'Root~Child' ...'`. `~` is now in
-    // the safe class (every nested-stack child name carries one), and a value
-    // that genuinely needs quoting no longer sits inside an outer pair.
+    // value produced `run 'cdkd force-unlock 'Root~Child' ...'`. A value that
+    // genuinely needs quoting no longer sits inside an outer pair.
     const msg = await buildLockContentionMessage({
       lockManager: lockManagerReturning(null),
       stackName: 'Root~Child',
       region: 'us-east-1',
       subject: 'nested-stack child',
-      recovery: { profile: 'my prod' },
+      recovery: { profile: 'my~prod' },
     });
     expect(msg).toContain(`cdkd force-unlock 'Root~Child' --stack-region us-east-1`);
-    expect(msg).toContain(`--profile 'my prod'`);
+    expect(msg).toContain(`--profile 'my~prod'`);
     // No stray outer quote wrapping the whole command.
     expect(msg).not.toContain(`run 'cdkd force-unlock`);
   });
@@ -668,13 +662,14 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     expect(cmd.split('\n')).toHaveLength(1);
   });
 
-  it('QUOTES a hostile region that carries no control character', async () => {
+  it('SUPPRESSES a hostile region that carries no control character, and quotes a region that needs it', async () => {
     // The sanitize half and the quote half must BOTH be fenced: the newline
-    // case above passes under sanitization alone, so dropping `shellQuote`
-    // around the region would leave it green. A `;`-bearing value has nothing
-    // to sanitize and is neutralized only by the quoting.
-    const cmd = buildForceUnlockCommand('MyStack', 'us-east-1; rm -rf /');
-    expect(cmd).toContain(`--stack-region 'us-east-1; rm -rf /'`);
+    // case above passes under sanitization alone. A `;`-bearing value has
+    // nothing to sanitize and is not inert bare, so it suppresses
+    // (go-to-k/cdkd#4205); a medial `~` is inert bare and still needs the
+    // quoting, so dropping `shellQuote` around the region reds here.
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1; rm -rf /')).toBe('');
+    expect(buildForceUnlockCommand('MyStack', 'us-east~1')).toContain(`--stack-region 'us-east~1'`);
   });
 
   it('sanitizes the PROSE head too, not only the command', async () => {
@@ -810,9 +805,12 @@ describe('buildLockContentionMessage (issue #2170)', () => {
   });
 
   it('shell-quotes the STACK NAME and the BUCKET, not only the profile', async () => {
-    const cmd = buildForceUnlockCommand('my stack', 'us-east-1', { stateBucket: 'my bucket' });
-    expect(cmd).toContain(`cdkd force-unlock 'my stack'`);
-    expect(cmd).toContain(`--state-bucket 'my bucket'`);
+    const cmd = buildForceUnlockCommand('my~stack', 'us-east-1', { stateBucket: 'my~bucket' });
+    expect(cmd).toContain(`cdkd force-unlock 'my~stack'`);
+    expect(cmd).toContain(`--state-bucket 'my~bucket'`);
+    // A space in either is not inert unquoted, so it suppresses (go-to-k/cdkd#4205).
+    expect(buildForceUnlockCommand('my stack', 'us-east-1')).toBe('');
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { stateBucket: 'my bucket' })).toBe('');
   });
 });
 
@@ -855,6 +853,6 @@ describe('forceQuitRecoveryClause', () => {
     // It is spliced lowercase into `lock-manager.ts`'s sentence and used
     // capitalised here, so both spellings have to stay grammatical.
     expect(UNREPRODUCIBLE_LOCK_CLAUSE.startsWith('Inspect the lock object directly:')).toBe(true);
-    expect(UNREPRODUCIBLE_LOCK_CLAUSE.endsWith('could address a different lock.')).toBe(true);
+    expect(UNREPRODUCIBLE_LOCK_CLAUSE.endsWith('could address a different lock or run part of it as shell.')).toBe(true);
   });
 });

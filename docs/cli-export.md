@@ -425,7 +425,9 @@ configuration, and a `SecureString` is never read decrypted.
 
 On a per-stack failure, cdkd state is preserved for the failed stack and every
 stack not yet imported, and the error names which stacks moved and which
-remain. Re-running `cdkd export` does not resume: it refuses the whole tree
+remain; a cdkd or CloudFormation stack name that is not a plain identifier
+inert on a command line prints in those lists as "(not shown: it is not a
+plain identifier)". Re-running `cdkd export` does not resume: it refuses the whole tree
 while any of its CloudFormation stacks exists, and every stack imported before
 the failure has one. When any step from a stack's IMPORT (Phase 1A) through its
 phase 2 fails, the error gives the by-hand recovery instead:

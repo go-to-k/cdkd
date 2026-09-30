@@ -77,6 +77,7 @@ import {
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { shellQuote } from '../../../src/utils/pasteable-command.js';
 
 /**
  * The four payload families. `;` alone is not the class: `$( )` and backticks
@@ -180,6 +181,18 @@ let stubBin: string | undefined;
  * just the whole message, because under the harness's `bash -c` a syntax error
  * on a line OUTSIDE the selection stops the whole-message span before it
  * reaches the straddle (an interactive bash drops that line and goes on).
+ *
+ * A run may also START mid-line, at any sentence or clause start of its first
+ * line (the same breaks a single line is split at), and run through each later
+ * line end (go-to-k/cdkd#4205 review, M1). An operator selects from a sentence
+ * through the command below it, and a first line whose opening words are a
+ * syntax error on their own (`SkippedDelete (phys-…)`, `State for 'S' (r)`)
+ * would otherwise stop every run starting at the line start before it reached
+ * the quote that line's later sentence opens.
+ *
+ * And every prefix of the message that ends at a line end is pasted once more
+ * behind {@link OPERATOR_FLIP}: text ABOVE the message that holds an unpaired
+ * `'` (go-to-k/cdkd#4205).
  */
 export function segmentsOf(message: string): Set<string> {
   const out = new Set<string>();
@@ -191,12 +204,60 @@ export function segmentsOf(message: string): Set<string> {
       for (const clause of sentence.split(/: | — | -- /)) out.add(clause);
     }
   }
+  // The FLIP (go-to-k/cdkd#4205): a selection starting in terminal output
+  // ABOVE the message, which holds an unpaired `'`. See {@link OPERATOR_FLIP}
+  // for why exactly these spans.
+  for (let last = 0; last < lines.length; last++) {
+    out.add(`${OPERATOR_FLIP}\n${lines.slice(0, last + 1).join('\n')}`);
+  }
   for (let first = 0; first < lines.length; first++) {
+    const starts = [0, ...lineStarts(lines[first]!)];
     for (let last = first + 1; last < lines.length; last++) {
-      out.add(lines.slice(first, last + 1).join('\n'));
+      const rest = lines.slice(first + 1, last + 1).join('\n');
+      for (const at of starts) out.add(`${lines[first]!.slice(at)}\n${rest}`);
     }
   }
   return out;
+}
+
+/**
+ * A line of terminal output ABOVE a message, holding one unpaired `'`
+ * (go-to-k/cdkd#4205): the threat that issue is about is text the operator
+ * pastes with the message, which cdkd cannot see, flipping the quote parity
+ * before the message's first character. {@link segmentsOf} prepends it to
+ * every prefix of the message that ends at a line end — `line 1`,
+ * `lines 1-2`, ... the whole message — and to nothing else, because that is
+ * the whole set of selections that START above the message: such a selection
+ * is contiguous, so it always holds the message from its first character, and
+ * it ends where the operator stops (a command sits at a line end). A selection
+ * starting INSIDE the message cannot hold text from above, so the in-message
+ * spans stay unflipped. One unpaired `'` is the general case for "odd parity
+ * at the message's start": any odd count above is equivalent. A `"` above is
+ * a different state (double-quoted, where `$( )` runs) and is not modelled
+ * here. Pasting it is cheap: one span per line of the message.
+ *
+ * Two limits, stated so a green case is not over-read. Under a SINGLE flip
+ * only the separator family gives a command-side red: a shell-quoted value
+ * holding its own `'` (the embedded-quote family) re-balances the parity, and
+ * `$( )` / backtick values are held inside the operator's quote until a later
+ * `'` closes it, so a site that must see those families inverted needs a
+ * targeted selection (the delete-skip case pastes from `CHILD's`). And text
+ * selected BELOW the message is not modelled.
+ */
+export const OPERATOR_FLIP = "the operator's text above";
+
+/**
+ * Where a selection can start inside `line`, past its first character: after a
+ * sentence break (`[.!?]` then whitespace) or a clause break (`: `, ` — `,
+ * ` -- `), the splits {@link segmentsOf} cuts a single line at.
+ */
+export function lineStarts(line: string): number[] {
+  const at = new Set<number>();
+  for (const m of line.matchAll(/(?<=[.!?])\s+|: | — | -- /g)) {
+    const end = m.index + m[0].length;
+    if (end > 0 && end < line.length) at.add(end);
+  }
+  return [...at].sort((a, b) => a - b);
 }
 
 /** A shell the harness drives. */
@@ -225,8 +286,12 @@ export function filesTouchedBy(span: string, dir: string, options: PasteRunOptio
   return spanRun(span, dir, options).touched;
 }
 
-/** What one span did across the shells: the files it touched, and whether a stubbed verb ran. */
-function spanRun(
+/**
+ * What one span did across the shells: the files it touched, and whether a
+ * stubbed verb ran. Exported for a site pinning a CLASSIFIED residual exactly
+ * (which span, which files, no verb), never to exempt one.
+ */
+export function spanRun(
   span: string,
   dir: string,
   options: PasteRunOptions
@@ -326,7 +391,7 @@ export function expectZshRunsTheDisplay(message: string, dir: string, value: str
       // Judged against its lines, and not counted as the display running:
       // the display's own line is a span of its own (go-to-k/cdkd#4133).
       if (run.touched.length > 0 || run.verbRan) {
-        expectNoMoreThanItsLines(span, dir, { shells: ['zsh'] }, lineDoes);
+        expectNoMoreThanItsLines(flipJudged(span, value), dir, { shells: ['zsh'] }, lineDoes);
       }
       continue;
     }
@@ -390,6 +455,101 @@ function expectNoMoreThanItsLines(
   ).toEqual({ touched: [], verbRan: false });
 }
 
+/**
+ * A span as the display-residual helpers judge it: unchanged, unless it is an
+ * {@link OPERATOR_FLIP} span, where every paired JSON span that IS a display
+ * of `value` (exactly, {@link exactDisplaysOf}) is replaced by an inert
+ * `"DISPLAY"` first. Under the
+ * flip, a JSON-bounded display holding a `'` closes the operator's quote and
+ * its `$( )` runs bare: that is the display residual go-to-k/cdkd#3950 tracks
+ * (`displayIdent` keeps a `'` raw inside its boundary; its fix is tracked by
+ * go-to-k/cdkd#4229), CLASSIFIED here rather than dropped. It is the display, and only the display, that is set aside:
+ * a COMMAND that names the value (the class go-to-k/cdkd#4205 closes) still
+ * runs with the display gone, and the lines judgement then refuses it.
+ */
+function flipJudged(span: string, value: string, extra: readonly string[] = []): string {
+  if (!span.startsWith(`${OPERATOR_FLIP}\n`)) return span;
+  const displays = new Set([...exactDisplaysOf(value), ...checkedDisplays(value, extra)]);
+  return span.replace(/"(?:[^"\\]|\\.)*"/g, (s) => (displays.has(s) ? '"DISPLAY"' : s));
+}
+
+/**
+ * The EXACT spelling a display of `value` takes by default: its JSON string,
+ * which is what `displayIdent` / `displayStackName` render for every payload
+ * the harness drives (none is cut). Only a paired span EQUAL to it (or to a
+ * site's own {@link checkedDisplays}) is set aside: matching on "the decoded
+ * span contains the value" let a stray `"` earlier on the line re-pair the
+ * quotes around a COMMAND naming the value and set that aside too (the
+ * go-to-k/cdkd#4205 review's S-m5, measured running under both shells).
+ */
+function exactDisplaysOf(value: string): Set<string> {
+  return new Set([JSON.stringify(value)]);
+}
+
+/**
+ * A site's own `displays` entries, each checked before it is trusted, so a
+ * broad entry cannot set a command aside: it must be a JSON string that decodes
+ * to text holding `value` (a display OF the value), and it must not hold
+ * `shellQuote(value)` (the spelling a command names it by), nor a quote or a
+ * `cdkd` / `aws` verb outside the value (a command quoting a larger word that
+ * holds it, e.g. `--resource 'L=<v>'`). Throws on a bad
+ * entry rather than skipping it: a set-aside that silently widens is the
+ * fail-open this guards.
+ */
+export function checkedDisplays(value: string, displays: readonly string[]): string[] {
+  for (const entry of displays) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(entry);
+    } catch {
+      decoded = undefined;
+    }
+    if (typeof decoded !== 'string' || !decoded.includes(value)) {
+      throw new Error(`displays entry is not a JSON display of the value ${value}: ${entry}`);
+    }
+    // A command can name the value on its own (`'<v>'`) or inside a larger
+    // quoted word (`--resource 'L=<v>'`), so the check is on what the entry
+    // holds OUTSIDE the value: a quote or a `cdkd` / `aws` verb there means the
+    // pair spans a command. A plain value is its own shell-quoted spelling, so
+    // the whole-spelling test applies only to a value that needs quoting.
+    const outside = decoded.split(value).join('');
+    if (
+      (shellQuote(value) !== value && entry.includes(shellQuote(value))) ||
+      /['`]|\b(?:cdkd|aws)\s/.test(outside)
+    ) {
+      throw new Error(`displays entry holds a command spelling of the value ${value}: ${entry}`);
+    }
+  }
+  return [...displays];
+}
+
+/**
+ * {@link spansThatRun} for a site that DISPLAYS `value` in a JSON boundary and
+ * asserts nothing else runs: each {@link OPERATOR_FLIP} span is pasted with
+ * that display set aside ({@link flipJudged}), every other span as it is. The
+ * set-aside is the classified go-to-k/cdkd#3950 residual (fix tracked by
+ * go-to-k/cdkd#4229), named at each caller;
+ * a command naming the value still reds.
+ */
+export function spansThatRunBesideTheDisplay(
+  message: string,
+  dir: string,
+  value: string,
+  options: PasteRunOptions = {},
+  /**
+   * The site's OWN exact display spellings when the value is shown inside a
+   * larger JSON string (`"cdkd/<value>/us-east-1/state.json"`, `"<value>|b"`),
+   * each the full paired span including its quotes.
+   */
+  displays: readonly string[] = []
+): string[] {
+  const out: string[] = [];
+  for (const span of segmentsOf(message)) {
+    if (filesTouchedBy(flipJudged(span, value, displays), dir, options).length > 0) out.push(span);
+  }
+  return out;
+}
+
 /** Every span of `message` ({@link segmentsOf}) that touched a file. */
 export function spansThatRun(message: string, dir: string, options: PasteRunOptions = {}): string[] {
   const out: string[] = [];
@@ -409,6 +569,12 @@ export interface ResidualOptions {
    * the `go-to-k/cdkd#3950` reference; remove it as the row's fix lands.
    */
   readonly unfixedS1Row?: string;
+  /**
+   * The site's own exact display spellings when the value is shown inside a
+   * larger JSON string, set aside under the OPERATOR_FLIP as the value's own
+   * display is (see {@link spansThatRunBesideTheDisplay}).
+   */
+  readonly displays?: readonly string[];
 }
 
 /**
@@ -423,7 +589,7 @@ export interface ResidualOptions {
  * double quotes do not stop `$( )` or a backtick, so a prose span that parses
  * can still run. His criterion is therefore per BLOCK — a block carrying an
  * untrusted value carries no pasteable command, and what it displays is
- * go-to-k/cdkd#3232's class. This helper pins both halves. The RUNTIME half,
+ * the display residual go-to-k/cdkd#3950 tracks. This helper pins both halves. The RUNTIME half,
  * through {@link expectRuntimeResidual}: no span
  * that runs also runs a stubbed `cdkd` / `aws` (its marker, not a verb token
  * in the text: `Could not … cdkd force-unlock …` runs `Could`, with `cdkd` as
@@ -461,7 +627,37 @@ export function expectOnlyDisplayResidual(
   } else {
     expectNoCommandBesideDisplay(message, value);
   }
-  return expectRuntimeResidual(message, dir, value);
+  return expectRuntimeResidual(message, dir, value, options.displays);
+}
+
+/**
+ * The criterion for a message whose COMMAND withholds a payload value that its
+ * PROSE still displays through `displayIdent`'s JSON boundary
+ * (go-to-k/cdkd#4205's sites). Of {@link PASTE_PAYLOADS}, only the SEPARATOR
+ * family holds no `$( )` or backtick and is inert inside double quotes, so
+ * nothing may run at all for it; the other three (substitution, backtick, and
+ * the embedded-quote family, which carries a `$( )` too) run there and are held
+ * to {@link expectOnlyDisplayResidual}, which refuses any span where the value
+ * runs OUTSIDE a JSON boundary, the shape a shell-quoted value in a command
+ * takes once the parity before it flips. `label` prefixes a failure from
+ * either arm.
+ */
+export function expectNothingRunsButTheDisplay(
+  message: string,
+  dir: string,
+  value: string,
+  label = value
+): void {
+  if (/\$\(|`/.test(value)) {
+    try {
+      expectOnlyDisplayResidual(message, dir, value);
+    } catch (error) {
+      if (error instanceof Error) error.message = `${label}: ${error.message}`;
+      throw error;
+    }
+  } else {
+    expect(spansThatRun(message, dir), label).toEqual([]);
+  }
 }
 
 /**
@@ -471,7 +667,12 @@ export function expectOnlyDisplayResidual(
  * {@link expectOnlyDisplayResidual}, so the options a site can pass hold no
  * switch that skips the block rule.
  */
-export function expectRuntimeResidual(message: string, dir: string, value: string): string[] {
+export function expectRuntimeResidual(
+  message: string,
+  dir: string,
+  value: string,
+  displays: readonly string[] = []
+): string[] {
   const ran: string[] = [];
   const lineDoesByShell = new Map<PasteShell, Map<string, boolean>>();
   for (const span of segmentsOf(message)) {
@@ -487,7 +688,7 @@ export function expectRuntimeResidual(message: string, dir: string, value: strin
           cache = new Map<string, boolean>();
           lineDoesByShell.set(shell, cache);
         }
-        expectNoMoreThanItsLines(span, dir, one, cache);
+        expectNoMoreThanItsLines(flipJudged(span, value, displays), dir, one, cache);
       }
       if (run.touched.length > 0) ran.push(span);
       continue;

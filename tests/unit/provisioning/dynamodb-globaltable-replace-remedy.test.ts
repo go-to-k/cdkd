@@ -53,6 +53,8 @@ import {
   localReplicaEntry,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
+import { UNNAMEABLE_ID_CLAUSE } from '../../../src/provisioning/replacement-protection-advice.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const TYPE = 'AWS::DynamoDB::GlobalTable';
 const TABLE = 'MyGlobalTable';
@@ -61,11 +63,12 @@ const KEY_SCHEMA = [{ AttributeName: 'pk', KeyType: 'HASH' }];
 
 async function refusal(
   properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>
+  previousProperties: Record<string, unknown>,
+  physicalId: string = TABLE
 ): Promise<string> {
   const provider = new DynamoDBGlobalTableProvider();
   try {
-    await provider.update('Table', TABLE, TYPE, properties, previousProperties);
+    await provider.update('Table', physicalId, TYPE, properties, previousProperties);
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -115,6 +118,25 @@ describe('DynamoDB GlobalTable immutable-property refusals (sites 5-7)', () => {
       expect(message).toContain(`--table-name ${TABLE} --no-deletion-protection-enabled`);
       expect(mockSend).not.toHaveBeenCalled();
     });
+
+    it(`${label}: routes a planted table name through the gate (go-to-k/cdkd#4205)`, async () => {
+      const messages: Array<[string, string]> = [];
+      for (const { label: payload, value } of PASTE_PAYLOADS) {
+        const message = await refusal(
+          next,
+          { ...prev, Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] },
+          `${TABLE}${value}`
+        );
+        expect(message, payload).toContain(UNNAMEABLE_ID_CLAUSE);
+        expect(message, payload).not.toContain('update-table');
+        messages.push([payload, message]);
+      }
+      withPasteDir((dir) => {
+        for (const [payload, message] of messages) {
+          expect(spansThatRun(message, dir), payload).toEqual([]);
+        }
+      });
+    }, 120_000);
 
     it(`${label}: keeps the short advice when the local replica is unprotected`, async () => {
       const message = await refusal(next, {

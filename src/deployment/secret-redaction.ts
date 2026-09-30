@@ -1034,8 +1034,9 @@ function carryMaskOnlyMarks(from: RecordedSecretValues, to: RecordedSecretValues
  * Keyed by the pass's map like {@link freshNoEchoValuesOf}.
  *
  * The one writer is the resolver, for the value of a `NoEcho: true` template
- * PARAMETER at the point a `Ref` (or an `Fn::Sub` variable) serves it, and for
- * the `Fn::Base64` encoding of text that embeds one.
+ * PARAMETER at the point a `Ref` (or an `Fn::Sub` variable) serves it, for
+ * the `Fn::Base64` encoding of text that embeds one, and for each `Fn::Split`
+ * piece's share of one ({@link recordLogOnlySplitFragments}).
  *
  * WHY A SIDE SET AND NOT THE MAP. The map's VALUE is what a plaintext is
  * rewritten to on the way into state: an expression, or {@link SECRET_MASK}
@@ -1094,7 +1095,9 @@ export function carryLogOnlyValues(from: RecordedSecretValues, to: RecordedSecre
  * {@link MIN_NEEDLE_LENGTH}. The nested-stack child's twin of the parent's
  * `Ref` recording: a child resource consuming a parameter the parent built
  * from a `NoEcho` value gets that value as a needle in its OWN bag, which is
- * the bag its provider's masker and its error / event masking read.
+ * the bag its provider's masker and its error / event masking read. A LIST
+ * value also carries a needle its elements were split out of, with each
+ * element's fragment ({@link carryListElementFragments}).
  */
 export function carryLogOnlyValuesCarriedBy(
   from: RecordedSecretValues,
@@ -1113,6 +1116,128 @@ export function carryLogOnlyValuesCarriedBy(
       }
     }
   }
+  carryListElementFragments(values, to, value);
+}
+
+/**
+ * The list arm of {@link carryLogOnlyValuesCarriedBy} (go-to-k/cdkd#4049): a
+ * child `CommaDelimitedList` / `List<...>` parameter fed a parent's `NoEcho`
+ * STRING arrives split on `,` and space-trimmed, so no element equals or
+ * contains a needle holding a comma, and each element prints in the clear.
+ *
+ * The coercion is undone on BOTH sides rather than guessed at: the elements
+ * re-joined with `,`, and each needle split on `,`, trimmed and re-joined —
+ * and for a list of NUMBERS (`List<Number>`) each piece also passed through
+ * `Number()`, the coercion's own step, so `007,8080` meets `[7, 8080]`. A
+ * needle found in the original string is then found here too, since the trim
+ * removes only whitespace next to a comma (or at an edge), which both sides
+ * lose alike; a comma-free needle with edge whitespace is covered the same
+ * way. Each element's share of an occurrence is recorded as a LOG-ONLY needle,
+ * with the needle itself, under {@link MIN_NEEDLE_LENGTH}'s rule measured on
+ * the NORMALIZED needle: an occurrence counts whole at any length and embedded
+ * only at the floor, and a fragment under the floor masks a text only when it
+ * IS that text.
+ */
+function carryListElementFragments(
+  needles: ReadonlySet<string>,
+  to: RecordedSecretValues,
+  value: unknown
+): void {
+  if (!Array.isArray(value) || value.length === 0) return;
+  if (
+    !value.every((e) => typeof e === 'string' || typeof e === 'number' || typeof e === 'boolean')
+  ) {
+    return;
+  }
+  const numeric = value.every((element) => typeof element === 'number');
+  const joined = value.map((element) => String(element)).join(',');
+  // A snapshot: `to` can share `needles`' set (`shareLogOnlyValues`).
+  for (const needle of [...needles]) {
+    // A `List<Number>` element is EXACTLY `Number()` of its piece — `NaN` for
+    // a word, `0` for an empty piece — so every piece is normalized the same
+    // way. A needle is skipped only when EVERY piece is a word or empty: its
+    // elements are all `NaN` / `0`, which print nothing of it, while matching
+    // would carry it into any list of `NaN`s (a child fed some other word).
+    // Skipping a needle with even one numeric piece would print that element.
+    const pieces = needle.split(',').map((piece) => piece.trim());
+    if (numeric && pieces.every((piece) => piece === '' || Number.isNaN(Number(piece)))) continue;
+    const normalized = pieces.map((piece) => (numeric ? String(Number(piece)) : piece)).join(',');
+    const fragments = fragmentsOfNeedleIn(joined, ',', normalized);
+    if (fragments.size === 0) continue;
+    recordLogOnlyValue(to, needle);
+    for (const fragment of fragments) recordLogOnlyValue(to, fragment);
+  }
+}
+
+/**
+ * Record, as LOG-ONLY needles of `to`, each piece of `text` split by
+ * `delimiter` that holds part of a log-only needle of one of `from`
+ * (go-to-k/cdkd#4049): the resolver's `Fn::Split` over text carrying a
+ * `NoEcho` value. The needle itself was already masked; its pieces were not,
+ * so they printed on the `Resolved Fn::Split` line and wherever a consumer of
+ * a piece echoed it.
+ *
+ * A piece's share of an occurrence is what is recorded, never the whole piece:
+ * `pre-<v1>` of `pre-<v1>,<v2>` records `<v1>`, and the substring arm masks it
+ * inside the piece once it clears {@link MIN_NEEDLE_LENGTH}. An occurrence
+ * counts under the same rule as the masker's: the whole text at any length,
+ * an embedded one at the floor. A needle lying whole inside one piece records
+ * nothing new. LOG-ONLY, so nothing persisted moves; the one verdict reading
+ * log-only needles, `exportNameSecretExposure`, reads these too. An empty
+ * delimiter records nothing: it would make every character a needle, so
+ * `resolveSplit` masks that line's pieces whole instead.
+ */
+export function recordLogOnlySplitFragments(
+  from: ReadonlyArray<RecordedSecretValues | undefined>,
+  to: RecordedSecretValues,
+  text: string,
+  delimiter: string
+): void {
+  if (delimiter === '') return;
+  for (const bag of from) {
+    if (bag === undefined) continue;
+    // A snapshot: `to` is usually one of `from`, and a fragment recorded
+    // mid-walk must not be re-scanned as a needle of this call.
+    for (const needle of [...(logOnlyValuesOf.get(bag) ?? [])]) {
+      for (const fragment of fragmentsOfNeedleIn(text, delimiter, needle)) {
+        if (fragment !== needle) recordLogOnlyValue(to, fragment);
+      }
+    }
+  }
+}
+
+/**
+ * The parts of `needle`'s occurrences in `text` that fall in each piece of
+ * `text.split(delimiter)`. An occurrence is the whole text at any length, or
+ * an embedded one at or above {@link MIN_NEEDLE_LENGTH}. Empty when the
+ * needle does not occur.
+ */
+function fragmentsOfNeedleIn(text: string, delimiter: string, needle: string): Set<string> {
+  const fragments = new Set<string>();
+  if (needle === '') return fragments;
+  const starts: number[] = [];
+  if (text === needle) starts.push(0);
+  else if (needle.length >= MIN_NEEDLE_LENGTH) {
+    for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) {
+      starts.push(at);
+    }
+  }
+  if (starts.length === 0) return fragments;
+  const spans: Array<[number, number]> = [];
+  let offset = 0;
+  for (const piece of text.split(delimiter)) {
+    spans.push([offset, offset + piece.length]);
+    offset += piece.length + delimiter.length;
+  }
+  for (const start of starts) {
+    const end = start + needle.length;
+    for (const [pieceStart, pieceEnd] of spans) {
+      const from = Math.max(pieceStart, start);
+      const to = Math.min(pieceEnd, end);
+      if (from < to) fragments.add(text.slice(from, to));
+    }
+  }
+  return fragments;
 }
 
 /**
@@ -1159,12 +1284,33 @@ export function shareLogOnlyValues(view: RecordedSecretValues, target: RecordedS
  * `recordNoEchoParameterValue` calls it when a `Ref` serves the parameter, and
  * the deploy's diff log masker calls it up front, before any `Ref` resolves
  * (go-to-k/cdkd#4049).
+ *
+ * `splitDelimiters` ({@link literalSplitDelimitersOf} over the template) adds
+ * the pieces of each string spelling split by each delimiter, for an UP-FRONT
+ * caller: a piece is otherwise recorded only when `Fn::Split` runs, so a
+ * property that STOPPED reading one would print the old piece from state.
+ * Only those callers pass it, into a bag that only PRINTS: never the
+ * resolver's pass bag, which feeds the export-name verdict, and never a corpus
+ * `cdkd diff` hands a nested child, whose carry would move a piece into the
+ * child's Outputs-pass bag and its export-name preview.
  */
-export function recordLogOnlyParameterValue(secrets: RecordedSecretValues, value: unknown): void {
+export function recordLogOnlyParameterValue(
+  secrets: RecordedSecretValues,
+  value: unknown,
+  splitDelimiters?: ReadonlySet<string>
+): void {
   const record = (leaf: unknown): void => {
-    if (typeof leaf === 'string') recordLogOnlyValue(secrets, leaf);
-    else if (typeof leaf === 'number' || typeof leaf === 'boolean') {
-      recordLogOnlyValue(secrets, String(leaf));
+    const spelled =
+      typeof leaf === 'string'
+        ? leaf
+        : typeof leaf === 'number' || typeof leaf === 'boolean'
+          ? String(leaf)
+          : undefined;
+    if (spelled === undefined) return;
+    recordLogOnlyValue(secrets, spelled);
+    for (const delimiter of splitDelimiters ?? []) {
+      if (delimiter === '' || !spelled.includes(delimiter)) continue;
+      for (const piece of spelled.split(delimiter)) recordLogOnlyValue(secrets, piece);
     }
   };
   if (Array.isArray(value)) {
@@ -1173,6 +1319,70 @@ export function recordLogOnlyParameterValue(secrets: RecordedSecretValues, value
     return;
   }
   record(value);
+}
+
+/**
+ * Every LITERAL delimiter an `Fn::Split` in `template` splits a value READING
+ * one of `parameters` by (go-to-k/cdkd#4049), for
+ * {@link recordLogOnlyParameterValue}'s up-front callers. READING is a `Ref`
+ * to the parameter, or any string naming it as `${Name}` (an `Fn::Sub`; a
+ * match elsewhere only over-masks), anywhere
+ * under the split's value operand: a delimiter no split applies to the value
+ * would only record unrelated words (`postgres` of a URL split by `:`). A
+ * delimiter that is itself an intrinsic is left out: it has no value before
+ * resolution, and the resolver records that split's pieces when it runs.
+ * Cycle-safe, and bounded by the template.
+ *
+ * BOUNDS of the up-front record it feeds: it sees only the splits of the
+ * template it is given (the NEW one), a CDK nested child declares no `NoEcho`
+ * and so records nothing up front, and a split reading the value INDIRECTLY
+ * (`Fn::GetAtt`, `Fn::FindInMap`) is not collected, its pieces left to the
+ * resolver, which records none when that resolution fails.
+ */
+export function literalSplitDelimitersOf(
+  template: unknown,
+  parameters: ReadonlySet<string>
+): Set<string> {
+  const delimiters = new Set<string>();
+  if (parameters.size === 0) return delimiters;
+  const reads = (node: unknown, seen: WalkedContainers): boolean => {
+    if (typeof node === 'string') {
+      for (const name of parameters) if (node.includes(`\${${name}}`)) return true;
+      return false;
+    }
+    if (node === null || typeof node !== 'object' || seen.has(node)) return false;
+    seen.add(node);
+    if (!Array.isArray(node)) {
+      const ref = (node as Record<string, unknown>)['Ref'];
+      if (typeof ref === 'string' && parameters.has(ref)) return true;
+    }
+    for (const child of Array.isArray(node) ? node : Object.values(node)) {
+      if (reads(child, seen)) return true;
+    }
+    return false;
+  };
+  const seen: WalkedContainers = new Set();
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child);
+      return;
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (
+        key === 'Fn::Split' &&
+        Array.isArray(child) &&
+        typeof child[0] === 'string' &&
+        reads(child[1], new Set())
+      ) {
+        delimiters.add(child[0]);
+      }
+      walk(child);
+    }
+  };
+  walk(template);
+  return delimiters;
 }
 
 /**
