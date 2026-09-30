@@ -443,8 +443,13 @@ export class NestedStackProvider implements ResourceProvider {
     // bare `TypeError` the guard exists to remove, and a `[]` / number /
     // boolean logged `0 resource(s)` before the runner got to say otherwise.
     // Same helper, so the child's refusal reads identically to a top-level
-    // one.
-    refuseMalformedResourcesForDestroy(childStateData.state, childStackName, childRegion);
+    // one — and the same account flags the child's runner is handed below, so
+    // its pasteable commands read the bucket this run read (go-to-k/cdkd#3909).
+    refuseMalformedResourcesForDestroy(childStateData.state, childStackName, childRegion, {
+      profile: ctx.destroyOptions?.profile,
+      stateBucket: ctx.stateBucket,
+      statePrefix: ctx.destroyOptions?.statePrefix,
+    });
     const resourceCount = Object.keys(childStateData.state.resources).length;
     this.logger.info(
       `Destroying nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`

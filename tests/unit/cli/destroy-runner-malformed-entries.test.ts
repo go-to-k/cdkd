@@ -179,8 +179,11 @@ describe('runDestroyForStack refuses an unreadable resource ROW (go-to-k/cdkd#32
     // back over the record; a destroy's saves are the snapshots of what is left.
     expect(err.message).not.toContain('saving over the record');
     // And it ends on the read command, so a line-select paste carries nothing
-    // after it.
-    expect(err.message).toMatch(/cdkd state show TestStack --stack-region us-east-1 --json$/);
+    // after it — qualified with the run's bucket, so it reads the record this
+    // run refused rather than the default bucket's (go-to-k/cdkd#3909).
+    expect(err.message).toMatch(
+      /cdkd state show TestStack --stack-region us-east-1 --json --state-bucket test-bucket$/
+    );
   });
 
   it('names EVERY unreadable row in one refusal', async () => {

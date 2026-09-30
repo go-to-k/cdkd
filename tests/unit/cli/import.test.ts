@@ -2526,6 +2526,25 @@ describe('cdkd import', () => {
       expect(options.expectedEtag).toBe('"existing-etag"');
     });
 
+    it('refuses an existing record whose resources map is unreadable, qualified with this run`s bucket', async () => {
+      // go-to-k/cdkd#3909: `refuseMalformedState` is handed the run's
+      // `lockRecovery`, so the inspect command it ends on reads the bucket this
+      // import read rather than the default profile's.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: { ...existingState(), resources: null as unknown as Record<string, never> },
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      await expect(
+        runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+      ).rejects.toThrow();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain("no readable 'resources' map");
+      expect(message).toContain('--json --state-bucket test-bucket');
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
     /**
      * A malformed `outputs` bag on the EXISTING record (issue
      * go-to-k/cdkd#3192). `cdkd import` does not rebuild the bag the way
@@ -2565,6 +2584,8 @@ describe('cdkd import', () => {
         // It names THIS container: borrowing the resources refusal would tell
         // the operator their stack would be re-created, over an intact map.
         expect(message).not.toContain(`'resources'`);
+        // Its inspect command reads THIS run's bucket (go-to-k/cdkd#3909).
+        expect(message).toContain('--json --state-bucket test-bucket');
         // The evidence survives. This assertion is the one that matters: the
         // throw alone would also be satisfied by a refusal raised AFTER the
         // save.
@@ -2612,6 +2633,8 @@ describe('cdkd import', () => {
         // lock and before any provider import, and its text says so. Without
         // these three the pre-save twin alone satisfies every assertion above.
         expect(message).toContain('Nothing was locked');
+        // Its inspect command reads THIS run's bucket (go-to-k/cdkd#3909).
+        expect(message).toContain('--json --state-bucket test-bucket');
         expect(mockAcquireLock, 'the lock was taken before the refusal').not.toHaveBeenCalled();
         expect(importFn, 'a provider import ran before the refusal').not.toHaveBeenCalled();
         expect(
@@ -2698,6 +2721,8 @@ describe('cdkd import', () => {
       const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(errored).toContain('MyBucket');
       expect(errored).toContain('their import did not succeed');
+      // Its inspect command reads THIS run's bucket (go-to-k/cdkd#3909).
+      expect(errored).toContain('--json --state-bucket test-bucket');
       // The pre-flight text is NOT the one raised here: the lock is held and
       // AWS was read by then, which that text denies.
       expect(errored).not.toContain('Nothing was locked');
@@ -2886,6 +2911,8 @@ describe('cdkd import', () => {
         expect(message).toContain(`'orphans'`);
         expect(message).not.toContain(`'resources'`);
         expect(message).not.toContain(`'outputs'`);
+        // Its inspect command reads THIS run's bucket (go-to-k/cdkd#3909).
+        expect(message).toContain('--json --state-bucket test-bucket');
         // The assertion that discriminates placement from verdict: a guard
         // below the save would also throw, with the record already rewritten.
         expect(
@@ -2944,6 +2971,8 @@ describe('cdkd import', () => {
           runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
         ).rejects.toThrow();
         const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // Its commands read THIS run's bucket (go-to-k/cdkd#3909).
+        expect(message).toContain('--state-bucket test-bucket');
         // The ROW text: the field here is a list, so the container refusal would
         // send the operator to rewrite a field that is already the right shape.
         expect(message).toContain('rollback-orphan record(s)');

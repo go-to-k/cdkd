@@ -213,10 +213,18 @@ that is exact yet unpasteable, which no truncation row reaches. Where they are
 the SAME, exactness is subsumed and nothing can red on dropping it: unfenceable
 rather than unfenced.
 
-That third message still ends on the template, on one line, because its EXACT
-arm offers no read; its withhold arm does. Not the shape to copy for a message
-offering both. And the per-line shape is a property of the MESSAGE, not of every
-surface printing it — two readers flatten it back (go-to-k/cdkd#3518).
+That third message's EXACT arm still ends on the template, on one line, because
+it offers no read. Not the shape to copy for a message offering both. And the
+per-line shape is a property of the MESSAGE, not of every surface printing it —
+two readers flatten it back (go-to-k/cdkd#3518).
+
+**Account flags go through `accountArgs`** (go-to-k/cdkd#3909): each value is a
+shared-gate argument with `plainIdent`, and a refused one is a hole the prose
+DESCRIBES, never echoes. With any flag present, a destroy withhold arm prints its
+listing as a `Find the exact name:` line, since a value cannot ride in prose
+quotes. `orphanRefusal` qualifies through it too, and its legacy `State bucket:`
+line holds the bucket to the same predicate; `recoveryCommandFlags` (exactness
+only) is `cdkd force-unlock`'s, which suppresses its whole command instead.
 
 ## Two exports here are not guards at all
 

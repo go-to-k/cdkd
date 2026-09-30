@@ -630,7 +630,11 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // to `saveState` for optimistic locking.
     const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
     const existingState = existingResult?.state ?? null;
-    if (existingState) refuseMalformedState(existingState, stackInfo.stackName, targetRegion);
+    // `lockRecovery` qualifies each refusal's pasteable commands with this
+    // run's account flags (go-to-k/cdkd#3909).
+    if (existingState) {
+      refuseMalformedState(existingState, stackInfo.stackName, targetRegion, lockRecovery);
+    }
     // The ROWS of that map, in SELECTIVE mode only, and only the rows this
     // merge does NOT re-import (go-to-k/cdkd#3202). A selective merge starts
     // from `{ ...existingState.resources }` and saves every row it did not
@@ -650,7 +654,8 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         existingState,
         [...overrides.keys()],
         stackInfo.stackName,
-        targetRegion
+        targetRegion,
+        lockRecovery
       );
     }
     // The `outputs` bag takes the same answer and needs its own call — the one
@@ -661,7 +666,9 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // record stops looking damaged; a string one is carried into a record the
     // exports index then republishes. AT THE LOAD, on the same line as the
     // resources refusal, so neither can drift below a read.
-    if (existingState) refuseMalformedOutputs(existingState, stackInfo.stackName, targetRegion);
+    if (existingState) {
+      refuseMalformedOutputs(existingState, stackInfo.stackName, targetRegion, lockRecovery);
+    }
     // The `orphans` CONTAINER, third call for the same reason (go-to-k/cdkd#3379).
     // This one does NOT launder: `orphansCarriedFrom` copies the stored value
     // verbatim into the save. What it would do instead is write a record every
@@ -677,8 +684,8 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // list, so either order refuses a non-list field through the container guard,
     // with the same text.
     if (existingState) {
-      refuseMalformedOrphans(existingState, stackInfo.stackName, targetRegion);
-      refuseMalformedOrphanRecords(existingState, stackInfo.stackName, targetRegion);
+      refuseMalformedOrphans(existingState, stackInfo.stackName, targetRegion, lockRecovery);
+      refuseMalformedOrphanRecords(existingState, stackInfo.stackName, targetRegion, lockRecovery);
     }
     const existingEtag = existingResult?.etag;
     const migrationPending = existingResult?.migrationPending ?? false;
@@ -870,7 +877,12 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         existingState,
         selectiveMode
       );
-      refuseMalformedResourceEntriesForImportSave(stackState, stackInfo.stackName, targetRegion);
+      refuseMalformedResourceEntriesForImportSave(
+        stackState,
+        stackInfo.stackName,
+        targetRegion,
+        lockRecovery
+      );
 
       if (options.dryRun) {
         logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
