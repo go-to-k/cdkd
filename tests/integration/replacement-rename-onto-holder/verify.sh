@@ -26,6 +26,12 @@
 #      lookup finds nothing, the replacement runs, QUEUE_A is deleted.
 #   B2/C2. The same pair for the SNS topic (`CreateTopic` returns an existing
 #      topic's ARN): TOPIC_HELD out of band refuses, TOPIC_FREE replaces.
+#   B3/C3. The same pair for the ECS cluster (`CreateCluster` returns an
+#      existing ACTIVE cluster): CLUSTER_HELD out of band refuses with
+#      CLUSTER_A still ACTIVE and recorded, CLUSTER_FREE replaces.
+#   C4. The deleted CLUSTER_A, still listed as INACTIVE, does not hold its
+#      name: a rename back onto it MUST SUCCEED with a fresh ACTIVE cluster.
+#      Before the lookup read INACTIVE as absent it refused.
 #   D. #3931 ARM. Create REPO_HELD out of band, then rename Repo onto it under
 #      `--recreate-via-cc-api Repo`. The deploy must FAIL with the create-first
 #      collision and delete nothing: REPO_A keeps its createdAt, REPO_HELD
@@ -34,10 +40,11 @@
 #   E. CONTROL for D: remove REPO_HELD, rename Repo onto REPO_FREE under the
 #      same flag. It must create REPO_FREE BEFORE deleting REPO_A (read off the
 #      log order), and record REPO_FREE on the Cloud Control route.
-#   F. Destroy; every queue, repository and the state file are gone.
+#   F. Destroy; every queue, topic, cluster, repository and the state file are
+#      gone.
 #
 # After a run killed with SIGKILL (no trap runs), clear by hand the queues,
-# topics and ECR repositories whose names start `cdkd-integ-rroh-` — the
+# topics, ECS clusters and ECR repositories whose names start `cdkd-integ-rroh-` — the
 # out-of-band holders carry a per-run suffix after `cdkd-integ-rroh-*-held-`,
 # so a later run's pre-flight check does not see them.
 #
@@ -97,11 +104,15 @@ QUEUE_FREE="cdkd-integ-rroh-queue-free"
 TOPIC_A="cdkd-integ-rroh-topic-a"
 TOPIC_HELD="cdkd-integ-rroh-topic-held-${RUN_SUFFIX}"
 TOPIC_FREE="cdkd-integ-rroh-topic-free"
+CLUSTER_A="cdkd-integ-rroh-cluster-a"
+CLUSTER_HELD="cdkd-integ-rroh-cluster-held-${RUN_SUFFIX}"
+CLUSTER_FREE="cdkd-integ-rroh-cluster-free"
 REPO_A="cdkd-integ-rroh-repo-a"
 REPO_HELD="cdkd-integ-rroh-repo-held-${RUN_SUFFIX}"
 REPO_FREE="cdkd-integ-rroh-repo-free"
 ALL_QUEUES="${QUEUE_A} ${QUEUE_HELD} ${QUEUE_FREE}"
 ALL_TOPICS="${TOPIC_A} ${TOPIC_HELD} ${TOPIC_FREE}"
+ALL_CLUSTERS="${CLUSTER_A} ${CLUSTER_HELD} ${CLUSTER_FREE}"
 ALL_REPOS="${REPO_A} ${REPO_HELD} ${REPO_FREE}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -138,6 +149,49 @@ queue_created_at() { # usage: queue_created_at <name>
 # The topic ARN a name maps to in this account and region (no API call).
 topic_arn() { # usage: topic_arn <name>
   printf 'arn:%s:sns:%s:%s:%s' "${PARTITION}" "${REGION}" "${ACCOUNT_ID}" "$1"
+}
+# A cluster's status, `None` when ECS knows no cluster of the name. Not a
+# gone-probe: `describe-clusters` answers a missing name (listed under
+# `failures`) and a deleted one (`INACTIVE`) with exit 0, so "gone" is one of
+# those two VALUES. Callers capture it as its own statement, never inside
+# `[ ]`, so a failed read is reported as unreadable, not as a wrong status.
+cluster_status() { # usage: cluster_status <name>
+  aws ecs describe-clusters --clusters "$1" --region "${REGION}" \
+    --query 'clusters[0].status' --output text
+}
+# Fails the run naming the cluster unless its status is <want>; an unreadable
+# status is reported as unreadable, never as a wrong status.
+assert_cluster_status() { # usage: assert_cluster_status <name> <want> <description>
+  local st
+  st="$(cluster_status "$1")" || { echo "[verify] FAIL: could not read cluster $1's status" >&2; exit 1; }
+  if [ "${st}" != "$2" ]; then
+    echo "[verify] FAIL: $3 (cluster $1 is ${st})" >&2
+    exit 1
+  fi
+}
+cluster_is_gone() { # usage: cluster_is_gone <name> — 0 when missing or INACTIVE
+  local st
+  st="$(cluster_status "$1")" || return 2
+  [ "${st}" = "None" ] || [ "${st}" = "INACTIVE" ]
+}
+# A deleted cluster passes through DEPROVISIONING, so "gone" is polled.
+assert_cluster_gone() { # usage: assert_cluster_gone <name> <description>
+  local deadline rc
+  deadline=$(( $(date +%s) + 180 ))
+  while :; do
+    rc=0
+    cluster_is_gone "$1" || rc=$?
+    [ "${rc}" -eq 0 ] && return 0
+    if [ "${rc}" -eq 2 ]; then
+      echo "[verify] FAIL: could not read cluster $1's status" >&2
+      exit 1
+    fi
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      echo "[verify] FAIL: $2" >&2
+      exit 1
+    fi
+    sleep 10
+  done
 }
 repo_created_at() { # usage: repo_created_at <name>
   aws ecr describe-repositories --repository-names "$1" --region "${REGION}" \
@@ -187,6 +241,12 @@ delete_topic_best_effort() { # usage: delete_topic_best_effort <name>
   aws sns delete-topic --topic-arn "$(topic_arn "$1")" --region "${REGION}" >/dev/null 2>&1 || true
   )
 }
+delete_cluster_best_effort() { # usage: delete_cluster_best_effort <name>
+  (
+  set +eu
+  aws ecs delete-cluster --cluster "$1" --region "${REGION}" >/dev/null 2>&1 || true
+  )
+}
 delete_repo_best_effort() { # usage: delete_repo_best_effort <name>
   (
   set +eu
@@ -203,6 +263,7 @@ cleanup() {
     --region "${REGION}" --yes >/dev/null 2>&1 || true
   for q in ${ALL_QUEUES}; do delete_queue_best_effort "${q}"; done
   for t in ${ALL_TOPICS}; do delete_topic_best_effort "${t}"; done
+  for c in ${ALL_CLUSTERS}; do delete_cluster_best_effort "${c}"; done
   for r in ${ALL_REPOS}; do delete_repo_best_effort "${r}"; done
   aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${LOCK_KEY}" >/dev/null 2>&1 || true
@@ -229,6 +290,15 @@ for t in ${ALL_TOPICS}; do
     exit 1
   fi
 done
+for c in ${ALL_CLUSTERS}; do
+  c_rc=0
+  cluster_is_gone "${c}" || c_rc=$?
+  if [ "${c_rc}" -ne 0 ]; then
+    echo "[verify] FAIL: ECS cluster ${c} already exists (or its status is unreadable) before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
+    rm -rf "${LOG_DIR}"
+    exit 1
+  fi
+done
 for r in ${ALL_REPOS}; do
   if ! gone_probe aws ecr describe-repositories --repository-names "${r}" --region "${REGION}"; then
     echo "[verify] FAIL: repository ${r} already exists before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
@@ -250,10 +320,10 @@ if [ ! -d node_modules ]; then
   CI=true pnpm install --ignore-workspace
 fi
 
-deploy() { # usage: deploy <log> <QUEUE_NAME> <TOPIC_NAME> <REPO_NAME> [extra flags...]
-  local log="$1" queue="$2" topic="$3" repo="$4"
-  shift 4
-  env QUEUE_NAME="${queue}" TOPIC_NAME="${topic}" REPO_NAME="${repo}" \
+deploy() { # usage: deploy <log> <QUEUE_NAME> <TOPIC_NAME> <CLUSTER_NAME> <REPO_NAME> [extra flags...]
+  local log="$1" queue="$2" topic="$3" cluster="$4" repo="$5"
+  shift 5
+  env QUEUE_NAME="${queue}" TOPIC_NAME="${topic}" CLUSTER_NAME="${cluster}" REPO_NAME="${repo}" \
     node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
     --yes "$@" > "${log}" 2>&1
 }
@@ -277,8 +347,8 @@ assert_refusal() { # usage: assert_refusal <log> <sentinel> <marker> <arm>
 # ---------------------------------------------------------------------------
 # PHASE A: baseline
 # ---------------------------------------------------------------------------
-echo "[verify] phase A: deploy ${STACK} (Queue=${QUEUE_A}, Repo=${REPO_A})"
-deploy "${LOG_DIR}/a.log" "${QUEUE_A}" "${TOPIC_A}" "${REPO_A}" \
+echo "[verify] phase A: deploy ${STACK} (Queue=${QUEUE_A}, Topic=${TOPIC_A}, Cluster=${CLUSTER_A}, Repo=${REPO_A})"
+deploy "${LOG_DIR}/a.log" "${QUEUE_A}" "${TOPIC_A}" "${CLUSTER_A}" "${REPO_A}" \
   || { sed 's/^/  /' "${LOG_DIR}/a.log"; echo "[verify] FAIL: phase A deploy failed" >&2; exit 1; }
 QUEUE_A_URL="$(queue_url "${QUEUE_A}")"
 if [ "$(state_field '.resources.Queue.physicalId')" != "${QUEUE_A_URL}" ]; then
@@ -304,7 +374,7 @@ QUEUE_HELD_URL="$(aws sqs create-queue --queue-name "${QUEUE_HELD}" --region "${
   --query QueueUrl --output text)"
 QUEUE_HELD_CREATED="$(queue_created_at "${QUEUE_HELD}")"
 set +e
-deploy "${LOG_DIR}/b.log" "${QUEUE_HELD}" "${TOPIC_A}" "${REPO_A}"
+deploy "${LOG_DIR}/b.log" "${QUEUE_HELD}" "${TOPIC_A}" "${CLUSTER_A}" "${REPO_A}"
 B_RC=$?
 set -e
 sed 's/^/  /' "${LOG_DIR}/b.log" || true
@@ -332,7 +402,7 @@ echo "[verify] phase B ok: refused before any create, both queues untouched"
 # PHASE C: NEGATIVE CONTROL — a rename onto a free name still replaces
 # ---------------------------------------------------------------------------
 echo "[verify] phase C: rename Queue onto the free ${QUEUE_FREE} (MUST SUCCEED)"
-deploy "${LOG_DIR}/c.log" "${QUEUE_FREE}" "${TOPIC_A}" "${REPO_A}" \
+deploy "${LOG_DIR}/c.log" "${QUEUE_FREE}" "${TOPIC_A}" "${CLUSTER_A}" "${REPO_A}" \
   || { sed 's/^/  /' "${LOG_DIR}/c.log"; echo "[verify] FAIL: the rename onto a free name failed — the lookup refused a name nobody holds" >&2; exit 1; }
 QUEUE_FREE_URL="$(queue_url "${QUEUE_FREE}")"
 if [ "$(state_field '.resources.Queue.physicalId')" != "${QUEUE_FREE_URL}" ]; then
@@ -353,7 +423,7 @@ if [ "${TOPIC_HELD_ARN}" != "$(topic_arn "${TOPIC_HELD}")" ]; then
   exit 1
 fi
 set +e
-deploy "${LOG_DIR}/b2.log" "${QUEUE_FREE}" "${TOPIC_HELD}" "${REPO_A}"
+deploy "${LOG_DIR}/b2.log" "${QUEUE_FREE}" "${TOPIC_HELD}" "${CLUSTER_A}" "${REPO_A}"
 B2_RC=$?
 set -e
 sed 's/^/  /' "${LOG_DIR}/b2.log" || true
@@ -377,7 +447,7 @@ echo "[verify] phase B2 ok: refused before any create, both topics untouched"
 # PHASE C2: CONTROL for B2 — a topic rename onto a free name replaces
 # ---------------------------------------------------------------------------
 echo "[verify] phase C2: rename Topic onto the free ${TOPIC_FREE} (MUST SUCCEED)"
-deploy "${LOG_DIR}/c2.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${REPO_A}" \
+deploy "${LOG_DIR}/c2.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${CLUSTER_A}" "${REPO_A}" \
   || { sed 's/^/  /' "${LOG_DIR}/c2.log"; echo "[verify] FAIL: the topic rename onto a free name failed" >&2; exit 1; }
 if [ "$(state_field '.resources.Topic.physicalId')" != "$(topic_arn "${TOPIC_FREE}")" ]; then
   echo "[verify] FAIL: state does not record Topic as ${TOPIC_FREE} after phase C2" >&2
@@ -387,6 +457,75 @@ assert_topic_gone "${TOPIC_A}" "the replaced ${TOPIC_A} survived the phase C2 re
 echo "[verify] phase C2 ok: ${TOPIC_FREE} replaced ${TOPIC_A}"
 
 # ---------------------------------------------------------------------------
+# PHASE B3: #3937 on ECS — rename the cluster onto an out-of-band cluster's name
+# ---------------------------------------------------------------------------
+echo "[verify] phase B3: ${CLUSTER_HELD} out of band, then rename Cluster onto it (expect REFUSAL)"
+if [ "$(state_field '.resources.Cluster.physicalId')" != "${CLUSTER_A}" ]; then
+  echo "[verify] FAIL: state does not record Cluster as ${CLUSTER_A} before phase B3" >&2
+  exit 1
+fi
+CLUSTER_HELD_ARN="$(aws ecs create-cluster --cluster-name "${CLUSTER_HELD}" --region "${REGION}" \
+  --query cluster.clusterArn --output text)"
+set +e
+deploy "${LOG_DIR}/b3.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${CLUSTER_HELD}" "${REPO_A}"
+B3_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/b3.log" || true
+if [ "${B3_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: the rename onto ${CLUSTER_HELD} SUCCEEDED — the replacement adopted the out-of-band cluster" >&2
+  exit 1
+fi
+assert_refusal "${LOG_DIR}/b3.log" "already holds the name it asks for" \
+  "another existing resource (${CLUSTER_HELD})" "phase B3"
+if grep -qF 'Deleting old Cluster' "${LOG_DIR}/b3.log"; then
+  echo "[verify] FAIL: the refused deploy started deleting ${CLUSTER_A}" >&2
+  exit 1
+fi
+# An ECS cluster re-created under a name keeps its ARN and carries no
+# creation time, so "untouched" is: still ACTIVE, and never deleted in the log.
+assert_cluster_status "${CLUSTER_A}" ACTIVE "${CLUSTER_A} is no longer ACTIVE after the refused deploy"
+assert_cluster_status "${CLUSTER_HELD}" ACTIVE "the out-of-band ${CLUSTER_HELD} is no longer ACTIVE after the refused deploy"
+if [ "$(state_field '.resources.Cluster.physicalId')" != "${CLUSTER_A}" ]; then
+  echo "[verify] FAIL: state no longer records Cluster as ${CLUSTER_A} after the refused deploy" >&2
+  exit 1
+fi
+echo "[verify] phase B3 ok: refused before any create, both clusters ACTIVE (${CLUSTER_HELD_ARN})"
+
+# ---------------------------------------------------------------------------
+# PHASE C3: CONTROL for B3 — a cluster rename onto a free name replaces
+# ---------------------------------------------------------------------------
+echo "[verify] phase C3: rename Cluster onto the free ${CLUSTER_FREE} (MUST SUCCEED)"
+deploy "${LOG_DIR}/c3.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${CLUSTER_FREE}" "${REPO_A}" \
+  || { sed 's/^/  /' "${LOG_DIR}/c3.log"; echo "[verify] FAIL: the cluster rename onto a free name failed" >&2; exit 1; }
+if [ "$(state_field '.resources.Cluster.physicalId')" != "${CLUSTER_FREE}" ]; then
+  echo "[verify] FAIL: state does not record Cluster as ${CLUSTER_FREE} after phase C3" >&2
+  exit 1
+fi
+assert_cluster_status "${CLUSTER_FREE}" ACTIVE "${CLUSTER_FREE} is not ACTIVE after phase C3"
+assert_cluster_gone "${CLUSTER_A}" "the replaced ${CLUSTER_A} survived the phase C3 replacement"
+echo "[verify] phase C3 ok: ${CLUSTER_FREE} replaced ${CLUSTER_A}"
+
+# ---------------------------------------------------------------------------
+# PHASE C4: a DELETED (INACTIVE) cluster does not hold its name
+# ---------------------------------------------------------------------------
+# The branch under test is the lookup's INACTIVE arm, so the phase first
+# proves ECS still LISTS the deleted CLUSTER_A (as INACTIVE, not absent): a
+# listing already aged out to `None` would take the missing-name arm and test
+# nothing, so that fails loudly rather than passing.
+echo "[verify] phase C4: rename Cluster back onto the deleted ${CLUSTER_A} (MUST SUCCEED)"
+assert_cluster_status "${CLUSTER_A}" INACTIVE \
+  "phase C4 needs ${CLUSTER_A} listed as INACTIVE (a None listing would not reach the arm under test)"
+deploy "${LOG_DIR}/c4.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${CLUSTER_A}" "${REPO_A}" \
+  || { sed 's/^/  /' "${LOG_DIR}/c4.log"; echo "[verify] FAIL: the rename onto the deleted ${CLUSTER_A} failed — an INACTIVE cluster was read as holding its name" >&2; exit 1; }
+if [ "$(state_field '.resources.Cluster.physicalId')" != "${CLUSTER_A}" ]; then
+  echo "[verify] FAIL: state does not record Cluster as ${CLUSTER_A} after phase C4" >&2
+  exit 1
+fi
+assert_cluster_status "${CLUSTER_A}" ACTIVE "${CLUSTER_A} is not a fresh ACTIVE cluster after phase C4"
+assert_cluster_gone "${CLUSTER_FREE}" "the replaced ${CLUSTER_FREE} survived the phase C4 replacement"
+echo "[verify] phase C4 ok: a fresh ${CLUSTER_A} replaced ${CLUSTER_FREE}"
+
+# ---------------------------------------------------------------------------
 # PHASE D: #3931 — a recreate renamed onto an out-of-band repository's name
 # ---------------------------------------------------------------------------
 echo "[verify] phase D: ${REPO_HELD} out of band, then --recreate-via-cc-api Repo renamed onto it (expect REFUSAL)"
@@ -394,7 +533,7 @@ REPO_A_CREATED="$(repo_created_at "${REPO_A}")"
 aws ecr create-repository --repository-name "${REPO_HELD}" --region "${REGION}" >/dev/null
 REPO_HELD_CREATED="$(repo_created_at "${REPO_HELD}")"
 set +e
-deploy "${LOG_DIR}/d.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${REPO_HELD}" \
+deploy "${LOG_DIR}/d.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${CLUSTER_A}" "${REPO_HELD}" \
   --recreate-via-cc-api Repo --force-stateful-recreation
 D_RC=$?
 set -e
@@ -435,7 +574,7 @@ echo "[verify] phase D ok: refused with nothing deleted"
 # PHASE E: CONTROL — a renamed recreate creates BEFORE it deletes
 # ---------------------------------------------------------------------------
 echo "[verify] phase E: --recreate-via-cc-api Repo renamed onto the free ${REPO_FREE} (MUST SUCCEED, create first)"
-deploy "${LOG_DIR}/e.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${REPO_FREE}" \
+deploy "${LOG_DIR}/e.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${CLUSTER_A}" "${REPO_FREE}" \
   --recreate-via-cc-api Repo --force-stateful-recreation \
   || { sed 's/^/  /' "${LOG_DIR}/e.log"; echo "[verify] FAIL: the renamed recreate onto a free name failed" >&2; exit 1; }
 sed 's/^/  /' "${LOG_DIR}/e.log" || true
@@ -470,10 +609,13 @@ echo "[verify] phase F: destroy ${STACK}"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_queue_gone "${QUEUE_FREE}" "queue ${QUEUE_FREE} still exists after destroy"
 assert_topic_gone "${TOPIC_FREE}" "topic ${TOPIC_FREE} still exists after destroy"
+assert_cluster_gone "${CLUSTER_A}" "ECS cluster ${CLUSTER_A} still exists after destroy"
 assert_gone "repository ${REPO_FREE} still exists after destroy" \
   aws ecr describe-repositories --repository-names "${REPO_FREE}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+aws ecs delete-cluster --cluster "${CLUSTER_HELD}" --region "${REGION}" >/dev/null
+assert_cluster_gone "${CLUSTER_HELD}" "the out-of-band ${CLUSTER_HELD} survived its own delete"
 aws sns delete-topic --topic-arn "${TOPIC_HELD_ARN}" --region "${REGION}"
 assert_topic_gone "${TOPIC_HELD}" "the out-of-band ${TOPIC_HELD} survived its own delete"
 aws sqs delete-queue --queue-url "${QUEUE_HELD_URL}" --region "${REGION}"

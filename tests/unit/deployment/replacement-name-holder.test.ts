@@ -759,6 +759,7 @@ describe('replacementNameProbe (go-to-k/cdkd#3937)', () => {
   it('pins the name-adopting SDK create types', () => {
     expect(nameAdoptingSdkCreateTypes()).toEqual([
       'AWS::CloudWatch::Alarm',
+      'AWS::ECS::Cluster',
       'AWS::Events::Rule',
       'AWS::S3::Bucket',
       'AWS::SNS::Topic',

@@ -15,6 +15,7 @@ import {
   waitUntilServicesStable,
   TagResourceCommand,
   UntagResourceCommand,
+  type DescribeClustersCommandOutput,
   type Tag,
   type KeyValuePair,
   type PortMapping,
@@ -107,6 +108,7 @@ import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 
@@ -522,8 +524,11 @@ export class ECSProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created ECS cluster ${logicalId}: ${cluster.clusterArn}`);
 
+      // The name AWS answers with, not the one requested: were ECS to fold a
+      // spelling, a record of the requested one would name a cluster that
+      // does not exist under it (go-to-k/cdkd#3937 review).
       return {
-        physicalId: clusterName,
+        physicalId: cluster.clusterName ?? clusterName,
         attributes: {
           Arn: cluster.clusterArn,
         },
@@ -3538,19 +3543,44 @@ export class ECSProvider implements ResourceProvider {
   private async importCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'ClusterName');
     if (explicit) {
+      let resp: DescribeClustersCommandOutput;
       try {
-        const resp = await this.getClient().send(
-          new DescribeClustersCommand({ clusters: [explicit] })
-        );
-        return resp.clusters?.[0]?.clusterName
-          ? { physicalId: resp.clusters[0].clusterName, attributes: {} }
-          : null;
+        resp = await this.getClient().send(new DescribeClustersCommand({ clusters: [explicit] }));
       } catch (err) {
         if (this.isClusterNotFoundException(err) || this.isServiceNotFoundException(err)) {
           return null;
         }
         throw err;
       }
+      // Read OUTSIDE the `try`: its not-found arm matches message substrings,
+      // so an error this code throws from the answer must never reach it.
+      //
+      // `DescribeClusters` keeps listing a DELETED cluster, as `INACTIVE`,
+      // for a while after its delete, and its name is free to create again,
+      // so that one is absent — for every caller: `cdkd import` (an explicit
+      // `--resource` included) and orphan adoption no longer adopt a dead
+      // cluster, and the stale-attribute heal reads it as not found. Any
+      // other status (ACTIVE, PROVISIONING, an unknown one) holds the name:
+      // the replacement name probe reads a found cluster as its holder
+      // (go-to-k/cdkd#3937), and refusing is the safe direction there.
+      const cluster = resp.clusters?.[0];
+      if (cluster?.clusterName) {
+        return cluster.status !== 'INACTIVE'
+          ? { physicalId: cluster.clusterName, attributes: {} }
+          : null;
+      }
+      // No cluster listed: only a `MISSING` failure says the name is free.
+      // Any other reason is a lookup that did not answer, and reading it as
+      // free would let the probe hand the name to a create that adopts.
+      const unanswered = (resp.failures ?? []).find((f) => f.reason !== 'MISSING');
+      if (unanswered !== undefined) {
+        throw new Error(
+          `DescribeClusters did not answer for cluster ${displaySafe(explicit)}: ` +
+            `${displaySafe(unanswered.reason ?? 'no reason given')}` +
+            (unanswered.detail !== undefined ? ` (${displaySafe(unanswered.detail)})` : '')
+        );
+      }
+      return null;
     }
     // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
     // that tag never exists on a real resource and the walk could not match

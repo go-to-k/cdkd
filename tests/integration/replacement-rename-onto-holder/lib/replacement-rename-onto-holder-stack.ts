@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 
@@ -8,7 +9,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * Fixture for issues #3937 and #3931: a replacement that RENAMES a resource
  * onto a name another resource already holds.
  *
- * covers: AWS::SQS::Queue, AWS::SNS::Topic, AWS::ECR::Repository
+ * covers: AWS::SQS::Queue, AWS::SNS::Topic, AWS::ECS::Cluster, AWS::ECR::Repository
  *
  * Both names are env-parameterized so verify.sh drives every phase from ONE
  * app, and each name is create-only, so changing it is a REPLACEMENT:
@@ -21,6 +22,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *   - `TOPIC_NAME` (`Topic`, #3937): SNS `CreateTopic` returns an existing
  *     topic's ARN for the name — the same adoption, found through a
  *     different lookup (a `ListTopics` walk).
+ *   - `CLUSTER_NAME` (`Cluster`, #3937): ECS `CreateCluster` returns an existing
+ *     ACTIVE cluster of the name. An empty cluster costs nothing.
  *   - `REPO_NAME` (`Repo`, #3931): renamed under `--recreate-via-cc-api Repo`,
  *     the recreate that used to delete the old repository FIRST. ECR's
  *     `CreateRepository` refuses a taken name, so the holder turns the rename
@@ -32,10 +35,11 @@ export class ReplacementRenameOntoHolderStack extends cdk.Stack {
 
     const queueName = process.env.QUEUE_NAME;
     const topicName = process.env.TOPIC_NAME;
+    const clusterName = process.env.CLUSTER_NAME;
     const repoName = process.env.REPO_NAME;
-    if (!queueName || !topicName || !repoName) {
+    if (!queueName || !topicName || !clusterName || !repoName) {
       throw new Error(
-        'QUEUE_NAME, TOPIC_NAME and REPO_NAME must all be set (verify.sh sets them per phase)'
+        'QUEUE_NAME, TOPIC_NAME, CLUSTER_NAME and REPO_NAME must all be set (verify.sh sets them per phase)'
       );
     }
 
@@ -44,6 +48,9 @@ export class ReplacementRenameOntoHolderStack extends cdk.Stack {
 
     const topic = new sns.CfnTopic(this, 'Topic', { topicName });
     topic.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    const cluster = new ecs.CfnCluster(this, 'Cluster', { clusterName });
+    cluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     const repo = new ecr.CfnRepository(this, 'Repo', {
       repositoryName: repoName,

@@ -774,9 +774,9 @@ The two replacements that otherwise delete first — the
 resource does not hold the new name. A collision then fails the same way with
 nothing deleted, and the old resource is deleted only once the new one exists.
 
-Some create APIs do not collide at all: SQS `CreateQueue`, SNS `CreateTopic`
-and Step Functions `CreateStateMachine` return the resource already holding the
-name, EventBridge `PutRule` and CloudWatch `PutMetricAlarm` overwrite it, and
+Some create APIs do not collide at all: SQS `CreateQueue`, SNS `CreateTopic`,
+Step Functions `CreateStateMachine` and ECS `CreateCluster` return the resource
+already holding the name, EventBridge `PutRule` and CloudWatch `PutMetricAlarm` overwrite it, and
 cdkd's S3 provider reads `BucketAlreadyOwnedByYou` as success. For those types
 on cdkd's SDK providers, a replacement that changes the name — or moves an
 EventBridge rule to another bus, or changes `Type` onto one of these types —
