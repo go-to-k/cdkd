@@ -129,6 +129,29 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
     );
   });
 
+  it('masks the ARN of a 2-character secret Name that a CreateSecret failure quotes back', async () => {
+    // No pair names the ARN before CreateSecret answers, and the name is below
+    // the needle floor: only the in-text ARN arm can mask it.
+    mockSend.mockRejectedValue(new Error(`Conflict on ${arnOf(TINY)}.`));
+    const err = await thrown(() =>
+      provider.create('Secret', TYPE, { Name: TINY, SecretString: 'v' }, { maskSecrets })
+    );
+    expect(err.message).toBe('Failed to create secret Secret: Conflict on ***.');
+    // The cause is threaded UNMASKED, so the retry classifiers still read it.
+    expect((err.cause as Error).message).toContain(arnOf(TINY));
+  });
+
+  it('keeps a 2-character secret that occurs in cdkd wording from masking that wording', async () => {
+    // `se` is in `secret`: below the needle floor it is no needle, so the fixed
+    // wording survives while the ARN naming it is masked whole.
+    const masker = createSecretMasker(bagOf('se'));
+    answerCreateWith('se');
+    await provider.create('Secret', TYPE, { Name: 'se', SecretString: 'v' }, { maskSecrets: masker });
+    expect(debugLines()).toEqual(
+      expect.arrayContaining(['Creating secret Secret', 'Successfully created secret Secret: ***'])
+    );
+  });
+
   it('masks the AWS error text RAW, so a whole-value 2-character echo is caught', async () => {
     mockSend.mockRejectedValue(new Error(TINY));
     const err = await thrown(() =>
@@ -289,6 +312,38 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
       )
     );
     expect(err.message).toBe('Failed to update secret Secret: Access denied to ***');
+  });
+
+  it('masks a ROTATED 3+ character recorded name an UpdateSecret failure quotes back bare', async () => {
+    // The old plaintext is in no bag of this deploy: only the name segment cut
+    // from the recorded ARN, as a needle, can mask it.
+    mockSend.mockRejectedValue(new Error('Secret old-db-name is scheduled for deletion.'));
+    const err = await thrown(() =>
+      provider.update(
+        'Secret',
+        arnOf('old-db-name'),
+        TYPE,
+        { Name: 'plain-name', SecretString: 'new' },
+        { Name: '{{resolve:secretsmanager:old-name}}', SecretString: 'old' },
+        { maskSecrets }
+      )
+    );
+    expect(err.message).toBe('Failed to update secret Secret: Secret *** is scheduled for deletion.');
+  });
+
+  it('masks AWS text that is exactly a ROTATED 2-character recorded name (whole-value name arm)', async () => {
+    mockSend.mockRejectedValue(new Error(ROTATED_OLD));
+    const err = await thrown(() =>
+      provider.update(
+        'Secret',
+        arnOf(ROTATED_OLD),
+        TYPE,
+        { Name: 'plain-name', SecretString: 'new' },
+        { Name: '{{resolve:secretsmanager:old-name}}', SecretString: 'old' },
+        { maskSecrets }
+      )
+    );
+    expect(err.message).toBe('Failed to update secret Secret: ***');
   });
 
   it('routes every update line through the sink: tag warning and generate-skip warning included', async () => {

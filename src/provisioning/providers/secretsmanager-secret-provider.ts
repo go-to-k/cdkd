@@ -680,14 +680,21 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * exactly `***`) is:
    *
    *  - rendered as `***` wherever a sink masks it as a WHOLE value, at any
-   *    length -- and so is a secret ARN whose NAME segment is one of them, so
-   *    the ARN `CreateSecret` returns is masked too;
+   *    length -- and so is a secret ARN whose NAME segment is one of them,
+   *    whether it is the whole value (the ARN `CreateSecret` returns) or
+   *    OCCURS inside other text (an AWS error quoting the ARN, which on
+   *    `create()` no pair can name up front);
    *  - and, at 3 characters or longer, a substring needle
-   *    (`withDerivedNameMasks`), so it is also masked where it OCCURS inside
-   *    other text, such as an AWS error quoting it back. The floor keeps a 1-2
-   *    character needle from masking letters of cdkd's own wording, whose
-   *    positions would hint at the secret; the whole-value arm still hides it
-   *    at every site cdkd interpolates.
+   *    (`withDerivedNameMasks`), so the bare name is also masked where an AWS
+   *    error quotes it back.
+   *
+   * The floor limits a needle masking letters of cdkd's own wording, whose
+   * positions would hint at the secret; it narrows that rather than closing it
+   * (a 3-character `ret` still masks part of `secret`). Below it, a 1-2
+   * character name is still hidden at every site cdkd interpolates, but an AWS
+   * error quoting that BARE name prints it: accepted, as in the Glue slice, for
+   * a secret that short. A short secret merely EMBEDDED in a longer `Name`
+   * does not count as secret-derived at all (the masker's substring floor).
    *
    * Built per call, never cached: the provider is a singleton serving
    * concurrent resources.
@@ -719,7 +726,13 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     const mask: MaskerFn = (text: string) =>
       secretNames.has(text) || secretNames.has(arnName(text) ?? '')
         ? MASK_WALK_DEPTH_CAP_MARKER
-        : needled.mask(text);
+        : needled.mask(
+            text.replace(
+              /arn:[^:\s]+:secretsmanager:[^:\s]*:[^:\s]*:secret:(\S+)-[A-Za-z0-9]{6}(?![A-Za-z0-9])/g,
+              (arn: string, name: string) =>
+                secretNames.has(name) ? MASK_WALK_DEPTH_CAP_MARKER : arn
+            )
+          );
     return {
       mask,
       value: (value: unknown) => mask(String(value)),
