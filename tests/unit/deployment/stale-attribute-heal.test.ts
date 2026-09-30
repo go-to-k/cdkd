@@ -456,6 +456,124 @@ describe('stale attribute heal — resolver (#1852)', () => {
       );
     });
 
+    // The other `staleRecordRemedy` sites: the DBProxy `VpcId` refusal and an
+    // attribute cdkd cannot build (`refuseUnconstructibleAttribute`).
+    it.each([
+      {
+        site: 'DBProxy VpcId',
+        logicalId: 'Proxy',
+        attribute: 'VpcId',
+        record: (): ResourceState => ({
+          physicalId: 'my-proxy',
+          resourceType: 'AWS::RDS::DBProxy',
+          properties: {},
+          attributes: {},
+        }),
+      },
+      {
+        site: 'DynamoDB StreamArn (refuseUnconstructibleAttribute)',
+        logicalId: 'Table',
+        attribute: 'StreamArn',
+        record: (): ResourceState => ({
+          physicalId: 'my-table',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: {},
+          attributes: {},
+        }),
+      },
+    ])('FAILED read, $site: the same split', async ({ logicalId, attribute, record }) => {
+      const outcome = { kind: 'failed', error: accessDenied() } as const;
+      const refuse = (readOnly: boolean): Promise<Error> =>
+        refusalOf(
+          resolver.resolve(
+            { 'Fn::GetAtt': [logicalId, attribute] },
+            mkContext({ [logicalId]: record() }, healerOf(outcome, readOnly))
+          )
+        );
+      const preview = (await refuse(true)).message;
+      expect(preview).toContain('This preview re-read the attributes from AWS, but the provider read failed');
+      expect(preview).not.toContain('tried to re-read');
+      expect((await refuse(false)).message).toContain(
+        'cdkd tried to re-read the attributes from AWS to heal the record'
+      );
+    });
+
+    // A WITHHELD value: the preview's read ran under the preview's credentials.
+    describe('a withheld value names the credentials that read it', () => {
+      const PREVIEW_WITHHELD =
+        'This preview re-read the resource through Cloud Control, but withheld the value';
+      const PREVIEW_GRANT =
+        'Grant the credentials the preview runs with cloudformation:DescribeType and run it again';
+      const DEPLOY_GRANT = 'Grant the deploy role cloudformation:DescribeType and deploy again';
+
+      it('the *Arn refusal (unenrichedRemedy)', async () => {
+        const outcome = { kind: 'read', attributes: {}, withheldKeys: ['Arn'] } as const;
+        const refuse = (readOnly: boolean): Promise<Error> =>
+          refusalOf(
+            resolver.resolve(
+              { 'Fn::GetAtt': ['Param', 'Arn'] },
+              mkContext({ Param: staleParameter() }, healerOf(outcome, readOnly))
+            )
+          );
+        const preview = (await refuse(true)).message;
+        expect(preview).toContain(PREVIEW_WITHHELD);
+        expect(preview).toContain(PREVIEW_GRANT);
+        expect(preview).not.toContain('deploy role');
+        expect((await refuse(false)).message).toContain(DEPLOY_GRANT);
+      });
+
+      it('the warn-and-return fallback', async () => {
+        const outcome = { kind: 'read', attributes: {}, withheldKeys: ['Endpoint'] } as const;
+        const warned = async (readOnly: boolean): Promise<string> => {
+          warnSpy.mockClear();
+          await resolver.resolve(
+            { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] },
+            mkContext(
+              {
+                Db: {
+                  physicalId: 'mydb',
+                  resourceType: 'AWS::RDS::DBInstance',
+                  properties: {},
+                  attributes: {},
+                },
+              },
+              healerOf(outcome, readOnly)
+            )
+          );
+          return String(warnSpy.mock.calls.at(-1)![0]);
+        };
+        const preview = await warned(true);
+        expect(preview).toContain(PREVIEW_GRANT);
+        expect(preview).not.toContain('deploy role');
+        expect(await warned(false)).toContain(DEPLOY_GRANT);
+      });
+
+      it('the placeholder-ARN refusal (staleRecordRemedy)', async () => {
+        const outcome = { kind: 'read', attributes: {}, withheldKeys: ['DataSourceArn'] } as const;
+        const refuse = (readOnly: boolean): Promise<Error> =>
+          refusalOf(
+            resolver.resolve(
+              { 'Fn::GetAtt': ['Ds', 'DataSourceArn'] },
+              mkContext(
+                {
+                  Ds: {
+                    physicalId: 'abc|ds',
+                    resourceType: 'AWS::AppSync::DataSource',
+                    properties: {},
+                    attributes: { DataSourceArn: 'arn:aws:appsync:*:*:apis/abc/datasources/ds' },
+                  },
+                },
+                healerOf(outcome, readOnly)
+              )
+            )
+          );
+        const preview = (await refuse(true)).message;
+        expect(preview).toContain(PREVIEW_GRANT);
+        expect(preview).not.toContain('deploy role');
+        expect((await refuse(false)).message).toContain(DEPLOY_GRANT);
+      });
+    });
+
     it("cdkd diff's own healer (the real factory) takes the preview wording", async () => {
       const healerFor = createReadOnlyAttributeHealerFactory({
         getProvider: () =>

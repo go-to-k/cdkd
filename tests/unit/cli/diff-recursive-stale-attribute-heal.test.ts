@@ -58,11 +58,14 @@ import { createReadOnlyAttributeHealerFactory } from '../../../src/deployment/re
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const NESTED = 'AWS::CloudFormation::Stack';
 const PARAM_ARN = 'arn:aws:ssm:us-east-1:123456789012:parameter/app/p';
 const ENDPOINT = 'db1.abc.us-east-1.rds.amazonaws.com';
 const URL = 'https://abc123.lambda-url.us-east-1.on.aws/';
+/** A physical id whose read AWS denies (go-to-k/cdkd#4163). */
+const DENIED = 'db-denied';
 
 function st(stackName: string, resources: Record<string, ResourceState>): StackState {
   return { stackName, region: 'us-east-1', resources, outputs: {}, version: 10, lastModified: 0 };
@@ -103,6 +106,12 @@ function healerFor(): ReturnType<typeof createReadOnlyAttributeHealerFactory> {
         knownPhysicalId: input.knownPhysicalId,
         stackName: input.stackName,
       });
+      if (input.knownPhysicalId === DENIED) {
+        throw Object.assign(new Error('not authorized to perform: rds:DescribeDBInstances'), {
+          name: 'AccessDeniedException',
+          $metadata: { httpStatusCode: 403 },
+        });
+      }
       const attributes = live[input.knownPhysicalId ?? ''];
       return attributes ? { physicalId: input.knownPhysicalId!, attributes } : null;
     }),
@@ -521,5 +530,60 @@ describe('a healed value that equals a NoEcho parameter value previews masked (g
     expect(human).not.toContain(NOECHO);
     expect(json).toContain('"newValue":"***"');
     expect(json).not.toContain(NOECHO);
+  });
+});
+
+describe('a denied re-read during the diff is worded as the preview (go-to-k/cdkd#4163)', () => {
+  // Through `buildDiffTree`, so the healer the command builds is the one the
+  // resolver sees: a wrapper between the factory and the context would drop
+  // its `readOnly` flag and bring back the deploy's "tried to heal" wording.
+  it('warns that the preview re-read the record, not that cdkd tried to heal it', async () => {
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
+          Endpoint: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+          },
+        },
+      },
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fakeBackend({
+        S: st('S', {
+          Db: {
+            physicalId: DENIED,
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { Engine: 'postgres' },
+            attributes: {},
+          },
+          Endpoint: {
+            physicalId: 'endpoint-param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Type: 'String', Value: DENIED },
+            attributes: {},
+          },
+        }),
+      }),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+      attributeHealerFor: healerFor(),
+    });
+    // The read was issued and failed, so the row falls back to the physical id.
+    expect(importCalls).toEqual([{ logicalId: 'Db', knownPhysicalId: DENIED, stackName: 'S' }]);
+    expect(node.changes.get('Endpoint')?.changeType).toBe('NO_CHANGE');
+    const warned = warn.mock.calls.map((call) => String(call[0])).filter((l) => l.includes('holds no'));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain(
+      'This preview re-read the attributes from AWS, but the provider read failed (AccessDeniedException, HTTP 403)'
+    );
+    expect(warned[0]).not.toContain('tried to re-read');
+    expect(warned[0]).not.toContain('retries the read on every deploy');
   });
 });

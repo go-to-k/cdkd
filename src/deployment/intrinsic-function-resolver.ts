@@ -5867,7 +5867,7 @@ export class IntrinsicFunctionResolver {
           `or remove it from state.`
         );
       case 'read':
-        if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy();
+        if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy(context);
         return (
           `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
           `attribute either, so there is nothing to heal the record with; ${touch}.`
@@ -5912,7 +5912,7 @@ export class IntrinsicFunctionResolver {
       );
     }
     if (outcome.kind === 'read') {
-      if (this.healWithheld(outcome, attributeName)) return this.withheldRemedy();
+      if (this.healWithheld(outcome, attributeName)) return this.withheldRemedy(context);
       return (
         `cdkd re-read the resource's attributes from AWS and the read reports none by that ` +
         `name. ${fileIssue}`
@@ -5935,12 +5935,25 @@ export class IntrinsicFunctionResolver {
    * Control's read-back is masked wherever cdkd cannot certify a key as a
    * read-only attribute, which is every key when `DescribeType` is unavailable.
    * "The read reports none ... file an issue" would be false here.
+   *
+   * A `readOnly` healer's read (`cdkd diff`'s) ran under the preview's own
+   * credentials, not the deploy role's, so that remedy names those instead.
    */
-  private withheldRemedy(): string {
+  private withheldRemedy(context?: ResolverContext): string {
+    const confirm =
+      `it could not confirm that this is a read-only attribute of the type, and an ` +
+      `unconfirmed value is never used.`;
+    if (context?.attributeHealer?.readOnly === true) {
+      return (
+        `This preview re-read the resource through Cloud Control, but withheld the value: ` +
+        `${confirm} Grant the credentials the preview runs with cloudformation:DescribeType ` +
+        `and run it again; if they already have it, the name is a writable property rather ` +
+        `than an attribute — reference the value the template sets instead.`
+      );
+    }
     return (
-      `cdkd re-read the resource through Cloud Control, but withheld the value: it could not ` +
-      `confirm that this is a read-only attribute of the type, and an unconfirmed value is ` +
-      `never used. Grant the deploy role cloudformation:DescribeType and deploy again; if the ` +
+      `cdkd re-read the resource through Cloud Control, but withheld the value: ${confirm} ` +
+      `Grant the deploy role cloudformation:DescribeType and deploy again; if the ` +
       `role already has it, the name is a writable property rather than an attribute — ` +
       `reference the value the template sets instead.`
     );
@@ -7878,7 +7891,7 @@ export class IntrinsicFunctionResolver {
     // "unknown attribute" the user can do nothing about: name the permission.
     const withheld =
       healOutcome?.kind === 'read' && this.healWithheld(healOutcome, attributeName)
-        ? `. ${this.withheldRemedy()}`
+        ? `. ${this.withheldRemedy(context)}`
         : '';
     this.logger.warn(
       `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${loggedType}, returning physical ID${withheld}`
