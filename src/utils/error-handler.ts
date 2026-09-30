@@ -5,7 +5,7 @@ import {
   quotedOrDescribed,
   withheldTargetClause,
 } from './pasteable-command.js';
-import { displayAwsMessage, displayIdent, isPasteableIdent } from './display-safe.js';
+import { displayAwsMessage, isPasteableIdent, plainIdentOr } from './display-safe.js';
 import { getLogger } from './logger.js';
 
 /**
@@ -713,16 +713,14 @@ export interface ActiveImportConsumer {
 
 /**
  * `export '<name>'` when the export name is plain, a description otherwise
- * (go-to-k/cdkd#3950). Plain is `displayIdent`'s set, not `isPasteableIdent`'s:
- * a CDK-generated export name carries `:` (`Producer:ExportsOutputRef…`), which
- * the command gate refuses and which is literal inside single quotes. The
- * whitespace test comes first, because the round-trip alone admits a value
- * ending in `displayIdent`'s own cut marker.
+ * (go-to-k/cdkd#3950). Plain is {@link plainIdentOr}'s rule, not
+ * `isPasteableIdent`'s: a CDK-generated export name carries `:`
+ * (`Producer:ExportsOutputRef…`), which the command gate refuses and which is
+ * literal inside single quotes.
  */
 function exportNamePhrase(exportName: string): string {
-  return !/\s/.test(exportName) && displayIdent(exportName) === exportName
-    ? `export '${exportName}'`
-    : 'an export whose name is not a plain identifier';
+  const shown = plainIdentOr(exportName, '');
+  return shown ? `export '${shown}'` : 'an export whose name is not a plain identifier';
 }
 
 /**

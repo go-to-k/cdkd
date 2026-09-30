@@ -4,7 +4,7 @@ import {
   StackHasActiveImportsError,
   type ActiveImportConsumer,
 } from '../../../src/utils/error-handler.js';
-import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from './paste-harness.js';
+import { CLAUSE_BREAK_PAYLOAD, PASTE_PAYLOADS, spansThatRun, withPasteDir } from './paste-harness.js';
 
 /**
  * go-to-k/cdkd#3950's `StackHasActiveImportsError` row: the refusal printed
@@ -77,7 +77,9 @@ describe('StackHasActiveImportsError — no non-plain record value inside cdkd q
   for (const { label, render, described } of POSITIONS) {
     it(`describes a payload ${label}, never shows it, and no pasted span runs`, () => {
       withPasteDir((dir) => {
-        for (const { value } of PASTE_PAYLOADS) {
+        // The clause-break payload too: every position refuses whitespace, so
+        // this site opts in (go-to-k/cdkd#4131 review m2).
+        for (const { value } of [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD]) {
           const message = render(value);
           expect(message, value).toContain(described);
           expect(message, value).not.toContain(value);
@@ -87,6 +89,25 @@ describe('StackHasActiveImportsError — no non-plain record value inside cdkd q
       // Spawns a shell per span.
     }, 120_000);
   }
+
+  it('describes only the payload consumer when a plain one is listed before it', () => {
+    // Each consumer line is rendered on its own: a plain first consumer keeps
+    // its names, and only the second, carrying the payload, is described
+    // (go-to-k/cdkd#4131 review m3).
+    const payload = "x'$(touch OWNED) #";
+    const message = new StackHasActiveImportsError('Producer', 'us-east-1', [
+      CONSUMER,
+      { consumerStack: payload, consumerRegion: 'us-east-1', exportName: payload },
+    ]).message;
+    expect(message).toContain(
+      "  - Consumer (us-east-1): imports export 'Producer:ExportsOutputRefBucket83908E7781C90AC0'\n" +
+        '  - a stack name that is not a plain identifier (us-east-1): imports an export whose name is not a plain identifier\n'
+    );
+    expect(message).not.toContain(payload);
+    withPasteDir((dir) => {
+      expect(spansThatRun(message, dir)).toEqual([]);
+    });
+  }, 120_000);
 
   it('describes an export name with no whitespace that is not plain, or is past the cap', () => {
     // No whitespace, so only the `displayIdent` round-trip refuses these: a
