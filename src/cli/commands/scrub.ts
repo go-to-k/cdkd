@@ -2457,7 +2457,14 @@ export function findDroppedOutputReaders(
     };
     for (const entry of entriesOf(record.imports, 'imports', record.stackName)) {
       const e = entry as Partial<StateImportEntry>;
-      if (e.sourceStack !== producerStack || !regionMayMatch(e.sourceRegion)) continue;
+      // `imports[].sourceStack` is stored verbatim, never redacted, so only a
+      // damaged entry holds a non-string one: it cannot be ruled out.
+      if (typeof e.sourceStack === 'string' && e.sourceStack !== producerStack) continue;
+      if (!regionMayMatch(e.sourceRegion)) continue;
+      if (typeof e.sourceStack !== 'string') {
+        reader(undefined, 'Fn::ImportValue');
+        continue;
+      }
       matchKey(e.exportName, 'Fn::ImportValue');
     }
     for (const entry of entriesOf(record.outputReads, 'outputReads', record.stackName)) {
@@ -7156,8 +7163,19 @@ export async function scrubStack(
         // or this run computed a name the deploy did not write (a parameter
         // override, a suppressed or skipped output) and the deploy's real alias
         // is one of the unaccounted keys.
+        //
+        // A LITERAL name colliding with ANOTHER declared output is exempt: the
+        // deploy never publishes that alias, and a literal is the name it
+        // computed too. An intrinsic one is not, since template defaults may
+        // not be what the deploy resolved. And a name that is also a declared
+        // Output name proves nothing on a record with no export set: the key
+        // it matched may be that plain Output.
+        const literalCollision =
+          typeof declaredExportName === 'string' &&
+          isExportAliasCollision(declaredExportName, name, declaredOutputNames);
         if (
           declaredExportName !== undefined &&
+          !literalCollision &&
           !(
             typeof exportName === 'string' &&
             !exportNameUnresolved &&
@@ -7165,7 +7183,9 @@ export async function scrubStack(
             Object.hasOwn(state.outputs, exportName) &&
             // A key the record's own export set does not list is a plain
             // Output of the same name, not this alias.
-            (!Array.isArray(state.exportNames) || state.exportNames.includes(exportName))
+            (Array.isArray(state.exportNames)
+              ? state.exportNames.includes(exportName)
+              : typeof declaredExportName === 'string' || !declaredOutputNames.has(exportName))
           )
         ) {
           everyExportAliasReproduced = false;

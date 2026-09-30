@@ -351,6 +351,39 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
       expect(saved!.outputs['x-Gone']).toBe(GONE_PLAINTEXT);
     });
 
+    it('exempts a LITERAL Export.Name colliding with another output: the deploy never writes it', async () => {
+      const { saved } = await scrub(
+        record(
+          { Out: SSM_PLAINTEXT, Sm: SM_EXPR, 'Old-Export': GONE_PLAINTEXT },
+          { exportNames: ['Old-Export'] }
+        ),
+        { ...DECLARED, Out: { Value: SSM_EXPR, Export: { Name: 'Sm' } } }
+      );
+
+      expect(saved!.outputs).not.toHaveProperty('Old-Export');
+    });
+
+    it('does not exempt an INTRINSIC name colliding with another output', async () => {
+      const { saved } = await scrub(
+        record(
+          { Out: SSM_PLAINTEXT, Sm: SM_EXPR, 'Old-Export': GONE_PLAINTEXT },
+          { exportNames: ['Old-Export'] }
+        ),
+        { ...DECLARED, Out: { Value: SSM_EXPR, Export: { Name: { 'Fn::Sub': 'Sm' } as never } } }
+      );
+
+      expect(saved!.outputs['Old-Export']).toBe(GONE_PLAINTEXT);
+    });
+
+    it('on a record with no export set, an intrinsic name matching a plain Output proves nothing', async () => {
+      const { saved } = await scrub(
+        record({ Out: SSM_PLAINTEXT, Sm: SM_EXPR, Lit: 'bucket-1', 'prod-Lit': 'bucket-1' }),
+        { ...DECLARED, Lit: { Value: 'bucket-1', Export: { Name: { 'Fn::Sub': 'Lit' } as never } } }
+      );
+
+      expect(saved!.outputs['prod-Lit']).toBe('bucket-1');
+    });
+
     it('does not count a PLAIN output of the same name as the reproduced alias', async () => {
       // `Lit`'s Export.Name resolves to `Lit`, a plain Output key the record
       // holds; the record's export set lists only `prod-Lit`, the real alias.
@@ -609,6 +642,21 @@ describe('findDroppedOutputReaders', () => {
         rec({ outputReads: [{ sourceStack: redacted, sourceRegion: 'us-east-1', outputName: 'Gone' }] }),
       ])
     ).toEqual([{ consumerStack: 'Consumer', consumerRegion: 'us-east-1', key: 'Gone', intrinsic: 'Fn::GetStackOutput' }]);
+  });
+
+  it('counts an entry whose producer or key is not a string as a possible read', () => {
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [
+        rec({ imports: [{ sourceStack: 42, sourceRegion: 'us-east-1', exportName: 'Gone' }] }),
+      ])
+    ).toHaveLength(1);
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [
+        rec({ imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 7 }] }),
+      ])
+    ).toEqual([
+      { consumerStack: 'Consumer', consumerRegion: 'us-east-1', key: undefined, intrinsic: 'Fn::ImportValue' },
+    ]);
   });
 
   it('counts an entry whose sourceRegion is unreadable as a possible read', () => {

@@ -1393,6 +1393,53 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     expect(logLines()).not.toContain(LEFTOVER);
   });
 
+  it('masks an index entry a PREVIOUS scrub left without its key, by the entry own value', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', makeState('MyStack', 'us-east-1', true)); // the key is already gone
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([[DROPPED, entry(LEFTOVER, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions());
+
+    expect(logLines()).toContain('Exports index entry (masked: "k-***")');
+    expect(logLines()).not.toContain(LEFTOVER);
+  });
+
+  it('summarises the drop without calling the keys secrets', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', leftover('MyStack'));
+
+    await scrubCommand([], commandOptions());
+
+    expect(logLines()).toContain(
+      '1 output key(s) the template no longer declares were dropped: their values could not be identified, and they are not necessarily secrets'
+    );
+  });
+
+  it('a failed load of the other records is not memoized', async () => {
+    synthStacks.push(makeStackInfo('A'), makeStackInfo('B'));
+    records.set('A', leftover('A'));
+    records.set('B', leftover('B'));
+    records.set('Consumer', leftover('Consumer'));
+    const real = commandStateBackend.getState.getMockImplementation() as (s: string) => unknown;
+    let consumerReads = 0;
+    commandStateBackend.getState.mockImplementation((stack: string) =>
+      stack === 'Consumer' && ++consumerReads === 1
+        ? Promise.reject(new Error('throttled'))
+        : real(stack)
+    );
+
+    await expect(scrubCommand([], commandOptions())).rejects.toMatchObject({
+      code: 'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED',
+    });
+    // The first stack kept its key; the second, on a fresh load, dropped it.
+    const saved = commandStateBackend.saveState.mock.calls.map((c) => c[2] as StackState);
+    expect(saved.filter((st) => Object.hasOwn(st.outputs, DROPPED))).toHaveLength(0);
+    expect(saved).toHaveLength(1);
+  });
+
   it('reads the other records ONCE per run, however many stacks drop a key', async () => {
     synthStacks.push(makeStackInfo('A'), makeStackInfo('B'));
     records.set('A', leftover('A'));
@@ -1443,5 +1490,6 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     });
     // Kept, and the record is otherwise clean, so nothing is written.
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+    expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
   });
 });
