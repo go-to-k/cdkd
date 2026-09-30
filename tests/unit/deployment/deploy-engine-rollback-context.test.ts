@@ -231,3 +231,56 @@ describe('DeployEngine rollback context: a nested child names itself for the rem
     expect('nestedChildStack' in contextOf({}, 'Top')).toBe(false);
   });
 });
+
+describe("DeployEngine rollback context: a nested child inherits its parent's producer regions (go-to-k/cdkd#4174)", () => {
+  const CHILD_INFO = { parentStack: 'Top', parentLogicalId: 'Child', parentRegion: 'us-east-1' };
+  const withRead = {
+    version: 8,
+    stackName: 'Top~Child',
+    region: 'us-east-1',
+    resources: {},
+    outputs: {},
+    outputReads: [{ stackName: 'P', outputName: 'O', sourceRegion: 'eu-west-1' }],
+    lastModified: 0,
+  } as unknown as StackState;
+
+  function contextFor(options: Record<string, unknown>): Record<string, unknown> {
+    const engine = new DeployEngine({} as never, {} as never, {} as never, {} as never, {} as never, options, 'us-east-1');
+    return (
+      engine as unknown as {
+        rollbackExecutorContext: (s: StackState, name: string) => Record<string, unknown>;
+      }
+    ).rollbackExecutorContext.call(engine, withRead, 'Top~Child');
+  }
+
+  it("a child unions its own regions with the parent engine's, complete when the parent's are", () => {
+    const ctx = contextFor({
+      parentStackInfo: CHILD_INFO,
+      inheritedProducerRegions: () => ({ regions: ['us-west-2'], complete: true }),
+    });
+    expect(ctx['importedProducerRegions']).toEqual(['eu-west-1', 'us-west-2']);
+    expect(ctx['producerRegionsIncomplete']).toBe(false);
+  });
+
+  it('a child with NO parent evidence is incomplete', () => {
+    const ctx = contextFor({ parentStackInfo: CHILD_INFO });
+    expect(ctx['importedProducerRegions']).toEqual(['eu-west-1']);
+    expect(ctx['producerRegionsIncomplete']).toBe(true);
+  });
+
+  it('a child whose parent evidence is incomplete stays incomplete', () => {
+    const ctx = contextFor({
+      parentStackInfo: CHILD_INFO,
+      inheritedProducerRegions: () => ({ regions: [], complete: false }),
+    });
+    expect(ctx['producerRegionsIncomplete']).toBe(true);
+  });
+
+  it('a top-level engine is complete with its own regions, and ignores a stray inherited option', () => {
+    const ctx = contextFor({
+      inheritedProducerRegions: () => ({ regions: ['us-west-2'], complete: false }),
+    });
+    expect(ctx['importedProducerRegions']).toEqual(['eu-west-1']);
+    expect(ctx['producerRegionsIncomplete']).toBe(false);
+  });
+});

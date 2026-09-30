@@ -2,6 +2,11 @@ import { getLogger } from '../utils/logger.js';
 import { commandHole, pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
+  inheritProducerRegions,
+  withProducerRegions,
+  type ProducerRegionEvidence,
+} from './producer-regions-scope.js';
+import {
   equalIdNamesDifferentResources,
   equalIdNamesSameResource,
   findNestedStackTypeChanges,
@@ -4042,19 +4047,24 @@ export class DeployEngine {
         state: newState,
         actualCounts,
         completedOperations,
-      } = await this.executeDeployment(
-        effectiveTemplate,
-        currentState,
-        changes,
-        dag,
-        executionLevels,
-        stackName,
-        outputsDigestSource,
-        parameterValues,
-        conditions,
-        currentEtag,
-        progress,
-        migrationPending
+      } = await withProducerRegions(
+        // go-to-k/cdkd#4174: for the child engine a nested-stack row builds.
+        () => this.producerRegionEvidence(currentState),
+        () =>
+          this.executeDeployment(
+            effectiveTemplate,
+            currentState,
+            changes,
+            dag,
+            executionLevels,
+            stackName,
+            outputsDigestSource,
+            parameterValues,
+            conditions,
+            currentEtag,
+            progress,
+            migrationPending
+          )
       );
 
       // 7a. Drain in-flight readCurrentState promises so each resource's
@@ -5284,6 +5294,7 @@ export class DeployEngine {
     previousState: StackState,
     stackName: string
   ): RollbackExecutorContext {
+    const producerRegions = this.producerRegionEvidence(previousState);
     return {
       providerRegistry: this.providerRegistry,
       region: this.stackRegion,
@@ -5302,23 +5313,36 @@ export class DeployEngine {
       // value) this deploy recorded per resource, which the replay's own
       // re-resolution of the journal cannot re-derive.
       logOnlyNeedlesFor: (logicalId) => this.perResourceSecrets.get(logicalId),
-      // Issue #2057: the producer regions this stack reads across, so the
-      // replay refuses a region-LESS `{{resolve:...}}` expression rather than
-      // re-resolving it here and writing a same-named foreign secret to a live
-      // resource. The UNION is what makes this reachable at all — a rollback
-      // runs only after a FAILED deploy, and the read this deploy INTRODUCED is
-      // in `recordedImports` / `recordedOutputReads`, never yet in the
-      // persisted snapshot. Strictly more evidence than `cdkd rollback` can
-      // derive on its own, which sees only what a save persisted.
-      importedProducerRegions: producerRegionsFromState(
-        crossStackReadsForPartialSave(
-          previousState,
-          this.recordedImports,
-          this.recordedOutputReads,
-          this.crossStackReadKeyNormalizer()
-        )
-      ),
+      // See `producerRegionEvidence`.
+      importedProducerRegions: producerRegions.regions,
+      producerRegionsIncomplete: !producerRegions.complete,
     };
+  }
+
+  /**
+   * The producer regions this stack reads across (issue #2057), so a replay
+   * refuses a region-LESS `{{resolve:...}}` expression rather than
+   * re-resolving it here and writing a same-named foreign secret to a live
+   * resource. The UNION is what makes this reachable at all — a rollback runs
+   * only after a FAILED deploy, and the read this deploy INTRODUCED is in
+   * `recordedImports` / `recordedOutputReads`, never yet in the persisted
+   * snapshot. Strictly more evidence than `cdkd rollback` can derive on its
+   * own, which sees only what a save persisted.
+   *
+   * A nested child adds its parent's (go-to-k/cdkd#4174), and is complete
+   * only when those are.
+   */
+  private producerRegionEvidence(previousState: StackState): ProducerRegionEvidence {
+    const own = producerRegionsFromState(
+      crossStackReadsForPartialSave(
+        previousState,
+        this.recordedImports,
+        this.recordedOutputReads,
+        this.crossStackReadKeyNormalizer()
+      )
+    );
+    if (!this.options.parentStackInfo) return { regions: own, complete: true };
+    return inheritProducerRegions(own, this.options.inheritedProducerRegions?.());
   }
 
   /**

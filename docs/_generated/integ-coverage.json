@@ -632,6 +632,7 @@
         "nested-stack-rollback",
         "nested-stack-secret",
         "recreate-nested-logical-id-collision",
+        "rollback-nested-cross-region-secret",
         "scrub-nested-child"
       ],
       "signals": {
@@ -669,6 +670,9 @@
           "literal"
         ],
         "recreate-nested-logical-id-collision": [
+          "literal"
+        ],
+        "rollback-nested-cross-region-secret": [
           "literal"
         ],
         "scrub-nested-child": [
@@ -5996,6 +6000,7 @@
         "rollback-deletion-policy-snapshot",
         "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
+        "rollback-nested-cross-region-secret",
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
@@ -6137,6 +6142,9 @@
         "rollback-failure-injection": [
           "l1"
         ],
+        "rollback-nested-cross-region-secret": [
+          "l1"
+        ],
         "rollback-replacement-retain": [
           "l1"
         ],
@@ -6276,6 +6284,7 @@
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-failure-injection",
+        "rollback-nested-cross-region-secret",
         "rollback-replacement-retain",
         "s3-tables",
         "schema-v5-to-v6-migration",
@@ -6521,6 +6530,10 @@
           "l2"
         ],
         "rollback-failure-injection": [
+          "l2"
+        ],
+        "rollback-nested-cross-region-secret": [
+          "l1",
           "l2"
         ],
         "rollback-replacement-retain": [
