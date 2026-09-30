@@ -505,9 +505,10 @@ the bucket-wide exports index, which any stack's reader can list.
   deploy succeeds, the alias is not published, and the next exports-index
   update drops a previously published entry.
 - The residual note at `outputs-export-alias.ts:119-128` is replaced.
-- **Phase B widens the containment scan too.** `secretsPresentIn` over
-  `recordedThisPass` then sees every `NoEcho` value ANY output of the pass
-  read. A name that merely contains one at 4 or more characters is refused. For
+- **The containment scan is pass-wide from Phase A on.** The corpus
+  `printingCorpusOf(nameSecrets)` holds the log-only set the whole outputs pass
+  shares (`deploy-engine.ts:10517`), so it sees every `NoEcho` value ANY
+  output of the pass read. Phase B sees the same set through the map. A name that merely contains one at 4 or more characters is refused. For
   a low-entropy value (`prod`), that refuses ordinary names. This is the same
   bound #1919 accepted for secrets, and the warning names the output.
 - **A stack that is never redeployed** keeps a published alias in `outputs`,
@@ -651,8 +652,8 @@ lanes once B merges.
 
 - **A.** `exportNameSecretExposure` over a bag holding only a `NoEcho` needle
   refuses a name equal to a value of any length, and a name embedding a value
-  of 4 or more characters. A needle another output recorded into the shared
-  log-only set does not refuse an unrelated name. An ordinary parameter in the
+  of 4 or more characters. A name that does not contain a needle another
+  output recorded into the shared log-only set is not refused. An ordinary parameter in the
   same name still publishes. **B** adds the positional twin: a 1-3 character
   embedded value is refused by position.
 - **B, arms.** Cover each case:
