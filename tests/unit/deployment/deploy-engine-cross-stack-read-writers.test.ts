@@ -269,7 +269,11 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
   });
 
   it('counts the union call sites, so a deleted spread reds this test', () => {
-    const source = stripComments(readFileSync(`${REPO_ROOT}${SOURCE}`, 'utf8'));
+    // The rollback-executor context's call lives in the `deploy-engine-rollback.ts`
+    // mixin (#4200), so the count spans both files.
+    const source = [SOURCE, 'src/deployment/deploy-engine-rollback.ts']
+      .map((file) => stripComments(readFileSync(`${REPO_ROOT}${file}`, 'utf8')))
+      .join('\n');
     const calls = source.match(/crossStackReadsForPartialSave\(/g) ?? [];
     // 1 declaration + 6 non-success saves + 1 rollback-executor context.
     expect(

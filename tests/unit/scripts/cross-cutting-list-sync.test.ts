@@ -112,6 +112,7 @@ const DESTROY_SCOPE_PIN = [
   'src/deployment/deploy-engine-name-collision.ts',
   'src/deployment/deploy-engine-options.ts',
   'src/deployment/deploy-engine-outputs.ts',
+  'src/deployment/deploy-engine-rollback.ts',
   'src/deployment/deploy-engine.ts',
   'src/deployment/deploy-value-equality.ts',
   'src/deployment/inline-policy-claims.ts',
