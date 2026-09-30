@@ -986,6 +986,27 @@ describe('derived physical names (issue #2177 security review)', () => {
     expect(error.message).not.toContain('owner hunter2x');
     expect(allLines()).not.toContain('owner hunter2x');
   });
+
+  it('masks the derived name whole where a recorded secret rewrites its inside (issue #4193)', async () => {
+    // `alice` is recorded too, so the base turns the name into
+    // `MyStack-***-example-com`; the needle must match that rendering.
+    const roleName = derived(FOLDED, 64);
+    answerIam({ CreateRoleCommand: new Error(`Role ${roleName} already exists.`) });
+    const error = await withStackName(STACK, () =>
+      new IAMRoleProvider().create(
+        'MyRole',
+        'AWS::IAM::Role',
+        { RoleName: FOLDED, AssumeRolePolicyDocument: DOC },
+        { maskSecrets: createSecretMasker(bagOf(FOLDED, 'alice')) }
+      )
+    ).then(
+      () => new Error('resolved instead of rejecting'),
+      (e: unknown) => e as Error
+    );
+    expect(error.message).toContain(`Role ${SECRET_MASK} already exists.`);
+    expect(error.message).not.toContain('example-com');
+    expect(allLines()).not.toContain('example-com');
+  });
 });
 
 /**

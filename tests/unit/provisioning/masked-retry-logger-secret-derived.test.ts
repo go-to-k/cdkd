@@ -110,10 +110,28 @@ describe('withDerivedNameMasks runs the base masker before its needles (issue #4
     );
   });
 
-  it('drops a needle the base hides whole, and returns the sinks unchanged when none is left', () => {
+  it('renders like the base alone when every needle is one the base hides whole', () => {
     const base = createMaskedLogSinks(silent, createSecretMasker(bagOf('prod-db')));
-    expect(withDerivedNameMasks(silent, base, [['prod-db', 'prod-db']])).toBe(base);
+    const sinks = withDerivedNameMasks(silent, base, [['prod-db', 'prod-db']]);
+    for (const text of ["Name 'prod-db' is taken.", 'a***b', 'prod-dbprod-db']) {
+      expect(sinks.mask(text)).toBe(base.mask(text));
+    }
+    // No secret-derived pair at all: the input sinks come back unchanged.
     expect(withDerivedNameMasks(silent, base, [['plain', 'plain']])).toBe(base);
+  });
+
+  it('renders each needle against the bag as it is at MASK time, not at build time', () => {
+    // The base reads a bag that can grow after the sinks are built (the
+    // rollback records secrets as it resolves them). A needle rendered once,
+    // up front, would stay `stack-alice-example-com` while the base now
+    // rewrites the text to `stack-***-example-com`, and the rest would print.
+    const bag = bagOf('alice@example.com');
+    const sinks = withDerivedNameMasks(silent, createMaskedLogSinks(silent, createSecretMasker(bag)), [
+      ['alice@example.com', 'stack-alice-example-com'],
+    ]);
+    expect(sinks.mask('Role stack-alice-example-com failed.')).toBe('Role *** failed.');
+    bag.set('alice', '{{resolve:secretsmanager:alice}}');
+    expect(sinks.mask('Role stack-alice-example-com failed.')).toBe('Role *** failed.');
   });
 
   it('keeps its substring floor equal to MIN_NEEDLE_LENGTH', () => {

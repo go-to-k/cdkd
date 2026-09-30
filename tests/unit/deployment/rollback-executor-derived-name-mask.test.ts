@@ -37,9 +37,17 @@ const OTHER_EXPR = '{{resolve:secretsmanager:other-name:SecretString:name::}}';
 /** A secret with a whitespace RUN, which `collisionText` collapses. */
 const SPACED_NAME = 'alice  spaced  secret';
 const SPACED_EXPR = '{{resolve:secretsmanager:spaced-name:SecretString:name::}}';
+/** A secret CONTAINING the derived name `KEPT` (issue #4193). */
+const LONGER_SECRET = 'MyStack-alice-example-com owner hunter2x';
+const LONGER_EXPR = '{{resolve:secretsmanager:longer-name:SecretString:name::}}';
 const smSend = vi.fn(async (cmd?: { input?: { SecretId?: string } }) => ({
   SecretString: JSON.stringify({
-    name: cmd?.input?.SecretId === 'spaced-name' ? SPACED_NAME : SECRET_NAME,
+    name:
+      cmd?.input?.SecretId === 'spaced-name'
+        ? SPACED_NAME
+        : cmd?.input?.SecretId === 'longer-name'
+          ? LONGER_SECRET
+          : SECRET_NAME,
   }),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -352,6 +360,36 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     const event = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED');
     expect(event?.error?.message).toContain('role/***');
     expect(leaks(event!.error!.message)).toBe(false);
+  });
+
+  it('does not split a longer resolved secret that contains the derived name (#4193)', async () => {
+    // The derived name is a needle, and the op also resolved a secret that
+    // CONTAINS it. The op's masker must hide that secret whole, not cut it at
+    // the needle and print its remainder.
+    const create = vi
+      .fn()
+      .mockRejectedValue(new Error(`Description '${LONGER_SECRET}' is invalid.`));
+    const { ctx, lines, events } = makeCtx({ create, delete: vi.fn() });
+    const { op, state } = replacement(KEPT, SECRET_EXPR, 'plain-new', 'plain-new', {
+      op: {
+        previousState: role(KEPT, SECRET_EXPR, {
+          properties: {
+            RoleName: SECRET_EXPR,
+            AssumeRolePolicyDocument: TRUST,
+            Description: LONGER_EXPR,
+          },
+        }),
+      },
+    });
+
+    const result = await replayKept(() => replayRollback([op], state, STACK, ctx));
+
+    expect(result.failures).toBe(1);
+    const failed = lines.find((l) => l.includes('Rollback failed for R'));
+    expect(failed).toContain("Description '***' is invalid.");
+    for (const line of lines) expect(line).not.toContain('hunter2x');
+    const event = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED');
+    expect(event?.error?.message).toContain("Description '***' is invalid.");
   });
 
   // The two in-place arms resolve BOTH sides, and each side's name derives

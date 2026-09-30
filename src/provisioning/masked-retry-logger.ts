@@ -208,10 +208,15 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  * longer; below it the base's substring arm leaves the text alone too), so a
  * needle whose INSIDE the base rewrites still matches the rewritten text; a
  * needle the base turns into exactly the mask is dropped, because the base
- * already hides it whole. The residual, accepted: a recorded secret that
- * STRADDLES a needle's edge in the text rewrites the needle differently there
- * than alone, so the needle's part outside that secret prints — part of the
- * derived name, never part of a secret the base hid.
+ * already hides it whole. The needles are rendered on EVERY call, not once
+ * here: the base can read a bag that grows after these sinks are built, and a
+ * needle rendered against the older bag would no longer match once a newly
+ * recorded secret rewrites its inside. The residual, accepted: a recorded
+ * secret that STRADDLES a needle's edge in the text rewrites the needle
+ * differently there than alone, so the needle's part outside that secret
+ * prints. That part can be a fragment of secret plaintext, since a derived
+ * name may be a folded copy of the secret; the needles-first order printed
+ * the straddling secret's outside part instead.
  */
 export function withDerivedNameMasks(
   logger: { debug(message: string): void; warn(message: string): void },
@@ -230,21 +235,20 @@ export function withDerivedNameMasks(
     )
     .map(([, derived]) => derived);
   if (derivedNames.length === 0) return sinks;
-  // Each needle as it reads in the BASE's output (see the ordering note above).
-  // The same marker the depth cap substitutes, which is fenced against
-  // `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
-  const needles = [
-    ...new Set(
-      derivedNames.map((derived) =>
-        derived.length < BASE_MASKER_SUBSTRING_FLOOR ? derived : base(derived)
-      )
-    ),
-  ]
-    .filter((needle) => needle !== '' && needle !== MASK_WALK_DEPTH_CAP_MARKER)
-    // Longest first, so a needle that contains another is replaced whole.
-    .sort((a, b) => b.length - a.length);
-  if (needles.length === 0) return sinks;
   const mask: MaskerFn = (text: string) => {
+    // Each needle as it reads in the BASE's output NOW (see the ordering note
+    // above). The same marker the depth cap substitutes, which is fenced
+    // against `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
+    const needles = [
+      ...new Set(
+        derivedNames.map((derived) =>
+          derived.length < BASE_MASKER_SUBSTRING_FLOOR ? derived : base(derived)
+        )
+      ),
+    ]
+      .filter((needle) => needle !== '' && needle !== MASK_WALK_DEPTH_CAP_MARKER)
+      // Longest first, so a needle that contains another is replaced whole.
+      .sort((a, b) => b.length - a.length);
     let out = base(text);
     for (const needle of needles) out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
     return out;
