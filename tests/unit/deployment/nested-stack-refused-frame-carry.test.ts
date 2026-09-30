@@ -79,6 +79,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
         // A parameter NAMED by an inherited secret (the #4130 review's M0): its
         // name reaches the token only after that secret is substituted in.
         if (name === '/app/pinname-long') return { Parameter: { Value: 'q7', Type: 'SecureString' } };
+        // A secret whose value occurs in its own token's text (the #4130
+        // review's M2): `in` inside `{{resolve:ssm:/app/kin}}`.
+        if (name === '/app/kin') return { Parameter: { Value: 'in', Type: 'SecureString' } };
         // A SecureString whose value is itself reference text (issue #3306's
         // two-stage shape): the object's final pass resolves it again.
         if (name === '/app/ref') {
@@ -645,6 +648,43 @@ describe('issue #3306 review M0: a recorded secret INSIDE the carried token is r
       expect(bag.has(`port:${PIN}`)).toBe(false);
       expect(String(await childPersist(bag, 'Pin', `port:${PIN}`))).not.toContain(NAME);
       if (rowToo) expect(String(record.Parameters['Pin'])).not.toContain(NAME);
+    });
+  }
+});
+
+describe('issue #3306 review M2: a frame whose own value occurs in its token text is still carried', () => {
+  const EXPRESSION = 'port:{{resolve:ssm:/app/kin}}';
+  for (const [label, pin, bound] of [
+    ['a wholly literal Fn::Sub', { 'Fn::Sub': 'port:{{resolve:ssm:/app/kin}}' }, {}],
+    ['an Fn::Join with a Ref outside the token', { 'Fn::Join': ['', [{ Ref: 'Pre' }, ':{{resolve:ssm:/app/kin}}']] }, { Pre: 'port' }],
+    ['an Fn::Sub with a placeholder outside the token', { 'Fn::Sub': '${Pre}:{{resolve:ssm:/app/kin}}' }, { Pre: 'port' }],
+  ] as const) {
+    it(`carries ${label}`, async () => {
+      const { bag, resolved, record } = await deployRow({ Pin: pin }, bound);
+      // Premises: the value is sub-floor (the scan alone is silent on it) and
+      // occurs in its own token's text.
+      expect(resolved.Parameters['Pin']).toBe('port:in');
+      expect('in'.length).toBeLessThan(MIN_NEEDLE_LENGTH);
+      expect(redactSecretsForState('port:in', new Map([['in', 'x']]))).toBe('port:in');
+      expect(EXPRESSION.includes('in')).toBe(true);
+      expect(bag.get('port:in')).toBe(EXPRESSION);
+      expect(record.Parameters['Pin']).toBe(EXPRESSION);
+      expect(await childPersist(bag, 'Pin', 'port:in')).toBe(EXPRESSION);
+    });
+  }
+
+  // The exception covers the token only: the same value in the PREFIX or the
+  // SUFFIX is a plaintext the spelling would carry, so it is still refused.
+  for (const [label, pin, bound] of [
+    ['the prefix', { 'Fn::Join': ['', [{ Ref: 'Pre' }, ':{{resolve:ssm:/app/kin}}']] }, { Pre: 'in' }],
+    ['the suffix', { 'Fn::Join': ['', ['{{resolve:ssm:/app/kin}}:', { Ref: 'Tail' }]] }, { Tail: 'in' }],
+  ] as const) {
+    it(`refuses a frame whose own value also sits in ${label}`, async () => {
+      const { bag, resolved, record } = await deployRow({ Pin: pin }, bound);
+      expect(resolved.Parameters['Pin']).toBe('in:in');
+      expect(bag.has('in:in')).toBe(false);
+      expect(await childPersist(bag, 'Pin', 'in:in')).toBe('in:in');
+      expect(String(record.Parameters['Pin'])).not.toContain('{{resolve:');
     });
   }
 });

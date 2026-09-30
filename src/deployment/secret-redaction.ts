@@ -380,9 +380,19 @@ function substitutedSpellingOf(
   // another secret this pass recorded, which the spelling would carry
   // verbatim as though it were an expression (the #4130 review's M0). Refused
   // at any length, over-refusing toward the value scan's answer: a plaintext
-  // the bag holds anywhere in `input`.
+  // the bag holds anywhere in `input` -- except the frame's OWN value inside
+  // its token. That value is in the bag by construction, and a 1-3 character
+  // one is often a substring of the token's literal text (`in` in
+  // `{{resolve:ssm:/app/kin}}`), so scanning the token for it refused the
+  // #3156 carry itself (the review's M2). It is still refused in the affix.
+  // Another short secret that merely coincides with the token's literal text
+  // is still over-refused; the scan cannot tell where the text came from.
   for (const plaintext of secrets.keys()) {
-    if (plaintext !== '' && resolution.input.includes(plaintext)) return undefined;
+    if (plaintext === '') continue;
+    const outsideToken = frame.prefix.includes(plaintext) || frame.suffix.includes(plaintext);
+    if (plaintext === substitution.value ? outsideToken : resolution.input.includes(plaintext)) {
+      return undefined;
+    }
   }
   return resolution.input;
 }
@@ -2628,7 +2638,8 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * verdict, one that replaced more than one token, one whose token sits in a
  * part with no record of its own (an `Fn::Select` element, an `Fn::If` branch
  * of that kind), one whose spelling holds a plaintext the bag holds
- * anywhere, prefix, token or suffix (another secret a non-literal part
+ * anywhere, prefix, token or suffix, bar its own value inside its token
+ * (another secret a non-literal part
  * resolved into it, e.g. `{{resolve:ssm:/app/${Name}}}` with `Name` a secret;
  * {@link substitutedSpellingOf}) -- each keeps the plaintext in the child, and
  * for the outside-the-token frame in the parent's record; so does an
