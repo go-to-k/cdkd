@@ -1,5 +1,7 @@
 import type { ResourceDeleteResult } from '../types/resource.js';
+import { plainIdentOr } from '../utils/display-safe.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import { plainOrDescribed } from '../utils/pasteable-command.js';
 import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
 
 /**
@@ -240,6 +242,31 @@ function quotedOr(value: string, quote: "'" | '"', description: string): string 
   return QUOTABLE_VALUE.test(value) ? `${quote}${value}${quote}` : description;
 }
 
+/**
+ * The logical id as the messages below print it, UNQUOTED at the head:
+ * itself when `isPasteableIdent` admits it, otherwise a description
+ * (go-to-k/cdkd#4107). On `cdkd destroy` it is a `state.json` resource key,
+ * which nothing validates, so a state-bucket writer chooses it: printed raw,
+ * `X$(touch OWNED)` ran when the head was pasted.
+ */
+function logicalIdShown(logicalId: string): string {
+  return plainOrDescribed(logicalId, 'logical id');
+}
+
+/**
+ * A CloudFormation type name: alphanumeric `::`-joined segments, the later
+ * ones also admitting `_`, `@` and `-` (`Custom::My-Thing`). No character here
+ * expands or redirects at the start of a pasted line.
+ */
+const RESOURCE_TYPE_SHAPE = /^[A-Za-z0-9]+(?:::[A-Za-z0-9_@-]+)+$/;
+
+/** The resource type as the refusal head prints it, or a description. */
+function resourceTypeShown(resourceType: string): string {
+  return RESOURCE_TYPE_SHAPE.test(resourceType) && plainIdentOr(resourceType, '') === resourceType
+    ? resourceType
+    : 'a resource type that is not a plain identifier';
+}
+
 /** Render `<a>|<b>|<c>` from the segment names. */
 function idShape(segments: readonly CompositeIdSegment[]): string {
   return segments.map((segment) => `<${segment.name}>`).join(COMPOSITE_ID_SEPARATOR);
@@ -282,8 +309,14 @@ export function compositeIdSeparatorRefusal(
     )
     .join(' and ');
 
+  // `resourceType` selects the provider on the delete path, so it is a
+  // registered type there, and it is template text elsewhere; it is still held
+  // to the CloudFormation type shape rather than printed raw, since it is the
+  // FIRST word of a pasted line, where `plainIdentOr` alone would admit a
+  // command path (`./x`) or an assignment (`A=b`).
+  const typeShown = resourceTypeShown(resourceType);
   return (
-    `${resourceType} ${logicalId}: ${named} contains '${COMPOSITE_ID_SEPARATOR}', which cdkd uses ` +
+    `${typeShown} ${logicalIdShown(logicalId)}: ${named} contains '${COMPOSITE_ID_SEPARATOR}', which cdkd uses ` +
     `as the separator in this type's physical id (${idShape(segments)}). Recording it would ` +
     `produce an id that decodes back to a DIFFERENT resource, so a later cdkd destroy / drift / ` +
     `update would target the wrong one — or silently skip it while the real resource stays ` +
@@ -431,7 +464,7 @@ export function compositeIdFormatMessage(
     : `"${formatShape(format.segments)}"`;
 
   const head =
-    `Invalid physicalId format for ${format.label} ${logicalId}: ` +
+    `Invalid physicalId format for ${format.label} ${logicalIdShown(logicalId)}: ` +
     `expected ${accepted}, got ${quotedOr(physicalId, '"', 'an id that is not a plain identifier')}`;
 
   if (!options?.skipping) return head;
