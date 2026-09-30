@@ -35,9 +35,9 @@ paths:
 
 Synth-driven: drops resources by construct path (PREFIX-matched) and
 rewrites every sibling `Ref` / `Fn::GetAtt` / `Fn::Sub` / `dependencies`
-reference to them, no other intrinsic. A `Fn::GetAtt` takes the
-RECORDED attribute wherever the resolver would; the live `getAttribute()` reads
-by NAME, so only otherwise ([#4186](https://github.com/go-to-k/cdkd/issues/4186)).
+reference to them, no other intrinsic. A `Fn::GetAtt` takes the RECORDED
+attribute over the live `getAttribute()` answer (read by NAME), and only once
+that read answered, so it prints nothing the live path could not ([#4186](https://github.com/go-to-k/cdkd/issues/4186)).
 
 - The `aws:cdk:path` index (`src/cli/cdk-path.ts`, shared with `cdkd import`)
   excludes `AWS::CDK::Metadata`, so `CDKMetadata/Default` is never orphanable.

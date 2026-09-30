@@ -1262,7 +1262,7 @@ describe('recorded attributes are served before a live read (#4186)', () => {
     });
   }
 
-  it('takes the recorded value over a DIFFERENT live one, in all three shapes, with no live read', async () => {
+  it('takes the recorded value over a DIFFERENT live one, in all three shapes', async () => {
     const getAttribute = vi.fn(async () => FOREIGN);
     const result = await rewriteResourceReferences(
       repoState({ KmsKeyId: RECORDED }),
@@ -1275,7 +1275,7 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       String: RECORDED,
       Sub: `k=${RECORDED}`,
     });
-    expect(getAttribute).not.toHaveBeenCalled();
+    expect(getAttribute).toHaveBeenCalledTimes(1);
     expect(result.rewrites.filter((r) => r.kind === 'getAtt').map((r) => r.after)).toEqual([
       RECORDED,
       RECORDED,
@@ -1309,7 +1309,7 @@ describe('recorded attributes are served before a live read (#4186)', () => {
     expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(FOREIGN);
   });
 
-  it('takes a recorded null as the resolver does, rather than reading live', async () => {
+  it('takes a recorded null as the resolver does, over a live value', async () => {
     const getAttribute = vi.fn(async () => FOREIGN);
     const result = await rewriteResourceReferences(
       repoState({ KmsKeyId: null }),
@@ -1317,7 +1317,7 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       fakeRegistry(getAttribute)
     );
     expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBeNull();
-    expect(getAttribute).not.toHaveBeenCalled();
+    expect(getAttribute).toHaveBeenCalledTimes(1);
   });
 
   for (const [label, masked] of [
@@ -1388,7 +1388,7 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       fakeRegistry(getAttribute)
     );
     expect((fresh.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(recorded);
-    expect(getAttribute).not.toHaveBeenCalled();
+    expect(getAttribute).toHaveBeenCalledTimes(1);
   });
 
   it("reads live past a legacy '' security-group VpcId (#3097)", async () => {
@@ -1426,7 +1426,7 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       'ns-1',
       'ns-2',
     ]);
-    expect(getAttribute).not.toHaveBeenCalled();
+    expect(getAttribute).toHaveBeenCalled();
   });
 
   it('serves a dotted attribute from a flat key, then from a nested object (issue #381)', async () => {
@@ -1443,7 +1443,7 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       fakeRegistry(getAttribute)
     );
     expect((nested.state.resources['Other']?.properties as { Array: unknown }).Array).toBe('3306');
-    expect(getAttribute).not.toHaveBeenCalled();
+    expect(getAttribute).toHaveBeenCalled();
   });
 
   it('does not walk an INHERITED key of a nested attribute object', async () => {
@@ -1471,18 +1471,17 @@ describe('recorded attributes are served before a live read (#4186)', () => {
     );
   });
 
-  it('serves a recorded value WITHOUT --force where the provider has no getAttribute or none routes', async () => {
-    // The recorded read sits ABOVE the provider lookup: a Cloud-Control-routed
-    // orphan (no `getAttribute`) was unresolvable without `--force` before.
+  // GATED ON A LIVE ANSWER (security review of go-to-k/cdkd#4189): a record
+  // whose provider cannot answer keeps its pre-#4186 outcome, so the recorded
+  // read never prints what the live-read-only path could not.
+  it('does NOT serve a recorded value where the provider has no getAttribute or none routes', async () => {
     const noGetAttribute = await rewriteResourceReferences(
       repoState({ KmsKeyId: RECORDED }),
       ['Repo'],
       fakeRegistry()
     );
-    expect(noGetAttribute.unresolvable).toEqual([]);
-    expect((noGetAttribute.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
-      RECORDED
-    );
+    expect(noGetAttribute.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(noGetAttribute.rewrites)).not.toContain(RECORDED);
     const throwing = {
       getProviderFor: vi.fn(() => {
         throw new Error('no provider');
@@ -1493,10 +1492,41 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       ['Repo'],
       throwing
     );
-    expect(noProvider.unresolvable).toEqual([]);
-    expect((noProvider.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
-      RECORDED
+    expect(noProvider.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(noProvider.rewrites)).not.toContain(RECORDED);
+  });
+
+  it('does not serve a Cloud-Control-routed record, whose attributes are the whole model', async () => {
+    // `CloudControlProvider` implements no `getAttribute`, and its record can
+    // hold a credential no name rule sees (`TokenValue`).
+    const state = baseState({
+      Tok: {
+        physicalId: 'tok-1',
+        resourceType: 'AWS::EC2::IpamExternalResourceVerificationToken',
+        properties: {},
+        attributes: { TokenValue: 'plaintext-token-value' },
+        provisionedBy: 'cc-api',
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Tok', 'TokenValue'] } },
+      },
+    });
+    const result = await rewriteResourceReferences(state, ['Tok'], fakeRegistry());
+    expect(JSON.stringify(result.rewrites)).not.toContain('plaintext-token-value');
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain('plaintext-token-value');
+    expect(result.unresolvable).toHaveLength(1);
+  });
+
+  it('does not serve a recorded value when the live read answers undefined (a plain out-of-band delete)', async () => {
+    const result = await rewriteResourceReferences(
+      repoState({ KmsKeyId: RECORDED }),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => undefined))
     );
+    expect(result.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(result.rewrites)).not.toContain(RECORDED);
   });
 
   it("serves an empty legacy NameServers string as [], the resolver's shape", async () => {
@@ -1524,10 +1554,9 @@ describe('recorded attributes are served before a live read (#4186)', () => {
   // the default path: the audit table prints every substituted value.
   it('does not serve a credential-named attribute (IAM AccessKey SecretAccessKey)', async () => {
     const SECRET = 'PLAINTEXT-SECRET-ACCESS-KEY';
-    // The provider refuses the attribute live, as `IAMAccessKeyProvider` does.
-    const getAttribute = vi.fn(async () => {
-      throw new Error('SecretAccessKey is only available at create time');
-    });
+    // A provider that DID answer (the real one refuses): the name rule alone
+    // must withhold the record, and the live answer decides as before #4186.
+    const getAttribute = vi.fn(async () => 'live-answer');
     const result = await rewriteResourceReferences(
       repoState({ SecretAccessKey: SECRET }, 'SecretAccessKey', 'AWS::IAM::AccessKey'),
       ['Repo'],
@@ -1535,9 +1564,9 @@ describe('recorded attributes are served before a live read (#4186)', () => {
     );
     expect(JSON.stringify(result.rewrites)).not.toContain(SECRET);
     expect(JSON.stringify(result.state.resources['Other'])).not.toContain(SECRET);
-    expect(result.unresolvable).toHaveLength(3);
-    // The live read decided, as before #4186 (a failed read is not memoized).
-    expect(getAttribute).toHaveBeenCalledWith('my-repo', 'AWS::IAM::AccessKey', 'SecretAccessKey');
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-answer'
+    );
   });
 
   it('CONTROL: a credential-looking name ending in an identifier suffix IS served', async () => {
@@ -1553,32 +1582,35 @@ describe('recorded attributes are served before a live read (#4186)', () => {
   for (const type of ['AWS::CloudFormation::CustomResource', 'Custom::Thing']) {
     it(`does not serve a recorded custom-resource value (${type})`, async () => {
       const PLAIN = 'legacy-noecho-plaintext';
+      // A provider that DID answer: the type rule alone must withhold it.
       const result = await rewriteResourceReferences(
         repoState({ Token: PLAIN }, 'Token', type),
         ['Repo'],
-        fakeRegistry()
+        fakeRegistry(vi.fn(async () => 'live-answer'))
       );
       expect(JSON.stringify(result.rewrites)).not.toContain(PLAIN);
-      expect(result.unresolvable).toHaveLength(3);
+      expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+        'live-answer'
+      );
     });
   }
 
   it("does not serve an AppSync API key's ApiKey, the x-api-key value itself", async () => {
     const KEY = 'da2-plaintextapikeyvalue123';
-    // The AppSync provider's `getAttribute` answers `undefined` for everything.
+    // A provider that DID answer: the table alone must withhold the record.
     const result = await rewriteResourceReferences(
       repoState({ ApiKey: KEY, Arn: 'arn:aws:appsync:us-east-1:1:apis/a/apikey/k' }, 'ApiKey', 'AWS::AppSync::ApiKey'),
       ['Repo'],
-      fakeRegistry(vi.fn(async () => undefined))
+      fakeRegistry(vi.fn(async () => 'live-answer'))
     );
     expect(JSON.stringify(result.rewrites)).not.toContain(KEY);
     expect(JSON.stringify(result.state.resources['Other'])).not.toContain(KEY);
-    expect(result.unresolvable).toHaveLength(3);
-    // CONTROL: the same record's Arn is served.
+    // CONTROL: with a live answer, the same record's Arn is served. (The
+    // real AppSync provider answers nothing, so this isolates the table.)
     const arn = await rewriteResourceReferences(
       repoState({ ApiKey: KEY, Arn: 'arn:aws:appsync:us-east-1:1:apis/a/apikey/k' }, 'Arn', 'AWS::AppSync::ApiKey'),
       ['Repo'],
-      fakeRegistry(vi.fn(async () => undefined))
+      fakeRegistry(vi.fn(async () => 'live-arn'))
     );
     expect((arn.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
       'arn:aws:appsync:us-east-1:1:apis/a/apikey/k'
@@ -1611,5 +1643,16 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       fakeRegistry(vi.fn(async () => 'live-value'))
     );
     expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toEqual(value);
+  });
+
+  it('does not answer an INHERITED flat key from the record, even when the live read answers', async () => {
+    const result = await rewriteResourceReferences(
+      repoState(JSON.parse('{"Arn":"arn"}'), 'constructor'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live-value'))
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-value'
+    );
   });
 });

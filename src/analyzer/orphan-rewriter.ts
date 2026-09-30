@@ -140,8 +140,8 @@ export interface OrphanRewriteOptions {
 }
 
 /**
- * Attributes whose recorded VALUE is a secret although their NAME passes
- * `isSensitiveAttributeName` — so the name rule cannot see them. Keyed by
+ * Attributes whose recorded VALUE is a secret although their NAME does not
+ * pass `isSensitiveAttributeName` — so the name rule cannot see them. Keyed by
  * resource type, read by own key. `AWS::AppSync::ApiKey`'s `ApiKey` is the
  * `x-api-key` value itself, recorded in plaintext at create.
  */
@@ -156,7 +156,7 @@ const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map
  */
 function carriesSensitiveNamedLeaf(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return false;
-  if (Array.isArray(value)) return value.some(carriesSensitiveNamedLeaf);
+  // An array's entries are its index keys, never sensitive; its elements recurse.
   return Object.entries(value).some(
     ([key, leaf]) => isSensitiveAttributeName(key) || carriesSensitiveNamedLeaf(leaf)
   );
@@ -166,18 +166,24 @@ function carriesSensitiveNamedLeaf(value: unknown): boolean {
  * The orphan's RECORDED value for `attribute`, when the record holds one the
  * deploy-time resolver would serve as-is (go-to-k/cdkd#4186).
  *
+ * GATED ON A LIVE ANSWER. The caller takes this value only after the live
+ * read returned a defined value for the same attribute, so it never widens
+ * what the live-read-only path could substitute and print; see the call site.
+ *
  * WHY RECORDED BEFORE LIVE. `IntrinsicFunctionResolver.resolveGetAtt` serves a
  * `Fn::GetAtt` from this same `attributes` map whenever it holds the key, so
  * this chooses the same value the resolver would — not necessarily the value
  * a rewritten sibling was deployed with (a row still holding its intrinsic
  * never went through the resolver), and not necessarily the value AWS holds
- * today for an attribute AWS changes later (an instance's `PublicIp`). The live `provider.getAttribute(...)` read
- * is addressed by the recorded NAME for most SDK providers, so after the
- * resource was deleted out of band and a DIFFERENT one took its name — the
- * situation `cdkd orphan` is the documented remedy for — it answered with the
- * FOREIGN resource's attribute and planted that into the dependents' state.
+ * today for an attribute AWS changes later (an instance's `PublicIp`). The
+ * live `provider.getAttribute(...)` read is addressed by the recorded NAME for
+ * most SDK providers, so after the resource was deleted out of band and a
+ * DIFFERENT one took its name — the situation `cdkd orphan` is the documented
+ * remedy for — it answered with the FOREIGN resource's attribute and planted
+ * that into the dependents' state.
  *
- * NOT SERVED, so the live read (and then `--force`'s fallback) still decides,
+ * NOT SERVED, so the live answer (or, when there is none, `--force`'s
+ * fallback) still decides,
  * mirroring each arm on which the resolver does not serve the stored value
  * verbatim either:
  * - an absent key, or `''` where `isImpossibleEmptyStoredAttribute` says the
@@ -193,9 +199,11 @@ function carriesSensitiveNamedLeaf(value: unknown): boolean {
  *   output, issue #2055), which the resolver re-resolves in a context this
  *   analyzer pass does not have.
  *
- * And two classes whose recorded value may be a SECRET PLAINTEXT, so the
- * default path must not substitute it — the rewrite audit table prints every
- * substituted value at default verbosity. Both keep their pre-#4186 outcome:
+ * And the classes whose recorded value may be a SECRET PLAINTEXT, so it must
+ * not replace the live answer — the rewrite audit table prints every
+ * substituted value at default verbosity, and the live answer is what the
+ * pre-#4186 path printed. (The live-answer gate already keeps a provider that
+ * cannot answer, e.g. Cloud Control's whole-model record, out of here.)
  * - an attribute whose NAME is credential-bearing (`isSensitiveAttributeName`,
  *   the predicate the resolver's log redaction uses): `AWS::IAM::AccessKey`
  *   records `SecretAccessKey` in plaintext, and no mask covers it;
@@ -441,11 +449,14 @@ class AttributeFetcher {
     }
 
     // RECORDED FIRST (go-to-k/cdkd#4186): see `servableRecordedAttribute`.
+    // Taken only AFTER the live read below answered with a defined value, so
+    // the set of attributes this can substitute (and the audit table prints)
+    // is exactly the set the live-read-only path already substituted. A
+    // provider with no `getAttribute` (every Cloud-Control-routed record, whose
+    // `attributes` is the whole resource model, some of it credentials no
+    // name rule can recognise) or a live read that fails keeps its pre-#4186
+    // outcome: unresolvable without `--force`.
     const recorded = servableRecordedAttribute(orphan, attribute);
-    if (recorded.served) {
-      this.cache.set(cacheKey, recorded.value);
-      return { ok: true, value: recorded.value };
-    }
 
     let provider;
     try {
@@ -481,8 +492,12 @@ class AttributeFetcher {
           `provider returned undefined for ${orphan.resourceType}.${attribute}`
         );
       }
-      this.cache.set(cacheKey, value);
-      return { ok: true, value };
+      // The live holder answered, so the attribute was already printable on
+      // this path. Take the RECORDED value when there is one: after a name
+      // takeover the answer describes the newcomer.
+      const chosen = recorded.served ? recorded.value : value;
+      this.cache.set(cacheKey, chosen);
+      return { ok: true, value: chosen };
     } catch (err) {
       return this.cacheFallback(
         orphanLogicalId,
