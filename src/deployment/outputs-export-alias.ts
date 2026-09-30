@@ -44,6 +44,16 @@
  * | LITERAL, spelled as a `{{resolve:...}}` token  | publish           | publish           |
  * | LITERAL, contains a recorded plaintext         | refuse            | decide from STATE |
  * | collides with a published output name          | refuse            | refuse            |
+ * | holds a `NoEcho` value the outputs pass read   | refuse            | refuse            |
+ *
+ * The `NoEcho` row (issue [#4043](https://github.com/go-to-k/cdkd/issues/4043))
+ * reads the pass's LOG-ONLY needles on both sides: the diff resolves its
+ * outputs into bags of their OWN (`resolveTemplateOutputs`' `outputsPass`),
+ * never the resource pass's, which holds every `NoEcho` value up front, and
+ * decides each alias against the values' needles plus those of the names
+ * declared up to it, the deploy's order. Pinned
+ * by `export-name-noecho-refusal-4043.test.ts` and
+ * `cli/diff-export-name-noecho-4043.test.ts`.
  *
  * The INTRINSIC SecureString rows no longer diverge (issue
  * [#4056](https://github.com/go-to-k/cdkd/issues/4056)): the diff refuses an
@@ -116,15 +126,21 @@
  *   VALUE is no longer cached either, precisely so the two cannot disagree. A
  *   later occurrence therefore RE-RESOLVES and records into its own bag rather
  *   than substituting a plaintext with nothing recorded, so the refusal fires.
- * - A `Ref` to a `NoEcho` PARAMETER substituted into an export name is not
- *   REFUSED, and the name is published as before. Since go-to-k/cdkd#1998 the
- *   resolver records such a value as a LOG-ONLY needle of the pass's bag,
- *   read by the printing maskers (`maskSecretsInText` and the provider
- *   masker), but it is no map ENTRY, and the refusal above iterates the map.
- *   Deliberately so — the decision on #1998 left persistence unchanged, and
- *   refusing the alias would change what the deploy publishes into state and
- *   the exports index. Whether it should is go-to-k/cdkd#4043. This module's
- *   WARNINGS do mask it (go-to-k/cdkd#4049), through `printingCorpusOf`.
+ * - A `NoEcho` PARAMETER's value in an export name is refused
+ *   (go-to-k/cdkd#4043) only when the outputs pass READ it BEFORE the name was
+ *   decided: the resolver records it as a LOG-ONLY needle when a `Ref` or
+ *   `Fn::Sub` variable serves it, every output value first and then each
+ *   `Export.Name` in declaration order. So these are published: a name holding
+ *   a value only a RESOURCE reads, or only a LATER output's `Export.Name`; a
+ *   value that reaches the name without a `Ref` (an echoed `Fn::GetAtt`
+ *   attribute, a nested child's output, an `Fn::ImportValue`, an
+ *   `Fn::Select` fragment); and, by containment alone, a 1-3 character value
+ *   embedded in a longer name, even one the resolver substituted into THIS
+ *   name, since the name's log-only set is the pass's. A failed output's
+ *   alias the no-change merge carries forward is not re-decided either.
+ *   `cdkd diff` previews exactly this verdict. Which phase closes each of
+ *   these, or why one stays, is listed in section 5 of
+ *   `docs/design/4043-noecho-persistence-redaction.md`.
  * - In the DEPLOY ENGINE, `evaluateConditions` runs before any bag is built and
  *   records into a map that caller discards, while still WARMING the resolver's
  *   dynamic-reference cache — so a PINNED reference (`secretsmanager`, or a
@@ -705,7 +721,7 @@ function secretsPresentIn(
  * VALUES only, so the plaintext would land in `state.json` and be republished
  * into the exports index.
  *
- * TWO signals, and neither subsumes the other:
+ * THREE signals, and none subsumes another:
  *
  * - `substitutedIntoName` — the caller resolves the name with its OWN
  *   `recordedSecretValues` map, so a non-empty map means the resolver
@@ -714,6 +730,11 @@ function secretsPresentIn(
  * - a bounded containment scan of `recordedThisPass` ({@link secretsPresentIn}),
  *   which catches plaintext that arrived by any other route — a literal name, a
  *   cache hit, an `Fn::Sub` variable echoing the value.
+ * - the same scan over `printingCorpusOf(substitutedIntoName)`, whose LOG-ONLY
+ *   needles are the `NoEcho` parameter values the outputs pass read
+ *   (go-to-k/cdkd#4043). Containment only, since the set is pass-wide: a
+ *   short value (`prod`) embedded in an ordinary name refuses it, the bound
+ *   #1919 accepted for a secret.
  *
  * An earlier revision had only the first, calling the scan unpromising because
  * an UNBOUNDED one is: a degenerate one-character recorded secret would make
@@ -744,6 +765,19 @@ export function exportNameSecretExposure(
   const exposure: RecordedSecretValues = new Map(substitutedIntoName);
   for (const [plaintext, expression] of secretsPresentIn(exportName, recordedThisPass) ?? []) {
     exposure.set(plaintext, expression);
+  }
+  // A `NoEcho` PARAMETER's value (go-to-k/cdkd#4043, Phase A). The resolver
+  // records it as a LOG-ONLY needle, never a map entry, and the name's
+  // log-only set is SHARED with the whole outputs pass, so it is scanned by
+  // containment only: counted wholesale, one output reading a `NoEcho` value
+  // would refuse every export name. The same scan, and so the same detection
+  // haystacks and floor, as a secret: a name EQUAL to the value is refused at
+  // any length, one EMBEDDING it at MIN_SECRET_NEEDLE or more.
+  for (const [plaintext, expression] of secretsPresentIn(
+    exportName,
+    printingCorpusOf(substitutedIntoName)
+  ) ?? []) {
+    if (!exposure.has(plaintext)) exposure.set(plaintext, expression);
   }
   return exposure.size > 0 ? exposure : undefined;
 }
@@ -810,8 +844,8 @@ export function secretBearingExportNameWarning(
   // sees a second recorded secret the resolver did not put here but which this
   // name happens to hold.
   // A PRINTING corpus (go-to-k/cdkd#4049): a `NoEcho` parameter's value
-  // embedded beside the secret is masked in this line too. The refusal that
-  // led here was decided from the map alone.
+  // embedded beside the secret is masked in this line too, and one that is
+  // the refusal's own reason (go-to-k/cdkd#4043) arrives in `exposure`.
   const corpus = printingCorpusOf(secrets ?? exposure);
   const name = secretSafeKeyDisplay(exportName, corpus, exposure);
   const shown = name.kind === 'masked' ? `${maskedLabel(name.text)} ` : '';
@@ -1145,9 +1179,9 @@ export function exportAliasCollisionWarning(
   //
   // The PRINTING corpus (go-to-k/cdkd#4049): the map's entries plus the
   // pass's LOG-ONLY needles, so an `Export.Name` built from a `NoEcho`
-  // parameter's value is masked here. The refusal upstream still reads the
-  // map alone: whether such a name is published is go-to-k/cdkd#4043's
-  // decision, not this message's.
+  // parameter's value is masked here. The refusal upstream reads those needles
+  // too (go-to-k/cdkd#4043), but by containment and only the ones the outputs
+  // pass read, so a name it published can still hold one.
   const corpus = printingCorpusOf(secrets);
   const shown = displayTextOrWithheld(secretSafeKeyDisplay(exportName, corpus));
   const from = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, corpus));

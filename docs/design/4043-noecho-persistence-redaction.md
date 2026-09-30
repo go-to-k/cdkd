@@ -560,7 +560,8 @@ the bucket-wide exports index, which any stack's reader can list.
   - It deliberately reverses the #4049 rule that a publication verdict never
     reads log-only needles (`.claude/rules/layout-deployment-secrets.md`, and
     the side-set doc at `secret-redaction.ts:991-995`). Phase A updates the
-    rule file and the side-set doc comment.
+    rule file. The side-set doc comment moves to Phase B, because an open PR
+    (#4160) held `secret-redaction.ts` when Phase A landed.
   - **Phase B** makes the value a map entry of the name's own bag. Its
     wholesale arm then refuses it, still from 4 characters, because the
     mask-only floor applies.
@@ -574,11 +575,34 @@ the bucket-wide exports index, which any stack's reader can list.
 - The residual note at `outputs-export-alias.ts:119-128` is replaced.
 - **The containment scan is pass-wide from Phase A on.** The corpus
   `printingCorpusOf(nameSecrets)` holds the log-only set the whole outputs pass
-  shares (`deploy-engine.ts:10517`), so it sees every `NoEcho` value ANY
-  output of the pass read. Phase B sees the same set through the map. A name
-  that merely contains one at 4 or more characters is refused. For a
-  low-entropy value (`prod`), that refuses ordinary names. This is the same
-  bound #1919 accepted for secrets, and the warning names the output.
+  shares (`deploy-engine.ts:10517`). When a name is decided, that set holds the
+  `NoEcho` values every output VALUE read, plus those the `Export.Name`s
+  resolved BEFORE it read: pass 2 resolves and decides each name in
+  declaration order. Phase B sees the same set through the map. A name that
+  merely contains one at 4 or more characters is refused. For a low-entropy
+  value (`prod`), that refuses ordinary names. This is the same bound #1919
+  accepted for secrets, and the warning names the output.
+- **`cdkd diff` previews the same verdict** (Phase A). Its Outputs pass
+  resolves every value, then every `Export.Name` in declaration order, into
+  bags of its own that mirror the deploy's (never the resource pass's bag,
+  which holds every `NoEcho` value up front). The up-front values reach the
+  resolver's own lines through a print-only corpus
+  (`ResolverContext.printingSecrets`) that no verdict reads. The two sides are
+  kept at parity: a residual below that changes the deploy changes the diff
+  in the same PR.
+- **What Phase A leaves published, and which phase closes it:**
+
+  | Residual | Closed by |
+  | --- | --- |
+  | A name holding a value that only a LATER output's `Export.Name` reads | Phase B: pass 2 resolves every name first, then decides every alias (`deploy-engine.ts`), and the diff follows |
+  | A 1-3 character value embedded in a longer name, even one substituted into it | Phase B: the positional twin above |
+  | A value reaching the name without a `Ref`: an echoed attribute, a nested output, `Fn::ImportValue`, an `Fn::Select` fragment | Phase B: the declared-attribute mechanism (section 3.3), the cross-stack recovery (section 4.7) and the positional twin |
+  | A failed output's alias the no-change merge carries forward (`no-change-outputs-merge.ts`) | Phase B: the merge re-runs this verdict over each carried alias name |
+  | A LITERAL name spelling a value only a resource reads | Phase B: the verdict is seeded with every `NoEcho` parameter value, at the #1919 floor (maintainer decision on #4043); the cost is that an unrelated name containing a short or common value is refused |
+  | `cdkd diff`: a #2740-skipped output is resolved into the Outputs bag to record its needles, which issues its lookups and can over-refuse where the deploy's value pass fails before the `NoEcho` `Ref` | Accepted bound of the preview; revisited with Phase B's seeding, which makes it moot |
+  | `cdkd diff` of a nested child: a value reaching the child through the parent's printing corpus rather than its own row is recorded by the child's Outputs pass, so the preview can refuse an alias the child's deploy publishes | Phase B, with the echo residual above: the child's verdict then holds the value either way |
+  | `cdkd scrub` keeping an unnamed possible-alias key when a declared alias is refused (fail-safe) | Phase C, with scrub's key report |
+  | A nested child's rollback re-persisting a pre-run alias an older binary wrote (`nested-child-journal.ts`) | Phase C, with the rollback replay |
 - **A stack that is never redeployed** keeps a published alias in `outputs`,
   `exportNames` and the exports index. `cdkd scrub` cannot rewrite a key
   (`.claude/rules/layout-scrub.md`). It reports the key, and the remedy is a
@@ -687,15 +711,19 @@ Each phase lane re-checks, at lane start, which open PRs hold its files:
 
 | Phase | Scope | Files |
 | --- | --- | --- |
-| A | Export-name refusal (section 5) | `outputs-export-alias.ts`, `layout-deployment-secrets.md`, fixture, tests, changelog |
+| A | Export-name refusal and its `cdkd diff` preview (section 5) | `outputs-export-alias.ts`, `outputs-diff.ts`, `diff-recursive.ts`, the resolver's print-only corpus, rules, fixture, tests, changelog |
 | B | The core: both arms, the v11 bump and migration, diff promotion, readback | the resolver, redaction, engine and diff files; `state.ts`; rules; a new fixture |
 | C | Readers without a template (section 4.3-4.8) | the rollback, drift, state, import, scrub and export commands; their docs |
 
 **Phase A** refuses an `Export.Name` equal to or embedding a `NoEcho` value,
-from the log-only set. Files: `src/deployment/outputs-export-alias.ts`,
+from the log-only set, and `cdkd diff` previews the same verdict. Files:
+`src/deployment/outputs-export-alias.ts`, `src/analyzer/outputs-diff.ts`,
+`src/cli/commands/diff-recursive.ts`, `ResolverContext.printingSecrets` in
+`src/deployment/intrinsic-function-resolver.ts`,
 `.claude/rules/layout-deployment-secrets.md` (the publication-verdict rule),
-the side-set doc comment in `src/deployment/secret-redaction.ts`, the
-`noecho-parameter-masking` fixture, unit tests, and a changelog entry.
+the `noecho-parameter-masking` fixture, unit tests, and a changelog entry. The
+side-set doc comment in `src/deployment/secret-redaction.ts` moved to Phase B.
+Section 5 lists what Phase A leaves and which phase closes each item.
 
 **Phase B** covers:
 
@@ -705,17 +733,24 @@ the side-set doc comment in `src/deployment/secret-redaction.ts`, the
   decision 4 info line (§9);
 - the diff's create-only ceiling lowered for every property the readback cannot
   serve, which is decision 1's confirmed scope (section 4.2);
-- the decision 5 rotation guidance.
+- the decision 5 rotation guidance;
+- the section 5 residuals marked Phase B: the resolve-then-decide split of
+  the outputs pass 2 (and the diff's twin), the verdict over the no-change
+  merge's carried aliases, seeding the verdict with every `NoEcho` value; and
+  the side-set doc comment Phase A left.
 
 Its files: `secret-redaction.ts`, `intrinsic-function-resolver.ts`,
-`deploy-engine.ts`, `src/analyzer/diff-calculator.ts`, `diff-recursive.ts`,
-`src/types/state.ts`, `.claude/rules/state-schema.md`,
+`deploy-engine.ts`, `src/deployment/no-change-outputs-merge.ts`,
+`src/analyzer/diff-calculator.ts`, `src/analyzer/outputs-diff.ts`,
+`diff-recursive.ts`, `src/types/state.ts`, `.claude/rules/state-schema.md`,
 `.claude/rules/layout-deployment-secrets.md`, `docs/state-management.md`, and
 a new `schema-v10-to-v11-migration` fixture.
 
 **Phase C** covers the rollback replay readback, the drift bucket and writers,
 import and refresh-observed coordinate masking, the scrub migration rule, and
-the `cdkd export` allowance. Files: `rollback-executor.ts`,
+the `cdkd export` allowance, plus the section 5 residuals marked Phase C (the
+scrub possible-alias keep and the nested-child rollback's re-persisted alias).
+Files: `rollback-executor.ts`, `src/deployment/nested-child-journal.ts`,
 `src/cli/commands/rollback.ts`, `drift.ts`, `state.ts` (CLI), `import.ts`,
 `scrub.ts`, `export.ts`, `docs/cli-drift.md`, `docs/cli-rollback.md`, and
 `docs/cli-scrub.md`.

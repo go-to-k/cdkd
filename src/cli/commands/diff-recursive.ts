@@ -1105,7 +1105,8 @@ export async function computeStackDiff(
     ) => Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }>;
     /**
      * The parent node's {@link StackDiffResult.printingSecrets} for a nested
-     * child (go-to-k/cdkd#4049). Printing only: never handed to the resolver.
+     * child (go-to-k/cdkd#4049). Printing only: handed to this node's resolver
+     * passes as their `inheritedSecrets` (below), which read it to mask.
      */
     inheritedSecrets?: RecordedSecretValues;
     /**
@@ -1314,8 +1315,10 @@ export async function computeStackDiff(
   // ALSO recorded into it up front: the resolver records one only when a `Ref`
   // serves it, while a property that STOPPED reading the parameter still holds
   // it on the stored side, and a `Fn::GetAtt` reading a stored copy prints it
-  // in the resolver's own debug lines. Log-only needles decide nothing: every
-  // resolver reader that decides reads the bag's MAP. That map holds at most
+  // in the resolver's own debug lines. Its log-only needles decide nothing:
+  // every resolver reader that decides reads the bag's MAP, and the one
+  // verdict that reads log-only needles (the `NoEcho` export alias, #4043)
+  // reads the Outputs pass's bags below, never this one. That map holds at most
   // the mask-only entries of an encoding derived from a needle
   // (`Fn::Base64`), since `skipDynamicReferences` resolves no secret, and the
   // INHERITED bag handed to the resolver below has an empty map.
@@ -1335,50 +1338,64 @@ export async function computeStackDiff(
   }
   // ONE cached masker for the `--verbose` replacement line and the final pass
   // below; it re-reads the bags when they grow, as they do mid-walk.
-  const printing = createDiffPrintingMasker([diffSecrets, inheritedForResolver]);
+  // The Outputs pass records into a bag of its OWN (go-to-k/cdkd#4043), the
+  // twin of the deploy's outputs-pass bag: which `NoEcho` values it holds
+  // decides which export aliases the deploy refuses (each `Export.Name`'s bag
+  // shares its log-only set and forwards its entries into it). Printing reads
+  // it too, for an encoding an output derives from one (`Fn::Base64`).
+  const outputsPassSecrets: RecordedSecretValues = new Map();
+  const printing = createDiffPrintingMasker([
+    diffSecrets,
+    inheritedForResolver,
+    outputsPassSecrets,
+  ]);
   const maskForLog: MaskerFn = printing.mask;
 
-  const resolveFn = (value: unknown): Promise<unknown> =>
-    intrinsicResolver.resolve(value, {
-      recordedSecretValues: diffSecrets,
-      ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
-      template: effectiveTemplate,
-      resources: currentState.resources,
-      stateBackend,
-      stackName,
-      // Diff resolution is best-effort (the calculator catches failures and
-      // keeps the raw intrinsic): a Ref to a to-be-created resource is the
-      // expected case here, so the resolver logs it at debug, not warn
-      // (issue #1017).
-      bestEffort: true,
-      // Nested-stack children receive their input `Parameters` resolved
-      // against the parent's deployed state (issue #555 follow-up). Without
-      // this, a `Ref` to a synthesized nested-stack input parameter (e.g.
-      // `referenceto<Parent>RootTopicName`) is neither a resource nor a
-      // parameter in the diff context, so `resolveBestEffort` keeps the raw
-      // intrinsic and the diff calculator reports a spurious UPDATE of every
-      // property whose value derives from that parameter — even on a freshly
-      // deployed tree. The deploy engine forwards exactly this resolved
-      // parameter map to the child engine via `DeployEngineOptions.parameters`
-      // (`NestedStackProvider.extractParameters`), so resolving here too makes
-      // the recursive diff match what the deploy actually wrote to state.
-      // Template-declared parameter defaults are merged in as well (issue
-      // #1027) so `Ref` / `Fn::Sub` / `Fn::FindInMap` over parameters
-      // resolve like they do on deploy.
-      ...(mergedParameters && { parameters: mergedParameters }),
-      // Evaluated conditions so `Fn::If` resolves in property values.
-      ...(conditions && { conditions }),
-      // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED for diff
-      // (GHSA fix): state stores the unresolved expression, so comparing the
-      // desired side as its expression avoids a spurious perpetual change and
-      // any live secret fetch that would print the plaintext. As on the deploy
-      // engine's twin, an `ssm` reference is classified by the parameter's TYPE
-      // rather than its spelling (issue #1901), so a not-yet-classified one
-      // still costs one `GetParameter` here — issued with
-      // `WithDecryption: false`, so a `SecureString` never yields plaintext.
-      skipDynamicReferences: true,
-      ...(attributeHealer && { attributeHealer }),
-    });
+  const resolveRecordingInto =
+    (bag: RecordedSecretValues, printingSecrets?: RecordedSecretValues) =>
+    (value: unknown): Promise<unknown> =>
+      intrinsicResolver.resolve(value, {
+        recordedSecretValues: bag,
+        ...(printingSecrets && { printingSecrets }),
+        ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
+        template: effectiveTemplate,
+        resources: currentState.resources,
+        stateBackend,
+        stackName,
+        // Diff resolution is best-effort (the calculator catches failures and
+        // keeps the raw intrinsic): a Ref to a to-be-created resource is the
+        // expected case here, so the resolver logs it at debug, not warn
+        // (issue #1017).
+        bestEffort: true,
+        // Nested-stack children receive their input `Parameters` resolved
+        // against the parent's deployed state (issue #555 follow-up). Without
+        // this, a `Ref` to a synthesized nested-stack input parameter (e.g.
+        // `referenceto<Parent>RootTopicName`) is neither a resource nor a
+        // parameter in the diff context, so `resolveBestEffort` keeps the raw
+        // intrinsic and the diff calculator reports a spurious UPDATE of every
+        // property whose value derives from that parameter — even on a freshly
+        // deployed tree. The deploy engine forwards exactly this resolved
+        // parameter map to the child engine via `DeployEngineOptions.parameters`
+        // (`NestedStackProvider.extractParameters`), so resolving here too makes
+        // the recursive diff match what the deploy actually wrote to state.
+        // Template-declared parameter defaults are merged in as well (issue
+        // #1027) so `Ref` / `Fn::Sub` / `Fn::FindInMap` over parameters
+        // resolve like they do on deploy.
+        ...(mergedParameters && { parameters: mergedParameters }),
+        // Evaluated conditions so `Fn::If` resolves in property values.
+        ...(conditions && { conditions }),
+        // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED for diff
+        // (GHSA fix): state stores the unresolved expression, so comparing the
+        // desired side as its expression avoids a spurious perpetual change and
+        // any live secret fetch that would print the plaintext. As on the deploy
+        // engine's twin, an `ssm` reference is classified by the parameter's TYPE
+        // rather than its spelling (issue #1901), so a not-yet-classified one
+        // still costs one `GetParameter` here — issued with
+        // `WithDecryption: false`, so a `SecureString` never yields plaintext.
+        skipDynamicReferences: true,
+        ...(attributeHealer && { attributeHealer }),
+      });
+  const resolveFn = resolveRecordingInto(diffSecrets);
   // Rollback-orphan adoption, in the deploy's position: after condition
   // pruning, before the diff. `DiffCalculator` decides CREATE by ABSENCE from
   // state, so splicing a verified record in is the whole mechanism — there is
@@ -1631,7 +1648,14 @@ export async function computeStackDiff(
     resolveFn,
     conditions,
     currentState.outputs,
-    bindingSkipped
+    bindingSkipped,
+    {
+      // `diffSecrets` as the PRINT-ONLY corpus: it holds every `NoEcho` value
+      // up front, so the resolver's own lines over an output stay masked,
+      // while the verdict reads only what this pass's bags recorded.
+      resolveInto: (bag) => resolveRecordingInto(bag, diffSecrets),
+      secrets: outputsPassSecrets,
+    }
   );
   const templateHasSecretReference =
     resolved.templateHasSecretReference || inheritSecretBearingTemplate === true;

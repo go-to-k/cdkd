@@ -58,8 +58,11 @@ const PROPS = {
   AllowedPattern: { 'Fn::Base64': { 'Fn::Join': ['', ['pw=', { Ref: 'Secret' }]] } },
 };
 // `Export.Name` is typed as a string; an intrinsic one is what a template holds.
+// The name reads the PUBLIC parameter: one holding the NoEcho value is refused
+// (go-to-k/cdkd#4043, `export-name-noecho-refusal-4043.test.ts`), which would
+// make the two states below differ by design.
 const OUTPUTS = {
-  Echo: { Value: { Ref: 'Secret' }, Export: { Name: { 'Fn::Sub': 'exp-${Secret}' } } },
+  Echo: { Value: { Ref: 'Secret' }, Export: { Name: { 'Fn::Sub': 'exp-${Plain}' } } },
 } as unknown as Record<string, TemplateOutput>;
 
 function templateOf(noEcho: boolean, props: Record<string, unknown> = PROPS): CloudFormationTemplate {
@@ -221,13 +224,15 @@ describe('DeployEngine - persistence is unchanged by NoEcho (go-to-k/cdkd#1998)'
     };
     const withNoEcho = await saved(true);
     const without = await saved(false);
-    // Non-vacuity: the value, the encoding and the export name are all in the
-    // persisted state in the clear (the decision on #1998), and the dynamic
-    // reference beside them is still redacted.
+    // Non-vacuity: the value, the encoding and the output value are all in
+    // the persisted state in the clear (the decision on #1998), the export
+    // alias is published, and the dynamic reference beside them is still
+    // redacted.
     const encoded = Buffer.from(`pw=${NOECHO}`).toString('base64');
     expect(withNoEcho).toContain(`"Value":"${NOECHO}"`);
     expect(withNoEcho).toContain(encoded);
-    expect(withNoEcho).toContain(`exp-${NOECHO}`);
+    expect(withNoEcho).toContain(`"Echo":"${NOECHO}"`);
+    expect(withNoEcho).toContain(`"exp-public-plain":"${NOECHO}"`);
     expect(withNoEcho).toContain(`built for ${NOECHO}`);
     expect(withNoEcho).toContain('{{resolve:ssm-secure:/app/pw}}');
     expect(withNoEcho).not.toContain('dynref-secret-value');
