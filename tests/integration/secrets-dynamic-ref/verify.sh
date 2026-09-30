@@ -1409,6 +1409,92 @@ if jq -e '.outputs | has("MarkSplitExport")' "${MARK_SPLIT_DROPPED}" >/dev/null;
 fi
 aws s3 cp "${MARK_SPLIT_DROPPED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
 
+# --- Phase 1b7: an Export.Name spelling the password in full-width characters (issue #4001)
+# `CDKD_TEST_FULLWIDTH_EXPORT=true` declares `FullWidthExport`, whose VALUE
+# resolves the password and whose `Export.Name` resolves to the password with
+# its tail `-123` SUBSTITUTED by the full-width U+FF0D U+FF11 U+FF12 U+FF13.
+# That folds to ASCII under NFKC, so the name READS as the password, and no
+# earlier arm (printed space, raw, #2889's mark-stripped form) contains it.
+# The deploy now also tests a compatibility-folded form, refuses the alias and
+# warns without printing the name. Same probe shape as Phase 1b6.
+echo "==> Phase 1b7: CDKD_TEST_FULLWIDTH_EXPORT probe deploy (issue #4001)"
+# Full-width `-123` as UTF-8 bytes: bash 3.2 has no unicode escape in $'...'.
+FW_TAIL=$'\xef\xbc\x8d\xef\xbc\x91\xef\xbc\x92\xef\xbc\x93'
+FW_NAME="cdkd-dynref-fw-split-${EXPECTED_PASSWORD:0:13}${FW_TAIL}"
+FW_STATE=$(mktemp)
+FW_INDEX=$(mktemp)
+FW_DROPPED=$(mktemp)
+SCRATCH_FILES+=("${FW_STATE}" "${FW_INDEX}" "${FW_DROPPED}")
+if ! DEPLOY_OUT_FW=$(CDKD_TEST_FULLWIDTH_EXPORT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the CDKD_TEST_FULLWIDTH_EXPORT probe deploy exited non-zero -- a refused export alias is warned about and skipped, and the deploy exits 0 (issue #4001)" >&2
+  diag_output "${DEPLOY_OUT_FW}"
+  exit 1
+fi
+# Premise: the synthesized `Fn::Sub` resolves to the password's head plus the
+# FULL-WIDTH tail, and the literal password is NOT in it -- otherwise the
+# pre-#4001 arms catch it and this phase proves nothing about folding.
+FW_SHAPE=$(jq -r --arg name "${FW_NAME}" --arg pw "${EXPECTED_PASSWORD}" --arg wide "${FW_TAIL}" \
+  '.Outputs.FullWidthExport.Export.Name
+   | if . == null then "absent"
+     elif type != "object" or (.["Fn::Sub"] | type) != "array" then "not-an-Fn::Sub"
+     else .["Fn::Sub"] as [$body, $vars]
+       | ($body | gsub("\\$\\{Head\\}"; $vars.Head) | gsub("\\$\\{Wide\\}"; $vars.Wide)) as $resolved
+       | if $resolved == $name and $vars.Wide == $wide
+            and (($body + ($vars | tostring)) | contains($pw) | not)
+         then "full-width" else "other" end
+     end' "${SYNTH_TEMPLATE}")
+if [ "${FW_SHAPE}" != "full-width" ]; then
+  echo "FAIL: premise: FullWidthExport's Export.Name synthesized as '${FW_SHAPE}', not the password with a full-width tail -- the #4001 arm is not what this deploy exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: FullWidthExport's Export.Name is the password with a full-width tail"
+# THE DISCRIMINATING ASSERTION: before #4001 no warn was emitted and the alias
+# was published.
+if [[ "${DEPLOY_OUT_FW}" != *"Output FullWidthExport has an Export.Name that resolves to a value containing a secret"* ]]; then
+  echo "FAIL: the probe deploy did not refuse FullWidthExport's Export.Name -- a password spelled in full-width characters was treated as safe (issue #4001)" >&2
+  diag_output "${DEPLOY_OUT_FW}"
+  exit 1
+fi
+# `fw-split` is unique to this export name, so it catches the name in ANY
+# rendering (folded, blanked, escaped), not just raw.
+if [[ "${DEPLOY_OUT_FW}" == *"fw-split"* ]] || [[ "${DEPLOY_OUT_FW}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: the probe deploy's log prints the full-width name (in some rendering) or the password (issue #4001)" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${FW_STATE}" --quiet
+# Positive first: the output itself WAS persisted.
+if ! jq -e '.outputs | has("FullWidthExport")' "${FW_STATE}" >/dev/null; then
+  echo "FAIL: premise: state.outputs has no FullWidthExport after the probe deploy -- the outputs pass did not persist it (issue #4001)" >&2
+  exit 1
+fi
+if jq -e --arg name "${FW_NAME}" '.outputs | has($name)' "${FW_STATE}" >/dev/null; then
+  echo "FAIL: state.outputs carries the full-width export name as a KEY -- the password was published into state.json (issue #4001)" >&2
+  exit 1
+fi
+if grep -qF -- "${FW_NAME}" "${FW_STATE}" || grep -qF -- "fw-split" "${FW_STATE}"; then
+  echo "FAIL: state.json carries the full-width export name somewhere (issue #4001)" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/cdkd/_index/${REGION}/exports.json" "${FW_INDEX}" --quiet
+if ! jq -e --arg ok "${STACK}-function-name" '.exports | has($ok)' "${FW_INDEX}" >/dev/null; then
+  echo "FAIL: premise: the exports index lacks ${STACK}-function-name -- the absence check below would read the wrong document (issue #4001)" >&2
+  exit 1
+fi
+if grep -qF -- "${FW_NAME}" "${FW_INDEX}" || grep -qF -- "fw-split" "${FW_INDEX}"; then
+  echo "FAIL: the exports index carries the full-width export name (issue #4001)" >&2
+  exit 1
+fi
+echo "    OK: the full-width Export.Name was refused, and neither state.json nor the exports index carries it (#4001)"
+jq 'del(.outputs.FullWidthExport)' "${FW_STATE}" > "${FW_DROPPED}"
+if jq -e '.outputs | has("FullWidthExport")' "${FW_DROPPED}" >/dev/null; then
+  echo "FAIL: could not drop FullWidthExport from the persisted outputs -- the diff --fail guard later would red on it" >&2
+  exit 1
+fi
+aws s3 cp "${FW_DROPPED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+
 # --- Assertion: dynamic references resolved on the deployed Lambda ----
 echo "==> Reading consumer Lambda env vars from AWS (GetFunctionConfiguration)"
 FN_NAME=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \

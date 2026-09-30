@@ -16,7 +16,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { commandHole } from '../../utils/pasteable-command.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
@@ -346,8 +346,9 @@ async function deployCommand(
           // command happens to stop ... one appended flag from being silent" —
           // which is true of a BARE trailing hole and not of what this prints
           // (go-to-k/cdkd#3613's M8).
-          `\nRelease with: cdkd force-unlock ${commandHole('stackName')} ` +
-          `--stack-region ${commandHole('region')}\n`
+          // Built through the shared builder so it carries the run's typed
+          // `--profile` / `--state-bucket` / `--state-prefix` (go-to-k/cdkd#4177).
+          `\nRelease with: ${forceQuitReleaseCommand()}\n`
       );
       process.exit(130);
     }
@@ -1406,4 +1407,18 @@ export function createDeployCommand(): Command {
   cmd.addOption(deprecatedRegionOption);
 
   return cmd;
+}
+
+/**
+ * The `Release with:` command deploy's force-quit prints: both values are
+ * quoted holes, since one run can hold several stacks' locks, and the shared
+ * builder appends the run's typed `--profile` / `--state-bucket` /
+ * `--state-prefix` so a paste unlocks in the same account and bucket
+ * (go-to-k/cdkd#4177). Exported for its test.
+ */
+export function forceQuitReleaseCommand(): string {
+  return pasteableCommand('cdkd force-unlock', [
+    { hole: 'stackName' },
+    { flag: '--stack-region', hole: 'region' },
+  ]).command;
 }

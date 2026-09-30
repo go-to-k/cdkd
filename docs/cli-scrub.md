@@ -359,8 +359,8 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | Code | Meaning |
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
-| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
-| `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, or the exports index was left incomplete. |
+| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, an undeclared key another stack still reads or one that may be a live export alias, or an exports index entry that has no key left in `state.outputs` and still holds a secret this run recorded. |
+| `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, the exports index was left incomplete, or the other stacks' state could not be read before a drop (`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED`). |
 
 The full cross-command table is in the
 [CLI Reference](cli-reference.md#exit-codes).
@@ -422,7 +422,7 @@ without materializing `{}`.
 
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
-cannot rewrite. Four shapes qualify, and all four are also reported in words:
+cannot rewrite. Five shapes qualify, and all five are also reported in words:
 
 - a **state KEY** holding a secret, which needs an `Export.Name` change plus a
   redeploy: `N output KEY(s) in <stack> hold plaintext and CANNOT be scrubbed`;
@@ -433,13 +433,24 @@ cannot rewrite. Four shapes qualify, and all four are also reported in words:
   joiners, and zero-width combining marks (nonspacing diacritics) — and one
   placed inside a secret splits the plaintext so a literal scan misses it
   while a reader of the log sees the secret unbroken. Such a key is now
-  reported and the run exits `1`; an earlier cdkd passed over it silently. A
-  key caught only through a combining mark, or through a precomposed letter
-  standing for its decomposed spelling (the two render identically), is
-  reported with its name withheld, since the printed text keeps a name's own
-  diacritics. **If this starts firing on a state that used to pass, the key was
-  already leaking** — the change is what cdkd can see, not what the state
-  holds. Rotate the secret and change the `Export.Name`.
+  reported and the run exits `1`; an earlier cdkd passed over it silently.
+
+  The same holds for a secret spelled in **compatibility characters** —
+  full-width letters and digits, mathematical alphanumerics, superscripts,
+  ligatures, circled digits, an ideographic space — which Unicode NFKC folds to
+  their plain forms. A key caught only through a combining mark, a precomposed
+  letter standing for its decomposed spelling (the two render identically), or
+  a compatibility character is reported with its name withheld, since the
+  printed text keeps a name's own characters. Look-alike letters from another
+  script (Cyrillic small a, `U+0430`, standing for a Latin `a`) have no
+  compatibility mapping and are not detected, nor is a secret with a Hangul
+  jamo at its start or end, or ending in an open Hangul syllable, whose other
+  letters are spelled in compatibility characters, since that edge can join
+  a neighbouring jamo in the name into a different syllable.
+
+  **If this starts firing on a state that used to pass, the key was already
+  leaking** — the change is what cdkd can see, not what the state holds.
+  Rotate the secret and change the `Export.Name`.
 
 - a **cross-stack read that could not be verified**:
   `N cross-stack read(s) in <stack> could NOT be verified`.
@@ -482,6 +493,10 @@ cannot rewrite. Four shapes qualify, and all four are also reported in words:
   rotation**: `N cross-stack read name(s) in <stack> hold a plaintext scrub
   could NOT repair`. See [What this does not repair](#what-this-does-not-repair).
 
+- an **undeclared output key scrub keeps rather than drop** — one another
+  stack still reads, or one that may be a live export alias: see
+  [A key the template can no longer name is dropped](#a-key-the-template-can-no-longer-name-is-dropped).
+
 ### A scan `--fail` warns about but does not count
 
 Not every abandoned scan raises the exit code. One failure aborts the whole
@@ -521,6 +536,7 @@ These error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_PRODUCER_RECORD_UNREADABLE` | A stack imports from a PRODUCER whose own `outputs` map cannot be read, so this run could not tell whether that producer still holds the plaintext. Raised with or without `--fail`, `--dry-run` included. | `cdkd scrub '<producer>'` cannot run until that record is repaired — inspect it with `cdkd state show '<producer>' --stack-region '<region>' --json`, repair it, scrub the producer, then re-run. The importing stack was still scrubbed for everything else (audited, under `--dry-run`). |
 | `SCRUB_NESTED_CHILD_UNRESOLVABLE` | A [nested stack](#nested-stacks) has a state record, but `scrub` could not derive what its parent deployed it with. | Follow the remedy the message names for its cause. Every other stack was still scrubbed; when the cause is the parent's own failure, that failure is reported too. |
 | `SCRUB_NESTED_TEMPLATE_TREE_MALFORMED` | The nested template tree under a stack is cyclic, too deep or too large, or names an absolute or escaping `aws:asset:path` — a hand-modified or non-CDK assembly. | Re-synthesize the app with CDK. Nothing in that stack or under it was written; any nested record under it is refused too. |
+| `SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` | scrub had an undeclared output key to [drop](#a-key-the-template-can-no-longer-name-is-dropped), and the state bucket's listing or another stack's record could not be read to confirm nothing reads it. Raised after the summary, with or without `--fail`. | Fix the read (usually an S3 permission, or a damaged record the warning names) and re-run. The stack was still scrubbed for everything else; no key was dropped. |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a
@@ -844,6 +860,82 @@ value-matched rather than positioned for as long as the parameter stays
 unresolvable. Declare the export name literally, or give the parameter a
 `Default` the template resolves from, if you want that key positioned instead.
 
+### A key the template can no longer name is dropped
+
+A stored key the template can no longer name, whose value no pass rewrote, is
+**removed** from the outputs a scrub writes. Its value is one scrub cannot
+identify — most often the output was deleted, and the value may be a plaintext
+an older cdkd stored — and left beside the `{{resolve:...}}` references scrub
+writes, it would be read by `cdkd diff` as part of a redacted record and
+printed on the output's removal row. A deploy of today's template does not
+write the key either. Each dropped key is named, never its value:
+
+```text
+Dropped 1 output key(s) from MyStack that its template no longer declares: OldDbUrl. ...
+```
+
+`--dry-run` says `Would drop`, and counts the stack as one it would scrub, so
+`--dry-run --fail` exits `1` until a real run (or a deploy) removes the key. A
+name that holds a secret, or the key's own stored value, is masked or withheld;
+a name that may be an export alias and carries a character an output's logical
+id cannot is withheld outright, as `cdkd diff` withholds it.
+A dropped export alias leaves the record's export set too; its entry in the
+[exports index](#the-exports-index) is reported as a name `state.outputs` no
+longer holds, and a redeploy rewrites the index.
+
+The drop runs only when this run recorded at least one secret for the stack —
+the pass that rewrites the outputs at all. A stack whose template resolves no
+secret is not rewritten, and its undeclared keys stay as they are.
+
+These keys are **kept**:
+
+- one a pass rewrote, whole or in part — it now carries the reference, and the
+  [exports index](#the-exports-index) entry of that name is converged to it.
+  Text a part-rewritten value keeps beside the reference
+  (`postgres://u:{{resolve:...}}@host`) is withheld by `cdkd diff` itself;
+- one no string of which can be a plaintext — only whole `{{resolve:...}}`
+  references, or no string at all;
+- one whose name holds a secret this run recorded — the
+  [state KEY leak](#exit-codes) scrub reports and cannot rewrite, because the
+  exports index still publishes that name;
+- one that may be a **live export alias** whose name this run could not
+  reproduce. A key the record lists as an export (or any key, for a record
+  written before cdkd recorded which keys are exports) is dropped only when
+  every `Export.Name` in today's template resolved to a key the record holds
+  and lists as an export (a literal name that collides with another output is
+  exempt, since a deploy never publishes it; on a record with no export list,
+  or one listing anything but names, an intrinsic name matching a declared
+  output name proves nothing). Otherwise — a parameterized name deployed with
+  `--parameters`, one that does not resolve here, or an export the last deploy
+  did not write — scrub cannot tell that alias from a deleted one, keeps the
+  key, and warns: `... were LEFT as they are`. Such a key's value can still be
+  printed by `cdkd diff`, so the stack is not reported clean and `--fail` exits
+  `1`; a deploy rewrites the outputs;
+- one **another stack still reads**. Before dropping, scrub reads every state
+  record in the bucket once per run. A key another stack records reading, with
+  `Fn::ImportValue` or `Fn::GetStackOutput`, is kept and named with that
+  stack. Every key the stack would drop is kept when such a read's name or
+  producer is stored redacted or damaged and cannot be compared, and when
+  another record predates the field that records such reads (`imports`
+  before schema v4, `outputReads` before v8). Dropping it would break the read.
+  The rest of the record is still scrubbed, the stack is not reported clean,
+  and `--fail` exits `1`. Stop the consumer reading it (or declare the output
+  again) and deploy, then re-run.
+
+  This protects the reads cdkd **recorded**, and no others. Two residuals of the
+  version test: it misses a record older than schema v8 that a command other
+  than `cdkd deploy` has rewritten since (`cdkd scrub`, `cdkd drift --accept`,
+  `cdkd import`, the `cdkd state` commands), because every write stamps the
+  current version while carrying no `outputReads` — such a record reads as
+  having no readers; and it over-refuses, because one old record ANYWHERE in the
+  bucket, related or not, keeps every stack's drop candidates, and `--fail`
+  red, until that record is redeployed.
+
+When the listing or any record cannot be read — a listed record that reads as
+absent counts — **no** key is dropped from that stack, the rest of it is still
+scrubbed, and the run ends with
+`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` (exit `2`, with or without `--fail`).
+
 ## Cross-stack read names
 
 `state.imports` and `state.outputReads` record which producer a stack read a
@@ -902,8 +994,11 @@ into a CONSUMER stack's AWS call. Hence three rules:
 
 - **It never guesses.** When nothing this run recorded that plaintext — the
   secret was deleted, rotated away, or its reference is gone from the template
-  as well — the value is left exactly as it is, no key is invented, and no key
-  is removed. ROTATE the secret and redeploy; that rewrites the record. A
+  as well — the value is never rewritten onto a reference and no key is
+  invented. A key the template still names is left exactly as it is; one it
+  cannot name is dropped, as
+  [above](#a-key-the-template-can-no-longer-name-is-dropped), which ships no
+  token to a consumer — a key another stack reads is kept. ROTATE the secret and redeploy; that rewrites the record. A
   degenerately short plaintext, under 4 characters, is excluded from the
   WIDENED match specifically: it is never used as a cross-resource needle,
   since it would match unrelated values. A key the template still names is
@@ -961,7 +1056,7 @@ even when every `state.json` already holds the expression.
 ### What the index pass reports rather than writing
 
 Three cases produce a message and no write. The first exits `2`; the other two
-do not affect the exit code.
+do not affect the exit code, with one exception noted under the second.
 
 - **An entry it could not write.** S3 refused the `PutObject`, or a concurrent
   writer exhausted the If-Match retry budget. The run fails with
@@ -973,7 +1068,15 @@ do not affect the exit code.
   the re-run writes the remainder.
 - **An owned entry whose name is not a key of `state.outputs`.** There is no
   value to converge it to, so it keeps what it holds. Redeploy that producer,
-  which rewrites the index from its own outputs.
+  which rewrites the index from its own outputs. When that entry's value still
+  holds a secret this run recorded — typically after scrub
+  [dropped the key](#a-key-the-template-can-no-longer-name-is-dropped) — it is
+  a FINDING instead: the stack is not reported clean and `--fail` exits `1`.
+  An alias-shaped name this run dropped or kept is withheld on these lines,
+  as it was on the drop line; and an absent entry's name that carries a
+  character an output's logical id cannot is withheld on every run, even once
+  the template no longer references a secret (the entry is still the one an
+  earlier drop left). The stack and region still print.
 - **An entry published by a producer this run did not scrub.** `--all` targets
   every stack in the SYNTHESIZED APP, not every stack with a state record, and
   one bucket and region are legitimately shared by several CDK apps. Those

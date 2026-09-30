@@ -749,6 +749,7 @@ describe('secretSafeKeyDisplay: edge whitespace of a recorded secret (#2890)', (
     let inside = 0;
     let changed = 0;
     let maskedCount = 0;
+    let compatWithheld = 0;
     for (const secret of recordedSecrets) {
       const corpus = new Map([[secret, EXPR]]);
       const needle = strip(secret);
@@ -764,7 +765,17 @@ describe('secretSafeKeyDisplay: edge whitespace of a recorded secret (#2890)', (
             const label = JSON.stringify({ secret, key, shown });
             if (!edge || !untrimmed.includes(needle)) {
               outside++;
-              expect(shown, label).toEqual(preFix(key, corpus));
+              const before = preFix(key, corpus);
+              // Issue #4001's class: a key or secret whose compatibility
+              // folding differs (U+3000 and U+00A0 fold to a space) may move
+              // to `withheld` -- never anywhere else, and never to a weaker
+              // verdict.
+              const compat = [key, secret].some((s) => s.normalize('NFKD') !== s.normalize('NFD'));
+              if (compat && shown.kind === 'withheld' && before.kind !== 'withheld') {
+                compatWithheld++;
+              } else {
+                expect(shown, label).toEqual(before);
+              }
             } else {
               inside++;
               const covered = needle.length >= 4 || untrimmed === needle;
@@ -789,7 +800,12 @@ describe('secretSafeKeyDisplay: edge whitespace of a recorded secret (#2890)', (
     // cannot pass on the other.
     expect(outside).toBe(532);
     expect(inside).toBe(428);
-    expect(changed).toBe(187);
-    expect(maskedCount).toBe(526);
+    // 187 before issue #4001; its two are a recorded U+3000 + `abcd` beside a key
+    // also spelling ` abcd`, which printed `abcd-x***` and is now withheld.
+    expect(changed).toBe(189);
+    expect(maskedCount).toBe(524); // 526 before #4001: the same two pairs
+    // The outside-class pairs #4001 moved to `withheld`: U+3000 and U+00A0 edge
+    // secrets meeting a key spelled with a plain space.
+    expect(compatWithheld).toBe(16);
   });
 });

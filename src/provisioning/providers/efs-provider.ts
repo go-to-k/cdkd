@@ -58,6 +58,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
 /**
@@ -1270,7 +1271,7 @@ export class EFSProvider implements ResourceProvider {
         // retryable.
         throw markNonRetryable(
           new ProvisioningError(
-            `EFS refused CreateAccessPoint for ${logicalId}: the idempotency token cdkd sent is already bound to an access point, and cdkd could not confirm that access point is the one this deploy created (${reason}). That access point is NOT recorded in cdkd state -- find it with: aws efs describe-access-points --query "AccessPoints[?ClientToken=='${input.ClientToken}']"`,
+            `EFS refused CreateAccessPoint for ${logicalId}: the idempotency token cdkd sent is already bound to an access point, and cdkd could not confirm that access point is the one this deploy created (${reason}). That access point is NOT recorded in cdkd state -- find it with: ${withPasteableAwsProfile('aws efs describe-access-points')} --query "AccessPoints[?ClientToken=='${input.ClientToken}']"`,
             resourceType,
             logicalId,
             undefined,

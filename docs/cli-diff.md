@@ -160,13 +160,13 @@ not assigned the value yet (the endpoint of an RDS instance deployed with
 wildcard region and account fields. `cdkd deploy` re-reads such a resource
 from AWS when a reference needs the missing or placeholder attribute, and
 resolves the reference to the value AWS reports. `cdkd diff` issues the same read, so a property or output reading the
-attribute previews the value the deploy will use — not the unresolved
+attribute previews the value that read returns — not the unresolved
 reference, and not the resource's physical id — and a resource whose property
 will change because of it previews as an UPDATE.
 
 The read is made only when a reference needs that attribute, at most
 once per resource per run, in the stack's own region. The diff never writes
-what it reads to state; the next deploy records it. If the read fails — a
+what it reads to state; only a deploy's own read records it. If the read fails — a
 missing read permission, say — the row previews as it would without the read,
 and the diff does not fail. Custom resources and nested stacks are never
 re-read: their attributes come from the handler's response or the child's
@@ -406,7 +406,7 @@ These refusal gates decide this:
 | --- | --- | --- |
 | Redacted-expression mismatch | The template side is still a `{{resolve:...}}` expression while state is not — exactly what `cdkd scrub` repairs. A stored value counts as the expression only when it is one whole reference (and the template side is one too, or absent) or matches the template side's text around each reference, so a reference stored beside other text does not. | Record-wide |
 | Template-declared dynamic reference | The template declares the output's value as a dynamic reference. Also covers an output that was condition-skipped, which has no template side left to compare. | Record-wide |
-| Unaccountable stored key | A stored key today's template cannot account for — no declared output name, no literal `Export.Name`, not in the resolved bag — i.e. an output deleted from the template. Skipped when the stored record holds a plain `ssm` reference, which only a cdkd that redacts every secret writes (or a `cdkd scrub` that could not name every value, the caveat below); a `secretsmanager` reference alone does not prove that. | Per-key |
+| Unaccountable stored key | A stored key today's template cannot account for — no declared output name, no literal `Export.Name`, not in the resolved bag — i.e. an output deleted from the template. Skipped when the stored record holds a plain `ssm` reference, which only a cdkd that redacts every secret writes (or a `cdkd scrub` that kept an undeclared key beside it — one it rewrote only in part, one that may be a live export alias, one another stack still reads, every one when the other stacks' state could not be read, or one whose name holds a secret — the caveat below); a `secretsmanager` reference alone does not prove that. | Per-key |
 | Stored secret beside other text | The stored value holds a `{{resolve:...}}` secret reference beside other text in a shape the expression rule above rejects (in any string leaf of an array or object) — what an older deploy wrote around a plaintext. One whole reference is never withheld here. Checked for every key, whatever the record's other evidence or the template says. | Per-key |
 | Carried value in the merge preview | The no-change merge preview carried a value from state for a failed output, an alias included, that is not one whole secret reference. | Record-wide |
 

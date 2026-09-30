@@ -83,6 +83,8 @@ import {
   isSecretExpressionByVerdictOrSpelling,
   recordResolvedPair,
   recordIntrinsicLeafResolution,
+  recordIntrinsicLeafResolutionAs,
+  intrinsicLeafResolutionOf,
   isSingleDynamicReferenceToken,
   inheritedParameterExpression,
   clearRecoverableMaskedOutputs,
@@ -1658,11 +1660,12 @@ export interface ResolverContext {
    * no-change deploy, so without this the fallback's refusal is permanent.
    *
    * OPT-IN by presence, like the bags above. Only a caller that can ROUTE a
-   * record to its provider AND owns a state save supplies it: `DeployEngine`
-   * does, on every context it builds. A context without one keeps the pre-#1852
-   * behaviour exactly — no AWS call is ever issued on its behalf. The supplier
-   * owns single-flight, memoization and persistence; the resolver only asks,
-   * and only on a MISS.
+   * record to its provider supplies it: `DeployEngine` does, on every context
+   * it builds, and persists what the read returns; `cdkd diff` supplies a
+   * `readOnly` one (`read-only-attribute-healer.ts`) that persists nothing. A
+   * context without one keeps the pre-#1852 behaviour exactly — no AWS call is
+   * ever issued on its behalf. The supplier owns single-flight, memoization and
+   * any persistence; the resolver only asks, and only on a MISS.
    */
   attributeHealer?: StaleAttributeHealer;
 
@@ -4312,7 +4315,7 @@ export class IntrinsicFunctionResolver {
     }
 
     if ('Fn::If' in obj) {
-      return await this.resolveIf(obj['Fn::If'] as [string, unknown, unknown], context);
+      return await this.resolveIf(obj['Fn::If'] as [string, unknown, unknown], context, obj);
     }
 
     if ('Fn::Equals' in obj) {
@@ -5784,8 +5787,8 @@ export class IntrinsicFunctionResolver {
     // `value` is a PERSISTED attribute, so both need a bag.
     context?: ResolverContext,
     // What the #1852 heal observed before this refusal, so the remedy is true
-    // on the path taken. `undefined` = no healer on this context (`cdkd diff`,
-    // `cdkd drift`, ...), i.e. nothing was re-read.
+    // on the path taken. `undefined` = no healer on this context, i.e. nothing
+    // was re-read.
     healOutcome?: StaleAttributeHealOutcome
   ): void {
     if (!isStalePlaceholderArnAttribute(resource.resourceType, attributeName, value)) return;
@@ -5813,7 +5816,8 @@ export class IntrinsicFunctionResolver {
   /**
    * The remedy half of a STALE-RECORD refusal (issue
    * [#1852](https://github.com/go-to-k/cdkd/issues/1852)), worded from what the
-   * heal observed so it is true on the path taken.
+   * heal observed, and from whether the healer writes (a `readOnly` one does
+   * not), so it is true on the path taken.
    *
    * The sentence it replaces — "deploy the stack again so the resource's next
    * update heals the record" — was false for the commonest case: a deploy that
@@ -5837,31 +5841,46 @@ export class IntrinsicFunctionResolver {
         `record. Otherwise ${touch}.`
       );
     }
+    // A read-only healer (`cdkd diff`'s) writes nothing, so its read heals no
+    // record: word the outcome as the preview's own read, not a heal attempt.
+    const preview = context?.attributeHealer?.readOnly === true;
+    const attempted = preview
+      ? `This preview re-read the attributes from AWS`
+      : `cdkd tried to re-read the attributes from AWS to heal the record`;
     switch (outcome.kind) {
       case 'failed':
         return (
-          `cdkd tried to re-read the attributes from AWS to heal the record, but ` +
+          `${attempted}, but ` +
           `${this.describeFailureObserved('the provider read', outcome.error, context)}. ` +
-          `Fix that (a missing read permission is the usual cause) and deploy again — cdkd ` +
-          `retries the read on every deploy until the record is healed — or ${touch}.`
+          (preview
+            ? `A preview writes nothing to state; 'cdkd deploy' issues the same read and records ` +
+              `the attribute once the read returns it. Fix the read (a missing read permission is the ` +
+              `usual cause), or ${touch}.`
+            : `Fix that (a missing read permission is the usual cause) and deploy again — cdkd ` +
+              `retries the read on every deploy until the record is healed — or ${touch}.`)
         );
       case 'not-found':
         return (
-          `cdkd tried to re-read the attributes from AWS to heal the record, but AWS reports no ` +
+          `${attempted}, but AWS reports no ` +
           `resource behind the recorded physical id — it was probably deleted outside cdkd. ` +
           `Check it with 'cdkd drift', then re-create it (change the resource so it is replaced) ` +
           `or remove it from state.`
         );
       case 'read':
-        if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy();
-        return (
-          `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
-          `attribute either, so there is nothing to heal the record with; ${touch}.`
-        );
+        if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy(context);
+        return preview
+          ? `This preview re-read the resource from AWS and the read reports no usable value ` +
+              `for this attribute either; ${touch}.`
+          : `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
+              `attribute either, so there is nothing to heal the record with; ${touch}.`;
       case 'not-attempted':
         return (
-          `cdkd did not re-read it from AWS (the record was written by this deploy, or this ` +
-          `resource type has no read-only lookup); ${touch}.`
+          // No reason in the preview: "written by this deploy" is false there,
+          // and naming another would claim to know why the healer declined.
+          (preview
+            ? `cdkd did not re-read it from AWS for this preview; `
+            : `cdkd did not re-read it from AWS (the record was written by this deploy, or this ` +
+              `resource type has no read-only lookup); `) + `${touch}.`
         );
     }
   }
@@ -5870,8 +5889,8 @@ export class IntrinsicFunctionResolver {
    * The remedy half of the "not enriched" refusal. The pre-#1852 sentence,
    * plus what the heal established: a completed re-read that reports no such
    * attribute CONFIRMS the type does not supply it; a context with no healer
-   * (`cdkd diff`, `cdkd drift`, ...) re-read nothing, so the record may merely
-   * predate the enrichment and `cdkd deploy` is what heals it.
+   * re-read nothing, so the record may merely predate the enrichment and
+   * `cdkd deploy` is what heals it.
    */
   private unenrichedRemedy(
     resourceType: string,
@@ -5894,7 +5913,7 @@ export class IntrinsicFunctionResolver {
       );
     }
     if (outcome.kind === 'read') {
-      if (this.healWithheld(outcome, attributeName)) return this.withheldRemedy();
+      if (this.healWithheld(outcome, attributeName)) return this.withheldRemedy(context);
       return (
         `cdkd re-read the resource's attributes from AWS and the read reports none by that ` +
         `name. ${fileIssue}`
@@ -5917,12 +5936,26 @@ export class IntrinsicFunctionResolver {
    * Control's read-back is masked wherever cdkd cannot certify a key as a
    * read-only attribute, which is every key when `DescribeType` is unavailable.
    * "The read reports none ... file an issue" would be false here.
+   *
+   * A `readOnly` healer's read (`cdkd diff`'s) ran under the preview's own
+   * credentials, not the deploy role's, so that remedy names those instead.
    */
-  private withheldRemedy(): string {
+  private withheldRemedy(context?: ResolverContext): string {
+    const confirm =
+      `it could not confirm that this is a read-only attribute of the type, and an ` +
+      `unconfirmed value is never used.`;
+    if (context?.attributeHealer?.readOnly === true) {
+      return (
+        `This preview re-read the resource through Cloud Control, but withheld the value: ` +
+        `${confirm} Grant the credentials the preview runs with cloudformation:DescribeType ` +
+        `and run the diff again (a deploy's own read needs the same permission); if they ` +
+        `already have it, the name is a writable property rather ` +
+        `than an attribute — reference the value the template sets instead.`
+      );
+    }
     return (
-      `cdkd re-read the resource through Cloud Control, but withheld the value: it could not ` +
-      `confirm that this is a read-only attribute of the type, and an unconfirmed value is ` +
-      `never used. Grant the deploy role cloudformation:DescribeType and deploy again; if the ` +
+      `cdkd re-read the resource through Cloud Control, but withheld the value: ${confirm} ` +
+      `Grant the deploy role cloudformation:DescribeType and deploy again; if the ` +
       `role already has it, the name is a writable property rather than an attribute — ` +
       `reference the value the template sets instead.`
     );
@@ -7860,7 +7893,7 @@ export class IntrinsicFunctionResolver {
     // "unknown attribute" the user can do nothing about: name the permission.
     const withheld =
       healOutcome?.kind === 'read' && this.healWithheld(healOutcome, attributeName)
-        ? `. ${this.withheldRemedy()}`
+        ? `. ${this.withheldRemedy(context)}`
         : '';
     this.logger.warn(
       `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${loggedType}, returning physical ID${withheld}`
@@ -7962,9 +7995,9 @@ export class IntrinsicFunctionResolver {
               twin: resolved,
               product: true,
               raw: { value: raw },
-              input: resolved,
-              substitutions: [],
-              complete: true,
+              // A nested `Fn::Join` / `Fn::Sub` / `Fn::If` part lends its own
+              // record (issue #3306).
+              ...this.nestedPartResolution(context, v, resolved),
             };
           }
         ),
@@ -8236,12 +8269,22 @@ export class IntrinsicFunctionResolver {
     // with no entry here (an intrinsic) is a resolution product, masked whole
     // at the replacement below when it is a recorded secret.
     const variableTwins: Record<string, string> = Object.create(null) as Record<string, string>;
-    // Each STRING variable's own dynamic-reference pass (issue #3156), keyed
-    // like the two maps above. Read per placeholder USE below, so a variable
-    // the template never names contributes nothing to the object's record.
-    const variablePasses: Record<string, DynamicReferencePass> = Object.create(null) as Record<
+    // What each variable contributes to the object's record (issue #3156),
+    // keyed like the two maps above. Read per placeholder USE below, so a
+    // variable the template never names contributes nothing to the record. A
+    // STRING variable contributes its RAW text with its own dynamic-reference
+    // pass, so a token it holds reaches `input` as the token (issue #3306); an
+    // intrinsic one contributes its own record when the pass kept one
+    // (`nestedPartResolution`), and its resolved text otherwise -- looked up
+    // from `variableSources` at the placeholder, so an unused variable is
+    // never stringified here.
+    const variableSources: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    const variableRecords: Record<
       string,
-      DynamicReferencePass
+      Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'>
+    > = Object.create(null) as Record<
+      string,
+      Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'>
     >;
     // The FIRST list refusal (issue #3809), thrown only once the walk is done
     // -- see `subListRefusal`.
@@ -8297,7 +8340,11 @@ export class IntrinsicFunctionResolver {
             : { result: val, twin: val, substitutions: [], complete: true };
           variables[key] = resolved.result;
           variableTwins[key] = resolved.twin;
-          variablePasses[key] = resolved;
+          variableRecords[key] = {
+            input: val,
+            substitutions: resolved.substitutions,
+            complete: resolved.complete,
+          };
         } else {
           // Same sequential-walk defect as the object bag (issue
           // go-to-k/cdkd#3218), found beside it: `Fn::Sub: ["...", {A: {Ref:
@@ -8316,6 +8363,7 @@ export class IntrinsicFunctionResolver {
             context.abandonedResolutions === undefined
               ? await this.resolveValue(val, context)
               : await this.resolveKeyUnit(key, val, context, context.abandonedResolutions);
+          variableSources[key] = val;
           // Refused whether or not the template names it: CloudFormation
           // validates every value of the map (issue #3809).
           listRefusal ??= this.subListRefusal(
@@ -8338,13 +8386,13 @@ export class IntrinsicFunctionResolver {
     // `twin` is the replacement's LOG TWIN (issue #3100); an entry no secret
     // can reach (an escape, an empty `${}`, a pseudo parameter, a kept
     // placeholder) carries its replacement as its own twin.
-    // `pass` is set only for a STRING variable: its own dynamic-reference pass
-    // (issue #3156).
+    // `record` is set only for a variable: what it contributes to the
+    // object's record (issues #3156, #3306).
     const replacements: Array<{
       match: string;
       replacement: string;
       twin: string;
-      pass?: DynamicReferencePass;
+      record?: Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'>;
     }> = [];
     // Match BOTH the literal-escape form `${!X}` and the variable form `${X}`.
     // The CloudFormation rule: a `${` immediately followed by `!` is an escape —
@@ -8374,7 +8422,7 @@ export class IntrinsicFunctionResolver {
       let replacement: string;
       // Set only by the arms that RESOLVED something (issue #3100).
       let twinReplacement: string | undefined;
-      let pass: DynamicReferencePass | undefined;
+      let record: Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'> | undefined;
 
       // Check explicit variables first. `Object.hasOwn` rather than `in`
       // (issue #2776), on all three maps. UNFALSIFIABLE while they carry no
@@ -8389,7 +8437,10 @@ export class IntrinsicFunctionResolver {
         twinReplacement = Object.hasOwn(variableTwins, varNameStr)
           ? variableTwins[varNameStr]
           : this.productLogTwin(variables[varNameStr], context);
-        if (Object.hasOwn(variablePasses, varNameStr)) pass = variablePasses[varNameStr];
+        if (Object.hasOwn(variableRecords, varNameStr)) record = variableRecords[varNameStr];
+        else if (Object.hasOwn(variableSources, varNameStr)) {
+          record = this.nestedPartResolution(context, variableSources[varNameStr], replacement);
+        }
       } else {
         // Check if it's a pseudo parameter. `AWS::NotificationARNs` is a LIST
         // one, refused like any other list (issue #3809).
@@ -8488,7 +8539,7 @@ export class IntrinsicFunctionResolver {
         match: match[0],
         replacement,
         twin: twinReplacement ?? replacement,
-        ...(pass ? { pass } : {}),
+        ...(record ? { record } : {}),
       });
     }
 
@@ -8514,15 +8565,20 @@ export class IntrinsicFunctionResolver {
       return entry ? entry.twin : whole;
     });
 
-    // The record (issue #3156). `input` is the substituted template, the text
-    // the final pass below starts from; the replacements a USED string
-    // variable made count ahead of that pass's own. A variable replacement
-    // leaves its plaintext rather than its token in `input`, so the object
-    // records one substitution and an `input` spelling that token only when
-    // the variables replaced nothing and the final pass replaced exactly one.
-    const input = result;
-    const substitutions = replacements.flatMap((entry) => entry.pass?.substitutions ?? []);
-    let complete = replacements.every((entry) => entry.pass?.complete ?? true);
+    // The record (issue #3156). `input` is the template with each USED
+    // variable replaced by what it contributes (issue #3306): a string
+    // variable's RAW text, an intrinsic one's own record input or its
+    // resolved text, every other placeholder by its replacement. So a token a
+    // variable holds stays a token in `input`, beside the replacement that
+    // resolved it, and the replacements the used variables made count ahead of
+    // the final pass's own over the substituted template.
+    let inputCursor = 0;
+    const input = template.replace(/\$\{(!)?([^}]*)\}/g, (whole) => {
+      const entry = replacements[inputCursor++];
+      return entry ? (entry.record?.input ?? entry.replacement) : whole;
+    });
+    const substitutions = replacements.flatMap((entry) => entry.record?.substitutions ?? []);
+    let complete = replacements.every((entry) => entry.record?.complete ?? true);
 
     // Resolve any dynamic references in the substituted result (secret refs are
     // left unresolved per-reference when skipDynamicReferences is set).
@@ -8891,9 +8947,34 @@ export class IntrinsicFunctionResolver {
    */
   private async resolveIf(
     ifArgs: [string, unknown, unknown],
-    context: ResolverContext
+    context: ResolverContext,
+    source: object
   ): Promise<unknown> {
     const [conditionName, valueIfTrue, valueIfFalse] = ifArgs;
+    // The `Fn::If` object answers for the branch it selected (issue #3306):
+    // the nested-stack carry reads the record of the object the template
+    // spells, and that is this one, not the branch. A STRING branch is
+    // resolved by the dynamic-reference pass `resolveValue`'s string arm runs
+    // on a reference-bearing string (on any other it returns the string, which
+    // is what the pass returns there too), here so its replacements can be
+    // recorded; an object branch lends its own record, when the pass kept one.
+    const resolveBranch = async (branch: unknown): Promise<unknown> => {
+      if (typeof branch === 'string') {
+        const pass = await this.resolveDynamicReferencesWithLogTwin(branch, branch, context);
+        this.recordLeafResolution(context, source, {
+          input: branch,
+          output: pass.result,
+          substitutions: pass.substitutions,
+          complete: pass.complete,
+        });
+        return pass.result;
+      }
+      const resolved = await this.resolveValue(branch, context);
+      if (context.recordedSecretValues !== undefined) {
+        recordIntrinsicLeafResolutionAs(context.recordedSecretValues, source, branch);
+      }
+      return resolved;
+    };
 
     // Check if condition is evaluated in context. `Object.hasOwn` (issue
     // #2767): `conditionName` is template-controlled, so a bare `in` answered
@@ -8914,7 +8995,7 @@ export class IntrinsicFunctionResolver {
       this.logger.warn(
         `Condition ${this.displayMasked(String(conditionName), context)} not found in context, assuming false`
       );
-      return await this.resolveValue(valueIfFalse, context);
+      return await resolveBranch(valueIfFalse);
     }
 
     const conditionValue = context.conditions[conditionName];
@@ -8925,7 +9006,7 @@ export class IntrinsicFunctionResolver {
       `Resolved Fn::If: condition ${this.displayMasked(String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
     );
 
-    return await this.resolveValue(selectedValue, context);
+    return await resolveBranch(selectedValue);
   }
 
   /**
@@ -12122,9 +12203,10 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
-   * Record the `Fn::Join` / `Fn::Sub` object `source`'s own resolution under
-   * the pass bag the nested-stack carry reads (issue
-   * [#3156](https://github.com/go-to-k/cdkd/issues/3156)). The key is the
+   * Record the `Fn::Join` / `Fn::Sub` / `Fn::If` object `source`'s own
+   * resolution under the pass bag the nested-stack carry reads (issues
+   * [#3156](https://github.com/go-to-k/cdkd/issues/3156),
+   * [#3306](https://github.com/go-to-k/cdkd/issues/3306)). The key is the
    * object `resolveValue` dispatched on, and a context with no bag has no pass
    * to scope it to.
    */
@@ -12135,6 +12217,32 @@ export class IntrinsicFunctionResolver {
   ): void {
     if (context.recordedSecretValues === undefined) return;
     recordIntrinsicLeafResolution(context.recordedSecretValues, source, resolution);
+  }
+
+  /**
+   * What a NESTED intrinsic part contributes to its outer object's record
+   * (issue [#3306](https://github.com/go-to-k/cdkd/issues/3306)): the part's
+   * own record when this pass kept one for that object, so a token the part
+   * spelled reaches the outer `input` raw with
+   * the replacement that resolved it. Any other part contributes its resolved
+   * text and no replacement, as before. A record the pass kept describes THIS
+   * resolution: the part was just resolved into the same bag, and a
+   * resolution that differs from an earlier one poisons the record, which
+   * reads as none. `complete` is lent with the rest, though for every record
+   * the resolver writes a token the part left unreplaced also stays in its
+   * `input`, a second span the carry refuses on its own, so no case pins it.
+   */
+  private nestedPartResolution(
+    context: ResolverContext,
+    part: unknown,
+    resolved: string
+  ): Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'> {
+    const own =
+      context.recordedSecretValues !== undefined && typeof part === 'object' && part !== null
+        ? intrinsicLeafResolutionOf(context.recordedSecretValues, part)
+        : undefined;
+    if (own === undefined) return { input: resolved, substitutions: [], complete: true };
+    return { input: own.input, substitutions: own.substitutions, complete: own.complete };
   }
 
   /**

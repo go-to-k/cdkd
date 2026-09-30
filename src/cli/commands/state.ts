@@ -3420,12 +3420,20 @@ async function stateRefreshObservedCommand(
     // window, it does not close it. A target with no record is left to the
     // loop, whose "No state found" names it, and a legacy region-less one to the
     // refusal just before that loop.
+    // ONE context for the pre-flight and the per-stack call, so a refusal of
+    // the same record reads the same account whichever of the two raises it
+    // (go-to-k/cdkd#3909).
+    const lockRecovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket: setup.bucket,
+      statePrefix: options.statePrefix,
+    };
     if (regionScoped.length > 1) {
       for (const target of regionScoped) {
         const loaded = await setup.stateBackend.getState(target.stackName, target.region);
         if (!loaded) continue;
-        refuseMalformedState(loaded.state, target.stackName, target.region);
-        refuseMalformedResourceEntries(loaded.state, target.stackName, target.region);
+        refuseMalformedState(loaded.state, target.stackName, target.region, lockRecovery);
+        refuseMalformedResourceEntries(loaded.state, target.stackName, target.region, lockRecovery);
       }
     }
 
@@ -3528,11 +3536,7 @@ async function stateRefreshObservedCommand(
         {
           dryRun: options.dryRun ?? false,
           logger,
-          lockRecovery: {
-            profile: options.profile,
-            stateBucket: setup.bucket,
-            statePrefix: options.statePrefix,
-          },
+          lockRecovery,
         }
       );
       totalRefreshed += counts.refreshed;
@@ -3718,8 +3722,10 @@ async function refreshObservedForStack(
   // same answer in the same order as the real run (the reason it has its own
   // loop at all), and a refusal below the branch would have let `--dry-run`
   // report a plan for a record the real run refuses.
-  refuseMalformedState(state, stackName, region);
-  refuseMalformedResourceEntries(state, stackName, region);
+  // `lockRecovery` qualifies the refusals' pasteable commands with this run's
+  // account flags (go-to-k/cdkd#3909), as it does the contention hint below.
+  refuseMalformedState(state, stackName, region, lockRecovery);
+  refuseMalformedResourceEntries(state, stackName, region, lockRecovery);
 
   // No `?? {}`: the two refusals above have already thrown for every shape it
   // covered, so a fallback here could no longer fire and would only make a later

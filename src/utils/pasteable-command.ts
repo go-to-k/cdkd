@@ -95,6 +95,17 @@ import {
   truncateCodePoints,
   UNRENDERABLE,
 } from './display-safe.js';
+import { pasteableRunFlags, pasteableVerbFlags } from './pasteable-run-context.js';
+
+/**
+ * Whitespace, and every character a POSIX shell (bash or zsh) treats
+ * specially anywhere in a word, `~` and `^` included. A run flag's value
+ * holding one is printed as a hole: quoting alone is not enough, because a
+ * command can be pasted together with a sentence whose apostrophe flips the
+ * quote parity, or from inside markdown backticks (go-to-k/cdkd#3959). A
+ * value with none of these is inert even unquoted.
+ */
+export const SHELL_ACTIVE = /[\s'"`$;&|<>()*?[\]{}!#~\\^=%,]/;
 
 /**
  * Quote a value for a pasteable shell command.
@@ -436,10 +447,18 @@ function withholdReason(
  * Build a pasteable `cdkd` command: every user-controlled value shell-quoted
  * behind an exactness gate, every placeholder quoted, nothing wrapped.
  *
- * `extraFlags` is where a caller appends the flags that pin the command to its
- * own account and key space — in practice `recoveryCommandFlags(recovery)`,
- * whose `exact` the caller folds into its own decision. They are appended
- * verbatim, LAST, because they are built by the same rules one layer up.
+ * For a `cdkd ...` verb it then appends the run's explicitly typed
+ * `--profile` / `--state-bucket` / `--state-prefix` and a `'<role-arn>'` hole
+ * (`pasteable-run-context.ts`, go-to-k/cdkd#4177), limited to the options the
+ * hinted subcommand parses and skipping any flag the caller already passed. A
+ * hint that must NOT carry the run's bucket or account (one naming another
+ * account's record) must build its own command rather than call this.
+ *
+ * `extraFlags` is where a caller appends flags built by the same rules one
+ * layer up — `buildForceUnlockCommand`'s `recoveryCommandFlags(recovery)`,
+ * whose `exact` it folds into its own decision. They are appended verbatim,
+ * LAST. A caller wanting its account values GATED here passes them as
+ * `{ flag, value }` args instead (`malformed-resources-bag.ts`'s `accountArgs`).
  */
 export function pasteableCommand(
   verb: string,
@@ -473,7 +492,75 @@ export function pasteableCommand(
     parts.push(rendered);
   }
   parts.push(...extraFlags);
+  parts.push(...runFlagWords(verb, args, extraFlags));
   return { command: parts.join(' '), exact, withheld };
+}
+
+/**
+ * The run's explicit account / bucket flags (`pasteable-run-context.ts`,
+ * go-to-k/cdkd#4177) that `verb` accepts and the caller did not already pass,
+ * in `--profile` / `--state-bucket` / `--state-prefix` / `--role-arn` order.
+ *
+ * A value that is not inert in a shell becomes a quoted {@link commandHole} --
+ * never the altered spelling (another account or bucket) and never omitted
+ * (the ambient default, the very mis-target this closes). `--role-arn` is
+ * always the `'<role-arn>'` hole: the ARN carries the account id, and every
+ * command declaring `--role-arn` refuses the unfilled placeholder before any
+ * AWS call. `exact` is not touched, because every hole here fails closed: an
+ * unknown profile, an invalid bucket name, a refused role ARN, and a
+ * `'<prefix>'` that `parseStatePrefix` (`src/cli/options.ts`) refuses.
+ *
+ * A typed `--state-bucket` is printed as typed, account id included, as
+ * `recoveryCommandFlags` already does: the operator chose to type it, and a
+ * paste must reach the same bucket.
+ */
+function runFlagWords(
+  verb: string,
+  args: readonly CommandArg[],
+  extraFlags: readonly string[]
+): string[] {
+  const accepted = pasteableVerbFlags(verb);
+  if (accepted === undefined) return [];
+  const present = new Set<string>();
+  for (const arg of args) {
+    if ('flag' in arg) present.add(arg.flag);
+    // `malformed-resources-bag.ts` spells an explicit empty prefix as the
+    // literal `--state-prefix ''`.
+    else if ('literal' in arg) present.add(arg.literal.split(' ')[0]!);
+  }
+  for (const f of extraFlags) present.add(f.split(' ')[0]!);
+  const run = pasteableRunFlags();
+  const out: string[] = [];
+  const add = (
+    flag: string,
+    value: string | undefined,
+    hole: string,
+    allowEmpty: boolean
+  ): void => {
+    if (value === undefined || (value === '' && !allowEmpty)) return;
+    if (!accepted.has(flag) || present.has(flag)) return;
+    const inert =
+      displaySafe(value) === value &&
+      !value.startsWith('-') &&
+      !SHELL_ACTIVE.test(value) &&
+      // Invisible format characters (U+200B, U+200E/F, U+FEFF ...) survive
+      // `displaySafe`'s denylist and would let the display lie about the value.
+      !/\p{Cf}/u.test(value) &&
+      !truncateCodePoints(value, STACK_REF_MAX_CODE_POINTS).truncated;
+    // cdkd-profile-display: printed only when inert in a shell (no whitespace,
+    // no shell-active character, no leading `-`, unaltered by `displaySafe`),
+    // else as a literal hole.
+    out.push(`${flag} ${value === '' || inert ? shellQuote(value) : commandHole(hole)}`);
+  };
+  add('--profile', run.profile, 'profile', false);
+  add('--state-bucket', run.stateBucket, 'bucket', false);
+  // DEFINED, not truthy: `--state-prefix ''` keys a real key space
+  // (`.claude/rules/lock-contention-message.md`).
+  add('--state-prefix', run.statePrefix, 'prefix', true);
+  if (run.roleArn === true && accepted.has('--role-arn') && !present.has('--role-arn')) {
+    out.push(`--role-arn ${commandHole('role-arn')}`);
+  }
+  return out;
 }
 
 /**

@@ -101,7 +101,12 @@ export function createReadOnlyAttributeHealerFactory(options: {
 }): (stackName: string, region: string) => StaleAttributeHealer {
   const logger = getLogger().child('ReadOnlyAttributeHealer');
   const memo = new Map<string, Promise<StaleAttributeHealOutcome>>();
-  return (stackName, region) => (logicalId, resource) => {
+  const readOnce = (
+    stackName: string,
+    region: string,
+    logicalId: string,
+    resource: ResourceState
+  ): Promise<StaleAttributeHealOutcome> => {
     // Guarded, because the record is an unchecked cast of state.json: a
     // hand-edited row with a non-string `resourceType` throws inside
     // `isHealExcludedType`, and a healer must never throw. Synchronous rather
@@ -149,4 +154,10 @@ export function createReadOnlyAttributeHealerFactory(options: {
     memo.set(key, heal);
     return heal;
   };
+  return (stackName, region) =>
+    Object.assign(
+      (logicalId: string, resource: ResourceState) =>
+        readOnce(stackName, region, logicalId, resource),
+      { readOnly: true as const }
+    );
 }

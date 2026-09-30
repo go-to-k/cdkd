@@ -109,15 +109,15 @@ const makeJournal = () => ({
   ],
 });
 
-function install(orphans: unknown) {
+function install(orphans: unknown, resources?: unknown) {
   const saveState = vi.fn().mockResolvedValue('etag-1');
   const state: StackState = {
     version: 9,
     stackName: STACK,
     region: REGION,
-    resources: {
-      A: { physicalId: 'p', resourceType: 'AWS::SSM::Parameter', properties: {} },
-    },
+    resources: (resources === undefined
+      ? { A: { physicalId: 'p', resourceType: 'AWS::SSM::Parameter', properties: {} } }
+      : resources) as StackState['resources'],
     outputs: {},
     orphans: orphans as StackState['orphans'],
     lastModified: 1,
@@ -358,4 +358,33 @@ describe('rollbackCommand refuses an unusable orphan ROW (go-to-k/cdkd#3500)', (
     ).toHaveBeenCalled();
     expect(replayProvider.delete, 'the control never replayed anything').toHaveBeenCalled();
   });
+});
+
+/**
+ * go-to-k/cdkd#3909: each of the three load refusals prints its pasteable
+ * commands with the run's account, so they read the bucket this run read. One
+ * case per CALL SITE, each passing the context separately.
+ */
+describe('rollbackCommand qualifies its malformed-record refusals with the run account (go-to-k/cdkd#3909)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const OPTS = { ...BASE_OPTS, profile: 'prod', statePrefix: 'team-a' } as unknown as Parameters<
+    typeof rollbackCommand
+  >[1];
+  const FLAGS = '--profile prod --state-bucket b --state-prefix team-a';
+
+  for (const [site, orphans, resources] of [
+    ['the resources map', undefined, null],
+    ['the orphans container', 'abc', undefined],
+    ['an orphan row', [null], undefined],
+  ] as const) {
+    it(`${site}: the inspect command carries the flags`, async () => {
+      install(orphans, resources);
+      const thrown = await rollbackCommand(STACK, OPTS).catch((e: unknown) => e);
+      expect(thrown).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).message).toContain(
+        `cdkd state show ${STACK} --stack-region ${REGION} --json ${FLAGS}`
+      );
+    });
+  }
 });

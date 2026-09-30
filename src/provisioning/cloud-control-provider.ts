@@ -54,6 +54,7 @@ import { shellQuote } from '../state/lock-contention-message.js';
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
+import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
@@ -2630,7 +2631,7 @@ export class CloudControlProvider implements ResourceProvider {
         ? undefined
         : region;
     const regionFlag = safeRegion === undefined ? '' : ` --region ${shellQuote(safeRegion)}`;
-    return `aws cloudcontrol get-resource-request-status --request-token ${shellQuote(safeToken)}${regionFlag}`;
+    return `${withPasteableAwsProfile('aws cloudcontrol get-resource-request-status')} --request-token ${shellQuote(safeToken)}${regionFlag}`;
   }
 
   /**

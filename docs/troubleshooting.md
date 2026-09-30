@@ -1603,8 +1603,16 @@ The error above appears only when that re-read could not help:
 `--verbose` prints the AWS error text, which is withheld by default because a
 denied call quotes the caller's account, role and session.
 
-`cdkd diff` issues the same re-read, so its preview shows the value the deploy
-will use, but it never writes the value to state: the next deploy records it.
+`cdkd diff` issues the same re-read, and its preview shows the value that read
+returns, but it never writes the value to state: only a deploy's own read
+records it.
+When that read fails or finds no resource, the diff's message says `This
+preview re-read the attributes from AWS, but ...` where the deploy's says `cdkd
+tried to re-read the attributes from AWS to heal the record, but ...`, because
+the preview heals nothing. For a failed read it adds that `cdkd deploy` issues
+the same read and records the attribute once the read returns it. For a
+withheld value it names the credentials the preview runs with, not the deploy
+role.
 The other read-only commands (`cdkd drift`, `cdkd export`) never re-read and
 never write state. Until a deploy has healed the record they report an `*Arn` /
 `*Url` reference as unresolved, and resolve any other attribute to the physical

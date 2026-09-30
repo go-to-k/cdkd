@@ -1355,6 +1355,8 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
           // every other assertion green while the remedy names a region that
           // does not hold the record.
           expect(message).toContain('State for TestStack (us-east-1)');
+          // Its inspect command reads THIS run's bucket (go-to-k/cdkd#3909).
+          expect(message).toContain('--json --state-bucket test-bucket');
           expect(mockAcquireLock).not.toHaveBeenCalled();
           expect(mockSaveState).not.toHaveBeenCalled();
         });
@@ -1427,6 +1429,8 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
           expect(message).not.toContain('HealthyBucket');
           // Stack AND region forwarded as themselves from this call site.
           expect(message).toContain('State for TestStack (us-east-1)');
+          // ...and the run's account (go-to-k/cdkd#3909).
+          expect(message).toContain('--json --state-bucket test-bucket');
           expect(mockAcquireLock).not.toHaveBeenCalled();
           expect(mockSaveState).not.toHaveBeenCalled();
         });
@@ -1477,6 +1481,9 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
         const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
         expect(message).toContain(expected);
         expect(message).toContain('State for StackB (us-east-1)');
+        // The PRE-FLIGHT refusal carries the run's account too, the same
+        // context the per-stack call is handed (go-to-k/cdkd#3909).
+        expect(message).toContain('--json --state-bucket test-bucket');
         // Nothing locked and nothing written — StackA included.
         expect(mockAcquireLock).not.toHaveBeenCalled();
         expect(mockSaveState).not.toHaveBeenCalled();

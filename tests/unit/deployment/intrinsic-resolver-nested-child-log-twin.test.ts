@@ -18,10 +18,10 @@
  * engine's `recordNestedStackParameterExpressions`, which turns a wholly
  * literal secretsmanager frame (the `port:` + `PIN_REF` one most cases use)
  * into a whole-value inherited entry that masks the value first. The one
- * exception is the `ssm` SecureString case: its token sits in a nested part, a
- * frame the carry still refuses (go-to-k/cdkd#3306), and it runs the carry to
- * show that refusal, since production routes such a frame through this
- * lookup.
+ * exception is the `ssm` SecureString case: its token sits in an `Fn::Select`
+ * element, a part with no resolution record of its own, which the carry still
+ * refuses, and it runs the carry to show that refusal, since production
+ * routes such a frame through this lookup.
  *
  * ROUTE 2 — a string resolved in two stages. A list element that still spells
  * a reference after its list intrinsic resolved it (a resolved VALUE that is
@@ -81,8 +81,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
         }
         if (name === 'host') return { Parameter: { Value: PUBLIC_HOST, Type: 'String' } };
         // The ssm case's sub-floor SecureString, in a frame the parent's
-        // carry still refuses (a token in a nested part), which reaches this
-        // lookup in production.
+        // carry still refuses (a token in an `Fn::Select` element), which
+        // reaches this lookup in production.
         if (name === 'pinssm') return { Parameter: { Value: PIN_SSM, Type: 'SecureString' } };
         const notFound = new Error(`ParameterNotFound: ${String(name)}`);
         notFound.name = 'ParameterNotFound';
@@ -392,19 +392,20 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
     expect(debugLines('Resolved Fn::Join: ')).toEqual(['Resolved Fn::Join: ***']);
   });
 
-  it('the same lookup over an ssm SecureString frame the parent carry still refuses (a token in a nested part)', async () => {
+  it('the same lookup over an ssm SecureString frame the parent carry still refuses (a token in an Fn::Select element)', async () => {
     const parentBag = new Map<string, string>();
     const parent = new IntrinsicFunctionResolver('us-east-1');
-    // The token sits inside a NESTED `Fn::Sub` part, a shape the carry still
-    // refuses (go-to-k/cdkd#3306): the outer object's own text spells no
-    // token. Pinned below by running the carry over this very source, so the
-    // case keeps a production-reachable anchor.
+    // The token sits inside an `Fn::Select` element, a part with no record of
+    // its own, so the outer object's record lists no replacement and the carry
+    // still refuses it (a nested `Fn::Join` / `Fn::Sub` part lends its record
+    // since go-to-k/cdkd#3306). Pinned below by running the carry over this
+    // very source, so the case keeps a production-reachable anchor.
     // `Control` is a LITERAL frame over the same secret in the same row, which
     // the carry does record: its entry below shows the walk ran over this bag
     // and row, so `Endpoint`'s missing entry is a refusal, not an early exit.
     const source = {
       Parameters: {
-        Endpoint: { 'Fn::Join': ['', ['port:', { 'Fn::Sub': '{{resolve:ssm:pinssm}}' }]] },
+        Endpoint: { 'Fn::Join': ['', ['port:', { 'Fn::Select': [0, ['{{resolve:ssm:pinssm}}']] }]] },
         Control: 'lit:{{resolve:ssm:pinssm}}',
       },
     };

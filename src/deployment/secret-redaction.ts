@@ -198,15 +198,21 @@ export interface DynamicReferenceSubstitution {
 }
 
 /**
- * What resolving ONE `Fn::Join` / `Fn::Sub` object did to its dynamic
- * references (issue [#3156](https://github.com/go-to-k/cdkd/issues/3156)).
+ * What resolving ONE `Fn::Join` / `Fn::Sub` / `Fn::If` object did to its
+ * dynamic references (issue [#3156](https://github.com/go-to-k/cdkd/issues/3156)).
  * `input` is the text the object's references were replaced in: for a Join,
- * its parts joined with every string part RAW and every other part resolved;
- * for a Sub, the template after its placeholders were substituted.
+ * its parts joined with every string part RAW, every nested part that has a
+ * record of its own as that record's `input`, and every other part resolved;
+ * for a Sub, the template with each USED variable as its raw text (a string)
+ * or as a nested part (an intrinsic) and every other placeholder substituted.
  * `substitutions` lists every replacement made while resolving the object --
- * a Join's string parts and its joined string, a Sub's USED string variables
- * and its substituted template -- in order; `complete` is false when any of
- * those passes left a token unreplaced.
+ * a Join's string parts, the lending nested parts and its joined string, a
+ * Sub's used variables and its substituted template -- in order; `complete`
+ * is false when any of those passes left a token unreplaced. An `Fn::If`
+ * holds its selected branch's (issue
+ * [#3306](https://github.com/go-to-k/cdkd/issues/3306)): a string branch
+ * records its own pass, an object branch lends the record it has, and any
+ * other branch poisons the `Fn::If`.
  */
 export interface IntrinsicLeafResolution {
   readonly input: string;
@@ -267,6 +273,48 @@ export function recordIntrinsicLeafResolution(
   }
 }
 
+/**
+ * How the pass that owns `secrets` resolved the intrinsic object `source`, or
+ * `undefined` when it recorded nothing for it or resolved it two different
+ * ways (issue [#3306](https://github.com/go-to-k/cdkd/issues/3306)). The
+ * resolver reads it to assemble an OUTER object's record from a nested part's.
+ */
+export function intrinsicLeafResolutionOf(
+  secrets: RecordedSecretValues,
+  source: object
+): IntrinsicLeafResolution | undefined {
+  const resolution = intrinsicLeafResolutionsOf.get(secrets)?.get(source);
+  return resolution === CONFLICTING_LEAF_RESOLUTION ? undefined : resolution;
+}
+
+/**
+ * Record `branch`'s resolution as `source`'s too: an `Fn::If` resolves to
+ * the branch it selects, so the carry reading the `Fn::If` object finds the
+ * selected branch's record (issue
+ * [#3306](https://github.com/go-to-k/cdkd/issues/3306)). A branch with no
+ * record, or a poisoned one, poisons `source`, whichever order its
+ * resolutions came in: `source` never keeps a record one of its resolutions
+ * did not produce, and a poisoned record reads as none.
+ */
+export function recordIntrinsicLeafResolutionAs(
+  secrets: RecordedSecretValues,
+  source: object,
+  branch: unknown
+): void {
+  let leaves = intrinsicLeafResolutionsOf.get(secrets);
+  const resolution =
+    typeof branch === 'object' && branch !== null ? leaves?.get(branch) : undefined;
+  if (resolution === undefined || resolution === CONFLICTING_LEAF_RESOLUTION) {
+    if (leaves === undefined) {
+      leaves = new WeakMap();
+      intrinsicLeafResolutionsOf.set(secrets, leaves);
+    }
+    leaves.set(source, CONFLICTING_LEAF_RESOLUTION);
+    return;
+  }
+  recordIntrinsicLeafResolution(secrets, source, resolution);
+}
+
 function sameLeafResolution(a: IntrinsicLeafResolution, b: IntrinsicLeafResolution): boolean {
   return (
     a.input === b.input &&
@@ -292,17 +340,20 @@ function sameLeafResolution(a: IntrinsicLeafResolution, b: IntrinsicLeafResoluti
  * equal). That is the observed equation `resolvedValue = input[token := value]`;
  * it says nothing about what a later lookup of the token returns.
  *
- * The `secret` test and the COUNT are independent. The count refuses a
- * replacement listed ahead of the one the frame names that left its plaintext,
- * not its token, in `input` -- a used Sub variable holding the SAME token as
- * the template (`port:T${V}` with `V` = `T`), whose first replacement passes
- * the token and value tests while `input` keeps the variable's plaintext.
- * `complete`, `output` and the token and value tests are implied, for every
- * shape the resolver records, by the count and `singleSpanFrame` over `input`:
- * a token left unreplaced in `input` is a second span, and a frame that fits
- * `input` around the one replacement fixes the output it produces. They are
- * kept so a recorder that is not faithful refuses rather than certifies, and
- * are pinned by hand-built records only.
+ * The COUNT and the token and value tests refuse what `singleSpanFrame`
+ * alone does not: a secret whose value is itself reference text, which the
+ * object's final pass resolves again (`port:${V}` with `V` a token whose value
+ * is another token), lists TWO replacements over ONE span of `input`, and the
+ * span's token and value are the first stage's, not the frame's. The
+ * `port:T${V}` shape (a used variable holding the template's own token), which
+ * the count alone refused while a variable left its plaintext in `input`, is a
+ * second span since a used variable lends its raw text (issue
+ * [#3306](https://github.com/go-to-k/cdkd/issues/3306)). `complete` and
+ * `output` are implied, for every shape the resolver records, by
+ * `singleSpanFrame` over `input`: a token left unreplaced in `input` is a
+ * second span, and a frame that fits `input` around the one replacement fixes
+ * the output it produces. They are kept so a recorder that is not faithful
+ * refuses rather than certifies, and are pinned by hand-built records only.
  */
 function substitutedSpellingOf(
   secrets: RecordedSecretValues,
@@ -318,18 +369,28 @@ function substitutedSpellingOf(
   const frame = singleSpanFrame(resolvedValue, resolution.input);
   if (frame === undefined) return undefined;
   if (frame.token !== substitution.token || frame.middle !== substitution.value) return undefined;
-  // The AFFIX. A non-literal part of the object (a nested `Fn::Join` /
-  // `Fn::Sub`, a `Ref`, an intrinsic Sub variable) contributes its RESOLVED
-  // text to `input`, and a replacement made while resolving that part is its
-  // own object's, not this record's. So an affix can hold another secret this
-  // pass recorded, which the spelling would carry verbatim as though it were
-  // an expression. Refused at any length, over-refusing toward the value
-  // scan's answer: a plaintext the bag holds anywhere outside the token.
+  // A RECORDED SECRET ANYWHERE IN THE SPELLING. A non-literal part of the
+  // object contributes its RESOLVED text to `input`: a part with no record of
+  // its own (a `Ref`, an `Fn::Select`, an intrinsic Sub variable with none) in
+  // full, and a `${X}` / `Ref` inside a part that lends its record (issue
+  // #3306) or inside the object's own `Fn::Sub` template, into that text,
+  // which can be the frame's TOKEN (`{{resolve:ssm:/app/${Name}}}` with `Name`
+  // a secret). A replacement made while resolving such a part is not listed
+  // in this record, so the prefix, the token and the suffix can each hold
+  // another secret this pass recorded, which the spelling would carry
+  // verbatim as though it were an expression (the #4130 review's M0). Refused
+  // at any length, over-refusing toward the value scan's answer: a plaintext
+  // the bag holds anywhere in `input` -- except the frame's OWN value inside
+  // its token. That value is in the bag by construction, and a 1-3 character
+  // one is often a substring of the token's literal text (`in` in
+  // `{{resolve:ssm:/app/kin}}`), so scanning the token for it refused the
+  // #3156 carry itself (the review's M2). It is still refused in the affix.
+  // Another short secret that merely coincides with the token's literal text
+  // is still over-refused; the scan cannot tell where the text came from.
   for (const plaintext of secrets.keys()) {
-    if (
-      plaintext !== '' &&
-      (frame.prefix.includes(plaintext) || frame.suffix.includes(plaintext))
-    ) {
+    if (plaintext === '') continue;
+    const outsideToken = frame.prefix.includes(plaintext) || frame.suffix.includes(plaintext);
+    if (plaintext === substitution.value ? outsideToken : resolution.input.includes(plaintext)) {
       return undefined;
     }
   }
@@ -2567,24 +2628,33 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * token spelling `ssm:` or leaving its service to an intrinsic part, and a
  * frame whose non-literal part sits outside the token -- by its provenance
  * arm (issue #3156), which on the second also rewrites the PARENT's record of
- * the leaf through the entry. What remains of it: a leaf whose own resolution
- * does not certify -- the token spelled inside a NESTED intrinsic part (the
- * outer object's own text spells none), the token held by a used `Fn::Sub`
- * variable (the template spells a placeholder there), a leaf resolved two
- * different ways in one pass, one whose replacement took a public verdict, one
- * that replaced more than one token, one whose affix holds a plaintext the bag
- * holds (another secret a non-literal part resolved), an `Fn::If` around the
- * object (which the skeleton cannot render, and whose record is under the
- * selected branch) -- keeps the plaintext in the child, and for the
- * outside-the-token frame in the parent's record; so does an outside-the-token
- * frame sharing its value with a leaf of another token, which (iv) refuses. A
- * rollback replay records nothing here (`resolveReplayProps` resolves strings,
- * not intrinsic objects): a journal a deploy wrote holds a carried frame's
- * persisted spelling as a STRING, which the literal arm reads, while a record
- * `cdkd import` left holding the raw intrinsic stays refused on this arm
- * (go-to-k/cdkd#3306 tracks the refused shapes). Any other resolved
- * text a non-literal part contributes is carried verbatim in the spelling, as
- * the value already carries it.
+ * the leaf through the entry, and since issue #3306 for a token spelled inside
+ * a nested `Fn::Join` / `Fn::Sub` / `Fn::If` part, held by a used `Fn::Sub`
+ * variable, or inside an `Fn::If` around the frame, whose records lend the
+ * outer object the token raw (see {@link IntrinsicLeafResolution}). What
+ * remains of it, each a refusal of a wrong reference or of a carried
+ * plaintext: a leaf resolved two different ways in one pass (an `Fn::If` that
+ * selected different branches included), one whose replacement took a public
+ * verdict, one that replaced more than one token, one whose token sits in a
+ * part with no record of its own (an `Fn::Select` element, an `Fn::If` branch
+ * of that kind), one whose spelling holds a plaintext the bag holds
+ * anywhere, prefix, token or suffix, bar its own value inside its token
+ * (another secret a non-literal part
+ * resolved into it, e.g. `{{resolve:ssm:/app/${Name}}}` with `Name` a secret;
+ * {@link substitutedSpellingOf}) -- each keeps the plaintext in the child, and
+ * for the outside-the-token frame in the parent's record; so does an
+ * outside-the-token frame sharing its value with a leaf of another token,
+ * which (iv) refuses. The last refusal covers the carry only: the PARENT's own
+ * row, like any resource, still persists a token assembled from another
+ * secret through the position pass's arms, which write the expression the
+ * resolver recorded for it (go-to-k/cdkd#4166). A rollback replay records
+ * nothing here (`resolveReplayProps` resolves strings, not intrinsic objects):
+ * a journal a
+ * deploy wrote holds a carried frame's persisted spelling as a STRING, which
+ * the literal arm reads, while a record `cdkd import` left holding the raw
+ * intrinsic stays refused on this arm. Any other resolved text a non-literal
+ * part contributes is carried verbatim in the spelling, as the value already
+ * carries it.
  * (f) A child record persisted BEFORE this carry
  * keeps `port:q7` until the child is next redeployed: the parent's own row
  * already held the frame (the literal or frame arm), so a parent deploy whose child
@@ -2837,16 +2907,18 @@ export function recordNestedStackParameterExpressions(
   // unrewritten leaf on the spelled-secret arm, which `singleSpanFrame`
   // refuses too (a spelling equal to its bag has no middle that is not itself
   // a token); it states the rule.
-  // The span count is LOAD-BEARING: the VALUE SCAN, not only the frame arm,
-  // rewrites an object-sourced leaf whose whole value is a recorded plaintext,
-  // and frame gathering asks this before (ii) refuses that value -- so a
-  // source rendering no `{{resolve:` text reaches here with zero spans, and
-  // without the refusal the destructuring below throws. Its MORE-than-one
-  // arm is inert rather than unreachable: the same value-scan rewrite of a
-  // two-token source reaches it, but (ii) then refuses that value for every
-  // leaf holding it, so a laxer count could not change an entry or an
-  // association -- no case can pin it, and none is claimed. `isPlainObject`
-  // and `typeof written` narrow the types the calls below take.
+  // The skeleton and its ONE span gate the spelled-secret arm only (issue
+  // #3306): a source the skeleton cannot render (an `Fn::If`) or whose
+  // rendering spells no token or several (a token held by a nested part or a
+  // used `Fn::Sub` variable renders as a placeholder) has no own token to
+  // read a service from, so it goes to the provenance arm alone, which reads
+  // the leaf's record rather than its text. The MORE-than-one arm of the span
+  // test is inert rather than unreachable: the value scan rewrites a
+  // two-token source whose whole value is a recorded plaintext, but (ii)
+  // then refuses that value for every leaf holding it, so a laxer count could
+  // not change an entry or an association -- no case can pin it, and none is
+  // claimed. `isPlainObject` and `typeof written` narrow the types the calls
+  // below take.
   //
   // THE PROVENANCE ARM (issue #3156), asked only where the spelled-secret arm
   // refuses, so nothing that arm carries changes. It reads this leaf's OWN
@@ -2890,19 +2962,19 @@ export function recordNestedStackParameterExpressions(
     const written = positioned[name];
     if (typeof written !== 'string') return undefined;
     const segments = intrinsicSkeletonSegments(sourceLeaf);
-    if (segments === undefined) return undefined;
     const rendered = segments
-      .map((s) => (s === UNKNOWN_PART ? UNKNOWN_PART_PLACEHOLDER : s))
+      ?.map((s) => (s === UNKNOWN_PART ? UNKNOWN_PART_PLACEHOLDER : s))
       .join('');
-    const spans = dynamicReferenceSpans(rendered);
-    if (spans.length !== 1) return undefined;
-    const [span] = spans as [{ start: number; end: number }];
-    const ownToken = rendered.slice(span.start, span.end);
-    if (
-      written !== resolvedValue &&
-      SPELLED_SECRET_REFERENCE_PREFIXES.some((prefix) => ownToken.startsWith(prefix))
-    ) {
-      return written;
+    const spans = rendered === undefined ? [] : dynamicReferenceSpans(rendered);
+    if (rendered !== undefined && spans.length === 1) {
+      const [span] = spans as [{ start: number; end: number }];
+      const ownToken = rendered.slice(span.start, span.end);
+      if (
+        written !== resolvedValue &&
+        SPELLED_SECRET_REFERENCE_PREFIXES.some((prefix) => ownToken.startsWith(prefix))
+      ) {
+        return written;
+      }
     }
     const substituted = substitutedSpellingOf(secrets, sourceLeaf, resolvedValue);
     if (substituted === undefined) return undefined;

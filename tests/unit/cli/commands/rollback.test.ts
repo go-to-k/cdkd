@@ -88,6 +88,7 @@ import {
 import { CdkdError, PartialFailureError } from '../../../../src/utils/error-handler.js';
 import {
   PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
   spansThatRun,
   withPasteDir,
@@ -3450,10 +3451,40 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
         expect(message, label).toContain(`${displayStackName(value)} (us-east-1)`);
         expect(message, label).not.toContain(`'${displayStackName(value)}'`);
         expect(message, label).not.toContain(`'${value}'`);
-        expectOnlyDisplayResidual(message, dir, value);
+        // The two S1 rows skip the default block rule until their fix lands;
+        // their own cases below assert it.
+        expectOnlyDisplayResidual(
+          message,
+          dir,
+          value,
+          site === 'divergent record region' || site === 'nothing to roll back'
+            ? { unfixedS1Row: `go-to-k/cdkd#3950 rollback ${site}` }
+            : {}
+        );
       }
     });
   }, 120_000);
+
+  // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): one case per row,
+  // each flipped as its source fix lands. A block that displays an untrusted
+  // value carries no pasteable command; measured on the tree that added these
+  // cases, each site below still does. Each row's command is asserted before
+  // the rule is asked, so a mistyped site key or a message that lost its
+  // command cannot satisfy the case.
+  for (const [site, command] of [
+    ['divergent record region', 'Re-run with --verbose'],
+    ['nothing to roll back', "Run 'cdkd deploy'"],
+  ] as const) {
+    it(`S1 ${site}: a block that displays a payload still carries a pasteable command`, async () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = (await messagesFor(value))[site];
+        expect(message, `${site}: ${value}`).toContain(command);
+        expect(() => expectNoCommandBesideDisplay(message!, value), `${site}: ${value}`).toThrow(
+          /also carries a pasteable command/
+        );
+      }
+    });
+  }
 
   it('CONTROL: the pre-fix hand-quoted spelling runs the embedded-quote payload', () => {
     // Proves the harness sees the class this block fences: the same prompt
@@ -3462,5 +3493,5 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
     withPasteDir((dir) => {
       expect(spansThatRun(`Roll back '${displayStackName(value)}' (us-east-1)?`, dir)).not.toEqual([]);
     });
-  });
+  }, 120_000);
 });
