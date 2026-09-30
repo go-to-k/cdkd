@@ -437,6 +437,13 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
   });
 
+  it("issue #4157: threads the deleted record's attributes into the DeleteContext", async () => {
+    const attributes = { RepositoryId: 'id-recorded-4157' };
+    const state = makeState({ Db: res({ deletionPolicy: 'Delete', attributes }) });
+    await runDestroyForStack('TestStack', state, makeCtx());
+    expect(deleteContextArg()['recordedAttributes']).toEqual(attributes);
+  });
+
   it.each([
     // A standalone RDS instance: CloudFormation's absent default is Snapshot.
     ['AWS::RDS::DBInstance', 'Snapshot'],
