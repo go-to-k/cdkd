@@ -80,6 +80,9 @@ const DEPLOY_SKIP_CAVEAT =
   `re-attempts it — but a REPLACEMENT / rollback delete FAILS the resource instead ` +
   `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, remove the resource by hand.`;
 
+/** An inline policy name: IAM's own character set, at most 128 characters. */
+const IAM_POLICY_NAME = /^[\w+=,.@-]{1,128}$/;
+
 /** The three principal lists of one `AWS::IAM::Policy` bag, each ABSENT as `undefined`. */
 interface PolicyTargetLists {
   roles: string[] | undefined;
@@ -386,6 +389,21 @@ export class IAMPolicyProvider implements ResourceProvider {
     const newPolicyName =
       (properties['PolicyName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 64 });
+    // Every name the recorded principals may hold the policy under
+    // (go-to-k/cdkd#4152): the physical id's, and the recorded PolicyName when
+    // it is a usable name that differs. They differ on a rollback revert, which
+    // replays this method with the ATTEMPTED bag as the previous side while the
+    // physical id is still the old one: an interrupted rename left the NEW name
+    // on some principals, and only the recorded side names it. A value that is
+    // not an IAM policy name (a secret reference, the mask) is never sent.
+    const recordedPolicyName = previousProperties['PolicyName'];
+    const oldPolicyNames = [
+      ...new Set(
+        [oldPolicyName, recordedPolicyName].filter(
+          (name): name is string => typeof name === 'string' && IAM_POLICY_NAME.test(name)
+        )
+      ),
+    ];
     // BOTH sides before any call: the previous side is the state record, and a
     // rollback replays this method with a recorded bag as the DESIRED side.
     const newTargets = readPolicyTargetLists(properties);
@@ -443,111 +461,141 @@ export class IAMPolicyProvider implements ResourceProvider {
       );
     }
 
+    // A principal leaving the list must lose the policy, and nothing names it:
+    // refuse before any call rather than report a detach that never happened.
+    if (oldPolicyNames.length === 0) {
+      const leaving = (
+        [
+          [oldRoles, newRoles],
+          [oldGroups, newGroups],
+          [oldUsers, newUsers],
+        ] as const
+      ).some(([recorded, desired]) => {
+        const kept = new Set((desired ?? []).map((p) => p.toLowerCase()));
+        return (recorded ?? []).some((p) => !kept.has(p.toLowerCase()));
+      });
+      if (leaving) {
+        throw new ProvisioningError(
+          `IAM policy ${logicalId} has no usable recorded policy name (neither the physical id ` +
+            `nor the recorded PolicyName is one), so the principals leaving its Roles / Groups / ` +
+            `Users cannot be detached — no inline policy was attached or detached. Detach it by ` +
+            `hand, or repair the physical id in state.json, and re-run.`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+    }
+
     try {
       // Serialize policy document
       const policyDoc =
         typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
-      // ── Roles ──
-      const newRoleSet = new Set(newRoles || []);
-      const oldRoleSet = new Set(oldRoles || []);
-
-      // Attach/update policy on current roles
-      for (const roleName of newRoleSet) {
-        await this.iamClient.send(
-          new PutRolePolicyCommand({
-            RoleName: roleName,
-            PolicyName: newPolicyName,
-            PolicyDocument: policyDoc,
-          })
-        );
-        log.debug(`Attached inline policy ${v(newPolicyName)} to role ${v(roleName)}`);
-      }
-
-      // Remove policy from old roles no longer in the list
-      for (const roleName of oldRoleSet) {
-        if (!newRoleSet.has(roleName)) {
-          try {
-            await this.iamClient.send(
-              new DeleteRolePolicyCommand({
-                RoleName: roleName,
-                PolicyName: oldPolicyName,
+      const kinds = [
+        {
+          kind: 'role',
+          desired: new Set(newRoles || []),
+          recorded: new Set(oldRoles || []),
+          put: (name: string, policyName: string) =>
+            this.iamClient.send(
+              new PutRolePolicyCommand({
+                RoleName: name,
+                PolicyName: policyName,
+                PolicyDocument: policyDoc,
               })
-            );
-            log.debug(`Removed inline policy ${v(oldPolicyName)} from role ${v(roleName)}`);
-          } catch (error) {
-            if (!(error instanceof NoSuchEntityException)) {
-              throw error;
-            }
-          }
+            ),
+          remove: (name: string, policyName: string) =>
+            this.iamClient.send(
+              new DeleteRolePolicyCommand({ RoleName: name, PolicyName: policyName })
+            ),
+        },
+        {
+          kind: 'group',
+          desired: new Set(newGroups || []),
+          recorded: new Set(oldGroups || []),
+          put: (name: string, policyName: string) =>
+            this.iamClient.send(
+              new PutGroupPolicyCommand({
+                GroupName: name,
+                PolicyName: policyName,
+                PolicyDocument: policyDoc,
+              })
+            ),
+          remove: (name: string, policyName: string) =>
+            this.iamClient.send(
+              new DeleteGroupPolicyCommand({ GroupName: name, PolicyName: policyName })
+            ),
+        },
+        {
+          kind: 'user',
+          desired: new Set(newUsers || []),
+          recorded: new Set(oldUsers || []),
+          put: (name: string, policyName: string) =>
+            this.iamClient.send(
+              new PutUserPolicyCommand({
+                UserName: name,
+                PolicyName: policyName,
+                PolicyDocument: policyDoc,
+              })
+            ),
+          remove: (name: string, policyName: string) =>
+            this.iamClient.send(
+              new DeleteUserPolicyCommand({ UserName: name, PolicyName: policyName })
+            ),
+        },
+      ] as const;
+
+      // go-to-k/cdkd#4152: a principal that stays listed across a RENAME holds
+      // the OLD-named policy too, and used to keep it, untracked and still
+      // granting. A principal that leaves the list loses every name it may
+      // hold; one that stays loses every name except the new one.
+      //
+      // A case-only rename is NOT a rename here: IAM inline policy names are
+      // case-insensitive on one principal (measured: put `MyPolicy`, then put
+      // `mypolicy`, and the role lists ONE policy, still spelled `MyPolicy`,
+      // which `get-role-policy mypolicy` reads), so the removal would delete
+      // the policy the put just wrote and strip the live grant.
+      //
+      // Known limits (go-to-k/cdkd#4152, #4156):
+      //  - Two AWS::IAM::Policy resources swapping or handing off a name on one
+      //    principal in the same deploy can remove each other's grant (the
+      //    update has no view of sibling policies; fail-closed, and
+      //    CloudFormation's rename has the same hazard).
+      //  - A revert of a failed update removes the ATTEMPTED name from every
+      //    recorded principal, retained or leaving, so a hand-made inline
+      //    policy of that name on one of them goes too.
+      //  - With --no-rollback, a failed rename leaves the NEW name on the
+      //    principals it reached while the record keeps the old one; a later
+      //    deploy of the new template converges, but reverting the template to
+      //    the old name is not a rename to the record and leaves the new-named
+      //    policy there.
+      const renamedAway = oldPolicyNames.filter(
+        (name) => name.toLowerCase() !== newPolicyName.toLowerCase()
+      );
+      // Per kind, puts before removals: a principal belongs to one kind, so a
+      // failing put never strips a still-listed principal of the policy, and
+      // an earlier kind's leaving principals are already revoked when a later
+      // kind fails. A re-run converges: every put is idempotent, and a
+      // removal of a name already gone is NoSuchEntity.
+      for (const { kind, desired, recorded, put, remove } of kinds) {
+        for (const name of desired) {
+          await put(name, newPolicyName);
+          log.debug(`Attached inline policy ${v(newPolicyName)} to ${kind} ${v(name)}`);
         }
-      }
-
-      // ── Groups ──
-      const newGroupSet = new Set(newGroups || []);
-      const oldGroupSet = new Set(oldGroups || []);
-
-      // Attach/update policy on current groups
-      for (const groupName of newGroupSet) {
-        await this.iamClient.send(
-          new PutGroupPolicyCommand({
-            GroupName: groupName,
-            PolicyName: newPolicyName,
-            PolicyDocument: policyDoc,
-          })
-        );
-        log.debug(`Attached inline policy ${v(newPolicyName)} to group ${v(groupName)}`);
-      }
-
-      // Remove policy from old groups no longer in the list
-      for (const groupName of oldGroupSet) {
-        if (!newGroupSet.has(groupName)) {
-          try {
-            await this.iamClient.send(
-              new DeleteGroupPolicyCommand({
-                GroupName: groupName,
-                PolicyName: oldPolicyName,
-              })
-            );
-            log.debug(`Removed inline policy ${v(oldPolicyName)} from group ${v(groupName)}`);
-          } catch (error) {
-            if (!(error instanceof NoSuchEntityException)) {
-              throw error;
-            }
-          }
-        }
-      }
-
-      // ── Users ──
-      const newUserSet = new Set(newUsers || []);
-      const oldUserSet = new Set(oldUsers || []);
-
-      // Attach/update policy on current users
-      for (const userName of newUserSet) {
-        await this.iamClient.send(
-          new PutUserPolicyCommand({
-            UserName: userName,
-            PolicyName: newPolicyName,
-            PolicyDocument: policyDoc,
-          })
-        );
-        log.debug(`Attached inline policy ${v(newPolicyName)} to user ${v(userName)}`);
-      }
-
-      // Remove policy from old users no longer in the list
-      for (const userName of oldUserSet) {
-        if (!newUserSet.has(userName)) {
-          try {
-            await this.iamClient.send(
-              new DeleteUserPolicyCommand({
-                UserName: userName,
-                PolicyName: oldPolicyName,
-              })
-            );
-            log.debug(`Removed inline policy ${v(oldPolicyName)} from user ${v(userName)}`);
-          } catch (error) {
-            if (!(error instanceof NoSuchEntityException)) {
-              throw error;
+        // Principal names are case-insensitive in IAM too: a recorded `MyRole`
+        // the template now spells `myrole` is the SAME role the put just
+        // wrote, so it stays, and must not lose the policy as a leaver.
+        const stays = new Set([...desired].map((name) => name.toLowerCase()));
+        for (const name of recorded) {
+          for (const policyName of stays.has(name.toLowerCase()) ? renamedAway : oldPolicyNames) {
+            try {
+              await remove(name, policyName);
+              log.debug(`Removed inline policy ${v(policyName)} from ${kind} ${v(name)}`);
+            } catch (error) {
+              if (!(error instanceof NoSuchEntityException)) {
+                throw error;
+              }
             }
           }
         }
