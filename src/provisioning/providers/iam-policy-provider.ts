@@ -26,6 +26,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import type {
   CreateContext,
+  InlinePolicyPrincipalKind,
   UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
@@ -579,11 +580,21 @@ export class IAMPolicyProvider implements ResourceProvider {
       // which `get-role-policy mypolicy` reads), so the removal would delete
       // the policy the put just wrote and strip the live grant.
       //
+      // go-to-k/cdkd#4156: a name another resource of this deploy has ALREADY
+      // written onto the principal (a swap of two policies' names, a hand-off
+      // to a new policy or to the principal's own `Policies`) is not removed
+      // from it; `context.inlinePolicyClaimed` answers that live, from what
+      // the other resource recorded. One that has not written yet loses
+      // nothing to the removal: its later put restores the name.
+      //
       // Known limits (go-to-k/cdkd#4152, #4156):
-      //  - Two AWS::IAM::Policy resources swapping or handing off a name on one
-      //    principal in the same deploy can remove each other's grant (the
-      //    update has no view of sibling policies; fail-closed, and
-      //    CloudFormation's rename has the same hazard).
+      //  - Two writers of one name with no dependency between them run
+      //    concurrently; a removal racing the other's put can still strip the
+      //    name (fail-closed: less privilege, restored by the next change or
+      //    `cdkd drift --revert`; go-to-k/cdkd#4227).
+      //  - A rollback revert gets no claims, so reverting a same-deploy swap or
+      //    hand-off can remove the name the sibling's revert restores
+      //    (go-to-k/cdkd#4225).
       //  - A revert of a failed update removes the ATTEMPTED name from every
       //    recorded principal, retained or leaving, so a hand-made inline
       //    policy of that name on one of them goes too.
@@ -611,6 +622,12 @@ export class IAMPolicyProvider implements ResourceProvider {
         const stays = new Set([...desired].map((name) => name.toLowerCase()));
         for (const name of recorded) {
           for (const policyName of stays.has(name.toLowerCase()) ? renamedAway : oldPolicyNames) {
+            if (context?.inlinePolicyClaimed?.(kind, name, policyName) === true) {
+              log.debug(
+                `Kept inline policy ${v(policyName)} on ${kind} ${v(name)}: another resource of this deploy wrote it`
+              );
+              continue;
+            }
             try {
               await remove(name, policyName);
               log.debug(`Removed inline policy ${v(policyName)} from ${kind} ${v(name)}`);
@@ -870,6 +887,18 @@ export class IAMPolicyProvider implements ResourceProvider {
     const onDetached = (kind: string, name: string): void => {
       if (fromSecret(kind, name)) detached?.add(injectiveKey(kind, name));
     };
+    // go-to-k/cdkd#4156: a principal another resource of this deploy already
+    // wrote this name onto keeps it (the deploy's DELETE phase runs after every
+    // create and update).
+    const claimed = (kind: InlinePolicyPrincipalKind, name: string): boolean => {
+      if (context?.inlinePolicyClaimed?.(kind, name, policyName) !== true) {
+        return false;
+      }
+      this.logger.debug(
+        safeMsg`Kept inline policy ${policyName} on ${kind} ${mask(name)}: another resource of this deploy wrote it`
+      );
+      return true;
+    };
     const onNotFound = async (
       target: string,
       principal?: { kind: string; name: string }
@@ -895,7 +924,7 @@ export class IAMPolicyProvider implements ResourceProvider {
       // If no properties available, try legacy format (physicalId = "policyName:roleName").
       // The target lists and this role segment are computed above, so the
       // no-target guard sees exactly what this branch does.
-      if (legacyRoleFromPhysicalId) {
+      if (legacyRoleFromPhysicalId && !claimed('role', legacyRoleFromPhysicalId)) {
         const firstRole = legacyRoleFromPhysicalId;
         try {
           await this.iamClient.send(
@@ -917,6 +946,7 @@ export class IAMPolicyProvider implements ResourceProvider {
       // Delete from all roles
       if (roles) {
         for (const roleName of roles) {
+          if (claimed('role', roleName)) continue;
           try {
             await this.iamClient.send(
               new DeleteRolePolicyCommand({
@@ -939,6 +969,7 @@ export class IAMPolicyProvider implements ResourceProvider {
       // Delete from all groups
       if (groups) {
         for (const groupName of groups) {
+          if (claimed('group', groupName)) continue;
           try {
             await this.iamClient.send(
               new DeleteGroupPolicyCommand({
@@ -961,6 +992,7 @@ export class IAMPolicyProvider implements ResourceProvider {
       // Delete from all users
       if (users) {
         for (const userName of users) {
+          if (claimed('user', userName)) continue;
           try {
             await this.iamClient.send(
               new DeleteUserPolicyCommand({
