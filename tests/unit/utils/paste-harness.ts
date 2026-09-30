@@ -490,7 +490,9 @@ function exactDisplaysOf(value: string): Set<string> {
  * A site's own `displays` entries, each checked before it is trusted, so a
  * broad entry cannot set a command aside: it must be a JSON string that decodes
  * to text holding `value` (a display OF the value), and it must not hold
- * `shellQuote(value)` (the spelling a command names it by). Throws on a bad
+ * `shellQuote(value)` (the spelling a command names it by), nor a quote or a
+ * `cdkd` / `aws` verb outside the value (a command quoting a larger word that
+ * holds it, e.g. `--resource 'L=<v>'`). Throws on a bad
  * entry rather than skipping it: a set-aside that silently widens is the
  * fail-open this guards.
  */
@@ -505,7 +507,16 @@ export function checkedDisplays(value: string, displays: readonly string[]): str
     if (typeof decoded !== 'string' || !decoded.includes(value)) {
       throw new Error(`displays entry is not a JSON display of the value ${value}: ${entry}`);
     }
-    if (entry.includes(shellQuote(value))) {
+    // A command can name the value on its own (`'<v>'`) or inside a larger
+    // quoted word (`--resource 'L=<v>'`), so the check is on what the entry
+    // holds OUTSIDE the value: a quote or a `cdkd` / `aws` verb there means the
+    // pair spans a command. A plain value is its own shell-quoted spelling, so
+    // the whole-spelling test applies only to a value that needs quoting.
+    const outside = decoded.split(value).join('');
+    if (
+      (shellQuote(value) !== value && entry.includes(shellQuote(value))) ||
+      /['`]|\b(?:cdkd|aws)\s/.test(outside)
+    ) {
       throw new Error(`displays entry holds a command spelling of the value ${value}: ${entry}`);
     }
   }

@@ -299,6 +299,16 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       expect(() => spansThatRunBesideTheDisplay(stray, dir, sub, {}, ['"zzz"'])).toThrow(
         /is not a JSON display of the value/
       );
+      // A command quoting a larger word that holds the value (`'L=<v>'`) holds
+      // no `shellQuote(value)`; the quote and the verb outside the value refuse it.
+      const composite =
+        `Cause: AWS said "Invalid name; re-run with cdkd import --resource 'L=${sub}' --json. ` +
+        `Stack ${JSON.stringify(sub)} was refused.\nThe record's copy is kept.`;
+      const compositePair = /"(?:[^"\\]|\\.)*"/.exec(composite)![0];
+      expect(compositePair).not.toContain(shellQuote(sub));
+      expect(() => checkedDisplays(sub, [compositePair])).toThrow(/holds a command spelling/);
+      // A PLAIN value is its own shell-quoted spelling and is still accepted.
+      expect(checkedDisplays('Root', [JSON.stringify('cdkd/Root/state.json')])).toHaveLength(1);
       expect(() => checkedDisplays(sub, ['not json'])).toThrow(/is not a JSON display/);
       expect(checkedDisplays(sub, [JSON.stringify(`cdkd/${sub}/state.json`)])).toHaveLength(1);
     });
