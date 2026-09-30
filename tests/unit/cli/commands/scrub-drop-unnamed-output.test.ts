@@ -842,6 +842,42 @@ describe('readConsumerRecords', () => {
     ).rejects.toThrow('is listed but its state record could not be read');
   });
 
+  it('stops taking refs once a read failed', async () => {
+    let calls = 0;
+    const getState = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls === 1) throw new Error('throttled');
+      await new Promise((r) => setTimeout(r, 1));
+      return { state: { version: 9 } };
+    });
+    const refs = Array.from({ length: 80 }, (_, i) => ({ stackName: `S${i}`, region: 'us-east-1' }));
+
+    await expect(
+      readConsumerRecords({ listStacks: vi.fn().mockResolvedValue(refs), getState } as never, 'us-east-1')
+    ).rejects.toThrow('throttled');
+    // The 16 workers' first reads, and no more.
+    expect(calls).toBeLessThanOrEqual(16);
+  });
+
+  it('returns the records sorted by stack name, whatever order they completed in', async () => {
+    const getState = vi.fn().mockImplementation(async (name: string) => {
+      await new Promise((r) => setTimeout(r, name === 'A' ? 5 : 0));
+      return { state: { version: 9 } };
+    });
+    const refs = [
+      { stackName: 'C', region: 'us-east-1' },
+      { stackName: 'A', region: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1' },
+    ];
+
+    const records = await readConsumerRecords(
+      { listStacks: vi.fn().mockResolvedValue(refs), getState } as never,
+      'us-east-1'
+    );
+
+    expect(records.map((r) => r.stackName)).toEqual(['A', 'B', 'C']);
+  });
+
   it('never has more than 16 reads in flight', async () => {
     let inFlight = 0;
     let peak = 0;

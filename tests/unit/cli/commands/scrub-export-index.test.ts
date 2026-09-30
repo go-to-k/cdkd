@@ -1486,6 +1486,10 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     expect(logLines()).toContain('still holds a secret this run recorded, in plaintext');
     expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
     expect(logLines()).not.toContain(SECRET_PLAINTEXT);
+    // A REAL `--fail` run exits 1 over it too: no write can converge it.
+    await expect(scrubCommand([], commandOptions({ fail: true }))).rejects.toBeInstanceOf(
+      ScrubNeededError
+    );
   });
 
   it('keeps a PARTLY rewritten alias so its index entry converges (no recorded plaintext left)', async () => {
