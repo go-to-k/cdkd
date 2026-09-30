@@ -317,6 +317,10 @@ describe("cdkd scrub - the export-index repair lines' name display masks a log-o
       // A KEY carrying the value: the map-only key scan must still not count it.
       { Out: NOECHO, [`exp-${NOECHO}`]: 'v' }
     );
+    // Recorded as NOT an export, so a scrub that drops the undeclared key
+    // does not also WITHHOLD its alias-shaped name (go-to-k/cdkd#4120) and the
+    // masking under test stays observable.
+    state.exportNames = [];
     const { stateBackend, lockManager } = backends(state);
     const result = (await scrubStack(
       { stackName: 'MyStack', template } as never,

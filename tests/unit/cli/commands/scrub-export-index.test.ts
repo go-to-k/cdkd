@@ -800,7 +800,8 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
       etag: 'etag-1',
     });
     const region = slot({
-      entries: new Map([['Ghost', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]),
+      // Not a recorded secret: that one is a finding (see below).
+      entries: new Map([['Ghost', entry('a-public-value', 'MyStack', 'us-east-1')]]),
     });
     indexFake.regions.set('us-east-1', region);
 
@@ -831,7 +832,7 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
         etag: 'etag-1',
       });
       const region = slot({
-        entries: new Map([['Ghost', entry(SECRET_PLAINTEXT, STACK, 'us-east-1')]]),
+        entries: new Map([['Ghost', entry('a-public-value', STACK, 'us-east-1')]]),
       });
       indexFake.regions.set('us-east-1', region);
 
@@ -1391,7 +1392,8 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     const saved = commandStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
     expect(saved.outputs).not.toHaveProperty(DROPPED);
     expect(saved.exportNames).toEqual(['MyStack:Db']);
-    expect(logLines()).toContain('Exports index entry (masked: "k-***")');
+    // WITHHELD, as the Dropped line withheld the same alias-shaped name.
+    expect(logLines()).toContain('Exports index entry (name withheld: it may carry a secret)');
     expect(logLines()).not.toContain(LEFTOVER);
   });
 
@@ -1466,6 +1468,46 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     expect(consumerReads).toBe(1);
     // Neither stack dropped its key, and so neither was written.
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('an ABSENT index entry still holding a RECORDED secret is a finding: --dry-run --fail exits 1', async () => {
+    // The second run after a drop: the key is gone from state, and the index
+    // entry of that name still holds the secret this run records.
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', makeState('MyStack', 'us-east-1', true));
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['Old-Url', entry(`postgres://u:${SECRET_PLAINTEXT}@h`, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await expect(
+      scrubCommand([], commandOptions({ dryRun: true, fail: true }))
+    ).rejects.toBeInstanceOf(ScrubNeededError);
+    expect(logLines()).toContain('still holds a secret this run recorded, in plaintext');
+    expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
+    expect(logLines()).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it('keeps a PARTLY rewritten alias so its index entry converges (no recorded plaintext left)', async () => {
+    // The blocker a drop caused: the key kept, the entry converged to it.
+    synthStacks.push(makeStackInfo('MyStack'));
+    const state = makeState('MyStack', 'us-east-1', true);
+    state.outputs['Old-Url'] = `postgres://u:${SECRET_PLAINTEXT}@h-unrecorded`;
+    state.exportNames = [...state.exportNames!, 'Old-Url'];
+    records.set('MyStack', state);
+    const region = slot({
+      entries: new Map([
+        ['Old-Url', entry(`postgres://u:${SECRET_PLAINTEXT}@h-unrecorded`, 'MyStack', 'us-east-1')],
+      ]),
+    });
+    indexFake.regions.set('us-east-1', region);
+
+    await scrubCommand([], commandOptions());
+
+    const saved = commandStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs['Old-Url']).toBe(`postgres://u:${SECRET_EXPR}@h-unrecorded`);
+    expect(JSON.stringify(region.entries?.get('Old-Url'))).not.toContain(SECRET_PLAINTEXT);
+    expect(JSON.stringify(region.entries?.get('Old-Url'))).toContain(SECRET_EXPR);
   });
 
   it('reads the other records ONCE per run, however many stacks drop a key', async () => {

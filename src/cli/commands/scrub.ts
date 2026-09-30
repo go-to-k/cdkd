@@ -1227,6 +1227,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const examinedIndexNames = new Map<string, Set<string>>();
   let totalIndexEntriesConverged = 0;
   let totalIndexEntriesAbsent = 0;
+  // The subset of those whose value still holds a recorded plaintext
+  // (go-to-k/cdkd#4120): a FINDING, unlike the rest.
+  let totalIndexEntriesAbsentWithSecret = 0;
   let totalIndexEntriesUnexamined = 0;
   // The name is stored ALREADY RENDERED by the owning stack's masker: the
   // failure message is built after the per-stack loop, where the secrets bag
@@ -1390,6 +1393,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // failed index write leaves behind, and gating on `recordsChanged > 0`
     // would make that re-run a no-op.
     let indexConverged = 0;
+    let indexAbsentWithSecret = 0;
     try {
       const store = exportIndexFor(stackRegion);
       const repair = await repairExportIndexForStack(
@@ -1410,7 +1414,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // run of the documented CI gate, into CI logs, so a raw name here would
       // disclose on a schedule.
       const named = (exportName: string, alsoMask?: unknown): string =>
-        renderStateKeyForLine(scrubbed.exportNameDisplay(exportName, alsoMask));
+        renderStateKeyForLine(
+          scrubbed.exportNameDisplay(exportName, alsoMask),
+          'it may carry a secret'
+        );
       const unwrittenNames = new Set(repair.unwritten);
       for (const exportName of repair.unwritten) {
         indexUnwritten.push({ region: stackRegion, shown: named(exportName) });
@@ -1463,6 +1470,21 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           }
         } else {
           totalIndexEntriesAbsent++;
+          // An entry whose name this record no longer holds but whose VALUE
+          // still holds a plaintext this run recorded (go-to-k/cdkd#4120): no
+          // write can converge it, so it is a FINDING — the stack is not
+          // reported clean and `--fail` exits 1 — rather than coverage.
+          if (scrubbed.holdsRecordedPlaintext(finding.entryValue)) {
+            indexAbsentWithSecret++;
+            totalIndexEntriesAbsentWithSecret++;
+            logger.warn(
+              `Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) ` +
+                `still holds a secret this run recorded, in plaintext, and scrub cannot rewrite ` +
+                `it: ${shownStack}'s state.outputs has no key of that name to converge it to. ` +
+                `Redeploy ${shownStack} to rewrite the index, and ROTATE the secret.`
+            );
+            continue;
+          }
           logger.warn(
             `Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) is ` +
               `published by ${shownStack}, whose state.outputs ${options.dryRun ? '(as a real run would leave it) ' : ''}` +
@@ -1569,6 +1591,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       (scrubbed.keptReadOutputKeys ?? 0) === 0 &&
       (scrubbed.keptAliasOutputKeys ?? 0) === 0 &&
       !scrubbed.droppedOutputReadersUnverified &&
+      indexAbsentWithSecret === 0 &&
       indexConverged === 0
     ) {
       // A CONVERGE finding gates this line for the same reason the two below
@@ -1724,6 +1747,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksWithUnverifiableLeaves === 0 &&
     totalStacksWithUnrepairedReadNames === 0 &&
     totalStacksWithReadOutputKeys === 0 &&
+    totalIndexEntriesAbsentWithSecret === 0 &&
     droppedReadersUnverifiedStacks.length === 0 &&
     totalParentAttributesUnmatched === 0 &&
     totalIndexEntriesConverged === 0 &&
@@ -1843,6 +1867,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         ` ${totalIndexEntriesAbsent} exports index entr${totalIndexEntriesAbsent === 1 ? 'y is' : 'ies are'} ` +
           `published by a scrubbed stack under a name its state.outputs does not carry; nothing ` +
           `was written for ${totalIndexEntriesAbsent === 1 ? 'it' : 'them'} — redeploy that producer.`
+      );
+    }
+    if (totalIndexEntriesAbsentWithSecret > 0) {
+      parts.push(
+        ` ${totalIndexEntriesAbsentWithSecret} of ${totalIndexEntriesAbsent === 1 ? 'it' : 'them'} still ` +
+          `hold${totalIndexEntriesAbsentWithSecret === 1 ? 's' : ''} a secret this run recorded — see the ` +
+          `warnings above.`
       );
     }
     if (totalIndexEntriesUnexamined > 0) {
@@ -1990,6 +2021,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       totalStacksWithUnverifiableReads > 0 ||
       totalStacksWithUnrepairedReadNames > 0 ||
       totalStacksWithReadOutputKeys > 0 ||
+      totalIndexEntriesAbsentWithSecret > 0 ||
       totalParentAttributesUnmatched > 0 ||
       totalStacksWithUnverifiableLeaves > 0)
   ) {
@@ -2284,13 +2316,12 @@ function redactUnaccountedOutputs(
  * issue #1948 exoneration reads as "this bag is redacted", so the unnamed value
  * printed on its REMOVE row. So scrub removes it; the deploy that next writes
  * the record would not re-create it either, since the template no longer
- * declares it. Kept instead: one no string of which can be a plaintext AFTER
- * the redaction passes (only whole secret-reference tokens — a key a pass
- * rewrote whole — or no string at all), which a drop would rewrite a clean
- * record over; and one in `reportedKeys`. A key a pass rewrote only PARTLY is
- * dropped like any other: the text left beside the reference is unidentified.
- * The caller also keeps a key another stack still reads
- * (`findDroppedOutputReaders`).
+ * declares it. Kept instead: a key the widened pass rewrote, whole or in part
+ * (its value now carries the reference, and the exports-index step converges
+ * an entry against it); one no string of which can be a plaintext (only whole
+ * secret-reference tokens, or no string at all), which a drop would rewrite a
+ * clean record over; and one in `reportedKeys`. The caller also keeps a key
+ * another stack still reads (`findDroppedOutputReaders`).
  *
  * What may NOT be dropped is a LIVE export alias whose name this run could not
  * reproduce — a parameterized `Export.Name` resolved from template defaults, or
@@ -2328,15 +2359,21 @@ export function planUnnamedOutputDrop(input: {
   const knownExportNames = knownExportNamesOf(input.exportNames);
   for (const key of Object.keys(input.stored)) {
     if (input.accountedKeys.has(key) || input.reportedKeys?.has(key)) continue;
+    const value = input.stored[key];
     const now = Object.hasOwn(input.rewritten, key) ? input.rewritten[key] : undefined;
-    // Nothing in it can be a plaintext AFTER the redaction passes: every string
-    // leaf is a whole secret-reference token (a record a post-GHSA deploy
-    // wrote, or one a pass rewrote whole), or there is no string at all.
-    // Dropping it would rewrite a clean record for nothing, and turn
-    // `--dry-run --fail` red over it. A PARTLY rewritten value
-    // (`{{resolve:...}}-<text>`) is not exempt: the text beside the reference
-    // is as unidentified as any other, and `cdkd diff` prints it.
-    if (!mayHoldPlaintext(now)) continue;
+    // REWRITTEN by a redaction pass, whole or in part: KEPT. Its value now
+    // carries the reference, which is what the exports-index step converges
+    // an entry of this name to — dropping it sent that entry down the
+    // `absent` arm, which writes nothing, and left the recorded secret's
+    // plaintext in `exports.json`. The text a PARTLY rewritten value keeps
+    // beside the reference is withheld by `cdkd diff` itself (its per-key
+    // `ownValueHidesSecret`, issue #4101).
+    if (JSON.stringify(now) !== JSON.stringify(value)) continue;
+    // Nothing in it can be a plaintext: every string leaf is a whole
+    // secret-reference token (a record a post-GHSA deploy wrote), or there is
+    // no string at all. Dropping it would rewrite a clean record for nothing,
+    // and turn `--dry-run --fail` red over it.
+    if (!mayHoldPlaintext(value)) continue;
     const mayBeAlias = knownExportNames === undefined || knownExportNames.has(key);
     if (!mayBeAlias || input.everyExportAliasReproduced) drop.push(key);
     else keep.push(key);
@@ -2427,17 +2464,27 @@ export async function readConsumerRecords(
   const refs = await stateBackend.listStacks();
   const records: ConsumerRecord[] = [];
   let next = 0;
+  // Once one read failed the answer is already "unverifiable": the other
+  // workers stop taking refs rather than read the rest of the bucket.
+  let failed = false;
   // BOUNDED: one GET per record in the bucket, CONSUMER_RECORD_READ_CONCURRENCY
   // at a time.
   const worker = async (): Promise<void> => {
-    while (next < refs.length) {
+    while (!failed && next < refs.length) {
       const ref = refs[next++]!;
       const region = ref.region ?? fallbackRegion;
-      const got = await stateBackend.getState(ref.stackName, region);
+      let got: Awaited<ReturnType<typeof stateBackend.getState>>;
+      try {
+        got = await stateBackend.getState(ref.stackName, region);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
       // A record the listing named that reads as ABSENT is UNREADABLE here,
       // not "no reads": the listing and the read disagree, and a concurrent
       // delete is the only benign cause. Fail closed.
       if (!got) {
+        failed = true;
         throw new Error(
           `${displayStackName(ref.stackName)} (${displayIdent(region)}) is listed but its state record could not be read`
         );
@@ -2454,7 +2501,10 @@ export async function readConsumerRecords(
   await Promise.all(
     Array.from({ length: Math.min(CONSUMER_RECORD_READ_CONCURRENCY, refs.length) }, worker)
   );
-  return records;
+  // Completion order is arbitrary; sorted so the reader warnings are stable.
+  return records.sort(
+    (a, b) => a.stackName.localeCompare(b.stackName) || a.region.localeCompare(b.region)
+  );
 }
 
 /**
@@ -2508,7 +2558,13 @@ export function findDroppedOutputReaders(
     };
     // A record older than the field records no reads of that kind at all, so
     // an absent list there is UNKNOWN rather than empty. A version that is not
-    // a number is read as the oldest.
+    // a number is read as the oldest. TWO residuals, both documented in
+    // docs/cli-scrub.md: it is FAIL-OPEN for a pre-v8 record a non-deploy
+    // writer (scrub, drift, import, the state commands) has since rewritten —
+    // `saveState` stamps the current version on every write, so that record
+    // reads as current with no `outputReads` — and it OVER-REFUSES, since one
+    // old unrelated record anywhere in the bucket keeps every producer's drop
+    // candidates, and `--fail` red, until that record is redeployed.
     const version = typeof record.version === 'number' ? record.version : 0;
     if (version < IMPORTS_SCHEMA_VERSION) reader(undefined, 'Fn::ImportValue', false, true);
     if (version < OUTPUT_READS_SCHEMA_VERSION) {
@@ -5982,10 +6038,17 @@ function exportNameDisplayOver(
    * and the stored values of the output keys it dropped, so an index entry left
    * under a dropped key's name is masked as the drop line masked it.
    */
-  extra?: RecordedSecretValues
+  extra?: RecordedSecretValues,
+  /**
+   * Names WITHHELD outright (go-to-k/cdkd#4120): the alias-shaped keys this
+   * run dropped or kept, which its own lines withheld — an index line must
+   * not print what the line before it declined to.
+   */
+  withheld?: ReadonlySet<string>
 ): (exportName: string, alsoMask?: unknown) => SecretSafeKeyDisplay {
   const corpus = new Map([...printingCorpusOf(outputSecrets), ...(extra ?? [])]);
   return (exportName, alsoMask) => {
+    if (withheld?.has(exportName)) return { kind: 'withheld' };
     if (alsoMask === undefined) return secretSafeKeyDisplay(exportName, corpus);
     // An index entry's own VALUE: a name built around it would print it.
     const withValue = new Map(corpus);
@@ -7898,6 +7961,8 @@ export async function scrubStack(
     let droppedOutputReadersUnverified = false;
     // The key-display corpus below, kept for the exports-index lines too.
     const droppedDisplayCorpus: RecordedSecretValues = new Map();
+    // The alias-shaped names the lines below withhold, for the index lines too.
+    const withheldOutputKeys = new Set<string>();
     if (isReadableBag(state.outputs) && isReadableBag(redactedOutputs)) {
       const stored = state.outputs as Record<string, unknown>;
       const plan = planUnnamedOutputDrop({
@@ -7926,10 +7991,15 @@ export async function scrubStack(
         // here holds. This pass runs only for a stack whose template recorded
         // a secret, the diff's other condition.
         const knownExports = knownExportNamesOf(state.exportNames);
+        const aliasShaped = (key: string): boolean =>
+          (knownExports === undefined || knownExports.has(key)) && /[^A-Za-z0-9]/.test(key);
+        for (const key of [...plan.drop, ...plan.keep]) {
+          if (aliasShaped(key)) withheldOutputKeys.add(key);
+        }
         const shownKeys = (keys: Iterable<string>): string =>
           [...keys]
             .map((key) =>
-              (knownExports === undefined || knownExports.has(key)) && /[^A-Za-z0-9]/.test(key)
+              aliasShaped(key)
                 ? '(name withheld: an export name, which may carry a secret)'
                 : renderStateKeyForLine(
                     secretSafeKeyDisplay(key, corpus),
@@ -8111,7 +8181,11 @@ export async function scrubStack(
       ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
       ...(malformedResourceRows ? { malformedResourceRows } : {}),
       outputs: newOutputs,
-      exportNameDisplay: exportNameDisplayOver(outputSecrets, droppedDisplayCorpus),
+      exportNameDisplay: exportNameDisplayOver(
+        outputSecrets,
+        droppedDisplayCorpus,
+        withheldOutputKeys
+      ),
       resolveRecordedExpressions,
       holdsRecordedPlaintext,
       nestedChildren,

@@ -713,12 +713,12 @@ describe('cdkd scrub - review round 4 (go-to-k/cdkd#4120)', () => {
     expect(result.keptAliasOutputKeys).toBe(1);
   });
 
-  it('drops a key a pass rewrote only PARTLY: the text beside the reference is unidentified', async () => {
+  it('KEEPS a key a pass rewrote only PARTLY: its index entry converges to it', async () => {
     const { saved } = await run(
       record({ Out: SSM_EXPR, Sm: SM_EXPR, Gone: `${SM_PLAINTEXT}-${GONE_PLAINTEXT}` })
     );
 
-    expect(saved!.outputs).toEqual({ Out: SSM_EXPR, Sm: SM_EXPR });
+    expect(saved!.outputs).toEqual({ Out: SSM_EXPR, Sm: SM_EXPR, Gone: `${SM_EXPR}-${GONE_PLAINTEXT}` });
   });
 
   it('KEEPS, as a finding, a key a consumer reads by Fn::GetStackOutput through a non-string sourceStack', async () => {
@@ -736,19 +736,27 @@ describe('cdkd scrub - review round 4 (go-to-k/cdkd#4120)', () => {
   });
 
   it.each([
-    ['v3, before imports[]', 3, 'Fn::ImportValue'],
-    ['v7, before outputReads[]', 7, 'Fn::GetStackOutput'],
-  ])('KEEPS every key when another record is %s: its reads are unknown', async (_l, version, intrinsic) => {
-    seed({ ...record({}, {}, 'Old'), version } as StackState);
+    ['v3, before imports[]', 3, 'Fn::ImportValue', undefined],
+    // The BOUNDARIES: from v4 `imports[]` is recorded, so only the
+    // `outputReads[]` half is unknown.
+    ['v4, before outputReads[]', 4, 'Fn::GetStackOutput', 'Fn::ImportValue'],
+    ['v7, before outputReads[]', 7, 'Fn::GetStackOutput', 'Fn::ImportValue'],
+  ])(
+    'KEEPS every key when another record is %s: its reads are unknown',
+    async (_l, version, intrinsic, known) => {
+      seed({ ...record({}, {}, 'Old'), version } as StackState);
 
-    const { saved, result } = await run(legacyRecord());
+      const { saved, result } = await run(legacyRecord());
 
-    expect(saved!.outputs['Gone']).toBe(GONE_PLAINTEXT);
-    expect(result.keptReadOutputKeys).toBe(1);
-    expect(warnLines.join('\n')).toContain(
-      `Old (us-east-1) records no ${intrinsic} reads (written before cdkd recorded them)`
-    );
-  });
+      expect(saved!.outputs['Gone']).toBe(GONE_PLAINTEXT);
+      expect(result.keptReadOutputKeys).toBe(1);
+      const warn = warnLines.join('\n');
+      expect(warn).toContain(
+        `Old (us-east-1) records no ${intrinsic} reads (written before cdkd recorded them)`
+      );
+      if (known !== undefined) expect(warn).not.toContain(`records no ${known} reads`);
+    }
+  );
 
   it("masks a recorded secret in a reading consumer's stack NAME", async () => {
     seed(
