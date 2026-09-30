@@ -235,7 +235,9 @@ this run:
   not an SNS `TopicArn`).
 - **Served only where it matches.** A declared attribute is served only when
   the imported value matches a fresh value of the producer by the same two
-  rules as the declaration above.
+  rules as the declaration above. A served attribute is also declared into
+  `noEchoAttributeResources` for that run, since a `held` producer runs
+  neither its create nor its update site.
   Otherwise the consumer is refused.
 - **Never in the record.** The resolver's `Fn::GetAtt` reads the side map the
   way it reads the `attributeHealer` channel (`ResolverContext.attributeHealer`,
