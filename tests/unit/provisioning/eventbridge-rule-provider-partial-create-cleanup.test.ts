@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { spawnSync } from 'node:child_process';
+import { WITHHELD_AWS_COMMAND } from '../../../src/provisioning/replacement-protection-advice.js';
 
 const { mockSend, warnSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -133,6 +135,90 @@ describe('EventBridgeRuleProvider partial-create cleanup (Issue #376)', () => {
     expect(warnMsg).toContain('aws events list-targets-by-rule --rule MyRule');
     expect(warnMsg).toContain('aws events remove-targets --rule MyRule');
     expect(warnMsg).toContain('aws events delete-rule --name MyRule');
+  });
+
+  it.each([
+    ['the default bus', undefined],
+    ['a named bus', 'my.bus-1'],
+  ])('hands the listed target ids to --ids as ONE JSON word, so an id cannot become an option, on %s (go-to-k/cdkd#4199)', async (_label, bus) => {
+    mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/MyRule' });
+    mockSend.mockRejectedValueOnce(new Error('PutTargets boom (original)'));
+    mockSend.mockRejectedValueOnce(new Error('ListTargets also failed'));
+    await expect(
+      provider.create('MyRule', RESOURCE_TYPE, {
+        Name: 'MyRule',
+        ...(bus ? { EventBusName: bus } : {}),
+        Targets: [{ Id: 'Target1', Arn: 'arn:aws:sqs:us-east-1:123:queue1' }],
+      })
+    ).rejects.toThrow('PutTargets boom (original)');
+    const warnMsg = String(warnSpy.mock.calls[0][0]);
+    const command = warnMsg.slice(warnMsg.indexOf('aws events remove-targets'));
+    // A target Id may start with `-` (`[.\-_A-Za-z0-9]+`). With `jq | xargs`
+    // each id was its own word after `--ids`, so `--region` / `--profile` ids
+    // redirected the call. Run the printed command under bash with `aws`
+    // stubbed: the listing prints such ids, and remove-targets must get them
+    // as the ONE argument after `--ids`.
+    // The listing stub also checks the rule / bus words INSIDE `$(...)`
+    // arrived intact, printing ids only for the expected argv.
+    const listArgv = ['events', 'list-targets-by-rule', '--rule', 'MyRule', ...(bus ? ['--event-bus-name', bus] : []), '--query', 'Targets[].Id', '--output', 'json'].join(' ');
+    const script =
+      `aws() { case "$2" in list-targets-by-rule) [ "$*" = '${listArgv}' ] && printf '%s' '["a","--region","eu-west-3"]';; ` +
+      `remove-targets) printf '%s\\n' "$@";; esac; }\n${command}\n`;
+    const out = spawnSync('bash', ['--noprofile', '--norc', '-c', script], { encoding: 'utf8' });
+    expect(out.status).toBe(0);
+    const argv = out.stdout.split('\n').slice(0, -1);
+    expect(argv).toEqual([
+      'events',
+      'remove-targets',
+      '--rule',
+      'MyRule',
+      ...(bus ? ['--event-bus-name', bus] : []),
+      '--ids',
+      '["a","--region","eu-west-3"]',
+    ]);
+    expect(warnMsg).not.toContain('xargs');
+  });
+
+  it('says an empty-list remove-targets error is harmless, and the pasted delete-rule still runs after it', async () => {
+    mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/MyRule' });
+    mockSend.mockRejectedValueOnce(new Error('PutTargets boom (original)'));
+    mockSend.mockRejectedValueOnce(new Error('ListTargets also failed'));
+    await expect(
+      provider.create('MyRule', RESOURCE_TYPE, {
+        Name: 'MyRule',
+        Targets: [{ Id: 'Target1', Arn: 'arn:aws:sqs:us-east-1:123:queue1' }],
+      })
+    ).rejects.toThrow('PutTargets boom (original)');
+    const warnMsg = String(warnSpy.mock.calls[0][0]);
+    expect(warnMsg).toContain(
+      'If the rule has no targets left, the remove-targets step reports an empty id list; that error is harmless and the delete-rule step still runs'
+    );
+    // A rule whose targets are already gone: the listing prints `[]`, the
+    // stubbed remove-targets fails the way the CLI's min-length validation
+    // does, and the delete-rule after the `;` still runs.
+    const command = warnMsg.slice(warnMsg.indexOf('aws events remove-targets'));
+    const script =
+      `aws() { case "$2" in list-targets-by-rule) printf '%s' '[]';; ` +
+      `remove-targets) [ "$6" = '[]' ] && { echo 'ParamValidation' >&2; return 252; };; ` +
+      `delete-rule) echo DELETED;; esac; }\n${command}\n`;
+    const out = spawnSync('bash', ['--noprofile', '--norc', '-c', script], { encoding: 'utf8' });
+    expect(out.stderr).toContain('ParamValidation');
+    expect(out.stdout).toBe('DELETED\n');
+  });
+
+  it('omits the empty-list note when the command itself is withheld', async () => {
+    mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/MyRule' });
+    mockSend.mockRejectedValueOnce(new Error('PutTargets boom (original)'));
+    mockSend.mockRejectedValueOnce(new Error('ListTargets also failed'));
+    await expect(
+      provider.create('MyRule', RESOURCE_TYPE, {
+        Name: 'file://rule',
+        Targets: [{ Id: 'Target1', Arn: 'arn:aws:sqs:us-east-1:123:queue1' }],
+      })
+    ).rejects.toThrow('PutTargets boom (original)');
+    const warnMsg = String(warnSpy.mock.calls[0][0]);
+    expect(warnMsg).toContain(WITHHELD_AWS_COMMAND);
+    expect(warnMsg).not.toContain('remove-targets step');
   });
 
   it('threads EventBusName through every cleanup SDK call AND into the recovery-hint WARN', async () => {

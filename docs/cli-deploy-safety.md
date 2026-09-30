@@ -1279,8 +1279,9 @@ that re-applies it with the replace flags.
 Six types name this dead end explicitly in their own refusals, each reading its
 own protection property and naming the command that turns it off, or pointing
 at the console when the resource's id cannot be printed safely on a command
-line (it would be changed by sanitizing, or it holds whitespace or a character
-a shell acts on, such as a quote or a backtick):
+line (it would be changed by sanitizing, it holds whitespace or a character a
+shell acts on, such as a quote or a backtick, or it holds something the AWS CLI
+itself acts on, such as a leading `file://` or `-`):
 `AWS::Logs::LogGroup`, `AWS::ElasticLoadBalancingV2::LoadBalancer`,
 `AWS::EMR::Cluster`, `AWS::Cognito::UserPool`, `AWS::DynamoDB::GlobalTable` and
 `AWS::AutoScaling::AutoScalingGroup`. Every one of them knows only what cdkd
