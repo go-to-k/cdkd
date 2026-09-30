@@ -1101,9 +1101,17 @@ export interface ResourceProvider {
    * @param physicalId Physical resource ID
    * @param resourceType CloudFormation resource type
    * @param attributeName Attribute name
+   * @param logicalId Template logical id of the resource. A provider that
+   *   raises a `ProvisioningError` passes THIS in the error's logical-id slot,
+   *   never `physicalId` (go-to-k/cdkd#4222)
    * @returns Attribute value
    */
-  getAttribute?(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>;
+  getAttribute?(
+    physicalId: string,
+    resourceType: string,
+    attributeName: string,
+    logicalId: string
+  ): Promise<unknown>;
 
   /**
    * Read the **currently-deployed** properties of an existing resource as

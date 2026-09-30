@@ -446,29 +446,40 @@ describe('DLMLifecyclePolicyProvider getAttribute', () => {
       GetLifecyclePolicyCommand: { Policy: { PolicyId: POLICY_ID, PolicyArn: POLICY_ARN } },
     });
 
-    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Arn')).resolves.toBe(POLICY_ARN);
+    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Arn', 'Policy')).resolves.toBe(
+      POLICY_ARN
+    );
   });
 
   it('returns the physicalId for Id / PolicyId without an API call', async () => {
-    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Id')).resolves.toBe(POLICY_ID);
-    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'PolicyId')).resolves.toBe(
+    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Id', 'Policy')).resolves.toBe(
       POLICY_ID
     );
+    await expect(
+      provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'PolicyId', 'Policy')
+    ).resolves.toBe(POLICY_ID);
     expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('wraps Arn lookup failures in ProvisioningError', async () => {
     routeSend({ GetLifecyclePolicyCommand: new Error('boom') });
 
-    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Arn')).rejects.toThrow(
+    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Arn', 'Policy')).rejects.toThrow(
       ProvisioningError
     );
+    // The LOGICAL id in the logical-id slot (go-to-k/cdkd#4222).
+    await expect(
+      provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Arn', 'Policy')
+    ).rejects.toMatchObject({ logicalId: 'Policy', physicalId: POLICY_ID });
   });
 
   it('rejects unknown attributes', async () => {
-    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Nope')).rejects.toThrow(
+    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Nope', 'Policy')).rejects.toThrow(
       /Unknown attribute/
     );
+    await expect(
+      provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Nope', 'Policy')
+    ).rejects.toMatchObject({ logicalId: 'Policy', physicalId: POLICY_ID });
   });
 });
 

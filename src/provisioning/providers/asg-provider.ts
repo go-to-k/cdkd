@@ -1393,14 +1393,15 @@ export class ASGProvider implements ResourceProvider {
   async getAttribute(
     physicalId: string,
     _resourceType: string,
-    attributeName: string
+    attributeName: string,
+    logicalId: string
   ): Promise<unknown> {
     const group = await this.describeGroup(physicalId);
     if (!group) {
       throw new ProvisioningError(
         `AutoScalingGroup ${physicalId} not found while resolving attribute ${attributeName}`,
         'AWS::AutoScaling::AutoScalingGroup',
-        physicalId,
+        logicalId,
         physicalId
       );
     }

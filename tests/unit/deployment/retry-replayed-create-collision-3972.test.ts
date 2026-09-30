@@ -273,7 +273,7 @@ describe('isAuxiliaryFailure', () => {
     expect(isAuxiliaryFailure(wrapped)).toBe(false);
     markAuxiliaryFailure(wrapped, 'A');
     expect(isAuxiliaryFailure(wrapped)).toBe(true);
-    expect(isAuxiliaryFailure({ logicalId: auxiliaryLogicalId('A') })).toBe(true);
+    expect(isAuxiliaryFailure(markAuxiliaryFailure({}, 'A'))).toBe(true);
   });
 
   it('reads an unreadable chain as unmarked, and marking it does not throw', () => {
@@ -304,7 +304,7 @@ describe('isAuxiliaryFailure', () => {
     expect(isAuxiliaryFailure({ logicalId: 'A/auxiliary/x' })).toBe(false);
     expect(isAuxiliaryFailure(Object.create({ logicalId: auxiliaryLogicalId('A') }))).toBe(false);
     // Five links are walked, as `markAuxiliaryFailure` walks them.
-    let chain: unknown = { logicalId: auxiliaryLogicalId('A') };
+    let chain: unknown = markAuxiliaryFailure({}, 'A');
     for (let i = 0; i < 4; i++) chain = { logicalId: 'A', cause: chain };
     expect(isAuxiliaryFailure(chain)).toBe(true);
     expect(isAuxiliaryFailure({ logicalId: 'A', cause: chain })).toBe(false);

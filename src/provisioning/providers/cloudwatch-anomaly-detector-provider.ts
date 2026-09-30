@@ -273,12 +273,14 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
   async getAttribute(
     physicalId: string,
     resourceType: string,
-    attributeName: string
+    attributeName: string,
+    logicalId: string
   ): Promise<unknown> {
     if (attributeName === 'Id') return physicalId;
     throw new ProvisioningError(
       `Unknown attribute ${attributeName} for ${resourceType} (only 'Id' is defined)`,
       resourceType,
+      logicalId,
       physicalId
     );
   }

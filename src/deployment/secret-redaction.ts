@@ -8136,9 +8136,11 @@ const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `markAuxiliaryFailure`'s mark (`<owner logical id>/auxiliary`, read by
- * `isAuxiliaryFailure`'s suffix test): the one `logicalId` copied verbatim.
- * Its owner is the template logical id, never a physical id. The suffix alone
+ * `markAuxiliaryFailure`'s mark (`<owner>/auxiliary`, read by
+ * `isAuxiliaryFailure`, which requires the same shape as this): the one
+ * `logicalId` copied verbatim. Its owner is never a physical id: a provider
+ * passes its template logical id, and `withRetry` the fixed owner `withRetry`
+ * (go-to-k/cdkd#4222). The suffix alone
  * does not identify it — a physical id can end in a `/auxiliary` path segment —
  * so the mark's own descriptor shape is required too: `markAuxiliaryFailure`
  * defines it non-enumerable and read-only, while a `ProvisioningError`'s field
