@@ -42,7 +42,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 import { RepositoryDoesNotExistException } from '@aws-sdk/client-codecommit';
 import {
   CodeCommitRepositoryProvider,
-  CODECOMMIT_DELETE_IDENTITY_GUARD,
+  RECORDED_IDENTITY_DELETE_GUARD,
 } from '../../../../src/provisioning/providers/codecommit-repository-provider.js';
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
@@ -332,7 +332,7 @@ describe('CodeCommitRepositoryProvider — recorded RepositoryId before DeleteRe
     expect(sentNames()).toEqual(['GetRepositoryCommand', 'DeleteRepositoryCommand']);
     expect(result?.indeterminateGuards).toHaveLength(1);
     const guard = result!.indeterminateGuards![0]!;
-    expect(guard.guard).toBe(CODECOMMIT_DELETE_IDENTITY_GUARD);
+    expect(guard.guard).toBe(RECORDED_IDENTITY_DELETE_GUARD);
     expect(guard.reason).not.toContain('assumed-role');
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('Proceeding with the delete');
@@ -346,6 +346,6 @@ describe('CodeCommitRepositoryProvider — recorded RepositoryId before DeleteRe
       recordedAttributes: { RepositoryId: RECORDED_ID },
     });
     expect(sentNames()).toEqual(['GetRepositoryCommand', 'DeleteRepositoryCommand']);
-    expect(result?.indeterminateGuards?.[0]?.guard).toBe(CODECOMMIT_DELETE_IDENTITY_GUARD);
+    expect(result?.indeterminateGuards?.[0]?.guard).toBe(RECORDED_IDENTITY_DELETE_GUARD);
   });
 });

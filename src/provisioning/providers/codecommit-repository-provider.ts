@@ -170,10 +170,12 @@ function triggersEqual(a: RepositoryTrigger[], b: RepositoryTrigger[]): boolean 
 }
 
 /**
- * The guard id a delete reports when it could not read the live repository's
- * id to compare with the recorded one (go-to-k/cdkd#4157), and deleted anyway.
+ * The guard id a delete reports when it could not read the live resource's id
+ * to compare with the recorded one (go-to-k/cdkd#4157), and deleted anyway.
+ * Names the guard, not the type: another name-addressed provider making the
+ * same comparison reuses it.
  */
-export const CODECOMMIT_DELETE_IDENTITY_GUARD = 'codecommit-delete-repository-identity';
+export const RECORDED_IDENTITY_DELETE_GUARD = 'delete-recorded-identity';
 
 /**
  * The `RepositoryId` cdkd recorded for the resource, or `undefined` for a
@@ -1111,7 +1113,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // The class, never AWS's text (it quotes the caller's role and session).
       const failure = describeAwsFailure(error);
       this.logger.debug(
-        `GetRepository failed while confirming CodeCommit Repository ${logicalId}: ${failure.detail}`
+        safeMsg`GetRepository failed while confirming CodeCommit Repository ${logicalId}: ${failure.detail}`
       );
       return this.proceedUnconfirmed(
         logicalId,
@@ -1142,10 +1144,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   /** The proceed-anyway arm of {@link confirmDeleteTarget}, reported. */
   private proceedUnconfirmed(logicalId: string, reason: string): IndeterminateGuard {
     this.logger.warn(
-      `Could not confirm that CodeCommit Repository ${logicalId} is the repository cdkd ` +
-        `recorded: ${reason.replace(/[.\s]+$/, '')}. Proceeding with the delete.`
+      safeMsg`Could not confirm that CodeCommit Repository ${logicalId} is the repository cdkd recorded: ${reason.replace(/[.\s]+$/, '')}. Proceeding with the delete.`
     );
-    return { guard: CODECOMMIT_DELETE_IDENTITY_GUARD, reason };
+    return { guard: RECORDED_IDENTITY_DELETE_GUARD, reason };
   }
 
   /**
