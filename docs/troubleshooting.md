@@ -1604,7 +1604,8 @@ The error above appears only when that re-read could not help:
 denied call quotes the caller's account, role and session.
 
 `cdkd diff` issues the same re-read, so its preview shows the value the deploy
-will use, but it never writes the value to state: the next deploy records it.
+will use, but it never writes the value to state: only a deploy's own read
+records it.
 When that read fails or finds no resource, the diff's message says `This
 preview re-read the attributes from AWS, but ...` where the deploy's says `cdkd
 tried to re-read the attributes from AWS to heal the record, but ...`, because
