@@ -286,9 +286,10 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
     expect(masked.Message).toBe('*** on a request');
   });
 
-  it('MASKS a `logicalId` holding a recorded value: providers put a physical id there (#4222)', () => {
-    // The shape of e.g. `asg-provider.ts`'s getAttribute refusal: the
-    // physical id is passed in the logical-id slot.
+  it('MASKS a `logicalId` holding a recorded value: a physical id could still arrive there (#4222)', () => {
+    // Every provider now passes a logical id (#4222), but the fence holding
+    // them to it checks spelling, not data flow; this is the shape a
+    // forwarded physical id would take.
     const physical = `asg-${SECRET}`;
     const original = new ProvisioningError(
       `AutoScalingGroup ${physical} not found`,

@@ -452,7 +452,9 @@ describe('SchedulerScheduleProvider', () => {
     it('resolves Arn via GetSchedule (default-group fallback)', async () => {
       mockSend.mockResolvedValueOnce({ Arn: SCHED_ARN });
 
-      await expect(provider.getAttribute('my-sched', TYPE, 'Arn')).resolves.toBe(SCHED_ARN);
+      await expect(provider.getAttribute('my-sched', TYPE, 'Arn', 'MySchedule')).resolves.toBe(
+        SCHED_ARN
+      );
       const input = sentInput(GetScheduleCommand);
       expect(input).toEqual({ Name: 'my-sched' });
     });
@@ -460,15 +462,26 @@ describe('SchedulerScheduleProvider', () => {
     it('throws an actionable error when the bare-name lookup misses (custom-group schedule)', async () => {
       mockSend.mockRejectedValueOnce(notFound());
 
-      await expect(provider.getAttribute('my-sched', TYPE, 'Arn')).rejects.toThrow(
+      await expect(provider.getAttribute('my-sched', TYPE, 'Arn', 'MySchedule')).rejects.toThrow(
         /custom group/
       );
     });
 
+    it('names the LOGICAL id in the lookup failure, the schedule name as its physical id (#4222)', async () => {
+      mockSend.mockRejectedValueOnce(notFound());
+      await expect(
+        provider.getAttribute('my-sched', TYPE, 'Arn', 'MySchedule')
+      ).rejects.toMatchObject({ logicalId: 'MySchedule', physicalId: 'my-sched' });
+    });
+
     it('rejects unknown attributes', async () => {
-      await expect(provider.getAttribute('my-sched', TYPE, 'Nope')).rejects.toThrow(
+      await expect(provider.getAttribute('my-sched', TYPE, 'Nope', 'MySchedule')).rejects.toThrow(
         /Unknown attribute Nope/
       );
+      // The LOGICAL id in the logical-id slot (#4222).
+      await expect(
+        provider.getAttribute('my-sched', TYPE, 'Nope', 'MySchedule')
+      ).rejects.toMatchObject({ logicalId: 'MySchedule', physicalId: 'my-sched' });
     });
   });
 

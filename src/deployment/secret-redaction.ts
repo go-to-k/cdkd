@@ -8331,10 +8331,13 @@ function maskDescriptorValue(
  * SDK's other code fields. {@link maskSecretsInError} copies such a field
  * verbatim when its value is a STRING; any other value is masked like every
  * field. `logicalId` is compared exactly too (the other-resource anchor) but
- * is NOT listed: providers pass a PHYSICAL id, which a secret can name, in
- * `ProvisioningError`'s logical-id slot (go-to-k/cdkd#4222), and a masked id
- * fails that anchor closed. {@link isAuxiliaryAnchor} is the one `logicalId`
- * kept.
+ * is NOT listed. Providers now pass the logical id in `ProvisioningError`'s
+ * logical-id slot (go-to-k/cdkd#4222), but the fence holding them to it
+ * (`tests/unit/provisioning/logical-id-slot-4222.test.ts`) checks spelling,
+ * not data flow, so a physical id, which a secret can name, can still arrive
+ * there. Masking costs at most an anchor that fails closed: no collision or
+ * replace recovery, never a delete. {@link isAuxiliaryAnchor} is the one
+ * `logicalId` kept.
  */
 const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
   'name',
