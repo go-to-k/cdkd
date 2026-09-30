@@ -86,6 +86,13 @@ function statefulRefusal(resourceType: string): string {
   })!;
 }
 
+const LISTS = ['blockedAlreadySdk', 'blockedAlreadyCcApi', 'blockedNoSdkProvider'] as const;
+type BlockedList = (typeof LISTS)[number];
+
+function listRefusal(list: BlockedList, resourceType: string): string {
+  return renderRecreateTargetsErrors({ ...cleanValidation(), [list]: [target(resourceType)] })!;
+}
+
 function nestedRefusal(resourceType: string, templateNested: boolean): string {
   return renderRecreateTargetsErrors({
     ...cleanValidation(),
@@ -108,6 +115,9 @@ describe('recreate target rows — no non-plain recorded resource type printed r
     expect(nestedRefusal('AWS::CloudFormation::Stack', false)).toContain(
       '  - Bucket (AWS::CloudFormation::Stack)'
     );
+    for (const list of LISTS) {
+      expect(listRefusal(list, 'AWS::S3::Bucket'), list).toContain('  - Bucket (AWS::S3::Bucket)\n');
+    }
   });
 
   const SITES: readonly { label: string; render: (v: string) => Promise<string> | string; described: string }[] = [
@@ -136,6 +146,11 @@ describe('recreate target rows — no non-plain recorded resource type printed r
       render: (v) => nestedRefusal(v, false),
       described: `  - Bucket (${DESCRIBED})`,
     },
+    ...LISTS.map((list) => ({
+      label: `${list} refusal row`,
+      render: (v: string) => listRefusal(list, v),
+      described: `  - Bucket (${DESCRIBED})\n`,
+    })),
   ];
 
   for (const { label, render, described } of SITES) {

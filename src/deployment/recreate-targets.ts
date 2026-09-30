@@ -634,7 +634,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     );
     for (const overlap of validation.ambiguousIntent) {
       lines.push(
-        `  - ${overlap.logicalId} (${overlap.resourceType}) — both ` +
+        `  - ${overlap.logicalId} (${recordedTypeShown(overlap.resourceType)}) — both ` +
           `--recreate-via-cc-api ${overlap.logicalId} (would migrate to CC, ` +
           `honoring ${overlap.property}) AND ` +
           `--prefer-sdk-route ${overlap.resourceType}:${overlap.property} ` +
@@ -702,7 +702,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `replica regions is more involved than the single-region path):`
     );
     for (const blocked of validation.blockedMultiRegionTargets) {
-      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+      lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);
     }
     lines.push(
       `  No --force-stateful-recreation bypass — this category is structurally ` +
@@ -735,10 +735,10 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `reverse migration is a no-op):`
     );
     for (const blocked of validation.blockedAlreadySdk) {
-      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+      lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);
     }
     lines.push(
-      `  Fix: remove --recreate-via-sdk-provider <id> for these resources. ` +
+      `  Fix: drop these logical ids from --recreate-via-sdk-provider. ` +
         `They are already SDK-managed (or pre-v7 legacy state, treated as SDK).`
     );
   }
@@ -752,10 +752,10 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `migration is a no-op):`
     );
     for (const blocked of validation.blockedAlreadyCcApi) {
-      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+      lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);
     }
     lines.push(
-      `  Fix: remove --recreate-via-cc-api <id> for these resources. ` +
+      `  Fix: drop these logical ids from --recreate-via-cc-api. ` +
         `They are already CC-managed; a destroy + recreate cycle would ` +
         `produce the same end state at the cost of unnecessary downtime.`
     );
@@ -773,8 +773,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  The recreate deletes the existing resource first and then creates it ` +
         `through Cloud Control, which would fail and leave the resource deleted. ` +
-        `None of these resources was touched. Fix: remove --recreate-via-cc-api <id> ` +
-        `for these resources; they stay on their current route. There is no bypass flag.`
+        `None of these resources was touched. Fix: drop these logical ids from ` +
+        `--recreate-via-cc-api; they stay on their current route. There is no bypass flag.`
     );
   }
 
@@ -790,8 +790,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  cdkd keeps these types on their SDK provider whatever the flag says, so the ` +
         `recreate would delete each resource and create it again on the same SDK route. ` +
-        `None of these resources was touched. Fix: remove --recreate-via-cc-api <id> ` +
-        `for these resources.`
+        `None of these resources was touched. Fix: drop these logical ids from ` +
+        `--recreate-via-cc-api.`
     );
   }
 
@@ -802,10 +802,10 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `resource(s) of types cdkd has no SDK provider for (Tier 2 CC-only):`
     );
     for (const blocked of validation.blockedNoSdkProvider) {
-      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+      lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);
     }
     lines.push(
-      `  Fix: remove --recreate-via-sdk-provider <id> for these resources. ` +
+      `  Fix: drop these logical ids from --recreate-via-sdk-provider. ` +
         `The destroy + recreate would route via Cloud Control anyway — there's ` +
         `no SDK alternative available.`
     );
@@ -821,7 +821,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     );
     for (const overlap of validation.ambiguousIntentSdk) {
       lines.push(
-        `  - ${overlap.logicalId} (${overlap.resourceType}) — template uses ` +
+        `  - ${overlap.logicalId} (${recordedTypeShown(overlap.resourceType)}) — template uses ` +
           `${overlap.property}; the default-on CC auto-route would re-route ` +
           `the recreated resource back to CC immediately`
       );
@@ -838,11 +838,6 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
 }
 
 /**
- * Trim-then-lower-case, the pair `CloudControlProvider` applies to both sides
- * of its own region assert. `canonicalizeRegion` only lower-cases, so a state
- * record carrying stray whitespace would still fail a `!==` compare.
- */
-/**
  * A refusal row's type is the STATE record's, chosen by a state-bucket writer
  * (go-to-k/cdkd#4165): a plain type prints as before, any other is described,
  * so no pasted span of the refusal runs and no newline forges a row.
@@ -851,6 +846,11 @@ function recordedTypeShown(resourceType: string): string {
   return plainIdentOr(resourceType, 'a resource type that is not a plain identifier');
 }
 
+/**
+ * Trim-then-lower-case, the pair `CloudControlProvider` applies to both sides
+ * of its own region assert. `canonicalizeRegion` only lower-cases, so a state
+ * record carrying stray whitespace would still fail a `!==` compare.
+ */
 function foldRegion(region: string | undefined): string | undefined {
   return canonicalizeRegion(region?.trim());
 }
