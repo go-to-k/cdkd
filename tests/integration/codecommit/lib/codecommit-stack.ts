@@ -38,6 +38,11 @@ export class CodeCommitStack extends cdk.Stack {
     super(scope, id, props);
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    // Issue #4157 (verify.sh Phase 2b): a description-only change, so the
+    // update reaches the provider without renaming; and a name no repository
+    // holds, for the `cdkd orphan` remedy's deploy.
+    const isForeignProbe = process.env.CDKD_TEST_FOREIGN_PROBE === 'true';
+    const isFreshName = process.env.CDKD_TEST_FRESH_NAME === 'true';
 
     // SNS topic that the repository trigger notifies. CodeCommit validates a
     // trigger's SNS destination against the topic's access policy at
@@ -66,10 +71,16 @@ export class CodeCommitStack extends cdk.Stack {
     const repo = new codecommit.Repository(this, 'Repo', {
       // Phase 2 renames the repository — an IN-PLACE UpdateRepositoryName,
       // not a replacement (the repository ID must survive).
-      repositoryName: isUpdate
-        ? `${this.stackName.toLowerCase()}-repo-renamed`
-        : `${this.stackName.toLowerCase()}-repo`,
-      description: isUpdate ? 'updated description' : 'initial description',
+      repositoryName: isFreshName
+        ? `${this.stackName.toLowerCase()}-repo-fresh`
+        : isUpdate
+          ? `${this.stackName.toLowerCase()}-repo-renamed`
+          : `${this.stackName.toLowerCase()}-repo`,
+      description: isForeignProbe
+        ? 'probe description'
+        : isUpdate
+          ? 'updated description'
+          : 'initial description',
       // `Code` (create-only): the seed/ directory is zipped as a CDK file
       // asset and unpacked into the repository's initial commit on `main`.
       code: codecommit.Code.fromDirectory(path.join(thisDir, '..', 'seed'), 'main'),

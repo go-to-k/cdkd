@@ -16,7 +16,13 @@
 #      must survive), the description changed, env changed to prod, team
 #      REMOVED (the ECR #981 untag regression class), and a second trigger
 #      ADDED (PutRepositoryTriggers must carry the whole set, issue #3989).
-#   3. Destroy + assert the repo is gone and the cdkd state file is removed.
+#   2b. (issue #4157) Replace the repository out of band with a FOREIGN one
+#      under the same name. A description-only update must be refused with
+#      nothing written; destroy must refuse to delete it and keep the record;
+#      the remedy (`cdkd orphan`, then a RepositoryName no repository holds)
+#      must create a new repository and leave the foreign one alone.
+#   3. Destroy + assert the repo is gone and the cdkd state file is removed;
+#      the foreign repository survives it (then the script removes it).
 #
 # NOTE: CodeCommit returned to GA on 2025-11-24. If Phase 1's CreateRepository
 # fails with a new-customer access error, the account has not been re-enabled
@@ -64,6 +70,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 REPO="cdkdcodecommitexample-repo"
 REPO_RENAMED="cdkdcodecommitexample-repo-renamed"
+REPO_FRESH="cdkdcodecommitexample-repo-fresh"
 TOPIC="cdkdcodecommitexample-triggers"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -75,6 +82,7 @@ cleanup() {
   fi
   aws codecommit delete-repository --repository-name "${REPO}" --region "${REGION}" >/dev/null 2>&1 || true
   aws codecommit delete-repository --repository-name "${REPO_RENAMED}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws codecommit delete-repository --repository-name "${REPO_FRESH}" --region "${REGION}" >/dev/null 2>&1 || true
   local acct
   acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
   if [ -n "${acct}" ]; then
@@ -220,12 +228,62 @@ echo "    triggers (Phase 2): ${TRIGGERS2}"
 [ "${TRIGGERS2}" = '["branch-notify","commit-notify"]' ] || { echo "FAIL: expected triggers [branch-notify, commit-notify] after update, got ${TRIGGERS2}" >&2; exit 1; }
 echo "    added trigger applied, kept trigger preserved (full-set PutRepositoryTriggers)"
 
+# --- Phase 2b: a foreign repository under the recorded name (issue #4157) ---
+# The recorded repository is deleted out of band and ANOTHER is created under
+# the same name. A non-rename update must refuse it with nothing written, and
+# destroy must refuse to delete it and keep the record. The refusal's remedy
+# (`cdkd orphan`, then a RepositoryName no repository holds) must work.
+echo "==> Phase 2b: replace ${REPO_RENAMED} out of band with a foreign repository"
+aws codecommit delete-repository --repository-name "${REPO_RENAMED}" --region "${REGION}" >/dev/null
+FOREIGN_ID="$(aws codecommit create-repository --repository-name "${REPO_RENAMED}" \
+  --repository-description "foreign repository" --region "${REGION}" \
+  --query 'repositoryMetadata.repositoryId' --output text)"
+echo "    foreign repositoryId: ${FOREIGN_ID}"
+[ -n "${FOREIGN_ID}" ] && [ "${FOREIGN_ID}" != "${REPO_ID2}" ] || { echo "FAIL: premise: the foreign repository must carry a new id (got '${FOREIGN_ID}')" >&2; exit 1; }
+
+echo "==> Phase 2b: an in-place update (description only) must be refused"
+deploy_rc=0
+DEPLOY_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_FOREIGN_PROBE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || deploy_rc=$?
+echo "${DEPLOY_OUT}" | tail -20
+[ "${deploy_rc}" -ne 0 ] || { echo "FAIL: deploy over a foreign repository under the recorded name succeeded" >&2; exit 1; }
+printf '%s' "${DEPLOY_OUT}" | grep -qF "is not this resource's" || { echo "FAIL: the deploy did not fail on the recorded-id refusal" >&2; exit 1; }
+printf '%s' "${DEPLOY_OUT}" | grep -qF "cdkd orphan" || { echo "FAIL: the refusal names no cdkd orphan remedy" >&2; exit 1; }
+DESC_FOREIGN="$(repo_field "${REPO_RENAMED}" repositoryDescription)"
+[ "${DESC_FOREIGN}" = "foreign repository" ] || { echo "FAIL: the foreign repository was written to (description '${DESC_FOREIGN}')" >&2; exit 1; }
+echo "    update refused; the foreign repository was not written to"
+
+echo "==> Phase 2b: destroy must refuse to delete the foreign repository"
+destroy_rc=0
+DESTROY_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)" || destroy_rc=$?
+echo "${DESTROY_OUT}" | tail -20
+[ "${destroy_rc}" -ne 0 ] || { echo "FAIL: destroy over a foreign repository under the recorded name exited 0" >&2; exit 1; }
+printf '%s' "${DESTROY_OUT}" | grep -qF "cdkd did not delete it" || { echo "FAIL: the destroy did not fail on the recorded-id refusal" >&2; exit 1; }
+[ "$(repo_field "${REPO_RENAMED}" repositoryId)" = "${FOREIGN_ID}" ] || { echo "FAIL: destroy deleted the foreign repository" >&2; exit 1; }
+aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null || { echo "FAIL: destroy dropped the state holding the refused record" >&2; exit 1; }
+echo "    destroy refused; the foreign repository survived and the record was kept"
+
+echo "==> Phase 2b: the remedy — orphan the record, then deploy under a free name"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/Repo" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+CDKD_TEST_UPDATE=true CDKD_TEST_FRESH_NAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+REPO_ID3="$(repo_field "${REPO_FRESH}" repositoryId)"
+[ -n "${REPO_ID3}" ] && [ "${REPO_ID3}" != "${FOREIGN_ID}" ] || { echo "FAIL: the remedy's deploy did not create a new repository (id '${REPO_ID3}')" >&2; exit 1; }
+[ "$(repo_field "${REPO_RENAMED}" repositoryId)" = "${FOREIGN_ID}" ] || { echo "FAIL: the remedy's deploy touched the foreign repository" >&2; exit 1; }
+echo "    orphan + a free RepositoryName created a new repository; the foreign one untouched"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+CDKD_TEST_UPDATE=true CDKD_TEST_FRESH_NAME=true node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-assert_gone "repo ${REPO_RENAMED} still exists after destroy" aws codecommit get-repository --repository-name "${REPO_RENAMED}" --region "${REGION}"
+assert_gone "repo ${REPO_FRESH} still exists after destroy" aws codecommit get-repository --repository-name "${REPO_FRESH}" --region "${REGION}"
 echo "    repo deleted"
+[ "$(repo_field "${REPO_RENAMED}" repositoryId)" = "${FOREIGN_ID}" ] || { echo "FAIL: destroy deleted the foreign repository after the orphan" >&2; exit 1; }
+aws codecommit delete-repository --repository-name "${REPO_RENAMED}" --region "${REGION}" >/dev/null
+assert_gone "foreign repo ${REPO_RENAMED} still exists after its removal" aws codecommit get-repository --repository-name "${REPO_RENAMED}" --region "${REGION}"
+echo "    foreign repository survived the destroy; removed by the script"
 ACCT="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
 if [ -n "${ACCT}" ] && aws sns get-topic-attributes \
   --topic-arn "arn:aws:sns:${REGION}:${ACCT}:${TOPIC}" --region "${REGION}" >/dev/null 2>&1; then
@@ -235,4 +293,4 @@ echo "    SNS trigger topic deleted"
 assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — CodeCommit repository create (desc+tags+Ref id parity+Code seed+SNS trigger), in-place rename + tag untag + trigger add on update, clean destroy, 3 phases passed"
+echo "[verify] PASS — CodeCommit repository create (desc+tags+Ref id parity+Code seed+SNS trigger), in-place rename + tag untag + trigger add on update, foreign holder refused on update + destroy with a working orphan remedy (#4157), clean destroy, 4 phases passed"
