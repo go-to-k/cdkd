@@ -841,7 +841,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     try {
       holder = await this.getRepositoryMetadata(physicalId);
     } catch (error) {
-      throw this.holderReadFailure(logicalId, resourceType, physicalId, error);
+      throw this.wrapHolderReadError(logicalId, resourceType, physicalId, error);
     }
     if (holder?.repositoryId !== undefined && holder.repositoryId !== recordedId) {
       throw this.wrapNotThisRepositoryError(logicalId, resourceType, physicalId, 'recorded-name');
@@ -854,7 +854,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * so the retry classifier still reads the cause's text (an IAM grant still
    * propagating, go-to-k/cdkd#2302).
    */
-  private holderReadFailure(
+  private wrapHolderReadError(
     logicalId: string,
     resourceType: string,
     physicalId: string,
