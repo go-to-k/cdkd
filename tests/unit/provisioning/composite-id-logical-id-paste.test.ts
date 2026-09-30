@@ -107,6 +107,11 @@ describe('the composite-id message heads never print a raw logical id (go-to-k/c
     for (const id of ['-rf', '~root', '', ' MyTable', 'My Table', 'a\nb']) {
       for (const { site, message } of messagesFor(id)) {
         expect(message, `${site}: ${JSON.stringify(id)}`).toContain(ID_DESCRIBED);
+        // A description added BESIDE the raw id would still let it act; `''` is
+        // in every string and ` MyTable` can sit inside the description's text.
+        if (id !== '' && id !== ' MyTable') {
+          expect(message, `${site}: ${JSON.stringify(id)}`).not.toContain(id);
+        }
       }
     }
   });
