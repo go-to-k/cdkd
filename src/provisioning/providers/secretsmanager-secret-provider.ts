@@ -708,8 +708,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       if (typeof name !== 'string' || name === '') continue;
       // An ARN pair names two spellings of the secret: the ARN and its name.
       const embedded = arnName(name);
+      const secret = isSecretDerivedValue(raw, base.mask);
       for (const spelling of embedded === undefined ? [name] : [name, embedded]) {
-        if (isSecretDerivedValue(raw, base.mask)) secretNames.add(spelling);
+        if (secret) secretNames.add(spelling);
         if (spelling.length >= 3) needlePairs.push([raw, spelling]);
       }
     }
