@@ -39,13 +39,15 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
   it('finds the mixin modules, and every augmentation declares at least one member', () => {
     const modules = mixinModules();
     expect(modules.map((m) => m.file)).toEqual(
-      expect.arrayContaining(['deploy-engine-name-collision.ts', 'deploy-engine-outputs.ts', 'deploy-engine-rollback.ts'])
+      expect.arrayContaining(['deploy-engine-name-collision.ts', 'deploy-engine-outputs.ts', 'deploy-engine-rollback.ts',
+        'deploy-engine-observed-capture.ts',
+      ])
     );
     for (const { file, names } of modules) {
       expect(names.length, `${file}: augmentation parsed to no members`).toBeGreaterThan(0);
     }
     expect(modules.flatMap((m) => m.names)).toEqual(
-      expect.arrayContaining(['replacementNameOrigin', 'orphanedNameCollisionAdvice', 'resolveOutputs', 'performRollback'])
+      expect.arrayContaining(['replacementNameOrigin', 'orphanedNameCollisionAdvice', 'resolveOutputs', 'performRollback', 'drainObservedCaptures'])
     );
   });
 
