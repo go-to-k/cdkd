@@ -359,11 +359,11 @@ export function expectZshRunsTheDisplay(message: string, dir: string, value: str
  * let a join that runs `touch OWNED` hide behind a display line that creates
  * the same `OWNED` alone, and a verb only the join invokes would not show.
  *
- * Bound: a line that runs alone yet leaves its own quote open (a command
- * before an unterminated quote, or a bash `#` comment holding an apostrophe)
- * is replaced whole, which can close the straddle it took part in; that line
- * still takes the single-line checks. `lineDoes` caches each line's own run
- * for the caller's loop.
+ * Judged under ONE shell at a time (the caller passes each shell in turn): a
+ * line may act alone under one shell only (bash reads ` # it's` as a comment,
+ * an interactive zsh does not), and replacing it under the other would remove
+ * the quote that shell's straddle opens. `lineDoes` caches each line's own run
+ * for that shell.
  */
 function expectNoMoreThanItsLines(
   span: string,
@@ -473,11 +473,22 @@ export function expectOnlyDisplayResidual(
  */
 export function expectRuntimeResidual(message: string, dir: string, value: string): string[] {
   const ran: string[] = [];
-  const lineDoes = new Map<string, boolean>();
+  const lineDoesByShell = new Map<PasteShell, Map<string, boolean>>();
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, {});
     if (span.includes('\n') && (run.touched.length > 0 || run.verbRan)) {
-      expectNoMoreThanItsLines(span, dir, {}, lineDoes);
+      // Per shell, with a cache per shell (see `expectNoMoreThanItsLines`).
+      for (const shell of PASTE_SHELLS) {
+        const one = { shells: [shell] } as const;
+        const alone = spanRun(span, dir, one);
+        if (alone.touched.length === 0 && !alone.verbRan) continue;
+        let cache = lineDoesByShell.get(shell);
+        if (cache === undefined) {
+          cache = new Map<string, boolean>();
+          lineDoesByShell.set(shell, cache);
+        }
+        expectNoMoreThanItsLines(span, dir, one, cache);
+      }
       if (run.touched.length > 0) ran.push(span);
       continue;
     }

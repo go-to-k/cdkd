@@ -407,6 +407,15 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       expect(() => expectRuntimeResidual(sameName, dir, hostile)).toThrow(
         /runs more than pasting each alone/
       );
+      // Judged per shell: line one acts alone under bash only (its ` # it's`
+      // is a comment there), so under zsh it stays in the join, where its
+      // apostrophe pairs with line two's and `touch OTHER` runs.
+      if (PASTE_SHELLS.includes('zsh')) {
+        const perShell = `Stack "${hostile}" gone # it's\nx'; touch OTHER`;
+        expect(() => expectRuntimeResidual(perShell, dir, hostile)).toThrow(
+          /runs more than pasting each alone/
+        );
+      }
       // Nor a VERB only the join invokes.
       const joinedVerb = `Stack "${hostile}" gone.\nThe owner's record\nholds it's; cdkd destroy --force`;
       expect(() => expectRuntimeResidual(joinedVerb, dir, hostile)).toThrow(
