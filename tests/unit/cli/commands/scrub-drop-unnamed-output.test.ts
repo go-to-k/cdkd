@@ -416,6 +416,25 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
       expect(logs()).toContain('(masked: "k-***")');
     });
 
+    it('keeps EVERY key it would drop when a read of this producer stores its name redacted', async () => {
+      consumer({
+        imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: `x-${SM_EXPR}` }],
+      } as never);
+
+      const { saved, result } = await scrub(
+        record({ Out: SSM_PLAINTEXT, Sm: SM_EXPR, Gone: GONE_PLAINTEXT, Gone2: 'another-leftover' })
+      );
+
+      expect(result!.keptReadOutputKeys).toBe(2);
+      expect(saved!.outputs).toEqual({
+        Out: SSM_EXPR,
+        Sm: SM_EXPR,
+        Gone: GONE_PLAINTEXT,
+        Gone2: 'another-leftover',
+      });
+      expect(warnLines.join('\n')).toContain('a name stored redacted');
+    });
+
     it('under --dry-run too, and takes no lock', async () => {
       consumer({
         imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Gone' }],

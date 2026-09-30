@@ -1437,6 +1437,10 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
       code: 'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED',
       exitCode: 2,
     });
+    await expect(scrubCommand([], commandOptions({ dryRun: true }))).rejects.toMatchObject({
+      code: 'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED',
+      exitCode: 2,
+    });
     // Kept, and the record is otherwise clean, so nothing is written.
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
   });
