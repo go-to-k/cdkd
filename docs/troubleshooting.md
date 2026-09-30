@@ -1608,7 +1608,8 @@ will use, but it never writes the value to state: the next deploy records it.
 When that read fails or finds no resource, the diff's message says `This
 preview re-read the attributes from AWS, but ...` where the deploy's says `cdkd
 tried to re-read the attributes from AWS to heal the record, but ...`, because
-the preview heals nothing.
+the preview heals nothing. For a failed read it adds that `cdkd deploy` issues
+the same read and heals the record once the read succeeds.
 The other read-only commands (`cdkd drift`, `cdkd export`) never re-read and
 never write state. Until a deploy has healed the record they report an `*Arn` /
 `*Url` reference as unresolved, and resolve any other attribute to the physical

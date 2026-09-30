@@ -67,8 +67,8 @@ export type StaleAttributeHealer = {
    * run only (`cdkd diff`'s, from `read-only-attribute-healer.ts`). The
    * resolver words a stale-record remedy from it, so a failed read in a
    * preview does not tell the user cdkd tried to heal the record. The flag
-   * rides the healer rather than the context, so no context can carry a
-   * read-only healer without it.
+   * rides the healer rather than the context, so every context handed that
+   * factory's healer carries it; nothing makes another supplier set it.
    */
   readonly readOnly?: true;
 };

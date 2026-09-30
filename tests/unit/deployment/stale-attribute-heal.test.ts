@@ -373,7 +373,8 @@ describe('stale attribute heal — resolver (#1852)', () => {
       expect(preview).toContain('This preview re-read the attributes from AWS, but the provider read failed');
       expect(preview).toContain('AccessDeniedException, HTTP 403');
       expect(preview).toContain(
-        "A preview writes nothing to state; 'cdkd deploy' issues the same read and heals the record once it succeeds."
+        "A preview writes nothing to state; 'cdkd deploy' issues the same read and heals the record once it succeeds. " +
+          'Fix the read (a missing read permission is the usual cause), or change any property of the resource'
       );
       for (const phrase of [...DEPLOY_ONLY, 'tried to re-read']) expect(preview).not.toContain(phrase);
       const deploy = (await refuse(false)).message;
@@ -471,6 +472,35 @@ describe('stale attribute heal — resolver (#1852)', () => {
       );
       expect(error.message).toContain('This preview re-read the attributes from AWS, but the provider read failed');
       expect(error.message).not.toContain('tried to re-read');
+    });
+
+    it("cdkd diff's own healer declining a provider with no import() takes the preview's not-attempted wording", async () => {
+      // The factory's decline for a provider with no `import()`, end to end;
+      // its `isHealExcludedType` decline is pinned in
+      // `read-only-attribute-healer.test.ts`.
+      const healer = createReadOnlyAttributeHealerFactory({
+        getProvider: () => ({}) as unknown as ResourceProvider,
+        inRegion: (_region, fn) => fn(),
+      })('MyStack', 'us-east-1');
+      const error = await refusalOf(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Ds', 'DataSourceArn'] },
+          mkContext(
+            {
+              Ds: {
+                physicalId: 'abc|ds',
+                resourceType: 'AWS::AppSync::DataSource',
+                properties: {},
+                attributes: { DataSourceArn: 'arn:aws:appsync:*:*:apis/abc/datasources/ds' },
+              },
+            },
+            healer
+          )
+        )
+      );
+      expect(error.message).toContain(
+        'cdkd did not re-read it from AWS (this resource type has no read-only lookup)'
+      );
     });
   });
 
