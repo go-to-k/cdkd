@@ -219,6 +219,7 @@ vi.mock('node:readline/promises', () => ({
 
 import { createImportCommand } from '../../../src/cli/commands/import.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -4711,7 +4712,11 @@ describe('cdkd import', () => {
         }
       });
 
-      it('errors with clear message when STS GetCallerIdentity returns no Account', async () => {
+      it.each([
+        [undefined, '`aws sts get-caller-identity`'],
+        ['prod', '`aws --profile prod sts get-caller-identity`'],
+      ])('errors with clear message when STS GetCallerIdentity returns no Account (profile %s)', async (profile, check) => {
+        setPasteableAwsProfile(profile);
         // The recursive nested-stack flow needs the caller's AWS account ID
         // to synthesize the cdkd-local ARN it writes into the parent's
         // state for the nested-stack row (mirrors what
@@ -4764,10 +4769,13 @@ describe('cdkd import', () => {
           ).rejects.toThrow();
           const lastError = String(errorSpy.mock.calls.at(-1)?.[0]);
           expect(lastError).toMatch(/STS GetCallerIdentity returned no Account/);
+          // go-to-k/cdkd#3959: the credential check names the run's --profile.
+          expect(lastError).toContain(check);
           // Bail-out happens before any state write or retire round-trip.
           expect(mockSaveState).not.toHaveBeenCalled();
           expect(mockRetireCloudFormationStack).not.toHaveBeenCalled();
         } finally {
+          setPasteableAwsProfile(undefined);
           rmSync(tmpdirPath, { recursive: true, force: true });
         }
       });

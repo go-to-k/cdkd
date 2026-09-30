@@ -94,6 +94,14 @@ describe('pasteableAwsProfileFlag', () => {
     expect(pasteableAwsProfileFlag()).toBe(`--profile '<profile>'`);
   });
 
+  it.each([...' \t\'"`$;&|<>()*?[]{}!#~\\^=%,'])(
+    'holes a profile holding %j, which a pasted line could run or re-split',
+    (c) => {
+      setPasteableAwsProfile(`a${c}b`);
+      expect(pasteableAwsProfileFlag()).toBe(`--profile '<profile>'`);
+    }
+  );
+
   it('prints the role-profile hole when the run also assumed a role', () => {
     setPasteableAwsProfile('prod');
     setAssumedRoleCredentials({
@@ -226,7 +234,12 @@ describe('the shared renderers carry the profile (go-to-k/cdkd#3959)', () => {
 });
 
 describe('a hostile profile inside the backtick-wrapped advice runs nothing when pasted', () => {
-  it.each(PASTE_PAYLOADS.map((p) => [p.label, p.value] as const))(
+  it.each([
+    ...PASTE_PAYLOADS.map((p) => [p.label, p.value] as const),
+    // Space-free, so only the non-whitespace part of the gate can stop it.
+    ['space-free backtick', 'x`touch${IFS}OWNED`y'] as const,
+    ['space-free substitution', 'x$(touch${IFS}OWNED)'] as const,
+  ])(
     '%s',
     (_label, profile) => {
       setPasteableAwsProfile(profile);
