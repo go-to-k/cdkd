@@ -21,7 +21,8 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
   integ AFTER the flatten/rebase below (`references/verify.md` §8-b says which
   rebases stale it). While a scoped file this branch changes is busy on `main`
   (go-to-k/cdkd#4183), run the set as ONE parallel batch, each `verify.sh` that
-  builds (`grep -l 'vp run build' <dir>/verify.sh`) alone BEFORE it, then set
+  builds (`grep -lE '^\s*\(cd [^)]*&& vp run build\)' <dir>/verify.sh`; a bare
+  `vp run build` also matches error text) alone BEFORE it, then set
   the marker, record, push and merge without pausing.
 - **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
   a lane stopped at merge-ready drains no queue: re-send, confirm in the TREE.
