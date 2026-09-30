@@ -7,8 +7,9 @@
  * block. The names come from the state listing, so anyone who can write the
  * state bucket can plant one. The PROSE still displays the name through
  * `displayStackName`'s JSON boundary, which a `$( )` or backtick runs inside
- * (go-to-k/cdkd#3232's class, not this issue's), so those two families are held
- * to that display residual and the other two to nothing at all
+ * (the display residual go-to-k/cdkd#3950 tracks, not this issue's), so the
+ * three families carrying one are held to that residual and the separator family
+ * to nothing at all
  * (`expectNothingRunsButTheDisplay`). The builder is called DIRECTLY: reaching it
  * through `scrubStack` needs a chained state fixture per stack name, and the
  * case is about the text the builder renders.

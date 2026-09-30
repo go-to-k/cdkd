@@ -29,6 +29,7 @@ import {
   displayAwsMessage,
   displayIdent,
   displayStackName,
+  STACK_REF_MAX_CODE_POINTS,
   displaySafe,
   isPasteableIdent,
   safeMsg,
@@ -1717,9 +1718,9 @@ export class DeployEngine {
           // The old form wrapped the whole command in prose quotes AND left
           // `<stack>` / `<physicalId>` bare, which pasted as two redirections.
           // A LITERAL, not a gated value (go-to-k/cdkd#4205): the gate would
-          // withhold `Tbl=<physicalId>` whole for the `=`, `<` and `>` cdkd
-          // itself wrote into it, and the command would no longer name the
-          // record. The only untrusted part is `id`, which `pasteableHere`
+          // withhold `Tbl=<physicalId>` whole for the `<` and `>` of the hole
+          // cdkd itself wrote into it (a mid-word `=` it admits), and the
+          // command would no longer name the record. The only untrusted part is `id`, which `pasteableHere`
           // already held to `isPasteableIdent`, inert with no quotes at all.
           commandLines.push(
             `Re-import with: ${
@@ -9073,6 +9074,13 @@ export class DeployEngine {
     const safeId = displaySafe(physicalId, { asciiOnly: true });
     const safeStack = displaySafe(stackName, { asciiOnly: true });
     const safeLogicalId = displaySafe(logicalId, { asciiOnly: true });
+    // The PROSE shows each through `displayIdent`'s boundary (go-to-k/cdkd#4205):
+    // a plain value reads as itself, and a value carrying `;` or `'` stays
+    // literal inside the JSON quotes instead of running when the sentence is
+    // pasted. What double quotes cannot stop (`$( )`, a backtick) is the
+    // display residual go-to-k/cdkd#3950 tracks.
+    const shownId = displayIdent(physicalId, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+    const shownLogicalId = displayIdent(logicalId);
 
     // The CloudFormation comparison is stated as a DIFFERENCE, not a
     // similarity, and that is the correction this wording carries. Both engines
@@ -9089,7 +9097,7 @@ export class DeployEngine {
     // which is why the sentence says "unnamed" rather than claiming CFn never
     // collides.)
     const diagnosis =
-      `${safeLogicalId}: the name AWS reports as taken (${safeId}) is one cdkd DERIVED from ` +
+      `${shownLogicalId}: the name AWS reports as taken (${shownId}) is one cdkd DERIVED from ` +
       `the logical id, and that derivation has no random component — so this is most likely a ` +
       `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
       `DeletionPolicy: Retain in AWS and drops it from state, as CloudFormation does; what ` +
@@ -9097,7 +9105,7 @@ export class DeployEngine {
       `and redeploy clean, whereas cdkd asks again for the name the orphan still holds — so ` +
       `re-running does not clear this.`;
     const deleteArm =
-      `If it is not a resource you want to keep, delete ${safeId} in AWS — after ` +
+      `If it is not a resource you want to keep, delete ${shownId} in AWS — after ` +
       `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`;
 
     // Only advise `cdkd import` for a type that can actually be imported.
@@ -9134,11 +9142,11 @@ export class DeployEngine {
     // DIFFERENT questions, and an earlier revision of this comment got the
     // second one wrong:
     //
-    // - `shellQuote` makes the command SAFE TO RUN. It single-quotes anything
-    //   outside a conservative safe set and escapes embedded quotes, so a `$()`
-    //   payload — which `looksLikeCdkdGeneratedName` admits, its skeleton
-    //   stripping every non-alphanumeric before comparing — pastes as an inert
-    //   literal. `=` is outside that set, so the argument is always quoted.
+    // - The shared gate makes the command SAFE TO RUN. A `$()` payload —
+    //   which `looksLikeCdkdGeneratedName` admits, its skeleton stripping every
+    //   non-alphanumeric before comparing — is not inert with its quotes
+    //   stripped, so it prints as a quoted hole (go-to-k/cdkd#4205); quoting it
+    //   held only while the quote parity before the command was even.
     // - Comparing the SANITISED value against the original decides whether the
     //   command would name the RIGHT RESOURCE. It is not about printing: the
     //   prose above already prints the sanitised name in every branch. When
@@ -9166,13 +9174,27 @@ export class DeployEngine {
       return `${diagnosis} ${why}, so the way forward is to delete it. ${deleteArm}`;
     }
 
+    // Through the shared gate, on a line of its OWN and last (go-to-k/cdkd#4205):
+    // inlined in the sentence, a `shellQuote`d stack name (from the assembly,
+    // unvalidated) or id ran once the quote parity before it flipped. A value
+    // that is not inert with its quotes stripped is a quoted hole.
+    const adopt = pasteableCommand('cdkd import', [
+      { value: stackName, hole: 'stack' },
+      { flag: '--resource', value: `${logicalId}=${physicalId}`, hole: 'logicalId=physicalId' },
+    ]);
+    const holeNote =
+      adopt.withheld.length === 0
+        ? ''
+        : ` The command below prints a quoted hole in place of a value cdkd will not name on a ` +
+          `command line; replace it whole, quotes included, with your stack name or ` +
+          `'<logicalId>=<name>', shell-quoted.`;
     return (
-      `${diagnosis} To recover, adopt it back into state instead of re-creating it: ` +
-      `cdkd import ${shellQuote(safeStack)} --resource ${shellQuote(`${safeLogicalId}=${safeId}`)} ` +
-      `(a selective import merges into existing state and needs no --force while the resource ` +
-      `is absent from it). CONFIRM IT IS YOURS FIRST — a name cdkd derives is predictable, so ` +
-      `for a globally-namespaced type it can belong to another account, and the same stack ` +
-      `deployed in another region derives the same name. ${deleteArm}`
+      `${diagnosis} To recover, adopt it back into state instead of re-creating it, with the ` +
+      `command below (a selective import merges into existing state and needs no --force while ` +
+      `the resource is absent from it). CONFIRM IT IS YOURS FIRST — a name cdkd derives is ` +
+      `predictable, so for a globally-namespaced type it can belong to another account, and ` +
+      `the same stack deployed in another region derives the same name. ${deleteArm}` +
+      `${holeNote}\nAdopt with: ${adopt.command}`
     );
   }
 

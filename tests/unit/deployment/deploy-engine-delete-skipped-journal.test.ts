@@ -281,9 +281,13 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
   });
 
   it('names no shell-active stack or region in its two commands, and no pasted span runs (go-to-k/cdkd#4205)', async () => {
-    // The skip warning carries `resource's` and `'cdkd deploy'` above its
-    // `Inspect it with:` / `Drop the record with:` lines, so a shell-quoted
-    // payload ran once the lines were pasted as one block.
+    // The skip warning's `CHILD's` (in `for a nested stack it is the CHILD's
+    // own state`) is its one unpaired apostrophe (`'cdkd deploy'` is a paired
+    // literal), and it sits on the line above the `Inspect it with:` /
+    // `Drop the record with:` lines, so a shell-quoted payload ran once a
+    // selection from that sentence through a command line was pasted as one
+    // block. The line's own opening, `cdkd did not confirm L (phys-…)`, is a
+    // bash syntax error, which is why the harness starts such a run mid-line.
     const warn = vi.mocked(getLogger().warn);
     const messages: Array<[string, string]> = [];
     for (const { label, value } of PASTE_PAYLOADS) {

@@ -445,21 +445,6 @@ export function quotedOrDescribed(value: string, what: string): string {
 }
 
 /**
- * True when `value` reaches the terminal as itself — sanitizing changes
- * nothing, the cap does not cut it, and it is not empty.
- *
- * The comparison is against the RAW value, not against a second sanitizing
- * pass: `displaySafe` is idempotent, so comparing two sanitized spellings
- * would be satisfied by every input and the gate would pass vacuously.
- */
-export function rendersExactly(value: string): boolean {
-  const reason = withholdReason(value, undefined);
-  // `shell-active`, like `option-shaped`, is a COMMAND-level judgement made
-  // after rendering: `Old;Stack` survives sanitizing untouched.
-  return reason === undefined || reason === 'option-shaped' || reason === 'shell-active';
-}
-
-/**
  * True when `value` stays inert with its quotes stripped: it does not match
  * {@link PASTE_ARG_UNSAFE}. The test {@link withholdReason}'s `'shell-active'`
  * arm applies, exported for the two builders outside this function that print

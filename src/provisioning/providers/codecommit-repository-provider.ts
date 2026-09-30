@@ -38,9 +38,9 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
-import { pasteableCommand, shellQuote } from '../../utils/pasteable-command.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
-import { isPasteableIdent, safeMsg, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 
 /**
@@ -877,18 +877,17 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           `recording the new name), first confirm it is yours (\`aws codecommit get-repository\` ` +
           `shows its id, ARN, description and creation date), and re-adopt it only then; ` +
           `otherwise choose a RepositoryName no other repository holds.\nRe-adopt with:\n` +
-          // Unwrapped, on its own line, last. The pair is judged HALF by half
-          // (go-to-k/cdkd#4205): the shared gate withholds any value holding a
-          // shell-active character, and the `=` joining the two is cdkd's
-          // own, so the pair is named only when each half is an
-          // `isPasteableIdent` identifier, inert with no quotes at all.
+          // Unwrapped, on its own line, last; every value through the shared
+          // gate (a hole when it cannot be printed exactly, or is not inert
+          // with its quotes stripped, go-to-k/cdkd#4205). The joining `=` is
+          // mid-word, which the measured predicate admits.
           pasteableCommand('cdkd import', [
             { hole: 'stack' },
-            isPasteableIdent(logicalId) &&
-            isPasteableIdent(newName) &&
-            `${logicalId}=${newName}`.length <= STACK_REF_MAX_CODE_POINTS
-              ? { literal: `--resource ${shellQuote(`${logicalId}=${newName}`)}` }
-              : { flag: '--resource', hole: 'logicalId=repositoryName' },
+            {
+              flag: '--resource',
+              value: `${logicalId}=${newName}`,
+              hole: 'logicalId=repositoryName',
+            },
             { literal: '--force' },
           ]).command,
         resourceType,

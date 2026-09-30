@@ -4384,6 +4384,8 @@ export function orphanWithholdWhy(reason: WithholdReason, positional: boolean): 
     // does: a throw here would escape the state-deletion warn's `catch`.
     case 'pattern-shaped':
       return `cannot be printed as an argument to 'cdkd state orphan'`;
+    // Unreachable: `orphanCommandFor` passes `plainIdent`, which answers
+    // `not-plain` for every value this arm would take.
     case 'shell-active':
       return SHELL_ACTIVE_WHY;
     default: {
@@ -6571,6 +6573,9 @@ function refreshWithheldReason(built: PasteableCommand): string {
         `'_', '.' or '-'), the only shape named in a command here, since a name outside it ` +
         `can run as shell or read as a line of this message once the terminal wraps.`
       );
+    // Unreachable: `refArgs` passes `plainIdent`, which answers `not-plain` for
+    // every value this arm would take; answered on purpose, as `pattern-shaped`
+    // is below.
     case 'shell-active':
       return `${what} ${SHELL_ACTIVE_WHY}.`;
     case 'pattern-shaped':

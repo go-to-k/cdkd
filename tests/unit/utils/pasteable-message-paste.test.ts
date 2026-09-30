@@ -45,6 +45,8 @@ import {
   expectOnlyDisplayResidual,
   expectZshRunsTheDisplay,
   filesTouchedBy,
+  lineStarts,
+  segmentsOf,
   spansThatRun,
   withPasteDir,
 } from './paste-harness.js';
@@ -231,6 +233,33 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       const four = `Found 2 resource record(s)\n${block}`;
       expect(filesTouchedBy(four, dir, BASH_ONLY), 'the four-line message must be inert').toEqual([]);
       expect(spansThatRun(four, dir, BASH_ONLY)).toEqual([block]);
+    });
+  }, 120_000);
+
+  it('starts a run of lines MID-LINE too, so a `(`-stopped line opening cannot hide a straddle (go-to-k/cdkd#4205 M1)', () => {
+    // BASH ONLY, for the reason the cases above give: the stop at `(` is
+    // bash's. Line one's OPENING is a syntax error on its own, so every run
+    // starting at the line start stops there; the clause after its `: ` opens
+    // a quote the next line closes, and only a run starting at that clause
+    // reaches the substitution.
+    const BASH_ONLY = { shells: ['bash'] } as const;
+    withPasteDir((dir) => {
+      const opens = "SkippedDelete (phys-1): the owner's record";
+      const closes = `holds the stack's value "x$(touch OWNED)".`;
+      const message = `${opens}\n${closes}`;
+      expect(filesTouchedBy(message, dir, BASH_ONLY), 'the whole block must be inert').toEqual([]);
+      expect(filesTouchedBy(opens, dir, BASH_ONLY)).toEqual([]);
+      expect(filesTouchedBy(closes, dir, BASH_ONLY)).toEqual([]);
+      const midLine = `the owner's record\n${closes}`;
+      expect(segmentsOf(message).has(midLine)).toBe(true);
+      expect(spansThatRun(message, dir, BASH_ONLY)).toEqual([midLine]);
+      // Each break the single-line splitter knows starts a run: a sentence
+      // break, and the three clause breaks.
+      for (const brk of ['. ', ': ', ' — ', ' -- ']) {
+        expect(lineStarts(`a (b)${brk}c`), JSON.stringify(brk)).toEqual([5 + brk.length]);
+      }
+      // ...and a break at the very end of a line starts nothing.
+      expect(lineStarts('a (b): ')).toEqual([]);
     });
   }, 120_000);
 
@@ -639,7 +668,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
     // the maintainer's go-to-k/cdkd#3486 round-3 finding (16 executing spans
     // in a revert-plan block), and the reason his criterion is per BLOCK: a
     // block that carries untrusted values carries no pasteable command, and
-    // what such a block DISPLAYS is go-to-k/cdkd#3232's class, not this
+    // what such a block DISPLAYS is the display residual go-to-k/cdkd#3950 tracks, not this
     // fence's. Measured here rather than asserted, so the line between the two
     // renderers cannot drift back into a comment.
     withPasteDir((dir) => {

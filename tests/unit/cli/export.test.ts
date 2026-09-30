@@ -34,7 +34,7 @@ import {
 } from '../../../src/cli/commands/export.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
-import { shellQuote } from '../../../src/utils/pasteable-command.js';
+import { SHELL_ACTIVE_WHY, shellQuote } from '../../../src/utils/pasteable-command.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
@@ -4299,7 +4299,9 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       expect(orphanWithholdWhy('not-plain', positional)).toBe(
         "is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or '-'), which " +
           'cdkd does not print on a command line'
-      );
+      );      // Unreachable too (the gate is `plainIdent`, which answers `not-plain`),
+      // answered with the shared sentence (go-to-k/cdkd#4205).
+      expect(orphanWithholdWhy('shell-active', positional)).toBe(SHELL_ACTIVE_WHY);
     }
   });
 

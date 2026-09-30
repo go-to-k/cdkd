@@ -262,6 +262,8 @@ export async function assertAssetBucketRegion(
   }
 
   if (actual === want) return;
+  // Defence in depth: `actual` is S3's own redirect header, not a planted
+  // value, so no test drives a hostile one here (go-to-k/cdkd#4205 review).
   const actualShown = plainIdentOr(actual, 'another region');
 
   throw new CdkdError(
@@ -851,6 +853,9 @@ export async function ensureAssetStorage(
     const conflicts: string[] = [];
     if (options.assetBucketName && options.assetBucketName !== existingMarker.assetBucket) {
       conflicts.push(
+        // The requested name is the operator's own, validated by
+        // `bootstrap.ts` before it reaches here; described anyway as defence
+        // in depth (go-to-k/cdkd#4205 review).
         `asset bucket ${quotedIfPlain(existingMarker.assetBucket, 'with a name that is not a plain identifier')} (requested ${quotedIfPlain(options.assetBucketName, 'a name that is not a plain identifier')})`
       );
     }

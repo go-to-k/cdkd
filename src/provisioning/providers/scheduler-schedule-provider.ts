@@ -27,7 +27,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
-import { hasClauseBreak } from '../../utils/pasteable-command.js';
+import { hasClauseBreak, isInertUnquoted } from '../../utils/pasteable-command.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import {
   redactedDeleteAddressFields,
@@ -384,8 +384,11 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       const safeId = displaySafe(physicalId, { asciiOnly: true });
       // A clause break in the name (`: `, `. `, ...) lets a pasted selection
       // start INSIDE the shell quotes, so such a name is never printed, in the
-      // command or in the prose (go-to-k/cdkd#3950).
-      const nameShowable = !!safeId && safeId === physicalId && !hasClauseBreak(safeId);
+      // command or in the prose (go-to-k/cdkd#3950). Nor is one that is not
+      // inert with its quotes stripped (go-to-k/cdkd#4205): an apostrophe in
+      // whatever the operator pastes with the hint flips the quote parity.
+      const nameShowable =
+        !!safeId && safeId === physicalId && !hasClauseBreak(safeId) && isInertUnquoted(safeId);
       const manualHint = nameShowable
         ? `If the schedule lives in a custom group, delete it manually: ` +
           `${withPasteableAwsProfile('aws scheduler delete-schedule')} --name ${shellQuote(safeId)} --group-name '<group>'`

@@ -607,7 +607,7 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     // `x'$(touch OWNED)` closed that quote and ran from the first line alone;
     // the name now renders through `displayStackName`. The command below it
     // holes the name. The prose display is still a JSON boundary, which a
-    // `$( )` or backtick runs inside (go-to-k/cdkd#3232's class).
+    // `$( )` or backtick runs inside (the display residual go-to-k/cdkd#3950 tracks).
     const notes: Array<[string, string, string]> = [];
     for (const { label, value } of PASTE_PAYLOADS) {
       for (const [kind, reason, operations, failed] of [

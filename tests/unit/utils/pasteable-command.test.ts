@@ -21,7 +21,6 @@ import {
   commandHole,
   isInertUnquoted,
   pasteableCommand,
-  rendersExactly,
   shellQuote,
   withheldTargetClause,
 } from '../../../src/utils/pasteable-command.js';
@@ -560,10 +559,7 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     }
   });
 
-  it('rendersExactly compares against the RAW value, so it cannot pass vacuously', () => {
-    expect(rendersExactly('plain')).toBe(true);
-    expect(rendersExactly('a\u001bb')).toBe(false);
-    expect(rendersExactly('')).toBe(false);
+  it('shellQuote and commandHole spell the pair the gate is built from', () => {
     // The pair the gate is built from, asserted directly: a second sanitizing
     // pass would compare two sanitized spellings and be satisfied by anything.
     expect(shellQuote("it's")).toBe("'it'\\''s'");
@@ -748,32 +744,6 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     expect(optionPattern.withheld).toEqual([{ hole: 'stack', reason: 'option-shaped' }]);
   });
 
-  describe('rendersExactly', () => {
-    it('is about RENDERING only, so an option-shaped name is still exact', () => {
-      // The compatibility exception M11 had to make explicit. `rendersExactly`
-      // answers "does sanitizing leave this value alone", and `--all` survives
-      // sanitizing untouched — so `true` is the honest answer and was the
-      // answer before the rewrite. Expressing the predicate through
-      // `withholdReason` would have silently changed it to `false`, because
-      // that function ALSO refuses an option; the `option-shaped` exception is
-      // what preserves the original meaning, and this case is what pins it.
-      // Nothing else can: the command builder applies both rules at once, so a
-      // mutant deleting the exception is invisible through `pasteableCommand`.
-      expect(rendersExactly('--all')).toBe(true);
-      expect(rendersExactly('-x')).toBe(true);
-      // ...and the rendering half still refuses, so the exception did not
-      // widen the predicate to "anything goes".
-      expect(rendersExactly('')).toBe(false);
-      expect(rendersExactly('Prod\u00a0Stack')).toBe(false);
-      expect(rendersExactly('A'.repeat(STACK_REF_MAX_CODE_POINTS + 1))).toBe(false);
-      // A pattern is a COMMAND-level judgement, not a rendering one, so this
-      // predicate must not take it either; nor the shell-active arm
-      // (go-to-k/cdkd#4205), for the same reason.
-      expect(rendersExactly('*')).toBe(true);
-      expect(rendersExactly('Old;Stack')).toBe(true);
-      expect(rendersExactly('two words')).toBe(true);
-    });
-  });
 
 });
 

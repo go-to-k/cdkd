@@ -43,6 +43,7 @@ import { RepositoryDoesNotExistException } from '@aws-sdk/client-codecommit';
 import { CodeCommitRepositoryProvider } from '../../../../src/provisioning/providers/codecommit-repository-provider.js';
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../../utils/paste-harness.js';
 
 const TYPE = 'AWS::CodeCommit::Repository';
 const OLD = 'issue4042-old';
@@ -220,6 +221,49 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
       `\ncdkd import '<stack>' --resource '<logicalId=repositoryName>' --force`
     )).toBe(true);
     expect(err.message).not.toContain('\u0007');
+  });
+
+  describe('the --resource pair goes through the ONE gate (go-to-k/cdkd#4205)', () => {
+    const refusalFor = async (logicalId: string, name: string): Promise<string> => {
+      mockSend.mockImplementation((cmd: { constructor: { name: string }; input: Record<string, unknown> }) =>
+        cmd.constructor.name === 'GetRepositoryCommand' && cmd.input['repositoryName'] === name
+          ? Promise.resolve({ repositoryMetadata: { repositoryId: 'id-x', Arn: ARN } })
+          : gone()
+      );
+      return (
+        await rejection(provider.update(logicalId, OLD, TYPE, { ...DESIRED, RepositoryName: name }, RECORDED))
+      ).message;
+    };
+
+    it('names a valid name the stricter isPasteableIdent would refuse (a leading `_`)', async () => {
+      // `_repo` is a legal CodeCommit name; the mid-word `=` joining the pair
+      // is literal, so the measured predicate admits `Repo=_repo`.
+      expect(
+        (await refusalFor('Repo', '_repo')).endsWith(
+          `\ncdkd import '<stack>' --resource 'Repo=_repo' --force`
+        )
+      ).toBe(true);
+    });
+
+    it('holes a payload name or logical id, and the pasted command runs nothing', async () => {
+      const messages: Array<[string, string]> = [];
+      for (const { label, value } of PASTE_PAYLOADS) {
+        for (const [what, message] of [
+          ['name', await refusalFor('Repo', `r${value}`)],
+          ['logical id', await refusalFor(`Repo${value}`, 'r-new')],
+        ] as const) {
+          expect(message, `${what} ${label}`).toMatch(
+            /\ncdkd import '<stack>' --resource '<logicalId=repositoryName>' --force$/
+          );
+          messages.push([`${what} ${label}`, message.slice(message.lastIndexOf('\nRe-adopt with:'))]);
+        }
+      }
+      // From `Re-adopt with:` on: the lead above it prints the logical id RAW
+      // (`CodeCommit Repository <id>`), a prose display outside this issue.
+      withPasteDir((dir) => {
+        for (const [label, tail] of messages) expect(spansThatRun(tail, dir), label).toEqual([]);
+      });
+    }, 120_000);
   });
 
   it('a rename call that finds the old name gone (after the id read) is verified the same way', async () => {

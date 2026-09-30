@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
-import { shellQuote } from '../../../src/utils/pasteable-command.js';
+import { SHELL_ACTIVE_WHY, shellQuote } from '../../../src/utils/pasteable-command.js';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -2748,17 +2748,22 @@ describe('the entry-level text', () => {
     // ...and the DIAGNOSIS quotes both identifiers as well, which the remedy
     // tails above do not establish: dropping `shellQuote` from either one there
     // left every case green, because the only hostile fixtures reached the
-    // command. A name carrying a space renders unquoted as two words and reads
-    // as a different record.
-    const SPACED = 'my stack';
+    // command. A medial `~` is inert unquoted and still quoted by `shellQuote`.
     expect(
-      malformedResourceEntriesRefusalMessage(SPACED, 'eu west 1', ['R']),
+      malformedResourceEntriesRefusalMessage('my~stack', 'eu~west~1', ['R']),
       'the refusal diagnosis no longer quotes its identifiers'
-    ).toContain("State for 'my stack' ('eu west 1')");
+    ).toContain("State for 'my~stack' ('eu~west~1')");
     expect(
-      malformedResourceEntriesWarning(SPACED, 'eu west 1', ['R']),
+      malformedResourceEntriesWarning('my~stack', 'eu~west~1', ['R']),
       'the warning diagnosis no longer quotes its identifiers'
-    ).toContain("State for 'my stack' ('eu west 1')");
+    ).toContain("State for 'my~stack' ('eu~west~1')");
+    // A name carrying a SPACE is not inert unquoted, so the prose describes it
+    // rather than quoting it (go-to-k/cdkd#4205): a quoted value in a sentence
+    // runs once the quote parity above it flips.
+    expect(malformedResourceEntriesRefusalMessage('my stack', 'eu west 1', ['R'])).toContain(
+      'State for a stack whose name cannot be shown safely here ' +
+        '(a region that cannot be shown safely here)'
+    );
     // ...and opposite verdicts, so neither text can be swapped for the other.
     expect(refusal).toContain('refuses');
     expect(warning).toContain('Continuing WITHOUT them');
@@ -2807,10 +2812,10 @@ describe('the user-facing text', () => {
           `rendered text still carries ${JSON.stringify(forge)}: ${JSON.stringify(text)}`
         ).toBe(false);
       }
-      // And the sanitizer must not have eaten the identifier entirely — the
-      // message has to still name WHICH record is broken.
-      expect(text).toContain('Evil');
-      expect(text).toContain('Stack');
+      // The sanitized spelling holds spaces where the forgeries were, so it is
+      // not inert unquoted and the prose DESCRIBES the record rather than
+      // naming it (go-to-k/cdkd#4205); the listing still names it.
+      expect(text).toContain('a stack whose name cannot be shown safely here');
     }
   });
 
@@ -2843,16 +2848,15 @@ describe('the user-facing text', () => {
 
     for (const text of texts) {
       // The PROSE carries both identifiers too and was outside every probe,
-      // so check the whole text, not only the command tail.
-      expect(text, 'the hostile value never reached the rendered text').toContain('curl');
+      // so check the whole text, not only the command tail: the value is not
+      // inert unquoted, so it is DESCRIBED in the prose and a HOLE in the
+      // command (go-to-k/cdkd#4205), and appears nowhere.
+      expect(text, 'the hostile value reached the rendered text').not.toContain('curl');
+      expect(text).toContain('cannot be shown safely here');
       const command = text.slice(text.indexOf('cdkd state show'));
-      expect(command, 'the remedy command is missing').toContain('cdkd state show');
-      // Inside a single-quoted shell word, the ONLY way out is a closing quote.
-      // shellQuote escapes each one as '\'' so the word never terminates early.
-      expect(
-        command.includes("|sh") && !command.includes("'\\''"),
-        `the remedy still carries an unescaped injection: ${command}`
-      ).toBe(false);
+      expect(command, 'the remedy command is missing').toMatch(
+        /cdkd state show ('<stack>'|MyStack) --stack-region ('<region>'|us-east-1)/
+      );
     }
   });
 
@@ -5420,11 +5424,15 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     expect(
       lineValue(malformedOrphanResourcePropertiesRefusalMessage(nested, undefined, ['R']), 'Object key')
     ).toBe(`'<prefix>/${nested}/state.json'`);
-    // Quoted the way every other identifier in this module is, so a quote in
-    // the name cannot close the wrapping one early.
+    // Quoted the way every other identifier in this module is; a name that is
+    // not inert unquoted (a `'`) is the `<stack>` hole there, since a quoted
+    // key turns inside out once the parity above it flips (go-to-k/cdkd#4205).
+    const itIs = malformedOrphanResourcePropertiesRefusalMessage("It's", undefined, ['R']);
+    expect(lineValue(itIs, 'Object key')).toBe(`'<prefix>/<stack>/state.json'`);
+    expect(itIs).toContain("so the key shows the hole '<stack>' in its place");
     expect(
-      lineValue(malformedOrphanResourcePropertiesRefusalMessage("It's", undefined, ['R']), 'Object key')
-    ).toBe(`'<prefix>/It'\\''s/state.json'`);
+      lineValue(malformedOrphanResourcePropertiesRefusalMessage('Old~One', undefined, ['R']), 'Object key')
+    ).toBe(`'<prefix>/Old~One/state.json'`);
     // A name that would be sanitized or truncated gets NO path — a path with
     // a rewritten segment names an object that does not exist.
     // The padding class is the one that renders as a HEALTHY sibling's name
@@ -5703,10 +5711,12 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
 
     it('every orphanRefusal builder holes a payload name or region and runs nothing, pasted WHOLE (go-to-k/cdkd#4205)', () => {
       // The drop command (`dropRecordCommand`) and the properties refusal's
-      // inspect line (`orphanInspectCommand`) named a payload shell-quoted,
-      // and the lead's apostrophes (`record's`, `resource's`) on the lines
-      // above flip the quote parity once the lines are pasted as one block
-      // (go-to-k/cdkd#4133). Every span, every run of lines included.
+      // inspect line (`orphanInspectCommand`) named a payload shell-quoted.
+      // The lead's quoted literals (`'cdkd orphan'`, `'Drop the record'`) are
+      // PAIRED, so the flip comes from the orphans-records refusals' unpaired
+      // `others'`, or from whatever the operator selects above the message,
+      // once the lines are pasted as one block (go-to-k/cdkd#4133). Every span,
+      // every run of lines, mid-line starts included.
       const builders = [
         ['properties', malformedOrphanResourcePropertiesRefusalMessage],
         ['entries', malformedOrphanResourceEntriesRefusalMessage],
@@ -5718,6 +5728,11 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       const cases: Array<{ label: string; text: string }> = [];
       for (const [name, build] of builders) {
         for (const { label, value } of PASTE_PAYLOADS) {
+          // The region-LESS (legacy) arm, whose `Object key:` line shell-quoted
+          // the name inside the key: the segment is the `<stack>` hole now.
+          const legacy = build(value, undefined, ['A']);
+          expect(dropOf(legacy), `${name} ${label} legacy`).toBe("cdkd state orphan '<stack>'");
+          cases.push({ label: `${name} ${label} legacy`, text: legacy });
           const asName = build(value, 'us-east-1', ['A']);
           expect(dropOf(asName), `${name} ${label} name`).toBe(
             "cdkd state orphan '<stack>' --stack-region us-east-1"
@@ -5781,6 +5796,10 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       for (const withheld of [FORGED, "It's Legacy"]) {
         const text = malformedOrphanResourcePropertiesRefusalMessage(withheld, 'us-east-1', ['A']);
         expect(dropOf(text), withheld).toBe("cdkd state orphan '<stack>' --stack-region us-east-1");
+        // The withheld-identity clause gives the TRUE reason: the name renders
+        // exactly, so "did not render exactly" would contradict the head.
+        expect(text, withheld).toContain(`the stack name or region above ${SHELL_ACTIVE_WHY}`);
+        expect(text, withheld).not.toContain('did not render exactly');
         expect(text, withheld).toMatch(
           /^Inspect the record: cdkd state show '<stack>' --stack-region us-east-1 --json$/m
         );
@@ -6435,12 +6454,15 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // only the clause split can produce.
       // 124 measured once go-to-k/cdkd#4205 made every payload a hole, which
       // prints one spelling where the quoted value printed several.
-      expect(segments.size).toBeGreaterThan(100);
+      // 84 after go-to-k/cdkd#4205's second round also DESCRIBES a payload name
+      // in the `State for ...` prose.
+      expect(segments.size).toBeGreaterThan(70);
       expect(
         [...segments].filter((s) => s !== '' && !/[.\n]/.test(s)).length,
         'the clause split degenerated'
-        // 56 measured after go-to-k/cdkd#4205, for the reason given above.
-      ).toBeGreaterThan(50);
+        // 45 measured after go-to-k/cdkd#4205's second round, for the reason
+        // given above.
+      ).toBeGreaterThan(40);
       // And the PAREN split specifically, which neither floor above can see:
       // both are cleared by line+sentence alone, so reverting `[()]` from the
       // clause regex left this test green while removing the only granularity

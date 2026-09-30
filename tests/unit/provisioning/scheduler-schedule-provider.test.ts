@@ -60,7 +60,7 @@ import {
 
 /** Every family, the opt-in clause break included (go-to-k/cdkd#3950). */
 const PAYLOADS = [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD];
-import { hasClauseBreak, shellQuote } from '../../../src/utils/pasteable-command.js';
+import { hasClauseBreak, isInertUnquoted, shellQuote } from '../../../src/utils/pasteable-command.js';
 import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
 const TYPE = 'AWS::Scheduler::Schedule';
@@ -332,13 +332,21 @@ describe('SchedulerScheduleProvider', () => {
      * Before that it was interpolated UNQUOTED, so a name with a space split
      * the arguments and a name with `;` chained a second command.
      */
-    it('SHELL-QUOTES a physical id that needs it in the manual delete hint', async () => {
+    it('SHELL-QUOTES an inert id that needs it, and SUPPRESSES one that is not inert (go-to-k/cdkd#4205)', async () => {
       mockSend.mockResolvedValueOnce({});
-      await provider.delete('Sched', 'my sched; rm -rf /', TYPE, undefined);
-      const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warned).toContain("--name 'my sched; rm -rf /' --group-name '<group>'");
+      await provider.delete('Sched', 'my#sched', TYPE, undefined);
+      let warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain("--name 'my#sched' --group-name '<group>'");
       // Issue #3136: a bare `<group>` is two shell redirections.
       expect(warned).not.toContain('--group-name <group>');
+      // A name that would change the command once unquoted is not named: the
+      // quoting held only while the quote parity before it was even.
+      childLogger.warn.mockClear();
+      mockSend.mockResolvedValueOnce({});
+      await provider.delete('Sched', 'my sched; rm -rf /', TYPE, undefined);
+      warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).not.toContain('aws scheduler delete-schedule');
+      expect(warned).toContain('delete it manually via the console');
     });
 
     it('SUPPRESSES the manual delete hint when the id cannot be reproduced safely', async () => {
@@ -395,7 +403,9 @@ describe('SchedulerScheduleProvider', () => {
           if (value.includes("'")) expect(message, value).not.toContain(`'${value}'`);
           // A name holding a clause break is never printed, in the prose or
           // in the hint's command: a selection could start inside its quotes.
-          const breaks = hasClauseBreak(value);
+          // Nor is one that is not inert unquoted (go-to-k/cdkd#4205), which
+          // every payload family is.
+          const breaks = hasClauseBreak(value) || !isInertUnquoted(value);
           expect(message, value).toContain(
             logicalId === value
               ? 'The state record of a Schedule whose logical id is not a plain identifier carries'

@@ -180,6 +180,14 @@ let stubBin: string | undefined;
  * just the whole message, because under the harness's `bash -c` a syntax error
  * on a line OUTSIDE the selection stops the whole-message span before it
  * reaches the straddle (an interactive bash drops that line and goes on).
+ *
+ * A run may also START mid-line, at any sentence or clause start of its first
+ * line (the same breaks a single line is split at), and run through each later
+ * line end (go-to-k/cdkd#4205 review, M1). An operator selects from a sentence
+ * through the command below it, and a first line whose opening words are a
+ * syntax error on their own (`SkippedDelete (phys-…)`, `State for 'S' (r)`)
+ * would otherwise stop every run starting at the line start before it reached
+ * the quote that line's later sentence opens.
  */
 export function segmentsOf(message: string): Set<string> {
   const out = new Set<string>();
@@ -192,11 +200,27 @@ export function segmentsOf(message: string): Set<string> {
     }
   }
   for (let first = 0; first < lines.length; first++) {
+    const starts = [0, ...lineStarts(lines[first]!)];
     for (let last = first + 1; last < lines.length; last++) {
-      out.add(lines.slice(first, last + 1).join('\n'));
+      const rest = lines.slice(first + 1, last + 1).join('\n');
+      for (const at of starts) out.add(`${lines[first]!.slice(at)}\n${rest}`);
     }
   }
   return out;
+}
+
+/**
+ * Where a selection can start inside `line`, past its first character: after a
+ * sentence break (`[.!?]` then whitespace) or a clause break (`: `, ` — `,
+ * ` -- `), the splits {@link segmentsOf} cuts a single line at.
+ */
+export function lineStarts(line: string): number[] {
+  const at = new Set<number>();
+  for (const m of line.matchAll(/(?<=[.!?])\s+|: | — | -- /g)) {
+    const end = m.index + m[0].length;
+    if (end > 0 && end < line.length) at.add(end);
+  }
+  return [...at].sort((a, b) => a - b);
 }
 
 /** A shell the harness drives. */
@@ -423,7 +447,7 @@ export interface ResidualOptions {
  * double quotes do not stop `$( )` or a backtick, so a prose span that parses
  * can still run. His criterion is therefore per BLOCK — a block carrying an
  * untrusted value carries no pasteable command, and what it displays is
- * go-to-k/cdkd#3232's class. This helper pins both halves. The RUNTIME half,
+ * the display residual go-to-k/cdkd#3950 tracks. This helper pins both halves. The RUNTIME half,
  * through {@link expectRuntimeResidual}: no span
  * that runs also runs a stubbed `cdkd` / `aws` (its marker, not a verb token
  * in the text: `Could not … cdkd force-unlock …` runs `Could`, with `cdkd` as
@@ -467,11 +491,14 @@ export function expectOnlyDisplayResidual(
 /**
  * The criterion for a message whose COMMAND withholds a payload value that its
  * PROSE still displays through `displayIdent`'s JSON boundary
- * (go-to-k/cdkd#4205's sites). A family that holds no `$( )` or backtick is
- * inert inside double quotes, so nothing may run at all; the two that do run
- * there are held to {@link expectOnlyDisplayResidual}, which refuses any span
- * where the value runs OUTSIDE a JSON boundary, the shape a shell-quoted value
- * in a command takes once the parity before it flips.
+ * (go-to-k/cdkd#4205's sites). Of {@link PASTE_PAYLOADS}, only the SEPARATOR
+ * family holds no `$( )` or backtick and is inert inside double quotes, so
+ * nothing may run at all for it; the other three (substitution, backtick, and
+ * the embedded-quote family, which carries a `$( )` too) run there and are held
+ * to {@link expectOnlyDisplayResidual}, which refuses any span where the value
+ * runs OUTSIDE a JSON boundary, the shape a shell-quoted value in a command
+ * takes once the parity before it flips. `label` prefixes a failure from
+ * either arm.
  */
 export function expectNothingRunsButTheDisplay(
   message: string,
@@ -480,7 +507,12 @@ export function expectNothingRunsButTheDisplay(
   label = value
 ): void {
   if (/\$\(|`/.test(value)) {
-    expectOnlyDisplayResidual(message, dir, value);
+    try {
+      expectOnlyDisplayResidual(message, dir, value);
+    } catch (error) {
+      if (error instanceof Error) error.message = `${label}: ${error.message}`;
+      throw error;
+    }
   } else {
     expect(spansThatRun(message, dir), label).toEqual([]);
   }

@@ -300,11 +300,13 @@ describe('Phase 1A: the Cause line renders the waiter rethrow through displayAws
 
 describe('Phase 1A with nothing imported names no shell-active stack in its two commands (go-to-k/cdkd#4205)', () => {
   it('holes a payload root name in both commands, and no pasted span runs', async () => {
-    // The Cause line carries AWS's text, which can hold a `'` (as here), and
-    // the refusal prose `this stack's`: either flips the quote parity of a
-    // shell-quoted name in `list-stack-resources --stack-name` or
-    // `cdkd export`, once the lines are pasted as one block. The
-    // CloudFormation name is the root's own (no override), so both carry it.
+    // cdkd's own text on these lines carries no unpaired apostrophe; the flip
+    // comes from AWS's text in the `Cause:` line, which can hold a `'` (here
+    // planted: `the stack's changeset`), or from whatever the operator selects
+    // above the message. Either flips the quote parity of a shell-quoted name
+    // in `list-stack-resources --stack-name` or `cdkd export` once the lines
+    // are pasted as one block. The payload rides the cdkd name (with a valid
+    // CloudFormation override) and the override itself.
     const messages: Array<[string, string]> = [];
     // The payload as the cdkd name (with a valid CloudFormation override, as
     // the name check requires) and as the override itself.
