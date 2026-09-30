@@ -45,6 +45,7 @@ import {
   isAmbiguousOutcomeError,
   isThrottlingError,
   markNonRetryable,
+  markRedactedCause,
 } from '../../deployment/retryable-errors.js';
 import { withIndeterminateGuard } from '../../deployment/delete-outcome.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -840,15 +841,18 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     try {
       holder = await this.getRepositoryMetadata(physicalId);
     } catch (error) {
-      // The class, never AWS's text (it quotes the caller's role and session);
-      // the cause keeps it for the retry classifier.
-      throw new ProvisioningError(
-        `Failed to update CodeCommit Repository ${logicalId}: ${describeAwsFailure(error).summary}`,
+      // The class, never AWS's text (it quotes the caller's role and session).
+      // A redacted message is stamped so the retry classifier still reads the
+      // cause's text (an IAM grant still propagating, go-to-k/cdkd#2302).
+      const failure = describeAwsFailure(error);
+      const wrapped = new ProvisioningError(
+        `Failed to update CodeCommit Repository ${logicalId}: ${failure.summary}`,
         resourceType,
         logicalId,
         physicalId,
         error instanceof Error ? error : undefined
       );
+      throw failure.redacted ? markRedactedCause(wrapped) : wrapped;
     }
     if (holder?.repositoryId !== undefined && holder.repositoryId !== recordedId) {
       throw this.wrapNotThisRepositoryError(logicalId, resourceType, physicalId, 'recorded-name');
@@ -1107,7 +1111,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // The name changed hands between the read and the delete (CodeCommit has
       // no delete by id): say so, since it cannot be undone.
       this.logger.warn(
-        safeMsg`CodeCommit Repository ${logicalId}: the repository deleted under the recorded name was not the one cdkd recorded (its repository id changed between the identity check and the delete).`
+        safeMsg`CodeCommit Repository ${logicalId}: the repository deleted under the recorded name was not the one cdkd recorded (its repository id is not the recorded one).`
       );
     }
     this.logger.debug(`Successfully deleted CodeCommit Repository ${logicalId}`);
@@ -1124,7 +1128,12 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * - another id: THROWS a non-retryable refusal, and nothing is deleted;
    * - no answer (the read was denied, or returned no id): the delete goes
    *   ahead and the guard is reported. A throttled, 5xx or connection-level
-   *   failure is rethrown instead, so the caller's retry asks again.
+   *   failure is rethrown instead, so the caller's retry asks again. A
+   *   connection never made (`ECONNREFUSED`, `ENOTFOUND`) is not ambiguous and
+   *   takes the proceed arm; the delete that follows fails the same way.
+   *
+   * The guard stays on every return, an already-gone repository included: it
+   * reports that the check did not run, whatever the delete then found.
    *
    * Name and id address the same repository only at the moment of the read:
    * CodeCommit has no delete-by-id, so a swap between the two calls is not

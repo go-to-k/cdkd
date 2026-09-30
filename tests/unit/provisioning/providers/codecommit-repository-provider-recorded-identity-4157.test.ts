@@ -44,7 +44,10 @@ import {
   CodeCommitRepositoryProvider,
   RECORDED_IDENTITY_DELETE_GUARD,
 } from '../../../../src/provisioning/providers/codecommit-repository-provider.js';
-import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
+import {
+  isMarkedNonRetryable,
+  retryClassificationText,
+} from '../../../../src/deployment/retryable-errors.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 import { awsSdkError } from '../../_aws-sdk-error.js';
 
@@ -99,6 +102,8 @@ function primeAccount(opts: {
   deleteReturnsNullId?: boolean;
   /** DeleteRepository reports deleting this id instead (a swap after the read). */
   deleteReturnsId?: string;
+  /** DeleteRepository rejects with RepositoryDoesNotExistException. */
+  deleteGone?: boolean;
 }): void {
   mockSend.mockImplementation(
     (cmd: { constructor: { name: string }; input: Record<string, unknown> }) => {
@@ -120,6 +125,7 @@ function primeAccount(opts: {
         case 'GetRepositoryTriggersCommand':
           return Promise.resolve({ triggers: [] });
         case 'DeleteRepositoryCommand':
+          if (opts.deleteGone) return gone();
           if (opts.deleteReturnsId !== undefined) {
             return Promise.resolve({ repositoryId: opts.deleteReturnsId });
           }
@@ -279,6 +285,8 @@ describe('CodeCommitRepositoryProvider — recorded RepositoryId on update: othe
     const error = await caught(provider.update('Repo', NAME, TYPE, DESIRED, RECORDED, context));
     expect(error.message).toContain('AccessDeniedException');
     expect(error.message).not.toContain('assumed-role');
+    // The retry classifier still reads AWS's text (an IAM grant propagating).
+    expect(retryClassificationText(error)).toContain('is not authorized');
     expect(writesSent()).toEqual([]);
   });
 
@@ -318,6 +326,9 @@ describe('CodeCommitRepositoryProvider — recorded RepositoryId before DeleteRe
     });
     expect(result).toBeUndefined();
     expect(sentNames()).toEqual(['GetRepositoryCommand', 'DeleteRepositoryCommand']);
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'was not the one cdkd recorded'
+    );
   });
 
   it('a legacy record with no RepositoryId keeps the by-name delete: no read first', async () => {
@@ -328,6 +339,10 @@ describe('CodeCommitRepositoryProvider — recorded RepositoryId before DeleteRe
       await provider.delete('Repo', NAME, TYPE, RECORDED, context);
       expect(sentNames()).toEqual(['DeleteRepositoryCommand']);
     }
+    // No recorded id: nothing to compare the deleted id with.
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'was not the one cdkd recorded'
+    );
   });
 
   it('an already-gone repository is still a delete success', async () => {
@@ -473,6 +488,31 @@ describe('CodeCommitRepositoryProvider — delete: region, transient reads, guar
     const provider = new CodeCommitRepositoryProvider();
     const result = await provider.delete('Repo', NAME, TYPE, RECORDED, context);
     expect(result?.indeterminateGuards?.[0]?.guard).toBe(RECORDED_IDENTITY_DELETE_GUARD);
+  });
+
+  it('the guard survives a delete that found the repository already gone (an exception)', async () => {
+    primeAccount({
+      holderId: RECORDED_ID,
+      getFails: awsSdkError('denied', 'AccessDeniedException'),
+      deleteGone: true,
+    });
+    const provider = new CodeCommitRepositoryProvider();
+    const result = await provider.delete('Repo', NAME, TYPE, RECORDED, context);
+    expect(sentNames()).toEqual(['GetRepositoryCommand', 'DeleteRepositoryCommand']);
+    expect(result?.indeterminateGuards?.[0]?.guard).toBe(RECORDED_IDENTITY_DELETE_GUARD);
+  });
+
+  it('a MASKED recorded id still gets the region check: another region sends nothing', async () => {
+    primeAccount({ holderId: FOREIGN_ID });
+    const provider = new CodeCommitRepositoryProvider();
+    const error = await caught(
+      provider.delete('Repo', NAME, TYPE, RECORDED, {
+        recordedAttributes: { RepositoryId: '***' },
+        expectedRegion: 'eu-west-1',
+      })
+    );
+    expect(error.message).toMatch(/region/i);
+    expect(sentNames()).toEqual([]);
   });
 
   it('a MASKED recorded id proceeds with the delete and reports the guard', async () => {
