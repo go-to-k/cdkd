@@ -1918,6 +1918,11 @@
       "scenarios": []
     },
     {
+      "name": "replacement-rename-onto-holder",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "retain-orphan-redeploy",
       "annotated": false,
       "scenarios": []
@@ -3185,6 +3190,7 @@
     "rename-refactor",
     "replace-squatter-refusal",
     "replacement-immutable-name",
+    "replacement-rename-onto-holder",
     "retain-orphan-redeploy",
     "retain-orphan-secret",
     "rollback-command",

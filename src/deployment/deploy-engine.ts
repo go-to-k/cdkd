@@ -87,6 +87,7 @@ import {
   recordLogOnlyParameterValue,
   literalSplitDelimitersOf,
   createUnionSecretMasker,
+  SECRET_MASK,
   type RecordedSecretValues,
   type SecretMasker,
 } from './secret-redaction.js';
@@ -119,8 +120,16 @@ import {
 import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
 import {
   renderNameHeldElsewhere,
+  probeErrorMeansNameHeld,
+  probeFoundSameId,
+  renderReplacementNameChange,
+  replacementCreateAdoptsName,
+  replacementMovesEventBus,
+  replacementNameProbe,
+  replacementOrderIsCaseSensitive,
   replacementOldHoldsSentName,
   replacementRequestsDifferentName,
+  type ReplacementNameChange,
 } from './replacement-name-holder.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -154,6 +163,7 @@ import {
   ProviderRegistry,
   STICKY_CC_MIGRATION_EXEMPT,
   ccBrokenReason,
+  type ProvisionedBy,
 } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
 import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
@@ -1184,10 +1194,9 @@ export class DeployEngine {
    * inherited bag's fresh marks. `undefined` outside a nested child, or when
    * none does.
    *
-   * WHOLE values only. A mask-only needle replaces a leaf only whole, so a
-   * parameter that EMBEDS such a value (`prefix-<token>`) is not redacted for
-   * the diff at all: its readers already diff as UPDATE on the plaintext, and
-   * need no promotion from here.
+   * A parameter that EMBEDS such a value (`prefix-<token>`) counts too: the
+   * containment arm masks that leaf whole (go-to-k/cdkd#2453), and
+   * `carriesFreshNoEchoValue` shares its predicate.
    */
   private freshNoEchoParameters(
     parameterValues: Record<string, unknown>
@@ -6201,6 +6210,382 @@ export class DeployEngine {
   }
 
   /**
+   * The name a Type-changed replacement asks for, as a change to probe
+   * (go-to-k/cdkd#3937): across two types the "same" name is not one the old
+   * resource holds in the new type's name space. `undefined` without an
+   * explicit, plain name (a generated one is not compared).
+   */
+  private typeChangeNameQuestion(
+    resourceType: string,
+    input: { desiredProperties: Record<string, unknown>; currentResource: ResourceState }
+  ): ReplacementNameChange | undefined {
+    const property = explicitNamePropertyFor(resourceType);
+    if (property === undefined) return undefined;
+    const desired = input.desiredProperties[property];
+    if (typeof desired !== 'string' || desired === '' || desired === SECRET_MASK) return undefined;
+    if (desired.includes('{{resolve:')) return undefined;
+    return {
+      property,
+      desiredName: desired,
+      heldName: undefined,
+      heldProperty: undefined,
+      physicalId: input.currentResource.physicalId,
+    };
+  }
+
+  /**
+   * The name a replacement moves to when it is KNOWN to differ from the one
+   * the old resource holds ({@link replacementRequestsDifferentName}), checked
+   * against AWS where the create would not refuse a taken name
+   * (go-to-k/cdkd#3937, {@link replacementNameProbe}).
+   *
+   * - The probe finds ANOTHER resource under the name: refuses, with nothing
+   *   created or deleted — the create would hand that resource back (or
+   *   overwrite it) and the deploy would record it as its own.
+   * - It finds the OLD resource: the difference was not real, so `undefined`
+   *   and the caller keeps its pre-existing order.
+   * - It cannot be asked, or fails: refuses, since a guess either way can
+   *   adopt a stranger's resource.
+   *
+   * The answer also picks the ORDER of the fallback and `--recreate-via-*`
+   * arms, so it compares names exactly unless the type's name space is known
+   * to fold case (go-to-k/cdkd#3931, {@link replacementOrderIsCaseSensitive});
+   * an EventBridge rule moving bus counts as a name change
+   * ({@link replacementMovesEventBus}). A Type change onto a name-adopting
+   * type always asks, and a holder found under the id the old resource of
+   * ANOTHER type has is still refused: two namespaces, two resources.
+   */
+  private async checkedReplacementNameChange(input: {
+    logicalId: string;
+    resourceType: string;
+    oldResourceType: string;
+    stackName: string;
+    currentResource: ResourceState;
+    desiredProperties: Record<string, unknown>;
+    createProvider: ResourceProvider;
+    createdVia: ProvisionedBy | undefined;
+    createProps: Record<string, unknown>;
+    secrets: RecordedSecretValues;
+  }): Promise<ReplacementNameChange | undefined> {
+    const { logicalId, resourceType, currentResource, secrets } = input;
+    const question = {
+      oldResourceType: input.oldResourceType,
+      newResourceType: resourceType,
+      desiredProperties: input.desiredProperties,
+      recorded: currentResource.properties,
+      observed: currentResource.observedProperties,
+      physicalId: currentResource.physicalId,
+    };
+    // The #3808 comparison folds case, which is the safe direction for a
+    // refusal. Here it decides whether deleting first frees the name, and
+    // whether an adopting create is asked first, so a case-only rename is a
+    // different name unless the type folds case.
+    const adopts = replacementCreateAdoptsName(resourceType, input.createdVia);
+    const typeChanged = input.oldResourceType !== resourceType;
+    const change =
+      replacementRequestsDifferentName(question) ??
+      (adopts || replacementOrderIsCaseSensitive(resourceType)
+        ? replacementRequestsDifferentName({ ...question, caseSensitive: true })
+        : undefined) ??
+      replacementMovesEventBus(question) ??
+      (adopts && typeChanged ? this.typeChangeNameQuestion(resourceType, input) : undefined);
+    if (change === undefined) return undefined;
+    const probe = replacementNameProbe({
+      resourceType,
+      createdVia: input.createdVia,
+      change,
+      region: this.stackRegion,
+    });
+    if (probe === undefined) return change;
+    const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
+    const adoptsText =
+      `its create API hands back or overwrites an existing resource of that name instead of ` +
+      `refusing it`;
+    if (probe === null) {
+      throw markNonRetryable(
+        new CdkdError(
+          maskSecretsInText(
+            `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd cannot ` +
+              `check whether another resource already holds it. Nothing was created or deleted.`,
+            secrets
+          ),
+          'NAMED_REPLACEMENT_COLLISION'
+        )
+      );
+    }
+    // Every SDK provider of a name-adopting type implements `import()`
+    // (pinned in `replacement-name-holder.test.ts`). One without it is a test
+    // double or a wrapper; refusing there would turn every mocked renamed
+    // queue, topic, rule or alarm in the suite into a probe test.
+    const lookup = input.createProvider.import?.bind(input.createProvider);
+    if (lookup === undefined) return change;
+    let found: Awaited<ReturnType<NonNullable<ResourceProvider['import']>>>;
+    try {
+      found = await this.withRetry(
+        () =>
+          lookup({
+            logicalId,
+            resourceType,
+            stackName: input.stackName,
+            region: this.stackRegion,
+            properties: input.createProps,
+            ...probe,
+          }),
+        logicalId,
+        undefined,
+        undefined,
+        input.createProvider
+      );
+    } catch (probeError) {
+      if (probeErrorMeansNameHeld(resourceType, probeError)) {
+        throw markNonRetryable(
+          new CdkdError(
+            maskSecretsInText(
+              `${subject} requires replacement, and S3 answered 403 Forbidden for bucket ` +
+                `${displaySafe(change.desiredName)}: another account owns that name, or a bucket ` +
+                `of this account denies this identity \`s3:ListBucket\`, or the request's ` +
+                `credentials were rejected. Nothing was created or deleted. Choose another name, ` +
+                `or if the bucket is yours grant \`s3:ListBucket\` on it (or delete it) and ` +
+                `re-run.`,
+              secrets
+            ),
+            'NAMED_REPLACEMENT_COLLISION',
+            probeError instanceof Error ? probeError : undefined
+          )
+        );
+      }
+      throw markNonRetryable(
+        new CdkdError(
+          maskSecretsInText(
+            `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd could ` +
+              `not check whether another resource already holds it: ` +
+              `${displayAwsMessage(maskSecretsInText(probeError instanceof Error ? probeError.message : String(probeError), secrets))}. ` +
+              `Nothing was created or deleted. Re-run the deploy once the check can succeed.`,
+            secrets
+          ),
+          'NAMED_REPLACEMENT_COLLISION',
+          probeError instanceof Error ? probeError : undefined
+        )
+      );
+    }
+    if (found === null) return change;
+    if (
+      !typeChanged &&
+      probeFoundSameId(resourceType, found.physicalId, currentResource.physicalId)
+    ) {
+      return undefined;
+    }
+    throw markNonRetryable(
+      new CdkdError(
+        maskSecretsInText(
+          `${subject} requires replacement, and another existing resource ` +
+            `(${displaySafe(found.physicalId)}) already holds the name it asks for. ` +
+            `${renderReplacementNameChange(change, input.createProps)}. Since ${adoptsText}, creating the replacement ` +
+            `would take that resource over and record it as this stack's. Nothing was ` +
+            `created or deleted. Choose a name no other resource holds, or delete the ` +
+            `resource holding it if it is yours.`,
+          secrets
+        ),
+        'NAMED_REPLACEMENT_COLLISION'
+      )
+    );
+  }
+
+  /**
+   * The create-first order for a replacement whose name is KNOWN to move off
+   * the one the old resource holds (go-to-k/cdkd#3931): the `--recreate-via-*`
+   * destroy-then-create and the UPDATE-not-supported fallback's DELETE →
+   * CREATE delete first only to free a name the old resource holds, and here
+   * it holds another. Deleting first freed nothing, so when another resource
+   * held the new name the create collided with the managed resource already
+   * gone. Now the old resource is deleted only once its replacement exists,
+   * and a collision refuses with nothing deleted.
+   *
+   * The final-snapshot gate runs BEFORE the create, so its refusals still
+   * change nothing; the delete after it is the property-driven cleanup's
+   * ({@link deleteReplacedAfterCreate}).
+   */
+  private async createFirstThenDeleteOld(input: {
+    logicalId: string;
+    resourceType: string;
+    oldResourceType: string;
+    currentResource: ResourceState;
+    createProvider: ResourceProvider;
+    createProps: Record<string, unknown>;
+    deleteProvider: ResourceProvider;
+    deleteProperties: Record<string, unknown>;
+    secrets: RecordedSecretValues;
+    change: ReplacementNameChange;
+    /** An equal physical id on the two halves names the SAME resource. */
+    equalIdIsSameResource: boolean;
+    snapshotPolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+    deletePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+    /** What forced the replacement, for the refusals. */
+    trigger: string;
+    /** `UpdateReplacePolicy: Retain`: create only, the old resource stays. */
+    retainOld?: boolean;
+  }): Promise<ResourceCreateResult> {
+    const { logicalId, resourceType, currentResource, secrets } = input;
+    const retainOld = input.retainOld === true;
+    // Before the create, so a refusal changes nothing. A PRE_DELETE_SNAPSHOT
+    // type would take its snapshot here, before the create window; none of
+    // them has a name `replacementRequestsDifferentName` reads, so none
+    // reaches this method.
+    const finalSnapshotIdentifier = retainOld
+      ? undefined
+      : await this.prepareFinalSnapshotForDelete(
+          logicalId,
+          input.oldResourceType,
+          currentResource,
+          input.snapshotPolicy
+        );
+    this.logger.info(
+      retainOld
+        ? safeMsg`  ${logicalId}'s new name differs from the one the old resource holds — creating the new resource (the old one is retained)...`
+        : safeMsg`  ${logicalId}'s new name differs from the one the old resource holds — creating the new resource before deleting the old one...`
+    );
+    let createResult: ResourceCreateResult;
+    try {
+      createResult = await this.withRetry(
+        () =>
+          withCurrentResourceSecrets(secrets, () =>
+            input.createProvider.create(logicalId, resourceType, input.createProps, {
+              maskSecrets: createSecretMasker(secrets),
+            })
+          ),
+        logicalId,
+        undefined,
+        undefined,
+        input.createProvider
+      );
+    } catch (createError) {
+      // The old resource is untouched: a raw failure is the whole story.
+      if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
+      const createMsg = displayAwsMessage(
+        maskSecretsInText(
+          createError instanceof Error ? createError.message : String(createError),
+          secrets
+        )
+      );
+      // Marked: the message quotes the collision text, which the recreate
+      // retry classifier would otherwise retry for minutes.
+      throw markNonRetryable(
+        new CdkdError(
+          maskSecretsInText(
+            `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires replacement ` +
+              `(${input.trigger}), and cdkd created the new resource first because its name ` +
+              `differs, but the create collided: ${createMsg}. If the collision is on the ` +
+              `requested name: ${renderReplacementNameChange(input.change, input.createProps)}. Nothing was deleted` +
+              (retainOld ? ` (UpdateReplacePolicy: Retain keeps the old resource in place)` : '') +
+              `. Choose a name no other resource holds, or delete the resource holding it if it ` +
+              `is yours.`,
+            secrets
+          ),
+          'NAMED_REPLACEMENT_COLLISION',
+          createError instanceof Error ? createError : undefined
+        )
+      );
+    }
+    if (input.equalIdIsSameResource && createResult.physicalId === currentResource.physicalId) {
+      // A name-idempotent create handed the old resource back, so it holds the
+      // requested name after all and deleting it would delete the "new" one.
+      throw markNonRetryable(
+        new CdkdError(
+          maskSecretsInText(
+            `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires replacement ` +
+              `(${input.trigger}) under a new name, but the create returned the resource being ` +
+              `replaced (${displaySafe(currentResource.physicalId)}) instead of a new one, so ` +
+              `cdkd cannot tell which name it holds. Nothing was deleted. Delete that resource ` +
+              `by hand if it is yours, then re-run the deploy.`,
+            secrets
+          ),
+          'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
+        )
+      );
+    }
+    if (retainOld) return createResult;
+    this.logger.info(safeMsg`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+    await this.deleteReplacedAfterCreate(
+      logicalId,
+      input.oldResourceType,
+      currentResource,
+      input.deleteProvider,
+      input.deleteProperties,
+      finalSnapshotIdentifier,
+      input.deletePolicy,
+      secrets
+    );
+    return createResult;
+  }
+
+  /**
+   * The delete of a replaced resource once its replacement EXISTS. A failure
+   * or a skip warns rather than fails the resource (issue #1762): the new
+   * resource is created and about to be recorded, so the old one is untracked
+   * either way, and failing here would roll back a replacement that
+   * succeeded. Neither is recorded as a retention (issue #2631). The delete
+   * error is masked with `secrets` BEFORE it is rendered: a provider can echo
+   * a resolved value.
+   */
+  private async deleteReplacedAfterCreate(
+    logicalId: string,
+    oldResourceType: string,
+    currentResource: ResourceState,
+    deleteProvider: ResourceProvider,
+    deleteProperties: Record<string, unknown>,
+    finalSnapshotIdentifier: string | undefined,
+    updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
+    secrets: RecordedSecretValues
+  ): Promise<void> {
+    // Initialized because the catch below can leave it unassigned.
+    let deleteResult: void | ResourceDeleteResult = undefined;
+    let deleteFailed = false;
+    try {
+      deleteResult = await deleteProvider.delete(
+        logicalId,
+        currentResource.physicalId,
+        oldResourceType,
+        deleteProperties,
+        {
+          expectedRegion: this.stackRegion,
+          forceDataDelete: this.options.forceStatefulRecreation === true,
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          ...this.replacementDeleteContext(updateReplacePolicy),
+          // Issue #4157: the identity evidence of the record deleted.
+          recordedAttributes: currentResource.attributes,
+        }
+      );
+    } catch (deleteError) {
+      const deleteMsg = maskSecretsInText(
+        deleteError instanceof Error ? deleteError.message : String(deleteError),
+        secrets
+      );
+      deleteFailed = true;
+      // Always a warning, a not-found included: an "already gone" read off the
+      // MESSAGE cannot be made safe (go-to-k/cdkd#3236) — a logical id like
+      // `PageNotFound`, or a delete failing on a KMS key or role "not found"
+      // while the old resource is alive, would silence the one line telling
+      // the user an untracked resource may be left.
+      this.logger.warn(
+        safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
+      );
+    }
+    const skipReason = deleteSkipReason(deleteResult);
+    if (skipReason !== undefined) {
+      this.logger.warn(
+        `  ⚠ ${deleteSkippedMessage(
+          logicalId,
+          currentResource.physicalId,
+          skipReason,
+          'while cleaning up the replaced resource'
+        )}. Delete it manually — it is no longer tracked in state.`
+      );
+    } else if (!deleteFailed) {
+      this.logger.info(`  ${green('✓')} Old resource deleted`);
+    }
+  }
+
+  /**
    * Inner body of provisionResource, extracted so the outer wrapper can
    * apply the per-resource deadline (`withResourceDeadline`) without
    * having the timeout / warn timer code dwarf the real provisioning
@@ -7086,8 +7471,11 @@ export class DeployEngine {
           // explicit cost of opting into recreate; the design doc § 2
           // calls this out as "Old physical resource: destroyed via SDK
           // Provider ... New physical resource: created via CC API",
-          // i.e. destroy-then-create. (`updateReplacePolicy` is read once
-          // above, before the stateful guard, and reused here.)
+          // i.e. destroy-then-create — except when the template also renames
+          // the target (go-to-k/cdkd#3931): the old resource then does not
+          // hold the new name, so `createFirstThenDeleteOld` creates first.
+          // (`updateReplacePolicy` is read once above, before the stateful
+          // guard, and reused here.)
           //
           // Issue #2668: BOTH inputs come from the state record. The layer
           // always did; the TYPE used to be the template's, so on a Type change
@@ -7115,9 +7503,59 @@ export class DeployEngine {
             physicalId: currentResource.physicalId,
           });
 
+          // go-to-k/cdkd#3937 / #3931: a name KNOWN to move off the one the old
+          // resource holds, probed where the create would adopt a taken one.
+          // Before any arm below creates or deletes anything.
+          const nameChange = await this.checkedReplacementNameChange({
+            logicalId,
+            resourceType,
+            oldResourceType,
+            stackName,
+            currentResource,
+            desiredProperties: resolvedProps,
+            createProvider: replaceProvider,
+            createdVia: replaceDecision.provisionedBy,
+            createProps: replaceProps,
+            secrets: updateSecrets,
+          });
+
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
           let createResult: any;
-          if (recreateFlagged) {
+          if (recreateFlagged && nameChange !== undefined) {
+            // go-to-k/cdkd#3931: the destroy-then-create below exists to free
+            // a name the old resource holds; this one moves to another, so the
+            // old resource is deleted only once its replacement exists — and,
+            // under Retain, a collision is refused at once rather than retried
+            // as a late name release.
+            const retainOld = updateReplacePolicy === 'Retain';
+            const recreateFlagName = recreateViaCcApi
+              ? '--recreate-via-cc-api'
+              : '--recreate-via-sdk-provider';
+            if (retainOld) {
+              // Issue #2603, as on the destroy-then-create arm.
+              this.retainedOldOnReplacement.add(logicalId);
+              this.logger.warn(
+                safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} leaves the old physical resource (${currentResource.physicalId}) in place, no longer tracked by cdkd.`
+              );
+            }
+            createResult = await this.createFirstThenDeleteOld({
+              retainOld,
+              logicalId,
+              resourceType,
+              oldResourceType,
+              currentResource,
+              createProvider: replaceProvider,
+              createProps: replaceProps,
+              deleteProvider: oldDeleteProvider,
+              deleteProperties: currentResource.properties,
+              secrets: updateSecrets,
+              change: nameChange,
+              equalIdIsSameResource,
+              snapshotPolicy: updateReplacePolicy,
+              deletePolicy: updateReplacePolicy,
+              trigger: recreateFlagName,
+            });
+          } else if (recreateFlagged) {
             // Destroy-then-create path. Same `UpdateReplacePolicy:
             // Retain` semantics — retained old resources leak (named the
             // same as the new); document via warning. CFn would refuse a
@@ -7622,50 +8060,16 @@ export class DeployEngine {
                 );
               }
               if (!snapshotBlockedDelete) {
-                // Initialized because the catch below can leave it unassigned.
-                let cleanupDeleteResult: void | ResourceDeleteResult = undefined;
-                let cleanupDeleteFailed = false;
-                try {
-                  cleanupDeleteResult = await oldDeleteProvider.delete(
-                    logicalId,
-                    currentResource.physicalId,
-                    oldResourceType,
-                    currentResource.properties,
-                    {
-                      expectedRegion: this.stackRegion,
-                      forceDataDelete: this.options.forceStatefulRecreation === true,
-                      ...(cleanupFinalSnapshotId !== undefined && {
-                        finalSnapshotIdentifier: cleanupFinalSnapshotId,
-                      }),
-                      ...this.replacementDeleteContext(updateReplacePolicy),
-                      recordedAttributes: currentResource.attributes,
-                    }
-                  );
-                } catch (deleteError) {
-                  this.logger.warn(
-                    `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
-                  );
-                  cleanupDeleteFailed = true;
-                }
-                // Issue #1762: this is the ONE replacement site where a skip
-                // is a warning rather than a failure, and it takes that from
-                // the site's existing policy for a delete FAILURE right above:
-                // the new resource is already created and recorded, so the old
-                // one is untracked either way — failing the resource here
-                // would roll back a replacement that actually succeeded.
-                const cleanupSkipReason = deleteSkipReason(cleanupDeleteResult);
-                if (cleanupSkipReason !== undefined) {
-                  this.logger.warn(
-                    `  ⚠ ${deleteSkippedMessage(
-                      logicalId,
-                      currentResource.physicalId,
-                      cleanupSkipReason,
-                      'while cleaning up the replaced resource'
-                    )}. Delete it manually — it is no longer tracked in state.`
-                  );
-                } else if (!cleanupDeleteFailed) {
-                  this.logger.info(`  ${green('✓')} Old resource deleted`);
-                }
+                await this.deleteReplacedAfterCreate(
+                  logicalId,
+                  oldResourceType,
+                  currentResource,
+                  oldDeleteProvider,
+                  currentResource.properties,
+                  cleanupFinalSnapshotId,
+                  updateReplacePolicy,
+                  updateSecrets
+                );
               }
             }
           }
@@ -8112,13 +8516,45 @@ export class DeployEngine {
                   )
                 );
               }
+              // The replacement create gets a fresh routing decision, against
+              // the record as its unrecognized-property baseline (issue #3713,
+              // same reason as `replaceDecision`). Taken before anything is
+              // deleted, since the name check below needs its route.
+              const replDecision = this.providerRegistry.getProviderFor({
+                resourceType,
+                properties: resolvedProps,
+                previousProperties: currentResource.properties,
+              });
+              const replProvider = replDecision.provider;
+              const replProps =
+                replDecision.provisionedBy === 'cc-api'
+                  ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+                  : resolvedProps;
+              // go-to-k/cdkd#3937 / #3931, as on the property-driven path: a
+              // name known to move off the old resource's, probed where the
+              // create would adopt a taken one. Under Retain it only probes.
+              const fallbackNameChange = await this.checkedReplacementNameChange({
+                logicalId,
+                resourceType,
+                oldResourceType: resourceType,
+                stackName,
+                currentResource,
+                desiredProperties: resolvedProps,
+                createProvider: replProvider,
+                createdVia: replDecision.provisionedBy,
+                createProps: replProps,
+                secrets: updateSecrets,
+              });
+              const createFirst = !retainOldOnReplace && fallbackNameChange !== undefined;
               this.logger.info(
                 retainOldOnReplace
                   ? `UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
                       `(CREATE only — UpdateReplacePolicy: Retain keeps the old resource)`
-                  : `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
+                  : createFirst
+                    ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (CREATE → DELETE — the new name differs from the old resource's)`
+                    : `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
               );
-              if (!retainOldOnReplace) {
+              if (!retainOldOnReplace && !createFirst) {
                 // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
                 // old resource before the fallback replacement's delete. The
                 // TEMPLATE is authoritative here — unlike a destroy, an update
@@ -8219,36 +8655,55 @@ export class DeployEngine {
                   );
                 }
               }
-              // The replacement create gets a fresh routing decision, against
-              // the record as its unrecognized-property baseline (issue #3713,
-              // same reason as `replaceDecision`).
-              const replDecision = this.providerRegistry.getProviderFor({
-                resourceType,
-                properties: resolvedProps,
-                previousProperties: currentResource.properties,
-              });
-              const replProvider = replDecision.provider;
-              const replProps =
-                replDecision.provisionedBy === 'cc-api'
-                  ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
-                  : resolvedProps;
               // Set only on the retain arm; drives the `partial` outcome below.
               let retainedSurvivorReason: string | undefined;
               let createResult: ResourceCreateResult;
               try {
-                createResult = await this.withRetry(
-                  () =>
-                    withCurrentResourceSecrets(updateSecrets, () =>
-                      replProvider.create(logicalId, resourceType, replProps, {
-                        maskSecrets: createSecretMasker(updateSecrets),
+                createResult =
+                  createFirst && fallbackNameChange !== undefined
+                    ? await this.createFirstThenDeleteOld({
+                        logicalId,
+                        resourceType,
+                        oldResourceType: resourceType,
+                        currentResource,
+                        createProvider: replProvider,
+                        createProps: replProps,
+                        deleteProvider: updateProvider,
+                        deleteProperties: currentProps,
+                        secrets: updateSecrets,
+                        change: fallbackNameChange,
+                        equalIdIsSameResource: !equalIdNamesDifferentResources({
+                          resourceType,
+                          physicalId: currentResource.physicalId,
+                          oldProperties: currentResource.properties,
+                          newProperties: resolvedProps,
+                        }),
+                        // The same state fallback as the DELETE → CREATE arm's
+                        // snapshot read, for the same reason.
+                        snapshotPolicy:
+                          template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                          currentResource.updateReplacePolicy,
+                        deletePolicy:
+                          template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                          currentResource.updateReplacePolicy,
+                        trigger: 'the provisioning layer cannot update it in place',
                       })
-                    ),
-                  logicalId,
-                  undefined,
-                  undefined,
-                  replProvider
-                );
+                    : await this.withRetry(
+                        () =>
+                          withCurrentResourceSecrets(updateSecrets, () =>
+                            replProvider.create(logicalId, resourceType, replProps, {
+                              maskSecrets: createSecretMasker(updateSecrets),
+                            })
+                          ),
+                        logicalId,
+                        undefined,
+                        undefined,
+                        replProvider
+                      );
               } catch (createError) {
+                // The create-first arm's errors are already its own, and the
+                // old resource is untouched there.
+                if (createFirst) throw createError;
                 // Only `Retain` turned this into a create-FIRST path, so only
                 // `Retain` owes the name-collision translation (issue #2518).
                 // Without it the user reads a raw `AlreadyExists` and has no

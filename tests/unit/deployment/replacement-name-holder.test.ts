@@ -5,8 +5,15 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  nameAdoptingSdkCreateTypes,
+  probeErrorMeansNameHeld,
+  probeFoundSameId,
+  renderReplacementNameChange,
   renderNameHeldElsewhere,
   replacementDerivedGeneratedNames,
+  replacementMovesEventBus,
+  replacementNameProbe,
+  replacementOrderIsCaseSensitive,
   replacementOldHoldsSentName,
   replacementRequestsDifferentName,
   reverseReplacementNameKeyKind,
@@ -17,6 +24,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
 
 const FN = 'AWS::Lambda::Function';
 
@@ -735,5 +744,277 @@ describe('the parent review round of #3979 (helper)', () => {
         physicalId: 'my-fn',
       }).holds
     ).toBe(true);
+  });
+});
+
+describe('replacementNameProbe (go-to-k/cdkd#3937)', () => {
+  const change = (physicalId: string, desiredName: string) => ({
+    property: 'X',
+    desiredName,
+    heldName: undefined,
+    heldProperty: undefined,
+    physicalId,
+  });
+
+  it('pins the name-adopting SDK create types', () => {
+    expect(nameAdoptingSdkCreateTypes()).toEqual([
+      'AWS::CloudWatch::Alarm',
+      'AWS::Events::Rule',
+      'AWS::S3::Bucket',
+      'AWS::SNS::Topic',
+      'AWS::SQS::Queue',
+      'AWS::StepFunctions::StateMachine',
+    ]);
+  });
+
+  it("each one's SDK provider has the import() the probe asks", () => {
+    const registry = new ProviderRegistry();
+    registerAllProviders(registry);
+    for (const type of nameAdoptingSdkCreateTypes()) {
+      const decision = registry.getProviderFor({ resourceType: type, provisionedBy: 'sdk' });
+      expect(decision.provisionedBy, type).toBe('sdk');
+      expect(typeof decision.provider.import, type).toBe('function');
+    }
+  });
+
+  it('asks by the create bag (no extra fields) for a name-lookup type', () => {
+    expect(
+      replacementNameProbe({
+        resourceType: 'AWS::SQS::Queue',
+        createdVia: 'sdk',
+        change: change('https://sqs.us-east-1.amazonaws.com/1/q', 'other'),
+      })
+    ).toEqual({});
+  });
+
+  it('does not ask for a Cloud Control create, or another type', () => {
+    expect(
+      replacementNameProbe({
+        resourceType: 'AWS::SQS::Queue',
+        createdVia: 'cc-api',
+        change: change('u', 'other'),
+      })
+    ).toBeUndefined();
+    expect(
+      replacementNameProbe({
+        resourceType: 'AWS::Lambda::Function',
+        createdVia: 'sdk',
+        change: change('fn', 'other'),
+      })
+    ).toBeUndefined();
+    // An inherited key is not an entry.
+    expect(
+      replacementNameProbe({
+        resourceType: 'constructor',
+        createdVia: 'sdk',
+        change: change('fn', 'other'),
+      })
+    ).toBeUndefined();
+  });
+
+  it("derives a state machine's ARN from the old one, and cannot without an ARN", () => {
+    const old = 'arn:aws-cn:states:cn-north-1:123456789012:stateMachine:mine';
+    expect(
+      replacementNameProbe({
+        resourceType: 'AWS::StepFunctions::StateMachine',
+        createdVia: undefined,
+        change: change(old, 'theirs'),
+      })
+    ).toEqual({ knownPhysicalId: 'arn:aws-cn:states:cn-north-1:123456789012:stateMachine:theirs' });
+    expect(
+      replacementNameProbe({
+        resourceType: 'AWS::StepFunctions::StateMachine',
+        createdVia: 'sdk',
+        change: change('mine', 'theirs'),
+      })
+    ).toBeNull();
+    // A name that would split the ARN differently is not asked about.
+    expect(
+      replacementNameProbe({
+        resourceType: 'AWS::StepFunctions::StateMachine',
+        createdVia: 'sdk',
+        change: change(old, 'a:b'),
+      })
+    ).toBeNull();
+  });
+});
+
+describe('replacementRequestsDifferentName caseSensitive (go-to-k/cdkd#3937)', () => {
+  const q = 'AWS::SQS::Queue';
+  const base = {
+    oldResourceType: q,
+    newResourceType: q,
+    desiredProperties: { QueueName: 'Orders' },
+    recorded: { QueueName: 'orders' },
+    observed: undefined,
+    physicalId: 'https://sqs.us-east-1.amazonaws.com/1/orders',
+  };
+
+  it('folds a case-only rename by default, and answers it exactly when asked', () => {
+    expect(replacementRequestsDifferentName(base)).toBeUndefined();
+    expect(replacementRequestsDifferentName({ ...base, caseSensitive: true })).toMatchObject({
+      desiredName: 'Orders',
+      heldName: 'orders',
+    });
+  });
+
+  it('still answers undefined for the exact same name', () => {
+    expect(
+      replacementRequestsDifferentName({
+        ...base,
+        desiredProperties: { QueueName: 'orders' },
+        caseSensitive: true,
+      })
+    ).toBeUndefined();
+    // The physical id alone, exactly.
+    expect(
+      replacementRequestsDifferentName({
+        ...base,
+        desiredProperties: { QueueName: 'orders' },
+        recorded: undefined,
+        caseSensitive: true,
+      })
+    ).toBeUndefined();
+  });
+});
+
+describe('replacementMovesEventBus (go-to-k/cdkd#3937)', () => {
+  const R = 'AWS::Events::Rule';
+  const ask = (
+    oldBus: unknown,
+    newBus: unknown,
+    over: Partial<Parameters<typeof replacementMovesEventBus>[0]> = {}
+  ) =>
+    replacementMovesEventBus({
+      oldResourceType: R,
+      newResourceType: R,
+      desiredProperties: { Name: 'r', ...(newBus !== undefined && { EventBusName: newBus }) },
+      recorded: { Name: 'r', ...(oldBus !== undefined && { EventBusName: oldBus }) },
+      observed: undefined,
+      physicalId: 'arn:aws:events:us-east-1:1:rule/r',
+      ...over,
+    });
+
+  it('answers a move between two named buses', () => {
+    expect(ask('busA', 'busB')).toMatchObject({
+      property: 'EventBusName',
+      desiredName: 'busB',
+      heldName: 'busA',
+    });
+  });
+
+  it('treats an absent bus as default, and a bus ARN as its name', () => {
+    expect(ask(undefined, 'default')).toBeUndefined();
+    expect(ask('default', undefined)).toBeUndefined();
+    expect(ask(undefined, 'busB')).toMatchObject({ heldName: 'default', desiredName: 'busB' });
+    expect(ask('arn:aws:events:us-east-1:1:event-bus/busA', 'busA')).toBeUndefined();
+    expect(ask('busA', 'arn:aws:events:us-east-1:1:event-bus/busB')).toMatchObject({
+      desiredName: 'busB',
+    });
+  });
+
+  it('reads the observed bus when the record has none', () => {
+    expect(
+      ask(undefined, 'busA', { recorded: { Name: 'r' }, observed: { EventBusName: 'busA' } })
+    ).toBeUndefined();
+  });
+
+  it('answers nothing for an unreadable bus, or another type', () => {
+    expect(ask(SECRET_MASK, 'busB')).toBeUndefined();
+    expect(ask('busA', { Ref: 'Bus' })).toBeUndefined();
+    expect(ask('busA', '{{resolve:ssm:bus}}')).toBeUndefined();
+    expect(ask('busA', 'busB', { oldResourceType: 'AWS::SQS::Queue' })).toBeUndefined();
+  });
+});
+
+describe('replacementOrderIsCaseSensitive / probeFoundSameId', () => {
+  it('folds case only for a type whose name space folds it', () => {
+    expect(replacementOrderIsCaseSensitive('AWS::Lambda::Function')).toBe(true);
+    expect(replacementOrderIsCaseSensitive('AWS::DynamoDB::Table')).toBe(true);
+    expect(replacementOrderIsCaseSensitive('AWS::IAM::Role')).toBe(false);
+  });
+
+  it('reads the two SQS URL hosts as one queue, and nothing else loosely', () => {
+    const a = 'https://sqs.us-east-1.amazonaws.com/123456789012/q';
+    const b = 'https://us-east-1.queue.amazonaws.com/123456789012/q';
+    expect(probeFoundSameId('AWS::SQS::Queue', a, b)).toBe(true);
+    expect(probeFoundSameId('AWS::SQS::Queue', a, b.replace('/q', '/other'))).toBe(false);
+    expect(probeFoundSameId('AWS::SQS::Queue', a, b.replace('123456789012', '999'))).toBe(false);
+    expect(probeFoundSameId('AWS::SNS::Topic', a, b)).toBe(false);
+    expect(probeFoundSameId('AWS::SNS::Topic', 'x', 'x')).toBe(true);
+  });
+});
+
+describe('probeErrorMeansNameHeld / renderReplacementNameChange', () => {
+  it('reads only an S3 403 as a held name', () => {
+    const forbidden = { name: 'Forbidden', $metadata: { httpStatusCode: 403 } };
+    expect(probeErrorMeansNameHeld('AWS::S3::Bucket', forbidden)).toBe(true);
+    expect(probeErrorMeansNameHeld('AWS::S3::Bucket', { $metadata: { httpStatusCode: 403 } })).toBe(
+      true
+    );
+    expect(probeErrorMeansNameHeld('AWS::S3::Bucket', new Error('AccessDenied'))).toBe(false);
+    expect(probeErrorMeansNameHeld('AWS::SQS::Queue', forbidden)).toBe(false);
+    expect(probeErrorMeansNameHeld('AWS::S3::Bucket', null)).toBe(false);
+    // A named credential or clock failure is not about the name.
+    for (const name of ['ExpiredToken', 'RequestTimeTooSkewed', 'InvalidAccessKeyId']) {
+      expect(
+        probeErrorMeansNameHeld('AWS::S3::Bucket', { name, $metadata: { httpStatusCode: 403 } }),
+        name
+      ).toBe(false);
+    }
+  });
+
+  it('describes a bus move by the rule name, and a non-plain one without quoting it', () => {
+    const change = {
+      property: 'EventBusName',
+      desiredName: 'busB',
+      heldName: 'busA',
+      heldProperty: 'EventBusName',
+      physicalId: 'arn',
+    };
+    expect(renderReplacementNameChange(change, { Name: 'r' })).toBe(
+      'The replacement moves rule "r" from bus "busA" to bus "busB", where another rule already holds that name'
+    );
+    expect(renderReplacementNameChange(change, { Name: 'a"b' })).toContain('the rule (by its Name)');
+    const rename = { ...change, property: 'QueueName', desiredName: 'b', heldName: 'a' };
+    expect(renderReplacementNameChange(rename, {})).toContain('asks for QueueName "b"');
+  });
+
+  it('derives a state machine ARN from any ARN of the old resource, or refuses', () => {
+    const change = (physicalId: string) => ({
+      property: 'StateMachineName',
+      desiredName: 'sm',
+      heldName: undefined,
+      heldProperty: undefined,
+      physicalId,
+    });
+    expect(
+      replacementNameProbe({
+        resourceType: 'AWS::StepFunctions::StateMachine',
+        createdVia: 'sdk',
+        change: change('arn:aws-cn:sns:cn-north-1:123456789012:t'),
+        region: 'cn-north-1',
+      })
+    ).toEqual({ knownPhysicalId: 'arn:aws-cn:states:cn-north-1:123456789012:stateMachine:sm' });
+    // The old ARN's region must be the stack's: another region, or none given, refuses.
+    for (const region of ['us-east-1', undefined]) {
+      expect(
+        replacementNameProbe({
+          resourceType: 'AWS::StepFunctions::StateMachine',
+          createdVia: 'sdk',
+          change: change('arn:aws-cn:sns:cn-north-1:123456789012:t'),
+          region,
+        })
+      ).toBeNull();
+    }
+    // No region or account in the ARN (IAM, S3): nothing to derive from.
+    expect(
+      replacementNameProbe({
+        resourceType: 'AWS::StepFunctions::StateMachine',
+        createdVia: 'sdk',
+        change: change('arn:aws:s3:::bucket'),
+        region: 'us-east-1',
+      })
+    ).toBeNull();
   });
 });
