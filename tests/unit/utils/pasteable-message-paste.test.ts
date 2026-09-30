@@ -312,7 +312,23 @@ describe('pasteable messages — nothing runs at any granularity', () => {
           expectZshRunsTheDisplay(`Nothing for '${hostile}' (us-east-1).`, dir, hostile)
         ).toThrow(/zsh ran nothing/);
         const separator = 'x; touch OWNED; #';
-        expect(() => expectZshRunsTheDisplay(`Nothing for ${separator}`, dir, separator)).toThrow();
+        expect(() => expectZshRunsTheDisplay(`Nothing for ${separator}`, dir, separator)).toThrow(
+          /zsh ran an inert family/
+        );
+        // A run the display did not cause: an unrelated substitution in a
+        // sentence of its own, a span that does not hold the value.
+        expect(() =>
+          expectZshRunsTheDisplay(
+            `Nothing for "${hostile}" (us-east-1). Then $(touch OTHER) (x).`,
+            dir,
+            hostile
+          )
+        ).toThrow(/without the displayed value/);
+        // A run that also invokes a stubbed verb (the M4 shape: `x(N)` lets zsh
+        // go on to run the verb after the substitution).
+        expect(() =>
+          expectZshRunsTheDisplay(`cdkd deploy "${hostile}" x(N)`, dir, hostile)
+        ).toThrow(/also ran a stubbed cdkd/);
         const zshOnlyVerb = `cdkd deploy "${hostile}" x(N)`;
         expect(filesTouchedBy(zshOnlyVerb, dir, { shells: ['bash'] })).toEqual([]);
         expect(() => expectOnlyDisplayResidual(zshOnlyVerb, dir, hostile)).toThrow(

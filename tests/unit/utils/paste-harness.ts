@@ -243,10 +243,21 @@ function runUnder(
   const script = `${functions} ${span}`;
   // zsh reads the span on stdin as an INTERACTIVE shell (see the header);
   // bash's interactive default already reads ` #` as a comment, as `-c` does.
+  // Two things an interactive zsh does that a paste into an operator's shell
+  // does not (go-to-k/cdkd#4127 review):
+  // - it opens the controlling terminal and reads commands from it, not from
+  //   stdin, whenever the test run has one (a developer's `vp run test`), so
+  //   the child is DETACHED into its own session, with no terminal (M6);
+  // - its `!` history expansion aborts a `!<word>` span with "event not
+  //   found", since the child's history is empty, while an operator's shell
+  //   has a history and runs it. `no_bang_hist` is set on a line of its own
+  //   BEFORE the span, because history expansion happens when a line is
+  //   read, before any command on it runs (M8). The harness then
+  //   over-approximates a successful expansion.
   const r = spawnSync(shell, shell === 'zsh' ? ['-f', '-i'] : ['-c', script], {
     cwd: dir,
     encoding: 'utf8',
-    ...(shell === 'zsh' ? { input: `${script}\n` } : {}),
+    ...(shell === 'zsh' ? { input: `setopt no_bang_hist\n${script}\n`, detached: true } : {}),
     timeout: PASTE_CHILD_TIMEOUT_MS,
     // SIGKILL, not the default SIGTERM: `spawnSync` waits for the child to
     // EXIT after the signal, so a span ignoring TERM (`trap '' TERM`) would
@@ -288,11 +299,24 @@ function runUnder(
  * asserts `spansThatRun(...)` empty under both shells instead.
  */
 export function expectZshRunsTheDisplay(message: string, dir: string, value: string): void {
-  const ran = spansThatRun(message, dir, { shells: ['zsh'] });
+  const ran: string[] = [];
+  for (const span of segmentsOf(message)) {
+    const run = spanRun(span, dir, { shells: ['zsh'] });
+    if (run.touched.length === 0) continue;
+    ran.push(span);
+    // What ran is the DISPLAY: no stubbed verb, and the span holds the value
+    // (raw or JSON-escaped), so a run caused by something else in the message
+    // cannot stand in for the row's reason.
+    expect(run.verbRan, `a zsh span that ran also ran a stubbed cdkd / aws: ${span}`).toBe(false);
+    expect(
+      span.includes(value) || span.includes(JSON.stringify(value).slice(1, -1)),
+      `a zsh span ran without the displayed value: ${span}`
+    ).toBe(true);
+  }
   if (/\$\(|`/.test(value)) {
     expect(ran.length, `zsh ran nothing for ${value}`).toBeGreaterThan(0);
   } else {
-    expect(ran, value).toEqual([]);
+    expect(ran, `zsh ran an inert family for ${value}`).toEqual([]);
   }
 }
 
@@ -470,7 +494,9 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
       ZSH_AVAILABLE || !process.env['CI'],
       'zsh is not installed, and under CI the paste harness must drive it'
     ).toBe(true);
-    if (PASTE_SHELLS.includes('zsh')) {
+    // Keyed on AVAILABILITY, not on `PASTE_SHELLS`: a population that dropped
+    // zsh would otherwise skip the very control that catches the drop (M7).
+    if (ZSH_AVAILABLE) {
       // `zsh -f` reads no startup file: one planted in the child's HOME (the
       // scratch directory) would otherwise run before every span.
       writeFileSync(join(dir, '.zshenv'), 'touch RC_RAN\n', 'utf8');
@@ -490,6 +516,22 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
       const comment = 'echo see #1 "x$(touch OWNED)" here';
       expect(runUnder('bash', comment, dir).touched, 'bash ran past the ` #`').toEqual([]);
       expect(runUnder('zsh', comment, dir).touched, 'zsh read the ` #` as a comment').toEqual([
+        'OWNED',
+      ]);
+      // The zsh child has no terminal, so it reads the span from stdin even
+      // when the test run has one (M6): `$TTY` is empty.
+      expect(runUnder('zsh', '[[ -z $TTY ]] && touch OWNED', dir).touched, 'the zsh child has a tty').toEqual([
+        'OWNED',
+      ]);
+      // A `!<word>` span runs, as it would in an operator's shell with a
+      // history (M8); an empty history would abort it with "event not found".
+      expect(runUnder('zsh', 'echo "x$(touch OWNED)!aws"', dir).touched, 'zsh history expansion aborted the span').toEqual([
+        'OWNED',
+      ]);
+      // The DEFAULT shell list reaches zsh (M7): a call with no `shells`
+      // option runs the shape only zsh runs. A population hard-coded to bash
+      // would otherwise turn every default `spansThatRun` bash-only in silence.
+      expect(filesTouchedBy(disagreement, dir), 'the default shell list does not reach zsh').toEqual([
         'OWNED',
       ]);
     }
