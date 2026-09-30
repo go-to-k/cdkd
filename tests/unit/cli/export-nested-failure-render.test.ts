@@ -1660,7 +1660,7 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     "The next line's command names neither value, because its record's region does NOT " +
     'render exactly (another record may render identically). List the records as stored with ' +
     "'cdkd state list --json' and act on the one whose stackName and region match, replacing " +
-    'each quoted hole, quotes included, with the shell-quoted value.';
+    'each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted.';
   /** The note line for the plan migrated to CloudFormation stack `cfn`. */
   const noteLine = (cfn: string) =>
     `  For the record targeting CloudFormation stack ${cfn}: ${NOTE_BODY}`;
@@ -2006,7 +2006,7 @@ describe('the single-root pre-delete and phase-2 tails note a withheld orphan co
         "its record's region does NOT render exactly (another record may render identically). " +
         "List the records as stored with 'cdkd state list --json' and act on the one whose " +
         'stackName and region match, replacing each quoted hole, quotes included, with the ' +
-        "shell-quoted value.\n  cdkd state orphan '<stack>' --stack-region '<region>'\n"
+        "value decoded from its JSON string, then shell-quoted.\n  cdkd state orphan '<stack>' --stack-region '<region>'\n"
     );
   });
 });

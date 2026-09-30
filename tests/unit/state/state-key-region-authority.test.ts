@@ -813,13 +813,14 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
       // (go-to-k/cdkd#3420).
       expect(message).not.toContain('cdkd state orphan');
       expect(message).toContain(
-        "List the records as stored with 'cdkd state list --json', which writes each name raw"
+        "List the records as stored with 'cdkd state list --json', which prints each name as a JSON string"
       );
       expect(message).not.toContain('--long');
       // The hole remedy, and NOT "shell-quote it": the command below already
       // quotes the hole, and quoting inside it splits a padded name.
-      expect(message).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+      expect(message).toContain('replacing each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted');
       expect(message).not.toContain('shell-quote it');
+      expect(message).not.toMatch(/\braw\b/);
       // Still the same refusal, and still withholding the body value.
       expect(message).toContain('(a string)');
       expect(message).not.toContain('eu-west-1');

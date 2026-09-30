@@ -1053,8 +1053,11 @@ state-only child being DELETED runs no adoption preview, so neither orphan
 warning fires for it — that child still gets its container, `properties` and
 `outputs` warnings, and its own `cdkd destroy` refuses the row. For a resource
 `properties` map, an `outputs` bag and a kept rollback-orphan row, the warning
-also tells you the deploy refuses the record when it loads it. A nested child
-the deploy skips as unchanged is never loaded, so it is never refused.
+also tells you the deploy refuses the record. For the `outputs` bag and the
+orphan row, that refusal comes when the deploy loads the record; for a
+`properties` map, when it computes its diff, before it provisions anything. A
+nested child the deploy skips as unchanged is neither loaded nor diffed, so it
+is never refused.
 
 It is deliberately NOT `1`. `--fail` uses `1` to mean "something changed", and
 a refusal is not a change: a CI job gating on drift must be able to tell "there

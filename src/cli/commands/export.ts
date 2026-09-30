@@ -31,6 +31,7 @@ import {
   malformedResourcesWarning,
   refuseMalformedState,
   displayLogicalId,
+  JSON_LISTING_HOLE_VALUE,
   SHORT_NAME_MAX_CODE_POINTS,
 } from '../../state/malformed-resources-bag.js';
 import {
@@ -4326,7 +4327,7 @@ function orphanCommandFor(stackName: unknown, region: unknown): OrphanCommand {
           `name begins with a '-' and could parse as an option in that position, so do not ` +
           `fill a hole with it.`
         : `act on the one whose stackName and region match, replacing each quoted hole, ` +
-          `quotes included, with the shell-quoted value.`),
+          `quotes included, with ${JSON_LISTING_HOLE_VALUE}.`),
   };
 }
 
@@ -6800,7 +6801,7 @@ export function reportDriftBaselineGaps(
                 `option however it is quoted, so do not fill the stack hole with it: repair or ` +
                 `remove the record by hand. `
               : `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
-                `included, with the shell-quoted value. `)) +
+                `included, with ${JSON_LISTING_HOLE_VALUE}. `)) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own

@@ -1400,4 +1400,68 @@ describe('cdkd state list', () => {
       ]);
     });
   });
+
+  /**
+   * The destroy refusals' withhold arms send the operator here for a name they
+   * could not print, and tell them to fill a hole with the value DECODED from
+   * its JSON string, then shell-quoted (go-to-k/cdkd#3908,
+   * `JSON_LISTING_HOLE_VALUE` in `src/state/malformed-resources-bag.ts`). That
+   * pointer depends on two properties of THIS output path, both pinned here
+   * through the command rather than through `JSON.stringify` alone:
+   *
+   * - a padded name SURVIVES, where the text views trim it to a healthy
+   *   sibling's spelling — the reason the pointer names `--json` at all;
+   * - a name `--json` ESCAPES is not printed as stored, yet decodes back to
+   *   it exactly. Shell-quoting the printed spelling would name a different,
+   *   nonexistent record, which is why the pointer says to decode first. The
+   *   decode-back half is go-to-k/cdkd#3163's choice to escape rather than
+   *   replace: a `--json` that sanitized these names would strand the pointer.
+   */
+  describe('--json hands the withhold pointer the stored name (#3908)', () => {
+    it('keeps a padded name byte-exact beside its trimmed sibling, where --long does not', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'prod-api ', region: 'us-east-1' },
+        { stackName: 'prod-api', region: 'us-east-1' },
+      ]);
+      mockGetState.mockResolvedValue({ state: { resources: {}, lastModified: 0 } });
+      mockIsLocked.mockResolvedValue(false);
+
+      const json = await runStateList(['list', '--json']);
+      expect(json).toContain('"stackName": "prod-api "');
+      expect(
+        (JSON.parse(json) as Array<{ stackName: string }>).map((r) => r.stackName).sort()
+      ).toEqual(['prod-api', 'prod-api ']);
+
+      // The other polarity: the text view loses the padding, so it cannot
+      // tell the two apart — what the pointer must not send anyone to.
+      // `formatStackRefSafe` quotes the altered one, but the spelling inside
+      // the quotes is the trimmed one — the healthy sibling's name.
+      const long = await runStateList(['list', '--long']);
+      const headers = long.split('\n').filter((l) => l.endsWith('(us-east-1)'));
+      expect(headers.sort()).toEqual(['"prod-api" (us-east-1)', 'prod-api (us-east-1)']);
+    });
+
+    it.each([
+      ['a double quote', 'prod"api'],
+      ['a backslash', 'prod\\api'],
+      ['ESC', 'prod\u001bapi'],
+      ['a bidi override', 'prod‮api'],
+    ])('prints a name holding %s ESCAPED, and it decodes back to the stored name', async (_label, name) => {
+      mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
+
+      const json = await runStateList(['list', '--json']);
+
+      // As printed, the name is NOT the stored one: filling a hole with this
+      // spelling, shell-quoted, would aim at a record that does not exist.
+      expect(json).not.toContain(name);
+      // Decoded, it IS: the step the pointer tells the operator to take.
+      expect(JSON.parse(json)).toEqual([{ stackName: name, region: 'us-east-1' }]);
+    });
+
+    it('prints a legacy record region as null, the case the withhold docs tell to drop --stack-region', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'prod-api ' /* legacy */ }]);
+      const json = await runStateList(['list', '--json']);
+      expect(JSON.parse(json)).toEqual([{ stackName: 'prod-api ', region: null }]);
+    });
+  });
 });

@@ -802,13 +802,24 @@ with the flag, nothing matches it.
 
 The refusal prints that as a template rather than a ready-to-paste command, and
 it withholds the target entirely when the stack name or region does not render
-exactly. Both are deliberate: `cdkd state orphan` deletes a record, the region
-in the message is read from the damaged record's own body, and a name that
-needed sanitizing can render identically to a healthy one. Identify the record
-with `cdkd state list --json`, which prints each stack name and region as
-stored — `--long` trims a padded name, so it would show the healthy one's
-spelling — and replace each quoted hole in the command, quotes included, with
-the shell-quoted value.
+exactly. Both are deliberate: `cdkd state orphan` deletes a record; the region
+in the message is the one in the record's S3 key (the CLI's own region for a
+legacy record), and a key segment is chosen by anyone who can write the bucket;
+and a name that needed sanitizing can render identically to a healthy one.
+
+When the target renders exactly, the refusal names it and tells you to confirm
+the key with `cdkd state list --long`, which shows that name faithfully.
+
+When it withholds the target, the refusal prints no `cdkd state orphan` line,
+and points at `cdkd state list --json` instead — `--long` trims a padded name,
+so it would show the healthy one's spelling. `--json` keeps the padding, but it
+prints each stack name and region as a JSON string, which escapes a `"`, a `\`
+and control, format and separator characters (ESC prints as `\u001b`). Decode
+the value from its JSON string first, then replace each quoted hole in the
+command, quotes included, with the shell-quoted result: the escaped spelling,
+shell-quoted, names a record that does not exist. A record listed with
+`"region": null` is a legacy one — leave `--stack-region` out of the
+`cdkd state orphan` template rather than filling its hole, as above.
 
 Every command the refusal prints carries the `--profile`, `--state-bucket` and
 non-default `--state-prefix` the destroy ran with, so pasted it reads the same

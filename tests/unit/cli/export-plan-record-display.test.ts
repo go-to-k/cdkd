@@ -318,7 +318,7 @@ const REGION_ALT_NOTE =
   "The next line's command names neither value, because its record's region does NOT " +
   'render exactly (another record may render identically). List the records as stored with ' +
   "'cdkd state list --json' and act on the one whose stackName and region match, replacing " +
-  'each quoted hole, quotes included, with the shell-quoted value.';
+  'each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted.';
 
 describe('cdkd export --dry-run renders recorded ids in the plan with their own boundary', () => {
   it('renders an ordinary record exactly as before', async () => {
