@@ -991,7 +991,8 @@
           ],
           "seededBy": [
             "create",
-            "createStage"
+            "createStage",
+            "update"
           ]
         },
         {

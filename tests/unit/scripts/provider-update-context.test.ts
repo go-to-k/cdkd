@@ -183,6 +183,7 @@ describe('provider UpdateContext fence — the real tree', () => {
     // Calling the guard is remedy 2.
     expect([...report.declaring].sort()).toEqual([
       'ASGProvider',
+      'ApiGatewayProvider',
       'ApiGatewayV2Provider',
       'AppSyncProvider',
       'BudgetsBudgetProvider',

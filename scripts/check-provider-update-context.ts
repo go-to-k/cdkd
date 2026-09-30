@@ -233,7 +233,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'AgentCoreCodeInterpreterProvider',
   'AgentCoreEvaluatorProvider',
   'AgentCoreRuntimeProvider',
-  'ApiGatewayProvider',
   'CloudFrontDistributionProvider',
   'CloudFrontOACProvider',
   'CloudFrontOAIProvider',
