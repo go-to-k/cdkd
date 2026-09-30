@@ -558,7 +558,7 @@ export class DocDBProvider implements ResourceProvider {
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
       // Not the identifier: it embeds the physical id, which may be secret-derived
-      // (#4111). It is `<physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
+      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
           `Deleting DocDB DBCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`

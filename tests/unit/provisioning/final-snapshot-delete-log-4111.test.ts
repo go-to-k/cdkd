@@ -72,6 +72,8 @@ interface Arm {
   describeKey: string;
   /** The status field the wait-for-deleted poll reads. */
   statusKey: string;
+  /** The describe input field naming the resource. */
+  idKey: string;
   notFound: string;
   /** Whether `--remove-protection` flips a DeletionProtection guard here. */
   protection: boolean;
@@ -87,6 +89,7 @@ const ARMS: Arm[] = [
     describeCommand: 'DescribeDBInstancesCommand',
     describeKey: 'DBInstances',
     statusKey: 'DBInstanceStatus',
+    idKey: 'DBInstanceIdentifier',
     notFound: 'DBInstanceNotFoundFault',
     protection: true,
   },
@@ -99,6 +102,7 @@ const ARMS: Arm[] = [
     describeCommand: 'DescribeDBClustersCommand',
     describeKey: 'DBClusters',
     statusKey: 'Status',
+    idKey: 'DBClusterIdentifier',
     notFound: 'DBClusterNotFoundFault',
     protection: true,
   },
@@ -111,6 +115,7 @@ const ARMS: Arm[] = [
     describeCommand: 'DescribeDBClustersCommand',
     describeKey: 'DBClusters',
     statusKey: 'Status',
+    idKey: 'DBClusterIdentifier',
     notFound: 'DBClusterNotFoundFault',
     protection: true,
   },
@@ -123,6 +128,7 @@ const ARMS: Arm[] = [
     describeCommand: 'DescribeDBClustersCommand',
     describeKey: 'DBClusters',
     statusKey: 'Status',
+    idKey: 'DBClusterIdentifier',
     notFound: 'DBClusterNotFoundFault',
     protection: true,
   },
@@ -135,6 +141,7 @@ const ARMS: Arm[] = [
     describeCommand: 'DescribeCacheClustersCommand',
     describeKey: 'CacheClusters',
     statusKey: 'CacheClusterStatus',
+    idKey: 'CacheClusterId',
     notFound: 'CacheClusterNotFoundFault',
     protection: false,
   },
@@ -145,7 +152,8 @@ type Scenario = 'deleted' | 'already-gone' | 'protection-flip-fails' | 'wait-tim
 function stubAws(arm: Arm, scenario: Scenario): void {
   let deleted = false;
   let pollsAfterDelete = 0;
-  mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+  mockSend.mockImplementation(
+    (cmd: { constructor: { name: string }; input?: Record<string, unknown> }) => {
     const name = cmd.constructor.name;
     const notFound = () =>
       Promise.reject(Object.assign(new Error('not found'), { name: arm.notFound }));
@@ -155,6 +163,9 @@ function stubAws(arm: Arm, scenario: Scenario): void {
       return Promise.resolve({});
     }
     if (name === arm.describeCommand) {
+      // Only the resource itself exists: a describe naming anything else
+      // (the logical id passed where the physical id belongs) reads NotFound.
+      if (cmd.input?.[arm.idKey] !== SECRET_ID) return notFound();
       if (deleted) {
         // Real AWS reads `deleting` on the first poll after the delete, which
         // is what makes the wait loop log its status line.
@@ -177,7 +188,19 @@ function stubAws(arm: Arm, scenario: Scenario): void {
       );
     }
     return Promise.resolve({});
-  });
+  }
+  );
+}
+
+/** Every post-delete describe named the physical id, and at least one ran. */
+function expectWaitPolledPhysicalId(arm: Arm): void {
+  const calls = mockSend.mock.calls.map((c) => c[0]);
+  const deleteAt = calls.findIndex((c) => c.constructor.name === arm.deleteCommand);
+  const polls = calls
+    .slice(deleteAt + 1)
+    .filter((c) => c.constructor.name === arm.describeCommand);
+  expect(polls.length).toBeGreaterThan(0);
+  for (const poll of polls) expect(poll.input[arm.idKey]).toBe(SECRET_ID);
 }
 
 function logLines(): string[] {
@@ -228,6 +251,7 @@ describe.each(ARMS)('$label Snapshot-policy delete log lines (#4111)', (arm) => 
     );
     expect(childLogger.debug).toHaveBeenCalledWith(`Deleting ${arm.subject} MyRes`);
     expect(childLogger.debug).toHaveBeenCalledWith(`${arm.subject} MyRes status: deleting`);
+    expectWaitPolledPhysicalId(arm);
     expectNoIdentifierLogged(snap);
   });
 

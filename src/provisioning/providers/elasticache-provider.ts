@@ -696,7 +696,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         this.logger.debug(safeMsg`CacheCluster ${logicalId} is already deleting; waiting for it`);
       }
       // Not the identifier: it embeds the physical id, which may be secret-derived
-      // (#4111). It is `<physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
+      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
           `Deleting CacheCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`

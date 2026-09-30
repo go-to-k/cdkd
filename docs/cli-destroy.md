@@ -229,11 +229,18 @@ The three pre-delete types log the identifier as they create it. The five
 atomic-parameter types log only that the delete takes a final snapshot, under
 the resource's logical id: the identifier spells the physical id, which may
 come from a secret. Find that snapshot among the service's manual snapshots by
-its `<base>-final-` prefix, for example:
+its `<base>-final-` prefix:
 
 ```bash
+# RDS DBCluster (for DocDB and Neptune, run the same command as `aws docdb` / `aws neptune`)
 aws rds describe-db-cluster-snapshots --snapshot-type manual \
   --query "DBClusterSnapshots[?starts_with(DBClusterSnapshotIdentifier, 'my-cluster-final-')].DBClusterSnapshotIdentifier"
+# RDS DBInstance
+aws rds describe-db-snapshots --snapshot-type manual \
+  --query "DBSnapshots[?starts_with(DBSnapshotIdentifier, 'my-instance-final-')].DBSnapshotIdentifier"
+# ElastiCache CacheCluster
+aws elasticache describe-snapshots \
+  --query "Snapshots[?starts_with(SnapshotName, 'my-cache-final-')].SnapshotName"
 ```
 
 Three of those rows carry behaviour worth knowing before you rely on them:
