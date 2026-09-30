@@ -18,7 +18,12 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
-  integ AFTER the flatten/rebase below (`references/verify.md` §8-b).
+  integ AFTER the flatten/rebase below (`references/verify.md` §8-b). A rebase
+  over a `main` commit to a file THIS branch also changes re-stales it; one
+  over anything else keeps it `match`. While such a file is busy on `main`
+  (go-to-k/cdkd#4183 re-ran its set three times), run the whole fixture set as
+  ONE parallel batch (no `verify.sh` in it that builds), then set the marker,
+  record, push and merge without pausing.
 - **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
   a lane stopped at merge-ready drains no queue: re-send, confirm in the TREE.
 
@@ -52,9 +57,10 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 - **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
   commit ITS output. Take upstream whole when it derives the file from the tree.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
-  upstream-whole drops this lane's row. Keep both, then run
-  `vp run integ-ledger-normalize` before `git rebase --continue` and commit it —
-  after a CLEAN rebase touching the ledger too, before the push.
+  upstream-whole drops this lane's row. Its `merge=union` keeps both LOCALLY,
+  but GitHub ignores that driver: every `main` commit adding ledger rows turns
+  the PR CONFLICTING, and CI never fires. Rebase locally, then run
+  `vp run integ-ledger-normalize` and commit it before the push.
 
 ### Merge
 
@@ -72,8 +78,6 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
   as it blocks even after re-runs pass (#3664).
-- **`-R` is not optional in a multi-repo run**: `gh` infers it from the CWD,
-  and `Could not resolve to a PullRequest` reads as a permissions problem.
 - **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
   = `MERGED` is**, read in its OWN call before anything presuming the merge (the
   thank-you, the claim release, the pull). It lies both ways: from the PR's own

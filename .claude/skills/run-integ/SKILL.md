@@ -24,7 +24,10 @@ verify, clean up.
 1. **Rebase, then build**: `git fetch origin` and rebase onto current
    `origin/main` (merge it when a force push is denied) BEFORE the run — a
    stale base verifies code that is not what will merge, and nothing warns you.
-   Then `vp run build` so `dist/` is current.
+   Then `vp run build` so `dist/` is current — the LAST build in this tree until
+   the run ends: `/check`, `/verify-pr` and a building `verify.sh` all rewrite
+   `dist/`, and a live fixture's next `node dist/cli.js` (its cleanup trap's
+   too) then dies `ERR_MODULE_NOT_FOUND`. After one, re-scan per steps 6-7.
 
 2. **List available tests**: `ls tests/integration/` — never a hardcoded list.
 
@@ -210,9 +213,12 @@ verify, clean up.
    the other direction: `mise` writes to stderr and the rc can still read as
    success, so only `markgate status` says whether a marker exists. Run from the
    PR's own worktree on the PR branch, and if any success condition failed, do
-   NOT set the marker. The auto-mode classifier can refuse `markgate set` for
-   the parent agent too: never retry it — hand the user this ONE line (the same
-   hand-off for `integ-schema-migration` below):
+   NOT set the marker. The auto-mode classifier can refuse the parent's
+   `markgate set`, and step 11's ledger commit and push, even after a yes in
+   chat: never retry — hand them to the user. One step is this ONE line (the
+   same for `integ-schema-migration` below); several go in a short-path script,
+   `! bash /tmp/<n>.sh`, since a long line wraps on paste and a pasted `!` does
+   not enter bash mode — the user types the `!`:
 
    ```text
    ! cd <tree> && mise trust && mise exec -- markgate set integ-destroy && mise exec -- markgate status | grep integ-destroy
@@ -387,5 +393,3 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   invoke prints `[verify] command exited N` plus the stderr tail. A log that ends
   at an arm header with no error text means a fixture outside the fence — re-run
   that command with stderr attached BEFORE concluding anything.
-- **Never bypass this skill** with direct `cdkd deploy` / `cdkd destroy` — the
-  orphan-cleanup contract is part of the test, not optional.
