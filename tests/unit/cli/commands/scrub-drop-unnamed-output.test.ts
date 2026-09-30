@@ -855,6 +855,8 @@ describe('readConsumerRecords', () => {
     await expect(
       readConsumerRecords({ listStacks: vi.fn().mockResolvedValue(refs), getState } as never, 'us-east-1')
     ).rejects.toThrow('throttled');
+    // Let the other workers finish what they had taken.
+    await new Promise((r) => setTimeout(r, 50));
     // The 16 workers' first reads, and no more.
     expect(calls).toBeLessThanOrEqual(16);
   });
