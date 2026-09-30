@@ -8115,6 +8115,20 @@ function maskDescriptorValue(
   return value === descriptor.value ? descriptor : { ...descriptor, value };
 }
 
+/**
+ * The own fields of an error link that `retryable-errors.ts`'s classifiers
+ * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`), plus the SDK's
+ * other code fields. {@link maskSecretsInError} copies them verbatim.
+ */
+const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
+  'name',
+  'code',
+  'Code',
+  '__type',
+  'ccErrorCode',
+  'ccOperation',
+]);
+
 function isPlainContainer(value: object): boolean {
   const proto: unknown = Object.getPrototypeOf(value);
   return Array.isArray(value)
@@ -8136,9 +8150,10 @@ function isPlainContainer(value: object): boolean {
  * - a walk that throws (only a hostile Proxy's trap can) returns `value`.
  *
  * Breadth-first with a visited set, so a node is entered at its SHALLOWEST
- * depth, a cycle terminates, and a node shared by two parents stays shared in
- * the copy. A non-extensible node's copy is made non-extensible too; each
- * property keeps its own attributes.
+ * depth, a cycle terminates in linear work, and a node shared by two parents
+ * WITHIN this value stays shared in the copy. A non-extensible node's copy is
+ * made non-extensible too, and each property keeps its own attributes (an
+ * array's `length` included).
  */
 function maskErrorFieldValue(value: unknown, maskText: (text: string) => string): unknown {
   if (typeof value === 'string') return maskText(value);
@@ -8191,6 +8206,10 @@ function maskErrorFieldValue(value: unknown, maskText: (text: string) => string)
           }
         }
         Object.defineProperty(copy, key, descriptor);
+      }
+      if (Array.isArray(node)) {
+        const length = Object.getOwnPropertyDescriptor(node, 'length');
+        if (length?.writable === false) Object.defineProperty(copy, 'length', { writable: false });
       }
       if (!Object.isExtensible(node)) Object.preventExtensions(copy);
     }
@@ -8273,9 +8292,11 @@ function maskErrorFieldValue(value: unknown, maskText: (text: string) => string)
  * the object (`util.inspect`, `JSON.stringify`, a debug dump) prints them, so
  * every DATA field's value goes through {@link maskErrorFieldValue} — which
  * copies, never mutates — and a name ONLY in such a field (message and stack
- * clean) still makes a clone. An identifier field (`name`, `Code`,
- * `$metadata`) survives unless a recorded value occurs in it, the same overlap
- * `message` already has with a classifier's substring table.
+ * clean) still makes a clone. The link's own {@link CLASSIFIER_IDENTIFIER_FIELDS}
+ * are the exception, copied verbatim: a retry / collision classifier matches
+ * them EXACTLY, so a recorded value occurring inside one (`Throttling` in
+ * `ThrottlingException`) would flip its verdict, and each holds an AWS- or
+ * cdkd-authored code rather than echoed text.
  *
  * **Why `stack` is re-defined as DATA rather than copied.** V8 installs `stack`
  * as an own ACCESSOR whose getter reads a slot the engine attaches to an error
@@ -8339,7 +8360,10 @@ export function maskSecretsInError<T>(
       if (key === 'message' || key === 'cause' || key === 'stack') continue;
       const descriptor = Object.getOwnPropertyDescriptor(link, key);
       if (!descriptor) continue;
-      descriptors[key] = maskDescriptorValue(descriptor, maskText);
+      descriptors[key] =
+        typeof key === 'string' && CLASSIFIER_IDENTIFIER_FIELDS.has(key)
+          ? descriptor
+          : maskDescriptorValue(descriptor, maskText);
       if (descriptors[key] !== descriptor) changed = true;
     }
     // A non-`Error` cause is masked as a field. An `Error` cause is rewired

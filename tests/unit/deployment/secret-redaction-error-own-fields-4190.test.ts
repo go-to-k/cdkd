@@ -151,7 +151,10 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
   it('terminates on a CYCLE and keeps a shared node shared in the copy', () => {
     const shared = { Message: SECRET };
     const node: Record<string, unknown> = { a: shared, b: shared };
+    // Three self-references: without the visited set the frontier grows 3^depth.
     node.self = node;
+    node.again = node;
+    node.more = node;
     const original = Object.assign(new Error('x'), { Error: node });
     const masked = maskSecretsInError(original, bag());
     const copy = masked.Error;
@@ -212,6 +215,70 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
       cursor = cursor.next as Record<string, unknown>;
     }
     expect((cursor.leaf as { Message: string }).Message).toBe(SECRET);
+  });
+
+  it(`masks the last entered level (${ERROR_CAUSE_MASK_MAX_DEPTH - 1}) and keeps the one past it`, () => {
+    // The field value is level 0, so levels 0..MAX-1 are entered.
+    const past = { Message: SECRET };
+    const last: Record<string, unknown> = { Message: SECRET, past };
+    let root: Record<string, unknown> = last;
+    for (let i = 0; i < ERROR_CAUSE_MASK_MAX_DEPTH - 1; i++) root = { next: root };
+    const masked = maskSecretsInError(Object.assign(new Error('x'), { Error: root }), bag());
+    let cursor = masked.Error;
+    for (let i = 0; i < ERROR_CAUSE_MASK_MAX_DEPTH - 1; i++) {
+      cursor = cursor.next as Record<string, unknown>;
+    }
+    expect(cursor.Message).toBe(SECRET_MASK);
+    expect(cursor.past).toBe(past);
+  });
+
+  it('a throwing `stack` accessor neither throws nor stops the masking', () => {
+    const original = new Error(`m ${SECRET}`);
+    Object.defineProperty(original, 'stack', {
+      get() {
+        throw new Error('stack getter');
+      },
+      configurable: true,
+    });
+    const masked = maskSecretsInError(original, bag());
+    expect(masked.message).toBe(`m ${SECRET_MASK}`);
+    expect(Object.getOwnPropertyDescriptor(masked, 'stack')).toBeUndefined();
+  });
+
+  it('does not enter an Array SUBCLASS instance', () => {
+    class Items extends Array<string> {}
+    const items = new Items();
+    items.push(SECRET);
+    const masked = maskSecretsInError(Object.assign(new Error(`m ${SECRET}`), { items }), bag());
+    expect(masked.items).toBe(items);
+  });
+
+  it('keeps a frozen array`s length non-writable in the copy', () => {
+    const list = Object.freeze([SECRET, 'a']);
+    const masked = maskSecretsInError(Object.assign(new Error('x'), { list }), bag());
+    expect(masked.list).toEqual([SECRET_MASK, 'a']);
+    expect(Object.getOwnPropertyDescriptor(masked.list, 'length')?.writable).toBe(false);
+    expect(Object.isFrozen(masked.list)).toBe(true);
+  });
+
+  it('copies the classifier identifier fields verbatim even when a recorded value occurs in them', () => {
+    const original = Object.assign(new Error('Rate exceeded'), {
+      name: 'ThrottlingException',
+      code: 'ThrottlingException',
+      Code: 'Throttling',
+      __type: 'ThrottlingException',
+      ccErrorCode: 'Throttling',
+      ccOperation: 'Throttling',
+      Message: 'Throttling on a request',
+    });
+    const masked = maskSecretsInError(original, new Map([['Throttling', EXPRESSION]]));
+    expect(isThrottlingError(original)).toBe(true);
+    expect(isThrottlingError(masked)).toBe(true);
+    for (const key of ['name', 'code', 'Code', '__type', 'ccErrorCode', 'ccOperation'] as const) {
+      expect(masked[key]).toBe(original[key]);
+    }
+    // Any OTHER field is masked: the exemption is by key.
+    expect(masked.Message).toBe('*** on a request');
   });
 
   it('applies extraMask to own fields too', () => {
