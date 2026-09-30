@@ -56,6 +56,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **remove-protection-types.ts** - The ONE list both `--remove-protection` help strings render from (SDK types, then the CC registry). `remove-protection-types.test.ts` binds it to the provider files that read `removeProtection`, in both directions ([#2660](https://github.com/go-to-k/cdkd/issues/2660)).
 
+- **providers/ambiguous-create.ts** - For a CREATE with no idempotency token ([#2080](https://github.com/go-to-k/cdkd/issues/2080)): `withoutServerErrorRetries` keeps the SDK from replaying a 5xx on the create client, and `AmbiguousCreateLatch` arms only on an AMBIGUOUS failure of the create call itself, so the next attempt looks before creating again. A lookup only REPORTS: a name is not attribution, since the stack lock is per state location and names are per account and region. Rules: [docs/provider-rules.md](../../docs/provider-rules.md).
+
 - **providers/deletion-protection-compensation.ts** - Undoes a `--remove-protection` flip whose delete then failed TERMINALLY ([#2204](https://github.com/go-to-k/cdkd/issues/2204)). A new flip site wraps its delete in `deleteWithProtectionCompensation`, flips through `observeThenDisableProtection` (a pre-flip readback, never state) and sets `flip.deleteAccepted` once AWS takes the delete; otherwise a failed destroy leaves the guard silently stripped.
 
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`: the modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. A CC-routed protected ASG is delegated to `ASGProvider.delete`.

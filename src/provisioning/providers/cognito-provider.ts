@@ -45,10 +45,17 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { isThrottlingError, isTransientServerError } from '../../deployment/retryable-errors.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString, type ConfigStringOptions } from '../config-shape.js';
-import { maskDeep } from '../masked-retry-logger.js';
+import { createMaskedLogSinks, maskDeep, type MaskedLogSinks } from '../masked-retry-logger.js';
 import {
   protectedReplacementAdvice,
   pasteableAwsCommand,
@@ -178,6 +185,29 @@ export function userPoolDeletionProtectionUpdate(
 
 /** Failures of a write sent WITHOUT the pool's SES EmailConfiguration. */
 const sentWithoutEmail = new WeakSet<object>();
+
+/**
+ * Retry-safety state for `CreateUserPool`, which has no idempotency token and
+ * whose pool name AWS does not require to be unique (issue
+ * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
+ * `CognitoUserPoolProvider.reportPossibleOrphanPools`. Module-scoped: a
+ * provider instance is per registry, and one process can build several.
+ */
+const createUserPoolLatch = new AmbiguousCreateLatch('CreateUserPool');
+/** Pools this process created and recorded, never offered back by a lookup. */
+const userPoolsCreatedByThisProcess = new RecentIdSet();
+
+/** Page ceiling for the `ListUserPools` lookup (60 pools a page). */
+const MAX_USER_POOL_LIST_PAGES = 50;
+
+/** Most pool ids one orphan report names. */
+const MAX_REPORTED_ORPHAN_POOLS = 5;
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetUserPoolCreateRetryStateForTests(): void {
+  createUserPoolLatch.resetForTests();
+  userPoolsCreatedByThisProcess.resetForTests();
+}
 
 /** The report a `preFlipPools` record calls for (see `reportSettingsResetByBareFlip`). */
 function reportKind(record: {
@@ -1477,6 +1507,7 @@ function narrowMfaConfiguration(properties: Record<string, unknown>): Record<str
  */
 export class CognitoUserPoolProvider implements ResourceProvider {
   private cognitoClient?: CognitoIdentityProviderClient;
+  private cognitoCreateClient?: CognitoIdentityProviderClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CognitoUserPoolProvider');
   /** `--remove-protection` flips, keyed so a re-entered delete keeps them (#2204). */
@@ -1637,6 +1668,23 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       });
     }
     return this.cognitoClient;
+  }
+
+  /**
+   * The client `CreateUserPool` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #2080). Separate so every other call
+   * keeps the full SDK retry.
+   */
+  private getCreateClient(): CognitoIdentityProviderClient {
+    if (!this.cognitoCreateClient) {
+      this.cognitoCreateClient = withoutServerErrorRetries(
+        new CognitoIdentityProviderClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.cognitoCreateClient;
   }
 
   /**
@@ -1909,9 +1957,28 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         createParams.UserPoolTier = properties['UserPoolTier'] as UserPoolTierType;
       }
 
-      const response = await this.getClient().send(new CreateUserPoolCommand(createParams));
+      // Issue #2080: when an earlier attempt at this create ended ambiguous,
+      // name the pool it may have made BEFORE a second CreateUserPool is sent.
+      // Detection only -- see `reportPossibleOrphanPools`.
+      const orphanWindow = createUserPoolLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanPools(
+          logicalId,
+          poolName,
+          orphanWindow,
+          createMaskedLogSinks(this.logger, context?.maskSecrets)
+        );
+      }
 
-      const userPool = response.UserPool;
+      let userPool: Pick<UserPoolType, 'Id' | 'Arn'> | undefined;
+      const attemptStartMs = Date.now();
+      try {
+        userPool = (await this.getCreateClient().send(new CreateUserPoolCommand(createParams)))
+          .UserPool;
+      } catch (error) {
+        createUserPoolLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
       if (!userPool?.Id) {
         throw new Error('CreateUserPool did not return UserPool.Id');
       }
@@ -1938,6 +2005,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       });
 
       this.logger.debug(`Successfully created Cognito User Pool ${logicalId}: ${userPoolId}`);
+      userPoolsCreatedByThisProcess.add(userPoolId);
 
       // Record what was SENT, not what the template declared, whenever the
       // guard substituted (see `narrowMfaConfiguration`). Reachable on create
@@ -1984,6 +2052,114 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * After an attempt at this create ended AMBIGUOUS (a 5xx: Cognito may have
+   * made the pool and lost the answer), name the pools that could be its
+   * orphan before a second `CreateUserPool` is sent (issue
+   * [#2080](https://github.com/go-to-k/cdkd/issues/2080)). Detection only:
+   * this never adopts and never deletes.
+   *
+   * A candidate is a pool with this exact name, created INSIDE the window of
+   * the ambiguous attempt(s) -- from the earliest start to the latest end, each
+   * widened by a skew margin (`AmbiguousCreateWindow`) -- that this process has
+   * not already recorded.
+   *
+   * Why not adopt, even a pool whose name cdkd generated: pool names are
+   * scoped to the account and region, but cdkd's stack lock is scoped to the
+   * STATE bucket and prefix (`src/state/lock-manager.ts`), so two runs of the
+   * same stack name against different state locations (or after a
+   * `force-unlock`) can each create a pool with that exact name, inside this
+   * window, from the same settings. Nothing distinguishes the other run's
+   * empty pool from this run's orphan, and adopting it would point this
+   * stack's updates, its `cdkd destroy` -- and the post-create rollback above,
+   * which DELETES the pool on a later failure -- at another deploy's user
+   * store. A cdkd nonce tag on the create was rejected as the attribution
+   * channel: `UserPoolTags` is a template property read back for drift, a
+   * failed untag leaves it behind, and a tag-restricting SCP or
+   * `aws:RequestTag` condition could deny every create. An orphan costs
+   * nothing while it has no users.
+   *
+   * The report leads with a READ command per candidate: it may be another
+   * deploy's pool, so a delete command up front would hand the user the
+   * mistake cdkd declines to make itself. Cognito allows duplicate names, so
+   * after this attempt's create two pools with the name exist; the line says
+   * so.
+   *
+   * A lookup that fails -- transiently or not -- warns and lets the create
+   * proceed: nothing here adopts, so the lookup has no stake worth failing a
+   * create over, and a missing `cognito-idp:ListUserPools` must not break a
+   * deploy that works today.
+   * `ListUserPools` is eventually consistent, so an empty result says only
+   * what was listed.
+   */
+  private async reportPossibleOrphanPools(
+    logicalId: string,
+    poolName: string,
+    window: AmbiguousCreateWindow,
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
+    const since = new Date(window.floorMs).toISOString();
+    const until = new Date(window.ceilingMs).toISOString();
+
+    const candidates: string[] = [];
+    let truncated = false;
+    try {
+      let nextToken: string | undefined;
+      let pages = 0;
+      do {
+        const page = await this.getClient().send(
+          new ListUserPoolsCommand({ MaxResults: 60, ...(nextToken && { NextToken: nextToken }) })
+        );
+        for (const pool of page.UserPools ?? []) {
+          if (
+            pool.Id &&
+            pool.Name === poolName &&
+            isInsideWindow(pool.CreationDate, window) &&
+            !userPoolsCreatedByThisProcess.has(pool.Id)
+          ) {
+            candidates.push(pool.Id);
+          }
+        }
+        nextToken = page.NextToken;
+        pages++;
+      } while (nextToken && pages < MAX_USER_POOL_LIST_PAGES);
+      truncated = nextToken !== undefined;
+    } catch (error) {
+      const failure = describeAwsFailure(error);
+      log.debug(`ListUserPools failed with: ${v(failure.detail)}`);
+      log.warn(
+        `An earlier CreateUserPool attempt for ${logicalId} failed without a definite answer, so Cognito may have created a user pool named ${v(poolName)} that no cdkd state records, and cdkd could not look for it (ListUserPools: ${failure.summary}). Creating a new pool; check for a pool of that name created between ${since} and ${until}.`
+      );
+      return;
+    }
+    const incomplete = truncated
+      ? ` The search was incomplete: the pool list was cut at ${MAX_USER_POOL_LIST_PAGES} pages.`
+      : '';
+
+    if (candidates.length === 0) {
+      const line = `No listed user pool named ${v(poolName)} was created between ${since} and ${until}, where the earlier ambiguous CreateUserPool attempt for ${logicalId} ran.${incomplete}`;
+      if (truncated) {
+        log.warn(line);
+      } else {
+        log.debug(line);
+      }
+      return;
+    }
+
+    const shown = candidates.slice(0, MAX_REPORTED_ORPHAN_POOLS);
+    const aws = pasteableAwsCommand(log.mask);
+    const inspect = shown
+      .map((id) => aws`aws cognito-idp describe-user-pool --user-pool-id ${id}`.render())
+      .join(' ; ');
+    const deletion = shown
+      .map((id) => aws`aws cognito-idp delete-user-pool --user-pool-id ${id}`.render())
+      .join(' ; ');
+    log.warn(
+      `An earlier CreateUserPool attempt for ${logicalId} failed without a definite answer, and Cognito may have created a pool then that no cdkd state records. ${candidates.length} user pool(s) named ${v(poolName)} were created between ${since} and ${until}: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. cdkd does not adopt or delete them: a pool name does not prove which deploy created it. Creating a new pool now, so the new pool and the candidate(s) above will ALL be named ${v(poolName)} -- Cognito allows duplicate names. First inspect each candidate (its user count, creation date and tags): ${inspect}. Only after confirming a pool is this deploy's orphan and not another deploy's, delete it: ${deletion}.${incomplete}`
+    );
   }
 
   /**

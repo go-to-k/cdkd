@@ -1120,7 +1120,9 @@ invisible. `IAMAccessKeyProvider` shows the shape:
   with the baseline read, the create, and the reconcile all inside it, so no
   sibling create can interleave with them.
 - **Reconcile from the FAILURE path of the attempt that took the baseline**,
-  never from the top of the next attempt. A baseline that spans the whole retry
+  never from the top of the next attempt (this is about a reconcile that
+  DELETES; a report-only lookup, below, runs at the top of the next attempt
+  on purpose). A baseline that spans the whole retry
   schedule describes a window many seconds wide.
 - **Require a creation timestamp at or after the attempt started**, with a small
   margin for clock skew between you and the service.
@@ -1129,6 +1131,46 @@ invisible. `IAMAccessKeyProvider` shows the shape:
   one that covers the case the in-process lock cannot: another process.
 - **Report anything you decline to delete**, at `warn`, and do not claim an
   attribution the code did not establish.
+
+Where the API has no token and nothing can be deleted safely,
+`src/provisioning/providers/ambiguous-create.ts` is the shared shape (issue
+[#2080](https://github.com/go-to-k/cdkd/issues/2080): `CreateKey`,
+`CreateUserPool`, `CreateGraphqlApi`):
+
+- **Keep the SDK from replaying a 5xx.** Send the create through a dedicated
+  client wrapped by `withoutServerErrorRetries`: the SDK's own retry of a 5xx
+  inside one `send` is a duplicate nothing can see. The engine's retry covers
+  5xx and throttles; the SDK keeps its retry of throttles, connection
+  failures, clock skew and socket resets, which the engine does not retry.
+- **Look only after an AMBIGUOUS failure.** `AmbiguousCreateLatch.noteFailure`
+  arms on `isAmbiguousOutcomeError` thrown by the create call itself, and the
+  next attempt `take`s it before creating again. A definite refusal (a 4xx, a
+  throttle, IAM propagation's `not authorized`) costs no lookup. Pass the taken
+  window back to `noteFailure`, so two ambiguous attempts in a row are both
+  covered.
+- **Bound the window on BOTH ends.** The latch records the ambiguous
+  attempt's start AND end (each widened by a skew margin) and expires after
+  `AMBIGUOUS_LATCH_TTL_MS`: a same-named resource created later -- by another
+  process, after this one gave up -- is never a candidate.
+- **Adopt only on EXACT attribution, which a lookup never has.** The one
+  adoption in this family is a KMS key id that came back in this process's own
+  response before a follow-up call failed, bound to a digest of its inputs.
+  A NAME is not attribution, even a cdkd-generated one: names are scoped to
+  the account and region, the stack lock to the state bucket and prefix, so
+  another run of the same stack name can create an identical resource in the
+  window. REPORT candidates and create anyway.
+- **Lead the report with a READ command**, and offer a delete command only
+  after it, conditional on confirming the candidate is this deploy's orphan: a
+  candidate may belong to another deploy. Where there is no window at all
+  (`GraphqlApi` has no creation date) print no delete command.
+- **A lookup that fails, transiently or not, warns and lets the create
+  proceed**: nothing adopts, so a failed lookup has no stake worth failing a
+  create over. Say only what was LISTED: list APIs are eventually
+  consistent.
+- **Tagging the create with a cdkd token was rejected** as the attribution
+  channel: it makes a `TagResource` permission (or a request-tag condition) a
+  requirement of every create, collides with tag policies, and leaves a tag
+  every read and drift path must strip.
 
 ## Update removal semantics: clear-on-removal
 
