@@ -162,6 +162,9 @@ describe('withDerivedNameMasks runs the base masker before its needles (issue #4
     expect(needled(['Abab-Secret', 'bZ9Q'], [['Abab-Secret', 'abab']]).mask('x abababZ9Q y')).toBe(
       '***'
     );
+  });
+
+  it('checks an overlapped occurrence of a name recorded from a previous-value reference', () => {
     // A previous-value reference names `prod-db-prod-db`; its third, overlapped
     // occurrence is crossed by the recorded `db-tailsecret`.
     expect(
