@@ -20,10 +20,9 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
   `hash: diff` covers this branch's delta against `origin/main`, so run the
   integ AFTER the flatten/rebase below (`references/verify.md` §8-b says which
   rebases stale it). While a scoped file this branch changes is busy on `main`
-  (go-to-k/cdkd#4183), run the set as ONE parallel batch, each `verify.sh` that
-  builds (`grep -lE '^\s*\(cd [^)]*&& vp run build\)' <dir>/verify.sh`; a bare
-  `vp run build` also matches error text) alone BEFORE it, then set
-  the marker, record, push and merge without pausing.
+  (go-to-k/cdkd#4183), run the set as ONE parallel batch (building fixtures per
+  `/run-integ` step 1), then set the marker, record, push and merge without
+  starting other work between them (the Merge bullets below still apply).
 - **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
   a lane stopped at merge-ready drains no queue: re-send, confirm in the TREE.
 
