@@ -854,7 +854,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // puts a paren between the name and the member and walks past; the
       // runtime half catches the READ of any such stash (measured, round 3),
       // which is the closer -- this arm is the cheap write-side half.
-      /\b(?:asJson|requireSecretStringShape|generateMemberRefusal|generateCharset|randomIndex|SecretsManagerSecretProvider|requireConfigObject|configStringRefusal|configBooleanRefusal|configIntegerRefusal|coerceCfnBoolean|coerceCfnInteger|getLogger|getAwsClients|redactSecretsForState|getCurrentResourceSecrets|assertRegionMatch|generateResourceName|normalizeAwsTagsToCfn|clearOnUpdateRemoval|isDeepStrictEqual|ProvisioningError|SecretsManagerClient|CreateSecretCommand|DeleteSecretCommand|DescribeSecretCommand|UpdateSecretCommand|TagResourceCommand|UntagResourceCommand|ReplicateSecretToRegionsCommand|RemoveRegionsFromReplicationCommand|ResourceNotFoundException)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
+      /\b(?:asJson|requireSecretStringShape|generateMemberRefusal|generateCharset|randomIndex|SecretsManagerSecretProvider|requireConfigObject|configStringRefusal|configBooleanRefusal|configIntegerRefusal|coerceCfnBoolean|coerceCfnInteger|getLogger|getAwsClients|redactSecretsForState|getCurrentResourceSecrets|assertRegionMatch|generateResourceName|normalizeAwsTagsToCfn|clearOnUpdateRemoval|isDeepStrictEqual|ProvisioningError|SecretsManagerClient|CreateSecretCommand|DeleteSecretCommand|DescribeSecretCommand|UpdateSecretCommand|TagResourceCommand|UntagResourceCommand|ReplicateSecretToRegionsCommand|RemoveRegionsFromReplicationCommand|ResourceNotFoundException|createMaskedLogSinks|isSecretDerivedValue|withDerivedNameMasks|MASK_WALK_DEPTH_CAP_MARKER)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
       /\bthis\b(?!\.)/,
     ]) {
       expect(
@@ -931,6 +931,10 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       '../../utils/logger.js',
       '../config-shape.js',
       '../import-helpers.js',
+      // go-to-k/cdkd#2177: the shared masked-log-sink module (a LEAF importing
+      // one type; no module state). The provider hands it the context's masker
+      // and name pairs, never the minted value.
+      '../masked-retry-logger.js',
       '../region-check.js',
       '../resource-name.js',
       // go-to-k/cdkd#3994: the stateless Tags reader (no module state; it

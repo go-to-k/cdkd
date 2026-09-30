@@ -140,7 +140,7 @@
   "src/provisioning/providers/s3-tables-provider.ts": 31,
   "src/provisioning/providers/s3-vectors-provider.ts": 9,
   "src/provisioning/providers/scheduler-schedule-provider.ts": 6,
-  "src/provisioning/providers/secretsmanager-secret-provider.ts": 12,
+  "src/provisioning/providers/secretsmanager-secret-provider.ts": 4,
   "src/provisioning/providers/servicediscovery-provider.ts": 35,
   "src/provisioning/providers/sns-subscription-provider.ts": 9,
   "src/provisioning/providers/sns-topic-policy-provider.ts": 8,
