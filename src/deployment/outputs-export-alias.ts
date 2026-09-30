@@ -344,7 +344,7 @@ const SECRET_SCAN_INVISIBLES = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignora
  * Characters deleted from the canonical (printed) space ONLY for the secret
  * containment test, never from what is printed (issue
  * [#2889](https://github.com/go-to-k/cdkd/issues/2889)): NONSPACING marks,
- * after canonical decomposition. {@link detectionForm} decomposes (NFD),
+ * after canonical decomposition. {@link detectionForms} decomposes (NFD),
  * deletes the marks, and recomposes (NFC), so a precomposed letter and its
  * decomposed spelling -- which render identically -- meet as the same base
  * letter, and a Hangul syllable recomposes rather than staying split into
@@ -371,37 +371,87 @@ const SECRET_SCAN_INVISIBLES = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignora
  */
 const SECRET_DETECTION_ONLY = /\p{Mn}/gu;
 
-/** `canonical` in DETECTION space: see {@link SECRET_DETECTION_ONLY}. */
-function detectionForm(canonical: string): string {
-  return canonical.normalize('NFD').replace(SECRET_DETECTION_ONLY, '').normalize('NFC');
+/**
+ * `canonical` in DETECTION space: see {@link SECRET_DETECTION_ONLY}. TWO forms,
+ * each scanned by the one detection arm of {@link secretsPresentIn}:
+ *
+ * - `[0]` MARK-STRIPPED (issue #2889): NFD, marks removed, NFC.
+ * - `[1]` COMPATIBILITY-FOLDED (issue
+ *   [#4001](https://github.com/go-to-k/cdkd/issues/4001)): the same with NFKD
+ *   in place of NFD, so full-width (`U+FF41`), mathematical-alphanumeric,
+ *   superscript, ligature (`U+FB01`), circled and the other compatibility
+ *   spellings meet their plain letters -- a SUBSTITUTED character that reads
+ *   as the secret, where #2889 handled an INSERTED one. NFKD rather than a bare
+ *   NFKC so a name that is full-width AND mark-split folds in one step. After
+ *   the marks go the text is already compatibility-decomposed, so the closing
+ *   NFKC composes exactly as NFC would.
+ *
+ * ADDED BESIDE `[0]`, NEVER REPLACING IT, because compatibility folding is not
+ * closed under containment: Hangul compatibility jamo fold to conjoining jamo
+ * that recompose with their NEIGHBOUR, so a needle found in `[0]` space can be
+ * absent from `[1]` space. Scanning both keeps today's verdict a subset.
+ *
+ * THE BOUNDS. Cross-SCRIPT look-alikes (Cyrillic `U+0430` for Latin `a`,
+ * Greek omicron for `o`): they are distinct letters with no compatibility
+ * mapping, so no normalization joins them. Unicode TR39's confusable skeleton
+ * would, and it was not adopted (#4001's decision): the runtime ships no copy,
+ * and it would fold legitimate non-Latin names into Latin ones. And a HANGUL
+ * JAMO at EITHER edge of a secret, or a secret ENDING in an open Hangul
+ * syllable, meeting a compatibility spelling of the rest (a recorded `abcd` +
+ * `U+3131` in full-width `abcd` + `U+3131 U+314F`; a recorded `abcd` +
+ * `U+AC00` followed by `U+3133`, which folds into its final consonant): the
+ * closing recomposition joins the edge to its neighbour in the name, as the
+ * previous paragraph describes, and `[0]` keeps the full-width letters. A
+ * decomposed form without recomposition would close it, but it matches a
+ * syllable by its jamo prefix, which #2889 pinned as NOT a match.
+ *
+ * The COST of `[1]` is over-refusal on a name whose FOLDED spelling holds a
+ * recorded secret: `prod` + full-width `2024` beside a recorded `prod2024`,
+ * `pro` + `U+FB01` + `le` (folds to `profile`) beside a recorded `file`,
+ * `area-m` + `U+00B2` (superscript two) beside a recorded `ea-m2`, the
+ * circled digits `U+2460`-`U+2463` beside a recorded `1234`. Each is refused
+ * exactly when its folded spelling, typed in plain characters, would be -- so
+ * the cost is compatibility characters in real names meeting a recorded
+ * secret, never compatibility characters alone: a full-width or
+ * half-width-kana name beside an unrelated secret prints unchanged.
+ * Fail-safe and warned.
+ */
+function detectionForms(canonical: string): readonly [string, string] {
+  return [
+    canonical.normalize('NFD').replace(SECRET_DETECTION_ONLY, '').normalize('NFC'),
+    canonical.normalize('NFKD').replace(SECRET_DETECTION_ONLY, '').normalize('NFKC'),
+  ];
 }
 
 /**
- * A recorded secret's needle in DETECTION space, computed once per map
+ * A recorded secret's needles in DETECTION space, computed once per map
  * rather than on every call that scans against it (#2889 review). Keyed by
- * the map object and then by PLAINTEXT, and the form is a pure function of
+ * the map object and then by PLAINTEXT, and the forms are a pure function of
  * the plaintext, so an entry added to the map later is simply computed on
  * first use and a stale entry can never be wrong. The cache dies with the
  * map, as the side tables in `secret-redaction.ts` do.
  */
-const DETECTION_NEEDLES = new WeakMap<RecordedSecretValues, Map<string, string>>();
+const DETECTION_NEEDLES = new WeakMap<
+  RecordedSecretValues,
+  Map<string, readonly [string, string]>
+>();
 
-function detectionNeedleOf(
+function detectionNeedlesOf(
   secrets: RecordedSecretValues,
   plaintext: string,
   canonical: string
-): string {
-  let forms = DETECTION_NEEDLES.get(secrets);
+): readonly [string, string] {
+  let cache = DETECTION_NEEDLES.get(secrets);
+  if (cache === undefined) {
+    cache = new Map();
+    DETECTION_NEEDLES.set(secrets, cache);
+  }
+  let forms = cache.get(plaintext);
   if (forms === undefined) {
-    forms = new Map();
-    DETECTION_NEEDLES.set(secrets, forms);
+    forms = detectionForms(canonical);
+    cache.set(plaintext, forms);
   }
-  let form = forms.get(plaintext);
-  if (form === undefined) {
-    form = detectionForm(canonical);
-    forms.set(plaintext, form);
-  }
-  return form;
+  return forms;
 }
 
 /**
@@ -575,8 +625,16 @@ function secretsPresentIn(
   // part of the secret; and the untrimmed one catches a needle whose own edge
   // whitespace survives only there (a recorded ` abc` in ` ` + U+0301 + `abc`).
   // Every one of the three runs BOTH the whole-value and the embedded test.
-  const wideUntrimmed = detectionForm(haystacks[1]);
-  const wideHaystacks = [wideUntrimmed.trim(), wideUntrimmed, detectionForm(haystacks[0])];
+  // The three are built once PER DETECTION FORM (`detectionForms`: marks
+  // stripped, then compatibility-folded, issue #4001), for the same reason in
+  // each form -- a full-width or ideographic space folds to U+0020, which the
+  // trim then removes.
+  const [markedUntrimmed, foldedUntrimmed] = detectionForms(haystacks[1]);
+  const [markedTrimmed, foldedTrimmed] = detectionForms(haystacks[0]);
+  const wideHaystacks = [
+    [markedUntrimmed.trim(), markedUntrimmed, markedTrimmed],
+    [foldedUntrimmed.trim(), foldedUntrimmed, foldedTrimmed],
+  ] as const;
   const exposure: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of secrets) {
     // NO EMPTY-NEEDLE GUARD HERE, and the reason has now been wrong twice, so
@@ -611,11 +669,26 @@ function secretsPresentIn(
     // reason the canonical arm is bounded by its own. An ADDED arm, never a
     // replacement: `canonicalHit` is not implied by it, since deleting marks
     // can shorten a needle below the floor.
-    const wideNeedle = detectionNeedleOf(secrets, plaintext, needle);
-    const wideHit = wideHaystacks.some(
-      (wide) =>
-        wide === wideNeedle || (wideNeedle.length >= MIN_SECRET_NEEDLE && wide.includes(wideNeedle))
-    );
+    //
+    // The COMPATIBILITY form (issue #4001) runs the same two tests, but its
+    // embedded one needs BOTH detection spellings of the needle to clear the
+    // floor. Folding changes length in both directions: `U+2177` (small roman
+    // numeral eight) folds to `viii` and `U+2152` to `1` + U+2044 + `10`, so a
+    // one-character recorded secret would otherwise refuse every name holding
+    // that four-character spelling; and a mathematical letter is two UTF-16
+    // units that fold to one, so `U+1D41A U+1D41B` would otherwise be a
+    // four-unit needle matching the plain `ab`. The mark-stripped length
+    // stands in for the printed one, which it never exceeds except where the
+    // mark-stripped arm already applies that larger floor itself. A sub-floor
+    // needle is still refused as the WHOLE name.
+    const [markedNeedle, foldedNeedle] = detectionNeedlesOf(secrets, plaintext, needle);
+    const hitIn = (wides: readonly string[], wideNeedle: string, floor: number): boolean =>
+      wides.some(
+        (wide) => wide === wideNeedle || (floor >= MIN_SECRET_NEEDLE && wide.includes(wideNeedle))
+      );
+    const wideHit =
+      hitIn(wideHaystacks[0], markedNeedle, markedNeedle.length) ||
+      hitIn(wideHaystacks[1], foldedNeedle, Math.min(markedNeedle.length, foldedNeedle.length));
     const rawHit = plaintext.length >= MIN_SECRET_NEEDLE && text.includes(plaintext);
     if (canonicalHit || wideHit || rawHit) exposure.set(plaintext, expression);
   }
@@ -901,9 +974,10 @@ export function secretSafeKeyDisplay(
     // a non-empty needle puts it in `untrimmed` (see `secretScanHaystacks`)
     // EXCEPT the detection arm, so what reaches here is a recorded value equal
     // to the mask itself, an exposure whose needle canonicalised to empty
-    // beside an absent force-mask needle, or a secret split by a nonspacing
-    // mark, found only in detection space (issue #2889) -- masking in the
-    // printed space cannot reach it, and the name keeps its marks, so it is
+    // beside an absent force-mask needle, or a secret found only in detection
+    // space -- split by a nonspacing mark (issue #2889) or spelled in
+    // compatibility characters (issue #4001) -- masking in the printed space
+    // cannot reach it, and the name keeps its own characters, so it is
     // withheld rather than printed. With NO exposure the
     // only needles were force-mask ones that are simply absent from the text,
     // which is the ordinary case for the OUTPUT KEY beside a secret-bearing
@@ -925,8 +999,9 @@ export function secretSafeKeyDisplay(
   // still present after masking withholds the whole name. It reads the masked
   // UNTRIMMED string, so its trimmed haystack is exactly the text returned
   // below -- the re-test and the print are one string. It also runs the
-  // DETECTION arm (issue #2889), so a second copy split by a nonspacing mark
-  // withholds the name rather than surviving the canonical-space mask.
+  // DETECTION arm (issues #2889, #4001), so a second copy split by a
+  // nonspacing mark or spelled full-width withholds the name rather than
+  // surviving the canonical-space mask.
   if (
     stateKeySecretExposure(masked, secrets) ||
     (forceMask !== undefined && secretsPresentIn(masked, forceMask))

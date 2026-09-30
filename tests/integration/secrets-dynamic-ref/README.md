@@ -97,6 +97,10 @@ covers the optional-trailing-field grammar.
      that prints neither the name nor the password, and that neither
      `state.outputs` nor the exports index carries the name as a key. The
      output is dropped from state afterwards.
+   - Phase 1b7 (issue [#4001](https://github.com/go-to-k/cdkd/issues/4001)):
+     `CDKD_TEST_FULLWIDTH_EXPORT=true`, the same probe with the password's
+     tail spelled in full-width characters (`U+FF0D U+FF11 U+FF12 U+FF13`),
+     which fold to ASCII under NFKC. Same assertions as Phase 1b6.
 2. Read the consumer Lambda's env vars via `GetFunctionConfiguration`.
 3. For each env var: it is **not** still a literal `{{resolve:...}}` token, AND
    it equals the known expected value. A wrong-or-literal value FAILS with

@@ -912,6 +912,28 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(savedStateJson).not.toContain(split);
   });
 
+  it('a LITERAL export name spelling a secret in FULL-WIDTH characters is refused (#4001)', async () => {
+    // Full-width letters fold to ASCII under NFKC, so the name READS as the
+    // plaintext. Before #4001 no detection form folded them, and the name was
+    // PUBLISHED into state and the exports index.
+    const tail = PLAINTEXT_A.slice(6).replace(/[!-~]/g, (c) =>
+      String.fromCharCode(c.charCodeAt(0) + 0xfee0)
+    );
+    const wide = `pre-${PLAINTEXT_A.slice(0, 6)}${tail}-post`;
+    const { saved, indexed, savedStateJson } = await deployOutputs({
+      SecretAlpha: { Value: EXPR_A },
+      Exporter: { Value: PUBLIC_B, Export: { Name: wide } },
+    });
+
+    const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).not.toContain(tail);
+    expect(refusals[0]).not.toContain(`pre-${PLAINTEXT_A.slice(0, 6)}`);
+    expect(Object.keys(saved).sort()).toEqual(['Exporter', 'SecretAlpha']);
+    expect(Object.hasOwn(indexed, wide)).toBe(false);
+    expect(savedStateJson).not.toContain(tail);
+  });
+
   it('masking is LONGEST-FIRST, so a nested secret cannot leave the longer one in fragments', async () => {
     // `PLAINTEXT_SHORT` is a prefix of `PLAINTEXT_NESTED`. Masking shortest-first
     // consumes the prefix and leaves the remainder of the longer secret in the

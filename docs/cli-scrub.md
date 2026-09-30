@@ -433,13 +433,24 @@ cannot rewrite. Four shapes qualify, and all four are also reported in words:
   joiners, and zero-width combining marks (nonspacing diacritics) — and one
   placed inside a secret splits the plaintext so a literal scan misses it
   while a reader of the log sees the secret unbroken. Such a key is now
-  reported and the run exits `1`; an earlier cdkd passed over it silently. A
-  key caught only through a combining mark, or through a precomposed letter
-  standing for its decomposed spelling (the two render identically), is
-  reported with its name withheld, since the printed text keeps a name's own
-  diacritics. **If this starts firing on a state that used to pass, the key was
-  already leaking** — the change is what cdkd can see, not what the state
-  holds. Rotate the secret and change the `Export.Name`.
+  reported and the run exits `1`; an earlier cdkd passed over it silently.
+
+  The same holds for a secret spelled in **compatibility characters** —
+  full-width letters and digits, mathematical alphanumerics, superscripts,
+  ligatures, circled digits, an ideographic space — which Unicode NFKC folds to
+  their plain forms. A key caught only through a combining mark, a precomposed
+  letter standing for its decomposed spelling (the two render identically), or
+  a compatibility character is reported with its name withheld, since the
+  printed text keeps a name's own characters. Look-alike letters from another
+  script (Cyrillic small a, `U+0430`, standing for a Latin `a`) have no
+  compatibility mapping and are not detected, nor is a secret with a Hangul
+  jamo at its start or end, or ending in an open Hangul syllable, whose other
+  letters are spelled in compatibility characters, since that edge can join
+  a neighbouring jamo in the name into a different syllable.
+
+  **If this starts firing on a state that used to pass, the key was already
+  leaking** — the change is what cdkd can see, not what the state holds.
+  Rotate the secret and change the `Export.Name`.
 
 - a **cross-stack read that could not be verified**:
   `N cross-stack read(s) in <stack> could NOT be verified`.
