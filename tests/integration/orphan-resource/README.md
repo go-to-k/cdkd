@@ -4,14 +4,14 @@ Verifies `cdkd orphan <constructPath>` (per-resource orphan, mirrors
 upstream `cdk orphan --unstable=orphan`) end-to-end against real AWS.
 
 PR #100 reworked `cdkd orphan` to operate per-resource: the rewriter
-fetches every `Fn::GetAtt` it has to substitute via
-`provider.getAttribute(...)` and rewrites every sibling `Ref` /
+substitutes every `Fn::GetAtt` from the orphan's recorded attribute, or
+via a live `provider.getAttribute(...)` when the record lacks a usable
+one (issue #4186), and rewrites every sibling `Ref` /
 `Fn::GetAtt` / `Fn::Sub` site to a literal string before removing the
 target from state. Unit tests cover the algorithm
 (`tests/unit/analyzer/orphan-rewriter.test.ts`); this integ test
 exercises the load-bearing real-AWS assertions that unit tests can't:
 
-- Live `provider.getAttribute(...)` calls actually return real AWS values.
 - Sibling resources' `Ref` / `Fn::GetAtt` are rewritten to literal strings
   (not left as intrinsic objects pointing at the now-missing orphan).
 - The orphaned AWS resource really survives — `cdkd orphan` only
