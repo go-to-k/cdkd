@@ -338,12 +338,6 @@ export interface ResidualOptions {
    * `go-to-k/cdkd#3950` reference; remove it as the row's fix lands.
    */
   readonly unfixedS1Row?: string;
-  /**
-   * The harness's OWN self-test only (`pasteable-message-paste.test.ts`): drive
-   * the runtime half on its own, through spans that also carry a command. Not
-   * the S1 escape hatch, which asserts its row still violates the rule.
-   */
-  readonly selfTestRuntimeHalfOnly?: true;
 }
 
 /**
@@ -391,9 +385,20 @@ export function expectOnlyDisplayResidual(
       () => expectNoCommandBesideDisplay(message, value),
       `unfixedS1Row "${options.unfixedS1Row}" no longer violates the block rule; remove it`
     ).toThrow(/also carries a pasteable command/);
-  } else if (options.selfTestRuntimeHalfOnly !== true) {
+  } else {
     expectNoCommandBesideDisplay(message, value);
   }
+  return expectRuntimeResidual(message, dir, value);
+}
+
+/**
+ * The RUNTIME half of {@link expectOnlyDisplayResidual} on its own, without the
+ * block rule: for the harness's self-test, which drives it through spans that
+ * also carry a command (go-to-k/cdkd#4127 round-5 optional). A site test uses
+ * {@link expectOnlyDisplayResidual}, so the options a site can pass hold no
+ * switch that skips the block rule.
+ */
+export function expectRuntimeResidual(message: string, dir: string, value: string): string[] {
   const ran: string[] = [];
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, {});
@@ -495,29 +500,30 @@ const PASTEABLE_COMMAND = new RegExp(
  */
 export function expectNoCommandBesideDisplay(message: string, value: string): void {
   const escaped = JSON.stringify(value).slice(1, -1);
-  // A value carrying a newline is displayed raw across lines, so a line holding
-  // any non-empty piece of it counts as displaying it (go-to-k/cdkd#4127 M12).
-  // Only `\n` splits: a bare `\r` stays inside its line, the conservative
-  // direction, since a terminal paste reads `\r` as Enter.
-  const pieces = value.includes('\n') ? value.split(/\r?\n/).filter((p) => p !== '') : [value];
-  let displayed = false;
+  // A line displays the value when it holds the whole value, raw or
+  // JSON-escaped, or, for a payload, its sentinel (go-to-k/cdkd#4127 M14): that
+  // sees a value split across lines by its own newline, and a cut or
+  // re-quoted copy, on the very line that shows it. A display cut before the
+  // sentinel is invisible to any text rule; the runtime half still measures
+  // it. Only `\n` splits a line: a bare `\r` stays inside it, the
+  // conservative direction, since a terminal paste reads `\r` as Enter.
+  const sentinel = value.includes(PAYLOAD_SENTINEL);
   for (const line of message.split('\n')) {
-    if (!line.includes(escaped) && !pieces.some((p) => line.includes(p))) continue;
-    displayed = true;
+    const displays =
+      line.includes(value) || line.includes(escaped) || (sentinel && line.includes(PAYLOAD_SENTINEL));
+    if (!displays) continue;
     expect(line, 'a line that displays the value also carries a pasteable command').not.toMatch(
       PASTEABLE_COMMAND
     );
   }
-  // No line holds the value, yet the payload's sentinel is there: the value is
-  // shown sanitized, cut or re-quoted, which the containment test above
-  // cannot see, so the rule refuses rather than pass it (M12).
-  if (!displayed && value.includes(PAYLOAD_SENTINEL) && message.includes(PAYLOAD_SENTINEL)) {
-    expect.fail(`the value is displayed in a form the rule cannot see: ${message}`);
-  }
 }
 
-/** The command every payload family carries, whatever shape its display takes. */
-const PAYLOAD_SENTINEL = 'touch OWNED';
+/**
+ * The command every payload family carries, whatever shape its display takes.
+ * The block rule keys on it, and `pasteable-message-paste.test.ts` asserts every
+ * payload carries it.
+ */
+export const PAYLOAD_SENTINEL = 'touch OWNED';
 
 /**
  * A scratch directory seeded with the decoys, beside a stub `bin` the child's

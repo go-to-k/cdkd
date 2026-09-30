@@ -37,7 +37,10 @@ import {
   PASTE_CHILD_TIMEOUT_MS,
   PASTE_PAYLOADS,
   PASTE_SHELLS,
+  CLAUSE_BREAK_PAYLOAD,
+  PAYLOAD_SENTINEL,
   expectNoCommandBesideDisplay,
+  expectRuntimeResidual,
   expectOnlyDisplayResidual,
   expectZshRunsTheDisplay,
   filesTouchedBy,
@@ -46,14 +49,6 @@ import {
 } from './paste-harness.js';
 
 describe('pasteable messages — nothing runs at any granularity', () => {
-  /**
-   * `expectOnlyDisplayResidual` runs the per-line block rule first by default
-   * (go-to-k/cdkd#4127 M11). The cases below drive its RUNTIME half on its
-   * own, through spans that also carry a command, so they opt out; the
-   * default itself is pinned by the block-rule self-test.
-   */
-  const RUNTIME_ONLY = { selfTestRuntimeHalfOnly: true } as const;
-
   /**
    * The messages, each with the command line its renderer is EXPECTED to
    * print for a hostile payload. The first three are the SHAPES every
@@ -207,6 +202,10 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       expect(() => expectNoCommandBesideDisplay(message, v), message).toThrow(
         /also carries a pasteable command/
       );
+    const refusesFor = (message: string, value: string): void =>
+      expect(() => expectNoCommandBesideDisplay(message, value), message).toThrow(
+        /also carries a pasteable command/
+      );
     // Accepted: a display with no command, a command with no display, and a
     // prose mention of cdkd that is not an invocation.
     expectNoCommandBesideDisplay(`Nothing is recorded for ${JSON.stringify(v)}.`, v);
@@ -279,18 +278,25 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       v
     );
     refuses(`No stack ${shown} was found. Run 'cdkd state list' to see available stacks.`);
-    // A value carrying a newline is displayed across lines: a line holding a
-    // piece of it and a command refuses (go-to-k/cdkd#4127 M12).
+    // Displaying is decided per line from the payload's sentinel
+    // (go-to-k/cdkd#4127 M14), which every payload carries.
+    for (const payload of [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD]) {
+      expect(payload.value, payload.label).toContain(PAYLOAD_SENTINEL);
+    }
     const multi = 'x\n$(touch OWNED)';
-    expect(() =>
-      expectNoCommandBesideDisplay(`Stack ${multi} not found; run cdkd deploy`, multi)
-    ).toThrow(/also carries a pasteable command/);
-    // A display no line holds whole (cut, sanitized), with the payload's
-    // sentinel still there, refuses rather than pass (M12).
-    const long = 'x$(touch OWNED) and more';
-    expect(() =>
-      expectNoCommandBesideDisplay('Stack x$(touch OWNED) [cut] not found', long)
-    ).toThrow(/a form the rule cannot see/);
+    // A value split by its own newline, the command on a line of its own:
+    // passes (the piece `x` alone does not make a line display it).
+    expectNoCommandBesideDisplay(`Stack ${multi} not found.\nNext: cdkd deploy`, multi);
+    // ...and with the command beside the running half: refuses.
+    refusesFor(`Stack ${multi} not found; run cdkd deploy`, multi);
+    // A cut display with no command: passes.
+    const long = 'x$(touch OWNED)-long';
+    expectNoCommandBesideDisplay('Stack x$(touch OWNED) [cut] not found', long);
+    // The sentinel counts only for a value that carries it: another line
+    // mentioning it beside a command does not display `x$(id)`.
+    expectNoCommandBesideDisplay('Nothing for "x$(id)" here.\nRun: cdkd deploy # touch OWNED', 'x$(id)');
+    // A truncated copy on another line, beside a command: refuses.
+    refusesFor(`Stack ${JSON.stringify(long)} not found.\nRun: cdkd deploy "x$(touch OWNED)-lo…"`, long);
     // Every top-level command starts an invocation (one per command, so a
     // dropped alternative is seen), and the list IS `buildProgram()`'s.
     for (const command of CDKD_TOP_LEVEL_COMMANDS) refuses(`${JSON.stringify(v)} -- cdkd ${command} x`);
@@ -321,7 +327,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         `command cdkd state show "${hostile}"`,
         `aws s3 ls "${hostile}"`,
       ]) {
-        expect(() => expectOnlyDisplayResidual(ran, dir, hostile, RUNTIME_ONLY), ran).toThrow(
+        expect(() => expectRuntimeResidual(ran, dir, hostile), ran).toThrow(
           /also ran a stubbed cdkd \/ aws/
         );
       }
@@ -364,14 +370,14 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         ).toThrow(/also ran a stubbed cdkd/);
         const zshOnlyVerb = `cdkd deploy "${hostile}" x(N)`;
         expect(filesTouchedBy(zshOnlyVerb, dir, { shells: ['bash'] })).toEqual([]);
-        expect(() => expectOnlyDisplayResidual(zshOnlyVerb, dir, hostile, RUNTIME_ONLY)).toThrow(
+        expect(() => expectRuntimeResidual(zshOnlyVerb, dir, hostile)).toThrow(
           /also ran a stubbed cdkd \/ aws/
         );
       }
       // A verb that is only an ARGUMENT does not count, which was the token
       // rule's false positive: `Could` runs, with `cdkd` as its argument.
       const argument = `Could not lock "${hostile}" -- see cdkd force-unlock`;
-      expect(expectOnlyDisplayResidual(argument, dir, hostile, RUNTIME_ONLY).length).toBeGreaterThan(0);
+      expect(expectRuntimeResidual(argument, dir, hostile).length).toBeGreaterThan(0);
       // The pre-fold shape — a command inside prose quotes after an
       // apostrophe — is still refused, by the boundary check: the value runs
       // inside cdkd's single quotes, not a JSON pair. A `--flag` remedy beside
@@ -380,20 +386,20 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // carries no pasteable command), not this helper's.
       const commandRan =
         `This file's key is unreadable — run 'cdkd state show ${hostile}' if it's yours.`;
-      expect(() => expectOnlyDisplayResidual(commandRan, dir, hostile, RUNTIME_ONLY)).toThrow(/JSON boundary/);
+      expect(() => expectRuntimeResidual(commandRan, dir, hostile)).toThrow(/JSON boundary/);
       // A bare display: the value is not inside a JSON boundary...
       const separator = 'x; touch OWNED; #';
       const bareRan = `Cannot adopt SSM parameter ${separator} from an ARN.`;
-      expect(() => expectOnlyDisplayResidual(bareRan, dir, separator, RUNTIME_ONLY)).toThrow(/JSON boundary/);
+      expect(() => expectRuntimeResidual(bareRan, dir, separator)).toThrow(/JSON boundary/);
       // ...and a boundary around something ELSE in the span does not count:
       // the check binds the quotes to the value.
       const elsewhere = `Cannot adopt SSM parameter ${separator} from "an ARN".`;
-      expect(() => expectOnlyDisplayResidual(elsewhere, dir, separator, RUNTIME_ONLY)).toThrow(/JSON boundary/);
+      expect(() => expectRuntimeResidual(elsewhere, dir, separator)).toThrow(/JSON boundary/);
       // ...nor two unrelated quoted words on EITHER side of a bare value,
       // which a flanking-pair regex accepts: the span runs, and the value is
       // outside every paired `"..."`.
       const flanked = `Key "a" holds ${hostile} at "b"`;
-      expect(() => expectOnlyDisplayResidual(flanked, dir, hostile, RUNTIME_ONLY)).toThrow(/JSON boundary/);
+      expect(() => expectRuntimeResidual(flanked, dir, hostile)).toThrow(/JSON boundary/);
       // And the decoy sweep: a span that DELETES a decoy counts as having run
       // and the decoy is re-seeded, so the next span still has it (a first cut
       // walked surviving entries only and lost the decoy silently).
@@ -422,17 +428,17 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // A value the clause split cut in half: the running clause holds no
       // boundary and no whole value, so the absence check alone passed it.
       const split = 'x$(touch OWNED): y';
-      expect(() => expectOnlyDisplayResidual(`Found record(s): Key ${split}`, dir, split, RUNTIME_ONLY)).toThrow(
+      expect(() => expectRuntimeResidual(`Found record(s): Key ${split}`, dir, split)).toThrow(
         /JSON boundary/
       );
       // And a value inside a paired span AND bare beside it: the positive
       // check alone accepts it, the absence check is what refuses it.
       const twice = `Key "${hostile}" also ${hostile}`;
-      expect(() => expectOnlyDisplayResidual(twice, dir, hostile, RUNTIME_ONLY)).toThrow(/outside a JSON boundary/);
+      expect(() => expectRuntimeResidual(twice, dir, hostile)).toThrow(/outside a JSON boundary/);
       // ...and a second copy inside a quoted run that is NOT valid JSON is
       // bare too: only a decodable span is a boundary.
       const invalidBeside = `Key "${hostile}" also "\\q ${hostile}"`;
-      expect(() => expectOnlyDisplayResidual(invalidBeside, dir, hostile, RUNTIME_ONLY)).toThrow(
+      expect(() => expectRuntimeResidual(invalidBeside, dir, hostile)).toThrow(
         /outside a JSON boundary/
       );
       // A value carrying a quote or a backslash renders JSON-ESCAPED inside
@@ -441,7 +447,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // do not stop `$( )`).
       for (const escaped of ['x"$(touch OWNED)', 'x\\$(touch OWNED)']) {
         const bounded = `State file ${JSON.stringify(`cdkd/${escaped}/state.json`)} is not valid JSON.`;
-        expect(expectOnlyDisplayResidual(bounded, dir, escaped, RUNTIME_ONLY), escaped).toEqual([bounded]);
+        expect(expectRuntimeResidual(bounded, dir, escaped), escaped).toEqual([bounded]);
       }
       // The child's HOME is the scratch directory, so a `~`-expanding span
       // lands where the sweep sees it rather than in the real home.
@@ -465,7 +471,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // `displayIdent`'s boundary, no command in the span. Double quotes do
       // not stop `$( )`, which is the whole reason the criterion is per block.
       const accepted = `State file "cdkd/${hostile}/state.json" is not valid JSON.`;
-      expect(expectOnlyDisplayResidual(accepted, dir, hostile, RUNTIME_ONLY)).toEqual([accepted]);
+      expect(expectRuntimeResidual(accepted, dir, hostile)).toEqual([accepted]);
     });
   }, 120_000);
 
