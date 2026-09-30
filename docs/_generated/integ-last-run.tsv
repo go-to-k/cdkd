@@ -85,7 +85,7 @@ docdb-neptune	2026-09-29T15:04:16Z	PASS	5194	verify.sh	rc ok, orph clean (#4029 
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-09-30T02:58:12Z	PASS	331	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 drift-revert-arrays	2026-09-29T23:22:50Z	PASS	185	verify.sh	PR #4053 (#4042 + #4051 codecommit rename adopted by recorded RepositoryId; UpdateContext.recordedAttributes from every update() caller) @a46f094/a7ca35d; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-drift-revert-vpc	2026-09-30T03:06:19Z	PASS	476	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+drift-revert-vpc	2026-09-30T05:03:23Z	PASS	385	verify.sh	PR #4182 (#2177 EFS create/update masker threading) @847cce7; rc ok, destroy 0 errors, no state/VPC/EFS leftovers
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
@@ -107,9 +107,9 @@ ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24
 ecs-fargate	2026-09-25T19:22:55Z	PASS	386	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 ecs-schedule-targets	2026-09-14T21:27:55Z	PASS	83	verify.sh	#3125 gating: GetAtt Vpc.DefaultSecurityGroup consumer; 21 deleted 0 err 0 orph
 ecs-service-update-props	2026-09-29T14:07:55Z	PASS	116	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers; fixture now declares EnableForceNewDeployment: false (the #3567 pre-flight refused the nonce-only block)
-efs-immutable-replacement	2026-09-28T08:03:34Z	PASS	70	verify.sh	rc ok, orph clean (#3894)
+efs-immutable-replacement	2026-09-30T05:03:23Z	PASS	105	verify.sh	PR #4182 (#2177 EFS create/update masker threading) @847cce7; rc ok, orph clean
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
-efs-standalone	2026-09-28T07:21:28Z	PASS	170	verify.sh	rc ok, orph clean (#3894)
+efs-standalone	2026-09-30T05:03:23Z	PASS	185	verify.sh	PR #4182 (#2177 EFS create/update masker threading) @847cce7; rc ok, orph clean
 elasticache-replicationgroup-getatt	2026-09-29T14:00:50Z	PASS	776	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 elbv2-same-name-replacement	2026-09-29T02:36:21Z	PASS	75	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, same-name --replace still delete-first, 12 deleted 0 errors, orph clean
 emr-cluster	2026-09-29T11:44:30Z	PASS	683	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
