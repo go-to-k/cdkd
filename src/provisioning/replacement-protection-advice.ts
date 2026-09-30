@@ -326,7 +326,8 @@ export function renderDisableCommand<
  * Measured under each shell's DEFAULT options. Under zsh's `EXTENDED_GLOB` a
  * mid-word `#`, `^` or `~` is a glob operator, but that is not a way in:
  * `shellQuote` always quotes those characters, and a `cdkd's` flip leaves the
- * word glued to prose, so the worst case is a no-match abort, not a run.
+ * word glued to prose, so the worst case is a no-match abort (or the word
+ * dropped under `NULL_GLOB`), not a run.
  */
 const PASTE_ARG_UNSAFE = /[\s'"`$;&|<>()\\*?[\]{}!]|^[#=]|(?:^|[=:])~/;
 

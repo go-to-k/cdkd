@@ -125,7 +125,10 @@ describe('protectedReplacementAdvice', () => {
     // space-free one a whitespace gate alone would admit, rendered as the id
     // and fed to bash at line, sentence and clause granularity
     // (`tests/unit/utils/paste-harness.ts`).
-    const ids = [...PASTE_PAYLOADS.map((p) => p.value), `x;touch${'$'}{IFS}OWNED`, 'x`touch${IFS}OWNED`y', 'x;>OWNED'];
+    // `x;>OWNED;#` holds no whitespace, `$` or backtick; after the `cdkd's`
+    // flip its `#` comments out the value's closing quote, so a gate narrowed
+    // to those would red on the paste alone (go-to-k/cdkd#4198 R5).
+    const ids = [...PASTE_PAYLOADS.map((p) => p.value), `x;touch${'$'}{IFS}OWNED`, 'x`touch${IFS}OWNED`y', 'x;>OWNED;#'];
     const rendered = ids.map((id) => ({ id, message: build(id) }));
     withPasteDir((dir) => {
       for (const { id, message } of rendered) {

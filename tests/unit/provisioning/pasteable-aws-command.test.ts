@@ -161,9 +161,11 @@ describe('pasteableAwsCommand (issue #3136)', () => {
     // The apostrophe opens a single quote a pasted line then closes early, so
     // a shell-quoted identifier would sit bare. Each payload family, plus a
     // space-free backtick payload, as the identifier.
-    // `x;>OWNED` holds no whitespace, `$` or backtick, so a gate that narrow
-      // would admit it and the paste alone reds (go-to-k/cdkd#4198 O1).
-      const ids = [...PASTE_PAYLOADS.map((p) => p.value), 'x`touch${IFS}OWNED`y', 'x;>OWNED'];
+    // `x;>OWNED;#` holds no whitespace, `$` or backtick, so a gate that narrow
+    // would admit it; after the apostrophe flip its `#` comments out the
+    // value's own closing quote, so the line runs and the paste alone reds
+    // (go-to-k/cdkd#4198 R5).
+    const ids = [...PASTE_PAYLOADS.map((p) => p.value), 'x`touch${IFS}OWNED`y', 'x;>OWNED;#'];
     withPasteDir((dir) => {
       for (const id of ids) {
         const hint = `cdkd's cleanup could not delete it. Run: ${pasteableAwsCommand()`aws x y --id ${id}`.render()}`;
