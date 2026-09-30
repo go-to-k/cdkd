@@ -716,19 +716,27 @@ export async function rollbackCommand(
       // command would replace an unreadable resource map with a well-formed
       // empty one, in the command a user reaches for when state is ALREADY
       // suspect (go-to-k/cdkd#3018).
-      refuseMalformedState(baseState, stackName, region);
+      // `refusalRecovery` qualifies each refusal's pasteable commands with this
+      // run's account flags, so they read the bucket this run read
+      // (go-to-k/cdkd#3909).
+      const refusalRecovery = {
+        profile: options.profile,
+        stateBucket: setup.bucket,
+        statePrefix: options.statePrefix,
+      };
+      refuseMalformedState(baseState, stackName, region, refusalRecovery);
       // The `orphans` CONTAINER, ahead of every replay and of
       // `orphansAfterRollback` (go-to-k/cdkd#3379): that helper walks the
       // container with `for...of`, so a string comes back as a list of its
       // characters and this command SAVES it — a damaged container rewritten
       // into a differently damaged one, silently.
-      refuseMalformedOrphans(baseState, stackName, region);
+      refuseMalformedOrphans(baseState, stackName, region, refusalRecovery);
       // The ROWS (go-to-k/cdkd#3500). This command is where the collapse is
       // observable: `orphansAfterRollback` keys on `entry.logicalId`, so rows
       // MISSING one all write the SAME `undefined` entry and the record saved
       // below keeps one of them. Two distinct numeric ids do not collide; two
       // rows SHARING a string id do, and are refused here too (go-to-k/cdkd#3643).
-      refuseMalformedOrphanRecords(baseState, stackName, region);
+      refuseMalformedOrphanRecords(baseState, stackName, region, refusalRecovery);
       // A record whose body `region` disagreed with the key it was read from
       // (go-to-k/cdkd#3370) — BELOW `refuseMalformedState`, which proves the
       // bag this counts can be read, and ABOVE the plan preview, the prompt and

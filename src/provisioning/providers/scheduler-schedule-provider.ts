@@ -25,6 +25,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
+import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
 import { hasClauseBreak } from '../../utils/pasteable-command.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -387,7 +388,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       const nameShowable = !!safeId && safeId === physicalId && !hasClauseBreak(safeId);
       const manualHint = nameShowable
         ? `If the schedule lives in a custom group, delete it manually: ` +
-          `aws scheduler delete-schedule --name ${shellQuote(safeId)} --group-name '<group>'`
+          `${withPasteableAwsProfile('aws scheduler delete-schedule')} --name ${shellQuote(safeId)} --group-name '<group>'`
         : `If the schedule lives in a custom group, delete it manually via the console: the ` +
           `name recorded for it cannot be reproduced safely on a command line.`;
       // Neither value goes inside a hand-written `'...'` unless it is a plain

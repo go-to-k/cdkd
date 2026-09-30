@@ -405,9 +405,17 @@ export async function revertNestedChildFromJournal(args: {
       refuse("its state record's region field disagrees with the key it is stored under.");
     }
     const base: StackState = stateData!.state;
-    refuseMalformedState(base, childStackName, region);
-    refuseMalformedOrphans(base, childStackName, region);
-    refuseMalformedOrphanRecords(base, childStackName, region);
+    // The same account fields `NestedStackProvider.delete` hands the child's
+    // refusal, so the pasteable commands read the bucket this run read
+    // (go-to-k/cdkd#3909).
+    const refusalRecovery = {
+      profile: ctx.destroyOptions?.profile,
+      stateBucket: ctx.stateBucket,
+      statePrefix: ctx.destroyOptions?.statePrefix,
+    };
+    refuseMalformedState(base, childStackName, region, refusalRecovery);
+    refuseMalformedOrphans(base, childStackName, region, refusalRecovery);
+    refuseMalformedOrphanRecords(base, childStackName, region, refusalRecovery);
 
     const journal = await ctx.stateBackend.loadRollbackJournal(childStackName, region);
     const segments = (journal?.segments ?? []).filter((segment) => segment.runId === runId);

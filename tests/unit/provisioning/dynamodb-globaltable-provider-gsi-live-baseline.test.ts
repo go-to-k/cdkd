@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
+
 const { mockSend, childLogger } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   childLogger: {
@@ -658,6 +660,36 @@ describe('GlobalTable GSI live recovery baseline (issue #1571)', () => {
         ProvisionedThroughput: { ReadCapacityUnits: 6, WriteCapacityUnits: 8 },
       });
     });
+
+    it.each([
+      [undefined, 'aws dynamodb update-table'],
+      ['prod', 'aws --profile prod dynamodb update-table'],
+    ])(
+      'the live-only index warning prints a pasteable delete (profile %s, go-to-k/cdkd#3959)',
+      async (profile, head) => {
+        setPasteableAwsProfile(profile);
+        try {
+          describeTable({
+            BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+            GlobalSecondaryIndexes: [{ IndexName: 'live-only' }],
+          });
+          await provider.update(
+            'MyTable',
+            TABLE_NAME,
+            RESOURCE_TYPE,
+            { ...baseProps, BillingMode: 'PAY_PER_REQUEST' },
+            { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: 'bad' }
+          );
+          const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+          expect(warned).toContain(
+            `delete the index directly, e.g.: ${head} --table-name ${TABLE_NAME} ` +
+              `--global-secondary-index-updates '[{"Delete":{"IndexName":"<name>"}}]'`
+          );
+        } finally {
+          setPasteableAwsProfile(undefined);
+        }
+      }
+    );
 
     it('applies the #1160 on-demand ceiling RESET on the recovery deploy', async () => {
       // The `-1` reset is derived from the PREVIOUS side. With #1562's

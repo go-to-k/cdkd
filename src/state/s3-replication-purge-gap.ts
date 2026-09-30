@@ -1,6 +1,7 @@
 import { GetBucketReplicationCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { displaySafe } from '../utils/display-safe.js';
+import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { injectiveKey } from './record-keys.js';
 
 /**
@@ -592,8 +593,8 @@ export async function warnIfPurgeIsReplicated(
         // truncated warning that names a replica cdkd never names anywhere
         // would leave the user unable to act on it.
         (elided > 0
-          ? ` (and ${elided} more; aws s3api get-bucket-replication --bucket ` +
-            `${safeBucket} lists them all)`
+          ? ` (and ${elided} more; ${withPasteableAwsProfile('aws s3api get-bucket-replication')} ` +
+            `--bucket ${safeBucket} lists them all)`
           : '')
     );
     // Claimed only AFTER a successful emit. Claiming it first burnt the slot

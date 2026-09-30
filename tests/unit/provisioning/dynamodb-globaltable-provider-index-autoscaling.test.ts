@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 import {
   CreateTableCommand,
   DescribeTableCommand,
@@ -707,6 +708,76 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
         delete autoScalingRetryDelays.sleep;
       }
     });
+
+    it.each([
+      [undefined, 'aws application-autoscaling'],
+      ['prod', 'aws --profile prod application-autoscaling'],
+    ])(
+      "the register / put-policy warnings print pasteable commands (profile %s, go-to-k/cdkd#3959)",
+      async (profile, head) => {
+        autoScalingRetryDelays.sleep = () => Promise.resolve();
+        setPasteableAwsProfile(profile);
+        try {
+          for (const failing of [RegisterScalableTargetCommand, PutScalingPolicyCommand]) {
+            warnSpy.mockReset();
+            mockAutoScalingSend.mockReset();
+            mockAutoScalingSend.mockImplementation((command: unknown) =>
+              command instanceof failing
+                ? Promise.reject(new Error('ValidationException: nope'))
+                : Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] })
+            );
+            await provider.create('Prov', RESOURCE_TYPE, AUTOSCALED_PROPS);
+            const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+            expect(warned).toMatch(
+              failing === RegisterScalableTargetCommand
+                ? new RegExp(
+                    `Run: ${head} register-scalable-target --service-namespace dynamodb --resource-id table/${TABLE_NAME} --scalable-dimension dynamodb:table:WriteCapacityUnits --min-capacity \\d+ --max-capacity \\d+`
+                  )
+                : new RegExp(
+                    `Run: ${head} put-scaling-policy --policy-name \\S+ --service-namespace dynamodb --resource-id table/${TABLE_NAME} --scalable-dimension dynamodb:table:WriteCapacityUnits --policy-type TargetTrackingScaling`
+                  )
+            );
+          }
+        } finally {
+          setPasteableAwsProfile(undefined);
+          delete autoScalingRetryDelays.sleep;
+        }
+      }
+    );
+
+    it.each([
+      [undefined, 'aws application-autoscaling'],
+      ['prod', 'aws --profile prod application-autoscaling'],
+    ])(
+      "the teardown warnings print pasteable commands (profile %s, go-to-k/cdkd#3959)",
+      async (profile, head) => {
+        autoScalingRetryDelays.sleep = () => Promise.resolve();
+        setPasteableAwsProfile(profile);
+        try {
+          mockAutoScalingSend.mockReset();
+          mockAutoScalingSend.mockImplementation((command: unknown) =>
+            command instanceof DeleteScalingPolicyCommand ||
+            command instanceof DeregisterScalableTargetCommand
+              ? Promise.reject(new Error('ValidationException: nope'))
+              : Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] })
+          );
+          const next = { ...AUTOSCALED_PROPS, BillingMode: 'PAY_PER_REQUEST' };
+          await provider.update('Prov', TABLE_NAME, RESOURCE_TYPE, next, AUTOSCALED_PROPS);
+          const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+          expect(warned).toMatch(
+            new RegExp(
+              `Run: ${head} delete-scaling-policy --policy-name \\S+ --service-namespace dynamodb --resource-id table/${TABLE_NAME} --scalable-dimension dynamodb:table:ReadCapacityUnits`
+            )
+          );
+          expect(warned).toContain(
+            `Run: ${head} deregister-scalable-target --service-namespace dynamodb --resource-id table/${TABLE_NAME} --scalable-dimension dynamodb:table:ReadCapacityUnits`
+          );
+        } finally {
+          setPasteableAwsProfile(undefined);
+          delete autoScalingRetryDelays.sleep;
+        }
+      }
+    );
 
     it('does NOT retry a non-throttle failure', async () => {
       autoScalingRetryDelays.sleep = () => Promise.resolve();

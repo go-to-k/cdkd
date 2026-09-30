@@ -3268,7 +3268,8 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
       // The under-lock re-read guards the count `stillEmpty` and `deleteState`
       // act on — a DIFFERENT object, which a concurrent writer can supply.
       [
-        'refuseMalformedOrphanRecordsForDestroy(recheck.state,',
+        // Wrapped since the account context joined its arguments (go-to-k/cdkd#3909).
+        'refuseMalformedOrphanRecordsForDestroy(\n          recheck.state,',
         '(recheck.state.orphans ?? []).length',
       ],
     ],
@@ -5927,14 +5928,18 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       expect(lineValue(custom, 'State bucket')).toBe('cdkd-state-1');
       expect(custom).not.toContain('<prefix>');
       expect(custom).not.toContain("unless --state-prefix was given");
-      // The bucket is shell-quoted like every other value in a pasted line.
+      // A bucket that is not a plain identifier is a HOLE on the command line,
+      // and described, never echoed — its location line is withheld too
+      // (go-to-k/cdkd#3909).
       const quoted = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['A'], {
         stateBucket: "it's",
         statePrefix: 'cdkd',
       });
-      expect(dropOf(quoted)).toBe("cdkd state orphan S --state-bucket 'it'\\''s'");
+      expect(dropOf(quoted)).toBe("cdkd state orphan S --state-bucket '<bucket>'");
+      expect(quoted).toContain("the '--state-bucket' value this run was given is not a plain identifier");
       expect(lineValue(quoted, 'Object key')).toBe('cdkd/S/state.json');
-      expect(lineValue(quoted, 'State bucket')).toBe("'it'\\''s'");
+      expect(lineValue(quoted, 'State bucket')).toBeUndefined();
+      expect(quoted).not.toContain("it's");
       // An EMPTY prefix is accepted by the CLI and keys records under `/`, so
       // it is emitted (quoted) rather than dropped as falsy, and the path and
       // its fill-in note follow the same rule.
@@ -6120,8 +6125,10 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         // without it the drop command's name hole has nothing to fill it from.
         // Its LOCATION rides on labelled lines too, never inside the sentence (B1
         // of the fourth review): the key only when the name renders exactly.
-        ['S', undefined, ['Drop the record', 'Object key', 'State bucket']],
-        ['S ', undefined, ['Drop the record', 'Find the exact name', 'State bucket']],
+        // The bucket is not a plain identifier, so no line names it
+        // (go-to-k/cdkd#3909): the sentence points at 'cdkd state info'.
+        ['S', undefined, ['Drop the record', 'Object key']],
+        ['S ', undefined, ['Drop the record', 'Find the exact name']],
       ] as const) {
         const text = malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A'], recovery);
         const lines = text.split('\n');
@@ -6130,15 +6137,15 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         expect(lines.slice(1).map((l) => l.slice(0, l.indexOf(': '))), JSON.stringify(name)).toEqual([
           ...labels,
         ]);
-        // Each command carries the hostile bucket as ONE quoted argument, at its
-        // end; the location lines carry exactly one quoted value each.
+        // Each command carries the hostile bucket as a quoted HOLE at its end —
+        // not a plain identifier, so never echoed on a command line
+        // (go-to-k/cdkd#3909); the location lines carry exactly one quoted
+        // value each.
         for (const line of lines.slice(1)) {
-          if (line.startsWith('State bucket: ')) {
-            expect(line).toBe(`State bucket: 'b; printf INJECTED; #'`);
-          } else if (line.startsWith('Object key: ')) {
+          if (line.startsWith('Object key: ')) {
             expect(line).toBe('Object key: cdkd/S/state.json');
           } else {
-            expect(line.endsWith(`--state-bucket 'b; printf INJECTED; #'`), line).toBe(true);
+            expect(line.endsWith(`--state-bucket '<bucket>'`), line).toBe(true);
           }
         }
       }
@@ -7971,8 +7978,10 @@ describe('the inspect command explains a withheld value before its label (go-to-
     for (const call of parsed) {
       const args = call[1]!;
       const at = call.index!;
-      // The three that hand the gate an identity their own gate already
-      // cleared (the two DESTROY refusals) or none at all, and explain it.
+      // The five that hand the gate an identity their own gate already
+      // cleared (the two DESTROY refusals) or none at all (the divergent-region
+      // refusal's withhold arm, once per listing shape, and the orphan
+      // refusal's no-identity inspect template), and explain it.
       if (/^(exact \?|undefined, undefined)/.test(args)) {
         exempt++;
         continue;
@@ -7992,7 +8001,7 @@ describe('the inspect command explains a withheld value before its label (go-to-
       expect(src.slice(clauseAt, at)).not.toMatch(/\binspectCommand\s*\(/);
       callers.push(decl);
     }
-    expect(exempt).toBe(3);
+    expect(exempt).toBe(5);
     // Labels come from each entry's own function (`entry`), so they are
     // unique by construction; distinct renderings add that no two builders
     // collapse to one message — the same reason the `BUILDERS` census checks

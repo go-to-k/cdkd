@@ -6,6 +6,7 @@ import {
   clearReplicationProbeCache,
   DEFAULT_PURGED_OBJECT_DESCRIPTION,
 } from '../../../src/state/s3-replication-purge-gap.js';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
 /**
  * Issue [#2447](https://github.com/go-to-k/cdkd/issues/2447) — the detector
@@ -356,6 +357,23 @@ describe('S3 replication purge gap (issue #2447)', () => {
       ).resolves.toBeUndefined();
     });
 
+    it("the recovery command carries the run's explicit --profile (go-to-k/cdkd#3959)", async () => {
+      const dest = (name: string): Record<string, unknown> =>
+        enabledRule({ Destination: { Bucket: `arn:aws:s3:::${name}` } });
+      const s3 = stub({
+        ReplicationConfiguration: { Rules: [dest('r1'), dest('r2'), dest('r3'), dest('r4')] },
+      });
+      setPasteableAwsProfile('prod');
+      try {
+        await warnIfPurgeIsReplicated(s3, BUCKET, [KEY], { logger: logger() });
+      } finally {
+        setPasteableAwsProfile(undefined);
+      }
+      expect(String(warn.mock.calls[0]![0])).toContain(
+        `aws --profile prod s3api get-bucket-replication --bucket ${BUCKET} lists them all`
+      );
+    });
+
     it('de-duplicates destinations and elides past the third', async () => {
       const dest = (name: string): Record<string, unknown> =>
         enabledRule({ Destination: { Bucket: `arn:aws:s3:::${name}` } });
@@ -372,7 +390,7 @@ describe('S3 replication purge gap (issue #2447)', () => {
       expect(message).toContain('(and 1 more;');
       // The elided name must be RECOVERABLE -- a truncated warning naming a
       // replica cdkd never names anywhere leaves the reader unable to act.
-      expect(message).toContain(`get-bucket-replication --bucket ${BUCKET}`);
+      expect(message).toContain(`aws s3api get-bucket-replication --bucket ${BUCKET}`);
       expect(message).not.toContain('r4');
     });
 

@@ -101,6 +101,7 @@
  */
 
 import { displaySafe } from '../utils/display-safe.js';
+import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { shellQuote } from '../state/lock-contention-message.js';
 
 /**
@@ -297,7 +298,9 @@ export function renderDisableCommand<
   const quoted = pasteableArg(resolved.identifier, resolved.maskSecrets);
   if (quoted === undefined) return '';
   const tail = resolved.after ? ` ${resolved.after}` : '';
-  return `${resolved.before} ${quoted}${tail}`;
+  // The run's explicit `--profile` goes after the `aws` word of the literal
+  // `before` (go-to-k/cdkd#3959); without one this is the identity.
+  return `${withPasteableAwsProfile(resolved.before)} ${quoted}${tail}`;
 }
 
 /**
@@ -400,7 +403,10 @@ export function pasteableAwsCommand(
     strings: TemplateStringsArray,
     ...values: ReadonlyArray<string | PasteableAwsCommand>
   ): PasteableAwsCommand => {
-    let text = strings[0] ?? '';
+    // Each LITERAL span gets the run's explicit `--profile` after every `aws`
+    // command word it holds (go-to-k/cdkd#3959); a fragment's spans are
+    // rewritten by its own tag call, so nothing is rewritten twice.
+    let text = withPasteableAwsProfile(strings[0] ?? '');
     for (let i = 0; i < values.length; i++) {
       const value = values[i]!;
       // A fragment from ANOTHER tag withholds the command: its values passed
@@ -413,7 +419,7 @@ export function pasteableAwsCommand(
             : undefined
           : pasteableArg(value, maskSecrets);
       if (rendered === undefined) return new PasteableAwsCommand(undefined, tag);
-      text += rendered + (strings[i + 1] ?? '');
+      text += rendered + withPasteableAwsProfile(strings[i + 1] ?? '');
     }
     return new PasteableAwsCommand(text, tag);
   };
