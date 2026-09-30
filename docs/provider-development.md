@@ -73,7 +73,9 @@ export interface ResourceProvider {
    *   created. Providers MUST verify the AWS client's region against
    *   `context.expectedRegion` before treating a `*NotFound` error as
    *   idempotent delete success — see the "DELETE idempotency" section
-   *   below.
+   *   below. `context.recordedAttributes` is the deleted record's attributes
+   *   (identity evidence, issue #4157): a name-addressed provider compares a
+   *   recorded id with the live holder's before deleting.
    * @returns Nothing (means "deleted"), or `{ outcome: 'skipped', reason }`
    *   when the provider issued NO AWS call and the resource may still be
    *   alive — see "2b. Reporting a SKIPPED delete" below.
