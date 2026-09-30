@@ -321,6 +321,7 @@ describe('Repository update — a malformed RECORDED list is applied ADD-only (#
     );
     expect(sentNames()).toEqual([
       'GetRepositoryTriggersCommand',
+      'GetRepositoryCommand', // the id read before the rename (#4042)
       'UpdateRepositoryNameCommand',
       'PutRepositoryTriggersCommand',
       'GetRepositoryCommand',
@@ -344,34 +345,51 @@ describe('Repository update — a malformed RECORDED list is applied ADD-only (#
     expect(warned.some((w) => w.includes('stay only until the next change to Triggers'))).toBe(true);
   });
 
-  it('Triggers: a retry after the rename landed reads the live set under the new name', async () => {
-    mockSend.mockImplementation((cmd: { constructor: { name: string }; input: Record<string, unknown> }) => {
-      switch (cmd.constructor.name) {
-        case 'GetRepositoryTriggersCommand':
-          return cmd.input['repositoryName'] === 'issue3989-repo'
-            ? Promise.reject(
-                new RepositoryDoesNotExistException({ message: 'does not exist', $metadata: {} })
-              )
-            : Promise.resolve({ triggers: [sdkTrigger('manual')] });
-        case 'UpdateRepositoryNameCommand':
-          return Promise.reject(
-            new RepositoryDoesNotExistException({ message: 'does not exist', $metadata: {} })
-          );
-        case 'GetRepositoryCommand':
-          return Promise.resolve({
-            repositoryMetadata: { repositoryName: 'issue3989-renamed', repositoryId: 'id', Arn: REPO_ARN },
-          });
-        default:
-          return Promise.resolve({});
+  /**
+   * A stateful fake of one repository that attempt 1 renames: the old name
+   * answers until the rename lands, the new name after. `holderId` is the id of
+   * whatever repository holds the NEW name (#4042).
+   */
+  function primeRename(opts: { holderId: string; failPut: boolean[] }): void {
+    let renamed = false;
+    const gone = () =>
+      Promise.reject(new RepositoryDoesNotExistException({ message: 'does not exist', $metadata: {} }));
+    mockSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const name = cmd.input['repositoryName'];
+        switch (cmd.constructor.name) {
+          case 'GetRepositoryTriggersCommand':
+            if (name === 'issue3989-repo' && renamed) return gone();
+            return Promise.resolve({ triggers: [sdkTrigger('manual')] });
+          case 'GetRepositoryCommand':
+            if (name === 'issue3989-repo') {
+              return renamed
+                ? gone()
+                : Promise.resolve({ repositoryMetadata: { repositoryId: 'id-1', Arn: REPO_ARN } });
+            }
+            return Promise.resolve({
+              repositoryMetadata: { repositoryId: renamed ? 'id-1' : opts.holderId, Arn: REPO_ARN },
+            });
+          case 'UpdateRepositoryNameCommand':
+            if (renamed) return gone();
+            renamed = true;
+            return Promise.resolve({});
+          case 'PutRepositoryTriggersCommand':
+            return opts.failPut.shift() ? Promise.reject(new Error('throttled')) : Promise.resolve({});
+          default:
+            return Promise.resolve({});
+        }
       }
-    });
-    await provider.update(
-      'Repo',
-      'issue3989-repo',
-      TYPE,
-      { RepositoryName: 'issue3989-renamed', Triggers: [trigger('a')] },
-      { RepositoryName: 'issue3989-repo', Triggers: {} }
     );
+  }
+
+  it('Triggers: a retry after this run renamed it reads the live set under the new name (same id)', async () => {
+    primeRename({ holderId: 'id-1', failPut: [true] });
+    const desired = { RepositoryName: 'issue3989-renamed', Triggers: [trigger('a')] };
+    const recorded = { RepositoryName: 'issue3989-repo', Triggers: {} };
+    await rejection(provider.update('Repo', 'issue3989-repo', TYPE, desired, recorded));
+    mockSend.mockClear();
+    await provider.update('Repo', 'issue3989-repo', TYPE, desired, recorded);
     expect(sent('GetRepositoryTriggersCommand')).toEqual([
       { repositoryName: 'issue3989-repo' },
       { repositoryName: 'issue3989-renamed' },
@@ -381,8 +399,36 @@ describe('Repository update — a malformed RECORDED list is applied ADD-only (#
     ]);
   });
 
-  it('Triggers: a rename whose new name is missing too refuses with no write', async () => {
-    liveTriggers = new RepositoryDoesNotExistException({ message: 'does not exist', $metadata: {} });
+  it('Triggers: the old name gone and no rename by this run: refused before any trigger read under the new name', async () => {
+    mockSend.mockImplementation((cmd: { constructor: { name: string }; input: Record<string, unknown> }) =>
+      cmd.constructor.name === 'GetRepositoryCommand'
+        ? Promise.resolve({ repositoryMetadata: { repositoryId: 'someone-else', Arn: REPO_ARN } })
+        : cmd.input['repositoryName'] === 'issue3989-repo'
+          ? Promise.reject(
+              new RepositoryDoesNotExistException({ message: 'does not exist', $metadata: {} })
+            )
+          : Promise.resolve({ triggers: [sdkTrigger('foreign')] })
+    );
+    const err = await rejection(
+      provider.update(
+        'Repo',
+        'issue3989-repo',
+        TYPE,
+        { RepositoryName: 'issue3989-renamed', Triggers: [trigger('a')] },
+        { RepositoryName: 'issue3989-repo', Triggers: {} }
+      )
+    );
+    expect(err.message).toContain('as far as cdkd can verify');
+    // The new name appears only in the gated recovery command on the last line.
+    expect(err.message.split('\n').slice(0, -1).join('\n')).not.toContain('issue3989-renamed');
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    expect(sentNames()).toEqual(['GetRepositoryTriggersCommand', 'GetRepositoryCommand']);
+  });
+
+  it('Triggers: a rename whose new name is missing too fails the read with no write', async () => {
+    mockSend.mockImplementation(() =>
+      Promise.reject(new RepositoryDoesNotExistException({ message: 'does not exist', $metadata: {} }))
+    );
     const err = await rejection(
       provider.update(
         'Repo',
@@ -393,11 +439,8 @@ describe('Repository update — a malformed RECORDED list is applied ADD-only (#
       )
     );
     expect(err.message).toContain('could not be read from CodeCommit');
-    expect(sent('GetRepositoryTriggersCommand')).toEqual([
-      { repositoryName: 'issue3989-repo' },
-      { repositoryName: 'issue3989-renamed' },
-    ]);
-    expect(sentNames()).toEqual(['GetRepositoryTriggersCommand', 'GetRepositoryTriggersCommand']);
+    expect(sentNames()).toEqual(['GetRepositoryTriggersCommand', 'GetRepositoryCommand']);
+    expect(sent('GetRepositoryCommand')).toEqual([{ repositoryName: 'issue3989-renamed' }]);
   });
 
   it('Triggers: a RepositoryName equal to the physical id is no rename: one read, no fallback', async () => {

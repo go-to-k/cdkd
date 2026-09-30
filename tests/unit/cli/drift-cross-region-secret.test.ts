@@ -666,6 +666,25 @@ describe('cdkd drift --revert refuses a region-ambiguous secret reference (issue
     expect(context.expectedRegion).not.toBe('us-east-1');
   });
 
+  it("--revert hands the reverted record's attributes as recordedAttributes (issue #4051)", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    const recorded = { Arn: 'arn:recorded-4051', FunctionId: 'id-4051' };
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: { ...lambdaResource(NAME_EXPR), attributes: recorded } }, [CONSUMER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(TOKYO_PASSWORD, 'tampered'),
+      update,
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const context = update.mock.calls[0]![5] as { recordedAttributes?: unknown };
+    expect(context.recordedAttributes).toEqual(recorded);
+  });
+
   it('no cross-stack reads on record at all: resolves in the consumer region exactly as before', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);

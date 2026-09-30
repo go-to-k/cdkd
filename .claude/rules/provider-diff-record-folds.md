@@ -25,13 +25,14 @@ Preceded by [provider-property-fidelity.md](provider-property-fidelity.md).
 
 Optional; an `update()` that does not read it needs no change. Its fields assert something about the CALLER and must not be merged:
 
-- `desiredFromAwsReadback` — set only by `drift --revert`, where `{Rules: []}` means "restore the unset state" while the same bag from a template means "a collapsed array, do not touch". It is named for what it ASSERTS: the rollback revert arms are state-borne too, but their desired bag is a TEMPLATE recorded earlier, so widening this to `stateBorne` would delete a live configuration during a rollback.
-- `replayingState` — set by the rollback executor's two revert arms ([#3141](https://github.com/go-to-k/cdkd/issues/3141)). It asserts only that the desired bag is a cdkd STATE record, licensing the `CreateContext.replayingState` refusal downgrade and nothing about the values' provenance.
-- Both it and `CreateContext` extend `SecretMaskingContext`, on a shared base: a masker present on one path and absent on the other is a fix with a hole.
+- `desiredFromAwsReadback` — only `drift --revert`, where `{Rules: []}` means "restore the unset state"; from a template it means "a collapsed array, do not touch". Named for what it ASSERTS: the revert arms' desired bag is a TEMPLATE recorded earlier, so widening it to `stateBorne` would delete a live configuration on rollback.
+- `replayingState` — the rollback executor's two revert arms ([#3141](https://github.com/go-to-k/cdkd/issues/3141)): the desired bag is a cdkd STATE record, licensing the `CreateContext.replayingState` refusal downgrade and nothing about provenance.
+- `recordedAttributes` — the addressed record's attributes ([#4051](https://github.com/go-to-k/cdkd/issues/4051)), identity evidence for a name probe; absent = unverifiable, so refuse to adopt.
+- Both it and `CreateContext` extend `SecretMaskingContext`: a masker present on one path and absent on the other is a fix with a hole.
 
 **Normalize BOTH comparison sides** — a record written before the narrowing still carries every key, so a one-sided pass flips the difference into a REMOVAL — and **wire `cdkd diff` too**, or a preview forecasts a change the deploy never makes. `makeCanonicalizePropertiesFn` (`src/provisioning/canonicalize-properties.ts`) is the one builder both commands use.
 
-**A create-side pre-flight refusal forbids re-creating inside `update()`.** The five providers that call their own `create()` from `update()` pass no `replayingState` (at most the masker), and the properties they forward ARE a state record during a rollback replay — so the refusal would fire on a replay undetectably.
+**A create-side pre-flight refusal forbids re-creating inside `update()`.** Providers calling their own `create()` from `update()` pass no `replayingState`, yet forward a state record during a rollback replay, so the refusal fires there undetectably.
 
 ## Retiring what a FAILING create already materialized
 

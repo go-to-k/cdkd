@@ -187,6 +187,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'AppSyncProvider',
       'BudgetsBudgetProvider',
       'CloudWatchAnomalyDetectorProvider',
+      'CodeCommitRepositoryProvider',
       'CognitoUserPoolProvider',
       'CustomResourceProvider',
       'DynamoDBGlobalTableProvider',

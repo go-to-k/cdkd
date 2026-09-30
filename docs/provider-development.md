@@ -45,7 +45,9 @@ export interface ResourceProvider {
    *   `replayingState` (the desired bag is a cdkd STATE record, set by the
    *   rollback executor's revert arms, issue #3141), `maskSecrets`, and
    *   `expectedRegion` (the region the state record being updated belongs to,
-   *   issue #2301). Optional in every sense: a provider that needs none of
+   *   issue #2301), and `recordedAttributes` (the attributes cdkd recorded for
+   *   the addressed record, identity evidence, issue #4051). Optional in every
+   *   sense: a provider that needs none of
    *   them may declare five parameters, as the examples further down this page
    *   do.
    * @returns Physical ID (may change if replaced) and attributes

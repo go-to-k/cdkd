@@ -8470,9 +8470,13 @@ export class DeployEngine {
                     // on a resource cdkd does not manage. Typed `string`, so a
                     // caller with no region hands over `''`; the guard treats
                     // that as absent and proceeds.
+                    //
+                    // `recordedAttributes` (issue #4051): the identity evidence
+                    // of the record `currentResource.physicalId` came from.
                     {
                       maskSecrets: createSecretMasker(updateSecrets),
                       expectedRegion: this.stackRegion,
+                      recordedAttributes: currentResource.attributes,
                     }
                   )
                 ),

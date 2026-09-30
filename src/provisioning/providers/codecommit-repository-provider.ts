@@ -32,11 +32,13 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
@@ -263,6 +265,15 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   private s3Client?: S3Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CodeCommitRepositoryProvider');
+  /**
+   * Renames this provider instance STARTED, keyed by the old name, with the
+   * repository id read just before the rename (go-to-k/cdkd#4042): the
+   * same-run evidence a retry's probe accepts beside the recorded
+   * `RepositoryId` (`UpdateContext.recordedAttributes`, go-to-k/cdkd#4051),
+   * and the only evidence for a record that holds none. The deploy engine's
+   * retry re-invokes `update()` on this same instance.
+   */
+  private readonly renamesStarted = new Map<string, string>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -438,7 +449,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CodeCommit Repository ${logicalId} (${physicalId})`);
 
@@ -452,6 +464,24 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     );
     const prevTriggers = readRepoList('Triggers', previousProperties['Triggers'], 'recorded');
     const prevTags = readRepoList('Tags', previousProperties['Tags'], 'recorded');
+    // Every call below is addressed by a state-recorded NAME, so a client in
+    // another region would act on a same-named repository cdkd does not manage.
+    // The client's region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
+    // The repository id cdkd recorded for this resource (go-to-k/cdkd#4051):
+    // the identity a rename-retry probe is verified against.
+    const recordedIdValue = context?.recordedAttributes?.['RepositoryId'];
+    const recordedId =
+      typeof recordedIdValue === 'string' && recordedIdValue.length > 0
+        ? recordedIdValue
+        : undefined;
     // A recorded Triggers cdkd cannot read is replaced by the live set, read
     // before the rename so a failed read changes nothing. A retry after a
     // rename that already landed finds the repository under the NEW name.
@@ -464,6 +494,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             typeof renameTo === 'string' && renameTo.length > 0 && renameTo !== physicalId
               ? renameTo
               : undefined,
+            recordedId,
             resourceType
           )
         : undefined;
@@ -477,19 +508,61 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     try {
       const newName = properties['RepositoryName'] as string | undefined;
       if (newName && newName !== physicalId) {
+        // Read the repository's id BEFORE renaming, and remember it: a retry
+        // then adopts the repository under the new name only when it is the
+        // same one (go-to-k/cdkd#4042). A repository under the recorded name
+        // whose id is not the recorded one (the recorded repository deleted
+        // out of band and the name taken since) is refused before anything is
+        // sent to it (go-to-k/cdkd#4051).
+        let gone = false;
         try {
-          await this.getClient().send(
-            new UpdateRepositoryNameCommand({ oldName: physicalId, newName })
-          );
+          const before = await this.getRepositoryMetadata(physicalId);
+          // A read with no id leaves no evidence, never an earlier attempt's.
+          this.renamesStarted.delete(physicalId);
+          if (
+            recordedId !== undefined &&
+            before?.repositoryId !== undefined &&
+            before.repositoryId !== recordedId
+          ) {
+            throw this.wrapNotThisRepositoryError(
+              logicalId,
+              resourceType,
+              physicalId,
+              'recorded-name'
+            );
+          }
+          if (before?.repositoryId) {
+            this.renamesStarted.set(physicalId, before.repositoryId);
+          }
         } catch (err) {
-          // Retry safety: the deploy engine's outer `withRetry` re-invokes
-          // update() with the OLD physicalId. If a previous attempt already
-          // renamed the repository and then failed on a later step, the
-          // rename call now sees a gone oldName. Probe the NEW name — if it
-          // exists, the rename already happened; continue instead of
-          // turning a transient retry into a permanent failure.
           if (!(err instanceof RepositoryDoesNotExistException)) throw err;
-          await this.getRepositoryMetadata(newName); // throws if truly gone
+          gone = true;
+        }
+        if (!gone) {
+          try {
+            await this.getClient().send(
+              new UpdateRepositoryNameCommand({ oldName: physicalId, newName })
+            );
+          } catch (err) {
+            if (!(err instanceof RepositoryDoesNotExistException)) throw err;
+            gone = true;
+          }
+        }
+        if (gone) {
+          // Retry safety: the deploy engine's outer `withRetry` re-invokes
+          // update() with the OLD physicalId. If a previous attempt (this run's
+          // or an earlier deploy's) already renamed the repository and then
+          // failed before recording the new name, the old name is gone. The
+          // repository under the NEW name is adopted only when its id is the
+          // recorded RepositoryId or the one this instance read before
+          // renaming; any other holder is refused, with nothing sent to it.
+          await this.verifyRenamedRepository(
+            logicalId,
+            resourceType,
+            physicalId,
+            newName,
+            recordedId
+          );
           this.logger.debug(
             `Rename ${physicalId} -> ${newName} already applied by a previous attempt`
           );
@@ -646,6 +719,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // Get current attributes (re-read so rename / description / key
       // updates above are reflected).
       metadata = await this.getRepositoryMetadata(currentName);
+      this.renamesStarted.delete(physicalId);
 
       return {
         physicalId: currentName,
@@ -653,6 +727,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         attributes: this.toAttributes(metadata),
       };
     } catch (error) {
+      // A refusal (go-to-k/cdkd#4042) already names the resource and carries
+      // its non-retryable mark.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update CodeCommit Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -716,6 +793,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     logicalId: string,
     repositoryName: string,
     renamedTo: string | undefined,
+    recordedId: string | undefined,
     resourceType: string
   ): Promise<RepositoryTrigger[]> {
     try {
@@ -729,6 +807,16 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           }
           return undefined;
         });
+      if (first === undefined) {
+        // Only this resource's own repository is read under the new name.
+        await this.verifyRenamedRepository(
+          logicalId,
+          resourceType,
+          repositoryName,
+          renamedTo as string,
+          recordedId
+        );
+      }
       const resp =
         first ??
         (await this.getClient().send(
@@ -736,6 +824,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         ));
       return resp.triggers ?? [];
     } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
       throw new ProvisioningError(
         `the recorded Triggers of CodeCommit Repository ${logicalId} is not a list cdkd can ` +
           `read, and the triggers could not be read from CodeCommit instead — the repository ` +
@@ -746,6 +835,108 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         error instanceof Error ? error : undefined
       );
     }
+  }
+
+  /**
+   * The rename-retry probe's identity check (go-to-k/cdkd#4042,
+   * go-to-k/cdkd#4051). The old name is gone; accept the repository holding
+   * `newName` only when its id is one this resource is KNOWN to have: the
+   * `RepositoryId` cdkd recorded for it (`UpdateContext.recordedAttributes`),
+   * or the id this instance read just before starting the rename. A holder
+   * with any other id is refused with nothing sent to it: adopting it would
+   * overwrite its description, key, tags and triggers and record it as this
+   * resource, which a later destroy deletes. With NO known id (a record from
+   * before the attribute existed, and no rename started by this run) the
+   * holder cannot be verified, so it is refused too, naming the manual
+   * re-adoption.
+   */
+  private async verifyRenamedRepository(
+    logicalId: string,
+    resourceType: string,
+    oldName: string,
+    newName: string,
+    recordedId: string | undefined
+  ): Promise<void> {
+    const known = [recordedId, this.renamesStarted.get(oldName)].filter(
+      (id): id is string => id !== undefined
+    );
+    const holder = await this.getRepositoryMetadata(newName);
+    // The id alone identifies the repository, whatever name it now holds.
+    if (holder?.repositoryId !== undefined && known.includes(holder.repositoryId)) return;
+    const intro =
+      `CodeCommit Repository ${logicalId} no longer exists under the name cdkd recorded, and ` +
+      `the repository holding the desired RepositoryName is not this resource's`;
+    if (known.length > 0) {
+      throw this.wrapNotThisRepositoryError(logicalId, resourceType, oldName, 'desired-name');
+    }
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${intro} as far as cdkd can verify (its record holds no RepositoryId, and this run ` +
+          `started no rename of this resource) — nothing was sent to that repository. If it is ` +
+          `this resource's repository (an earlier deploy renamed it and stopped before ` +
+          `recording the new name), first confirm it is yours (\`aws codecommit get-repository\` ` +
+          `shows its id, ARN, description and creation date), and re-adopt it only then; ` +
+          `otherwise choose a RepositoryName no other repository holds.\nRe-adopt with:\n` +
+          // Unwrapped, on its own line, last; every value through the shared
+          // gate (a hole when it cannot be printed exactly).
+          pasteableCommand('cdkd import', [
+            { hole: 'stack' },
+            {
+              flag: '--resource',
+              value: `${logicalId}=${newName}`,
+              hole: 'logicalId=repositoryName',
+            },
+            { literal: '--force' },
+          ]).command,
+        resourceType,
+        logicalId,
+        oldName
+      )
+    );
+  }
+
+  /**
+   * The refusal for a repository whose id is KNOWN not to be this resource's
+   * (go-to-k/cdkd#4042, go-to-k/cdkd#4051): nothing is sent to it, and no
+   * re-adoption is offered. `which` names the repository by role, never by
+   * name.
+   */
+  private wrapNotThisRepositoryError(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    which: 'recorded-name' | 'desired-name'
+  ): ProvisioningError {
+    // The remedy depends on WHICH name a foreign repository holds: a new
+    // RepositoryName clears a collision on the desired name, but not one on the
+    // recorded name, which every later update is addressed to.
+    const remedy =
+      which === 'desired-name'
+        ? `The repository holding the desired RepositoryName is not this resource's (its ` +
+          `repository id is not the one cdkd holds for this resource) — nothing was sent to ` +
+          `that repository. If this resource's repository was renamed outside cdkd and you ` +
+          `can find it, set RepositoryName to its current name: cdkd adopts it by the ` +
+          `repository id it holds. If it was deleted outside cdkd, drop ` +
+          `this resource's record so the next deploy creates a new repository (fill in the ` +
+          `resource's construct path):\n` +
+          pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command
+        : `The repository cdkd recorded for this resource no longer holds its recorded name ` +
+          `(it was deleted or renamed outside cdkd), and the repository now holding that name ` +
+          `is not this resource's (its repository id is not the one cdkd holds) — nothing was ` +
+          `sent to that repository. Changing RepositoryName does not clear this. Leave that ` +
+          `repository alone. If the recorded repository was renamed and you can find it, ` +
+          `re-adopt it under its new name with cdkd import (--resource, --force) instead; ` +
+          `otherwise drop this resource's record so the next deploy creates a new repository ` +
+          `(fill in the resource's construct path):\n` +
+          pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command;
+    return markNonRetryable(
+      new ProvisioningError(
+        `CodeCommit Repository ${logicalId}: ${remedy}`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
   }
 
   /**

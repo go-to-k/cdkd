@@ -6192,10 +6192,14 @@ async function runRevert(
                 // exists for. With this threaded, a Cloud-Control-routed
                 // resource in that position REFUSES instead. Same-region
                 // reverts, which is every ordinary run, are unaffected.
+                //
+                // `recordedAttributes` (issue #4051): the identity evidence of
+                // the record `stateResource.physicalId` came from.
                 {
                   desiredFromAwsReadback: true,
                   maskSecrets: createSecretMasker(secrets),
                   expectedRegion: report.region,
+                  recordedAttributes: stateResource.attributes,
                 }
               ),
             outcome.logicalId,
