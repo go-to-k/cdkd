@@ -752,7 +752,7 @@ there changed. A `cdkd deploy` repairs it: one that changes the resource
 re-captures the whole baseline, and one that changes nothing replaces each mask
 the resource's own secret references can certify. Re-running this command
 afterwards writes the masks back, since it resolves nothing. See
-[Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
+[Redacted baselines](cli-drift.md#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 
 Resources whose provider cannot read current state, and resources AWS reports
 as not found, are counted as unsupported and keep their previous baseline —

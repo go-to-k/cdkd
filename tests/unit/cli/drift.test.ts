@@ -1920,7 +1920,7 @@ describe('cdkd drift', () => {
       expect(mockSaveState).not.toHaveBeenCalled();
       expect(mockAcquireLock).not.toHaveBeenCalled();
       expect(output).toContain('Plan (--accept)');
-      expect(output).toContain('VersioningConfiguration.Status: Enabled -> Suspended');
+      expect(output).toContain('VersioningConfiguration.Status: Enabled → Suspended');
     });
 
     it('--accept on a clean stack is a no-op', async () => {

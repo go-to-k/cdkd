@@ -2403,9 +2403,10 @@ function redactDriftValue(
  *   `awsValue` is `undefined` it would INSERT that key rather than removing the
  *   real one, so the value check alone does not cover it.
  * - A masked BASELINE (issue #2274) says the state side itself is the mask —
- *   a `NoEcho` custom resource's `Data` redacted out of `state.json`. Accepting
- *   would write the live plaintext over a deliberate redaction, which is the
- *   opposite of what the mask is for.
+ *   a `NoEcho` custom resource's `Data` or the `Fn::Base64` encoding of a
+ *   secret redacted out of `state.json`, or a readback position the #2852
+ *   walk could not certify. Accepting would write the live plaintext over a
+ *   deliberate redaction, which is the opposite of what the mask is for.
  *
  * The path check is what makes the value exemptions safe: `redactDriftValue`
  * lets `undefined` / `null` / a whole expression through unmasked, which is
@@ -2445,17 +2446,24 @@ function acceptRefusalReason(
     // bare "re-deploy" read as though any deploy would. A no-change deploy
     // replaces a mask only under the re-capture's two conditions
     // (`masked-baseline-recapture.ts`), and this arm is reached when something
-    // at the position DIFFERS, which is exactly when the first one fails. A
-    // `NoEcho` value additionally needs its handler to run again, which only an
-    // update of the custom resource itself does.
+    // at the position DIFFERS, which is exactly when the first one fails.
+    //
+    // And only the fail-closed mask is replaceable at all (issue #2881). A
+    // `NoEcho` custom-resource value and the `Fn::Base64` encoding of a secret
+    // (issues #2759 / #3119) are masked in `properties` too, which the
+    // re-capture declines outright, and a deploy that updates the resource
+    // masks them again on capture — so the message must not offer either a
+    // remedy: that position is refused here for as long as it differs.
     return (
-      'cdkd does not know the value that belongs at this position — the baseline holds only the ' +
+      'the value that belongs at this position is unknown to cdkd — the baseline holds only the ' +
       'redaction mask, so accepting would write AWS-held plaintext over a deliberate redaction. ' +
-      'A `cdkd deploy` that CHANGES this resource re-captures the baseline. A deploy that changes ' +
-      'nothing replaces the mask only when the resource still reads back as its baseline records ' +
-      "and the resource's own secret reference resolves to the value AWS holds there; where the " +
-      'value came from a `NoEcho` custom resource, that custom resource must update too, so its ' +
-      'handler supplies the value again'
+      'Where cdkd wrote that mask because it could not pair the readback with a secret reference, ' +
+      'a deploy that CHANGES this resource re-captures the baseline, and a deploy that changes ' +
+      'nothing replaces the mask only when the resource still reads back as its baseline ' +
+      "records, the resource's own secret reference resolves to the value AWS holds there, and " +
+      "nothing in the resource's recorded properties is masked. " +
+      'Where the mask stands for a NoEcho custom-resource value or for the Fn::Base64 ' +
+      'encoding of a secret value, cdkd never records the value, so no deploy replaces the mask'
     );
   }
   return (
@@ -5363,7 +5371,9 @@ function withValueAtPath(
  *
  * WHY THIS EXISTS AT ALL. A `NoEcho` custom resource's `Data` resolved into a
  * dependent's property is persisted as {@link SECRET_MASK}, because there is no
- * expression to store in its place. `--revert` pushes the BASELINE to AWS, so
+ * expression to store in its place. So is the `Fn::Base64` encoding of a
+ * secret (issues #2759 / #3119), and `observedProperties` holds one wherever
+ * the #2852 walk could not certify a readback position. `--revert` pushes the BASELINE to AWS, so
  * without this a revert triggered by a SIBLING key would write the literal
  * `***` onto the live SSM parameter / secret / env var — the issue #1498 /
  * #1501 data-corruption class, and strictly worse than the disclosure the mask
@@ -6259,37 +6269,50 @@ async function runRevert(
             // call was attempted, and the cause is a value cdkd cannot name —
             // not an update that failed.
             //
-            // The message names BOTH causes of a mask (issue #2881): a NoEcho
-            // custom-resource value (issue #2274, the only cause while the
-            // message asserted it as THE cause) and a readback position the
-            // #2852 fail-closed walk could not certify — the COMMON one since
-            // that change, for which the old nonce prescription did nothing.
-            // Nothing in the record distinguishes the two (issue #2449's
-            // absent per-attribute flag), so the message must offer both
-            // remedies rather than assert one cause. The sibling messages in
-            // `export.ts` and `rollback-executor.ts` KEEP their NoEcho
-            // attribution deliberately: both read `properties`, and their
-            // wording stays right exactly as long as NoEcho is the only
-            // writer of a mask into `properties` — #2852's fail-closed mask
-            // lands only in `observedProperties`, and issue #2759 (an
-            // `Fn::Base64`-encoded secret registering a mask-only needle) is
-            // OPEN, `resolveBase64` calling no `recordMaskOnlyValue` today.
-            // If #2759 ships, issue #2881's remaining checklist items own
-            // re-widening those messages; do not re-assert the conclusion
-            // here without re-checking that dependency.
+            // The message names all THREE writers of a mask (issue #2881),
+            // because nothing in the record says which one wrote it (issue
+            // #2449's absent per-attribute flag):
+            //
+            // - a `NoEcho` custom-resource value (issue #2274), the only
+            //   writer when the message named it as THE cause;
+            // - the `Fn::Base64` encoding of a secret, which `resolveBase64`
+            //   registers as a mask-only needle (issues #2759 / #3119). No
+            //   custom resource is involved, so the nonce remedy does nothing;
+            // - a readback position the #2852 fail-closed walk could not
+            //   certify.
+            //
+            // The remedies differ by cause. A deploy that UPDATES this
+            // resource sends a Base64 encoding again (the recorded `***`
+            // differs from the resolved encoding, so the update carries it),
+            // which gives the next revert a live value to keep. For an
+            // uncertified position it need not send anything there — a
+            // normalised neighbouring literal equals `properties`, so an
+            // update patch omits it — and what it does is re-capture the
+            // baseline. A no-change deploy does neither: it runs no update,
+            // and its re-capture (`masked-baseline-recapture.ts`) refuses a
+            // resource that no longer reads back as its baseline, which one
+            // reaching this arm does not. None of the three clears the MASK
+            // for a NoEcho or Base64 value (see `acceptRefusalReason`), which
+            // is why the last sentence speaks of this refusal, not the mask.
+            // The first two write the mask into `properties` as well, so the
+            // `export.ts`, `rollback-executor.ts` and `deploy-engine.ts`
+            // messages, which omit the `Fn::Base64` writer, are wrong for that
+            // population too; they are issue #2881's remaining checklist items.
             totalUnresolvable++;
             logger.error(
               `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                 `refused to revert ` +
                 `${maskSecretsInText(maskPreserved.unpreservablePaths.join(', '), secrets)} — the recorded ` +
                 `baseline holds only the redaction mask there, and AWS reports nothing to ` +
-                `preserve, so cdkd has no value it may write. Two causes leave such a mask, and ` +
+                `preserve, so cdkd has no value it may write. Three causes leave such a mask, and ` +
                 `the record does not say which: a NoEcho custom-resource value (force that ` +
                 `custom resource to update — change one of its properties, e.g. a nonce — and ` +
-                `re-deploy, so its handler runs again and supplies the value), or a readback ` +
-                `position cdkd could not certify when the baseline was captured (deploy a ` +
-                `change to this resource, so the baseline is recaptured against the template). ` +
-                `An ordinary no-change re-deploy clears neither.`
+                `re-deploy, so its handler runs again and supplies the value); the Fn::Base64 ` +
+                `encoding of a secret value, which cdkd never records (deploy a change to this ` +
+                `resource, which sends it the encoded value again); or a readback position cdkd ` +
+                `could not certify when the baseline was captured (deploy a change to this ` +
+                `resource, so its baseline is re-captured). A re-deploy that leaves this resource ` +
+                `unchanged sends it nothing, so it resolves this refusal for none of them.`
             );
             return;
           }
@@ -7504,33 +7527,64 @@ function reportPath(path: string): string {
   return safeMsg`${reportIdent(path, IDENT_MAX_CODE_POINTS)}`;
 }
 
+/** The separator of a plan's `<from> → <to>` pair; see `reportPlanChangeLine`. */
+const PLAN_ARROW = '→';
+
 /**
- * One `<path>: <from> -> <to>` line of a `--accept` / `--revert` plan, each
+ * One `<path>: <from> → <to>` line of a `--accept` / `--revert` plan, each
  * value through `reportPlanValue` and the whole row a `safeMsg` template, as a
  * `-` / `+` line of the report is (issue go-to-k/cdkd#3949). The revert plan
  * is printed directly above the confirmation prompt, so a forged row here
  * misstates what the operator is about to confirm.
+ *
+ * The separator is {@link PLAN_ARROW}, not ASCII `->` (issue
+ * go-to-k/cdkd#4239): pasted into a shell, `->` is `-` plus a `>` redirect
+ * onto the bare value after it, so a readback value would name a file to
+ * truncate. `→` is an ordinary word character to bash and zsh.
  */
 function reportPlanChangeLine(path: string, from: unknown, to: unknown): string {
-  return safeMsg`    ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportPlanValue(from)} -> ${reportPlanValue(to)}\n`;
+  return safeMsg`    ${reportIdent(path, IDENT_MAX_CODE_POINTS)}: ${reportPlanValue(from)} ${PLAN_ARROW} ${reportPlanValue(to)}\n`;
 }
 
 /**
- * `reportValue`, plus one more reason to quote a string: it contains `->`,
- * the arrow of the plan's own ` -> ` separator. Unquoted, a readback value
- * `prod -> prod` would print `Env: prod -> prod -> staging`, and the reader
- * could not tell which value the revert pushes. Matching the ARROW rather
- * than ` -> ` is what makes that hold: `a ->` / `b` and `a` / `-> b` would
- * otherwise both print `a -> -> b` (the line supplies the missing space), and
- * a look-alike space around the arrow would pass. With no unquoted value
- * containing `->`, the only `->` outside quotes after the path is the
- * separator (the path itself is unquoted, as on the report's rows). A
- * structured value needs no rule: JSON has no `->` of its own, so one inside
- * it sits between JSON's quotes. The quoted form is `reportValue`'s own, so a
- * string it would quote anyway prints the same either way.
+ * Whether a plan value must be quoted so it cannot read as the separator: it
+ * carries ASCII `->` or a character of one of these arrow ranges — Arrows
+ * U+2190-21FF, the dingbat arrows U+2794-27BF, Supplemental Arrows-A
+ * U+27F0-27FF and -B U+2900-297F, Miscellaneous Symbols and Arrows
+ * U+2B00-2BFF, Supplemental Arrows-C U+1F800-1F8FF, and the halfwidth arrows
+ * U+FFE9-FFEC.
+ *
+ * The ranges, not {@link PLAN_ARROW} alone: a look-alike (`⟶`, `➔`, `⮕`) in a
+ * bare value reads as the separator just as `→` does, and `->` is the arrow
+ * the separator itself used to be. The criterion is LOOKING like the
+ * separator. That quoting `->` also keeps its `>` inside JSON's double quotes
+ * is a side effect, not the rule: other redirect spellings in a value (a bare
+ * `>`, `−>` with U+2212) print as they are, the value-display class of
+ * go-to-k/cdkd#3950.
  */
-function reportPlanValue(value: unknown): string {
-  if (typeof value === 'string' && value.includes('->')) {
+const PLAN_ARROW_LIKE =
+  /->|[\u2190-\u21FF\u2794-\u27BF\u27F0-\u27FF\u2900-\u297F\u2B00-\u2BFF\u{1F800}-\u{1F8FF}\uFFE9-\uFFEC]/u;
+
+/**
+ * `reportValue`, plus one more reason to quote a string: {@link PLAN_ARROW_LIKE}.
+ * Unquoted, a readback value `prod → prod` would print
+ * `Env: prod → prod → staging`, and the reader could not tell which value the
+ * revert pushes. Matching the ARROW rather than ` → ` is what makes that hold:
+ * `a →` / `b` and `a` / `→ b` would otherwise both print `a → → b` (the line
+ * supplies the missing space), and a look-alike space around the arrow would
+ * pass. With no unquoted value carrying an arrow, the only one outside quotes
+ * after the path is the separator (the path itself is unquoted, as on the
+ * report's rows). A structured value needs no rule: JSON has no arrow of its
+ * own, so one inside it sits between JSON's quotes. The quoted form is
+ * `reportValue`'s own, so a string it would quote anyway prints the same
+ * either way.
+ *
+ * Only the arrow family is handled here. A value's OTHER shell characters
+ * (a lone `>`, `;`, `$( )`) print as they are, as on the report's rows: that
+ * is the value-display class of go-to-k/cdkd#3950.
+ */
+export function reportPlanValue(value: unknown): string {
+  if (typeof value === 'string' && PLAN_ARROW_LIKE.test(value)) {
     return escapeJsonLiterals(JSON.stringify(value));
   }
   return reportValue(value);

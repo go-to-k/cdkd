@@ -3675,10 +3675,11 @@ describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (i
     expect(sent['Cfg']).toEqual(refShaped);
   });
 
-  it('the mask refusal names BOTH causes and BOTH remedies (issue #2881)', async () => {
-    // Since #2852 a mask in the baseline has two causes, and the record does
-    // not say which; a message asserting the NoEcho cause prescribed a nonce
-    // bump that does nothing for the now-common uncertified-position cause.
+  it('the mask refusal names all THREE causes and their remedies (issue #2881)', async () => {
+    // A mask in the baseline has three writers, and the record does not say
+    // which: a NoEcho custom resource, the Fn::Base64 encoding of a secret
+    // (#2759 / #3119), and the #2852 fail-closed walk. A message asserting the
+    // NoEcho cause prescribed a nonce bump that does nothing for the other two.
     const update = vi.fn();
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
@@ -3704,9 +3705,20 @@ describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (i
     // for...
     expect(errored).toContain('NoEcho custom-resource value');
     expect(errored).toContain('nonce');
-    // ...cause 2 + its remedy, the one the old message misattributed...
+    // ...cause 2, which no custom resource is behind...
+    expect(errored).toContain('the Fn::Base64 encoding of a secret value');
+    // ...cause 3, the one the old message misattributed...
     expect(errored).toContain('could not certify');
-    expect(errored).toContain('deploy a change to this resource');
+    // ...each non-NoEcho cause with its OWN remedy: the Base64 encoding is
+    // sent again, an uncertified position is re-captured (a change need not
+    // resend a value there)...
+    expect(errored).toContain('which sends it the encoded value again');
+    expect(errored).toContain('so its baseline is re-captured');
+    // ...and the no-change deploy scoped to THIS REFUSAL, since no deploy
+    // clears a NoEcho or Base64 mask itself (the --accept refusal says so).
+    expect(errored).toContain('so it resolves this refusal for none of them');
+    expect(errored).not.toContain('clears none of them');
+    expect(errored).not.toContain('Two causes');
     // ...and no assertion of a SINGLE cause: the old parenthetical claimed the
     // mask IS a NoEcho value.
     expect(errored).not.toContain('(a NoEcho custom-resource value)');
