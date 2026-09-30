@@ -421,7 +421,11 @@ function collidingOutputs(
 }
 
 describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)', () => {
-  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
+  };
   let lockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
@@ -436,7 +440,13 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     dynamicRefCalls.length = 0;
     contextKeysAtResolve.length = 0;
     pendingLate.release = undefined;
-    stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-2') };
+    stateBackend = {
+      getState: vi.fn(),
+      saveState: vi.fn().mockResolvedValue('etag-2'),
+      // Read when a record has an undeclared output key to DROP
+      // (go-to-k/cdkd#4120): no other stack reads it.
+      listStacks: vi.fn().mockResolvedValue([]),
+    };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
       releaseLock: vi.fn().mockResolvedValue(undefined),

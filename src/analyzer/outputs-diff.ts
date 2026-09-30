@@ -1150,11 +1150,17 @@ export async function resolveTemplateOutputs(
  *
  *   That reasoning holds for a DEPLOY write and is weaker for a `cdkd scrub`
  *   one, which rewrites `state.outputs` IN PLACE: scrub redacts what it has a
- *   needle or a template position for, and its own docs admit it can leave a
- *   plaintext it has neither for — so a scrubbed bag holding one redacted key
- *   can exonerate a deleted key's surviving plaintext. Recorded rather than
- *   closed: removing the exoneration would withhold values on every clean
- *   post-GHSA record in a secret-handling stack, which is the larger harm.
+ *   needle or a template position for. A key today's template cannot name
+ *   whose value it cannot identify is DROPPED (go-to-k/cdkd#4120), except
+ *   one it rewrote only in part (the text it keeps beside the reference is
+ *   withheld per key below), one that may be a live export alias this run
+ *   could not reproduce, one
+ *   another stack still reads, every one when the other records could not be
+ *   read, and one whose NAME holds a secret (#1919) — so a scrubbed bag
+ *   holding one redacted key can still exonerate such a kept key's surviving
+ *   plaintext. Scrub reports each of those as a finding, never clean. Recorded rather than closed: removing the
+ *   exoneration would withhold values on every clean post-GHSA record in a
+ *   secret-handling stack, which is the larger harm.
  *   The deploy's own save belongs to the same class when the no-change path
  *   keeps a previous bag whole: its value scan can redact one stored value into
  *   an expression while another stored plaintext, which no needle names,
@@ -1274,8 +1280,8 @@ export function computeOutputsDiff(
   // plain `ssm` token is written only after #1901 (before it, every plain ssm
   // reference resolved): by a deploy, whose no-change merge refuses to put a
   // first one beside a carried value (`bagHoldsSecretExpression` counts it),
-  // or by `cdkd scrub`, which rewrites only what it can name and can leave a
-  // plaintext it could not (the scrub residual the note above names). So it
+  // or by `cdkd scrub`, which drops an undeclared key it cannot identify but
+  // keeps the kinds the note above names (the scrub residual). So it
   // is the strongest evidence the bag is redacted, not a proof. A record with
   // none keeps the unaccountable-key signal:
   // fail-closed, costing a removed output's value in a `secretsmanager`-only

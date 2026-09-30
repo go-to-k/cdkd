@@ -167,7 +167,11 @@ function makeState(
 }
 
 describe('cdkd scrub - a stored output key the template cannot account for (issue #2005)', () => {
-  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
+  };
   let lockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
@@ -175,7 +179,13 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
 
   beforeEach(() => {
     vi.clearAllMocks();
-    stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-2') };
+    stateBackend = {
+      getState: vi.fn(),
+      saveState: vi.fn().mockResolvedValue('etag-2'),
+      // Read when a record has an undeclared output key to DROP
+      // (go-to-k/cdkd#4120): no other stack reads it.
+      listStacks: vi.fn().mockResolvedValue([]),
+    };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
       releaseLock: vi.fn().mockResolvedValue(undefined),
@@ -376,10 +386,12 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
       { extraResourceSecrets: { Pin: SHORT_EXPR } }
     );
 
-    // Nothing at all to write: the only other recorded secret (the resource's
-    // db reference) is already an expression in the record.
-    expect(saved?.outputs['DeletedPin'] ?? state.outputs['DeletedPin']).toBe(SHORT_PLAINTEXT);
-    expect(changed).toBe(0);
+    // Never REWRITTEN onto the resource's reference. Since go-to-k/cdkd#4120
+    // the key is DROPPED instead — the template no longer names it and no pass
+    // rewrote it — so the one change is the drop.
+    expect(saved!.outputs).not.toHaveProperty('DeletedPin');
+    expect(JSON.stringify(saved!.outputs)).not.toContain(SHORT_EXPR);
+    expect(changed).toBe(1);
   });
 
   it('DOES use a plaintext exactly at the needle floor', async () => {
@@ -411,8 +423,10 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
     // here — the floor bounds cross-resource needles, not positioned ones.
     expect(saved!.resources['Db']!.properties['MasterUserPassword']).toBe(SHORT_EXPR);
     // ...while the outputs bag, which only the union could have reached, is
-    // left exactly as found.
-    expect(saved!.outputs['DeletedPin']).toBe(SHORT_PLAINTEXT);
+    // never rewritten onto an expression: the key no pass rewrote is DROPPED
+    // (go-to-k/cdkd#4120).
+    expect(saved!.outputs).not.toHaveProperty('DeletedPin');
+    expect(JSON.stringify(saved!.outputs)).not.toContain(SHORT_EXPR);
   });
 
   it('REPAIRS a stored key whose `Export.Name` did not fully resolve', async () => {
@@ -433,16 +447,18 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
     expect(saved!.outputs['prefix-${Foo}']).toBe(SECRET_EXPR);
   });
 
-  it('leaves a stored output matching NO recorded secret byte-identical', async () => {
+  it('never REWRITES a stored output matching NO recorded secret onto an expression', async () => {
     // The negative twin of case 1: same shape, same undeclared key, a value
     // that is simply not a secret. Rewriting it would ship a fabricated
-    // `{{resolve:...}}` token to every consumer stack importing it.
+    // `{{resolve:...}}` token to every consumer stack importing it. Since
+    // go-to-k/cdkd#4120 such a key is DROPPED rather than left beside the
+    // expressions scrub writes; it is never given one.
     const { saved } = await scrub(
       makeState({ DeletedEndpoint: PUBLIC_VALUE, DbPassword: SECRET_PLAINTEXT }),
       {}
     );
 
-    expect(saved!.outputs['DeletedEndpoint']).toBe(PUBLIC_VALUE);
+    expect(saved!.outputs).not.toHaveProperty('DeletedEndpoint');
     // The sibling in the same bag IS repaired, so this is a per-key refusal
     // rather than the whole pass declining to run.
     expect(saved!.outputs['DbPassword']).toBe(SECRET_EXPR);
