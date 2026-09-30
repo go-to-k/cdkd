@@ -288,7 +288,7 @@ s3-subconfig-removal	2026-09-28T08:48:59Z	PASS	85	verify.sh	rc ok, orph clean (#
 s3-tables	2026-09-29T11:14:58Z	PASS	50	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 s3-vectors	2026-09-29T11:15:53Z	PASS	50	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-scheduler-custom-group	2026-09-29T16:01:16Z	PASS	110	verify.sh	rc ok, orph clean; #4119 recreate-via-cc-api refused, schedule untouched
+scheduler-custom-group	2026-09-30T03:42:32Z	PASS	110	verify.sh	rc ok, orph clean (#3959 pasteable profile)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
