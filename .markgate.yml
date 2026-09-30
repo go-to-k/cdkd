@@ -130,6 +130,7 @@ gates:
       - "src/deployment/deploy-engine-name-collision.ts"
       - "src/deployment/deploy-engine-options.ts"
       - "src/deployment/deploy-engine-outputs.ts"
+      - "src/deployment/deploy-engine-rollback.ts"
       - "src/deployment/deploy-value-equality.ts"
       - "src/deployment/label-routing.ts"
       # Decides whether an IAM::Policy update / delete SKIPS removing an

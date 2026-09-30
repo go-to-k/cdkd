@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
 
@@ -179,6 +179,27 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
     );
   });
 
+  it('no DeployEngine mixin module writes these records or carries the outputs bag (#4200)', () => {
+    // The method groups split out of the engine (`deploy-engine-<group>.ts`)
+    // are outside the positional compare above, which reads one file. A save
+    // path moved into one would write here unseen, so every mixin must hold
+    // NONE: a save site belongs in the engine, where it is enumerated.
+    const dir = `${REPO_ROOT}src/deployment/`;
+    const mixins = readdirSync(dir).filter((f) => /^deploy-engine-.+\.ts$/.test(f));
+    expect(mixins.length, 'no mixin module found; this case is reading nothing').toBeGreaterThan(0);
+    for (const file of mixins) {
+      const source = readFileSync(`${dir}${file}`, 'utf8');
+      expect(
+        scanWriters(source).map((w) => `${file}:${w.line}  ${w.text}`),
+        `${file} writes imports / outputReads / exportNames — move that save site into deploy-engine.ts`
+      ).toEqual([]);
+      expect(
+        stripComments(source).includes('outputs: currentState.outputs,'),
+        `${file} carries the outputs bag — move that save site into deploy-engine.ts`
+      ).toBe(false);
+    }
+  });
+
   it('the scan actually SEES a wholesale write (positive control)', () => {
     // Without this the test above passes just as happily against a regex that
     // matches nothing, which is the same "nobody looked" failure it exists to
@@ -269,7 +290,11 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
   });
 
   it('counts the union call sites, so a deleted spread reds this test', () => {
-    const source = stripComments(readFileSync(`${REPO_ROOT}${SOURCE}`, 'utf8'));
+    // The rollback-executor context's call lives in the `deploy-engine-rollback.ts`
+    // mixin (#4200), so the count spans both files.
+    const source = [SOURCE, 'src/deployment/deploy-engine-rollback.ts']
+      .map((file) => stripComments(readFileSync(`${REPO_ROOT}${file}`, 'utf8')))
+      .join('\n');
     const calls = source.match(/crossStackReadsForPartialSave\(/g) ?? [];
     // 1 declaration + 6 non-success saves + 1 rollback-executor context.
     expect(

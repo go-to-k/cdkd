@@ -57,7 +57,7 @@ They write through `S3StateBackend.saveState`
 | `orphans[*].state` | `redactStateForPersist`, `deploy-engine.ts:2852` | `scrubResourceRecord`, map only | yes |
 | `imports[].exportName`, `outputReads[]` names | resolver records; redacted at `deploy-engine.ts:2935` | `redactSecretsForState`, map only | yes, when a name embeds it |
 | Exports index | `ExportIndexStore.writeIndex`, `src/state/export-index-store.ts:592` | values from `redactOutputs`; keys never redacted | yes, value and key |
-| Rollback journal | `appendRollbackJournalSegment`, `s3-state-backend.ts:1124`, from `deploy-engine.ts:6000` | `redactOperationsForJournal`, `deploy-engine.ts:2550` | yes |
+| Rollback journal | `appendRollbackJournalSegment`, `s3-state-backend.ts:1124`, from `writeRollbackJournalSegment` in `deploy-engine-rollback.ts` | `redactOperationsForJournal`, `deploy-engine-rollback.ts` | yes |
 | Nested journal `previousOutputs` | copied from the previous state | none (a copy) | when that state held it |
 | `deployments/*.jsonl` events | deploy `deploy-engine.ts:6452`; rollback `src/cli/commands/rollback.ts:907`; destroy `src/cli/commands/destroy-runner.ts:2091` | per writer, in the note below | `physicalId`; a rollback or destroy message quoting the value |
 | `cdkd state refresh-observed` | `src/cli/commands/state.ts:3986` | position walk with an empty map (`state.ts:3952`) | yes |
@@ -196,7 +196,7 @@ interface ResourceState {
 | exports index values | inherits `redactOutputs` (`deploy-engine.ts:4543`, `:4750`) | unchanged callers |
 | `outputs` alias keys, `exportNames` | none: the alias is refused (section 5) | `resolveOutputs` |
 | `imports[]` / `outputReads[]` names | `***` via the value arm | `redactCrossStackReads` |
-| rollback journal `properties` / `attemptedProperties` | both arms (the journal already positions by the template bag, `deploy-engine.ts:2563`) | `redactOperationsForJournal` |
+| rollback journal `properties` / `attemptedProperties` | both arms (the journal already positions by the template bag, `redactOperationsForJournal` in `deploy-engine-rollback.ts`) | `redactOperationsForJournal` |
 | rollback journal `previousState` | carries the record, marker included (`scrubResourceRecord`, `:2596`) | unchanged |
 | `orphans[*].state` | carries the record | unchanged |
 | `deployments/*.jsonl` | unchanged: the map entry now masks `error.message` / `reason` without the log-only set | `maskSecretsInEvent` |
