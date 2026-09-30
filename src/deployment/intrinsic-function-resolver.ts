@@ -12154,6 +12154,54 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Whether the dynamic-reference token `fullMatch` was ASSEMBLED from a
+   * secret (issues #2743, #4166): its log text differs from the token, so a
+   * twin mask sits inside it (floor-free, which is how a substituted secret of
+   * any length shows), or the needle mask changes the raw token (a recorded
+   * plaintext of four or more characters sits in it with no twin, which is
+   * how a `Ref` to a parameter a parent decrypted shows). A sub-floor secret
+   * that merely coincides with the token's literal text trips neither.
+   */
+  private tokenAssembledFromSecret(
+    fullMatch: string,
+    tokenLogText: string,
+    context: ResolverContext | undefined
+  ): boolean {
+    return tokenLogText !== fullMatch || this.maskNeedlesForLog(fullMatch, context) !== fullMatch;
+  }
+
+  /**
+   * Refuse a SECRET result of a resolvable token ASSEMBLED from a secret
+   * (issue #4166): `{{resolve:ssm:/app/${Name}}}` with `Name` a secret, where
+   * `/app/<Name>` is a `SecureString`. Recording that result would make the
+   * assembled token the expression of its plaintext, and every state writer
+   * (the frame, skeleton, whole-value and substring arms) then puts that
+   * expression, with the other secret inside it, into `state.json`. A writer
+   * that refused the expression would leave the token's plaintext in the
+   * clear instead, so the refusal belongs here, before anything is recorded
+   * or cached.
+   *
+   * Called only once the token has resolved to a secret: a lookup failure
+   * keeps its own masked error, and a public result records no expression.
+   * The caller exempts persisted text (`cdkd drift`, the rollback replay), as
+   * the unsupported-service arm does (issue #2743).
+   */
+  private refuseSecretAssembledReference(
+    fullMatch: string,
+    tokenLogText: string,
+    context: ResolverContext | undefined
+  ): void {
+    if (!this.tokenAssembledFromSecret(fullMatch, tokenLogText, context)) return;
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Refusing to resolve ${this.displayMasked(tokenLogText, context)}: the reference was ` +
+          `assembled from a secret value and resolves to a secret, so recording it would write ` +
+          `that value into state inside the reference. Build the reference name from non-secret values.`
+      )
+    );
+  }
+
+  /**
    * The log text of a name or token whose `twin` masks spans of `raw` (issue
    * [#3150](https://github.com/go-to-k/cdkd/issues/3150)). The twin prints
    * unless the needle mask ALSO changes `raw`; then the two must agree. When
@@ -12664,7 +12712,7 @@ export class IntrinsicFunctionResolver {
    * re-resolution); a TEMPLATE leaf goes through {@link resolve}, which takes
    * {@link resolveTemplateLeafReferences}.
    *
-   * The distinction is load-bearing for ONE arm (issue #2743). A token of a
+   * The distinction is load-bearing for two refusals. A token of a
    * service cdkd does not resolve is REFUSED on the template route when it
    * holds a secret, because leaving it would send that secret to AWS for the
    * first time. Persisted text is different on both counts: AWS already holds
@@ -12673,7 +12721,10 @@ export class IntrinsicFunctionResolver {
    * the reference that resolves to it would fail its rollback op on every
    * retry, where replaying the literal is a correct no-op. So this entry point
    * keeps the warn-and-leave for every such token, and the value scan redacts
-   * whatever is persisted afterwards.
+   * whatever is persisted afterwards (issue #2743). A resolvable token
+   * assembled from a secret that resolves to a secret is REFUSED on the
+   * template route, since recording it would persist the other secret inside
+   * the reference (issue #4166); here it resolves, for the same two reasons.
    */
   async resolveDynamicReferences(value: string, context?: ResolverContext): Promise<string> {
     return (await this.resolveDynamicReferencesWithLogTwin(value, value, context, undefined, true))
@@ -12717,8 +12768,8 @@ export class IntrinsicFunctionResolver {
     // lines only: `logTwin` stays the token itself, so the twin this method
     // registers for its result is the one it registered before.
     inherited?: { tokenLogText: string; nameLogText: (name: string) => string },
-    // PERSISTED text rather than a template leaf: the unsupported-service arm
-    // never refuses it. Set by {@link resolveDynamicReferences} alone, so the
+    // PERSISTED text rather than a template leaf: neither the unsupported-service
+    // arm nor the secret-assembled refusal (issue #4166) refuses it. Set by {@link resolveDynamicReferences} alone, so the
     // default -- every internal route -- is the refusing one.
     persistedText = false
   ): Promise<DynamicReferencePass> {
@@ -12915,10 +12966,10 @@ export class IntrinsicFunctionResolver {
             // PROPAGATED, not defaulted: this internal route is entered ON
             // BEHALF of whatever drove the outer call, so a delegation made for
             // persisted text must not re-arm the refusal the outer call was
-            // exempt from. Unreachable today -- the arm is only taken for an
-            // ARN-form resolvable service, so the sibling classifies that
-            // service and never reaches the unsupported-service branch -- but
-            // the default here would be a silent behaviour change the day it is.
+            // exempt from. The sibling reaches the refusal of a secret result
+            // assembled from a secret (issue #4166); the unsupported-service
+            // refusal it cannot reach, since the arm is only taken for an
+            // ARN-form resolvable service.
             persistedText
           );
           // Replacer FUNCTION for the same reason as every other substitution in
@@ -12986,6 +13037,9 @@ export class IntrinsicFunctionResolver {
           // cache already recorded whatever it was entitled to pin, and a second
           // add could only ever be a no-op or an un-pinning it explicitly avoided
           // (issue #1916).
+          if (cached.secret && cached.value && !persistedText) {
+            this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
+          }
           const recorded = context?.recordedSecretValues;
           if (cached.secret && cached.value && recorded) {
             recorded.set(cached.value, fullMatch);
@@ -13024,6 +13078,11 @@ export class IntrinsicFunctionResolver {
          * which caches nothing (issue #1933).
          */
         let cacheable = true;
+        // A definitive `SecureString` verdict read on the deploy path, pinned
+        // only once the issue #4166 refusal below has passed: pinned first,
+        // a refused token would stay in the process-wide store, where the
+        // redaction path can still name it as a leaf's expression.
+        let pinSecureVerdict = false;
 
         if (service === 'secretsmanager') {
           resolved = await this.resolveSecretsManagerReference(inner, context, nameLogText);
@@ -13047,7 +13106,8 @@ export class IntrinsicFunctionResolver {
           // treated as secret for THIS resolution but deliberately not pinned,
           // so the next pass re-asks instead of inheriting a transient answer.
           if (param.type === 'SecureString') {
-            this.pinSecretVerdict(fullMatch, true);
+            if (decrypt) pinSecureVerdict = true;
+            else this.pinSecretVerdict(fullMatch, true);
           } else if (!param.secure) {
             this.pinSecretVerdict(fullMatch, false);
           } else {
@@ -13155,10 +13215,7 @@ export class IntrinsicFunctionResolver {
           // needle half can fire there (that entry point passes the value as
           // its own twin, so every token pairs with itself), and it is the one
           // that must not: see {@link resolveDynamicReferences}.
-          if (
-            !persistedText &&
-            (tokenLogText !== fullMatch || this.maskNeedlesForLog(fullMatch, context) !== fullMatch)
-          ) {
+          if (!persistedText && this.tokenAssembledFromSecret(fullMatch, tokenLogText, context)) {
             throw markNonRetryable(
               new IntrinsicResolutionRefusalError(
                 `Refusing to resolve ${this.displayMasked(tokenLogText, context)}: its service is not one cdkd ` +
@@ -13177,6 +13234,13 @@ export class IntrinsicFunctionResolver {
           complete = false;
           continue;
         }
+
+        // Issue #4166: refused BEFORE the cache write too, so a later pass
+        // cannot take the value from the cache arm without the same check.
+        if (isSecret && resolved && !persistedText) {
+          this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
+        }
+        if (pinSecureVerdict) this.pinSecretVerdict(fullMatch, true);
 
         // The verdict is stored ALONGSIDE the value so the cache-hit arm above can
         // re-record it into a later pass's bag on its own, without depending on a

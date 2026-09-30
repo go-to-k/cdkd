@@ -1375,21 +1375,34 @@ describe('issue #3150: names parsed out of an assembled dynamic reference', () =
   });
 
   it('a version stage and version id inner Fn::Subs built', async () => {
+    // The lookup succeeds, so the secret result is refused (issue #4166)
+    // after the lookup line: both name the fields masked.
     const resolver = new IntrinsicFunctionResolver('us-east-1');
-    await resolver.resolve(
-      {
-        'Fn::Sub': [
-          `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:\${S}:\${V}}}`,
-          { S: sub('stage-${P}'), V: sub('version-${P}') },
-        ],
-      },
-      makeContext() as never
-    );
+    const message = await resolver
+      .resolve(
+        {
+          'Fn::Sub': [
+            `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:\${S}:\${V}}}`,
+            { S: sub('stage-${P}'), V: sub('version-${P}') },
+          ],
+        },
+        makeContext() as never
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => (e instanceof Error ? e.message : String(e))
+      );
     expect(everyLine()).toContain(
       `Resolving dynamic reference: secretsmanager:${SECRET_ID}:SecretString:pin:stage-***:version-***`
     );
-    expectNowhere(`stage-${PIN}`);
-    expectNowhere(`version-${PIN}`);
+    expect(message).toBe(
+      `Refusing to resolve {{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:stage-***:version-***}}: ` +
+        'the reference was assembled from a secret value and resolves to a secret, so recording it ' +
+        'would write that value into state inside the reference. Build the reference name from ' +
+        'non-secret values.'
+    );
+    expectNowhere(`stage-${PIN}`, String(message));
+    expectNowhere(`version-${PIN}`, String(message));
   });
 
   it('CONTROL: a version stage and version id substituted from unrecorded values print verbatim', async () => {

@@ -38,6 +38,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - ["Unresolved intrinsic function" Error](#unresolved-intrinsic-function-error)
   - [STS cannot report the account, and pseudo parameters fall back](#sts-cannot-report-the-account-and-pseudo-parameters-fall-back)
   - ["Refusing to resolve" a reference whose service cdkd does not resolve](#refusing-to-resolve-a-reference-whose-service-cdkd-does-not-resolve)
+  - ["Refusing to resolve" a reference whose name was built from a secret](#refusing-to-resolve-a-reference-whose-name-was-built-from-a-secret)
   - ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed)
 - [Permission Errors](#permission-errors)
   - ["Access Denied" Error](#access-denied-error)
@@ -1551,6 +1552,51 @@ unresolvable text to it. When another stack imports the value, scrub the
 PRODUCER stack before deploying the consumer: a consumer reads the producer's
 stored output as written, and cannot tell a leaked token from ordinary text.
 Rotate the secret either way.
+
+---
+
+### "Refusing to resolve" a reference whose name was built from a secret
+
+**Symptoms:**
+
+```
+Refusing to resolve {{resolve:ssm:/app/***}}: the reference was assembled from a secret value and resolves to a secret, so recording it would write that value into state inside the reference. Build the reference name from non-secret values.
+```
+
+The resource or stack Output fails as in the section above.
+
+**Causes:**
+
+An `Fn::Sub` or `Fn::Join` puts a secret value into a `secretsmanager`, `ssm`
+or `ssm-secure` reference (its name, or another field such as a JSON key or a
+version stage), and the reference resolves to a secret:
+
+```yaml
+Value:
+  Fn::Sub:
+    - '{{resolve:ssm:/app/${Name}}}'
+    - Name: '{{resolve:secretsmanager:MySecret:SecretString:name}}'
+```
+
+cdkd stores a resolved secret in `state.json` as the reference that resolved
+it. Here that reference holds the other secret, so storing it would write that
+secret into state. A name that spells a secret of four or more characters
+which the deploy already resolved is refused too, even when the text is
+written literally.
+
+Not refused: a reference whose result is public (an `ssm` `String` or
+`StringList` parameter) or empty, and one whose lookup fails, which reports its own
+error with the name masked. `cdkd drift` and a rollback replay read what
+state already holds and are not refused.
+
+**Solution:**
+
+Build the reference name from values that are not secrets: a literal, or a
+plain parameter. If such a template was deployed before cdkd refused it, the
+stack's state record can hold the other secret inside the stored reference.
+[`cdkd scrub`](cli-scrub.md) leaves text inside a `secretsmanager` / `ssm` /
+`ssm-secure` reference as written, so it does not remove it: deploy the
+corrected template, which rewrites the record, and rotate the secret.
 
 ---
 
