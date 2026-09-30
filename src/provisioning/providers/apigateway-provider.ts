@@ -50,7 +50,13 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+} from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
@@ -72,6 +78,36 @@ const REST_API_ID_ADDRESSED_TYPES: ReadonlySet<string> = new Set([
   'AWS::ApiGateway::Deployment',
   'AWS::ApiGateway::Stage',
 ]);
+
+/**
+ * A caught error's text, masked BEFORE it joins a `create()` / `update()`
+ * failure message (issue #2177). AWS quotes a rejected request value back (a
+ * stage name, an authorizer URI, a role ARN), and those values come off the
+ * RESOLVED `properties` bag. Masking the raw text reaches the masker's
+ * whole-value arm, which the assembled sentence cannot.
+ */
+function awsErrorText(error: unknown, log: MaskedLogSinks): string {
+  return log.mask(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * The masked sinks ONE Stage `create()` / `update()` logs through (issue
+ * #2177). A Stage's physical id IS its `StageName`, a template value that can
+ * be secret-derived. The deploy's masker knows the name this deploy resolved;
+ * what it cannot know is a name recorded from a PREVIOUS secret, which state
+ * persists as its `{{resolve:` reference (or `***`) while the old plaintext
+ * stays the physical id. `withDerivedNameMasks` masks the name whenever the
+ * value it came from is secret-derived, including inside the stage ARN the tag
+ * lines print. No length floor, per that helper's contract: a short
+ * secret-derived name over-masks this operation's lines rather than printing.
+ */
+function stageSinks(
+  logger: { debug(message: string): void; warn(message: string): void },
+  context: CreateContext | UpdateContext | undefined,
+  pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
+): MaskedLogSinks {
+  return withDerivedNameMasks(logger, createMaskedLogSinks(logger, context?.maskSecrets), pairs);
+}
 
 /**
  * AWS API Gateway Provider
@@ -179,7 +215,13 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Create a resource
+   * Create a resource.
+   *
+   * Each `create()` / `update()` builds ONE masked sink set from its own
+   * context (issue #2177, `.claude/rules/provider-masking.md`) and routes every
+   * log line and wrapped AWS error text through it; every bag value a cdkd
+   * line interpolates is also masked RAW (`log.value`), so a secret below the
+   * masker's substring floor is caught too. Absent context means identity.
    */
   async create(
     logicalId: string,
@@ -187,19 +229,28 @@ export class ApiGatewayProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
-        return this.createAccount(logicalId, resourceType, properties);
+        return this.createAccount(logicalId, resourceType, properties, log);
       case 'AWS::ApiGateway::Authorizer':
-        return this.createAuthorizer(logicalId, resourceType, properties);
+        return this.createAuthorizer(logicalId, resourceType, properties, log);
       case 'AWS::ApiGateway::Resource':
-        return this.createResource(logicalId, resourceType, properties);
+        return this.createResource(logicalId, resourceType, properties, log);
       case 'AWS::ApiGateway::Deployment':
-        return this.createDeployment(logicalId, resourceType, properties);
+        return this.createDeployment(logicalId, resourceType, properties, log);
       case 'AWS::ApiGateway::Stage':
-        return this.createStage(logicalId, resourceType, properties);
+        return this.createStage(
+          logicalId,
+          resourceType,
+          properties,
+          // `withDerivedNameMasks` drops a non-string name at runtime.
+          stageSinks(this.logger, context, [
+            [properties['StageName'], properties['StageName'] as string | undefined],
+          ])
+        );
       case 'AWS::ApiGateway::Method':
-        return this.createMethod(logicalId, resourceType, properties, context);
+        return this.createMethod(logicalId, resourceType, properties, log, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -210,25 +261,29 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update a resource
+   * Update a resource. `context` is read for its masker only (issue #2177);
+   * see `create()`.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
-        return this.updateAccount(logicalId, physicalId, resourceType, properties);
+        return this.updateAccount(logicalId, physicalId, resourceType, properties, log);
       case 'AWS::ApiGateway::Authorizer':
         return this.updateAuthorizer(
           logicalId,
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       case 'AWS::ApiGateway::Resource':
         return this.updateResource(
@@ -236,17 +291,29 @@ export class ApiGatewayProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       case 'AWS::ApiGateway::Deployment':
         return this.updateDeployment(logicalId, physicalId, resourceType);
       case 'AWS::ApiGateway::Stage':
+        // The recorded name is the physical id. Either side's `StageName`
+        // being secret-derived makes it a needle. The desired side covers the
+        // threaded callers (a rotated secret resolves to a NEW plaintext the
+        // masker knows, and the needle then removes the OLD one). The previous
+        // side is a backstop for a caller whose masker does not know the
+        // desired name while state recorded the name as a `{{resolve:`
+        // reference or `***`; it can only over-mask.
         return this.updateStage(
           logicalId,
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          stageSinks(this.logger, context, [
+            [properties['StageName'], physicalId],
+            [previousProperties['StageName'], physicalId],
+          ])
         );
       case 'AWS::ApiGateway::Method':
         return this.updateMethod(
@@ -254,7 +321,8 @@ export class ApiGatewayProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       default:
         throw new ProvisioningError(
@@ -349,16 +417,17 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async createAccount(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway Account ${logicalId}`);
+    log.debug(`Creating API Gateway Account ${logicalId}`);
 
     const cloudWatchRoleArn = properties['CloudWatchRoleArn'] as string | undefined;
 
     try {
-      await this.updateAccountWithRetry(cloudWatchRoleArn, logicalId, resourceType);
+      await this.updateAccountWithRetry(cloudWatchRoleArn, logicalId, resourceType, log);
 
-      this.logger.debug(`Successfully created API Gateway Account ${logicalId}`);
+      log.debug(`Successfully created API Gateway Account ${logicalId}`);
 
       return {
         physicalId: 'ApiGatewayAccount',
@@ -367,7 +436,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create API Gateway Account ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create API Gateway Account ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -383,16 +452,17 @@ export class ApiGatewayProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating API Gateway Account ${logicalId}`);
+    log.debug(`Updating API Gateway Account ${logicalId}`);
 
     const cloudWatchRoleArn = properties['CloudWatchRoleArn'] as string | undefined;
 
     try {
-      await this.updateAccountWithRetry(cloudWatchRoleArn, logicalId, resourceType);
+      await this.updateAccountWithRetry(cloudWatchRoleArn, logicalId, resourceType, log);
 
-      this.logger.debug(`Successfully updated API Gateway Account ${logicalId}`);
+      log.debug(`Successfully updated API Gateway Account ${logicalId}`);
 
       return {
         physicalId,
@@ -402,7 +472,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update API Gateway Account ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update API Gateway Account ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -455,11 +525,14 @@ export class ApiGatewayProvider implements ResourceProvider {
    * When a new IAM role is created and immediately assigned as the API Gateway
    * CloudWatch role, API Gateway may reject it with "not authorized" because
    * the IAM trust relationship hasn't fully propagated yet.
+   *
+   * `log` is the calling operation's masked sink (issue #2177).
    */
   private async updateAccountWithRetry(
     cloudWatchRoleArn: string | undefined,
     logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    log: MaskedLogSinks
   ): Promise<void> {
     // Use `!== undefined` rather than a truthy gate so that an explicit
     // empty string `''` (the cdkd-state representation of "no
@@ -497,7 +570,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           message.toLowerCase().includes('too many requests');
 
         if (isIamPropagationError && attempt < ApiGatewayProvider.MAX_IAM_RETRIES) {
-          this.logger.warn(
+          log.warn(
             `IAM propagation delay for ${logicalId} (attempt ${attempt}/${ApiGatewayProvider.MAX_IAM_RETRIES}), ` +
               `retrying in ${ApiGatewayProvider.IAM_RETRY_DELAY_MS / 1000}s...`
           );
@@ -521,9 +594,10 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async createAuthorizer(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway Authorizer ${logicalId}`);
+    log.debug(`Creating API Gateway Authorizer ${logicalId}`);
 
     const restApiId = properties['RestApiId'] as string;
     const name = properties['Name'] as string;
@@ -560,9 +634,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
 
       const authorizerId = response.id!;
-      this.logger.debug(
-        `Successfully created API Gateway Authorizer ${logicalId}: ${authorizerId}`
-      );
+      log.debug(`Successfully created API Gateway Authorizer ${logicalId}: ${authorizerId}`);
 
       return {
         physicalId: authorizerId,
@@ -573,7 +645,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create API Gateway Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create API Gateway Authorizer ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -608,9 +680,10 @@ export class ApiGatewayProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating API Gateway Authorizer ${logicalId}: ${physicalId}`);
+    log.debug(`Updating API Gateway Authorizer ${logicalId}: ${physicalId}`);
 
     const restApiId = properties['RestApiId'] as string | undefined;
     if (!restApiId) {
@@ -670,7 +743,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     }
 
     if (patchOperations.length === 0) {
-      this.logger.debug(`No changes detected for API Gateway Authorizer ${logicalId}`);
+      log.debug(`No changes detected for API Gateway Authorizer ${logicalId}`);
       return { physicalId, wasReplaced: false };
     }
 
@@ -682,14 +755,14 @@ export class ApiGatewayProvider implements ResourceProvider {
           patchOperations,
         })
       );
-      this.logger.debug(
+      log.debug(
         `Successfully updated API Gateway Authorizer ${logicalId} (${patchOperations.length} patch ops)`
       );
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update API Gateway Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update API Gateway Authorizer ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -774,9 +847,10 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async createResource(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway Resource ${logicalId}`);
+    log.debug(`Creating API Gateway Resource ${logicalId}`);
 
     const restApiId = properties['RestApiId'] as string;
     const parentId = properties['ParentId'] as string;
@@ -800,7 +874,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
 
       const resourceId = response.id!;
-      this.logger.debug(`Successfully created API Gateway Resource ${logicalId}: ${resourceId}`);
+      log.debug(`Successfully created API Gateway Resource ${logicalId}: ${resourceId}`);
 
       return {
         physicalId: resourceId,
@@ -811,7 +885,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create API Gateway Resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create API Gateway Resource ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -831,21 +905,23 @@ export class ApiGatewayProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating API Gateway Resource ${logicalId}: ${physicalId}`);
+    log.debug(`Updating API Gateway Resource ${logicalId}: ${physicalId}`);
 
     const newPathPart = properties['PathPart'] as string;
     const oldPathPart = previousProperties['PathPart'] as string;
 
     // PathPart is immutable - if it changed, resource must be replaced
     if (newPathPart !== oldPathPart) {
-      this.logger.debug(
-        `PathPart changed from "${oldPathPart}" to "${newPathPart}", replacing resource`
+      // Both path parts are bag values, masked RAW (issue #2177).
+      log.debug(
+        `PathPart changed from "${log.value(oldPathPart)}" to "${log.value(newPathPart)}", replacing resource`
       );
 
       // Create new resource
-      const createResult = await this.createResource(logicalId, resourceType, properties);
+      const createResult = await this.createResource(logicalId, resourceType, properties, log);
 
       // Delete old resource. What it leaves behind rides out on the update's
       // `'partial'` outcome (issue #1819): the new resource already exists so
@@ -860,7 +936,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           redactedDeleteAddressFields({ RestApiId: previousProperties['RestApiId'] }).length > 0
         ) {
           orphanReason = `old API Gateway Resource ${physicalId} was not deleted: its recorded RestApiId is redacted`;
-          this.logger.warn(
+          log.warn(
             safeMsg`Old API Gateway Resource ${physicalId} was not deleted during replacement: its ` +
               `recorded RestApiId is redacted in state, which names no API. The old resource ` +
               `may be orphaned and require manual cleanup.`
@@ -869,8 +945,13 @@ export class ApiGatewayProvider implements ResourceProvider {
           await this.deleteResource(logicalId, physicalId, resourceType, previousProperties);
         }
       } catch (error) {
-        orphanReason = `old API Gateway Resource ${physicalId} could not be deleted: ${safeStringify(error)}`;
-        this.logger.warn(
+        // The delete error is AWS text that can quote the recorded RestApiId
+        // back; the reason rides out on the update's result, so it is masked
+        // here too, not only in the warning (issue #2177).
+        orphanReason = log.mask(
+          `old API Gateway Resource ${physicalId} could not be deleted: ${safeStringify(error)}`
+        );
+        log.warn(
           `Failed to delete old API Gateway Resource ${physicalId} during replacement: ${safeStringify(error)}. ` +
             `The old resource may be orphaned and require manual cleanup.`
         );
@@ -978,9 +1059,10 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async createDeployment(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway Deployment ${logicalId}`);
+    log.debug(`Creating API Gateway Deployment ${logicalId}`);
 
     const restApiId = properties['RestApiId'] as string;
 
@@ -1001,9 +1083,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
 
       const deploymentId = response.id!;
-      this.logger.debug(
-        `Successfully created API Gateway Deployment ${logicalId}: ${deploymentId}`
-      );
+      log.debug(`Successfully created API Gateway Deployment ${logicalId}: ${deploymentId}`);
 
       return {
         physicalId: deploymentId,
@@ -1014,7 +1094,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create API Gateway Deployment ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create API Gateway Deployment ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -1120,9 +1200,10 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async createStage(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway Stage ${logicalId}`);
+    log.debug(`Creating API Gateway Stage ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
@@ -1235,8 +1316,8 @@ export class ApiGatewayProvider implements ResourceProvider {
           try {
             await this.apiGatewayClient.send(new DeleteStageCommand({ restApiId, stageName }));
           } catch (cleanupError) {
-            this.logger.warn(
-              `Failed to clean up stage ${stageName} after a post-create patch failure: ${describeAwsFailure(cleanupError).detail}`
+            log.warn(
+              `Failed to clean up stage ${log.value(stageName)} after a post-create patch failure: ${describeAwsFailure(cleanupError).detail}`
             );
           }
           // The stage itself was created: an "already exists" from the patch is
@@ -1245,7 +1326,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         }
       }
 
-      this.logger.debug(`Successfully created API Gateway Stage ${logicalId}: ${stageName}`);
+      log.debug(`Successfully created API Gateway Stage ${logicalId}: ${log.value(stageName)}`);
 
       return {
         physicalId: stageName,
@@ -1256,7 +1337,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create API Gateway Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create API Gateway Stage ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -1275,9 +1356,10 @@ export class ApiGatewayProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating API Gateway Stage ${logicalId}: ${physicalId}`);
+    log.debug(`Updating API Gateway Stage ${logicalId}: ${log.value(physicalId)}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
@@ -1416,7 +1498,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     const rawAccessLog = properties['AccessLogSetting'];
     const accessLogMalformed = rawAccessLog != null && !isPlainObjectBlock(rawAccessLog);
     if (accessLogMalformed) {
-      this.logger.warn(
+      log.warn(
         `AWS::ApiGateway::Stage AccessLogSetting for ${logicalId} is not an object block (got ${Array.isArray(rawAccessLog) ? 'an array' : typeof rawAccessLog}); leaving the live access-log config untouched.`
       );
     }
@@ -1464,7 +1546,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     const rawCanary = properties['CanarySetting'];
     const canaryMalformed = rawCanary != null && !isPlainObjectBlock(rawCanary);
     if (canaryMalformed) {
-      this.logger.warn(
+      log.warn(
         `AWS::ApiGateway::Stage CanarySetting for ${logicalId} is not an object block (got ${Array.isArray(rawCanary) ? 'an array' : typeof rawCanary}); leaving the live canary config untouched.`
       );
     }
@@ -1576,11 +1658,15 @@ export class ApiGatewayProvider implements ResourceProvider {
           resourceType,
           logicalId,
           previousProperties['Tags'],
-          properties['Tags']
+          properties['Tags'],
+          log,
+          // Display-only (issue #2177): the RestApiId segment is a bag value,
+          // masked RAW like the Method ids; the raw ARN still goes to AWS.
+          stageArn.replace(`/restapis/${restApiId}/`, `/restapis/${log.value(restApiId)}/`)
         );
       }
 
-      this.logger.debug(`Successfully updated API Gateway Stage ${logicalId}`);
+      log.debug(`Successfully updated API Gateway Stage ${logicalId}`);
 
       return {
         physicalId,
@@ -1592,7 +1678,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update API Gateway Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update API Gateway Stage ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1728,9 +1814,10 @@ export class ApiGatewayProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
+    log: MaskedLogSinks,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway Method ${logicalId}`);
+    log.debug(`Creating API Gateway Method ${logicalId}`);
 
     const restApiId = properties['RestApiId'] as string;
     const resourceId = properties['ResourceId'] as string;
@@ -1741,7 +1828,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       properties['AuthorizationType'],
       'NONE',
       'AWS::ApiGateway::Method AuthorizationType',
-      replayWarn(this.logger, context)
+      replayWarn(log, context)
     );
     const authorizerId = properties['AuthorizerId'] as string | undefined;
     const apiKeyRequired = properties['ApiKeyRequired'] as boolean | undefined;
@@ -1783,12 +1870,17 @@ export class ApiGatewayProvider implements ResourceProvider {
         // thrown arm (durable) and the warn arm (terminal) alike, so the masker
         // goes through unconditionally -- it is absent on the paths that have no
         // context, where it degrades to identity.
-        maskSecrets: context?.maskSecrets,
+        maskSecrets: log.mask,
         ...(context?.replayingState === true && {
-          onRefusal: (message: string) => this.logger.warn(message),
+          onRefusal: (message: string) => log.warn(message),
         }),
       }
     );
+    // Issue #2177: the three ids are bag values (resolved `Ref`s and the
+    // verb), each masked RAW before it joins a line, so a secret shorter than
+    // the masker's substring floor is caught too.
+    const maskedIds = [restApiId, resourceId, httpMethod].map((id) => log.value(id));
+    const methodPath = maskedIds.join('/');
 
     try {
       await this.apiGatewayClient.send(
@@ -1933,16 +2025,16 @@ export class ApiGatewayProvider implements ResourceProvider {
           await this.apiGatewayClient.send(
             new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
           );
-          this.logger.debug(
-            `Cleaned up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}) after wiring failure`
+          log.debug(
+            `Cleaned up partially-created API Gateway Method ${logicalId} (${methodPath}) after wiring failure`
           );
         } catch (cleanupError) {
           // All three ids are TEMPLATE values (resolved `Ref`s and the
           // method), so the command renders through `pasteableAwsCommand`
           // (issue #3136): quoted, or withheld when one cannot be printed
           // exactly.
-          this.logger.warn(
-            `Failed to clean up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(context?.maskSecrets)`aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`.render()}`
+          log.warn(
+            `Failed to clean up partially-created API Gateway Method ${logicalId} (${methodPath}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(log.mask)`aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`.render()}`
           );
         }
         // The method itself was created: an "already exists" from its wiring
@@ -1950,7 +2042,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         throw markAuxiliaryFailure(innerError, logicalId);
       }
 
-      this.logger.debug(`Successfully created API Gateway Method ${logicalId}: ${physicalId}`);
+      log.debug(`Successfully created API Gateway Method ${logicalId}: ${maskedIds.join('|')}`);
 
       return {
         physicalId,
@@ -1959,7 +2051,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create API Gateway Method ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create API Gateway Method ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -2008,14 +2100,18 @@ export class ApiGatewayProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating API Gateway Method ${logicalId}: ${physicalId}`);
-
     const parts = physicalId.split('|');
+    // Issue #2177: the recorded ids came off a resolved bag, each masked RAW,
+    // on the updating line and in the malformed-id refusal alike.
+    const maskedId = parts.map((p) => log.value(p)).join('|');
+    log.debug(`Updating API Gateway Method ${logicalId}: ${maskedId}`);
+
     if (parts.length !== 3) {
       throw new ProvisioningError(
-        compositeIdFormatMessage(APIGW_METHOD_ID_FORMAT, logicalId, physicalId),
+        compositeIdFormatMessage(APIGW_METHOD_ID_FORMAT, logicalId, maskedId),
         resourceType,
         logicalId,
         physicalId
@@ -2081,7 +2177,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     }
 
     if (patchOperations.length === 0) {
-      this.logger.debug(`No changes detected for API Gateway Method ${logicalId}`);
+      log.debug(`No changes detected for API Gateway Method ${logicalId}`);
       return { physicalId, wasReplaced: false };
     }
 
@@ -2094,14 +2190,14 @@ export class ApiGatewayProvider implements ResourceProvider {
           patchOperations,
         })
       );
-      this.logger.debug(
+      log.debug(
         `Successfully updated API Gateway Method ${logicalId} (${patchOperations.length} patch ops)`
       );
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update API Gateway Method ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update API Gateway Method ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -2217,18 +2313,25 @@ export class ApiGatewayProvider implements ResourceProvider {
    * `UntagResource` takes `{ resourceArn, tagKeys: [...] }`. Both sides are
    * read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record
    * untags nothing.
+   *
+   * `log` is the calling update's masked sink (issue #2177): the stage ARN
+   * embeds the stage name, which can be secret-derived. `displayArn` is the
+   * ARN the lines print, its RestApiId segment masked RAW by the caller;
+   * `resourceArn` is what AWS receives.
    */
   private async applyTagDiff(
     resourceArn: string,
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    log: MaskedLogSinks,
+    displayArn: string
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
+      log.warn(tagWarning);
     }
     const tagsToAdd: Record<string, string> = Object.fromEntries(plan.set);
     const tagsToRemove = plan.remove;
@@ -2237,14 +2340,12 @@ export class ApiGatewayProvider implements ResourceProvider {
       await this.apiGatewayClient.send(
         new UntagResourceCommand({ resourceArn, tagKeys: tagsToRemove })
       );
-      this.logger.debug(
-        `Removed ${tagsToRemove.length} tag(s) from API Gateway resource ${resourceArn}`
-      );
+      log.debug(`Removed ${tagsToRemove.length} tag(s) from API Gateway resource ${displayArn}`);
     }
     if (Object.keys(tagsToAdd).length > 0) {
       await this.apiGatewayClient.send(new TagResourceCommand({ resourceArn, tags: tagsToAdd }));
-      this.logger.debug(
-        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on API Gateway resource ${resourceArn}`
+      log.debug(
+        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on API Gateway resource ${displayArn}`
       );
     }
   }
