@@ -96,10 +96,11 @@ and never reads the flag under test. Two more vacuity shapes:
 from a slow one; `/run-integ` step 5 carries the watchdog recipe. **ANCHOR the
 predicate a poller waits on**: a line written only at the END
 (`grep -q "^suite_rc="` — unanchored, `test_rc=` matches `typecheck_test_rc=`)
-plus `pgrep -f '[v]erify.sh'` — a bare pattern also matches any POLLER whose
-command line carries it — and, over a state prefix, only `state.json` /
-`lock.json` (`deployments/` is always there). "Completed, exit 0" is the rc of
-what you BACKGROUNDED, so run the long job as that call's SOLE command.
+plus `kill -0 <YOUR run's PID>`, never `pgrep -f <name>`, which also matches
+any poller or peer run whose command line carries it; over a state prefix, read
+only `state.json` / `lock.json` (`deployments/` is always there). "Completed,
+exit 0" is the rc of what you BACKGROUNDED, so run the long job as that call's
+SOLE command.
 
 ### 8-f. Fixture environment prechecks
 
