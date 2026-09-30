@@ -47,9 +47,15 @@ import { getLogger } from '../../utils/logger.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { maskDeep } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskDeep,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+} from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -75,6 +81,25 @@ const API_ID_ADDRESSED_TYPES: ReadonlySet<string> = new Set([
   'AWS::ApiGatewayV2::Route',
   'AWS::ApiGatewayV2::Authorizer',
 ]);
+
+/**
+ * The masked sinks ONE Stage `create()` / `update()` logs through (issue
+ * #2177). A Stage's physical id IS its `StageName`, a template value that can
+ * be secret-derived. The deploy's masker knows the name this deploy resolved;
+ * what it cannot know is a name recorded from a PREVIOUS secret, which state
+ * persists as its `{{resolve:` reference (or `***`) while the old plaintext
+ * stays the physical id. `withDerivedNameMasks` masks the name whenever the
+ * value it came from is secret-derived. No length floor, per that helper's
+ * contract: a short secret-derived name over-masks this operation's lines
+ * rather than printing.
+ */
+function stageSinks(
+  logger: { debug(message: string): void; warn(message: string): void },
+  context: CreateContext | UpdateContext | undefined,
+  pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
+): MaskedLogSinks {
+  return withDerivedNameMasks(logger, createMaskedLogSinks(logger, context?.maskSecrets), pairs);
+}
 
 /**
  * AWS API Gateway V2 (HTTP API) Provider
@@ -241,15 +266,45 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     return this.client;
   }
 
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked (issue #2177): AWS quotes a rejected request value back (a stage
+   * name, an integration URI, an authorizer URI) off the RESOLVED `properties`
+   * bag, and masking the raw text reaches the masker's whole-value arm, which
+   * the assembled sentence cannot. The `cause` stays unmasked, and a message
+   * the mask CHANGED is stamped `markRedactedCause`, so the retry classifiers
+   * read that chain rather than a masked text a secret cut retry wording out
+   * of (the issue #4244 class). A method, so `gen-update-wrap-coverage` sees
+   * the catch that throws it as a wrap. Same logic as `wrapMaskedAwsError`
+   * (`src/deployment/retryable-errors.ts`, added by PR #4257): delegate to it
+   * once that is on `main`.
+   */
+  private wrapMaskedError(
+    log: MaskedLogSinks,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const raw = error instanceof Error ? error.message : String(error);
+    const masked = log.mask(raw);
+    const wrapped = build(masked);
+    return masked === raw ? wrapped : markRedactedCause(wrapped);
+  }
+
   // ─── Dispatch ─────────────────────────────────────────────────────
 
   /**
    * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
-   * #1932 item 3, adopted here by issue #1997). `createIntegration` is the only
-   * arm that interpolates a RESOLVED property value into a log line, so it is
-   * the only arm the masker is threaded into; the rest name nothing but the
-   * logical id. Read defensively — `create()` is also called by the import path
-   * and by tests, neither of which supplies a context.
+   * #1932 item 3). Each `create()` / `update()` builds ONE masked sink set from
+   * its own context (issue #2177, `.claude/rules/provider-masking.md`) and
+   * routes every log line and wrapped AWS error text through it; a bag value a
+   * cdkd line interpolates is also masked RAW (`log.value`), so a secret below
+   * the masker's substring floor is caught too. Read defensively — `create()`
+   * is also called by the import path and by tests, neither of which supplies a
+   * context; absent means identity. The one exception is the Stage path
+   * (`stageSinks`): a Stage name whose source `StageName` spells a
+   * `{{resolve:` reference or is exactly `***` is masked even with no masker,
+   * because that test needs none (on `update()` this is the previous side
+   * read from state).
    */
   async create(
     logicalId: string,
@@ -257,17 +312,24 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const log =
+      resourceType === 'AWS::ApiGatewayV2::Stage'
+        ? // `withDerivedNameMasks` drops a non-string name at runtime.
+          stageSinks(this.logger, context, [
+            [properties['StageName'], properties['StageName'] as string | undefined],
+          ])
+        : createMaskedLogSinks(this.logger, context?.maskSecrets);
     switch (resourceType) {
       case 'AWS::ApiGatewayV2::Api':
-        return this.createApi(logicalId, resourceType, properties);
+        return this.createApi(logicalId, resourceType, properties, log);
       case 'AWS::ApiGatewayV2::Stage':
-        return this.createStage(logicalId, resourceType, properties);
+        return this.createStage(logicalId, resourceType, properties, log);
       case 'AWS::ApiGatewayV2::Integration':
-        return this.createIntegration(logicalId, resourceType, properties, context?.maskSecrets);
+        return this.createIntegration(logicalId, resourceType, properties, log);
       case 'AWS::ApiGatewayV2::Route':
-        return this.createRoute(logicalId, resourceType, properties);
+        return this.createRoute(logicalId, resourceType, properties, log);
       case 'AWS::ApiGatewayV2::Authorizer':
-        return this.createAuthorizer(logicalId, resourceType, properties);
+        return this.createAuthorizer(logicalId, resourceType, properties, log);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -289,11 +351,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * replacement path.
    *
    * The `context` parameter mirrors {@link create}'s: read only for
-   * `maskSecrets`, and only `updateIntegration` needs it. The update path
-   * carries the same RESOLVED bag as the create path, so the masking
-   * requirement is identical on both — a masker present on one and absent from
-   * the other is not a partial fix, it is a fix with a hole in the shape of
-   * whichever path a given deploy takes.
+   * `maskSecrets`, one masked sink set per operation. The update path carries
+   * the same RESOLVED bag as the create path, so the masking requirement is
+   * identical on both — a masker present on one and absent from the other is
+   * not a partial fix, it is a fix with a hole in the shape of whichever path a
+   * given deploy takes.
    */
   async update(
     logicalId: string,
@@ -303,16 +365,38 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // A Stage's recorded name is its physical id. `updateStage` refuses a
+    // StageName CHANGE before it logs anything, so a line is reached only when
+    // both sides agree (a replay of state, which passes the recorded
+    // `{{resolve:` reference or `***`) or one side is absent. Either side
+    // being secret-derived makes the physical id a needle, which covers a
+    // plaintext in no bag of this deploy (a rotated secret); it can only
+    // over-mask.
+    const log =
+      resourceType === 'AWS::ApiGatewayV2::Stage'
+        ? stageSinks(this.logger, context, [
+            [properties['StageName'], physicalId],
+            [previousProperties['StageName'], physicalId],
+          ])
+        : createMaskedLogSinks(this.logger, context?.maskSecrets);
     switch (resourceType) {
       case 'AWS::ApiGatewayV2::Api':
-        return this.updateApi(logicalId, physicalId, resourceType, properties, previousProperties);
+        return this.updateApi(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          log
+        );
       case 'AWS::ApiGatewayV2::Stage':
         return this.updateStage(
           logicalId,
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       case 'AWS::ApiGatewayV2::Integration':
         return this.updateIntegration(
@@ -321,7 +405,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          log
         );
       case 'AWS::ApiGatewayV2::Route':
         return this.updateRoute(
@@ -329,7 +413,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       case 'AWS::ApiGatewayV2::Authorizer':
         return this.updateAuthorizer(
@@ -337,7 +422,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       default:
         throw new ResourceUpdateNotSupportedError(
@@ -410,9 +496,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   private async createApi(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway V2 Api ${logicalId}`);
+    log.debug(`Creating API Gateway V2 Api ${logicalId}`);
 
     const name = properties['Name'] as string;
     const protocolType = properties['ProtocolType'] as string;
@@ -452,7 +539,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       const apiId = response.ApiId!;
       const apiEndpoint = response.ApiEndpoint!;
-      this.logger.debug(`Successfully created API Gateway V2 Api ${logicalId}: ${apiId}`);
+      log.debug(`Successfully created API Gateway V2 Api ${logicalId}: ${apiId}`);
 
       // `ExecuteApiArn` is a read-only attribute AWS publishes on this type and
       // `CreateApi` does not return, so it is CONSTRUCTED — the shape
@@ -463,7 +550,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // `getAttribute`; an absent `*Arn` reaches `guardedPhysicalIdFallback`,
       // which HARD-THROWS because the physical id is a bare api id (the issue
       // [#1179](https://github.com/go-to-k/cdkd/issues/1179) class).
-      const executeApiArn = await this.buildExecuteApiArn(apiId);
+      const executeApiArn = await this.buildExecuteApiArn(apiId, log);
       return {
         physicalId: apiId,
         attributes: {
@@ -474,12 +561,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway V2 Api ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway V2 Api ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -540,18 +632,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * an orphan. A failure means the attribute is absent, which is the state
    * every deploy before this change was in.
    *
-   * Takes NO `SecretMaskingContext`, where its SSM twin takes one, and the
-   * difference is not an oversight: every interpolated value here is
-   * non-secret BY CONSTRUCTION — an AWS-minted api id (or, on import, the
-   * CLI's own `--resource` argument), a derived partition, a region, an
-   * account id — and the catch names the error CLASS rather than its message.
-   * `SSMParameterProvider.buildParameterArn` needs a masker because it
-   * interpolates `error.message`, which quotes a resolved parameter value
-   * back. **Widening this catch to `error.message` therefore requires
-   * threading the masker in the same change**; the invariant is what makes
-   * the omission safe, not the current absence of a caller.
+   * Every interpolated value here is non-secret BY CONSTRUCTION — an
+   * AWS-minted api id (or, on import, the CLI's own `--resource` argument), a
+   * derived partition, a region, an account id — and the catch names the error
+   * CLASS rather than its message. `SSMParameterProvider.buildParameterArn`
+   * must mask because it interpolates `error.message`, which quotes a resolved
+   * parameter value back. **Widening this catch to `error.message` therefore
+   * requires masking it RAW in the same change** (`log.value`). `log` is the
+   * calling `create()` / `update()`'s masked sink (issue #2177), so a warning
+   * added here later is masked by construction; the import path has no
+   * context and takes the identity default.
    */
-  private async buildExecuteApiArn(apiId: string): Promise<string | undefined> {
+  private async buildExecuteApiArn(
+    apiId: string,
+    log: MaskedLogSinks = createMaskedLogSinks(this.logger, undefined)
+  ): Promise<string | undefined> {
     try {
       // The region comes from the CLIENT that just issued the call, not from a
       // default: `getAccountInfo()` with no argument falls back to the ambient
@@ -560,7 +655,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       const region = await this.getClient().config.region();
       const accountInfo = await getAccountInfo(region);
       if (accountInfo.fabricated) {
-        this.logger.warn(
+        log.warn(
           `Cannot determine the AWS account (STS is unreachable, and the resolved account id ` +
             `is a placeholder), so the ExecuteApiArn attribute for API ${apiId} would be ` +
             `fabricated and is NOT recorded. An Fn::GetAtt on it will fail until a later ` +
@@ -576,7 +671,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // with a message naming the RESOLVER, and nothing in the deploy log
       // pointing at the create-time cause. The reachable throw is
       // `config.region()` rejecting.
-      this.logger.warn(
+      log.warn(
         `Could not build the ExecuteApiArn attribute for API ${apiId} ` +
           `(${error instanceof Error ? error.name : typeof error}), so it is NOT recorded. ` +
           `An Fn::GetAtt on it will fail until a later deploy records it.`
@@ -596,9 +691,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   private async createStage(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway V2 Stage ${logicalId}`);
+    log.debug(`Creating API Gateway V2 Stage ${logicalId}`);
 
     const apiId = properties['ApiId'] as string;
     const stageName = properties['StageName'] as string;
@@ -628,7 +724,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully created API Gateway V2 Stage ${logicalId}: ${stageName}`);
+      log.debug(`Successfully created API Gateway V2 Stage ${logicalId}: ${log.value(stageName)}`);
 
       return {
         physicalId: stageName,
@@ -636,12 +732,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway V2 Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway V2 Stage ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -704,9 +805,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway V2 Integration ${logicalId}`);
+    log.debug(`Creating API Gateway V2 Integration ${logicalId}`);
 
     const apiId = properties['ApiId'] as string;
     const integrationType = properties['IntegrationType'] as string;
@@ -719,7 +820,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
     }
 
-    this.warnTlsConfigIgnoredIfPublic(logicalId, properties);
+    this.warnTlsConfigIgnoredIfPublic(logicalId, properties, log);
 
     try {
       const response = await this.getClient().send(
@@ -741,10 +842,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           IntegrationSubtype: properties['IntegrationSubtype'] as string | undefined,
           PassthroughBehavior: properties['PassthroughBehavior'] as PassthroughBehavior | undefined,
           RequestTemplates: properties['RequestTemplates'] as Record<string, string> | undefined,
-          ResponseParameters: this.toSdkResponseParameters(
-            properties['ResponseParameters'],
-            maskSecrets
-          ),
+          ResponseParameters: this.toSdkResponseParameters(properties['ResponseParameters'], log),
           TemplateSelectionExpression: properties['TemplateSelectionExpression'] as
             | string
             | undefined,
@@ -753,9 +851,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
 
       const integrationId = response.IntegrationId!;
-      this.logger.debug(
-        `Successfully created API Gateway V2 Integration ${logicalId}: ${integrationId}`
-      );
+      log.debug(`Successfully created API Gateway V2 Integration ${logicalId}: ${integrationId}`);
 
       return {
         physicalId: integrationId,
@@ -765,12 +861,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway V2 Integration ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway V2 Integration ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -836,9 +937,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   private async createRoute(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway V2 Route ${logicalId}`);
+    log.debug(`Creating API Gateway V2 Route ${logicalId}`);
 
     const apiId = properties['ApiId'] as string;
     const routeKey = properties['RouteKey'] as string;
@@ -874,7 +976,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
 
       const routeId = response.RouteId!;
-      this.logger.debug(`Successfully created API Gateway V2 Route ${logicalId}: ${routeId}`);
+      log.debug(`Successfully created API Gateway V2 Route ${logicalId}: ${routeId}`);
 
       return {
         physicalId: routeId,
@@ -884,12 +986,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway V2 Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway V2 Route ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -951,9 +1058,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   private async createAuthorizer(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating API Gateway V2 Authorizer ${logicalId}`);
+    log.debug(`Creating API Gateway V2 Authorizer ${logicalId}`);
 
     const apiId = properties['ApiId'] as string;
     const authorizerType = properties['AuthorizerType'] as string;
@@ -1001,9 +1109,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
 
       const authorizerId = response.AuthorizerId!;
-      this.logger.debug(
-        `Successfully created API Gateway V2 Authorizer ${logicalId}: ${authorizerId}`
-      );
+      log.debug(`Successfully created API Gateway V2 Authorizer ${logicalId}: ${authorizerId}`);
 
       return {
         physicalId: authorizerId,
@@ -1013,12 +1119,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway V2 Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway V2 Authorizer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1509,7 +1620,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
     if (
       properties['ProtocolType'] !== undefined &&
@@ -1621,11 +1733,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
 
     if (!changed && !corsRemoved) {
-      this.logger.debug(`No mutable Api fields changed for ${logicalId}; skipping UpdateApi`);
+      log.debug(`No mutable Api fields changed for ${logicalId}; skipping UpdateApi`);
       return { physicalId, wasReplaced: false };
     }
 
-    this.logger.debug(`Updating API Gateway V2 Api ${logicalId}: ${physicalId}`);
+    log.debug(`Updating API Gateway V2 Api ${logicalId}: ${physicalId}`);
 
     try {
       let apiEndpoint: string | undefined;
@@ -1634,7 +1746,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         apiEndpoint = updated.ApiEndpoint;
       }
       if (corsRemoved) {
-        this.logger.debug(`Clearing CORS configuration for Api ${logicalId}: ${physicalId}`);
+        log.debug(`Clearing CORS configuration for Api ${logicalId}: ${physicalId}`);
         await this.getClient().send(new DeleteCorsConfigurationCommand({ ApiId: physicalId }));
       }
       // HEAL. `ExecuteApiArn` is a NEW attribute, so no state record written by
@@ -1666,7 +1778,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // STS call (`mockGetAccountInfo` is asserted uncalled on the CORS-only
       // arm) and the inner one gates the write.
       if (apiEndpoint !== undefined) {
-        const executeApiArn = await this.buildExecuteApiArn(physicalId);
+        const executeApiArn = await this.buildExecuteApiArn(physicalId, log);
         if (executeApiArn !== undefined) {
           return {
             physicalId,
@@ -1683,7 +1795,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         // this prints only under `--verbose`. What that warning does not say is
         // what happened HERE: that the update returned no attributes and the
         // previously recorded map was kept. This line is that half.
-        this.logger.debug(
+        log.debug(
           `Skipping the ExecuteApiArn heal for API ${physicalId}: the ARN could not be built. ` +
             `The previously recorded attributes are kept.`
         );
@@ -1691,12 +1803,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway V2 Api ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway V2 Api ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1716,7 +1833,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -1867,21 +1985,26 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           );
         } catch (error) {
           const cause = error instanceof Error ? error : undefined;
-          throw new ProvisioningError(
-            `Failed to update API Gateway V2 Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
+          throw this.wrapMaskedError(
+            log,
+            error,
+            (text) =>
+              new ProvisioningError(
+                `Failed to update API Gateway V2 Stage ${logicalId}: ${text}`,
+                resourceType,
+                logicalId,
+                physicalId,
+                cause
+              )
           );
         }
         return { physicalId, wasReplaced: false };
       }
-      this.logger.debug(`No mutable Stage fields changed for ${logicalId}; skipping UpdateStage`);
+      log.debug(`No mutable Stage fields changed for ${logicalId}; skipping UpdateStage`);
       return { physicalId, wasReplaced: false };
     }
 
-    this.logger.debug(`Updating API Gateway V2 Stage ${logicalId}: ${physicalId}`);
+    log.debug(`Updating API Gateway V2 Stage ${logicalId}: ${log.value(physicalId)}`);
 
     try {
       await this.getClient().send(new UpdateStageCommand(input));
@@ -1889,12 +2012,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway V2 Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway V2 Stage ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1915,7 +2043,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2118,7 +2246,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     ) {
       input.ResponseParameters = this.toSdkResponseParameters(
         properties['ResponseParameters'],
-        maskSecrets
+        log
       );
       changed = true;
     }
@@ -2134,31 +2262,36 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       properties['TlsConfig'] != null &&
       !this.deepEqual(properties['TlsConfig'], previousProperties['TlsConfig'])
     ) {
-      this.warnTlsConfigIgnoredIfPublic(logicalId, properties);
+      this.warnTlsConfigIgnoredIfPublic(logicalId, properties, log);
       input.TlsConfig = properties['TlsConfig'] as TlsConfigInput;
       changed = true;
     }
 
     if (!changed) {
-      this.logger.debug(
+      log.debug(
         `No mutable Integration fields changed for ${logicalId}; skipping UpdateIntegration`
       );
       return { physicalId, wasReplaced: false };
     }
 
-    this.logger.debug(`Updating API Gateway V2 Integration ${logicalId}: ${physicalId}`);
+    log.debug(`Updating API Gateway V2 Integration ${logicalId}: ${physicalId}`);
 
     try {
       await this.getClient().send(new UpdateIntegrationCommand(input));
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway V2 Integration ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway V2 Integration ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2175,7 +2308,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2342,21 +2476,26 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           await this.deleteRouteRequestParameters(apiId, physicalId, droppedRequestParameterKeys);
         } catch (error) {
           const cause = error instanceof Error ? error : undefined;
-          throw new ProvisioningError(
-            `Failed to update API Gateway V2 Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
+          throw this.wrapMaskedError(
+            log,
+            error,
+            (text) =>
+              new ProvisioningError(
+                `Failed to update API Gateway V2 Route ${logicalId}: ${text}`,
+                resourceType,
+                logicalId,
+                physicalId,
+                cause
+              )
           );
         }
         return { physicalId, wasReplaced: false };
       }
-      this.logger.debug(`No mutable Route fields changed for ${logicalId}; skipping UpdateRoute`);
+      log.debug(`No mutable Route fields changed for ${logicalId}; skipping UpdateRoute`);
       return { physicalId, wasReplaced: false };
     }
 
-    this.logger.debug(`Updating API Gateway V2 Route ${logicalId}: ${physicalId}`);
+    log.debug(`Updating API Gateway V2 Route ${logicalId}: ${physicalId}`);
 
     try {
       await this.getClient().send(new UpdateRouteCommand(input));
@@ -2364,12 +2503,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway V2 Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway V2 Route ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2386,7 +2530,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2517,25 +2662,28 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
 
     if (!changed) {
-      this.logger.debug(
-        `No mutable Authorizer fields changed for ${logicalId}; skipping UpdateAuthorizer`
-      );
+      log.debug(`No mutable Authorizer fields changed for ${logicalId}; skipping UpdateAuthorizer`);
       return { physicalId, wasReplaced: false };
     }
 
-    this.logger.debug(`Updating API Gateway V2 Authorizer ${logicalId}: ${physicalId}`);
+    log.debug(`Updating API Gateway V2 Authorizer ${logicalId}: ${physicalId}`);
 
     try {
       await this.getClient().send(new UpdateAuthorizerCommand(input));
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway V2 Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway V2 Authorizer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2722,10 +2870,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    */
   private warnTlsConfigIgnoredIfPublic(
     logicalId: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): void {
     if (properties['TlsConfig'] != null && properties['ConnectionType'] !== 'VPC_LINK') {
-      this.logger.warn(
+      log.warn(
         `AWS::ApiGatewayV2::Integration ${logicalId}: TlsConfig is only honored on a ` +
           `VPC_LINK (private) integration — AWS silently ignores it on a public one, and ` +
           `the value will never be readable back from AWS (issue #1602).`
@@ -2757,29 +2906,28 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * A `Destination` is never coerced — it becomes an SDK map KEY, and a
    * non-string there is a malformed template, not a scalar shorthand.
    *
-   * `maskSecrets` is the caller's secret masker (issue #1932 item 3, adopted
-   * here by issue #1997), threaded from `CreateContext` / `UpdateContext` via
+   * `log` is the calling `create()` / `update()`'s masked sink (issue #1932
+   * item 3, adopted here by issue #1997; one sink per operation since issue
+   * #2177), built from `CreateContext` / `UpdateContext` and passed down via
    * `createIntegration` / `updateIntegration`. The warning below names the
    * offending `Destination` / `Source`, which come out of the RESOLVED
    * `properties` bag — a `{{resolve:secretsmanager:...}}` scalar is plaintext by
    * the time a provider sees it, and neither the deploy engine's error text nor
-   * the resolver's debug line covers a provider's own `logger.warn`. It defaults
-   * to IDENTITY so `readCurrentState`'s inverse mapper and every unit test keep
-   * working unchanged.
+   * the resolver's debug line covers a provider's own `logger.warn`.
    */
   private toSdkResponseParameters(
     value: unknown,
-    maskSecrets: SecretMasker = (text) => text
+    log: MaskedLogSinks
   ): Record<string, Record<string, string>> | undefined {
-    // ONE masked sink for every warning in this method, rather than a
-    // `maskSecrets(...)` at each `logger.warn` call: a warning added later is
-    // masked by construction instead of by the author remembering. It is the
-    // OUTER of two layers — a finished message is always longer than the value
-    // inside it, so it can only reach `maskSecretsInText`'s SUBSTRING arm, which
-    // ignores needles below `MIN_NEEDLE_LENGTH` (4). `maskLeaf` below is the
-    // inner layer, handing the masker the raw string so it reaches the
-    // WHOLE-VALUE arm at any length; the mask is idempotent, so both are free.
-    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    // Every warning here goes through `log.warn`, the operation's ONE masked
+    // sink: a warning added later is masked by construction instead of by the
+    // author remembering. It is the OUTER of two layers — a finished message is
+    // always longer than the value inside it, so it can only reach
+    // `maskSecretsInText`'s SUBSTRING arm, which ignores needles below
+    // `MIN_NEEDLE_LENGTH` (4). `maskLeaf` below is the inner layer, handing the
+    // masker the raw string so it reaches the WHOLE-VALUE arm at any length;
+    // the mask is idempotent, so both are free.
+    const maskSecrets: SecretMasker = log.mask;
     // Mask every string LEAF (and KEY) BEFORE `JSON.stringify` escapes it: a
     // secret carrying a quote, a backslash or a newline no longer OCCURS in the
     // finished line, so the outer sink alone would miss it.
@@ -2832,7 +2980,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           // Never silent: an entry cdkd cannot deliver is the same class of
           // defect as the drop this whole method closes, so it is announced
           // rather than skipped quietly.
-          warn(
+          log.warn(
             `AWS::ApiGatewayV2::Integration ResponseParameters['${maskSecrets(statusCode)}'] has ` +
               `an entry cdkd cannot deliver (Destination must be a string and Source a string / ` +
               `number / boolean; got ${JSON.stringify(maskLeaf(destination))} / ` +
