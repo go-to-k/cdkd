@@ -1603,8 +1603,8 @@ The error above appears only when that re-read could not help:
 `--verbose` prints the AWS error text, which is withheld by default because a
 denied call quotes the caller's account, role and session.
 
-`cdkd diff` issues the same re-read, so its preview shows the value the deploy
-will use, but it never writes the value to state: only a deploy's own read
+`cdkd diff` issues the same re-read, and its preview shows the value that read
+returns, but it never writes the value to state: only a deploy's own read
 records it.
 When that read fails or finds no resource, the diff's message says `This
 preview re-read the attributes from AWS, but ...` where the deploy's says `cdkd

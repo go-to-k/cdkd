@@ -448,7 +448,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
         );
       const preview = (await refuse(true)).message;
       expect(preview).toContain(
-        'cdkd did not re-read it from AWS (this resource type has no read-only lookup); change any property'
+        'cdkd did not re-read it from AWS for this preview; change any property'
       );
       expect(preview).not.toContain('this deploy');
       expect((await refuse(false)).message).toContain(
@@ -620,7 +620,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
         )
       );
       expect(error.message).toContain(
-        'cdkd did not re-read it from AWS (this resource type has no read-only lookup)'
+        'cdkd did not re-read it from AWS for this preview; change any property'
       );
     });
   });

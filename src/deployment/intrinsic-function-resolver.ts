@@ -5874,10 +5874,10 @@ export class IntrinsicFunctionResolver {
         );
       case 'not-attempted':
         return (
-          // The read-only healer declines by type only: `isHealExcludedType`,
-          // or a provider with no `import()`.
+          // No reason in the preview: "written by this deploy" is false there,
+          // and naming another would claim to know why the healer declined.
           (preview
-            ? `cdkd did not re-read it from AWS (this resource type has no read-only lookup); `
+            ? `cdkd did not re-read it from AWS for this preview; `
             : `cdkd did not re-read it from AWS (the record was written by this deploy, or this ` +
               `resource type has no read-only lookup); `) + `${touch}.`
         );
