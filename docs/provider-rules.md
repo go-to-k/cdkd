@@ -1753,8 +1753,8 @@ redaction mask, a `{{resolve:...}}` reference, a stale placeholder ARN, a VPC's
 credential-named key, and any custom-resource attribute are never taken from
 the record, since the value may be a plaintext secret. A live read that fails
 or answers nothing leaves the reference unresolvable without `--force`, as it
-always did, so a
-provider without `getAttribute` gets nothing from the record either. A live
+always did, so a provider without `getAttribute` gets nothing from the record
+either. A live
 read addresses the resource by its recorded name, so after the resource was
 deleted and another one took that name it describes the newcomer; the recorded
 value is the one cdkd's own `Fn::GetAtt` resolution would choose. A recorded

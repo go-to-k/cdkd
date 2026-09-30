@@ -1228,13 +1228,13 @@ describe('--force over an unreadable state.attributes cache', () => {
 });
 
 /**
- * RECORDED FIRST (go-to-k/cdkd#4186). The live read is addressed by the
- * recorded NAME, so after the resource was deleted out of band and another one
- * took the name it answers for the NEWCOMER. The recorded value is what the
- * resolver served the sibling on every deploy, so it wins whenever the resolver
- * would serve it; the live read decides only otherwise.
+ * RECORDED OVER A LIVE ANSWER (go-to-k/cdkd#4186). The live read is addressed
+ * by the recorded NAME, so after the resource was deleted out of band and
+ * another one took the name it answers for the NEWCOMER. Once it answers, the
+ * recorded value replaces that answer wherever the resolver would serve it; a
+ * live read that fails or answers nothing keeps its pre-#4186 outcome.
  */
-describe('recorded attributes are served before a live read (#4186)', () => {
+describe('a recorded attribute replaces a live answer (#4186)', () => {
   const FOREIGN = 'arn:aws:kms:us-east-1:123456789012:key/foreign-key';
   const RECORDED = 'arn:aws:kms:us-east-1:123456789012:key/recorded-key';
 
@@ -1517,6 +1517,22 @@ describe('recorded attributes are served before a live read (#4186)', () => {
     expect(JSON.stringify(result.rewrites)).not.toContain('plaintext-token-value');
     expect(JSON.stringify(result.state.resources['Other'])).not.toContain('plaintext-token-value');
     expect(result.unresolvable).toHaveLength(1);
+  });
+
+  it('does not serve a recorded value when the live read THROWS, and leaves the intrinsic', async () => {
+    const state = repoState({ KmsKeyId: RECORDED });
+    const result = await rewriteResourceReferences(
+      state,
+      ['Repo'],
+      fakeRegistry(
+        vi.fn(async () => {
+          throw new Error('AccessDenied');
+        })
+      )
+    );
+    expect(result.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(result.rewrites)).not.toContain(RECORDED);
+    expect(result.state.resources['Other']?.properties).toEqual(state.resources['Other']?.properties);
   });
 
   it('does not serve a recorded value when the live read answers undefined (a plain out-of-band delete)', async () => {
