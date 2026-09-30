@@ -208,17 +208,38 @@ equals or embeds a fresh `NoEcho` needle of the producer's bag is added to
 That covers the run in which the producer is created or updated. On a LATER
 deploy the producer is `held` and skipped, so its record holds
 `attributes.Value = '***'`, and the consumer's `Fn::GetAtt` would be refused
-again. The #1852 heal cannot help: `readStaleAttributes` drops masked keys
-(`deploy-engine.ts:2721-2726`). So on a `held` verdict, the engine installs the
-readback's live values for the declared attributes into the IN-MEMORY record's
-`attributes` only, and registers them as fresh needles for that logical id.
-This is a deliberate, narrow extension of the readback's "persists nothing"
-property (`deploy-engine.ts:3049-3062`): the values are never persisted, never
-installed as `observedProperties`, and dropped with the run. A producer with no
-readback (`not-readable`) cannot serve them, so its same-stack consumers are
-refused, as a custom-resource `NO_CHANGE` consumer is today
-(`nested-stack-provider.ts:810-816`). That refusal and an out-of-process
-consumer's are listed with the new refusals in section 6.
+again. The #1852 heal cannot help. It runs only for an attribute the record
+LACKS or holds as a stale placeholder
+(`intrinsic-function-resolver.ts:6017-6024`), and `mergeHealedAttributes`
+never overwrites a recorded key (`src/deployment/stale-attribute-heal.ts:169-190`).
+
+So a `held` producer serves the declared attributes through a SIDE map for
+this run:
+
+- **Source.** The #1852 read primitive, `provider.import({ knownPhysicalId })`
+  (`deploy-engine.ts:2703-2712`). It is read-only, memoized per record per
+  deploy, and it returns the ATTRIBUTE map. The `held` readback
+  (`readCurrentState`, `src/types/resource.ts:1142-1148`) returns properties,
+  whose keys coincide with attribute names only by accident (SSM `Value`, but
+  not an SNS `TopicArn`).
+- **Served only where it matches.** A declared attribute is served only when
+  the imported value equals or embeds a fresh needle of the producer's bag.
+  Otherwise the consumer is refused.
+- **Never in the record.** The resolver's `Fn::GetAtt` reads the side map the
+  way it reads the `attributeHealer` channel (`ResolverContext.attributeHealer`,
+  `intrinsic-function-resolver.ts:1667`). It never goes through
+  `healedAttributes` / `withHealedAttributes`, which the persist merge reads
+  (`deploy-engine.ts:2801`). So `stateResources[producer].attributes` is never
+  written by this path. This matters for a `Number` or 1-3 character value,
+  which the value arm would not re-mask on the way out.
+- **Fresh in the consumer.** Each served value is registered as a fresh needle
+  in the consumer's bag, so the consumer's record persists `***`.
+
+A producer whose type has no `import`, or whose value does not match, cannot
+serve them, so its same-stack consumers are refused, as a custom-resource
+`NO_CHANGE` consumer is today (`nested-stack-provider.ts:810-816`). That
+refusal and an out-of-process consumer's are listed with the new refusals in
+section 6.
 
 **`physicalId` stays in the clear.** It is the handle every later call
 addresses the resource by, and AWS publishes it (ARN, name). A value used to
@@ -676,7 +697,9 @@ lanes once B merges.
   - a 3-character value rotated: UPDATE issued;
   - a same-stack `Fn::GetAtt` consumer of an echoed attribute persists `***`,
     and is not refused on the next deploy when the producer's readback is
-    `held`; the live attribute never reaches the persisted record;
+    `held`; with a NUMBER echoed attribute, the persisted producer record
+    still holds `***` (or nothing) at that key after the `held` deploy, which a
+    string case cannot discriminate because the value arm re-masks a string;
   - the same consumer of a `not-readable` producer is refused on the next
     deploy with the remedy.
 - **B, migration.** A v10 fixture record gets `version: 11`, `***` at every
