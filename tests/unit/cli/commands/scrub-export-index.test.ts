@@ -1435,6 +1435,29 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     expect(logLines()).not.toContain('hunter2');
   });
 
+  it('still NAMES an alias-shaped absent entry of a stack whose template records no secret', async () => {
+    synthStacks.push({
+      stackName: 'MyStack',
+      template: {
+        Resources: { Db: { Type: 'AWS::RDS::DBInstance', Properties: { MasterUsername: 'admin' } } },
+        Outputs: { Db: { Value: 'db-1', Export: { Name: 'MyStack:Db' } } },
+      },
+    });
+    records.set('MyStack', {
+      ...makeState('MyStack', 'us-east-1', true),
+      resources: {},
+      outputs: { Db: 'db-1', 'MyStack:Db': 'db-1' },
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['old-bucket-export', entry('bucket-1', 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions({ dryRun: true, fail: true }));
+
+    expect(logLines()).toContain('Exports index entry old-bucket-export (us-east-1)');
+  });
+
   it('summarises an absent entry holding a recorded secret in the singular', async () => {
     synthStacks.push(makeStackInfo('MyStack'));
     records.set('MyStack', makeState('MyStack', 'us-east-1', true));
