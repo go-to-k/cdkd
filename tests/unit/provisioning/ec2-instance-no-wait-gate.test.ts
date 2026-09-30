@@ -63,7 +63,6 @@ import {
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -518,14 +517,14 @@ describe('IAM instance profile skip warning content under --no-wait (issue #1279
   });
 
   // Issue #3136: the profile is a TEMPLATE value, so both commands render
-  // through `pasteableAwsCommand` — quoted, or withheld when it cannot be
-  // printed exactly.
-  it('shell-quotes a forged profile name after Name=, and withholds for a control byte', async () => {
+  // through `pasteableAwsCommand` — withheld when it cannot be printed
+  // exactly or holds a character that changes it once unquoted (go-to-k/cdkd#3950).
+  it('withholds the command for a forged profile name, and for a control byte', async () => {
     await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
       ...PROPS,
       IamInstanceProfile: FORGED_QUOTE,
     });
-    expectQuotedAfter(skipWarning()!, '--iam-instance-profile Name=', FORGED_QUOTE);
+    expectWithheld(skipWarning()!, 'aws ec2 associate-iam-instance-profile');
 
     warnMock.mockReset();
     mockRunInstancesOk('pending');
@@ -536,13 +535,13 @@ describe('IAM instance profile skip warning content under --no-wait (issue #1279
     expectWithheld(skipWarning()!, 'aws ec2 associate-iam-instance-profile');
   });
 
-  it('shell-quotes a forged ARN-shaped profile after Arn=', async () => {
+  it('withholds the command for a forged ARN-shaped profile', async () => {
     const arn = `arn:aws:iam::123456789012:instance-profile/$(id)/${FORGED_QUOTE}`;
     await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
       ...PROPS,
       IamInstanceProfile: arn,
     });
-    expectQuotedAfter(skipWarning()!, '--iam-instance-profile Arn=', arn);
+    expectWithheld(skipWarning()!, 'aws ec2 associate-iam-instance-profile');
   });
 
   it('withholds both commands for a profile the caller masker would change', async () => {

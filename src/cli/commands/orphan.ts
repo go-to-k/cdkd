@@ -197,8 +197,10 @@ interface OrphanOptions {
  *   2. For each non-orphan resource, find every reference to an orphan
  *      in `properties` / `attributes` / `dependencies`:
  *      - `{Ref: O}` → orphan.physicalId
- *      - `{Fn::GetAtt: [O, attr]}` (and `"O.attr"` form) → live
- *        `provider.getAttribute(...)` value (cached per `(O, attr)`).
+ *      - `{Fn::GetAtt: [O, attr]}` (and `"O.attr"` form) → the orphan's
+ *        recorded `attributes[attr]` when servable, else a live
+ *        `provider.getAttribute(...)` value (cached per `(O, attr)`,
+ *        go-to-k/cdkd#4186).
  *      - `Fn::Sub` template strings — `${O}` / `${O.attr}` placeholders
  *        substituted in place; unrelated placeholders preserved.
  *      - dependency-array entries equal to `O` removed.

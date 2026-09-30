@@ -8066,7 +8066,7 @@ export function maskRecordedSecretsInText(text: string, secrets: RecordedSecretV
  * and the retry classifiers (depth 5) use. A link BEYOND the cap keeps its
  * original, UNMASKED message, and the last cloned link points at it.
  */
-const ERROR_CAUSE_MASK_MAX_DEPTH = 20;
+export const ERROR_CAUSE_MASK_MAX_DEPTH = 20;
 
 /**
  * The `cause` chain of `root`, root first, stopping at the first non-`Error`

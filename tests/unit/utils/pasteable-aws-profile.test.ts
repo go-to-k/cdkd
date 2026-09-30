@@ -112,14 +112,22 @@ describe('pasteableAwsProfileFlag', () => {
     expect(pasteableAwsProfileFlag()).toBe(`--profile '<role-profile>'`);
   });
 
-  it('adds nothing under an assumed role when the run named no profile', () => {
-    setAssumedRoleCredentials({
-      accessKeyId: 'AKIDEXAMPLE',
-      secretAccessKey: 'secret',
-      sessionToken: 'token',
-    });
-    expect(pasteableAwsProfileFlag()).toBe('');
-  });
+  it.each([undefined, ''])(
+    'prints the role-profile hole under an assumed role when the run named no profile (%j, go-to-k/cdkd#4178)',
+    (profile) => {
+      setPasteableAwsProfile(profile);
+      setAssumedRoleCredentials({
+        accessKeyId: 'AKIDEXAMPLE',
+        secretAccessKey: 'secret',
+        sessionToken: 'token',
+      });
+      expect(pasteableAwsProfileFlag()).toBe(`--profile '<role-profile>'`);
+      const aws = pasteableAwsCommand();
+      expect(aws`aws iam delete-role --role-name ${'r'}`.render()).toBe(
+        `aws --profile '<role-profile>' iam delete-role --role-name r`
+      );
+    }
+  );
 });
 
 describe('withPasteableAwsProfile', () => {

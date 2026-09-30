@@ -187,7 +187,7 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
 
   it.each(CASES)('$type $attribute falls back, or refuses, with no healer wired', async (c) => {
     if (c.fallback === REFUSED) {
-      // No heal ran (`cdkd diff`, `cdkd drift`, ...): `cdkd deploy` is the
+      // No heal ran (`cdkd drift`, ...): `cdkd deploy` is the
       // remedy, since the record may only predate the read-back.
       await expect(resolveWith(c)).rejects.toThrow(/Run 'cdkd deploy': it re-reads/);
       return;

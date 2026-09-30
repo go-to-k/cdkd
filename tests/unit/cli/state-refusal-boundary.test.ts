@@ -20,7 +20,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { setStdinIsTty } from '../../stdin-tty.js';
 import {
   PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
+  expectZshRunsTheDisplay,
+  itUnderZsh,
   spansThatRun,
   withPasteDir,
 } from '../utils/paste-harness.js';
@@ -347,24 +350,55 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
       expect(lines(warnSpy)).toContain('No state found for stack S in us-east-1, skipping');
     });
 
-    it('no pasted span of a hostile --stack-region skip line runs anything', async () => {
-      // The ` (` after the name stops a pasted line before the name's `$( )`
-      // residual can run beside `--stack-region` (go-to-k/cdkd#3950).
+    // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule, classified in the
+    // go-to-k/cdkd#4127 review M1) until its source row lands, which flips the
+    // last two cases: the line displays the name (JSON) AND carries
+    // `--stack-region eu-west-1`, a `--flag` in prose, which the rule counts
+    // whether it is a directive or not. Under bash the ` (` after the name
+    // stops a pasted line before the name's `$( )` runs; under zsh it does not.
+    const hostileSkipLines = async (): Promise<Array<{ value: string; message: string }>> => {
       const messages: Array<{ value: string; message: string }> = [];
       for (const value of HOSTILE) {
         warnSpy.mockClear();
         mockListStacks.mockResolvedValue([{ stackName: value, region: 'us-east-1' }]);
         // eslint-disable-next-line no-await-in-loop
         await runState(['destroy', value, '--stack-region', 'eu-west-1', '--yes']);
-        messages.push({ value, message: lines(warnSpy).join('\n') });
+        const message = lines(warnSpy).join('\n');
+        // The row itself, found before any rule is asked.
+        expect(message, value).toContain(`Skipping ${JSON.stringify(value)} (no state record`);
+        expect(message, value).toContain('--stack-region eu-west-1');
+        messages.push({ value, message });
       }
+      return messages;
+    };
+
+    it('no pasted span of a hostile --stack-region skip line runs anything under bash', async () => {
+      const messages = await hostileSkipLines();
       withPasteDir((dir) => {
         for (const { value, message } of messages) {
-          expect(message, value).toContain(`Skipping ${JSON.stringify(value)} (no state record`);
-          expect(spansThatRun(message, dir), value).toEqual([]);
+          expect(spansThatRun(message, dir, { shells: ['bash'] }), value).toEqual([]);
         }
       });
     }, 120_000);
+
+    it('S1 state destroy skip line: a hostile name block still carries a --flag (block rule)', async () => {
+      for (const { value, message } of await hostileSkipLines()) {
+        expect(() => expectNoCommandBesideDisplay(message, value), value).toThrow(
+          /also carries a pasteable command/
+        );
+      }
+    });
+
+    itUnderZsh(
+      'S1 state destroy skip line: under zsh a hostile name runs its display (paste)',
+      async () => {
+        const messages = await hostileSkipLines();
+        withPasteDir((dir) => {
+          for (const { value, message } of messages) expectZshRunsTheDisplay(message, dir, value);
+        });
+      },
+      120_000
+    );
 
     it('names the --stack-region skip without cdkd quotes', async () => {
       mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);

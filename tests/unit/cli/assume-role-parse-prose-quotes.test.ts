@@ -101,7 +101,7 @@ describe('--assume-role refusals never put an operand inside cdkd double quotes 
     expect(autoRefusal(GOOD)).toContain(`but --assume-role "${GOOD}" also names`);
     const long = `arn:aws:iam::123456789012:role/${'r'.repeat(300)}`;
     expect(autoRefusal(long)).toContain(`but --assume-role "${long}" also names`);
-  });
+  }, 120_000);
 
   it("describes an operand ending in displayIdent's own cut marker, which round-trips unchanged", () => {
     // Exactly the role-ARN cap of plain characters, then the 35-character

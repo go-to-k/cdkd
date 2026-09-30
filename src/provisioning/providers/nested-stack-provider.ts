@@ -490,6 +490,18 @@ export class NestedStackProvider implements ResourceProvider {
           statePrefix: ctx.destroyOptions.statePrefix,
         }),
         ...(deleteContext?.removeProtection === true && { removeProtection: true }),
+        // go-to-k/cdkd#4150: forwarded ONLY from this delete's own context,
+        // which a top-level destroy sets and a deploy's nested-stack removal
+        // never does (its template-removal DELETE runs after every CREATE).
+        // The parent's producer regions go down with it: a child receives a
+        // parent's cross-region value only as a Parameter, which its own
+        // state does not record as a read.
+        ...(deleteContext?.resolveSecretDerivedPrincipals !== undefined && {
+          resolveSecretDerivedPrincipals: {
+            inheritedProducerRegions:
+              deleteContext.resolveSecretDerivedPrincipals.importedProducerRegions,
+          },
+        }),
         // `--skip-final-snapshot` reaches a whole-nested-stack removal from
         // BOTH directions: `cdkd destroy` / `state destroy` thread it via
         // ctx.destroyOptions, while `cdkd deploy` (template-removal delete of

@@ -132,7 +132,15 @@ substitute dynamic references — so the resolved name can contain a
 resolved secret. That name would become a KEY in `state.json` and in the
 exports index, and redaction rewrites VALUES only, so nothing downstream
 would ever scrub it. cdkd skips such an alias and warns with the name
-masked.
+masked. "Contains" means as a reader sees it: the name is also tested with
+invisible characters and combining marks removed and with compatibility
+characters (full-width, superscript, ligature) folded by Unicode NFKC, so a
+secret spelled that way is refused too, and its name withheld from the
+warning. Cross-script look-alikes (Cyrillic small a, `U+0430`, standing
+for a Latin `a`) are not folded, nor is a secret with a Hangul jamo at
+either edge, or ending in an open Hangul syllable, whose other letters are
+spelled in compatibility characters (the edge can recompose with its
+neighbour in the name).
 
 **Two outputs sharing ONE `Export.Name`** (with no output of that name) is
 NOT guarded, deliberately. Both bags stay consistent there — one iteration

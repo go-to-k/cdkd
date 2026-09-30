@@ -130,11 +130,12 @@ describe('LogsLogGroupProvider partial-create cleanup (Issue #376)', () => {
     expect(warnMsg).not.toContain("--log-group-name '/cdkd/my-log-group'");
   });
 
-  it('shell-quotes the manual delete command for a name carrying a quote, and suppresses it for a control byte (#2669)', async () => {
+  it('suppresses the manual delete command for a name carrying a quote, and for a control byte (#2669)', async () => {
     // Same failure shape as the case above, driven with the two hostile names
     // the shared renderer exists for. A `'` used to break out of the
-    // hand-quoting; a control byte used to be pasted raw into a warn line that
-    // is also persisted into `deployments/*.jsonl`.
+    // hand-quoting, and now suppresses the command as a shell-active character
+    // (go-to-k/cdkd#3950); a control byte used to be pasted raw into a warn
+    // line that is also persisted into `deployments/*.jsonl`.
     mockSend.mockResolvedValueOnce({}); // CreateLogGroupCommand
     mockSend.mockRejectedValueOnce(new Error('PutRetentionPolicy boom (original)'));
     mockSend.mockRejectedValueOnce(new Error('DeleteLogGroup also failed'));
@@ -144,8 +145,9 @@ describe('LogsLogGroupProvider partial-create cleanup (Issue #376)', () => {
         RetentionInDays: 7,
       })
     ).rejects.toThrow('PutRetentionPolicy boom (original)');
-    const quoted = String(warnSpy.mock.calls[0][0]);
-    expect(quoted).toContain("aws logs delete-log-group --log-group-name '/cdkd/it'\\''s-a-group'");
+    const quote = String(warnSpy.mock.calls[0][0]);
+    expect(quote).not.toContain('aws logs delete-log-group');
+    expect(quote).toContain('Manual deletion may be required before the next deploy, via the console');
 
     warnSpy.mockClear();
     mockSend.mockResolvedValueOnce({}); // CreateLogGroupCommand

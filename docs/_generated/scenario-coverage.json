@@ -1794,6 +1794,11 @@
       ]
     },
     {
+      "name": "orphan-getatt-takeover",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "orphan-resource",
       "annotated": true,
       "scenarios": []
@@ -3161,6 +3166,7 @@
     "nested-stack-rollback",
     "nodejs-function",
     "noecho-parameter-masking",
+    "orphan-getatt-takeover",
     "rds-dbinstance-backfill",
     "recreate-mixed-direction",
     "recreate-nested-logical-id-collision",

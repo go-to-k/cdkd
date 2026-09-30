@@ -25,16 +25,9 @@
  */
 import { getAssumedRoleCredentials } from './aws-client-defaults.js';
 import { displaySafe } from './display-safe.js';
-import { commandHole, shellQuote } from './pasteable-command.js';
+import { commandHole, SHELL_ACTIVE, shellQuote } from './pasteable-command.js';
 
 let explicitProfile: string | undefined;
-
-/**
- * Whitespace, and every character a POSIX shell (bash or zsh) treats
- * specially anywhere in a word, `~` and `^` included. A profile holding one
- * is printed as a hole (see {@link pasteableAwsProfileFlag}).
- */
-const SHELL_ACTIVE = /[\s'"`$;&|<>()*?[\]{}!#~\\^=%,]/;
 
 /**
  * Record the run's explicit `--profile` (`undefined` clears it). Called once
@@ -47,10 +40,16 @@ export function setPasteableAwsProfile(profile: string | undefined): void {
 
 /**
  * The `--profile ...` words a pasteable `aws` command must carry, WITHOUT
- * surrounding spaces, or `''` when the run named no profile.
+ * surrounding spaces, or `''` when the run named no profile and assumed no role.
  *
- * - No explicit profile (or an empty one): `''`, so the command is byte-for-byte
- *   what it was before go-to-k/cdkd#3959.
+ * - A run that assumed a role (`--role-arn` / `CDKD_ROLE_ARN`), with or without
+ *   `--profile`: the quoted `'<role-profile>'` hole. Every cdkd call ran as that
+ *   role, possibly in another account, while a pasted command runs as the BASE
+ *   profile's principal or, with no profile, the ambient identity
+ *   (go-to-k/cdkd#4178). The unfilled hole makes the AWS CLI refuse before any
+ *   call, so the operator must name a profile that reaches the role's account.
+ * - No explicit profile (or an empty one) and no role: `''`, so the command is
+ *   byte-for-byte what it was before go-to-k/cdkd#3959.
  * - A profile that renders exactly and holds no shell-active character:
  *   `--profile <shellQuote(profile)>` (bare for a plain ASCII name, quoted for
  *   a non-ASCII one, which is legitimate: go-to-k/cdkd#3377).
@@ -64,18 +63,16 @@ export function setPasteableAwsProfile(profile: string | undefined): void {
  *   Never the altered spelling (a different profile) and never nothing (the
  *   ambient default, the very mis-target this closes); an unfilled hole makes
  *   the AWS CLI refuse the profile before any call.
- * - A run that ALSO assumed a role (`--role-arn` / `CDKD_ROLE_ARN`): every
- *   cdkd call ran as that role, possibly in another account, while
- *   `--profile X` pasted runs as the BASE profile's principal. The
- *   `'<role-profile>'` hole says so and fails closed the same way.
  */
 export function pasteableAwsProfileFlag(): string {
-  const profile = explicitProfile;
-  if (profile === undefined || profile === '') return '';
+  // Checked BEFORE the no-profile arm: a role run without `--profile` must not
+  // print a bare command, which would run as the ambient identity.
   if (getAssumedRoleCredentials() !== undefined) {
     // cdkd-profile-display: a literal hole; the profile's value is not printed.
     return `--profile ${commandHole('role-profile')}`;
   }
+  const profile = explicitProfile;
+  if (profile === undefined || profile === '') return '';
   const safe = displaySafe(profile);
   if (safe !== profile || profile.startsWith('-') || SHELL_ACTIVE.test(profile)) {
     // cdkd-profile-display: a literal hole; the profile's value is not printed.

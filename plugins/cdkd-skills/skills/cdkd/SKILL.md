@@ -195,6 +195,8 @@ failure there could not be cleared. So **a green `--dry-run --fail` does not by
 itself mean every record was examined**: read the warnings, since a record cdkd
 could not certify may still hold a plaintext written by an older binary.
 
+Scrub DROPS a stored output key today's template no longer declares whose value it cannot identify (a deleted output's leftover), naming the key but never its value, so `--dry-run --fail` also exits `1` until a real scrub or a deploy removes it. It keeps such a key when it may be a live export alias whose name scrub could not reproduce, and when another stack's state still records reading it — both are findings, so `--fail` exits `1`; when the other stacks' state cannot be read it drops nothing and exits `2`.
+
 Scrubbing needs the CDK app (`--app` / `CDKD_APP` / `cdk.json`) because state records the resolved value with no marker of which values are secrets — only the template carries the references. Scrub only stops a plaintext secret being re-read out of state going forward; rotating it in Secrets Manager is what retires it.
 
 ## Reclaim asset storage

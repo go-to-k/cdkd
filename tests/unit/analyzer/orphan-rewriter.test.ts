@@ -326,32 +326,38 @@ describe('rewriteResourceReferences', () => {
   });
 
   it('--force falls back to state.attributes cache when live fetch fails', async () => {
+    // A VPC's `Ipv6CidrBlocks` is the ordinary recorded value the
+    // recorded-first read (go-to-k/cdkd#4186) declines, so the live read runs
+    // and fails, and only `--force` reaches the cache.
     const getAttribute = vi.fn(async () => {
       throw new Error('throttled');
     });
     const state = baseState({
-      Bucket: {
-        physicalId: 'b',
-        resourceType: 'AWS::S3::Bucket',
+      Vpc: {
+        physicalId: 'vpc-1',
+        resourceType: 'AWS::EC2::VPC',
         properties: {},
-        attributes: { Arn: 'arn:aws:s3:::b-cached' },
+        attributes: { Ipv6CidrBlocks: ['2600:1f18::/56'] },
       },
       Other: {
         physicalId: 'o',
-        resourceType: 'AWS::Lambda::Function',
-        properties: { Arn: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Vpc', 'Ipv6CidrBlocks'] } },
       },
     });
 
+    const plain = await rewriteResourceReferences(state, ['Vpc'], fakeRegistry(getAttribute));
+    expect(plain.unresolvable.map((u) => u.reason)).toEqual(['throttled']);
+
     const result = await rewriteResourceReferences(
       state,
-      ['Bucket'],
+      ['Vpc'],
       fakeRegistry(getAttribute),
       { force: true }
     );
 
     expect(result.unresolvable).toEqual([]);
-    expect(result.state.resources['Other']?.properties).toEqual({ Arn: 'arn:aws:s3:::b-cached' });
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: ['2600:1f18::/56'] });
   });
 
   it("--force does NOT substitute a legacy '' security-group VpcId after a failed live read (#3097)", async () => {
@@ -748,24 +754,35 @@ describe('rewriteResourceReferences', () => {
     expect(result.unresolvable[0]?.attribute).toBe('Ref');
   });
 
-  it('--force does NOT emit the MASK warning for an ordinary cached value (scope control)', async () => {
-    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
-    warn.mockClear();
-    const state = baseState({
-      Bucket: {
-        physicalId: 'b',
-        resourceType: 'AWS::S3::Bucket',
+  // An ORDINARY recorded value is served before any live read since
+  // go-to-k/cdkd#4186, so it reaches the `--force` fallback only through an arm
+  // the recorded-first read declines by type: a VPC's `Ipv6CidrBlocks`, which
+  // the resolver never serves stored either.
+  function vpcIpv6State(): StackState {
+    return baseState({
+      Vpc: {
+        physicalId: 'vpc-1',
+        resourceType: 'AWS::EC2::VPC',
         properties: {},
-        attributes: { Arn: 'arn:aws:s3:::b-cached' },
+        attributes: { Ipv6CidrBlocks: ['2600:1f18::/56'] },
       },
       Other: {
         physicalId: 'o',
-        resourceType: 'AWS::Lambda::Function',
-        properties: { Arn: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Vpc', 'Ipv6CidrBlocks'] } },
       },
     });
+  }
 
-    await rewriteResourceReferences(state, ['Bucket'], fakeRegistry(), { force: true });
+  it('--force does NOT emit the MASK warning for an ordinary cached value (scope control)', async () => {
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const state = vpcIpv6State();
+
+    const result = await rewriteResourceReferences(state, ['Vpc'], fakeRegistry(), {
+      force: true,
+    });
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: ['2600:1f18::/56'] });
 
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).toContain('falling back to cached value');
@@ -780,22 +797,11 @@ describe('rewriteResourceReferences', () => {
     const getAttribute = vi.fn(async () => {
       throw new Error('throttled');
     });
-    const state = baseState({
-      Bucket: {
-        physicalId: 'b',
-        resourceType: 'AWS::S3::Bucket',
-        properties: {},
-        attributes: { Arn: 'arn:aws:s3:::b-cached' },
-      },
-      Other: {
-        physicalId: 'o',
-        resourceType: 'AWS::Lambda::Function',
-        properties: { Arn: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
-      },
-    });
+    const state = vpcIpv6State();
 
-    await rewriteResourceReferences(state, ['Bucket'], fakeRegistry(getAttribute), { force: true });
+    await rewriteResourceReferences(state, ['Vpc'], fakeRegistry(getAttribute), { force: true });
 
+    expect(getAttribute).toHaveBeenCalledTimes(1);
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     // The ordinary "falling back to cached value" warn still fires...
     expect(warned).toContain('falling back to cached value');
@@ -1179,26 +1185,27 @@ describe('--force over an unreadable state.attributes cache', () => {
   }
 
   it('CONTROL: an OWN key of a readable cache is still served', async () => {
+    // A VPC's `Ipv6CidrBlocks` is declined by the recorded-first read
+    // (go-to-k/cdkd#4186), so this reaches the fallback's own-key read.
+    const getAttribute = vi.fn(async () => undefined);
     const state = baseState({
-      Bucket: {
-        physicalId: 'b',
-        resourceType: 'AWS::S3::Bucket',
+      Vpc: {
+        physicalId: 'vpc-1',
+        resourceType: 'AWS::EC2::VPC',
         properties: {},
-        attributes: { Arn: 'arn-cached' },
+        attributes: { Ipv6CidrBlocks: ['2600:1f18::/56'] },
       },
       Other: {
         physicalId: 'o',
         resourceType: 'AWS::Lambda::Function',
-        properties: { A: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+        properties: { A: { 'Fn::GetAtt': ['Vpc', 'Ipv6CidrBlocks'] } },
       },
     });
-    const result = await rewriteResourceReferences(
-      state,
-      ['Bucket'],
-      fakeRegistry(vi.fn(async () => undefined)),
-      { force: true }
-    );
-    expect(result.state.resources['Other']?.properties).toEqual({ A: 'arn-cached' });
+    const result = await rewriteResourceReferences(state, ['Vpc'], fakeRegistry(getAttribute), {
+      force: true,
+    });
+    expect(getAttribute).toHaveBeenCalledTimes(1);
+    expect(result.state.resources['Other']?.properties).toEqual({ A: ['2600:1f18::/56'] });
   });
 
   it('CONTROL: an absent cache still reads as holding nothing, with its own warning', async () => {
@@ -1217,5 +1224,451 @@ describe('--force over an unreadable state.attributes cache', () => {
       { force: true }
     );
     expect(result.unresolvable[0]?.reason).toContain('cache also has no value');
+  });
+});
+
+/**
+ * RECORDED OVER A LIVE ANSWER (go-to-k/cdkd#4186). The live read is addressed
+ * by the recorded NAME, so after the resource was deleted out of band and
+ * another one took the name it answers for the NEWCOMER. Once it answers, the
+ * recorded value replaces that answer wherever the resolver would serve it; a
+ * live read that fails or answers nothing keeps its pre-#4186 outcome.
+ */
+describe('a recorded attribute replaces a live answer (#4186)', () => {
+  const FOREIGN = 'arn:aws:kms:us-east-1:123456789012:key/foreign-key';
+  const RECORDED = 'arn:aws:kms:us-east-1:123456789012:key/recorded-key';
+
+  function repoState(
+    attributes: Record<string, unknown> | undefined,
+    attribute = 'KmsKeyId',
+    resourceType = 'AWS::CodeCommit::Repository'
+  ): StackState {
+    return baseState({
+      Repo: {
+        physicalId: 'my-repo',
+        resourceType,
+        properties: {},
+        ...(attributes !== undefined && { attributes }),
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::Lambda::Function',
+        properties: {
+          Array: { 'Fn::GetAtt': ['Repo', attribute] },
+          String: { 'Fn::GetAtt': `Repo.${attribute}` },
+          Sub: { 'Fn::Sub': `k=\${Repo.${attribute}}` },
+        },
+      },
+    });
+  }
+
+  it('takes the recorded value over a DIFFERENT live one, in all three shapes', async () => {
+    const getAttribute = vi.fn(async () => FOREIGN);
+    const result = await rewriteResourceReferences(
+      repoState({ KmsKeyId: RECORDED }),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect(result.unresolvable).toEqual([]);
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Array: RECORDED,
+      String: RECORDED,
+      Sub: `k=${RECORDED}`,
+    });
+    expect(getAttribute).toHaveBeenCalledTimes(1);
+    expect(result.rewrites.filter((r) => r.kind === 'getAtt').map((r) => r.after)).toEqual([
+      RECORDED,
+      RECORDED,
+    ]);
+  });
+
+  it('CONTROL: an attribute the record lacks is still read live', async () => {
+    const getAttribute = vi.fn(async () => FOREIGN);
+    const result = await rewriteResourceReferences(
+      repoState({ Arn: 'arn:aws:codecommit:us-east-1:123456789012:my-repo' }),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Array: FOREIGN,
+      String: FOREIGN,
+      Sub: `k=${FOREIGN}`,
+    });
+    // Memoized: one live read serves all three sites.
+    expect(getAttribute).toHaveBeenCalledTimes(1);
+    expect(getAttribute).toHaveBeenCalledWith('my-repo', 'AWS::CodeCommit::Repository', 'KmsKeyId');
+  });
+
+  it('CONTROL: a record with no attributes map is still read live', async () => {
+    const getAttribute = vi.fn(async () => FOREIGN);
+    const result = await rewriteResourceReferences(
+      repoState(undefined),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(FOREIGN);
+  });
+
+  it('takes a recorded null as the resolver does, over a live value', async () => {
+    const getAttribute = vi.fn(async () => FOREIGN);
+    const result = await rewriteResourceReferences(
+      repoState({ KmsKeyId: null }),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBeNull();
+    expect(getAttribute).toHaveBeenCalledTimes(1);
+  });
+
+  for (const [label, masked] of [
+    ['the mask itself', SECRET_MASK],
+    ['a list holding the mask', ['a', SECRET_MASK]],
+    ['an object holding the mask', { Inner: SECRET_MASK }],
+  ] as const) {
+    it(`never writes ${label} into a sibling on the default path; reads live instead`, async () => {
+      const getAttribute = vi.fn(async () => 'live-value');
+      const result = await rewriteResourceReferences(
+        repoState({ KmsKeyId: masked }),
+        ['Repo'],
+        fakeRegistry(getAttribute)
+      );
+      expect(result.state.resources['Other']?.properties).toEqual({
+        Array: 'live-value',
+        String: 'live-value',
+        Sub: 'k=live-value',
+      });
+      expect(JSON.stringify(result.state)).not.toContain(SECRET_MASK);
+    });
+  }
+
+  it('a masked recorded value with a FAILED live read stays unresolvable without --force', async () => {
+    const getAttribute = vi.fn(async () => {
+      throw new Error('RepositoryDoesNotExistException');
+    });
+    const state = repoState({ KmsKeyId: SECRET_MASK });
+    const result = await rewriteResourceReferences(state, ['Repo'], fakeRegistry(getAttribute));
+    expect(result.state.resources['Other']?.properties).toEqual(
+      state.resources['Other']?.properties
+    );
+    expect(result.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(SECRET_MASK);
+  });
+
+  it('reads live past a recorded {{resolve:...}} reference (issue #2055)', async () => {
+    const TOKEN = '{{resolve:secretsmanager:prod/db:SecretString:password::}}';
+    const getAttribute = vi.fn(async () => 'live-value');
+    const result = await rewriteResourceReferences(
+      repoState({ 'Outputs.Pw': TOKEN }, 'Outputs.Pw', 'AWS::CloudFormation::Stack'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-value'
+    );
+    expect(JSON.stringify(result.state)).not.toContain('{{resolve:');
+  });
+
+  it('reads live past a pre-#1681 placeholder ARN, and serves a real recorded ARN', async () => {
+    const PLACEHOLDER = 'arn:aws:appsync:*:*:apis/abc/apikeys/k';
+    const REAL = 'arn:aws:appsync:us-east-1:123456789012:apis/abc/apikeys/k';
+    const getAttribute = vi.fn(async () => REAL);
+    const stale = await rewriteResourceReferences(
+      repoState({ Arn: PLACEHOLDER }, 'Arn', 'AWS::AppSync::ApiKey'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((stale.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(REAL);
+    expect(getAttribute).toHaveBeenCalledTimes(1);
+
+    getAttribute.mockClear();
+    const recorded = 'arn:aws:appsync:us-east-1:123456789012:apis/abc/apikeys/recorded';
+    const fresh = await rewriteResourceReferences(
+      repoState({ Arn: recorded }, 'Arn', 'AWS::AppSync::ApiKey'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((fresh.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(recorded);
+    expect(getAttribute).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads live past a legacy '' security-group VpcId (#3097)", async () => {
+    const getAttribute = vi.fn(async () => 'vpc-live');
+    const result = await rewriteResourceReferences(
+      repoState({ VpcId: '' }, 'VpcId', 'AWS::EC2::SecurityGroup'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'vpc-live'
+    );
+  });
+
+  it("reads a VPC's Ipv6CidrBlocks live even when recorded, as the resolver does", async () => {
+    const getAttribute = vi.fn(async () => ['2600:1f18::/56']);
+    const result = await rewriteResourceReferences(
+      repoState({ Ipv6CidrBlocks: [] }, 'Ipv6CidrBlocks', 'AWS::EC2::VPC'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toEqual([
+      '2600:1f18::/56',
+    ]);
+  });
+
+  it('splits a legacy comma-joined Route 53 NameServers string into the list', async () => {
+    const getAttribute = vi.fn(async () => ['ns-foreign']);
+    const result = await rewriteResourceReferences(
+      repoState({ NameServers: 'ns-1,ns-2' }, 'NameServers', 'AWS::Route53::HostedZone'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toEqual([
+      'ns-1',
+      'ns-2',
+    ]);
+    expect(getAttribute).toHaveBeenCalled();
+  });
+
+  it('serves a dotted attribute from a flat key, then from a nested object (issue #381)', async () => {
+    const getAttribute = vi.fn(async () => 'live-port');
+    const flat = await rewriteResourceReferences(
+      repoState({ 'Endpoint.Port': '5432', Endpoint: { Port: '3306' } }, 'Endpoint.Port', 'AWS::RDS::DBCluster'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((flat.state.resources['Other']?.properties as { Array: unknown }).Array).toBe('5432');
+    const nested = await rewriteResourceReferences(
+      repoState({ Endpoint: { Port: '3306' } }, 'Endpoint.Port', 'AWS::RDS::DBCluster'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((nested.state.resources['Other']?.properties as { Array: unknown }).Array).toBe('3306');
+    expect(getAttribute).toHaveBeenCalled();
+  });
+
+  it('does not walk an INHERITED key of a nested attribute object', async () => {
+    const getAttribute = vi.fn(async () => 'live-value');
+    const result = await rewriteResourceReferences(
+      repoState({ Endpoint: { Port: '3306' } }, 'Endpoint.constructor', 'AWS::RDS::DBCluster'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-value'
+    );
+    expect(getAttribute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not serve a masked leaf through the nested walk', async () => {
+    const getAttribute = vi.fn(async () => 'live-value');
+    const result = await rewriteResourceReferences(
+      repoState({ Endpoint: { Password: SECRET_MASK } }, 'Endpoint.Password', 'AWS::RDS::DBCluster'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-value'
+    );
+  });
+
+  // GATED ON A LIVE ANSWER (security review of go-to-k/cdkd#4189): a record
+  // whose provider cannot answer keeps its pre-#4186 outcome, so the recorded
+  // read never prints what the live-read-only path could not.
+  it('does NOT serve a recorded value where the provider has no getAttribute or none routes', async () => {
+    const noGetAttribute = await rewriteResourceReferences(
+      repoState({ KmsKeyId: RECORDED }),
+      ['Repo'],
+      fakeRegistry()
+    );
+    expect(noGetAttribute.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(noGetAttribute.rewrites)).not.toContain(RECORDED);
+    const throwing = {
+      getProviderFor: vi.fn(() => {
+        throw new Error('no provider');
+      }),
+    } as unknown as ProviderRegistry;
+    const noProvider = await rewriteResourceReferences(
+      repoState({ KmsKeyId: RECORDED }),
+      ['Repo'],
+      throwing
+    );
+    expect(noProvider.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(noProvider.rewrites)).not.toContain(RECORDED);
+  });
+
+  it('does not serve a Cloud-Control-routed record, whose attributes are the whole model', async () => {
+    // `CloudControlProvider` implements no `getAttribute`, and its record can
+    // hold a credential no name rule sees (`TokenValue`).
+    const state = baseState({
+      Tok: {
+        physicalId: 'tok-1',
+        resourceType: 'AWS::EC2::IpamExternalResourceVerificationToken',
+        properties: {},
+        attributes: { TokenValue: 'plaintext-token-value' },
+        provisionedBy: 'cc-api',
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Tok', 'TokenValue'] } },
+      },
+    });
+    const result = await rewriteResourceReferences(state, ['Tok'], fakeRegistry());
+    expect(JSON.stringify(result.rewrites)).not.toContain('plaintext-token-value');
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain('plaintext-token-value');
+    expect(result.unresolvable).toHaveLength(1);
+  });
+
+  it('does not serve a recorded value when the live read THROWS, and leaves the intrinsic', async () => {
+    const state = repoState({ KmsKeyId: RECORDED });
+    const result = await rewriteResourceReferences(
+      state,
+      ['Repo'],
+      fakeRegistry(
+        vi.fn(async () => {
+          throw new Error('AccessDenied');
+        })
+      )
+    );
+    expect(result.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(result.rewrites)).not.toContain(RECORDED);
+    expect(result.state.resources['Other']?.properties).toEqual(state.resources['Other']?.properties);
+  });
+
+  it('does not serve a recorded value when the live read answers undefined (a plain out-of-band delete)', async () => {
+    const result = await rewriteResourceReferences(
+      repoState({ KmsKeyId: RECORDED }),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => undefined))
+    );
+    expect(result.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(result.rewrites)).not.toContain(RECORDED);
+  });
+
+  it("serves an empty legacy NameServers string as [], the resolver's shape", async () => {
+    const result = await rewriteResourceReferences(
+      repoState({ NameServers: '' }, 'NameServers', 'AWS::Route53::HostedZone'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => ['ns-foreign']))
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toEqual([]);
+  });
+
+  it('reads live when a nested walk meets a null, instead of throwing', async () => {
+    const getAttribute = vi.fn(async () => 'live-port');
+    const result = await rewriteResourceReferences(
+      repoState({ Endpoint: null }, 'Endpoint.Port', 'AWS::RDS::DBCluster'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-port'
+    );
+  });
+
+  // A recorded value that may be a SECRET PLAINTEXT is never substituted on
+  // the default path: the audit table prints every substituted value.
+  it('does not serve a credential-named attribute (IAM AccessKey SecretAccessKey)', async () => {
+    const SECRET = 'PLAINTEXT-SECRET-ACCESS-KEY';
+    // A provider that DID answer (the real one refuses): the name rule alone
+    // must withhold the record, and the live answer decides as before #4186.
+    const getAttribute = vi.fn(async () => 'live-answer');
+    const result = await rewriteResourceReferences(
+      repoState({ SecretAccessKey: SECRET }, 'SecretAccessKey', 'AWS::IAM::AccessKey'),
+      ['Repo'],
+      fakeRegistry(getAttribute)
+    );
+    expect(JSON.stringify(result.rewrites)).not.toContain(SECRET);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(SECRET);
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-answer'
+    );
+  });
+
+  it('CONTROL: a credential-looking name ending in an identifier suffix IS served', async () => {
+    const ARN = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:s-AbCdEf';
+    const result = await rewriteResourceReferences(
+      repoState({ 'MasterUserSecret.SecretArn': ARN }, 'MasterUserSecret.SecretArn', 'AWS::RDS::DBInstance'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live'))
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(ARN);
+  });
+
+  for (const type of ['AWS::CloudFormation::CustomResource', 'Custom::Thing']) {
+    it(`does not serve a recorded custom-resource value (${type})`, async () => {
+      const PLAIN = 'legacy-noecho-plaintext';
+      // A provider that DID answer: the type rule alone must withhold it.
+      const result = await rewriteResourceReferences(
+        repoState({ Token: PLAIN }, 'Token', type),
+        ['Repo'],
+        fakeRegistry(vi.fn(async () => 'live-answer'))
+      );
+      expect(JSON.stringify(result.rewrites)).not.toContain(PLAIN);
+      expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+        'live-answer'
+      );
+    });
+  }
+
+  it("does not serve an AppSync API key's ApiKey, the x-api-key value itself", async () => {
+    const KEY = 'da2-plaintextapikeyvalue123';
+    // A provider that DID answer: the table alone must withhold the record.
+    const result = await rewriteResourceReferences(
+      repoState({ ApiKey: KEY, Arn: 'arn:aws:appsync:us-east-1:1:apis/a/apikey/k' }, 'ApiKey', 'AWS::AppSync::ApiKey'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live-answer'))
+    );
+    expect(JSON.stringify(result.rewrites)).not.toContain(KEY);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(KEY);
+    // CONTROL: with a live answer, the same record's Arn is served. (The
+    // real AppSync provider answers nothing, so this isolates the table.)
+    const arn = await rewriteResourceReferences(
+      repoState({ ApiKey: KEY, Arn: 'arn:aws:appsync:us-east-1:1:apis/a/apikey/k' }, 'Arn', 'AWS::AppSync::ApiKey'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live-arn'))
+    );
+    expect((arn.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'arn:aws:appsync:us-east-1:1:apis/a/apikey/k'
+    );
+  });
+
+  for (const [label, value] of [
+    ['a top-level Password leaf', { Host: 'h', Password: 'pw-plaintext-1' }],
+    ['a nested credential leaf', { Conn: [{ Credentials: 'pw-plaintext-1' }] }],
+  ] as const) {
+    it(`does not serve an innocently named object holding ${label}; reads live instead`, async () => {
+      const getAttribute = vi.fn(async () => 'live-value');
+      const result = await rewriteResourceReferences(
+        repoState({ Endpoint: value }, 'Endpoint', 'AWS::RDS::DBCluster'),
+        ['Repo'],
+        fakeRegistry(getAttribute)
+      );
+      expect(JSON.stringify(result.rewrites)).not.toContain('pw-plaintext-1');
+      expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+        'live-value'
+      );
+    });
+  }
+
+  it('CONTROL: an object whose keys are identifiers only is served whole', async () => {
+    const value = { Address: 'db.example', Port: '5432', SecretArn: 'arn:s' };
+    const result = await rewriteResourceReferences(
+      repoState({ Endpoint: value }, 'Endpoint', 'AWS::RDS::DBCluster'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live-value'))
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toEqual(value);
+  });
+
+  it('does not answer an INHERITED flat key from the record, even when the live read answers', async () => {
+    const result = await rewriteResourceReferences(
+      repoState(JSON.parse('{"Arn":"arn"}'), 'constructor'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live-value'))
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'live-value'
+    );
   });
 });

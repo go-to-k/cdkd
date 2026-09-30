@@ -56,6 +56,7 @@ import { SchedulerScheduleProvider } from '../../../src/provisioning/providers/s
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
 import { FSxFileSystemProvider } from '../../../src/provisioning/providers/fsx-filesystem-provider.js';
 import { S3VectorsProvider } from '../../../src/provisioning/providers/s3-vectors-provider.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 /** Drive an `update()` that must throw, and hand back the message. */
 async function refusalMessage(run: () => Promise<unknown>): Promise<string> {
@@ -102,15 +103,42 @@ describe('protectedReplacementAdvice', () => {
     expect(advice).toContain('`aws widgets unprotect --id w-1 --protected false`');
   });
 
-  it('SHELL-QUOTES an id that needs it, so the command cannot truncate when pasted', () => {
+  it('withholds the command for an id holding a shell-active character (go-to-k/cdkd#3950)', () => {
     // The id is NOT an AWS-minted literal: the deploy engine passes
     // `currentResource.physicalId` off state.json, and for GlobalTable / ASG
-    // the physical id is the TEMPLATE-chosen name.
-    expect(build('my table')).toContain("`aws widgets unprotect --id 'my table' --protected false`");
-    expect(build("it's-mine")).toContain(
-      "`aws widgets unprotect --id 'it'\\''s-mine' --protected false`"
+    // the physical id is the TEMPLATE-chosen name. The command sits inside
+    // backticks and after `cdkd's`, so such an id is not named at all.
+    for (const id of ['my table', "it's-mine"]) {
+      const withheld = build(id);
+      expect(withheld, id).not.toContain('aws widgets unprotect');
+      expect(withheld, id).not.toContain(id);
+      expect(withheld, id).toContain(UNNAMEABLE_ID_CLAUSE);
+    }
+    // A plain id with no shell-active character is still named, bare.
+    expect(build('team.a_b@c:d/e+f')).toContain(
+      '`aws widgets unprotect --id team.a_b@c:d/e+f --protected false`'
     );
   });
+
+  it('pastes nothing runnable for any payload used as the id (go-to-k/cdkd#3950)', () => {
+    // The paste fence for this renderer: each payload family, plus a
+    // space-free one a whitespace gate alone would admit, rendered as the id
+    // and fed to bash at line, sentence and clause granularity
+    // (`tests/unit/utils/paste-harness.ts`).
+    // `x;>OWNED;#` holds no whitespace, `$` or backtick; after the `cdkd's`
+    // flip its `#` comments out the value's closing quote, so a gate narrowed
+    // to those would red on the paste alone (go-to-k/cdkd#4198 R5).
+    const ids = [...PASTE_PAYLOADS.map((p) => p.value), `x;touch${'$'}{IFS}OWNED`, 'x`touch${IFS}OWNED`y', 'x;>OWNED;#'];
+    const rendered = ids.map((id) => ({ id, message: build(id) }));
+    withPasteDir((dir) => {
+      for (const { id, message } of rendered) {
+        // The paste first: with the gate reverted it reds on its own, since the
+        // shell-quoted id then runs (measured), before the spelling below.
+        expect(spansThatRun(message, dir), id).toEqual([]);
+        expect(message, id).not.toContain('aws ');
+      }
+    });
+  }, 120_000);
 
   it('SUPPRESSES the whole command when sanitizing would CHANGE the id', () => {
     // A command naming the sanitized id would act on a DIFFERENT resource --

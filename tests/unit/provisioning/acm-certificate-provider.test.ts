@@ -48,7 +48,6 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -385,11 +384,13 @@ describe('ACMCertificateProvider', () => {
     });
 
     // Issue #3136: the ARN (AWS-minted, off the RequestCertificate response)
-    // and the region parsed out of it route through `pasteableAwsCommand`.
+    // and the region parsed out of it route through `pasteableAwsCommand`,
+    // which withholds a value holding a shell-active character
+    // (go-to-k/cdkd#3950) as it does one holding a control byte.
     it.each([
-      ['quoted', `${ARN}${FORGED_QUOTE}`],
-      ['withheld', `${ARN}${FORGED_CTRL}`],
-    ])('the survivor note command is %s for a forged certificate ARN', async (outcome, arn) => {
+      ['a shell-active character', `${ARN}${FORGED_QUOTE}`],
+      ['a control byte', `${ARN}${FORGED_CTRL}`],
+    ])('the survivor note command is withheld for a forged certificate ARN carrying %s', async (_label, arn) => {
       process.env['CDKD_NO_WAIT'] = '';
       mockSend.mockResolvedValueOnce({ CertificateArn: arn });
       for (let i = 0; i < 10; i++) {
@@ -407,11 +408,7 @@ describe('ACMCertificateProvider', () => {
         );
 
       expect(message).toMatch(/could NOT be deleted/);
-      if (outcome === 'quoted') {
-        expectQuotedAfter(message, 'aws acm delete-certificate --certificate-arn ', arn);
-      } else {
-        expectWithheld(message, 'aws acm delete-certificate');
-      }
+      expectWithheld(message, 'aws acm delete-certificate');
     });
 
     it('appends the survivor note on the NON-cdkd path too', async () => {

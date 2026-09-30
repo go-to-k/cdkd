@@ -931,7 +931,13 @@ secret-reference-`ServiceToken` arms), the empty-policy-name arm in
 malformed-target-list arm in `iam-policy-provider.ts`: a recorded `Roles` /
 `Groups` / `Users` that is not a list of IAM names. Issue
 [#3888](https://github.com/go-to-k/cdkd/issues/3888) added the same arm for an
-`AWS::IAM::UserToGroupAddition` record's `Users`. Each exports its `reason` as
+`AWS::IAM::UserToGroupAddition` record's `Users`. Issue
+[#4150](https://github.com/go-to-k/cdkd/issues/4150) added one arm to each of
+those two providers: a destroy that resolved a secret-derived list and found a
+principal the secret named without the grant keeps the record, since the secret
+may have rotated. For an inline policy that is `NoSuchEntity` on the delete
+call. For a membership it is a `ListGroupsForUser` read BEFORE the call, because
+`RemoveUserFromGroup` succeeds for an existing user outside the group. Each exports its `reason` as
 a named constant beside the provider, so the wording is pinned by a test instead
 of retyped.
 
@@ -1741,17 +1747,32 @@ same value.
 
 Beyond the initial create/update return value, providers should implement
 `getAttribute(physicalId, resourceType, attributeName)` so that **live**
-attribute reads succeed even when the value is no longer in cdkd state —
-specifically the `cdkd orphan` per-resource flow, which fetches each
-referenced attribute on demand to splice into sibling references.
+attribute reads succeed when the value is not in cdkd state — specifically
+the `cdkd orphan` per-resource flow, which splices each referenced attribute
+into sibling references. It always reads live first. When that read answers,
+it substitutes the orphan's **recorded** attribute instead wherever cdkd's own
+`Fn::GetAtt` resolution would serve that value, and keeps the live answer only
+when the record lacks it or holds a value that cannot be spliced (a
+redaction mask, a `{{resolve:...}}` reference, a stale placeholder ARN, a VPC's
+`Ipv6CidrBlocks`, an impossible empty value). A credential-named attribute
+(`SecretAccessKey`), an AppSync API key's `ApiKey`, a value holding a
+credential-named key, and any custom-resource attribute are never taken from
+the record, since the value may be a plaintext secret. A live read that fails
+or answers nothing leaves the reference unresolvable without `--force`, as it
+always did, so a provider without `getAttribute` gets nothing from the record
+either. A live
+read addresses the resource by its recorded name, so after the resource was
+deleted and another one took that name it describes the newcomer; the recorded
+value is the one cdkd's own `Fn::GetAtt` resolution would choose. A recorded
+attribute AWS changes later (an instance's `PublicIp`) can be stale.
 
 Conventions:
 
 - Return `undefined` for unknown attribute names. Do not throw.
 - Treat `*NotFound` exceptions as `undefined` rather than re-throwing —
-  the live fetch is best-effort, and `cdkd orphan` falls back to the
-  cached `state.attributes` (and ultimately `--force`) when the live
-  resolution comes back empty.
+  the live fetch is best-effort, and under `--force` `cdkd orphan` falls
+  back to the cached `state.attributes` when the live resolution comes back
+  empty.
 - Prefer derivation from `physicalId` when CFn returns derivable values
   (S3 Bucket DomainName/Arn, SNS Topic name from ARN tail, SQS QueueName
   from URL tail) so the call is free.

@@ -464,10 +464,11 @@ describe('rdsFamilyProtectionSite', () => {
     expect(commands.restoreAfterNotFound).toBe(commands.restoreLive);
   });
 
+  // A shell-active character withholds them (go-to-k/cdkd#3950).
   it.each([
-    ['a space', 'db 1', "'db 1'"],
-    ['a quote', "db'1", "'db'\\''1'"],
-  ])('shell-quotes a state-borne identifier carrying %s', (_label, id, quoted) => {
+    ['a space', 'db 1'],
+    ['a quote', "db'1"],
+  ])('WITHHOLDS every command for a state-borne identifier carrying %s', (_label, id) => {
     const commands = rdsFamilyProtectionSite({
       cliService: 'rds',
       serviceLabel: 'RDS',
@@ -477,12 +478,11 @@ describe('rdsFamilyProtectionSite', () => {
       notFoundFault: 'F',
       isNotFound: () => false,
     }).commands();
-    expect(commands.restoreLive).toBe(
-      `aws rds modify-db-cluster --db-cluster-identifier ${quoted} --region us-east-1 --deletion-protection --apply-immediately`
-    );
-    expect(commands.check).toBe(
-      `aws rds describe-db-clusters --db-cluster-identifier ${quoted} --region us-east-1`
-    );
+    expect(commands).toEqual({
+      check: WITHHELD_AWS_COMMAND,
+      restoreAfterNotFound: WITHHELD_AWS_COMMAND,
+      restoreLive: WITHHELD_AWS_COMMAND,
+    });
   });
 
   it('WITHHOLDS every command for an identifier that cannot be printed exactly (a newline)', () => {

@@ -554,6 +554,8 @@ describe('cdkd destroy: terminationProtection guard', () => {
     // The runner runs (bypass) and the runner gets removeProtection=true.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].removeProtection).toBe(true);
+    // go-to-k/cdkd#4150: a top-level destroy opts in to secret-principal resolution.
+    expect(mockRunDestroyForStack.mock.calls[0]?.[2].resolveSecretDerivedPrincipals).toEqual({});
 
     // No exit-2 on the bypass path.
     expect(exitSpy).not.toHaveBeenCalled();

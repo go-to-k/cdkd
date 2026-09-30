@@ -34,7 +34,6 @@ import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eve
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -194,12 +193,11 @@ describe('EventBridgeRuleProvider partial-create cleanup (Issue #376)', () => {
       return String(warnSpy.mock.calls[0][0]);
     }
 
-    it('shell-quotes a rule name and a bus name carrying a quote, in every command', async () => {
-      const msg = await warnFor(FORGED_QUOTE, `bus${FORGED_QUOTE}`);
-      expectQuotedAfter(msg, 'aws events list-targets-by-rule --rule ', FORGED_QUOTE);
-      expectQuotedAfter(msg, 'xargs aws events remove-targets --rule ', FORGED_QUOTE);
-      expectQuotedAfter(msg, 'aws events delete-rule --name ', FORGED_QUOTE);
-      expectQuotedAfter(msg, '--event-bus-name ', `bus${FORGED_QUOTE}`);
+    // A shell-active character withholds it (go-to-k/cdkd#3950).
+    it('withholds the whole command for a rule name or a bus name carrying a quote', async () => {
+      expectWithheld(await warnFor(FORGED_QUOTE, 'MyBus'), 'aws events');
+      warnSpy.mockClear();
+      expectWithheld(await warnFor('MyRule', `bus${FORGED_QUOTE}`), 'aws events');
     });
 
     it('withholds the whole command when only the BUS carries a control byte', async () => {

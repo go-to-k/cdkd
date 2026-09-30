@@ -22,7 +22,7 @@
  * from the name.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 import type { ExportIndexEntry } from '../../../../src/state/export-index-store.js';
@@ -416,7 +416,11 @@ describe('planExportIndexRepair — the ABSENT-key report path', () => {
     // EXAMINED, so the coverage report does not double-count it as unexamined,
     // and reported rather than skipped.
     expect(plan.examined).toEqual(['Ghost']);
-    expect(plan.findings).toEqual([{ kind: 'absent', exportName: 'Ghost' }]);
+    // The entry's VALUE rides along so the report can mask a name built
+    // around it (go-to-k/cdkd#4120).
+    expect(plan.findings).toEqual([
+      { kind: 'absent', exportName: 'Ghost', entryValue: SECRET_PLAINTEXT },
+    ]);
   });
 
   it('reports every owned entry when the stack has NO state record at all', () => {
@@ -428,8 +432,8 @@ describe('planExportIndexRepair — the ABSENT-key report path', () => {
     const plan = planExportIndexRepair(entries, 'MyStack', 'us-east-1', undefined);
 
     expect(plan.findings).toEqual([
-      { kind: 'absent', exportName: 'A' },
-      { kind: 'absent', exportName: 'B' },
+      { kind: 'absent', exportName: 'A', entryValue: SECRET_PLAINTEXT },
+      { kind: 'absent', exportName: 'B', entryValue: SECRET_PLAINTEXT },
     ]);
   });
 });
@@ -796,7 +800,8 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
       etag: 'etag-1',
     });
     const region = slot({
-      entries: new Map([['Ghost', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]),
+      // Not a recorded secret: that one is a finding (see below).
+      entries: new Map([['Ghost', entry('a-public-value', 'MyStack', 'us-east-1')]]),
     });
     indexFake.regions.set('us-east-1', region);
 
@@ -807,6 +812,8 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(region.patches).toEqual([]);
     expect(logLines()).toContain("Exports index entry Ghost");
     expect(logLines()).toContain('has no key of that name');
+    // --dry-run writes nothing, and says so in its own tense.
+    expect(logLines()).toContain('nothing would be written for it');
   });
 
   describe('names the stack and the export inside their own boundaries (go-to-k/cdkd#3638)', () => {
@@ -825,7 +832,7 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
         etag: 'etag-1',
       });
       const region = slot({
-        entries: new Map([['Ghost', entry(SECRET_PLAINTEXT, STACK, 'us-east-1')]]),
+        entries: new Map([['Ghost', entry('a-public-value', STACK, 'us-east-1')]]),
       });
       indexFake.regions.set('us-east-1', region);
 
@@ -1341,5 +1348,293 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
 
     await expect(scrubCommand([], commandOptions())).resolves.toBeUndefined();
     expect(logLines()).not.toContain('exports index entry');
+  });
+});
+
+describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cdkd#4120)', () => {
+  const LEFTOVER = 'PRE1901PLAIN';
+  const DROPPED = `k-${LEFTOVER}`;
+  let records: Map<string, StackState>;
+
+  beforeEach(() => {
+    records = new Map();
+    commandStateBackend.getState.mockImplementation((stack: string) => {
+      const state = records.get(stack);
+      return Promise.resolve(state ? { state: structuredClone(state), etag: 'etag-1' } : null);
+    });
+    commandStateBackend.listStacks.mockImplementation(() =>
+      Promise.resolve([...records.keys()].map((stackName) => ({ stackName, region: 'us-east-1' })))
+    );
+  });
+  afterEach(() => {
+    commandStateBackend.getState.mockReset();
+    commandStateBackend.listStacks.mockReset().mockResolvedValue([]);
+  });
+
+  /** A scrubbed record plus one undeclared alias whose name embeds its own value. */
+  function leftover(stackName: string, extra: Partial<StackState> = {}): StackState {
+    const state = makeState(stackName, 'us-east-1', true);
+    state.outputs[DROPPED] = LEFTOVER;
+    state.exportNames = [...state.exportNames!, DROPPED];
+    return { ...state, ...extra };
+  }
+
+  it("masks the dropped alias's name on the exports-index line that reports it", async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', leftover('MyStack'));
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([[DROPPED, entry(LEFTOVER, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions());
+
+    const saved = commandStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs).not.toHaveProperty(DROPPED);
+    expect(saved.exportNames).toEqual(['MyStack:Db']);
+    // WITHHELD, as the Dropped line withheld the same alias-shaped name.
+    expect(logLines()).toContain(
+      'Exports index entry (name withheld: an export name, which may carry a secret)'
+    );
+    expect(logLines()).not.toContain(LEFTOVER);
+  });
+
+  it('masks an index entry a PREVIOUS scrub left without its key, by the entry own value', async () => {
+    // An ALPHANUMERIC name, which the alias rule below does not withhold, so
+    // only the entry's own value can mask it.
+    const name = `k${LEFTOVER}`;
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', makeState('MyStack', 'us-east-1', true)); // the key is already gone
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([[name, entry(LEFTOVER, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions());
+
+    expect(logLines()).toContain('Exports index entry (masked: "k***")');
+    expect(logLines()).not.toContain(LEFTOVER);
+  });
+
+  it('WITHHOLDS an alias-shaped ABSENT entry name on a later run, whatever this run planned', async () => {
+    // `db-hunter2-url`: withheld when an earlier run dropped its key; its
+    // entry stays until the producer redeploys, and no corpus this run holds
+    // contains `hunter2`. Its value is not a recorded secret either.
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', makeState('MyStack', 'us-east-1', true));
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['db-hunter2-url', entry('postgres://h', 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions({ dryRun: true, fail: true }));
+
+    expect(logLines()).toContain(
+      'Exports index entry (name withheld: an export name, which may carry a secret)'
+    );
+    expect(logLines()).not.toContain('hunter2');
+  });
+
+  it('WITHHOLDS an alias-shaped absent entry even when the template records no secret (#4167 review)', async () => {
+    synthStacks.push({
+      stackName: 'MyStack',
+      template: {
+        Resources: { Db: { Type: 'AWS::RDS::DBInstance', Properties: { MasterUsername: 'admin' } } },
+        Outputs: { Db: { Value: 'db-1', Export: { Name: 'MyStack:Db' } } },
+      },
+    });
+    records.set('MyStack', {
+      ...makeState('MyStack', 'us-east-1', true),
+      resources: {},
+      outputs: { Db: 'db-1', 'MyStack:Db': 'db-1' },
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({
+        entries: new Map([
+          ['old-bucket-export', entry('bucket-1', 'MyStack', 'us-east-1')],
+          // NEGATIVE CONTROL: a name with no alias-only character still prints.
+          ['OldBucketExport', entry('bucket-2', 'MyStack', 'us-east-1')],
+        ]),
+      })
+    );
+
+    await scrubCommand([], commandOptions({ dryRun: true, fail: true }));
+
+    expect(logLines()).not.toContain('old-bucket-export');
+    expect(logLines()).toContain('(name withheld: an export name, which may carry a secret)');
+    expect(logLines()).toContain('Exports index entry OldBucketExport (us-east-1)');
+  });
+
+  it('summarises an absent entry holding a recorded secret in the singular', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', makeState('MyStack', 'us-east-1', true));
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['OldUrl', entry(`u:${SECRET_PLAINTEXT}`, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions()).catch(() => undefined);
+
+    expect(logLines()).toContain('One such entry still holds a secret this run recorded');
+  });
+
+  it('--dry-run --fail exits 1 over a pending drop, and says it WOULD drop', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', leftover('MyStack'));
+
+    await expect(
+      scrubCommand([], commandOptions({ dryRun: true, fail: true }))
+    ).rejects.toBeInstanceOf(ScrubNeededError);
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+    expect(logLines()).toContain('1 output key(s) the template no longer declares would be dropped');
+  });
+
+  it('a key kept as a possible live alias turns a REAL --fail run red and is not reported clean', async () => {
+    // The template's export name is not the stored alias key, so nothing
+    // proves the undeclared alias dead.
+    const stack = makeStackInfo('MyStack');
+    (stack.template.Outputs as Record<string, { Export: { Name: string } }>)['Db']!.Export.Name =
+      'renamed:Db';
+    synthStacks.push(stack);
+    records.set('MyStack', leftover('MyStack'));
+
+    await expect(scrubCommand([], commandOptions({ fail: true }))).rejects.toBeInstanceOf(
+      ScrubNeededError
+    );
+    expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
+    expect(logLines()).toContain('or one that may be a live export alias');
+  });
+
+  it('summarises the drop without calling the keys secrets', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', leftover('MyStack'));
+
+    await scrubCommand([], commandOptions());
+
+    expect(logLines()).toContain(
+      '1 output key(s) the template no longer declares were dropped: their values could not be identified, and they are not necessarily secrets'
+    );
+  });
+
+  it('a failed load of the other records is memoized: read once, every later stack keeps its keys', async () => {
+    synthStacks.push(makeStackInfo('A'), makeStackInfo('B'));
+    records.set('A', leftover('A'));
+    records.set('B', leftover('B'));
+    records.set('Consumer', leftover('Consumer'));
+    const real = commandStateBackend.getState.getMockImplementation() as (s: string) => unknown;
+    let consumerReads = 0;
+    commandStateBackend.getState.mockImplementation((stack: string) =>
+      stack === 'Consumer' && ++consumerReads === 1
+        ? Promise.reject(new Error('throttled'))
+        : real(stack)
+    );
+
+    const err = await scrubCommand([], commandOptions()).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED' });
+    expect((err as Error).message).toContain('2 stack(s) hold output keys');
+    expect(consumerReads).toBe(1);
+    // Neither stack dropped its key, and so neither was written.
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('an ABSENT index entry still holding a RECORDED secret is a finding: --dry-run --fail exits 1', async () => {
+    // The second run after a drop: the key is gone from state, and the index
+    // entry of that name still holds the secret this run records.
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', makeState('MyStack', 'us-east-1', true));
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['Old-Url', entry(`postgres://u:${SECRET_PLAINTEXT}@h`, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await expect(
+      scrubCommand([], commandOptions({ dryRun: true, fail: true }))
+    ).rejects.toBeInstanceOf(ScrubNeededError);
+    expect(logLines()).toContain('still holds a secret this run recorded, in plaintext');
+    expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
+    expect(logLines()).not.toContain(SECRET_PLAINTEXT);
+    // A REAL `--fail` run exits 1 over it too: no write can converge it.
+    await expect(scrubCommand([], commandOptions({ fail: true }))).rejects.toBeInstanceOf(
+      ScrubNeededError
+    );
+  });
+
+  it('keeps a PARTLY rewritten alias so its index entry converges (no recorded plaintext left)', async () => {
+    // The blocker a drop caused: the key kept, the entry converged to it.
+    synthStacks.push(makeStackInfo('MyStack'));
+    const state = makeState('MyStack', 'us-east-1', true);
+    state.outputs['Old-Url'] = `postgres://u:${SECRET_PLAINTEXT}@h-unrecorded`;
+    state.exportNames = [...state.exportNames!, 'Old-Url'];
+    records.set('MyStack', state);
+    const region = slot({
+      entries: new Map([
+        ['Old-Url', entry(`postgres://u:${SECRET_PLAINTEXT}@h-unrecorded`, 'MyStack', 'us-east-1')],
+      ]),
+    });
+    indexFake.regions.set('us-east-1', region);
+
+    await scrubCommand([], commandOptions());
+
+    const saved = commandStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs['Old-Url']).toBe(`postgres://u:${SECRET_EXPR}@h-unrecorded`);
+    expect(JSON.stringify(region.entries?.get('Old-Url'))).not.toContain(SECRET_PLAINTEXT);
+    expect(JSON.stringify(region.entries?.get('Old-Url'))).toContain(SECRET_EXPR);
+  });
+
+  it('reads the other records ONCE per run, however many stacks drop a key', async () => {
+    synthStacks.push(makeStackInfo('A'), makeStackInfo('B'));
+    records.set('A', leftover('A'));
+    records.set('B', leftover('B'));
+
+    await scrubCommand([], commandOptions());
+
+    // One listing for the nested-record check, one for the consumer records.
+    expect(commandStateBackend.listStacks).toHaveBeenCalledTimes(2);
+    expect(commandStateBackend.saveState).toHaveBeenCalledTimes(2);
+  });
+
+  it('a key another stack still reads is kept and turns --fail red, on a real run too', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', leftover('MyStack'));
+    records.set(
+      'Consumer',
+      leftover('Consumer', {
+        imports: [{ sourceStack: 'MyStack', sourceRegion: 'us-east-1', exportName: DROPPED }],
+      })
+    );
+
+    await expect(scrubCommand([], commandOptions({ fail: true }))).rejects.toBeInstanceOf(
+      ScrubNeededError
+    );
+    // Kept, and the record is otherwise clean, so nothing is written.
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+    expect(logLines()).not.toContain(`No plaintext secrets found in MyStack`);
+    expect(logLines()).toContain(
+      '1 stack(s) keep an undeclared output key another stack still reads'
+    );
+    await expect(scrubCommand([], commandOptions())).resolves.toBeUndefined();
+  });
+
+  it('exits 2 when the other records cannot be read, whatever --fail says', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', leftover('MyStack'));
+    records.set('Broken', leftover('Broken'));
+    const real = commandStateBackend.getState.getMockImplementation() as (s: string) => unknown;
+    commandStateBackend.getState.mockImplementation((stack: string) =>
+      stack === 'Broken' ? Promise.reject(new Error('throttled')) : real(stack)
+    );
+
+    await expect(scrubCommand([], commandOptions())).rejects.toMatchObject({
+      code: 'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED',
+      exitCode: 2,
+    });
+    await expect(scrubCommand([], commandOptions({ dryRun: true }))).rejects.toMatchObject({
+      code: 'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED',
+      exitCode: 2,
+    });
+    // Kept, and the record is otherwise clean, so nothing is written.
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+    expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
   });
 });
