@@ -104,7 +104,10 @@ import {
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import { maskDeep, type MaskerFn } from '../masked-retry-logger.js';
-import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
+import {
+  pasteableAwsCommand,
+  protectedReplacementAdvice,
+} from '../replacement-protection-advice.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1273,8 +1276,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             const msg = describeAwsFailure(replicaCleanupErr).detail;
             warn(
               `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
-                `Run: aws dynamodb update-table --table-name ${tableName} ` +
-                `--replica-updates 'Delete={RegionName=${region}}' --region ${currentRegion}`
+                `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates ${`Delete={RegionName=${region}}`} --region ${currentRegion}`.render()}`
             );
           }
         }
@@ -1283,8 +1285,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const cleanupMsg = describeAwsFailure(cleanupErr).detail;
         warn(
           `Partial-create cleanup failed for ${tableName}: ${cleanupMsg}. ` +
-            `Run: aws dynamodb delete-table --table-name ${tableName} ` +
-            `to remove the orphaned AWS-side table.`
+            `To remove the orphaned AWS-side table, run: ` +
+            pasteableAwsCommand(
+              maskSecrets
+            )`aws dynamodb delete-table --table-name ${tableName}`.render()
         );
       }
       // CreateTable succeeded, so nothing raised here is this table's own name
@@ -3310,9 +3314,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               `table but not in the template. No Delete is issued while the recorded ` +
               `GlobalSecondaryIndexes are unusable — a junk state record cannot prove cdkd ` +
               `created them, and an index delete is irreversible. This does NOT self-heal, ` +
-              `and no later cdkd deploy will remove them: delete the index directly, e.g. ` +
-              `aws dynamodb update-table --table-name ${physicalId} ` +
-              `--global-secondary-index-updates '[{"Delete":{"IndexName":"<name>"}}]'.`
+              `and no later cdkd deploy will remove them: delete the index directly, e.g.: ` +
+              pasteableAwsCommand(
+                maskSecrets
+              )`aws dynamodb update-table --table-name ${physicalId} --global-secondary-index-updates '[{"Delete":{"IndexName":"<name>"}}]'`.render()
           );
         }
       }
@@ -4083,10 +4088,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           warn(
             `Could not register auto-scaling target on ${tableName} (${dimension}): ` +
               `${describeAwsFailure(err).detail}. ` +
-              `Run: aws application-autoscaling register-scalable-target ` +
-              `--service-namespace dynamodb --resource-id ${resourceId} ` +
-              `--scalable-dimension ${dimension} --min-capacity ${minCapacity} ` +
-              `--max-capacity ${maxCapacity}`
+              `Run: ${pasteableAwsCommand(maskSecrets)`aws application-autoscaling register-scalable-target --service-namespace dynamodb --resource-id ${resourceId} --scalable-dimension ${dimension} --min-capacity ${String(minCapacity)} --max-capacity ${String(maxCapacity)}`.render()}`
           );
           return;
         }
@@ -4171,10 +4173,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           warn(
             `Could not put auto-scaling policy on ${tableName} (${dimension}): ` +
               `${describeAwsFailure(err).detail}. ` +
-              `Run: aws application-autoscaling put-scaling-policy ` +
-              `--policy-name ${policyName} --service-namespace dynamodb ` +
-              `--resource-id ${resourceId} --scalable-dimension ${dimension} ` +
-              `--policy-type TargetTrackingScaling`
+              `Run: ${pasteableAwsCommand(maskSecrets)`aws application-autoscaling put-scaling-policy --policy-name ${policyName} --service-namespace dynamodb --resource-id ${resourceId} --scalable-dimension ${dimension} --policy-type TargetTrackingScaling`.render()}`
           );
         }
         return;
@@ -4242,9 +4241,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           warn(
             `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
               `${describeAwsFailure(err).detail}. ` +
-              `Run: aws application-autoscaling delete-scaling-policy ` +
-              `--policy-name ${policyName} --service-namespace dynamodb ` +
-              `--resource-id ${resourceId} --scalable-dimension ${dimension}`
+              `Run: ${pasteableAwsCommand(maskSecrets)`aws application-autoscaling delete-scaling-policy --policy-name ${policyName} --service-namespace dynamodb --resource-id ${resourceId} --scalable-dimension ${dimension}`.render()}`
           );
         }
         // Continue to the Deregister attempt regardless — AWS may have
@@ -4284,9 +4281,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           warn(
             `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
               `${describeAwsFailure(err).detail}. ` +
-              `Run: aws application-autoscaling deregister-scalable-target ` +
-              `--service-namespace dynamodb --resource-id ${resourceId} ` +
-              `--scalable-dimension ${dimension}`
+              `Run: ${pasteableAwsCommand(maskSecrets)`aws application-autoscaling deregister-scalable-target --service-namespace dynamodb --resource-id ${resourceId} --scalable-dimension ${dimension}`.render()}`
           );
         }
       }

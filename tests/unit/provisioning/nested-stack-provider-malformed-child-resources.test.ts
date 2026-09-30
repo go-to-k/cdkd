@@ -88,8 +88,12 @@ function templatePath(): string {
   return templateFile;
 }
 
-function makeContext(state: StackState): NestedStackProviderContext {
+function makeContext(
+  state: StackState,
+  destroyOptions?: NestedStackProviderContext['destroyOptions']
+): NestedStackProviderContext {
   return {
+    ...(destroyOptions !== undefined && { destroyOptions }),
     stateBackend: {
       getState: vi.fn(async () => ({ state, etag: 'e' })),
     } as unknown as NestedStackProviderContext['stateBackend'],
@@ -107,9 +111,12 @@ function makeContext(state: StackState): NestedStackProviderContext {
   };
 }
 
-const destroyChild = async (state: StackState): Promise<void> => {
+const destroyChild = async (
+  state: StackState,
+  destroyOptions?: NestedStackProviderContext['destroyOptions']
+): Promise<void> => {
   const provider = new NestedStackProvider();
-  await withNestedStackContext(makeContext(state), () =>
+  await withNestedStackContext(makeContext(state, destroyOptions), () =>
     provider.delete('Child', 'Parent~Child', 'AWS::CloudFormation::Stack')
   );
 };
@@ -166,6 +173,21 @@ describe("NestedStackProvider.delete refuses a child's malformed resources (go-t
       err.message,
       'the refusal named the parent, so an operator inspects the wrong record'
     ).not.toMatch(/State for 'Parent'/);
+  });
+
+  it("qualifies the child's inspect line with the account the child's runner is handed (go-to-k/cdkd#3909)", async () => {
+    // The child record is named EXACTLY here, so the read line substitutes it.
+    const err = (await destroyChild(childState([]), {
+      profile: 'prod',
+      statePrefix: 'team-a',
+    } as NestedStackProviderContext['destroyOptions']).catch((e: unknown) => e)) as Error;
+    expect(err.message).toContain(
+      `--json --profile prod --state-bucket cdkd-state-test --state-prefix team-a`
+    );
+    // CONTROL: a directly-built context with no destroyOptions, so only the bucket.
+    const bare = (await destroyChild(childState([])).catch((e: unknown) => e)) as Error;
+    expect(bare.message).toContain('--json --state-bucket cdkd-state-test\n');
+    expect(bare.message).not.toContain('--profile');
   });
 
   // THE OTHER DIRECTION — without these, a guard that refused every child

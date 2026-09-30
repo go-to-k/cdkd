@@ -483,8 +483,12 @@ aws logs put-log-group-deletion-protection --log-group-identifier <name> --delet
 aws cognito-idp update-user-pool --user-pool-id <id> --deletion-protection ACTIVE
 ```
 
-DocDB and Neptune take the same `modify-db-cluster` / `modify-db-instance`
-form under `aws docdb` / `aws neptune`. `update-user-pool` resets the pool
+A command cdkd prints carries the run's `--profile` when you passed one
+(`aws --profile prod rds modify-db-cluster ...`), or a `'<role-profile>'`
+placeholder to fill in when the run also assumed a role with `--role-arn`; add yours to the commands above
+when you type them by hand, or they run against your default profile. DocDB and
+Neptune take the same `modify-db-cluster` / `modify-db-instance` form under
+`aws docdb` / `aws neptune`. `update-user-pool` resets the pool
 settings it omits (self sign-up, Lambda triggers and advanced security among
 them), so send the pool's complete configuration alongside
 `--deletion-protection` rather than the flag alone.
@@ -804,6 +808,13 @@ with `cdkd state list --json`, which prints each stack name and region as
 stored — `--long` trims a padded name, so it would show the healthy one's
 spelling — and replace each quoted hole in the command, quotes included, with
 the shell-quoted value.
+
+Every command the refusal prints carries the `--profile`, `--state-bucket` and
+non-default `--state-prefix` the destroy ran with, so pasted it reads the same
+bucket. When the refusal withholds the target and carries any of them, the
+listing is printed as its own `Find the exact name:` line with them. A value that is not a plain identifier
+is printed as a quoted hole such as `'<profile>'`, and the message says why;
+fill it with the value you passed.
 
 To act on the resources instead, inspect the record with `cdkd state show
 '<stack>' --stack-region '<region>' --json`, repair it, and re-run the destroy. An

@@ -918,3 +918,37 @@ describe('dropSettledNestedJournals — after a settled rollback (#3754)', () =>
     expect(b.kept['Root~B']).toEqual([]);
   });
 });
+
+/**
+ * go-to-k/cdkd#3909: the child's malformed-record refusals print their
+ * pasteable commands with the same account fields `NestedStackProvider.delete`
+ * hands its child refusal — `ctx.stateBucket` plus `ctx.destroyOptions`'
+ * profile and prefix. One case per call site, and the context-less control.
+ */
+describe('revertNestedChildFromJournal qualifies its malformed-record refusals (go-to-k/cdkd#3909)', () => {
+  const FLAGS = '--profile prod --state-bucket b --state-prefix team-a';
+  // `~` is not bare-safe, so the child name prints shell-quoted.
+  const INSPECT = `cdkd state show '${CHILD}' --stack-region ${REGION} --json`;
+  const withOptions = { destroyOptions: { profile: 'prod', statePrefix: 'team-a' } };
+
+  for (const [site, state] of [
+    ['the resources map', { ...childState(), resources: null }],
+    ['the orphans container', { ...childState(), orphans: 'abc' }],
+    ['an orphan row', { ...childState(), orphans: [null] }],
+  ] as const) {
+    it(`${site}: the inspect command carries the run account`, async () => {
+      const h = harness({ state: state as unknown as StackState, segments: [seg('r', ['Q'])], ctxExtra: withOptions });
+      const err = (await h.run('r').catch((e: unknown) => e)) as Error;
+      expect(err.message).toContain(`${INSPECT} ${FLAGS}`);
+      expect(replay.calls).toHaveLength(0);
+    });
+
+    it(`${site}: CONTROL — a context with no destroyOptions carries the bucket alone`, async () => {
+      const h = harness({ state: state as unknown as StackState, segments: [seg('r', ['Q'])] });
+      const err = (await h.run('r').catch((e: unknown) => e)) as Error;
+      expect(err.message).toContain(`${INSPECT} --state-bucket b`);
+      expect(err.message).not.toContain('--profile');
+      expect(err.message).not.toContain('--state-prefix');
+    });
+  }
+});
