@@ -91,7 +91,7 @@ export function outputMapsEqual(a: Record<string, unknown>, b: Record<string, un
   return deepEqualValue(a, b);
 }
 
-export function deepEqualValue(a: unknown, b: unknown): boolean {
+function deepEqualValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a == null || b == null) return a === b;
   if (typeof a !== typeof b) return false;

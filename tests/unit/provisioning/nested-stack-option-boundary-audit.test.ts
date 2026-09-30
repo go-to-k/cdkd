@@ -28,7 +28,7 @@ import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
-const DEPLOY_ENGINE = readFileSync(
+const DEPLOY_ENGINE_OPTIONS = readFileSync(
   join(REPO_ROOT, 'src/deployment/deploy-engine-options.ts'),
   'utf8'
 );
@@ -73,11 +73,11 @@ const AUDITED_MEMBERS = [
 
 /** The interface body, sliced once and shared by the parse and the fail-closed scan. */
 function interfaceBody(): string {
-  const start = DEPLOY_ENGINE.indexOf('export interface DeployEngineOptions {');
+  const start = DEPLOY_ENGINE_OPTIONS.indexOf('export interface DeployEngineOptions {');
   if (start === -1) throw new Error('DeployEngineOptions interface not found');
-  const end = DEPLOY_ENGINE.indexOf('\n}', start);
+  const end = DEPLOY_ENGINE_OPTIONS.indexOf('\n}', start);
   if (end === -1) throw new Error('DeployEngineOptions interface close not found');
-  return DEPLOY_ENGINE.slice(start, end);
+  return DEPLOY_ENGINE_OPTIONS.slice(start, end);
 }
 
 /**
