@@ -8120,9 +8120,11 @@ function maskDescriptorValue(
  * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`), plus the
  * SDK's other code fields. {@link maskSecretsInError} copies such a field
  * verbatim when its value is a STRING; any other value is masked like every
- * field. `logicalId` is NOT one: providers pass a PHYSICAL id, which a secret
- * can name, in `ProvisioningError`'s logical-id slot (go-to-k/cdkd#4222). See
- * {@link isAuxiliaryAnchor} for the one `logicalId` shape kept.
+ * field. `logicalId` is compared exactly too (the other-resource anchor) but
+ * is NOT listed: providers pass a PHYSICAL id, which a secret can name, in
+ * `ProvisioningError`'s logical-id slot (go-to-k/cdkd#4222), and a masked id
+ * fails that anchor closed. {@link isAuxiliaryAnchor} is the one `logicalId`
+ * kept.
  */
 const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
   'name',
@@ -8136,11 +8138,20 @@ const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
 /**
  * `markAuxiliaryFailure`'s mark (`<owner logical id>/auxiliary`, read by
  * `isAuxiliaryFailure`'s suffix test): the one `logicalId` copied verbatim.
- * Its owner is the template logical id, never a physical id; any other
- * `logicalId` is masked like every field.
+ * Its owner is the template logical id, never a physical id. The suffix alone
+ * does not identify it — a physical id can end in a `/auxiliary` path segment —
+ * so the mark's own descriptor shape is required too: `markAuxiliaryFailure`
+ * defines it non-enumerable and read-only, while a `ProvisioningError`'s field
+ * is an ordinary assignment. Any other `logicalId` is masked like every field.
  */
-function isAuxiliaryAnchor(key: PropertyKey, value: unknown): boolean {
-  return key === 'logicalId' && typeof value === 'string' && value.endsWith('/auxiliary');
+function isAuxiliaryAnchor(key: PropertyKey, descriptor: PropertyDescriptor): boolean {
+  return (
+    key === 'logicalId' &&
+    descriptor.enumerable === false &&
+    descriptor.writable === false &&
+    typeof descriptor.value === 'string' &&
+    descriptor.value.endsWith('/auxiliary')
+  );
 }
 
 function isPlainContainer(value: object): boolean {
@@ -8413,7 +8424,7 @@ export function maskSecretsInError<T>(
         (typeof key === 'string' &&
           CLASSIFIER_IDENTIFIER_FIELDS.has(key) &&
           typeof descriptor.value === 'string') ||
-        isAuxiliaryAnchor(key, descriptor.value)
+        isAuxiliaryAnchor(key, descriptor)
           ? descriptor
           : maskDescriptorValue(descriptor, maskText);
       if (descriptors[key] !== descriptor) changed = true;

@@ -304,6 +304,29 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
     expect(original.logicalId).toBe(physical);
   });
 
+  it('masks a `/auxiliary`-looking value that is not the mark: wrong key, mid-string, or a physical id', () => {
+    const original = Object.assign(new Error('x'), {
+      // Wrong key: only `logicalId` can carry the mark.
+      physicalId: `${SECRET}/auxiliary`,
+      Message: `role/${SECRET}/auxiliary`,
+    });
+    const masked = maskSecretsInError(original, bag());
+    expect(masked.physicalId).toBe(`${SECRET_MASK}/auxiliary`);
+    expect(masked.Message).toBe(`role/${SECRET_MASK}/auxiliary`);
+
+    // Not a suffix.
+    const mid = new ProvisioningError('m', 'AWS::X::Y', `${SECRET}/auxiliary/x`);
+    expect(maskSecretsInError(mid, bag()).logicalId).toBe(`${SECRET_MASK}/auxiliary/x`);
+
+    // A physical id ending in a `/auxiliary` path segment, passed in the
+    // logical-id slot (#4222): an ordinary enumerable field, not the mark.
+    const physical = `/app/${SECRET}/auxiliary`;
+    const ssm = new ProvisioningError('m', 'AWS::SSM::Parameter', physical, physical);
+    const maskedSsm = maskSecretsInError(ssm, bag());
+    expect(maskedSsm.logicalId).toBe(`/app/${SECRET_MASK}/auxiliary`);
+    expect(inspect(maskedSsm, { depth: 10 })).not.toContain(SECRET);
+  });
+
   it('keeps an auxiliary-failure `logicalId` mark verbatim, so isAuxiliaryFailure survives a needle in it', () => {
     const auxiliary = markAuxiliaryFailure(new Error('Bucket policy failed'), 'MyBucket');
     // `auxiliary` reaches the suffix `isAuxiliaryFailure` reads, so a masked
