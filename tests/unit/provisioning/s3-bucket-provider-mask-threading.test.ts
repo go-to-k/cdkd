@@ -769,6 +769,26 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
 
       expect(transcript()).toContain(`Applied versioning (Enabled) to bucket ${OLD}`);
     });
+
+    it('does not split a longer recorded secret AWS echoes that contains the recorded name (issue #4193)', async () => {
+      const longer = `${SHORT} owner hunter2x`;
+      answer({ PutBucketVersioningCommand: awsError('AccessDenied', `denied on '${longer}'`) });
+
+      await provider
+        .update(
+          'Bucket',
+          SHORT,
+          RESOURCE_TYPE,
+          { BucketName: SHORT, VersioningConfiguration: { Status: 'Enabled' } },
+          { BucketName: SHORT },
+          { maskSecrets: createSecretMasker(bagOf(SHORT, longer)) }
+        )
+        .catch(() => undefined);
+
+      const text = transcript();
+      expect(text).toContain(`denied on '${SECRET_MASK}'`);
+      expect(text).not.toContain('owner hunter2x');
+    });
   });
 
   describe('the view', () => {

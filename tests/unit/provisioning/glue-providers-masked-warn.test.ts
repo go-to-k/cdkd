@@ -570,6 +570,18 @@ describe('GlueProvider AWS::Glue::Database (issue #2177)', () => {
     await provider.create('Db', type, { DatabaseInput: { Name: SHORT } });
     expect(allLines()).toContain(`Successfully created Glue Database Db: ${SHORT}`);
   });
+
+  it('does not split a longer recorded secret AWS echoes that contains the name (issue #4193)', async () => {
+    const longer = `${SHORT} owner hunter2x`;
+    answerGlue({ CreateDatabaseCommand: awsEcho(`Description '${longer}' is invalid.`) });
+    const error = await caught(
+      provider.create('Db', type, { DatabaseInput: { Name: SHORT } }, {
+        maskSecrets: createSecretMasker(bagOf(SHORT, longer)),
+      })
+    );
+    expect((error as Error).message).toContain(`Description '${SECRET_MASK}' is invalid.`);
+    expect((error as Error).message).not.toContain('owner hunter2x');
+  });
 });
 
 describe('GlueProvider AWS::Glue::Table (issue #2177)', () => {

@@ -194,34 +194,101 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  * over-masking unrelated text in this operation's lines, never disclosure.
  *
  * The derived name is replaced wherever it OCCURS — including inside an ARN
- * built from it — before the base masker runs, and the returned `mask` is the
- * extended one, so a `pasteableAwsCommand(mask)` WITHHOLDS a command naming it.
+ * built from it — and the returned `mask` is the extended one, so a
+ * `pasteableAwsCommand(mask)` WITHHOLDS a command naming it.
+ *
+ * THE BASE MASKER RUNS FIRST, the needles after it (issue
+ * [#4193](https://github.com/go-to-k/cdkd/issues/4193)). The base is one
+ * longest-first pass over the recorded secrets, so a needle replaced BEFORE it
+ * could cut a longer recorded secret containing the needle, which then no
+ * longer occurs whole and its remainder prints. Each name is rendered as the
+ * base renders it, on EVERY call (the base can read a bag that grows after
+ * these sinks are built), and that rendering is the needle applied to the
+ * base's output.
+ *
+ * THE INVARIANT: every occurrence of a derived name left in the line —
+ * overlapping ones included — reads as exactly `base(name)` in the base's
+ * output, or the WHOLE line is `***`. An
+ * occurrence a recorded secret crosses or contains renders otherwise, and its
+ * part outside that secret would print (a fragment of secret plaintext, since
+ * a derived name may be a folded copy of the secret). The needles then only
+ * replace with the mask, so the helper never reveals what the base hides:
+ * what it prints is a subset of what the base alone prints. Occurrences that
+ * overlap one another may not be masked whole (the split / join residual
+ * below).
+ *
+ * Exempt from the check, as residuals:
+ *
+ *  - a name shorter than {@link BASE_MASKER_SUBSTRING_FLOOR} is applied as a
+ *    raw needle and not checked, for the FALSE-POSITIVE rate (a short name
+ *    sits inside unrelated secrets); a recorded secret crossing one can print
+ *    at most two of its characters;
+ *  - a name whose rendering is exactly `***` is a recorded secret itself, and
+ *    renders as the base alone renders it.
+ *
+ * Two more residuals:
+ *
+ *  - the needles are replaced by split / join, so occurrences that overlap
+ *    one another, or another name's occurrence, can leave the part outside
+ *    the first replacement (`ababab` against the name `abab` prints
+ *    `***ab`); unchanged from before issue #4193;
+ *  - the check costs O(occurrences x line length) per name: a few KB of AWS
+ *    echo or log line is cheap, and a very large leaf string walked through
+ *    {@link maskDeep} is where it shows.
+ *
+ * False positives over-mask, the direction this module prefers: a recorded
+ * secret crossing or containing an occurrence, or a prefix / suffix of the
+ * line that coincidentally equals a short recorded secret, withholds the line.
  */
 export function withDerivedNameMasks(
   logger: { debug(message: string): void; warn(message: string): void },
   sinks: MaskedLogSinks,
   pairs: ReadonlyArray<readonly [raw: unknown, derived: string | undefined]>
 ): MaskedLogSinks {
-  const needles = pairs
+  const base = sinks.mask;
+  const derivedNames = pairs
     .filter(
       (pair): pair is readonly [string, string] =>
         typeof pair[0] === 'string' &&
         pair[0] !== '' &&
         typeof pair[1] === 'string' &&
         pair[1] !== '' &&
-        isSecretDerivedValue(pair[0], sinks.mask)
+        isSecretDerivedValue(pair[0], base)
     )
-    .map(([, derived]) => derived)
-    // Longest first, so a needle that contains another is replaced whole.
-    .sort((a, b) => b.length - a.length);
-  if (needles.length === 0) return sinks;
-  const base = sinks.mask;
+    .map(([, derived]) => derived);
+  if (derivedNames.length === 0) return sinks;
   const mask: MaskerFn = (text: string) => {
-    let out = text;
-    // The same marker the depth cap substitutes, which is fenced against
+    const masked = base(text);
+    const needles: string[] = [];
+    for (const derived of new Set(derivedNames)) {
+      // The base never sees a name this short as a substring: a raw needle.
+      if (derived.length < BASE_MASKER_SUBSTRING_FLOOR) {
+        needles.push(derived);
+        continue;
+      }
+      const rendered = base(derived);
+      // The base hides it whole.
+      if (rendered === MASK_WALK_DEPTH_CAP_MARKER) continue;
+      // Each occurrence must read as `rendered` in the base's output (the
+      // invariant above), or a recorded secret crosses or contains it.
+      for (let i = text.indexOf(derived); i !== -1;) {
+        const j = i + derived.length;
+        if (masked !== base(text.slice(0, i)) + rendered + base(text.slice(j))) {
+          return MASK_WALK_DEPTH_CAP_MARKER;
+        }
+        // `i + 1`, not `j`: an occurrence OVERLAPPING this one is checked too.
+        i = text.indexOf(derived, i + 1);
+      }
+      needles.push(rendered);
+    }
+    // Longest first, so a needle that contains another is replaced whole. The
+    // same marker the depth cap substitutes, which is fenced against
     // `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
-    for (const needle of needles) out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
-    return base(out);
+    let out = masked;
+    for (const needle of needles.sort((a, b) => b.length - a.length)) {
+      out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
+    }
+    return out;
   };
   return {
     mask,
@@ -256,6 +323,18 @@ export const MASK_WALK_MAX_DEPTH = 8;
  * test that imports both.
  */
 export const MASK_WALK_DEPTH_CAP_MARKER = '***';
+
+/**
+ * The length below which the deploy's base masker leaves a SUBSTRING alone
+ * (it still masks a whole value of any length), so a derived-name needle this
+ * short is stored as-is rather than passed through the base first — see
+ * {@link withDerivedNameMasks}.
+ *
+ * MUST equal `MIN_NEEDLE_LENGTH` in `src/deployment/secret-redaction.ts`,
+ * spelled here for the same leaf-module reason as
+ * {@link MASK_WALK_DEPTH_CAP_MARKER} and fenced against drift the same way.
+ */
+export const BASE_MASKER_SUBSTRING_FLOOR = 4;
 
 /**
  * Mask every string LEAF and KEY of an arbitrary value, returning a structure
