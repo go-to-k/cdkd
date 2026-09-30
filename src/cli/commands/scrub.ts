@@ -1478,10 +1478,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
             indexAbsentWithSecret++;
             totalIndexEntriesAbsentWithSecret++;
             logger.warn(
-              `Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) ` +
+              safeMsg`Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) ` +
                 `still holds a secret this run recorded, in plaintext, and scrub cannot rewrite ` +
-                `it: ${shownStack}'s state.outputs has no key of that name to converge it to. ` +
-                `Redeploy ${shownStack} to rewrite the index, and ROTATE the secret.`
+                safeMsg`it: ${shownStack}'s state.outputs has no key of that name to converge it to. ` +
+                safeMsg`Redeploy ${shownStack} to rewrite the index, and ROTATE the secret.`
             );
             continue;
           }
