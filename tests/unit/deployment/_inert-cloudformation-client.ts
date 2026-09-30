@@ -3,9 +3,11 @@
  * tests that drive `DeployEngine.deploy()` or the recursive diff without
  * mocking the client factory.
  *
- * Both start a background create-only prefetch
- * (`prefetchCreateOnlyPropertyPaths` -> `scheduleDescribeType`), which reads
- * `getAwsClients().cloudFormation` from the process-global factory. Unmocked,
+ * Both look up resource schemas with DescribeType — the background create-only
+ * prefetch (`prefetchCreateOnlyPropertyPaths`) and the awaited create-only /
+ * read-only / write-only lookups — and every one goes through
+ * `scheduleDescribeType`, which reads `getAwsClients().cloudFormation` from the
+ * process-global factory. Unmocked,
  * that is a REAL client: with no credentials (CI) its credential chain calls
  * IMDS, and the unit-test AWS fence in `tests/setup.ts` fails whichever test is
  * running when the request goes out.
