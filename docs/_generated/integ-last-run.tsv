@@ -105,7 +105,7 @@ ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo
 ecr-scanning	2026-09-29T11:14:03Z	PASS	60	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24, destroy 24/0, orphans clean
 ecs-fargate	2026-09-25T19:22:55Z	PASS	386	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
-ecs-schedule-targets	2026-09-14T21:27:55Z	PASS	83	verify.sh	#3125 gating: GetAtt Vpc.DefaultSecurityGroup consumer; 21 deleted 0 err 0 orph
+ecs-schedule-targets	2026-09-30T15:56:55Z	PASS	651	verify.sh	rc ok, destroy 0 errors, orph clean (#4240); the tagging API still listed one STOPPED Fargate task on the INACTIVE cluster, an ECS record that expires, not a resource
 ecs-service-update-props	2026-09-29T14:07:55Z	PASS	116	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers; fixture now declares EnableForceNewDeployment: false (the #3567 pre-flight refused the nonce-only block)
 efs-immutable-replacement	2026-09-30T08:37:29Z	PASS	75	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
@@ -116,12 +116,12 @@ emr-cluster	2026-09-30T06:28:26Z	PASS	831	verify.sh	PR #4189 (#4186 orphan GetAt
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-eventbridge	2026-09-25T19:22:55Z	PASS	80	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
+eventbridge	2026-09-30T15:59:08Z	PASS	91	verify.sh	rc ok, orph clean (#4240)
 eventbridge-api-destination	2026-08-10T04:16:05Z	PASS	66	verify.sh	0810 staleness sweep b1; Connection/ApiDestination GetAtt, 5 del 0 err, 0 orph
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 staleness sweep b1; post-#1396 ECS target sub-shape, 0 err, 0 orph
 eventbridge-pipes	2026-09-29T02:38:06Z	PASS	180	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, named-pipe --replace delete-first, 6 deleted 0 errors, orph clean
-eventbridge-scheduler	2026-09-24T22:46:12Z	PASS	58	verify.sh	rc ok, 0 orphans (#3663)
+eventbridge-scheduler	2026-09-30T15:45:50Z	PASS	60	verify.sh	rc ok, orph clean (#4240)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
 export	2026-09-30T12:54:59Z	PASS	230	verify.sh	rc ok, orph clean (#4228)
@@ -244,7 +244,7 @@ nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-parameter-masking	2026-09-30T14:14:02Z	PASS	140	verify.sh	rc ok, orph clean, index clean (#4049 split pieces + nested CommaDelimitedList child, parent-review round); revert probes red at Phase 1: pre-fix index publishes the split alias, pre-fix log prints a split piece, list-carry-only revert prints the child's ListIn elements
 opensearch-domain-getatt	2026-08-10T08:05:51Z	PASS	1798	verify.sh	0810 P2 sweep b13; 60m CC delete floor ok, 0 err 0 orph
-orphan-getatt-takeover	2026-09-30T12:15:09Z	PASS	50	verify.sh	rc ok, orph clean (#4228)
+orphan-getatt-takeover	2026-09-30T16:00:10Z	PASS	50	verify.sh	rc ok, orph clean (#4240)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 output-never-resolved-diff	2026-09-25T11:43:35Z	PASS	200	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 outputs-only-export	2026-09-28T07:22:06Z	PASS	115	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
@@ -290,7 +290,7 @@ s3-subconfig-removal	2026-09-28T08:48:59Z	PASS	85	verify.sh	rc ok, orph clean (#
 s3-tables	2026-09-29T11:14:58Z	PASS	50	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 s3-vectors	2026-09-29T11:15:53Z	PASS	50	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-scheduler-custom-group	2026-09-30T03:42:32Z	PASS	110	verify.sh	rc ok, orph clean (#3959 pasteable profile)
+scheduler-custom-group	2026-09-30T15:44:39Z	PASS	115	verify.sh	rc ok, orph clean (#4240)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
