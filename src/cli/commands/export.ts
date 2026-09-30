@@ -109,6 +109,7 @@ import {
 import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
+import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 
 interface ExportOptions {
   app?: string;
@@ -3356,7 +3357,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                   .join('') +
                 `     (one per entry in the pre-delete list logged above).\n` +
                 `  3. Run the phase-2 UPDATE manually with the full synth template:\n` +
-                `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
+                `       ${withPasteableAwsProfile('aws cloudformation create-change-set')} --stack-name ${cfnStackName} \\\n` +
                 `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
                 `         --template-body file://<full-template.json>\n` +
                 `  4. Once phase 2 succeeds, clean up cdkd's stale state record.${orphan.note}\n` +
@@ -3420,7 +3421,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
               recreateNote +
               `  1. Fix the failure cause (typically an onCreate Lambda error).\n` +
               `  2. Re-run the phase 2 UPDATE manually with the full synth template:\n` +
-              `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
+              `       ${withPasteableAwsProfile('aws cloudformation create-change-set')} --stack-name ${cfnStackName} \\\n` +
               `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
               `         --template-body file://<full-template.json>\n` +
               `  3. Once phase 2 succeeds, clean up cdkd's stale state record.${orphan.note}\n` +
@@ -5450,8 +5451,10 @@ export function preDeleteManualCommands(
   const lines: string[] = [];
   if (types.has('AWS::ApiGatewayV2::Stage')) {
     lines.push(
-      `aws apigatewayv2 delete-stage --api-id ${commandHole('ApiId')} ` +
-        `--stage-name ${commandHole('StageName')}`
+      withPasteableAwsProfile(
+        `aws apigatewayv2 delete-stage --api-id ${commandHole('ApiId')} ` +
+          `--stage-name ${commandHole('StageName')}`
+      )
     );
   }
   // One command per principal KIND a policy records, each alone on its line
@@ -5482,7 +5485,9 @@ export function preDeleteManualCommands(
   for (const [kind, verb, flag, hole] of iam) {
     if (!kinds.has(kind)) continue;
     lines.push(
-      `aws iam ${verb} ${flag} ${commandHole(hole)} --policy-name ${commandHole('PolicyName')}`
+      withPasteableAwsProfile(
+        `aws iam ${verb} ${flag} ${commandHole(hole)} --policy-name ${commandHole('PolicyName')}`
+      )
     );
   }
   if (kinds.size > 0) {
@@ -8413,9 +8418,10 @@ export async function runPerStackImportLoop(args: {
               `No stack was imported. A failed IMPORT can leave CloudFormation stack ` +
               `${quotedOrNotShown(plan.cfnName)} behind, and a re-run is refused while ` +
               `it exists. Check that it holds no resources:\n  ${
-                pasteableCommand('aws cloudformation list-stack-resources', [
-                  { flag: '--stack-name', value: plan.cfnName, hole: 'stack-name' },
-                ]).command
+                pasteableCommand(
+                  withPasteableAwsProfile('aws cloudformation list-stack-resources'),
+                  [{ flag: '--stack-name', value: plan.cfnName, hole: 'stack-name' }]
+                ).command
               }\nthen delete it, and re-run with: ${
                 pasteableCommand('cdkd export', [{ value: rootStackName, hole: 'stack' }]).command
               }\n`;

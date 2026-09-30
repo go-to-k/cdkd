@@ -2,6 +2,7 @@ import { Command } from 'commander';
 
 import { getCdkdVersion } from '../version.js';
 import { guardStackRegionOptions } from './options.js';
+import { setPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
@@ -57,6 +58,9 @@ export function buildProgram(): Command {
 
   program.hook('preAction', (_thisCommand, actionCommand) => {
     const { profile } = actionCommand.optsWithGlobals<{ profile?: string }>();
+    // The EXPLICIT flag only: every pasteable `aws ...` command then carries it
+    // (go-to-k/cdkd#3959). An inherited AWS_PROFILE is not recorded.
+    setPasteableAwsProfile(profile);
     if (profile !== undefined) {
       process.env['AWS_PROFILE'] = profile;
     }

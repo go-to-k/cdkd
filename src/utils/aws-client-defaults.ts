@@ -506,9 +506,11 @@ export function getPreAssumeEnvCredentials(): CallerEnvCredentials | undefined {
 /**
  * The credentials published by {@link setAssumedRoleCredentials}, if any.
  *
- * ONE production consumer, and it asks a yes/no question rather than using the
- * value: `applyRoleArnIfSet` reads it to refuse a second `--role-arn` BEFORE
- * its `AssumeRole` hop, so that nothing is corrupted first. No client ever
+ * TWO production consumers, and both ask a yes/no question rather than using
+ * the value: `applyRoleArnIfSet` reads it to refuse a second `--role-arn`
+ * BEFORE its `AssumeRole` hop, so that nothing is corrupted first, and
+ * `pasteable-aws-profile.ts` reads it to print a hole instead of a `--profile`
+ * whose principal is not the role cdkd ran as. No client ever
  * reads it — every one of those receives the credentials through
  * {@link awsClientDefaults} — so this is not a way to "get the role" and must
  * not become one; a site that wants the role's identity simply omits
