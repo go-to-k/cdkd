@@ -2706,13 +2706,15 @@ get stuck — the name is taken either way, and the recovery below applies to
 CloudFormation stacks too, via `cdk import`.
 
 cdkd names this case for you. When the colliding name is one cdkd derived, the
-failure is followed by a line saying so and giving the adoption command:
+failure is followed by a message saying so, ending with the adoption command
+on a line of its own:
 
 ```text
 ApiGatewayAccountCloudWatchRole: the name AWS reports as taken
 (mystack-apigatewayaccountcl-19184149) is one cdkd DERIVED from the logical id
-... To recover, adopt it back into state instead of re-creating it:
-cdkd import MyStack --resource 'ApiGatewayAccountCloudWatchRole=mystack-apigatewayaccountcl-19184149'
+... To recover, adopt it back into state instead of re-creating it, with the
+command below ...
+Adopt with: cdkd import MyStack --resource 'ApiGatewayAccountCloudWatchRole=mystack-apigatewayaccountcl-19184149'
 ```
 
 A selective `--resource` import merges into existing state and needs no
@@ -2730,7 +2732,12 @@ confirming it holds nothing you need, since `Retain` is what kept it — and
 re-deploy. cdkd says so instead of offering the command in three cases: the
 type's provider implements no import, the resource is in a nested stack (whose
 stack name `cdkd import` cannot resolve), or its name contains characters that
-would make the printed command name something else.
+would make the printed command name something else. A stack name, logical id or
+resource name that holds whitespace or a character a shell acts on (such as
+`'`, `;` or `$`) is printed in the command as a quoted hole (`'<stack>'`,
+`'<logicalId=physicalId>'`), and the message says to replace the hole with your
+own shell-quoted value; the prose describes such a logical id or name rather
+than printing it.
 
 > **Do not delete `state.json` and redeploy.** It is not a reset, and what
 > happens next is not uniform: most types fail the CREATE with an

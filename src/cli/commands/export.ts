@@ -5,6 +5,7 @@ import {
   type CommandArg,
   type PasteableCommand,
   SHELL_ACTIVE_WHY,
+  isInertUnquoted,
   type WithholdReason,
 } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
@@ -3752,6 +3753,8 @@ function safeSegment(value: unknown): string {
  * and holds no whitespace, so a plain value cannot close the quote or put a
  * clause break inside it, and it prints exactly as it did. The cap is the
  * stack-ref one, so a legitimate multi-level nested-child name is not cut.
+ * The value must also be inert with its quotes stripped (go-to-k/cdkd#4205):
+ * `displayIdent`'s plain set admits `~root`, `=a`, `a=~b` and `a:~b`.
  */
 function quotedOrNotShown(value: unknown): string {
   // An empty string prints as `''`: it closes nothing, and an empty id is
@@ -3759,7 +3762,8 @@ function quotedOrNotShown(value: unknown): string {
   return value === '' ||
     (typeof value === 'string' &&
       !/\s/.test(value) &&
-      displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value)
+      displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value &&
+      isInertUnquoted(value))
     ? `'${String(value)}'`
     : '(not shown: it is not a plain identifier)';
 }
@@ -8412,7 +8416,9 @@ export async function runPerStackImportLoop(args: {
       const completed = perStackPlans.slice(0, i);
       const notYetImported = perStackPlans
         .slice(i + 1)
-        .map((p) => safeSegment(p.cdkdName))
+        // `quotedOrNotShown`, not the raw `safeSegment` (go-to-k/cdkd#4205
+        // review): selecting the clause after `: ` ran a planted cdkd name.
+        .map((p) => quotedOrNotShown(p.cdkdName))
         .join(', ');
       // One command per line of its own, and a withheld plan's note on the line
       // ABOVE its command (go-to-k/cdkd#3436): printing `.command` alone would
@@ -9027,7 +9033,10 @@ export async function runPerStackImportLoop(args: {
               // MULTI-LINE block: a planted newline forges extra `  - cdkd/...`
               // rows naming a healthy stack, and the sentence below tells the
               // operator to orphan every record listed (review round 4).
-              `  - cdkd/${safeSegment(f.stackName)}/${safeSegment(f.region)}/state.json: ` +
+              // The whole key through `quotedOrNotShown` (go-to-k/cdkd#4205
+              // review): raw `safeSegment` segments ran a planted name when
+              // the row was pasted.
+              `  - ${quotedOrNotShown(`cdkd/${f.stackName}/${f.region}/state.json`)}: ` +
               `${safeDetail(f.reason)}`
           )
           .join('\n');

@@ -267,9 +267,26 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       const display = `No stack ${JSON.stringify(v)} was found.`;
       expect(spansThatRun(display, dir)).toEqual([`${OPERATOR_FLIP}\n${display}`]);
       expect(spansThatRunBesideTheDisplay(display, dir, v)).toEqual([]);
-      // ...while a command naming the value still reds beside it.
-      const commanded = `${display}\nRun: cdkd deploy ${shellQuote('y; touch OWNED; #')}`;
-      expect(spansThatRunBesideTheDisplay(commanded, dir, v).length).toBeGreaterThan(0);
+      // ...while a command naming the SAME value it displays still reds beside
+      // it. The separator family, because a single flip makes only a `'`-free
+      // value's shell-quoted spelling run (see OPERATOR_FLIP).
+      const sep = 'x; touch OWNED; #';
+      const shown = `No stack ${JSON.stringify(sep)} was found.`;
+      expect(spansThatRunBesideTheDisplay(shown, dir, sep)).toEqual([]);
+      const commanded = `${shown}\nRun: cdkd deploy ${shellQuote(sep)}`;
+      expect(spansThatRunBesideTheDisplay(commanded, dir, sep)).toEqual([`${OPERATOR_FLIP}\n${commanded}`]);
+      // Only an EXACT display is set aside (go-to-k/cdkd#4205 review S-m5): a
+      // stray `"` earlier on the line re-pairs the quotes around a command
+      // naming the value, and matching on "the span contains the value" set
+      // that command aside too, though it runs under both shells.
+      const sub = 'x$(touch OWNED)';
+      const stray =
+        `Cause: AWS said "Invalid name; re-run with cdkd state show '${sub}' --json. ` +
+        `Stack ${JSON.stringify(sub)} was refused.\nThe record's copy is kept.`;
+      // The command's own `'` closes the operator's quote and `x$(touch OWNED)`
+      // is bare; the next line's apostrophe closes the rest, so the block parses.
+      expect(filesTouchedBy(`${OPERATOR_FLIP}\n${stray}`, dir)).toContain('OWNED');
+      expect(spansThatRunBesideTheDisplay(stray, dir, sub)).toContain(`${OPERATOR_FLIP}\n${stray}`);
     });
   }, 120_000);
 

@@ -521,7 +521,7 @@ describe('Phase 1A failing after a stack was imported gives the whole-tree recov
         'the same way:'
     );
     expect(err.message).not.toContain('must also adopt');
-    expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(err.message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
   });
 });
 
@@ -913,7 +913,7 @@ describe('a nested pre-delete failure in a child names the stacks after it', () 
       (e: unknown) => e as Error
     );
     expect(err.message).toContain('pre-delete of ChildPolicy');
-    expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(err.message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
     expect(err.message).toContain('"Nest an existing stack"');
     // The clean-up names the FAILED stack, not the first one in the loop.
     expect(err.message).toMatch(
@@ -1273,7 +1273,7 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
       /clean up its record the same way:\n {2}cdkd state orphan '?Root~Child'? --stack-region '?us-east-1'?\n/
     );
     // Root was never imported.
-    expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(err.message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
     expect(err.message).toContain('"Nest an existing stack"');
     // No failure points at another message the operator never saw (go-to-k/cdkd#3988).
     expect(err.message).toContain('"Nest an existing stack" procedure.');
@@ -1359,7 +1359,7 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
         'of IMPORT_COMPLETE, for the adoption by its parent) succeed by hand, clean up its record ' +
         "the same way:\n  cdkd state orphan 'Root~Child' --stack-region us-east-1\n"
     );
-    expect(message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
     // The by-hand IMPORT of the root is described, without pointing the
     // reader at "the Phase 1B adoption failure message": this is that message.
     expect(message).toContain('"Nest an existing stack" procedure.');
@@ -1979,6 +1979,38 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     expect(lines[lines.indexOf(noteLine('Root-A')) + 1]).toBe(HOLES);
   });
 
+  it('the not-yet-imported list names no payload stack raw, and its clause runs nothing (go-to-k/cdkd#4205)', async () => {
+    // The list printed each cdkd name through the raw `safeSegment`, so
+    // selecting the clause after `Stacks not yet imported (still
+    // cdkd-managed): ` ran a planted name with no flip at all. Failing at the
+    // SECOND changeset leaves the root not yet imported, and a payload root
+    // name (with a valid CloudFormation override) is the one listed.
+    const lines: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      waitChangeSetCreate.mockReset();
+      const message = (await runTree({ A: 'us-east-1', B: 'us-east-1' }, 2, { root: `R${value}` })).message;
+      const line = message.split('\n').find((l) => l.includes('Stacks not yet imported'));
+      expect(line, label).toBeDefined();
+      expect(line, label).toContain(
+        'Stacks not yet imported (still cdkd-managed): (not shown: it is not a plain identifier).'
+      );
+      lines.push([label, line!]);
+    }
+    // `quotedOrNotShown` holds the one predicate too: `displayIdent` renders
+    // `=Root` and `~root` plain, but neither is inert unquoted (zsh's `=cmd`,
+    // tilde expansion), so each is described rather than quoted.
+    for (const name of ['=Root', '~root']) {
+      waitChangeSetCreate.mockReset();
+      const message = (await runTree({ A: 'us-east-1', B: 'us-east-1' }, 2, { root: name })).message;
+      expect(message, name).toContain(
+        'Stacks not yet imported (still cdkd-managed): (not shown: it is not a plain identifier).'
+      );
+    }
+    withPasteDir((dir) => {
+      for (const [label, line] of lines) expect(spansThatRun(line, dir), label).toEqual([]);
+    });
+  }, 120_000);
+
   it('phase 1B: pastes nothing runnable from the tail for payload names and regions, named or withheld', async () => {
     const messages: string[] = [];
     for (const { value } of PASTE_PAYLOADS) {
@@ -2252,7 +2284,7 @@ describe('every failure after a Phase 1A IMPORT gives the recovery, and names on
       `Once this stack's ${FLIP_STEP} succeeds by hand, clean up its record the same way:\n` +
         "  cdkd state orphan 'Root~Child' --stack-region us-east-1\n"
     );
-    expect(message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
   });
 
   it('B: a failed read of a MIDDLE stack right after its IMPORT still asks for its adoption', async () => {

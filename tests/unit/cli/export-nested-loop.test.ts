@@ -22,6 +22,7 @@ import { setStdinIsTty } from '../../stdin-tty.js';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const infoSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -584,6 +585,65 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
       )
     ).toBe(true);
   });
+
+  it('names no payload stack raw in the state-deletion summary rows, and no row runs (go-to-k/cdkd#4205)', async () => {
+    // The rows printed `cdkd/<stack>/<region>/state.json` through the raw
+    // `safeSegment`, in a message the operator pastes from (it ends on
+    // `Recover with:`). A payload cdkd name reaches it with a valid
+    // CloudFormation override, as `cdkd export --cfn-stack-name` allows.
+    const rows: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      const name = `Root${value}`;
+      const root = makeState({
+        stackName: name,
+        region: 'us-east-1',
+        resources: { MyBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'my-bucket-123' } },
+      });
+      const { backend: stateBackend } = buildStateBackend({ [`${name}|us-east-1`]: root }, () => {
+        throw new Error('denied');
+      });
+      const { manager: lockManager } = buildLockManager();
+      const { client: cfnClient } = buildCfnClient();
+      const thrown = await runPerStackImportLoop({
+        lockRecovery: { stateBucket: 'bkt' },
+        rootStackName: name,
+        rootRegion: 'us-east-1',
+        rootStackInfoNestedTemplates: {},
+        rootTemplateFormat: 'json',
+        tree: { stackName: name, region: 'us-east-1', state: root, nestedChildren: new Map() },
+        rootTemplate: {
+          Resources: {
+            MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket-123' } },
+          },
+        },
+        cfnStackNameOverrides: { root: 'RootCfn', childMap: new Map() },
+        rootParameters: [],
+        deps: {
+          cfnClient,
+          stateBackend,
+          lockManager,
+          uploadOpts: { stateBucket: STATE_BUCKET },
+          lockOwner: 'tester@host:1234',
+          ssmClient: UNUSED_SSM,
+        },
+        options: {
+          dryRun: false,
+          yes: true,
+          includeNonImportable: false,
+          recreateImportUnsupported: true,
+        },
+      }).catch((e: unknown) => e);
+      const summary = (thrown as Error).message;
+      const row = summary.split('\n').find((l) => l.startsWith('  - '));
+      expect(row, `${label}: ${summary}`).toBe(
+        '  - (not shown: it is not a plain identifier): denied'
+      );
+      rows.push([label, `${row}\nRecover with: cdkd state orphan '<stack>' --stack-region '<region>'`]);
+    }
+    withPasteDir((dir) => {
+      for (const [label, block] of rows) expect(spansThatRun(block, dir), label).toEqual([]);
+    });
+  }, 120_000);
 
   it('puts the gate reason BEFORE the withheld orphan command in the state-deletion warn (go-to-k/cdkd#3436)', async () => {
     // A region `displaySafe` alters (a zero-width space) is WITHHELD, so the

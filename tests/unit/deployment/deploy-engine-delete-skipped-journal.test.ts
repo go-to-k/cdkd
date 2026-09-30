@@ -35,7 +35,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { PASTE_PAYLOADS, filesTouchedBy, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const l = {
@@ -283,11 +283,15 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
   it('names no shell-active stack or region in its two commands, and no pasted span runs (go-to-k/cdkd#4205)', async () => {
     // The skip warning's `CHILD's` (in `for a nested stack it is the CHILD's
     // own state`) is its one unpaired apostrophe (`'cdkd deploy'` is a paired
-    // literal), and it sits on the line above the `Inspect it with:` /
-    // `Drop the record with:` lines, so a shell-quoted payload ran once a
-    // selection from that sentence through a command line was pasted as one
-    // block. The line's own opening, `cdkd did not confirm L (phys-…)`, is a
-    // bash syntax error, which is why the harness starts such a run mid-line.
+    // literal), on the line above the `Inspect it with:` / `Drop the record
+    // with:` lines, so a shell-quoted payload ran once a selection from
+    // `CHILD's` through a command line was pasted as one block. Neither the
+    // harness's sentence / clause starts nor its OPERATOR_FLIP reaches that
+    // selection: `CHILD's` sits mid-sentence after the `(` that opens
+    // `(for a nested stack ...)`, whose `)` stops every span starting before
+    // it, and line 1 holds three `'`, so the flip leaves the command's parity
+    // EVEN. So the selection is pasted here by hand, for every payload: it is
+    // what reds a shell-quoted stack spliced back into the two commands.
     const warn = vi.mocked(getLogger().warn);
     const messages: Array<[string, string]> = [];
     for (const { label, value } of PASTE_PAYLOADS) {
@@ -310,7 +314,12 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
       }
     }
     withPasteDir((dir) => {
-      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+      for (const [label, message] of messages) {
+        expect(spansThatRun(message, dir), label).toEqual([]);
+        const at = message.indexOf("CHILD's");
+        expect(at, label).toBeGreaterThan(-1);
+        expect(filesTouchedBy(message.slice(at), dir), `${label} from CHILD's`).toEqual([]);
+      }
     });
   }, 120_000);
 

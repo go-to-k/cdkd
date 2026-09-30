@@ -739,7 +739,11 @@ describe('cdkd gc', () => {
           expect(message).not.toMatch(/^Inspect it with: /m);
           // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
           // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
-          expectOnlyDisplayResidual(message, dir, value);
+          // The display is the whole state KEY, JSON-quoted, so the residual
+          // names that exact spelling.
+          expectOnlyDisplayResidual(message, dir, value, {
+            displays: [JSON.stringify(`cdkd/${value}/us-east-1/state.json`)],
+          });
         }
       });
     }, 120_000);

@@ -77,6 +77,11 @@ import {
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import {
+  IDENT_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+  displayIdent,
+} from '../../../src/utils/display-safe.js';
 
 /**
  * The four payload families. `;` alone is not the class: `$( )` and backticks
@@ -234,6 +239,14 @@ export function segmentsOf(message: string): Set<string> {
  * at the message's start": any odd count above is equivalent. A `"` above is
  * a different state (double-quoted, where `$( )` runs) and is not modelled
  * here. Pasting it is cheap: one span per line of the message.
+ *
+ * Two limits, stated so a green case is not over-read. Under a SINGLE flip
+ * only the separator family gives a command-side red: a shell-quoted value
+ * holding its own `'` (the embedded-quote family) re-balances the parity, and
+ * `$( )` / backtick values are held inside the operator's quote until a later
+ * `'` closes it, so a site that must see those families inverted needs a
+ * targeted selection (the delete-skip case pastes from `CHILD's`). And text
+ * selected BELOW the message is not modelled.
  */
 export const OPERATOR_FLIP = "the operator's text above";
 
@@ -448,8 +461,9 @@ function expectNoMoreThanItsLines(
 
 /**
  * A span as the display-residual helpers judge it: unchanged, unless it is an
- * {@link OPERATOR_FLIP} span, where every paired JSON span holding `value`
- * (the value's DISPLAY) is replaced by an inert `"DISPLAY"` first. Under the
+ * {@link OPERATOR_FLIP} span, where every paired JSON span that IS a display
+ * of `value` (exactly, {@link exactDisplaysOf}) is replaced by an inert
+ * `"DISPLAY"` first. Under the
  * flip, a JSON-bounded display holding a `'` closes the operator's quote and
  * its `$( )` runs bare: that is the display residual go-to-k/cdkd#3950 tracks
  * (`displayIdent` keeps a `'` raw inside its boundary; its fix is tracked by
@@ -457,15 +471,28 @@ function expectNoMoreThanItsLines(
  * a COMMAND that names the value (the class go-to-k/cdkd#4205 closes) still
  * runs with the display gone, and the lines judgement then refuses it.
  */
-function flipJudged(span: string, value: string): string {
+function flipJudged(span: string, value: string, extra: readonly string[] = []): string {
   if (!span.startsWith(`${OPERATOR_FLIP}\n`)) return span;
-  return span.replace(/"(?:[^"\\]|\\.)*"/g, (s) => {
-    try {
-      return String(JSON.parse(s)).includes(value) ? '"DISPLAY"' : s;
-    } catch {
-      return s;
-    }
-  });
+  const displays = new Set([...exactDisplaysOf(value), ...extra]);
+  return span.replace(/"(?:[^"\\]|\\.)*"/g, (s) => (displays.has(s) ? '"DISPLAY"' : s));
+}
+
+/**
+ * The EXACT spellings a display of `value` takes: its JSON string, and the
+ * JSON boundary `displayIdent` / `displayStackName` render (a cut value's
+ * boundary holds the cut text; the `[cut: ...]` marker sits outside it). Only a
+ * paired span EQUAL to one of these is set aside: matching on "the decoded
+ * span contains the value" let a stray `"` earlier on the line re-pair the
+ * quotes around a COMMAND naming the value and set that aside too (the
+ * go-to-k/cdkd#4205 review's S-m5, measured running under both shells).
+ */
+function exactDisplaysOf(value: string): Set<string> {
+  const out = new Set([JSON.stringify(value)]);
+  for (const cap of [IDENT_MAX_CODE_POINTS, STACK_REF_MAX_CODE_POINTS]) {
+    const shown = displayIdent(value, { maxCodePoints: cap }).replace(/ \[cut: [^\]]*\]$/, '');
+    if (shown.startsWith('"')) out.add(shown);
+  }
+  return out;
 }
 
 /**
@@ -480,11 +507,17 @@ export function spansThatRunBesideTheDisplay(
   message: string,
   dir: string,
   value: string,
-  options: PasteRunOptions = {}
+  options: PasteRunOptions = {},
+  /**
+   * The site's OWN exact display spellings when the value is shown inside a
+   * larger JSON string (`"cdkd/<value>/us-east-1/state.json"`, `"<value>|b"`),
+   * each the full paired span including its quotes.
+   */
+  displays: readonly string[] = []
 ): string[] {
   const out: string[] = [];
   for (const span of segmentsOf(message)) {
-    if (filesTouchedBy(flipJudged(span, value), dir, options).length > 0) out.push(span);
+    if (filesTouchedBy(flipJudged(span, value, displays), dir, options).length > 0) out.push(span);
   }
   return out;
 }
@@ -508,6 +541,12 @@ export interface ResidualOptions {
    * the `go-to-k/cdkd#3950` reference; remove it as the row's fix lands.
    */
   readonly unfixedS1Row?: string;
+  /**
+   * The site's own exact display spellings when the value is shown inside a
+   * larger JSON string, set aside under the OPERATOR_FLIP as the value's own
+   * display is (see {@link spansThatRunBesideTheDisplay}).
+   */
+  readonly displays?: readonly string[];
 }
 
 /**
@@ -560,7 +599,7 @@ export function expectOnlyDisplayResidual(
   } else {
     expectNoCommandBesideDisplay(message, value);
   }
-  return expectRuntimeResidual(message, dir, value);
+  return expectRuntimeResidual(message, dir, value, options.displays);
 }
 
 /**
@@ -600,7 +639,12 @@ export function expectNothingRunsButTheDisplay(
  * {@link expectOnlyDisplayResidual}, so the options a site can pass hold no
  * switch that skips the block rule.
  */
-export function expectRuntimeResidual(message: string, dir: string, value: string): string[] {
+export function expectRuntimeResidual(
+  message: string,
+  dir: string,
+  value: string,
+  displays: readonly string[] = []
+): string[] {
   const ran: string[] = [];
   const lineDoesByShell = new Map<PasteShell, Map<string, boolean>>();
   for (const span of segmentsOf(message)) {
@@ -616,7 +660,7 @@ export function expectRuntimeResidual(message: string, dir: string, value: strin
           cache = new Map<string, boolean>();
           lineDoesByShell.set(shell, cache);
         }
-        expectNoMoreThanItsLines(flipJudged(span, value), dir, one, cache);
+        expectNoMoreThanItsLines(flipJudged(span, value, displays), dir, one, cache);
       }
       if (run.touched.length > 0) ran.push(span);
       continue;
