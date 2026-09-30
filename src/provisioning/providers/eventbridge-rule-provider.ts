@@ -326,9 +326,22 @@ export class EventBridgeRuleProvider implements ResourceProvider {
           // shell-quoted, and withheld whole when one cannot be printed exactly.
           const aws = pasteableAwsCommand();
           const busArg = eventBusName ? aws` --event-bus-name ${eventBusName}` : aws``;
-          const command = aws`aws events list-targets-by-rule --rule ${ruleName}${busArg} | jq -r '.Targets[].Id' | xargs aws events remove-targets --rule ${ruleName}${busArg} --ids; aws events delete-rule --name ${ruleName}${busArg}`;
+          // The target ids go to `--ids` as ONE JSON-list word, never one word
+          // each (`jq | xargs`, before go-to-k/cdkd#4199): an id is a
+          // template value that may start with `-`, and a bare word after a
+          // list-valued flag is parsed as an OPTION (`--region`, `--profile`
+          // redirected the call, measured). A JSON list element is data.
+          const command = aws`aws events remove-targets --rule ${ruleName}${busArg} --ids "$(aws events list-targets-by-rule --rule ${ruleName}${busArg} --query 'Targets[].Id' --output json)"; aws events delete-rule --name ${ruleName}${busArg}`;
           this.logger.warn(
-            `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${command.render()}`
+            // When RemoveTargets already succeeded, the listing is `[]` and the
+            // pasted remove-targets fails validation (an empty `--ids`) before
+            // the delete-rule after it runs; the message says so up front, so
+            // that error line does not read as the cleanup failing. Only when
+            // the command is PRINTED: a withheld one has no steps to describe.
+            `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy` +
+              (command.text === undefined
+                ? `: ${command.render()}`
+                : `. If the rule has no targets left, the remove-targets step reports an empty id list; that error is harmless and the delete-rule step still runs: ${command.render()}`)
           );
         }
         // The rule itself was created: an "already exists" from its wiring is an

@@ -544,6 +544,26 @@ describe('IAM instance profile skip warning content under --no-wait (issue #1279
     expectWithheld(skipWarning()!, 'aws ec2 associate-iam-instance-profile');
   });
 
+  // go-to-k/cdkd#4199: the profile lands INSIDE CLI shorthand (`Arn=<value>`),
+  // where `Key@=file://path` loads a LOCAL file into the request and a `,`
+  // starts another key (`x,Name=other` names a different profile). Both are
+  // inert to the shell, so only the aws-CLI checks refuse them.
+  it.each([
+    // A `,` then `@=`: the `,` check withholds it first.
+    ['a comma-led shorthand @= file load', 'arn:aws:iam::123456789012:instance-profile/x,Name@=file://~/.aws/credentials'],
+    // No `,`: only the gate's `@=` arm can withhold it.
+    ['a comma-free shorthand @= file load', 'Arn@=fileb://x'],
+    ['a shorthand key injection', 'arn:aws:iam::123456789012:instance-profile/x,Name=Other'],
+    ['a comma in a bare name', 'My,Profile'],
+  ])('withholds the re-associate command for %s', async (_label, profile) => {
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ...PROPS,
+      IamInstanceProfile: profile,
+    });
+    expectWithheld(skipWarning()!, 'aws ec2 associate-iam-instance-profile');
+    expect(skipWarning()).not.toContain(profile);
+  });
+
   it('withholds both commands for a profile the caller masker would change', async () => {
     await new EC2Provider().create(
       'MyInstance',

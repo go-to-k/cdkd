@@ -127,7 +127,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { pasteableAwsCommand, WITHHELD_AWS_COMMAND } from '../replacement-protection-advice.js';
 import { displayIdent } from '../../utils/display-safe.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
@@ -4092,7 +4092,14 @@ export class EC2Provider implements ResourceProvider {
                 `NO profile attached when the profile was created moments earlier. Verify with: ` +
                 `${aws`aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=${instanceId}`.render()}` +
                 ` — and if it is missing, re-associate with: ` +
-                `${aws`aws ec2 associate-iam-instance-profile --instance-id ${instanceId} --iam-instance-profile ${iamInstanceProfile.arn ? aws`Arn=${profileRef}` : aws`Name=${profileRef}`}`.render()}`
+                // `profileRef` lands INSIDE shorthand (`Arn=<value>`), where a
+                // `,` starts another key the CLI would send (`x,Name=other`
+                // names a different profile), so a value holding one is
+                // withheld here; the gate admits a mid-word `,` for names
+                // elsewhere (go-to-k/cdkd#4199).
+                (profileRef.includes(',')
+                  ? WITHHELD_AWS_COMMAND
+                  : aws`aws ec2 associate-iam-instance-profile --instance-id ${instanceId} --iam-instance-profile ${iamInstanceProfile.arn ? aws`Arn=${profileRef}` : aws`Name=${profileRef}`}`.render())
             );
           } else {
             await this.ensureIamInstanceProfileAssociated(

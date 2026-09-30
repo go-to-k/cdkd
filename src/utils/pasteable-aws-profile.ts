@@ -94,7 +94,8 @@ export function pasteableAwsProfileFlag(): string {
  * the service as a fragment, so its first span is `aws ` alone). The AWS CLI accepts a global option
  * before the service name, so this is correct for every service, and a span
  * chaining several invocations (`... && aws ec2 associate-address ...`,
- * `... | xargs aws events remove-targets ...`) gets the flag on each.
+ * `--ids "$(aws events list-targets-by-rule ...)"; aws events delete-rule ...`)
+ * gets the flag on each.
  *
  * NEVER pass it a value from state or a template: only cdkd-authored literal
  * text, where `aws ` can only be a command word.
