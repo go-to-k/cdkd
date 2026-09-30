@@ -3188,13 +3188,34 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     const fnAt = rollback.indexOf('export async function adoptRollbackOrphans(');
     expect(fnAt, 'adoptRollbackOrphans moved or was renamed').toBeGreaterThan(-1);
     const fnBody = rollback.slice(fnAt, rollback.indexOf('\n}\n', fnAt));
-    const reads = (text: string): number => text.split(/[A-Za-z]*[Ss]tate\.orphans\b/).length - 1;
+    // The SAME pattern the population derivation matches, so every shape the
+    // exclusion hides is counted — not only a direct container dereference.
+    const reads = (text: string): number =>
+      text.split(/[A-Za-z]*[Ss]tate\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/).length - 1;
     expect(reads(rollback), 'the rollback mixin no longer reads the container').toBeGreaterThan(0);
     expect(
       reads(rollback),
       'deploy-engine-rollback.ts reads the orphans container outside adoptRollbackOrphans, ' +
         'on a path the engine anchor does not cover: give it its own ANCHORS entry.'
     ).toBe(reads(fnBody));
+    // ...and the premise that its ONLY caller is the engine's ROW-anchored call:
+    // `private` enforced that before the move, and an `@internal` prototype
+    // member does not, so a caller elsewhere would reach it unguarded.
+    const callers = spawnSync('git', ['grep', '-l', 'adoptRollbackOrphans(', '--', 'src'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+      .stdout.split('\n')
+      .filter(Boolean)
+      .sort();
+    expect(callers, 'adoptRollbackOrphans gained a caller outside the engine').toEqual([
+      'src/deployment/deploy-engine-rollback.ts',
+      'src/deployment/deploy-engine.ts',
+    ]);
+    expect(
+      code('src/deployment/deploy-engine.ts').split('this.adoptRollbackOrphans(').length - 1,
+      'the engine calls adoptRollbackOrphans more than once; each call owes the ROW anchor'
+    ).toBe(1);
   });
 });
 
