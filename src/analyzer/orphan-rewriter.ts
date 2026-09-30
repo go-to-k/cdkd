@@ -2,6 +2,7 @@ import {
   carriesDynamicReference,
   cfnRefValueFromPhysicalId,
   isImpossibleEmptyStoredAttribute,
+  isStalePlaceholderArnAttribute,
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
 import { carriesSecretMask, SECRET_MASK } from '../deployment/secret-redaction.js';
@@ -56,7 +57,8 @@ function isResolvableOrphanRecord(entry: unknown): boolean {
  *   returns for O (its physicalId for most types; see
  *   {@link cfnRefValueFromPhysicalId} for the exceptions).
  * - `kind: 'getAtt'` — a `{Fn::GetAtt: [O, attr]}` (array OR string form)
- *   was replaced with the live attribute value.
+ *   was replaced with the attribute value: the recorded one when servable,
+ *   otherwise a live read.
  * - `kind: 'sub'` — an `${O}` or `${O.attr}` placeholder inside an
  *   `Fn::Sub` template string was substituted in place. The substituted
  *   sub-template (rather than the whole Fn::Sub block) is recorded so the
@@ -136,9 +138,88 @@ export interface OrphanRewriteOptions {
 }
 
 /**
- * Live-fetch helper. Wraps `provider.getAttribute(...)` for one orphan
- * resource and memoizes results so multiple references to the same
- * `(orphan, attr)` pair only hit AWS once.
+ * The orphan's RECORDED value for `attribute`, when the record holds one the
+ * deploy-time resolver would serve as-is (go-to-k/cdkd#4186).
+ *
+ * WHY RECORDED BEFORE LIVE. `IntrinsicFunctionResolver.resolveGetAtt` serves a
+ * sibling's `Fn::GetAtt` from this same `attributes` map whenever it holds the
+ * key, so the recorded value IS what every earlier deploy sent the sibling and
+ * what its next one would send. Substituting it makes the orphan a no-op for
+ * the sibling's resolved properties. The live `provider.getAttribute(...)` read
+ * is addressed by the recorded NAME for most SDK providers, so after the
+ * resource was deleted out of band and a DIFFERENT one took its name — the
+ * situation `cdkd orphan` is the documented remedy for — it answered with the
+ * FOREIGN resource's attribute and planted that into the dependents' state.
+ *
+ * NOT SERVED, so the live read (and then `--force`'s fallback) still decides,
+ * mirroring each arm on which the resolver does not serve the stored value
+ * verbatim either:
+ * - an absent key, or `''` where `isImpossibleEmptyStoredAttribute` says the
+ *   resource cannot hold it — the record predates the attribute;
+ * - `AWS::EC2::VPC` `Ipv6CidrBlocks`, which the resolver never serves stored
+ *   (an association after the create leaves the recorded list stale);
+ * - a pre-#1681 placeholder ARN (`isStalePlaceholderArnAttribute`), which the
+ *   resolver heals by a re-read;
+ * - a value carrying the redaction mask (`SECRET_MASK`): it is all cdkd kept of
+ *   the value, and a mask must never become a sibling's property on this
+ *   default path — only `--force`'s fallback may splice one, with its warning;
+ * - a value carrying a `{{resolve:...}}` reference (a nested stack's redacted
+ *   output, issue #2055), which the resolver re-resolves in a context this
+ *   analyzer pass does not have.
+ * The one reshaping the resolver applies is applied too: a legacy
+ * comma-joined Route 53 `NameServers` string becomes the list it stands for.
+ * The dotted-path walk over a nested `attributes` object (issue #381) is the
+ * resolver's second served arm and is mirrored, OWN keys only.
+ */
+function servableRecordedAttribute(
+  orphan: ResourceState,
+  attribute: string
+): { served: true; value: unknown } | { served: false } {
+  if (orphan.resourceType === 'AWS::EC2::VPC' && attribute === 'Ipv6CidrBlocks') {
+    return { served: false };
+  }
+  const bag: unknown = orphan.attributes;
+  // An unreadable map holds nothing; `--force`'s fallback says why.
+  if (bag === undefined || !isReadableBag(bag)) return { served: false };
+  const attributes = bag as Record<string, unknown>;
+  const stored = Object.hasOwn(attributes, attribute) ? attributes[attribute] : undefined;
+  let value = isImpossibleEmptyStoredAttribute(orphan.resourceType, attribute, stored)
+    ? undefined
+    : stored;
+  if (value !== undefined) {
+    if (isStalePlaceholderArnAttribute(orphan.resourceType, attribute, value)) {
+      return { served: false };
+    }
+    if (
+      orphan.resourceType === 'AWS::Route53::HostedZone' &&
+      attribute === 'NameServers' &&
+      typeof value === 'string'
+    ) {
+      value = value === '' ? [] : value.split(',');
+    }
+  } else if (attribute.includes('.')) {
+    let cursor: unknown = attributes;
+    for (const part of attribute.split('.')) {
+      if (cursor !== null && typeof cursor === 'object' && Object.hasOwn(cursor, part)) {
+        cursor = (cursor as Record<string, unknown>)[part];
+      } else {
+        cursor = undefined;
+        break;
+      }
+    }
+    value = cursor;
+  }
+  if (value === undefined || carriesSecretMask(value) || carriesDynamicReference(value)) {
+    return { served: false };
+  }
+  return { served: true, value };
+}
+
+/**
+ * Attribute resolver for one orphan resource: the RECORDED value when the
+ * record holds a servable one ({@link servableRecordedAttribute}), otherwise a
+ * live `provider.getAttribute(...)` read. Memoizes results so multiple
+ * references to the same `(orphan, attr)` pair only hit AWS once.
  *
  * Exposed as a class so the unit tests can plug in a fake registry
  * without faking the AWS SDK.
@@ -278,8 +359,9 @@ class AttributeFetcher {
   }
 
   /**
-   * Return the orphan's resolved value for `Fn::GetAtt`. Hits the live
-   * provider on first call; subsequent calls reuse the cached result.
+   * Return the orphan's resolved value for `Fn::GetAtt`: the recorded value
+   * when {@link servableRecordedAttribute} serves one, otherwise a live
+   * provider read on first call; subsequent calls reuse the memoized result.
    *
    * Returns `{ ok: true, value }` on success; `{ ok: false, reason }`
    * when the live fetch failed AND the `--force` cache fallback either
@@ -309,6 +391,13 @@ class AttributeFetcher {
     // read fields of the record, and the fallback would index its `attributes`.
     if (!isResolvableOrphanRecord(orphan)) {
       return { ok: false, reason: UNREADABLE_ORPHAN_RECORD_REASON };
+    }
+
+    // RECORDED FIRST (go-to-k/cdkd#4186): see `servableRecordedAttribute`.
+    const recorded = servableRecordedAttribute(orphan, attribute);
+    if (recorded.served) {
+      this.cache.set(cacheKey, recorded.value);
+      return { ok: true, value: recorded.value };
     }
 
     let provider;
@@ -513,7 +602,8 @@ class AttributeFetcher {
  * persisted state:
  *
  * 1. `{Ref: O}` → orphan.physicalId
- * 2. `{Fn::GetAtt: [O, attr]}` → live `provider.getAttribute(...)` value
+ * 2. `{Fn::GetAtt: [O, attr]}` → the orphan's recorded `attributes[attr]`
+ *    when servable (go-to-k/cdkd#4186), else live `provider.getAttribute(...)`
  * 3. `{Fn::GetAtt: "O.attr"}` (string form) → same as #2
  * 4. `Fn::Sub` template strings — `${O}` and `${O.attr}` placeholders
  *    are substituted in place; unrelated placeholders are preserved.
@@ -653,7 +743,7 @@ export async function rewriteResourceReferences(
 /**
  * Recursively walk a value (property tree, attribute tree, output value)
  * and replace every `Ref` / `Fn::GetAtt` / `Fn::Sub` reference to an
- * orphan with the orphan's resolved physical id / live attribute /
+ * orphan with the orphan's resolved physical id / attribute value /
  * substituted template string respectively.
  *
  * Mirrors the recursion structure of `IntrinsicFunctionResolver` but

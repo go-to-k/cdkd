@@ -33,11 +33,11 @@ paths:
 
 ## `cdkd orphan <constructPath>...`
 
-Per-resource and synth-driven: drops resources from state by construct path
-(PREFIX-matched), substituting each `Fn::GetAtt` via a live
-`provider.getAttribute()` and rewriting every sibling `Ref` / `Fn::GetAtt` /
-`Fn::Sub` / `dependencies` reference. `orphan-rewriter.ts` rewrites ONLY orphan
-references, leaving every other intrinsic alone.
+Synth-driven: drops resources by construct path (PREFIX-matched) and
+rewrites every sibling `Ref` / `Fn::GetAtt` / `Fn::Sub` / `dependencies`
+reference to them, no other intrinsic. A `Fn::GetAtt` takes the
+RECORDED attribute wherever the resolver would; the live `getAttribute()` reads
+by NAME, so only otherwise ([#4186](https://github.com/go-to-k/cdkd/issues/4186)).
 
 - The `aws:cdk:path` index (`src/cli/cdk-path.ts`, shared with `cdkd import`)
   excludes `AWS::CDK::Metadata`, so `CDKMetadata/Default` is never orphanable.

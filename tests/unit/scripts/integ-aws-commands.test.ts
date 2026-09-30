@@ -464,7 +464,10 @@ describe('integ fixture aws invocations (#1402)', () => {
     // Raised 3630 -> 4120 with the ceiling below at a re-measured
     // `{ t: 4430, s: 71, v: 430 }` (issue #3627's import-readback and migrate
     // fixtures took the total to exactly the old ceiling).
-    expect(stats.total).toBeGreaterThan(4120);
+    // Raised 4120 -> 4690 with the ceiling below at a re-measured
+    // `{ t: 5040, s: 73, v: 470 }` (issue #4186's orphan-getatt-takeover
+    // fixture crossed the old ceiling).
+    expect(stats.total).toBeGreaterThan(4690);
     // Re-tracked with the total (issue #2057): 55 / 290 sat 21% and 28% below
     // the measured 70 / 404, so either could have lost a fifth of its coverage
     // silently — the same argument the total's floor rests on. A floor is only
@@ -475,8 +478,10 @@ describe('integ fixture aws invocations (#1402)', () => {
     // measurement stops being one.
     // Re-tracked at `{ s: 71, v: 430 }` (issue #3627): 71 x ~0.93 is 66,
     // 430 x ~0.93 is 400.
-    expect(stats.services.size).toBeGreaterThan(66);
-    expect(stats.verbs.size).toBeGreaterThan(400);
+    // Re-tracked at `{ s: 73, v: 470 }` (issue #4186): 73 x ~0.93 is 67,
+    // 470 x ~0.93 is 437.
+    expect(stats.services.size).toBeGreaterThan(67);
+    expect(stats.verbs.size).toBeGreaterThan(437);
     // CEILING as well as floor. Floors catch a parser that stops seeing things;
     // only a ceiling catches one that starts seeing things that are not there
     // (the quoted-prose / ARN false positives review found were exactly that,
@@ -505,7 +510,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     // written.
     // Raised 4430 -> 5030 with the floor above, at a re-measured 4430 (issue
     // #3627's fixtures reached the old ceiling exactly). Same ~1.135x headroom.
-    expect(stats.total).toBeLessThan(5030);
+    // Raised 5030 -> 5720 with the floor above, at a re-measured 5040 (issue
+    // #4186). Same ~1.135x headroom.
+    expect(stats.total).toBeLessThan(5720);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {
       expect(stats.services.has(svc), `no aws ${svc} invocation parsed`).toBe(true);

@@ -3965,6 +3965,7 @@
         "multi-resource",
         "multi-stack-deps",
         "nested-stack",
+        "orphan-getatt-takeover",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -4172,6 +4173,10 @@
         ],
         "nested-stack": [
           "l2"
+        ],
+        "orphan-getatt-takeover": [
+          "l2",
+          "literal"
         ],
         "propagation-races-2": [
           "l2"
@@ -6258,6 +6263,7 @@
         "nested-stack-secret",
         "noecho-parameter-masking",
         "opensearch-domain-getatt",
+        "orphan-getatt-takeover",
         "output-never-resolved-diff",
         "outputs-only-export",
         "rds-full-stack",
@@ -6470,6 +6476,10 @@
         ],
         "opensearch-domain-getatt": [
           "l1"
+        ],
+        "orphan-getatt-takeover": [
+          "l2",
+          "literal"
         ],
         "output-never-resolved-diff": [
           "l2",

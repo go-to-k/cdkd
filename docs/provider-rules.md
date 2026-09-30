@@ -1741,17 +1741,23 @@ same value.
 
 Beyond the initial create/update return value, providers should implement
 `getAttribute(physicalId, resourceType, attributeName)` so that **live**
-attribute reads succeed even when the value is no longer in cdkd state —
-specifically the `cdkd orphan` per-resource flow, which fetches each
-referenced attribute on demand to splice into sibling references.
+attribute reads succeed when the value is not in cdkd state — specifically
+the `cdkd orphan` per-resource flow, which splices each referenced attribute
+into sibling references. It takes the orphan's **recorded** attribute
+whenever cdkd's own `Fn::GetAtt` resolution would serve that value, and reads
+live only when the record lacks it or holds a value that cannot be spliced (a
+redaction mask, a `{{resolve:...}}` reference, a stale placeholder). A live
+read addresses the resource by its recorded name, so after the resource was
+deleted and another one took that name it describes the newcomer; the recorded
+value describes the resource the siblings were deployed against.
 
 Conventions:
 
 - Return `undefined` for unknown attribute names. Do not throw.
 - Treat `*NotFound` exceptions as `undefined` rather than re-throwing —
-  the live fetch is best-effort, and `cdkd orphan` falls back to the
-  cached `state.attributes` (and ultimately `--force`) when the live
-  resolution comes back empty.
+  the live fetch is best-effort, and under `--force` `cdkd orphan` falls
+  back to the cached `state.attributes` when the live resolution comes back
+  empty.
 - Prefer derivation from `physicalId` when CFn returns derivable values
   (S3 Bucket DomainName/Arn, SNS Topic name from ARN tail, SQS QueueName
   from URL tail) so the call is free.
