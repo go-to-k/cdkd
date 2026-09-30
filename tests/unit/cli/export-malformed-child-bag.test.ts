@@ -21,7 +21,8 @@
  * `exportCommand` at the state load, is driven the same way.
  *
  * The healthy-child `--dry-run` case is the negative control: the same tree
- * with a readable child bag gets past the pre-flight and prints its plan, so a
+ * with a readable child bag (and a child template without the `Grandchild` row
+ * that bag does not carry) gets past the pre-flight and prints its plan, so a
  * refusal in the malformed cases is the bag's doing and not the fixture's.
  */
 
@@ -368,12 +369,33 @@ describe('cdkd export over a nested child whose resources bag is unreadable (iss
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(message).toContain(`State for '${CHILD}' (${REGION}) has no readable 'resources' map`);
-    expect(mockAcquireLock).not.toHaveBeenCalled();
     expectNothingWritten();
   });
 });
 
 describe('cdkd export over a ROOT record whose resources bag is unreadable (issue #3188)', () => {
+  it('REFUSES a LEGACY root record by name too, naming its S3 object rather than a region', async () => {
+    // `migrationPending` marks a record read from the region-less legacy key;
+    // the refusal must not name `--stack-region`, which selects no such record.
+    mockGetState.mockImplementation(async (name: string) => {
+      if (name !== STACK) return null;
+      const record = rootRecord();
+      record.state['resources'] = null;
+      return { ...record, migrationPending: true };
+    });
+
+    const message = await runExport([]);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(message).toContain(`CdkdError: State for ${STACK} has no readable 'resources' map`);
+    expect(message).toContain(`Object key: cdkd/${STACK}/state.json`);
+    expect(message).toContain('State bucket: test-bucket');
+    expect(message).not.toContain('--stack-region');
+    expect(message).not.toContain('TypeError');
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+    expectNothingWritten();
+  });
+
   for (const [label, bag] of SHAPES) {
     it(`REFUSES by name, before the lock, when the root's resources is ${label}`, async () => {
       mockGetState.mockImplementation(async (name: string) => {

@@ -8103,9 +8103,9 @@ export async function runPerStackImportLoop(args: {
   // it (issue #3188). `walkCdkdStateStackTree` returns a node whose bag is not
   // one CHILDLESS rather than throwing, so without this the subtree below it
   // would drop out of the migration; the refusal names the record instead of
-  // leaving the parameter pre-pass or `buildImportPlan` to throw a bare
-  // `TypeError` on a `null` bag, or to report every row as not deployed. It runs
-  // before the first AWS call and the first lock of the loop.
+  // leaving `buildImportPlan` to throw a bare `TypeError` on a `null` bag, or to
+  // report every row as not deployed. It runs before the first AWS call and the
+  // first lock of the loop.
   for (const n of leafFirst) {
     const meta = nodesByCdkdName.get(n.stackName)!;
     refuseMalformedState(meta.state, meta.cdkdStackName, meta.region, args.lockRecovery);
