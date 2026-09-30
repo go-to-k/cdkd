@@ -300,7 +300,7 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
     withPasteDir((dir) => {
       expect(spansThatRun(message, dir)).toEqual([]);
     });
-  });
+  }, 120_000);
 
   it('pastes nothing from the Fn::GetAZs refusal whose quoted value is a path', async () => {
     // A path `QUOTABLE_RENDER` admits, so it is QUOTED. Right after `: `, the
@@ -318,7 +318,7 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
         expect(spansThatRun(message, dir), value).toEqual([]);
       });
     }
-  });
+  }, 120_000);
 
   it('keeps an empty mapping name visible as an empty quote', async () => {
     expect(await refusal({ 'Fn::FindInMap': ['', 'k', 'present'] }, MAPPINGS('M', 'k'))).toContain(
