@@ -42,6 +42,7 @@ import {
   applyDefaultNameForFallback,
   withoutGeneratedFallbackName,
 } from '../provisioning/resource-name.js';
+import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import {
   IntrinsicFunctionResolver,
