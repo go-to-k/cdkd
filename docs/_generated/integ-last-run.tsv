@@ -83,7 +83,6 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-30T12:03:08Z	PASS	110	verify.sh	rc ok, orph clean (#4228)
 docdb-neptune	2026-09-29T15:04:16Z	PASS	5194	verify.sh	rc ok, orph clean (#4029 PR #4080)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-09-30T20:44:40Z	PASS	240	verify.sh	PR #4271 (#2177 ApiGatewayV2 masker threading) @a3db05a83; rc ok, destroy 0 errors, no state/IAM/Lambda/API leftovers
 drift-revert	2026-09-30T21:31:10Z	PASS	235	verify.sh	PR #4274 deploy-engine observed-capture mixin; rc ok, orph clean
 drift-revert-arrays	2026-09-29T23:22:50Z	PASS	185	verify.sh	PR #4053 (#4042 + #4051 codecommit rename adopted by recorded RepositoryId; UpdateContext.recordedAttributes from every update() caller) @a46f094/a7ca35d; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 drift-revert-vpc	2026-09-30T21:31:10Z	PASS	345	verify.sh	PR #4274 deploy-engine observed-capture mixin; rc ok, orph clean
