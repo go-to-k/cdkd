@@ -17,8 +17,6 @@
 - **One lane per cross-cutting file** — §2 holds the list.
 - **Never merge a PR whose destroy path is unverified, and never bypass
   `/run-integ`** (§8-c owns what COUNTS as one).
-- **`vp run build` after every source edit, before any live test** (AGENTS.md);
-  §8-i owns the unique-stack-name rule with it.
 - **Stale-base phantom diff** (§7) — rebase; never "restore" peer lines a stale
   `git diff main` shows removed.
 - **A Bash cwd silently drifts back to the main tree between calls**: prefix every
@@ -48,8 +46,11 @@
 - **An agent KILLED by a usage limit or a 429 keeps its context — `SendMessage`
   it, never re-dispatch**, and **read the TREE and the DIFF first**: it may
   already have committed, pushed and opened the PR, and **uncommitted changes
-  there may be the round's real fix, not an abandoned probe**. §5-g covers one
-  that finished quietly, and the lost-TRANSCRIPT case.
+  there may be the round's real fix, not an abandoned probe**; §5-g covers one
+  that finished quietly. One killed MID-INTEG also owes, before the resume: no
+  `pgrep -fl verify.sh` hit whose cwd (`lsof -a -p <pid> -d cwd`) is inside its
+  tree, a clean `/run-integ` step 4 scan for its fixtures, and its tree's HEAD
+  against the pushed branch.
 
 ## Important existing rules this skill leans on
 
