@@ -123,10 +123,32 @@ export const stateOptions = [
     '--state-bucket <bucket>',
     'S3 bucket for state storage. Falls back to CDKD_STATE_BUCKET env or cdk.json'
   ),
-  new Option('--state-prefix <prefix>', 'S3 key prefix for state files').default(
-    DEFAULT_STATE_PREFIX
-  ),
+  new Option('--state-prefix <prefix>', 'S3 key prefix for state files')
+    .default(DEFAULT_STATE_PREFIX)
+    .argParser(parseStatePrefix),
 ];
+
+/**
+ * Refuse a `--state-prefix` holding `<` or `>`, and return every other value
+ * VERBATIM (an empty one included: `--state-prefix ''` keys records under `/`,
+ * and a rewrite would desynchronise every printed hint from the key it
+ * selects).
+ *
+ * The refusal is what makes cdkd's `'<prefix>'` placeholder fail CLOSED. A
+ * pasted hint prints that placeholder where the run's prefix cannot be shown
+ * safely, and unrefused it is a valid key prefix: `cdkd deploy --state-prefix
+ * '<prefix>'` would find no state and CREATE every resource again
+ * (go-to-k/cdkd#4177's review).
+ */
+export function parseStatePrefix(value: string): string {
+  if (value.includes('<') || value.includes('>')) {
+    throw new InvalidArgumentError(
+      "a state prefix cannot contain '<' or '>': that is a placeholder cdkd printed in a " +
+        'suggested command for a value it could not show. Replace it with your actual prefix.'
+    );
+  }
+  return value;
+}
 
 /**
  * Stack options

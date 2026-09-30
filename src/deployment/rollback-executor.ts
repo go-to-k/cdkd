@@ -482,7 +482,10 @@ function orphanRemedy(
       : ` This is the nested stack's own rollback, and only a rollback of the nested stack ` +
         `itself honours --orphan for this op, so the command names it.` +
         withheldTargetClause(target, 'stack', 'cdkd rollback', "The nested stack's name");
-  const rollbackVerb = target?.command ?? 'cdkd rollback';
+  // The stack-less fallback goes through the shared builder too, so it carries
+  // the run's typed `--profile` / `--state-bucket` / `--state-prefix`
+  // (go-to-k/cdkd#4177).
+  const rollbackVerb = (target ?? pasteableCommand('cdkd rollback')).command;
   return {
     offered: true,
     clause: `${stackClause}${idClause}`,

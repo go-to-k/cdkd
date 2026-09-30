@@ -77,6 +77,12 @@ vi.mock('@aws-sdk/client-cloudformation', () => ({
   waitUntilChangeSetCreateComplete: waitUntilChangeSetCreateCompleteMock,
 }));
 
+const uploadMock = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/cli/upload-cfn-template.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/cli/upload-cfn-template.js')>()),
+  uploadCfnTemplate: uploadMock,
+}));
+
 const loggerSpies = vi.hoisted(() => ({
   debug: vi.fn(),
   info: vi.fn(),
@@ -102,6 +108,7 @@ import {
   RLO,
   ST,
 } from '../_forging-characters.js';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
 /** One hostile marker per interpolated value, each with its own sanitized twin. */
 const HOSTILE = {
@@ -599,7 +606,11 @@ describe('the finally-block cleanup warns quote AWS text too (#3479)', () => {
     const warn = warnLines().find((w) => w.includes('Failed to delete transient macro-expand stack'));
     expect(warn).toBeDefined();
     expect(warn).toContain('AccessDenied 2K on delete');
-    expect(hasForgingCharacter(warn!)).toBe(false);
+    // The command sits on cdkd's own trailing line (go-to-k/cdkd#4177), so
+    // the one newline is layout; every LINE must be free of forging bytes.
+    const lines = warn!.split('\n');
+    expect(lines).toHaveLength(2);
+    for (const line of lines) expect(hasForgingCharacter(line)).toBe(false);
   });
 
   it('leaves ordinary SDK text byte-identical in that warn', async () => {
@@ -609,6 +620,99 @@ describe('the finally-block cleanup warns quote AWS text too (#3479)', () => {
     });
     const warn = warnLines().find((w) => w.includes('Failed to delete transient macro-expand stack'));
     expect(warn).toContain(': AccessDenied. Clean up manually via');
+  });
+
+  it.each([
+    [undefined, 'aws cloudformation delete-stack'],
+    ['prod', 'aws --profile prod cloudformation delete-stack'],
+  ])(
+    'prints the DeleteStack cleanup command unwrapped on its own line (profile %s, go-to-k/cdkd#4177)',
+    async (profile, head) => {
+      setPasteableAwsProfile(profile);
+      try {
+        await expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+          ...OPTS,
+          cfnClient: cleanupFails(new Error('AccessDenied')),
+        });
+      } finally {
+        setPasteableAwsProfile(undefined);
+      }
+      const warn = warnLines().find((w) => w.includes('Failed to delete transient macro-expand stack'));
+      expect(warn).toMatch(
+        new RegExp(
+          `Clean up manually via:\\n  ${head} --stack-name cdkd-macro-expand-[0-9a-f-]{16} --region us-east-1$`
+        )
+      );
+    }
+  );
+
+  it.each([
+    [undefined, 'aws s3 rm'],
+    ['prod', 'aws --profile prod s3 rm'],
+  ])(
+    'prints the template-upload sweep command unwrapped on its own line (profile %s, go-to-k/cdkd#4177)',
+    async (profile, head) => {
+      uploadMock.mockReset();
+      uploadMock.mockResolvedValueOnce({
+        url: 'https://example.invalid/t.json',
+        cleanup: () => Promise.reject(new Error('AccessDenied')),
+      });
+      // Over the inline limit, so the template goes through the upload path.
+      const big = macroTemplate(['AWS::Serverless-2016-10-31']);
+      (big as { Metadata?: unknown }).Metadata = { pad: 'x'.repeat(60_000) };
+      setPasteableAwsProfile(profile);
+      try {
+        await expandMacros(big, {
+          ...OPTS,
+          cfnClient: buildCfnClient({
+            CreateChangeSet: { Id: 'cs-arn', StackId: 's-arn' },
+            GetTemplate: { TemplateBody: EXPANDED },
+          }),
+        });
+      } finally {
+        setPasteableAwsProfile(undefined);
+      }
+      expect(uploadMock).toHaveBeenCalledTimes(1);
+      const warn = warnLines().find((w) => w.includes('template upload from'));
+      expect(warn).toMatch(
+        new RegExp(
+          `Sweep manually via:\\n  ${head} s3://${OPTS.stateBucket}/cdkd-migrate-tmp/cdkd-macro-expand-[0-9a-f-]{16}/ --recursive$`
+        )
+      );
+    }
+  );
+
+  it('leaves --region off the delete-stack command when the region is not inert', async () => {
+    await expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+      ...OPTS,
+      region: 'us-east-1;id',
+      cfnClient: cleanupFails(new Error('AccessDenied')),
+    });
+    const warn = warnLines().find((w) => w.includes('Failed to delete transient macro-expand stack'));
+    expect(warn).toMatch(/--stack-name cdkd-macro-expand-[0-9a-f-]{16}$/);
+    expect(warn).not.toContain('--region');
+  });
+
+  it('prints no s3 rm command for a bucket name that is not inert in a shell', async () => {
+    uploadMock.mockReset();
+    uploadMock.mockResolvedValueOnce({
+      url: 'https://example.invalid/t.json',
+      cleanup: () => Promise.reject(new Error('AccessDenied')),
+    });
+    const big = macroTemplate(['AWS::Serverless-2016-10-31']);
+    (big as { Metadata?: unknown }).Metadata = { pad: 'x'.repeat(60_000) };
+    await expandMacros(big, {
+      ...OPTS,
+      stateBucket: 'b;id',
+      cfnClient: buildCfnClient({
+        CreateChangeSet: { Id: 'cs-arn', StackId: 's-arn' },
+        GetTemplate: { TemplateBody: EXPANDED },
+      }),
+    });
+    const warn = warnLines().find((w) => w.includes('template upload from'));
+    expect(warn).toContain('Sweep that key prefix manually via the S3 console');
+    expect(warn).not.toContain('aws s3 rm');
+    expect(warn).not.toContain('s3://b;id');
   });
 
   it('CAPS an oversized cleanup error and MARKS the cut', async () => {

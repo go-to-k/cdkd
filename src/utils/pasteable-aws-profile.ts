@@ -25,16 +25,9 @@
  */
 import { getAssumedRoleCredentials } from './aws-client-defaults.js';
 import { displaySafe } from './display-safe.js';
-import { commandHole, shellQuote } from './pasteable-command.js';
+import { commandHole, SHELL_ACTIVE, shellQuote } from './pasteable-command.js';
 
 let explicitProfile: string | undefined;
-
-/**
- * Whitespace, and every character a POSIX shell (bash or zsh) treats
- * specially anywhere in a word, `~` and `^` included. A profile holding one
- * is printed as a hole (see {@link pasteableAwsProfileFlag}).
- */
-const SHELL_ACTIVE = /[\s'"`$;&|<>()*?[\]{}!#~\\^=%,]/;
 
 /**
  * Record the run's explicit `--profile` (`undefined` clears it). Called once

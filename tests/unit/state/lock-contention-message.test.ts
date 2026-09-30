@@ -10,7 +10,7 @@ import type { LockManager } from '../../../src/state/lock-manager.js';
 import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import { Command } from 'commander';
-import { stateOptions } from '../../../src/cli/options.js';
+import { parseStatePrefix, stateOptions } from '../../../src/cli/options.js';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 
 /**
@@ -668,9 +668,11 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     // nothing else going red (m8 of go-to-k/cdkd#3363's review).
     const opt = stateOptions.find((o) => o.long === '--state-prefix');
     expect(opt, '--state-prefix is no longer declared in stateOptions').toBeDefined();
-    // No argParser at all is the invariant: ANY rewrite (a trim, an empty-to-
-    // default) would desynchronise the emitted flag from the key it selects.
-    expect(opt!.parseArg).toBeUndefined();
+    // No REWRITE is the invariant: a trim or an empty-to-default would
+    // desynchronise the emitted flag from the key it selects. The one parser
+    // allowed only REFUSES a `<` / `>` placeholder (go-to-k/cdkd#4177) and
+    // returns everything else verbatim, which the loop below pins.
+    expect(opt!.parseArg === undefined || opt!.parseArg === parseStatePrefix).toBe(true);
     for (const value of ['', ' padded ', 'a/b', 'custom']) {
       const cmd = new Command().exitOverride();
       for (const o of stateOptions) cmd.addOption(o);
