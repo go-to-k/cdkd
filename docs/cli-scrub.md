@@ -886,7 +886,9 @@ These keys are **kept**:
   reproduce. A key the record lists as an export (or any key, for a record
   written before cdkd recorded which keys are exports) is dropped only when
   every `Export.Name` in today's template resolved to a key the record holds
-  and lists as an export; otherwise — a parameterized name deployed with
+  and lists as an export (a literal name that collides with another output is
+  exempt, since a deploy never publishes it; on a record with no export list,
+  an intrinsic name matching a declared output name proves nothing); otherwise — a parameterized name deployed with
   `--parameters`, one that does not resolve here, or an export the last deploy
   did not write — scrub cannot tell that alias from a deleted one, keeps the
   key, and warns: `... were LEFT as they are`. Such a key's value can still be
