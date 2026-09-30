@@ -359,7 +359,7 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | Code | Meaning |
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
-| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
+| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite. |
 | `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, or the exports index was left incomplete. |
 
 The full cross-command table is in the

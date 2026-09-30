@@ -420,7 +420,10 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
 
     it("REFUSES when another stack's record cannot be read", async () => {
       seed(record({}, {}, 'Consumer'));
-      const real = stateBackend.getState.getMockImplementation()!;
+      const real = stateBackend.getState.getMockImplementation() as (
+        stack: string,
+        region: string
+      ) => Promise<unknown>;
       stateBackend.getState.mockImplementation((stack: string, region: string) =>
         stack === 'Consumer' ? Promise.reject(new Error('throttled')) : real(stack, region)
       );

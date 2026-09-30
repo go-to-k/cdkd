@@ -7780,8 +7780,8 @@ export async function scrubStack(
             );
           }
           logger.info(
-            `${opts.dryRun ? 'Would drop' : 'Dropped'} ${plan.drop.length} output key(s) from ` +
-              `${shownStack} that its template no longer declares: ${shownKeys(plan.drop)}. ` +
+            safeMsg`${opts.dryRun ? 'Would drop' : 'Dropped'} ${plan.drop.length} output key(s) from ` +
+              safeMsg`${shownStack} that its template no longer declares: ${shownKeys(plan.drop)}. ` +
               `Their values are not printed: scrub could not identify them as a secret's ` +
               `plaintext, and left beside the references it writes, cdkd diff would print ` +
               `them. A deploy of today's template does not write them either.`
@@ -7789,12 +7789,12 @@ export async function scrubStack(
         }
         if (plan.keep.length > 0) {
           logger.warn(
-            `${plan.keep.length} output key(s) in ${shownStack} that its template does not ` +
-              `declare were LEFT as they are: ${shownKeys(plan.keep)}. Each may be a live ` +
+            safeMsg`${plan.keep.length} output key(s) in ${shownStack} that its template does not ` +
+              safeMsg`declare were LEFT as they are: ${shownKeys(plan.keep)}. Each may be a live ` +
               `export alias whose Export.Name this run could not reproduce (scrub resolves ` +
               `with template defaults and takes no --parameters), so it is not dropped. If it ` +
               `is a deleted output's, its value is still stored and cdkd diff can print it; ` +
-              `deploying ${shownStack} rewrites the outputs.`
+              safeMsg`deploying ${shownStack} rewrites the outputs.`
           );
         }
       }
