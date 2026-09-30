@@ -281,12 +281,13 @@ export function recoveryCommandFlags(recovery?: LockRecoveryContext): RecoveryCo
         : `--state-bucket ${commandHole('bucket')}`
     );
   }
-  // DEFINED, not truthy: `--state-prefix` has no argParser, so `''` is
-  // accepted and keys every record under `/`, and a hint that dropped it would
-  // resolve the default `cdkd/` prefix instead — a different record with the
-  // same name (go-to-k/cdkd#3363 review). Quoted, an empty value pastes as
-  // `--state-prefix ''`. The premise — the option carries no argParser, and
-  // the backend keys on the value verbatim — is fenced in
+  // DEFINED, not truthy: `--state-prefix`'s parser never rewrites a value (it
+  // only refuses a `<` / `>` placeholder), so `''` is accepted and keys every
+  // record under `/`, and a hint that dropped it would resolve the default
+  // `cdkd/` prefix instead — a different record with the same name
+  // (go-to-k/cdkd#3363 review). Quoted, an empty value pastes as
+  // `--state-prefix ''`. The premise — no rewrite, and the backend keys on the
+  // value verbatim — is fenced in
   // `tests/unit/state/lock-contention-message.test.ts`.
   const prefix = recovery?.statePrefix;
   if (prefix !== undefined && prefix !== DEFAULT_STATE_PREFIX) {

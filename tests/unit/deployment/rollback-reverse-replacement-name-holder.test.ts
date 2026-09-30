@@ -59,6 +59,11 @@ import { withStackName } from '../../../src/provisioning/resource-name.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { buildProgram } from '../../../src/cli/program.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 
 const silentLogger = {
   debug: vi.fn(),
@@ -331,6 +336,30 @@ describe('the unproven-holder refusal (#3979)', () => {
     expect(failed[0]).not.toContain('another resource holds the colliding name');
     expect(failed[0].split('cannot show that').length - 1).toBe(1);
     expect(failed[0]).toMatch(/\nTo orphan it: cdkd rollback --orphan Q$/);
+  });
+
+  it("the stack-less orphan line carries the run's typed flags (go-to-k/cdkd#4177)", async () => {
+    buildProgram();
+    setPasteableRunFlags({ profile: 'prod', stateBucket: 'b' });
+    try {
+      const IDP = 'AWS::Cognito::UserPoolIdentityProvider';
+      const { provider } = collidingProvider();
+      const op: CompletedOperation = {
+        logicalId: 'Q',
+        changeType: 'UPDATE',
+        resourceType: IDP,
+        physicalId: 'idp-new',
+        previousState: res(IDP, { physicalId: 'idp-old', properties: { a: 1 } }),
+      };
+      const state = { Q: res(IDP, { physicalId: 'idp-new', properties: { a: 2 } }) };
+      await replayRollback([op], state, 'CdkdX', ctxFor(provider));
+      expect(failureLines()[0]).toMatch(
+        /\nTo orphan it: cdkd rollback --profile prod --state-bucket b --orphan Q$/
+      );
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
   });
 
   it('runs AHEAD of the Retain refusal, whose text presumes the new resource holds the name', async () => {

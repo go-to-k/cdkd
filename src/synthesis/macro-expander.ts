@@ -26,6 +26,8 @@ import {
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { displayAwsMessage, displayIdent, displaySafe } from '../utils/display-safe.js';
+import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
+import { SHELL_ACTIVE, shellQuote } from '../utils/pasteable-command.js';
 
 /**
  * A transform name comes from the TEMPLATE's own `Transform` / `Fn::Transform`
@@ -585,11 +587,23 @@ async function expandMacrosAttempt(
       try {
         await cfn.send(new DeleteStackCommand({ StackName: transientStackName }));
       } catch (cleanupErr) {
+        // The command on its OWN trailing line, unwrapped, carrying the run's
+        // `--profile` (go-to-k/cdkd#4177): inside the old `'...'` prose quotes a
+        // shell-quoted profile would have turned the quoting inside out. The
+        // stack name is cdkd-minted (`cdkd-macro-expand-<uuid>`), so it needs
+        // no gate of its own.
         logger.warn(
           `Failed to delete transient macro-expand stack ` +
             `'${transientStackName}': ${formatErr(cleanupErr)}. ` +
-            `Clean up manually via 'aws cloudformation delete-stack ` +
-            `--stack-name ${transientStackName}'.`
+            `Clean up manually via:\n  ` +
+            `${withPasteableAwsProfile('aws cloudformation delete-stack')} --stack-name ${transientStackName}` +
+            // The stack lives in the client's region, not necessarily the
+            // profile's default one.
+            (region !== '' &&
+            displaySafe(region, { asciiOnly: true }) === region &&
+            !SHELL_ACTIVE.test(region)
+              ? ` --region ${region}`
+              : '')
         );
       }
     }
@@ -600,12 +614,24 @@ async function expandMacrosAttempt(
         // Surface the S3 key prefix so the operator can grep the
         // bucket for a stranded object (the per-key suffix is the
         // transientStackName + timestamp; see uploadCfnTemplate).
+        // Same shape as the stack hint above. The bucket is operator-supplied,
+        // so the command names it only when it is inert in a shell; S3 bucket
+        // names always are, so the other arm is for a value that is not one.
+        const uri = `s3://${stateBucket}/cdkd-migrate-tmp/${transientStackName}/`;
+        const nameable =
+          displaySafe(stateBucket, { asciiOnly: true }) === stateBucket &&
+          stateBucket !== '' &&
+          !SHELL_ACTIVE.test(stateBucket);
         logger.warn(
           `Failed to delete transient macro-expand template upload from ` +
-            `state bucket '${stateBucket}' (key prefix ` +
+            `state bucket ${displayIdent(stateBucket)} (key prefix ` +
             `'cdkd-migrate-tmp/${transientStackName}/'): ` +
-            `${formatErr(cleanupErr)}. Sweep manually via ` +
-            `'aws s3 rm s3://${stateBucket}/cdkd-migrate-tmp/${transientStackName}/ --recursive'.`
+            `${formatErr(cleanupErr)}. ` +
+            (nameable
+              ? `Sweep manually via:\n  ` +
+                `${withPasteableAwsProfile('aws s3 rm')} ${shellQuote(uri)} --recursive`
+              : `Sweep that key prefix manually via the S3 console: the bucket name ` +
+                `cannot be printed safely on a command line.`)
         );
       }
     }

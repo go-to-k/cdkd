@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { getCdkdVersion } from '../version.js';
 import { guardStackRegionOptions } from './options.js';
 import { setPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
+import { setPasteableRunFlags, setPasteableVerbFlags } from '../utils/pasteable-run-context.js';
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
@@ -61,6 +62,23 @@ export function buildProgram(): Command {
     // The EXPLICIT flag only: every pasteable `aws ...` command then carries it
     // (go-to-k/cdkd#3959). An inherited AWS_PROFILE is not recorded.
     setPasteableAwsProfile(profile);
+    // The same rule for every pasteable `cdkd ...` hint (go-to-k/cdkd#4177):
+    // only what was TYPED. `--state-prefix` has a default, so its SOURCE is
+    // read; an env-var bucket or role reaches the pasted command from the
+    // same shell.
+    const { stateBucket, roleArn } = actionCommand.optsWithGlobals<{
+      stateBucket?: string;
+      roleArn?: string;
+    }>();
+    const prefixFromCli = actionCommand.getOptionValueSourceWithGlobals('statePrefix') === 'cli';
+    setPasteableRunFlags({
+      profile,
+      stateBucket,
+      statePrefix: prefixFromCli
+        ? actionCommand.optsWithGlobals<{ statePrefix?: string }>().statePrefix
+        : undefined,
+      roleArn: roleArn !== undefined,
+    });
     if (profile !== undefined) {
       process.env['AWS_PROFILE'] = profile;
     }
@@ -91,5 +109,26 @@ export function buildProgram(): Command {
   // that arrives the same way, without each command having to know.
   guardStackRegionOptions(program);
 
+  // Which long options each subcommand parses, read off the REAL tree, so a
+  // pasteable hint only gains a run flag its command accepts (go-to-k/cdkd#4177).
+  setPasteableVerbFlags(collectVerbFlags(program));
+
   return program;
+}
+
+/** `'cdkd state orphan'` -> the long option names that subcommand declares. */
+function collectVerbFlags(program: Command): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  const walk = (cmd: Command, path: string): void => {
+    for (const sub of cmd.commands) {
+      const verb = `${path} ${sub.name()}`;
+      map.set(
+        verb,
+        new Set(sub.options.map((o) => o.long).filter((l): l is string => l !== undefined))
+      );
+      walk(sub, verb);
+    }
+  };
+  walk(program, 'cdkd');
+  return map;
 }

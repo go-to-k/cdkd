@@ -25,6 +25,7 @@ import {
 } from '../../state/deployment-events-store.js';
 import type { DeploymentEvent, DeploymentRunSummary } from '../../types/deployment-events.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
   displayIdent,
   displaySafe,
@@ -132,6 +133,8 @@ const NONCURRENT_VERSIONS_SURVIVE_NOTE =
  * (`commonOptions` + `stateOptions` + the deprecated region option).
  */
 interface EventsCommandOptions {
+  /** `--role-arn`: declared by `commonOptions`, applied before any AWS call. */
+  roleArn?: string;
   stateBucket?: string;
   statePrefix?: string;
   region?: string;
@@ -183,6 +186,10 @@ export async function eventsCommand(
   // reaches an SDK client, an ARN segment or a state key. Rationale (and why
   // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
   foldRegionOption(options);
+  // `--role-arn` is declared on this command (`commonOptions`) and was
+  // silently ignored, so a pasted `cdkd events ... --role-arn '<role-arn>'`
+  // hint read the base identity's bucket (go-to-k/cdkd#4177's review).
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   const awsClients = new AwsClients({
     ...(options.region && { region: options.region }),
@@ -319,6 +326,7 @@ async function resolveEventsRegion(
  * region / profile blocks as `cdkd events`; adds the retention knobs.
  */
 interface EventsPruneCommandOptions {
+  roleArn?: string;
   stateBucket?: string;
   statePrefix?: string;
   region?: string;
@@ -380,6 +388,9 @@ export async function eventsPruneCommand(
   const olderThanMs =
     options.olderThan !== undefined ? parseDuration(options.olderThan) : undefined;
 
+  // `--role-arn` applied here too, after the flag checks above and before
+  // any AWS call (see `eventsCommand`).
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
   const awsClients = new AwsClients({
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
