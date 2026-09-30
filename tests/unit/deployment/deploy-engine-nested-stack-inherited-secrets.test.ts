@@ -23,6 +23,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { getCurrentProducerRegions } from '../../../src/deployment/producer-regions-scope.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -580,5 +581,78 @@ describe('DeployEngine — nested-stack child inherits the parent secrets map (#
       v: unknown
     ) => Promise<unknown>;
     await expect(diffResolveFn({ Ref: PARAM })).resolves.toBe('ordinary-public-config');
+  });
+
+  // go-to-k/cdkd#4174: a nested-stack row's provider call must see THIS
+  // engine's producer-region evidence, which `NestedStackProvider` hands the
+  // child engine it builds. Read from inside the provider call, as the
+  // provider does.
+  it("binds this engine's producer-region evidence around its provider calls, the parent's included", async () => {
+    primeCreate();
+    const seen: unknown[] = [];
+    mockProvider.create!.mockImplementation(async () => {
+      seen.push(getCurrentProducerRegions()?.());
+      return { physicalId: 'child-res-phys' };
+    });
+    const engine = new DeployEngine(
+      mockStateBackend as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      {
+        dryRun: false,
+        parameters: { [PARAM]: 'v' },
+        parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+        inheritedProducerRegions: () => ({ regions: ['us-west-2'], complete: true }),
+      },
+      'us-east-1'
+    );
+
+    await engine.deploy(childStackName, childTemplate);
+
+    expect(seen).toEqual([{ regions: ['us-west-2'], complete: true }]);
+  });
+
+  it('the bound evidence is read when the child needs it, so a read recorded after binding counts', async () => {
+    primeCreate();
+    const seen: unknown[] = [];
+    let engine: DeployEngine | undefined;
+    mockProvider.create!.mockImplementation(async () => {
+      // A cross-region read this deploy records AFTER the scope was bound.
+      (engine as unknown as { recordedOutputReads: unknown[] }).recordedOutputReads.push({
+        sourceStack: 'Producer',
+        outputName: 'O',
+        sourceRegion: 'eu-west-1',
+      });
+      seen.push(getCurrentProducerRegions()?.());
+      return { physicalId: 'child-res-phys' };
+    });
+    engine = new DeployEngine(
+      mockStateBackend as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      { dryRun: false, parameters: { [PARAM]: 'v' } },
+      'us-east-1'
+    );
+
+    await engine.deploy(childStackName, childTemplate);
+
+    expect(seen).toEqual([{ regions: ['eu-west-1'], complete: true }]);
+  });
+
+  it('CONTROL: a child engine given no parent evidence binds it as incomplete', async () => {
+    primeCreate();
+    const seen: unknown[] = [];
+    mockProvider.create!.mockImplementation(async () => {
+      seen.push(getCurrentProducerRegions()?.());
+      return { physicalId: 'child-res-phys' };
+    });
+
+    await makeChildEngine().deploy(childStackName, childTemplate);
+
+    expect(seen).toEqual([{ regions: [], complete: false }]);
   });
 });

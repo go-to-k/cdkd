@@ -176,6 +176,35 @@ export function producerRegionsFromState(
 }
 
 /**
+ * The secret a `{{resolve:...}}` expression names, or `undefined` when it is
+ * not a secret-service reference or names nothing. One parse for
+ * {@link classifyReplaySecretRegion} and {@link regionLessSecretName}.
+ */
+function secretReferenceName(expression: string): string | undefined {
+  const inner = expression.startsWith('{{resolve:')
+    ? expression.slice('{{resolve:'.length, -'}}'.length)
+    : undefined;
+  if (inner === undefined) return undefined;
+  const service = inner.split(':')[0];
+  if (service === undefined || !REPLAY_SECRET_SERVICES.has(service)) return undefined;
+  const secretName =
+    service === 'secretsmanager' ? secretsManagerSecretId(inner) : ssmParameterName(inner);
+  return secretName ? secretName : undefined;
+}
+
+/**
+ * The name of a secret reference that carries NO region of its own — the
+ * reference {@link classifyReplaySecretRegion} answers `ambiguous` for once a
+ * foreign producer region is on record — or `undefined` for anything else.
+ * A replay whose producer-region evidence is INCOMPLETE (a nested child whose
+ * parent's regions are unknown, go-to-k/cdkd#4174) refuses exactly these.
+ */
+export function regionLessSecretName(expression: string): string | undefined {
+  const secretName = secretReferenceName(expression);
+  return secretName !== undefined && arnRegion(secretName) === undefined ? secretName : undefined;
+}
+
+/**
  * Decide which region must answer for a single `{{resolve:...}}` expression a
  * rollback replay is about to re-resolve — issue
  * [#2057](https://github.com/go-to-k/cdkd/issues/2057).
@@ -369,15 +398,7 @@ export function classifyReplaySecretRegion(
   consumerRegion: string,
   importedProducerRegions: readonly string[] | undefined
 ): ReplaySecretRegionVerdict {
-  const inner = expression.startsWith('{{resolve:')
-    ? expression.slice('{{resolve:'.length, -'}}'.length)
-    : undefined;
-  if (inner === undefined) return { kind: 'local' };
-  const service = inner.split(':')[0];
-  if (service === undefined || !REPLAY_SECRET_SERVICES.has(service)) return { kind: 'local' };
-
-  const secretName =
-    service === 'secretsmanager' ? secretsManagerSecretId(inner) : ssmParameterName(inner);
+  const secretName = secretReferenceName(expression);
   if (!secretName) return { kind: 'local' };
 
   const named = arnRegion(secretName);

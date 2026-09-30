@@ -54,6 +54,7 @@ import {
 } from '../state/malformed-resources-bag.js';
 import { replayRollback, type RollbackExecutorContext } from './rollback-executor.js';
 import { producerRegionsFromState } from './secret-region-classification.js';
+import { inheritProducerRegions, type ProducerRegionEvidence } from './producer-regions-scope.js';
 import { markNonRetryable } from './retryable-errors.js';
 import {
   withNestedStackContext,
@@ -376,6 +377,12 @@ export async function revertNestedChildFromJournal(args: {
   region: string;
   run: NestedRevertRun;
   logger: Logger;
+  /**
+   * The producer-region evidence of the replay reverting this row — the
+   * parent's, its ancestors' included (go-to-k/cdkd#4174). Absent reads as
+   * INCOMPLETE, so the child refuses every region-less secret reference.
+   */
+  inheritedProducerRegions?: ProducerRegionEvidence | undefined;
 }): Promise<{ warnings: number }> {
   const { ctx, logicalId, childStackName, region, run, logger } = args;
   const runId = run.runId;
@@ -496,6 +503,18 @@ export async function revertNestedChildFromJournal(args: {
       }
     };
 
+    // The UNION of the record and the pre-run reads: `base` was saved by the
+    // deploy being undone and holds only ITS reads, while the replay restores
+    // values the pre-run reads produced (issue #2057's refusal needs them).
+    // Then the parent's (go-to-k/cdkd#4174): a child receives a parent's
+    // cross-region value only as a Parameter, which its own reads do not record.
+    const producerRegions = inheritProducerRegions(
+      producerRegionsFromState({
+        imports: [...(base.imports ?? []), ...(restoredReads?.imports ?? [])],
+        outputReads: [...(base.outputReads ?? []), ...(restoredReads?.outputReads ?? [])],
+      }),
+      args.inheritedProducerRegions
+    );
     const execCtx: RollbackExecutorContext = {
       providerRegistry: ctx.providerRegistry,
       region,
@@ -506,13 +525,8 @@ export async function revertNestedChildFromJournal(args: {
       finalSnapshotClients: ctx.options?.finalSnapshotClients,
       skipFinalSnapshot:
         ctx.options?.skipFinalSnapshot === true || ctx.destroyOptions?.skipFinalSnapshot === true,
-      // The UNION of the record and the pre-run reads: `base` was saved by the
-      // deploy being undone and holds only ITS reads, while the replay restores
-      // values the pre-run reads produced (issue #2057's refusal needs them).
-      importedProducerRegions: producerRegionsFromState({
-        imports: [...(base.imports ?? []), ...(restoredReads?.imports ?? [])],
-        outputReads: [...(base.outputReads ?? []), ...(restoredReads?.outputReads ?? [])],
-      }),
+      importedProducerRegions: producerRegions.regions,
+      producerRegionsIncomplete: !producerRegions.complete,
       // No `--orphan` reaches this replay: the flag feeds only the replay of
       // the stack it is run on (go-to-k/cdkd#3845).
       nestedChildRevert: true,

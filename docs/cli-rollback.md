@@ -168,6 +168,13 @@ These are surfaced in the plan rather than applied silently.
     block the child's own rollback.
   - Run without a stack name, `cdkd rollback` does not offer a child's
     journal separately when its parent has one.
+  - A secret reference that names no region (a Secrets Manager or SSM
+    parameter NAME rather than an ARN) is refused, not re-resolved, when the
+    parent or any stack above it reads a value from another region: the
+    parent may have supplied it from there. A direct rollback of the child
+    cannot see those regions, so it refuses every such reference. The
+    operation fails and the journal is kept; set the property yourself, or
+    spell the reference as a full ARN.
 - A re-run after a snapshot succeeded but its delete failed **re-snapshots** the
   name-keyed types (Redshift, ElastiCache), which resume only an in-flight
   snapshot. EBS volumes are reused via their `cdkd:final-snapshot-of` tag. The

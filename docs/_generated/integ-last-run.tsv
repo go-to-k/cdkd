@@ -240,6 +240,8 @@ nested-stack-deep	2026-09-30T10:20:59Z	PASS	105	verify.sh	rc ok, orph clean; PR 
 nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
 nested-stack-rollback	2026-09-30T03:35:51Z	PASS	105	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers; re-run on the final head after the review's nested-child-journal fix
 nested-stack-secret	2026-09-30T10:20:59Z	PASS	210	verify.sh	rc ok, orph clean; PR #4221 (#4094 bound child params + conditions)
+nested-stack-rollback	2026-09-30T11:33:23Z	PASS	100	verify.sh	rc ok, orph clean (#4215)
+nested-stack-secret	2026-09-30T02:41:33Z	PASS	386	verify.sh	rc ok, orph clean; #4130 round 2
 nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 24 deleted 0 errors, 0 orphans (VPC/ENI clean)
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-parameter-masking	2026-09-30T08:48:50Z	PASS	120	verify.sh	rc ok, orph clean, index clean (#4043 Phase A review round 3; revert probes red at Phase 1 refusal and Phase 3a alias row)
@@ -268,10 +270,11 @@ replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#21
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-09-30T10:32:09Z	PASS	150	verify.sh	PR #4208 (#4157) re-run on the head rebased over #4217 (DeployEngine mixin move); rc ok, destroy 0 errors, no state/lock/CFn leftovers
-rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph clean (#3595 lane)
+rollback-cross-region-secret	2026-09-30T11:33:23Z	PASS	231	verify.sh	rc ok, orph clean (#4215)
 rollback-deletion-policy-snapshot	2026-09-29T08:18:12Z	PASS	120	verify.sh	rc ok, orph clean (#4029 PR #4072)
 rollback-explicit-name-rewrite	2026-09-29T17:59:17Z	PASS	211	verify.sh	rc ok, orph clean (PR #4141 generic name segments)
 rollback-failure-injection	2026-09-30T08:40:10Z	PASS	365	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+rollback-nested-cross-region-secret	2026-09-30T11:33:23Z	PASS	230	verify.sh	rc ok, orph clean; arms A/B pass pre-#4174 too (parent refuses the row first), arm C red pre-fix (#4215)
 rollback-replacement-retain	2026-09-29T04:29:59Z	PASS	70	verify.sh	PR #4035 (#4024) @1e939cd1 on 11c8d52d; rc ok, orph clean
 rollback-replay-cc-generated-name	2026-09-28T22:10:42Z	PASS	155	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, IAM Role replacement reversed to generated name (no collision, guard not reached), no name-holder refusal, orph clean
 rollback-replay-effective-props	2026-09-27T19:24:50Z	PASS	255	verify.sh	rc ok, orph clean (#1706)

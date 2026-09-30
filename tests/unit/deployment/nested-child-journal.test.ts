@@ -139,6 +139,7 @@ function harness(opts: {
   segments?: RollbackJournalSegment[] | null;
   divergentBodyRegion?: string;
   ctxExtra?: Record<string, unknown>;
+  inherited?: { regions: string[]; complete: boolean };
 }) {
   const stateBackend = {
     getState: vi.fn().mockResolvedValue(
@@ -187,6 +188,7 @@ function harness(opts: {
       region: REGION,
       run: scope,
       logger: logger as never,
+      ...(opts.inherited && { inheritedProducerRegions: opts.inherited }),
     });
   };
   return { stateBackend, lockManager, exportIndexStore, run, logger, scope };
@@ -525,6 +527,59 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     await h.run('r');
 
     expect(replay.calls[0]!.ctx['importedProducerRegions']).toEqual(['eu-west-1']);
+  });
+
+  it("the region refusal reads the PARENT's regions, which the child's own reads never record (#4174)", async () => {
+    const h = harness({
+      segments: [seg('r', ['Q'], { previousCrossStackReads: {} as never })],
+      inherited: { regions: ['us-west-2'], complete: true },
+    });
+
+    await h.run('r');
+
+    expect(replay.calls[0]!.ctx['importedProducerRegions']).toEqual(['us-west-2']);
+    expect(replay.calls[0]!.ctx['producerRegionsIncomplete']).toBe(false);
+  });
+
+  it("unions the child's own regions first with the parent's, deduplicated case-insensitively (#4174)", async () => {
+    const h = harness({
+      state: {
+        ...childState(),
+        outputReads: [{ stackName: 'P', outputName: 'O', sourceRegion: 'eu-west-1' }],
+      } as unknown as StackState,
+      segments: [seg('r', ['Q'], { previousCrossStackReads: {} as never })],
+      inherited: { regions: ['EU-WEST-1', 'us-west-2'], complete: true },
+    });
+
+    await h.run('r');
+
+    expect(replay.calls[0]!.ctx['importedProducerRegions']).toEqual(['eu-west-1', 'us-west-2']);
+  });
+
+  it("with NO parent evidence the replay is marked incomplete, whatever the child's own reads say (#4174)", async () => {
+    const h = harness({
+      state: {
+        ...childState(),
+        outputReads: [{ stackName: 'P', outputName: 'O', sourceRegion: 'eu-west-1' }],
+      } as unknown as StackState,
+      segments: [seg('r', ['Q'], { previousCrossStackReads: {} as never })],
+    });
+
+    await h.run('r');
+
+    expect(replay.calls[0]!.ctx['importedProducerRegions']).toEqual(['eu-west-1']);
+    expect(replay.calls[0]!.ctx['producerRegionsIncomplete']).toBe(true);
+  });
+
+  it('INCOMPLETE parent evidence stays incomplete in the child (#4174)', async () => {
+    const h = harness({
+      segments: [seg('r', ['Q'])],
+      inherited: { regions: [], complete: false },
+    });
+
+    await h.run('r');
+
+    expect(replay.calls[0]!.ctx['producerRegionsIncomplete']).toBe(true);
   });
 
   it('the region refusal also reads the RECORD imports', async () => {

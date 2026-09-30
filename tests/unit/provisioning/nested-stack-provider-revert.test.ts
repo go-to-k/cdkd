@@ -53,6 +53,8 @@ vi.mock('../../../src/deployment/nested-child-journal.js', async (importOriginal
 import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
 import { withNestedStackContext } from '../../../src/provisioning/nested-stack-context.js';
 import { withNestedRevertRun } from '../../../src/deployment/nested-child-journal.js';
+import { withProducerRegions } from '../../../src/deployment/producer-regions-scope.js';
+import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
 const ARN = 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child';
 
@@ -210,5 +212,66 @@ describe('NestedStackProvider.update() — rollback revert (#3754)', () => {
     );
 
     expect(reverts.calls[0]).toMatchObject({ run: expect.objectContaining({ runId: undefined }) });
+  });
+});
+
+describe("NestedStackProvider hands the child the parent's producer regions (#4174)", () => {
+  const EVIDENCE = { regions: ['us-west-2'], complete: true };
+
+  it("a revert passes the reverting replay's evidence to the child journal replay", async () => {
+    const provider = new NestedStackProvider();
+
+    await withNestedStackContext(context(false), () =>
+      withProducerRegions(
+        () => EVIDENCE,
+        () =>
+          withNestedRevertRun('run-9', () =>
+            provider.update('Child', ARN, 'AWS::CloudFormation::Stack', {}, {}, {
+              replayingState: true,
+            })
+          )
+      )
+    );
+
+    expect(reverts.calls[0]!['inheritedProducerRegions']).toEqual(EVIDENCE);
+  });
+
+  it('CONTROL: with no evidence bound the child gets none, which it reads as incomplete', async () => {
+    const provider = new NestedStackProvider();
+
+    await withNestedStackContext(context(false), () =>
+      withNestedRevertRun('run-9', () =>
+        provider.update('Child', ARN, 'AWS::CloudFormation::Stack', {}, {}, { replayingState: true })
+      )
+    );
+
+    expect(reverts.calls[0]!['inheritedProducerRegions']).toBeUndefined();
+  });
+
+  it("an ordinary nested update hands the child engine the parent engine's evidence getter", async () => {
+    const provider = new NestedStackProvider();
+    const getter = () => EVIDENCE;
+
+    await withNestedStackContext(context(true), () =>
+      withProducerRegions(getter, () =>
+        provider.update('Child', ARN, 'AWS::CloudFormation::Stack', {}, {}, {})
+      )
+    );
+
+    const options = vi.mocked(DeployEngine).mock.calls.at(-1)![5] as Record<string, unknown>;
+    expect(options['inheritedProducerRegions']).toBe(getter);
+  });
+
+  it('CONTROL: an inherited top-level option never reaches the child: the spread site overwrites it', async () => {
+    const provider = new NestedStackProvider();
+    const ctx = context(true);
+    ctx.options = { concurrency: 1, inheritedProducerRegions: () => EVIDENCE };
+
+    await withNestedStackContext(ctx, () =>
+      provider.update('Child', ARN, 'AWS::CloudFormation::Stack', {}, {}, {})
+    );
+
+    const options = vi.mocked(DeployEngine).mock.calls.at(-1)![5] as Record<string, unknown>;
+    expect(options['inheritedProducerRegions']).toBeUndefined();
   });
 });

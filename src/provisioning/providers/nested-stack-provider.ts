@@ -16,6 +16,7 @@ import type {
 } from '../../types/resource.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
+import { getCurrentProducerRegions } from '../../deployment/producer-regions-scope.js';
 import {
   getNestedRevertRun,
   revertNestedChildFromJournal,
@@ -395,6 +396,9 @@ export class NestedStackProvider implements ResourceProvider {
       region: ctx.parentRegion,
       run,
       logger: this.logger,
+      // go-to-k/cdkd#4174: the reverting replay's producer regions, bound by
+      // the rollback executor. None bound reads as incomplete in the child.
+      inheritedProducerRegions: getCurrentProducerRegions()?.(),
     });
     if (warnings > 0) {
       return {
@@ -784,6 +788,10 @@ export class NestedStackProvider implements ResourceProvider {
         // only LOG-ONLY needles (a `NoEcho` parameter's value) still masks the
         // child's lines and is carried into its consuming resources' bags.
         ...(inheritedSecrets && hasMaskableValues(inheritedSecrets) && { inheritedSecrets }),
+        // go-to-k/cdkd#4174: the parent engine's producer regions, for the
+        // child's own in-process rollback. Always overwritten: none bound
+        // (no parent engine on the stack) reads as incomplete in the child.
+        inheritedProducerRegions: getCurrentProducerRegions(),
         parentStackInfo: {
           parentStack: parentCtx.parentStackName,
           parentLogicalId: logicalId,
