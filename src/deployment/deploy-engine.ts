@@ -32,7 +32,6 @@ import {
   isPasteableIdent,
   safeMsg,
 } from '../utils/display-safe.js';
-import { shellQuote } from '../state/lock-contention-message.js';
 import {
   refuseMalformedOutputs,
   refuseMalformedOrphanRecords,
@@ -48,9 +47,7 @@ import {
   withStackName,
   applyDefaultNameForFallback,
   withoutGeneratedFallbackName,
-  getCurrentStackName,
   getCurrentSkipPrefix,
-  looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import {
@@ -135,7 +132,6 @@ import {
   type StateOutputReadEntry,
   type ResourceState,
   type ResourceChange,
-  type ChangeType,
   type PropertyChange,
 } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
@@ -244,7 +240,7 @@ import {
   type FreshNoEchoCeilingVerdict,
   type FreshNoEchoReadback,
 } from './deploy-value-equality.js';
-
+import * as nameCollisionMixin from './deploy-engine-name-collision.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -582,16 +578,20 @@ function unionCrossStackReads<T>(
 }
 
 export class DeployEngine {
-  private logger = getLogger().child('DeployEngine');
-  private resolver: IntrinsicFunctionResolver;
-  private interrupted = false;
+  /** @internal */
+  logger = getLogger().child('DeployEngine');
+  /** @internal */
+  resolver: IntrinsicFunctionResolver;
+  /** @internal */
+  interrupted = false;
   /**
    * Why `interrupted` was set — first cause wins. `'user'` = SIGINT;
    * `'sibling-failure'` = a resource failed and the remaining work is being
    * cancelled. Drives the {@link InterruptedError} message so cancelled
    * siblings don't misreport a Ctrl+C nobody pressed.
    */
-  private interruptCause: InterruptCause | null = null;
+  /** @internal */
+  interruptCause: InterruptCause | null = null;
 
   /**
    * In-flight `provider.readCurrentState` promises kicked off after a
@@ -604,14 +604,15 @@ export class DeployEngine {
    * if the provider does not implement `readCurrentState` or the call
    * threw — never rejects, so an unhandled-rejection cannot escape.
    */
-  private observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
-    new Map();
+  /** @internal */
+  observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> = new Map();
   /**
    * The cap on the readback that decides a fresh-`NoEcho` replacement ceiling
    * (go-to-k/cdkd#3729). Outliving it keeps the replacement. A field rather
    * than a constant only so a test can shorten it.
    */
-  private noEchoCeilingReadbackTimeoutMs = 30_000;
+  /** @internal */
+  noEchoCeilingReadbackTimeoutMs = 30_000;
   /**
    * The bags a masked-baseline re-capture produced (issue #3595). Each is the
    * PREVIOUS baseline with some masks replaced, already redacted, so
@@ -622,14 +623,22 @@ export class DeployEngine {
    * or a replacement whose provider takes no capture of its own) never
    * receives a bag describing the resource it replaced.
    */
-  private recapturedBaselines = new WeakMap<object, object>();
-  private stateBackend: S3StateBackend;
-  private lockManager: LockManager;
-  private dagBuilder: DagBuilder;
-  private diffCalculator: DiffCalculator;
-  private templateParser = new TemplateParser();
-  private providerRegistry: ProviderRegistry;
-  private options: DeployEngineOptions;
+  /** @internal */
+  recapturedBaselines = new WeakMap<object, object>();
+  /** @internal */
+  stateBackend: S3StateBackend;
+  /** @internal */
+  lockManager: LockManager;
+  /** @internal */
+  dagBuilder: DagBuilder;
+  /** @internal */
+  diffCalculator: DiffCalculator;
+  /** @internal */
+  templateParser = new TemplateParser();
+  /** @internal */
+  providerRegistry: ProviderRegistry;
+  /** @internal */
+  options: DeployEngineOptions;
   /**
    * Optional persistent exports index store. When supplied, all
    * `Fn::ImportValue` resolutions in this deploy session prefer the
@@ -639,13 +648,15 @@ export class DeployEngine {
    * a single `cdkd deploy --all` invocation so the in-memory cache
    * survives across stacks.
    */
-  private exportIndexStore: ExportIndexStore | undefined;
+  /** @internal */
+  exportIndexStore: ExportIndexStore | undefined;
   /**
    * Per-deploy-session bag the resolver pushes resolved
    * `Fn::ImportValue` entries into. Reset at the start of each
    * `deploy()` call and persisted to `newState.imports` at the end.
    */
-  private recordedImports: StateImportEntry[] = [];
+  /** @internal */
+  recordedImports: StateImportEntry[] = [];
   /**
    * Per-deploy-session bag the resolver pushes resolved
    * `Fn::GetStackOutput` entries into (schema v8+, issue #668).
@@ -653,7 +664,8 @@ export class DeployEngine {
    * `newState.outputReads` at the end. Sibling of `recordedImports`
    * for the weak-reference `Fn::GetStackOutput` intrinsic.
    */
-  private recordedOutputReads: StateOutputReadEntry[] = [];
+  /** @internal */
+  recordedOutputReads: StateOutputReadEntry[] = [];
   /**
    * PER-RESOURCE map of resolved SECRET dynamic-reference values
    * (plaintext -> `{{resolve:...}}` expression) the resolver records for each
@@ -670,7 +682,8 @@ export class DeployEngine {
    * still redact an AWS-readback secret (Cognito `client_secret`). Reset per
    * `deploy()`. See `secret-redaction.ts`.
    */
-  private perResourceSecrets = new Map<string, RecordedSecretValues>();
+  /** @internal */
+  perResourceSecrets = new Map<string, RecordedSecretValues>();
   /**
    * Logical ids whose provider declared THIS RUN's `attributes` sensitive
    * (`ResourceCreateResult.noEchoAttributes` — issue
@@ -693,7 +706,8 @@ export class DeployEngine {
    * `NoEcho` response); a SET names the sensitive members only (a nested
    * stack's `Outputs.<Key>` entries — see `NoEchoAttributesResult`).
    */
-  private noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
+  /** @internal */
+  noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
   /**
    * PER-RESOURCE unresolved TEMPLATE properties, keyed by logicalId (issues
    * #1904 / #1900). The redaction choke point uses this as the POSITION source:
@@ -704,7 +718,8 @@ export class DeployEngine {
    * populate `perResourceSecrets`, where the unresolved bag is already in hand.
    * Reset per `deploy()`.
    */
-  private perResourceTemplateProps = new Map<string, Record<string, unknown>>();
+  /** @internal */
+  perResourceTemplateProps = new Map<string, Record<string, unknown>>();
 
   /**
    * The resource TYPE each logical id was resolved as during THIS deploy
@@ -719,14 +734,16 @@ export class DeployEngine {
    * needles went empty, and the plaintext survived into `state.json`. The
    * real-AWS secret fixture caught it.
    */
-  private perResourceResolvedType = new Map<string, string>();
+  /** @internal */
+  perResourceResolvedType = new Map<string, string>();
   /**
    * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
    * whose Value resolves a `{{resolve:...}}` reference). Separate from the
    * per-resource maps for the same anti-cross-contamination reason. Reset per
    * `deploy()`.
    */
-  private outputSecrets: RecordedSecretValues = new Map();
+  /** @internal */
+  outputSecrets: RecordedSecretValues = new Map();
   /**
    * The outputs pass's own recording map(s), one per `resolveOutputs` call
    * this deploy, so every redaction of the outputs bag re-reads them rather
@@ -736,7 +753,8 @@ export class DeployEngine {
    * save, the exports index and the deploy summary all run after that copy.
    * Reset per `deploy()`.
    */
-  private outputsPassSecretMaps: RecordedSecretValues[] = [];
+  /** @internal */
+  outputsPassSecretMaps: RecordedSecretValues[] = [];
   /**
    * UNRESOLVED template `Outputs` values, keyed by output name (issue #1910) —
    * the outputs' POSITION source, the sibling of `perResourceTemplateProps` for
@@ -754,10 +772,8 @@ export class DeployEngine {
    * writes to it, so the initialiser matches the reset rather than standing as
    * a second guard.
    */
-  private outputsTemplateSource: Record<string, unknown> = Object.create(null) as Record<
-    string,
-    unknown
-  >;
+  /** @internal */
+  outputsTemplateSource: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   /**
    * The export aliases the last `resolveOutputs` pass WROTE into its bag
    * (issue #2193) — exactly the keys `outputs[exportName] = value` landed on,
@@ -768,7 +784,8 @@ export class DeployEngine {
    * at the top of every `resolveOutputs`, so it is only meaningful right
    * after that call returns — read it there, not later.
    */
-  private resolvedExportNames: string[] = [];
+  /** @internal */
+  resolvedExportNames: string[] = [];
   /**
    * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
    * (the resolver threw under the default arm of
@@ -781,7 +798,8 @@ export class DeployEngine {
    * lifetime rule as `resolvedExportNames`: reset at the top of every
    * `resolveOutputs`, meaningful only right after that call returns.
    */
-  private skippedOutputs: Record<string, string> | undefined;
+  /** @internal */
+  skippedOutputs: Record<string, string> | undefined;
   /**
    * Whether {@link outputsTemplateSource} may be used to POSITION the outputs
    * redaction. False once an outputs pass threw partway: the post-loop
@@ -789,7 +807,8 @@ export class DeployEngine {
    * the throw — a partial source built from THIS template, while the bag the
    * failure path then redacts is the PREVIOUS deploy's. Reset per `deploy()`.
    */
-  private outputsSourceUsable = true;
+  /** @internal */
+  outputsSourceUsable = true;
 
   /**
    * Per-logical-id snapshot of the intrinsic-RESOLVED desired properties
@@ -798,7 +817,8 @@ export class DeployEngine {
    * `attemptedProperties` so `cdkd rollback --revert-failed` can generate a
    * patch that undoes a half-applied update.
    */
-  private attemptedResolvedProps = new Map<string, Record<string, unknown>>();
+  /** @internal */
+  attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
    * The live-progress label `provisionResource` gave each resource, and whether
@@ -808,10 +828,8 @@ export class DeployEngine {
    * re-labels it here if the resolved value keeps the replacement, and the
    * slow-resource warning reads the current label rather than the first one.
    */
-  private liveTaskLabels = new Map<
-    string,
-    { label: string; replacing: boolean; warnSuffix?: string }
-  >();
+  /** @internal */
+  liveTaskLabels = new Map<string, { label: string; replacing: boolean; warnSuffix?: string }>();
 
   /**
    * Logical ids whose replacement this deploy DELIBERATELY left the old
@@ -845,7 +863,8 @@ export class DeployEngine {
    * Cleared per `deploy()` alongside the other per-run maps: a `false` here
    * must mean "this deploy deleted it", never "a previous run said so".
    */
-  private retainedOldOnReplacement = new Set<string>();
+  /** @internal */
+  retainedOldOnReplacement = new Set<string>();
 
   /**
    * The pre-deploy state records, as loaded — the #1852 heal's eligibility
@@ -859,7 +878,8 @@ export class DeployEngine {
    * a provider call — its attributes object survives the spread, a create /
    * update result's does not.
    */
-  private healBaseline: Readonly<Record<string, ResourceState>> = {};
+  /** @internal */
+  healBaseline: Readonly<Record<string, ResourceState>> = {};
 
   /**
    * Single-flight + per-deploy memo of the #1852 heal, keyed by logical id and
@@ -869,7 +889,8 @@ export class DeployEngine {
    * the same record awaits the one read — and never deleting an entry is what
    * bounds it: one read per record per deploy, success or failure, no retry.
    */
-  private attributeHeals = new Map<string, Promise<StaleAttributeHealOutcome>>();
+  /** @internal */
+  attributeHeals = new Map<string, Promise<StaleAttributeHealOutcome>>();
 
   /**
    * What the heals of this deploy read, waiting for the next state save.
@@ -882,7 +903,8 @@ export class DeployEngine {
    * attribute goes through. A path that saves NOTHING (`--dry-run`) persists
    * nothing and the next deploy re-heals.
    */
-  private healedAttributes = new Map<
+  /** @internal */
+  healedAttributes = new Map<
     string,
     { physicalId: string; resourceType: string; attributes: Record<string, unknown> }
   >();
@@ -892,7 +914,8 @@ export class DeployEngine {
    * region-prefixed S3 state key and recorded in state.json for
    * cross-region destroy.
    */
-  private stackRegion: string;
+  /** @internal */
+  stackRegion: string;
 
   constructor(
     stateBackend: S3StateBackend,
@@ -8924,253 +8947,6 @@ export class DeployEngine {
   }
 
   /**
-   * The name-origin half of the replacement-collision messages (issue #1636).
-   *
-   * Every one of those refusals used to assert that the colliding resource
-   * "has a user-supplied physical name" and prescribe "rename the resource in
-   * your CDK code". For a resource the template never named BOTH halves are
-   * wrong: `generateResourceName` produces `{stackName}-{logicalId}` with no
-   * random component, so the collision is caused by cdkd's OWN naming scheme,
-   * and "rename" there means renaming the CONSTRUCT — a materially different
-   * and more disruptive action. The false half is the part the user is asked
-   * to act on, and a reader who finds no such name in their template cannot
-   * connect the message to their code at all.
-   *
-   * `descriptor` names WHERE the name came from; `remedy` is the accurate
-   * first option. What each caller appends after it differs: the two
-   * property-driven create-first sites append the shared `--replace`
-   * alternative, while the update-failure fallback's two `Retain` refusals
-   * (issue #2518) append the Retain clause instead — under `Retain` no flag
-   * frees the name, so offering `--replace` there would send the user to a
-   * flag that changes nothing.
-   *
-   * Classification is best-effort by construction (see
-   * {@link looksLikeCdkdGeneratedName}) and falls back to the pre-#1636
-   * wording, which stays correct for the template-named resource.
-   */
-  private replacementNameOrigin(
-    logicalId: string,
-    physicalId: string
-  ): { descriptor: string; remedy: string } {
-    if (looksLikeCdkdGeneratedName(physicalId, logicalId, getCurrentStackName())) {
-      return {
-        descriptor:
-          `The physical name (${physicalId}) was GENERATED by cdkd from the construct's ` +
-          `logical id rather than declared in your template, and that derivation has no ` +
-          `random component — so the new resource asks for exactly the name the existing ` +
-          `one still holds`,
-        remedy:
-          `Either give the resource an explicit physical name in your CDK code, or rename ` +
-          `the CONSTRUCT (its id feeds the generated name — note that this replaces the ` +
-          `resource rather than renaming it in place)`,
-      };
-    }
-    return {
-      descriptor: `The resource has a user-supplied physical name (${physicalId})`,
-      remedy:
-        `Either rename the resource in your CDK code (a fresh name lets the safe ` +
-        `create-first order proceed)`,
-    };
-  }
-
-  /**
-   * The plain-CREATE sibling of {@link replacementNameOrigin} (issue
-   * [#2902](https://github.com/go-to-k/cdkd/issues/2902)).
-   *
-   * A CREATE that collides on a name cdkd DERIVED is very likely a resource
-   * cdkd itself left behind: `DeletionPolicy: Retain` makes a rollback drop
-   * the state record while leaving the resource in AWS (CloudFormation
-   * semantics, and deliberate), and cdkd's generated names carry no random
-   * component (`generateResourceName`) — so the next deploy asks AWS for
-   * exactly the name the orphan still holds, fails, rolls back again, and
-   * repeats forever. Before this, the user saw only the bare AWS sentence:
-   * nothing named the collision's cause and nothing named a way out, so the
-   * reported recovery was hand-deleting resources through the AWS API.
-   *
-   * CloudFormation never shows this because its generated names carry a
-   * random suffix, so a retained orphan cannot collide with a later deploy.
-   * The breakage is that combination — CFn's retain semantics with cdkd's
-   * deterministic naming — rather than either half, which is why the fix here
-   * is a diagnosis and a remedy rather than a behaviour change. Whether cdkd
-   * should instead RE-ADOPT the retained resource is issue
-   * [#2914](https://github.com/go-to-k/cdkd/issues/2914).
-   *
-   * Returns `undefined` — leaving the pre-existing wording untouched — for
-   * every case it cannot vouch for:
-   *
-   * - not a CREATE. A replacement collision DOES arrive here — the
-   *   `NAMED_REPLACEMENT_COLLISION` throws happen inside `provisionResourceBody`,
-   *   which the caller invokes inside the same `try`, and this method's own
-   *   suite asserts their line was logged. What refuses them is the
-   *   `ProvisioningError` check below (they throw `CdkdError`), so deleting
-   *   EITHER guard alone leaves the suite green. That does not make this one
-   *   dead: a non-CREATE `ProvisioningError` whose message carries
-   *   `already exists` — an UPDATE-path sub-resource conflict — would reach
-   *   the advice without it, and the replacement message's remedy is to
-   *   RENAME, which does not recover an orphan. (An earlier revision of this
-   *   comment claimed the throws "never reach this catch at all". Three
-   *   reviewers disproved it independently.);
-   * - not a name collision;
-   * - no physical id on the error (a create that failed BEFORE the AWS call
-   *   never names one). At RUNTIME this is subsumed by the next guard --
-   *   `looksLikeCdkdGeneratedName` refuses a falsy id on its own first line,
-   *   measured: deleting this check ALONE leaves the suite green, deleting
-   *   both together reds it. It stays for the TYPE narrowing the message
-   *   interpolation needs, and so the refusal is readable here rather than
-   *   inferred from another module;
-   * - a name cdkd did not derive — a user-supplied name may collide with a
-   *   resource of someone else's entirely, and telling that user to
-   *   `cdkd import` it would be advice to adopt what this stack does not own;
-   * - a NESTED-STACK child. Its stack name is `<parent>~<logicalId>`, and CDK's
-   *   own stack-name rule bars `~`, so no Cloud Assembly stack can ever carry
-   *   it — `cdkd import` resolves its target from the assembly and walks
-   *   top-level stacks only, so the command would be unrunnable. That is the
-   *   same #2610 class this method's `canImport` check exists for, one level
-   *   down, so the child takes the delete-only arm.
-   *
-   * **A cdkd-DERIVED name is not proof the resource is THIS stack's**, which
-   * the first revision of this advice assumed. Two ways it is not, both
-   * reachable: a globally-namespaced type (`AWS::S3::Bucket` is the documented
-   * exception — see `.claude/rules/provider-resource-identity.md`) can collide
-   * with ANOTHER ACCOUNT's resource, and because the derivation is predictable
-   * that name can be pre-registered by someone else; and the same stack name
-   * deployed in two REGIONS derives the same name for a global type, so the
-   * collision is with a live resource another state file already owns —
-   * importing it would give two stacks one resource, and either `cdkd destroy`
-   * would then delete it out from under the other. So the message names the
-   * orphan as the LIKELY case rather than the certain one, and asks the reader
-   * to confirm ownership before adopting.
-   */
-  private orphanedNameCollisionAdvice(
-    changeType: ChangeType,
-    logicalId: string,
-    error: unknown
-  ): string | undefined {
-    if (changeType !== 'CREATE') return undefined;
-    if (!(error instanceof ProvisioningError)) return undefined;
-    const physicalId = error.physicalId;
-    if (!physicalId) return undefined;
-    if (!isNameCollisionErrorFrom(error, logicalId)) return undefined;
-    const stackName = getCurrentStackName();
-    if (!looksLikeCdkdGeneratedName(physicalId, logicalId, stackName)) return undefined;
-    // Implied by the guard above — it returns `false` for a falsy stack name —
-    // but stated so the type system can see it, and so a future change to that
-    // helper cannot make this method read an undefined stack name silently.
-    if (!stackName) return undefined;
-
-    // EVERY interpolation goes through this, the prose included and not only
-    // the pasteable command. An earlier revision sanitised the command
-    // alone while `diagnosis` and `deleteArm` printed the raw value, so a name
-    // carrying a control character (which `looksLikeCdkdGeneratedName` accepts,
-    // since its skeleton strips every non-alphanumeric) reached the terminal
-    // unchanged whichever branch was taken.
-    const safeId = displaySafe(physicalId, { asciiOnly: true });
-    const safeStack = displaySafe(stackName, { asciiOnly: true });
-    const safeLogicalId = displaySafe(logicalId, { asciiOnly: true });
-
-    // The CloudFormation comparison is stated as a DIFFERENCE, not a
-    // similarity, and that is the correction this wording carries. Both engines
-    // leave a `Retain` resource behind on a rollback and drop it from the
-    // stack — but CFn GENERATES names with a random suffix, so its next deploy
-    // asks for a NEW name and succeeds (leaving the old one orphaned but not
-    // blocking). cdkd's derivation has no random component, so its next deploy
-    // asks for the name the orphan still holds. An earlier revision said
-    // "(CloudFormation does the same)" right before the clause where it does
-    // NOT, which in a message announcing a stuck deploy reads as "this is
-    // normal, cdk deploy would stick too" — the opposite of the fact the reader
-    // needs, and false for exactly the population that hits this: a resource
-    // the template did not name. (CFn DOES stick for an explicitly-named one,
-    // which is why the sentence says "unnamed" rather than claiming CFn never
-    // collides.)
-    const diagnosis =
-      `${safeLogicalId}: the name AWS reports as taken (${safeId}) is one cdkd DERIVED from ` +
-      `the logical id, and that derivation has no random component — so this is most likely a ` +
-      `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
-      `DeletionPolicy: Retain in AWS and drops it from state, as CloudFormation does; what ` +
-      `differs is the name. CloudFormation would generate a fresh one for an unnamed resource ` +
-      `and redeploy clean, whereas cdkd asks again for the name the orphan still holds — so ` +
-      `re-running does not clear this.`;
-    const deleteArm =
-      `If it is not a resource you want to keep, delete ${safeId} in AWS — after ` +
-      `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`;
-
-    // Only advise `cdkd import` for a type that can actually be imported.
-    // `runImportForResource` SKIPS a provider with no `import` implementation
-    // (`skipped-no-impl`) rather than failing, so a blanket recommendation
-    // would not break anything — it would just send the user through a command
-    // that reports "provider does not implement import (yet)" and leaves them
-    // where they started. Naming a remedy whose precondition the code never
-    // checks is the defect class issue
-    // [#2610](https://github.com/go-to-k/cdkd/issues/2610) swept, so the
-    // precondition is checked here. `getProvider` is the right call and
-    // `getProviderFor` would be wrong: `cdkd import` itself uses `getProvider`,
-    // so this predicts exactly what that command will do.
-    //
-    // The `catch` is unreachable for the type that got us here, and is kept
-    // rather than removed: `provisionResource` already called `getProvider`
-    // with this same type before the create, to read its timeout floor, so a
-    // throwing lookup would have failed the deploy there instead. Keeping a
-    // catch inside a builder that runs on the failure path costs nothing and
-    // means a future caller cannot turn a diagnostic into a second failure --
-    // but it is NOT a checked precondition, and nothing tests it, because
-    // nothing can drive it.
-    let canImport: boolean;
-    try {
-      canImport =
-        typeof this.providerRegistry.getProvider(error.resourceType).import === 'function';
-    } catch {
-      canImport = false;
-    }
-
-    // The command is meant to be PASTED, so it gets this repo's established
-    // sanitize / quote / SUPPRESS treatment (`renderDisableCommand` in
-    // `replacement-protection-advice.ts` is the shape). The two halves answer
-    // DIFFERENT questions, and an earlier revision of this comment got the
-    // second one wrong:
-    //
-    // - `shellQuote` makes the command SAFE TO RUN. It single-quotes anything
-    //   outside a conservative safe set and escapes embedded quotes, so a `$()`
-    //   payload — which `looksLikeCdkdGeneratedName` admits, its skeleton
-    //   stripping every non-alphanumeric before comparing — pastes as an inert
-    //   literal. `=` is outside that set, so the argument is always quoted.
-    // - Comparing the SANITISED value against the original decides whether the
-    //   command would name the RIGHT RESOURCE. It is not about printing: the
-    //   prose above already prints the sanitised name in every branch. When
-    //   sanitising CHANGES the value, the command would carry a name AWS does
-    //   not hold, so it is withheld rather than shipped wrong — the same
-    //   reasoning `renderDisableCommand` records.
-    // All THREE values the command carries, not two. The logical id is
-    // interpolated into it as well, and `looksLikeCdkdGeneratedName` admits a
-    // dirty one for the same reason it admits a dirty name — its skeleton
-    // strips every non-alphanumeric — so a control character there produced a
-    // command naming a logical id no template or state record holds. Measured
-    // against production before this line covered it, which is the same defect
-    // the two other comparisons exist for, one field over.
-    const commandNamesTheRightResource =
-      safeId === physicalId && safeStack === stackName && safeLogicalId === logicalId;
-    const importableTarget = !stackName.includes('~');
-
-    if (!canImport || !commandNamesTheRightResource || !importableTarget) {
-      const why = !canImport
-        ? `cdkd cannot adopt ${displaySafe(error.resourceType, { asciiOnly: true })} back into ` +
-          `state (its provider implements no import)`
-        : !importableTarget
-          ? `this is a nested-stack child, whose stack name cdkd import cannot resolve`
-          : `cdkd cannot render an import command that provably names this resource`;
-      return `${diagnosis} ${why}, so the way forward is to delete it. ${deleteArm}`;
-    }
-
-    return (
-      `${diagnosis} To recover, adopt it back into state instead of re-creating it: ` +
-      `cdkd import ${shellQuote(safeStack)} --resource ${shellQuote(`${safeLogicalId}=${safeId}`)} ` +
-      `(a selective import merges into existing state and needs no --force while the resource ` +
-      `is absent from it). CONFIRM IT IS YOURS FIRST — a name cdkd derives is predictable, so ` +
-      `for a globally-namespaced type it can belong to another account, and the same stack ` +
-      `deployed in another region derives the same name. ${deleteArm}`
-    );
-  }
-
-  /**
    * Read `DeletionPolicy` / `UpdateReplacePolicy` from the synth template
    * so they can be persisted in `ResourceState` (schema v5+). Always returns
    * both keys (`undefined` when the template does not carry the attribute)
@@ -10093,3 +9869,6 @@ export class DeployEngine {
     return display;
   }
 }
+
+DeployEngine.prototype.replacementNameOrigin = nameCollisionMixin.replacementNameOrigin;
+DeployEngine.prototype.orphanedNameCollisionAdvice = nameCollisionMixin.orphanedNameCollisionAdvice;
