@@ -281,6 +281,12 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
     expect(masked.Message).toBe('*** on a request');
   });
 
+  it('masks a NON-string value under an identifier key', () => {
+    const original = Object.assign(new Error('x'), { code: { detail: SECRET } });
+    const masked = maskSecretsInError(original, bag());
+    expect(masked.code).toEqual({ detail: SECRET_MASK });
+  });
+
   it('applies extraMask to own fields too', () => {
     const original = Object.assign(new Error('clean'), { Error: { Message: 'stack prod-q7' } });
     const masked = maskSecretsInError(original, new Map(), (t) => t.split('prod-q7').join('***'));

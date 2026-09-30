@@ -8118,7 +8118,8 @@ function maskDescriptorValue(
 /**
  * The own fields of an error link that `retryable-errors.ts`'s classifiers
  * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`), plus the SDK's
- * other code fields. {@link maskSecretsInError} copies them verbatim.
+ * other code fields. {@link maskSecretsInError} copies such a field verbatim
+ * when its value is a STRING; any other value is masked like every field.
  */
 const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
   'name',
@@ -8361,7 +8362,9 @@ export function maskSecretsInError<T>(
       const descriptor = Object.getOwnPropertyDescriptor(link, key);
       if (!descriptor) continue;
       descriptors[key] =
-        typeof key === 'string' && CLASSIFIER_IDENTIFIER_FIELDS.has(key)
+        typeof key === 'string' &&
+        CLASSIFIER_IDENTIFIER_FIELDS.has(key) &&
+        typeof descriptor.value === 'string'
           ? descriptor
           : maskDescriptorValue(descriptor, maskText);
       if (descriptors[key] !== descriptor) changed = true;
