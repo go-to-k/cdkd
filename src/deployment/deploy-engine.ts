@@ -85,7 +85,6 @@ import {
   recordRecoverableMaskedOutput,
   wholeStringLeavesOf,
   TEMPLATE_SOURCED_RULES,
-  type FreshNoEchoLeaf,
   recordLogOnlyParameterValue,
   createUnionSecretMasker,
   unionOfSecretBags,
@@ -142,7 +141,6 @@ import {
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import {
   extractDeploymentEventError,
-  type DeploymentEventRecorder,
   type DeploymentResourceOperation,
 } from '../types/deployment-events.js';
 import type { LockManager } from '../state/lock-manager.js';
@@ -169,7 +167,6 @@ import {
   effectiveDeletionPolicy,
   replacementDeletePolicy,
   unsupportedFinalSnapshotError,
-  type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import {
@@ -212,7 +209,7 @@ import {
 import { withResourceDeadline } from './resource-deadline.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
-import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
+import { findUnrewrittenAssetReferences } from '../assets/asset-redirect.js';
 import {
   replayRollback,
   producerRegionsFromState,
@@ -232,6 +229,29 @@ import {
 } from './nested-child-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
+import {
+  DEFAULT_RESOURCE_TIMEOUT_MS,
+  DEFAULT_RESOURCE_WARN_AFTER_MS,
+  type DeployEngineOptions,
+  type DeployResult,
+} from './deploy-engine-options.js';
+import { deriveLabelRouting } from './label-routing.js';
+import {
+  isReplacementCeiling,
+  keyOrderFreeJson,
+  liveHoldsFreshLeaves,
+  outputMapsEqual,
+  type FreshNoEchoCeilingVerdict,
+  type FreshNoEchoReadback,
+} from './deploy-value-equality.js';
+
+export {
+  DEFAULT_RESOURCE_TIMEOUT_MS,
+  DEFAULT_RESOURCE_WARN_AFTER_MS,
+  type DeployEngineOptions,
+  type DeployResult,
+} from './deploy-engine-options.js';
+export { deriveLabelRouting, type LabelRoutingState } from './label-routing.js';
 
 /**
  * The bag a resource with no recorded secret masks against (issue #2038).
@@ -301,402 +321,6 @@ class ForwardingSecrets extends Map<string, string> {
 type RedactedAttributeRead = import('./intrinsic-function-resolver.js').RedactedAttributeRead;
 
 /**
- * Default per-resource warn threshold: warn the user when a single
- * resource has been in flight for 5 minutes. Most CC API resources
- * complete in under a minute; 5m is the agreed elbow.
- */
-export const DEFAULT_RESOURCE_WARN_AFTER_MS = 5 * 60 * 1000;
-
-/**
- * Default per-resource hard timeout: abort after 30 minutes. Matches the
- * design doc — Custom-Resource-heavy stacks should pass `--resource-timeout 1h`
- * explicitly because the Custom Resource provider's polling cap is 1h.
- */
-export const DEFAULT_RESOURCE_TIMEOUT_MS = 30 * 60 * 1000;
-
-/**
- * Deploy engine options
- */
-export interface DeployEngineOptions {
-  /** Maximum concurrent resource operations */
-  concurrency?: number;
-  /** Dry run mode (plan only, no actual changes) */
-  dryRun?: boolean;
-  /** Lock timeout in milliseconds */
-  lockTimeout?: number;
-  /** User-provided parameter values */
-  parameters?: Record<string, string>;
-  /** Skip rollback on failure (save partial state and fail) */
-  noRollback?: boolean;
-  /**
-   * The `--role-arn` the deploy is running with, if any. Informational only
-   * — recorded into the rollback-journal segment (issue #1183) so `cdkd
-   * rollback` can note that the deploy used a role when it is about to run
-   * with ambient credentials.
-   */
-  roleArn?: string;
-  /**
-   * Per-resource warn threshold (ms). When a single CREATE / UPDATE /
-   * DELETE has been running this long, the live renderer's task label
-   * gets a "[taking longer than expected, Nm+]" suffix and a
-   * `logger.warn` line is emitted. Defaults to
-   * {@link DEFAULT_RESOURCE_WARN_AFTER_MS}.
-   *
-   * Per-type override via {@link resourceWarnAfterByType} wins for
-   * matching resource types.
-   */
-  resourceWarnAfterMs?: number;
-  /**
-   * Per-resource hard timeout (ms). When a single resource exceeds this,
-   * `ResourceTimeoutError` is thrown and the existing rollback path
-   * runs. Defaults to {@link DEFAULT_RESOURCE_TIMEOUT_MS}.
-   *
-   * Per-type override via {@link resourceTimeoutByType} wins for
-   * matching resource types.
-   */
-  resourceTimeoutMs?: number;
-  /**
-   * Per-resource-type warn-after override map. Keys are
-   * `AWS::Service::Resource` strings; values are milliseconds. When the
-   * resource being provisioned matches a key here, that value supersedes
-   * `resourceWarnAfterMs` at the call site.
-   */
-  resourceWarnAfterByType?: Record<string, number>;
-  /**
-   * Per-resource-type hard-timeout override map. Same shape as
-   * {@link resourceWarnAfterByType}; supersedes `resourceTimeoutMs` at
-   * the call site for matching types.
-   */
-  resourceTimeoutByType?: Record<string, number>;
-  /**
-   * When true, kick off `provider.readCurrentState` immediately after
-   * each successful create / update so its result lands in
-   * `ResourceState.observedProperties` for the drift comparator. Calls
-   * are fire-and-forget — the deploy critical path does NOT block on
-   * them — and a final `Promise.all` drains the in-flight set right
-   * before the success state save.
-   *
-   * Defaults to `true`. Pass `--no-capture-observed-state` (or set
-   * `cdk.json context.cdkd.captureObservedState: false`) to disable
-   * when deploy speed is more important than rich drift detection.
-   */
-  captureObservedState?: boolean;
-
-  /**
-   * Issue #1002 PR 2 — §6 asset-location mapping table, present when the
-   * deploy region is in cdkd-assets mode and the stack has redirected
-   * assets. The engine uses it for the §7 step 3 post-resolution audit:
-   * after the intrinsic resolver produces final literal properties, any
-   * value still naming a mapped SOURCE (CDK bootstrap) bucket / repo fails
-   * the resource loudly — a template shape the rewrite missed must never
-   * deploy as a split-brain reference. Forwarded to nested-child engines
-   * via `NestedStackProvider`'s options spread. `undefined` in legacy mode
-   * (no audit — byte-identical behavior).
-   */
-  assetRedirect?: AssetRedirectMap;
-
-  /**
-   * When set, every state save during this deploy stamps the supplied
-   * parent-stack identity onto `StackState.parentStack` /
-   * `parentLogicalId` / `parentRegion` (schema v6+). The
-   * `NestedStackProvider` populates this when it builds a child
-   * `DeployEngine`, so the child's state file records that it is a
-   * nested-stack child of `<parentStack>` under template logical id
-   * `<parentLogicalId>`. Top-level deploys leave this `undefined` and
-   * the three fields stay unset (top-level state file shape).
-   *
-   * See issue [#459](https://github.com/go-to-k/cdkd/issues/459) /
-   * [docs/design/459-nested-stacks.md](../../docs/design/459-nested-stacks.md)
-   * §3 for the full state-key + identity layout.
-   */
-  parentStackInfo?: {
-    parentStack: string;
-    parentLogicalId: string;
-    parentRegion: string;
-  };
-
-  /**
-   * Secrets the PARENT already resolved on this child's behalf (issue
-   * [#1903](https://github.com/go-to-k/cdkd/issues/1903)) — the seed map
-   * `NestedStackProvider` hands the child {@link DeployEngine} it builds.
-   *
-   * WHY A CHILD ENGINE NEEDS ONE AT ALL. cdkd's secret redaction rests on the
-   * resolver recording `plaintext -> {{resolve:...}} expression` into
-   * `recordedSecretValues`, which this engine reads at its state-save choke
-   * point. A nested stack breaks that chain: the parent resolves the child's
-   * `Parameters` block, so the value reaching the child is already PLAINTEXT
-   * and the child's template carries `{Ref: <ParamName>}` — an intrinsic
-   * OBJECT, not an expression string. Nothing in the child's own resolution
-   * ever sees a `{{resolve:`, so its `perResourceSecrets` came out EMPTY and
-   * the child's `state.json` persisted the decrypted secret with no expression
-   * to redact back to.
-   *
-   * The PATH-based redaction that closed #1904 / #1900 structurally cannot
-   * help, and that is why this is a seed rather than a second source bag: that
-   * pass copies a source leaf that IS a `{{resolve:...}}` string, and the
-   * child's corresponding leaf is `{Ref: ...}`. There is no leaf to copy.
-   *
-   * WHAT IT IS USED FOR, both halves being needed or the fix trades one bug for
-   * another:
-   *
-   * 1. {@link buildResolverContext} puts it on the resolver context as
-   *    `ResolverContext.inheritedSecrets`, and the resolver copies a pair into
-   *    the context's own `recordedSecretValues` at the moment a `{Ref: Param}`
-   *    resolves to a value carrying that plaintext
-   *    (`recordInheritedParameterSecrets`). The ordinary VALUE-based redaction
-   *    then finds the plaintext wherever the parameter landed in that resource
-   *    — including inside an `Fn::Join` / `Fn::Sub` that merely EMBEDS it.
-   *
-   *    RECORDED AT RESOLUTION TIME, NOT PRE-SEEDED (issue
-   *    [#2087](https://github.com/go-to-k/cdkd/issues/2087)). The first cut
-   *    pre-loaded every child resource's map with this bag, which redacted the
-   *    genuine consumers but also spliced the expression into an UNRELATED
-   *    resource's literal that merely contained the plaintext as a substring
-   *    (`my-production-bucket` against a secret `production`) — a change the
-   *    desired side never mirrors, so the child acquired a perpetual UPDATE, or
-   *    a perpetual REPLACEMENT on a create-only property. Recording at
-   *    resolution time reproduces the parent's own scoping, where
-   *    `perResourceSecrets` is keyed by logical id.
-   * 2. The DIFF resolver context binds the child's `parameters` to the
-   *    REDACTED form (see `redactParametersForDiff`), so the comparison stays
-   *    expression-vs-expression. Without it the child's desired side resolves
-   *    `{Ref: Param}` to plaintext while its state now holds the expression,
-   *    and every deploy reports a spurious UPDATE — the #1901 perpetual-change
-   *    class, arriving through the parameter boundary.
-   *
-   * The redaction of (2) is deliberately NOT applied to the
-   * CONDITION-evaluation context: an `Fn::Equals` over a parameter must compare
-   * the value the stack actually deployed with, and substituting the expression
-   * there would flip a condition. (1) is harmless there and on the diff context
-   * alike, because it only RECORDS — it never changes a resolved value.
-   *
-   * The map is READ-ONLY: the resolver copies matching entries out of it into a
-   * fresh per-resource map, so passing the parent's own bag by reference cannot
-   * let a child's resolution write back into it.
-   *
-   * Nesting composes without extra plumbing, and now scopes on the way down
-   * too: a grandchild's `AWS::CloudFormation::Stack` row resolves its own
-   * `Parameters` block through a context carrying this option, so the pairs its
-   * values actually reference are recorded into THAT row's bag — which is
-   * exactly the bag `withCurrentResourceSecrets` binds around the provider call
-   * that builds the grandchild engine.
-   */
-  inheritedSecrets?: RecordedSecretValues;
-
-  /**
-   * Pre-provisioning gate invoked with the stack's CURRENT state, exactly
-   * once per `deploy()`, immediately after the post-lock state read and
-   * BEFORE anything else touches the template or a provider. `state` is
-   * `undefined` when the stack has no state at all (first deploy).
-   *
-   * Exists so a CLI pre-flight that needs to inspect existing state can
-   * reuse the state read the engine already performs, instead of issuing
-   * its own S3 GET before the lock and then having the engine read the
-   * same object again. The deploy CLI's `--prefix-user-supplied-names`
-   * migration check is the caller; reading POST-lock is also strictly more
-   * authoritative than the pre-lock read it replaces, since no concurrent
-   * deploy can mutate the state between the check and the diff.
-   *
-   * Throwing aborts the deploy. `DeployCancelledError` is the "user
-   * declined a confirmation prompt" signal the CLI unwinds quietly; any
-   * other error surfaces as a normal deploy failure. The engine does not
-   * catch either — the `finally` still releases the lock and stops the
-   * live renderer.
-   *
-   * `stackName` is passed so an implementation shared across a run can
-   * scope itself; the engine forwards its own option object to
-   * nested-stack children, which invoke the hook with the CHILD's name and
-   * state.
-   */
-  onCurrentStateLoaded?: (stackName: string, state: StackState | undefined) => Promise<void>;
-
-  /**
-   * Issues [#615] / [#651] — user-named resources to destroy + recreate this
-   * deploy, plumbed through `--recreate-via-cc-api <LogicalId>` /
-   * `--recreate-via-sdk-provider <LogicalId>` (both repeatable), TOGETHER WITH
-   * the stack name the pre-flight validated them against.
-   *
-   * Behavior at each provisionResource site:
-   *   - CREATE → the flag is not read at all. The pre-flight refuses an id
-   *     absent from cdkd state (`missingFromState`), so a CREATE here means a
-   *     state race between the pre-lock probe and the post-lock read; recreate
-   *     is N/A for a resource that does not yet exist, and the CREATE proceeds
-   *     normally. (An earlier revision of this comment promised a warning on
-   *     that path. There has never been one.)
-   *   - UPDATE → force the replacement code path, route the new resource via
-   *     the named direction's layer (`viaCcApi`: Cloud Control regardless of
-   *     whether the template has a silent-drop property, stamping
-   *     `provisionedBy: 'cc-api'`; `viaSdkProvider`: cdkd's SDK provider,
-   *     stamping `provisionedBy: 'sdk'`, used to migrate a CC-sticky resource
-   *     back after a #609 backfill release adds coverage). The OLD resource's
-   *     destroy uses its state-recorded `provisionedBy` so the destroy hits
-   *     the right provider. Destroy-then-create ordering in both directions —
-   *     the old physical id usually reuses its user-supplied name, so a
-   *     create-first would collide.
-   *   - DELETE → ignore the flag (the resource is being destroyed
-   *     anyway).
-   *
-   * `stackName` is NOT decoration and NOT redundant with the engine's own
-   * stack (issue [#2567]). The ids are validated ONCE, in `deploy.ts`, against
-   * the TOP-LEVEL stack's template + state + live emptiness probes — and this
-   * whole option object is then spread into every NESTED child engine by
-   * `NestedStackProvider.runChildDeploy`. A bare id set therefore matched the
-   * CHILD's logical ids too, and since `recreateFlagged` is exactly what SKIPS
-   * the mid-deploy stateful guard below, a child resource that merely SHARED a
-   * logical id with a validated parent one (same construct id, or an
-   * `overrideLogicalId`) could be DELETE + CREATEd with neither the pre-flight
-   * nor the guard having looked at it. Carrying the validated stack name
-   * beside the ids — and matching only there — is what confines the flag to
-   * the stack the user actually named. Same shape as the prefix-migration
-   * gate's `gateStackName !== opts.stackName` guard, and for the same reason.
-   *
-   * The two sets are mutually exclusive (the pre-flight validator rejects any
-   * logical id named in both), and the engine trusts that every id in them is
-   * present in the named stack's cdkd state on entry. When `undefined`, the
-   * engine behaves exactly as before #615 / #651.
-   */
-  /**
-   * `--pin-cc-api` targets (issue #2719): logical ids that decline the
-   * automatic return to their SDK provider and stay on the Cloud Control
-   * route for this deploy.
-   *
-   * Logical ids live HERE rather than on the registry because the registry is
-   * type-scoped and knows nothing about logical ids; the engine resolves
-   * membership and passes the answer down as a boolean.
-   *
-   * SELF-SCOPED by `stackName`, exactly like `recreateTargets` and for the
-   * same reason: this object is spread into every nested child engine, and a
-   * logical id is unique only WITHIN one template. Without the scope, pinning
-   * `Topic` in the parent would also pin a `Topic` in any nested child that
-   * happens to use the id -- silently, since a pin produces no output. Caught
-   * by `tests/unit/provisioning/nested-stack-option-boundary-audit.test.ts`,
-   * which is why the shape is a record rather than a bare Set.
-   */
-  pinCcApi?: {
-    /** The stack these ids were validated against — the ONLY stack they apply to. */
-    stackName: string;
-    logicalIds: ReadonlySet<string>;
-  };
-  recreateTargets?: {
-    /** The stack the ids below were validated against — the ONLY stack they apply to. */
-    stackName: string;
-    /** `--recreate-via-cc-api` targets (SDK → Cloud Control). */
-    viaCcApi: ReadonlySet<string>;
-    /** `--recreate-via-sdk-provider` targets (Cloud Control → SDK). */
-    viaSdkProvider: ReadonlySet<string>;
-  };
-
-  /**
-   * Issue [#808] — best-effort structured deployment-event recorder. When
-   * supplied, the engine emits one event per per-resource operation
-   * (RESOURCE_STARTED / RESOURCE_SUCCEEDED / RESOURCE_FAILED) and per
-   * rollback step (ROLLBACK_STARTED / ROLLBACK_RESOURCE_SUCCEEDED /
-   * ROLLBACK_RESOURCE_FAILED / ROLLBACK_FINISHED). The run-level
-   * RUN_STARTED / RUN_FINISHED events are emitted by the OWNER (the
-   * deploy CLI) which knows the command / cdkd version / terminal result
-   * and `finalize()`s the recorder after the run reaches a terminal
-   * state. `record()` is synchronous and never throws — the recorder
-   * buffers in memory and flushes to S3 asynchronously, so event
-   * recording can NEVER fail or block the deploy. When `undefined` the
-   * engine behaves exactly as before #808 (events are a no-op).
-   *
-   * NOTE: events carry error + metadata ONLY — never resource
-   * properties (which may contain secrets and already live in state.json).
-   */
-  eventRecorder?: DeploymentEventRecorder;
-
-  /**
-   * `--replace` — opt into replacing (DELETE + CREATE) a resource whose
-   * in-place `provider.update()` hard-rejects with a typed
-   * `ResourceUpdateNotSupportedError`. This happens when a user changes an
-   * immutable property (same logical id) of a type cdkd has no replacement
-   * rule for — AWS exposes no in-place update API, so CloudFormation would
-   * replace the resource, but cdkd otherwise fails the deploy. With this
-   * flag set, the engine catches the typed error and falls back to the same
-   * destroy-then-create path the CC-API `UnsupportedActionException` fallback
-   * already uses. When `undefined`/`false`, the engine rethrows the error
-   * (the pre-flag behavior — the deploy fails with the provider's message).
-   *
-   * Stateful types (RDS / DynamoDB / EFS / S3-with-data / Logs-with-retention
-   * / etc.) require {@link forceStatefulRecreation} to be ALSO set, since the
-   * replacement is a data-losing DELETE + CREATE.
-   */
-  replace?: boolean;
-
-  /**
-   * `--force-stateful-recreation` — confirm a data-losing replacement of a
-   * stateful resource. It is NOT merely a companion to {@link replace} / the
-   * `--recreate-via-*` flags: the guard also runs on replacement paths a plain
-   * `cdkd deploy` reaches with no flag at all — a property-driven replacement
-   * (an immutable / createOnly property changed in the template), and the
-   * update-failure fallback's Cloud Control trigger (issue [#2514]) — so a
-   * plain deploy can demand this flag on its own.
-   *
-   * It is NOT required on every replacement of a stateful type, and this
-   * comment must not be read as saying so. The property-driven site exempts a
-   * target whose template declares `UpdateReplacePolicy: Retain` (the old
-   * resource and its data survive, orphaned rather than deleted) and a
-   * `--recreate-via-*` target, which the pre-flight probe already validated.
-   * The update-failure fallback exempts neither, because it deletes the old
-   * resource before creating the new one. The exemptions are enumerated under
-   * "Three exemptions apply to this trigger specifically" in
-   * `docs/cli-deploy-safety.md`, whose per-path table separately enumerates
-   * the paths; prose here names examples and must not read as exhaustive.
-   *
-   * Without it, the engine refuses the replacement and surfaces a clear error
-   * naming the resource + the data-loss reason.
-   */
-  forceStatefulRecreation?: boolean;
-
-  /**
-   * `--strict-getatt` (issue #1111) — promote every unknown-attribute
-   * `Fn::GetAtt` physicalId fallback (any suffix, not just the always-fatal
-   * `*Arn` / `*Url` shape mismatches) to a hard error, and fail the deploy
-   * when a stack Output cannot be resolved (default: warn and store no
-   * value). Threaded into the engine's `IntrinsicFunctionResolver` at
-   * construction and consulted by `resolveOutputs`. Nested-stack child
-   * engines inherit it via the options spread in `NestedStackProvider`.
-   */
-  strictGetAtt?: boolean;
-
-  /**
-   * `--no-cfn-fallback` (issue #1697) — when false, disables the
-   * CloudFormation fallback for cross-stack references
-   * (`Fn::ImportValue` -> `ListExports`, `Fn::GetStackOutput` ->
-   * `DescribeStacks` outputs) that otherwise fires after a cdkd-state
-   * miss. Default true. Threaded into the engine's
-   * `IntrinsicFunctionResolver` at construction; nested-stack child
-   * engines inherit it via the options spread in `NestedStackProvider`.
-   */
-  cfnFallback?: boolean;
-
-  /**
-   * `--skip-final-snapshot` (issues #1352 / #1354) — delete
-   * `DeletionPolicy: Snapshot` resources (and, on the replacement paths,
-   * `UpdateReplacePolicy: Snapshot` old resources) WITHOUT the final snapshot
-   * the policy promises (data loss, explicit opt-in). Default
-   * (`undefined`/`false`): the delete sites honor the policy — atomic
-   * final-snapshot delete parameters for the `ATOMIC_FINAL_SNAPSHOT_TYPES`,
-   * a pre-delete snapshot+wait for the `PRE_DELETE_SNAPSHOT_TYPES` (EC2
-   * Volume, Redshift Cluster, ElastiCache ReplicationGroup — issue #1353),
-   * and a refusal (`FINAL_SNAPSHOT_UNSUPPORTED`) otherwise.
-   */
-  skipFinalSnapshot?: boolean;
-
-  /**
-   * Region-pinned clients for the pre-delete final snapshots (issues #1352 /
-   * #1353). The process-global `getAwsClients()` singleton is repointed
-   * per-stack under `--stack-concurrency > 1`, so a concurrent multi-region
-   * deploy could hand a delete site a wrong-region client — whose snapshot
-   * call 404s as a NotFound and silently skips the snapshot. `deploy.ts`
-   * threads the stack-scoped `AwsClients` instance here (structurally a
-   * `PreDeleteSnapshotClients`); absent (tests / legacy callers), the global
-   * is used.
-   */
-  finalSnapshotClients?: PreDeleteSnapshotClients;
-}
-
-/**
  * Reported up from a template-DELETE whose provider returned
  * `{ outcome: 'skipped' }` (issue #1762).
  *
@@ -757,76 +381,6 @@ interface ProvisionCounts {
 }
 
 /**
- * Deploy result
- */
-export interface DeployResult {
-  /** Stack name */
-  stackName: string;
-  /** Number of resources created */
-  created: number;
-  /** Number of resources updated */
-  updated: number;
-  /** Number of resources deleted */
-  deleted: number;
-  /**
-   * Number of template-DELETE resources whose provider reported
-   * `{ outcome: 'skipped' }` — cdkd could not address the resource, so it was
-   * NOT deleted and may still be ALIVE (issue
-   * [#1762](https://github.com/go-to-k/cdkd/issues/1762), the deploy-side twin
-   * of `DestroyRunnerResult.skippedCount`).
-   *
-   * Counted separately from `deleted` for the same reason it is on destroy: a
-   * skip never reached AWS, so counting it as deleted reports success over a
-   * resource nothing touched. Distinct from `unchanged` too — that counts
-   * resources cdkd deliberately left alone, whereas this one counts resources
-   * cdkd MEANT to delete and could not.
-   *
-   * The state record is deliberately KEPT for these, so the next deploy still
-   * sees the resource as a pending DELETE and re-attempts it. That
-   * self-healing is why a skip here is a warning rather than a failed
-   * RESOURCE -- but it is NOT why the RUN succeeds, and since issue
-   * [#1960](https://github.com/go-to-k/cdkd/issues/1960) it no longer does:
-   * the deploy exits 2, as `cdkd destroy` has for the identical outcome since
-   * #1752. Self-healing means the next run can fix it; it does not mean this
-   * run applied the template it was given. (`--allow-unaddressed` opts back
-   * out of the exit code, not out of the warning.)
-   */
-  deleteSkipped: number;
-  /**
-   * Resources whose UPDATE reported `{ outcome: 'partial' }` (issue #1819):
-   * updated, but something the update owned survives untracked. Separate from
-   * `updated` so a clean run and a run that orphaned a resource do not print
-   * the same summary, and separate from `deleteSkipped` because the surviving
-   * resource is not the row's own.
-   */
-  updatePartial: number;
-  /** Number of resources unchanged */
-  unchanged: number;
-  /** Total deployment time in milliseconds */
-  durationMs: number;
-  /**
-   * Resolved stack outputs keyed by the template-declared Output name
-   * (Export.Name duplicates are filtered out). Populated on a real
-   * deploy and on the no-change path; undefined under --dry-run.
-   */
-  outputs?: Record<string, unknown>;
-  /**
-   * Number of `Fn::GetAtt` resolutions that fell back to the physical ID
-   * (the resolver's warn path) during this deploy run (issue #1111 item 3).
-   * The deploy CLI prints a one-line summary when > 0 so the per-resolution
-   * warns don't scroll away on green deploys. Each distinct fallback site
-   * counts once per run (on the change path the counter is reset after the
-   * diff phase so a site is not counted at diff time AND provisioning
-   * time); see `IntrinsicFunctionResolver.getPhysicalIdFallbackCount` for
-   * the full per-path semantics. Scoped to THIS engine's resolver: a
-   * nested-stack CHILD engine's fallbacks appear in the child's own count
-   * and are NOT aggregated into the parent stack's summary. Always 0 under
-   * `--strict-getatt` (every fallback is a hard error there).
-   */
-  attributeFallbackCount: number;
-}
-
-/**
  * Deploy engine orchestrates the entire deployment process
  *
  * Responsibilities:
@@ -865,185 +419,6 @@ class InterruptedError extends Error {
     );
     this.name = 'InterruptedError';
   }
-}
-
-/**
- * Best-effort routing inference for the live-progress task label
- * (#614 §9). Mirrors the routing decision tree but is purely cosmetic:
- * errors here never surface — when the inference fails we return
- * `undefined` and the label gets no `[CC API]` tag. The real
- * `getProviderFor` call inside the deploy/destroy critical path is the
- * load-bearing dispatch.
- *
- * Inputs:
- * - CREATE / UPDATE → template-side `desiredProperties` (top-level CFn
- *   property names; intrinsic resolution does not change those, so we
- *   can route ahead of the resolver run).
- * - DELETE → sticky `provisionedBy` from the existing-state record.
- *
- * Exported so {@link DeployEngine.peekRoutingForLabel} stays a 1-line
- * delegate and the routing-inference logic is directly unit-testable
- * without standing up a full DeployEngine harness.
- */
-/** The only two fields {@link deriveLabelRouting} reads off a state record. */
-export type LabelRoutingState = Partial<Pick<ResourceState, 'provisionedBy' | 'properties'>>;
-
-export function deriveLabelRouting(
-  change: ResourceChange,
-  // Only these two fields are read, and BOTH optional, which is what the
-  // function already assumes (`existingState?.provisionedBy`,
-  // `existingState?.properties`). Saying so lets `peekRoutingForLabel` pass the
-  // recreate hint as a real object instead of an `as ResourceState` cast over
-  // four missing required fields -- a cast that also typechecked clean for
-  // `{}`, and whose replacement immediately caught that the hint record has no
-  // `properties`, which is exactly the mirror `replaceDecision` needs.
-  existingState: LabelRoutingState | undefined,
-  registry: Pick<ProviderRegistry, 'getProviderFor'>,
-  forceCcApi = false
-): 'sdk' | 'cc-api' | undefined {
-  try {
-    if (change.changeType === 'DELETE') {
-      return existingState?.provisionedBy;
-    }
-    const decision = registry.getProviderFor({
-      resourceType: change.resourceType,
-      // `?? {}` matches the dispatch's `change.desiredProperties || {}`. Safe
-      // today only because `DiffCalculator` always populates the field, which
-      // is the kind of "safe because of somewhere else" that made the
-      // diff-renderer copy of this same normalization a real bug.
-      properties: change.desiredProperties ?? {},
-      provisionedBy: existingState?.provisionedBy,
-      // Issue #2719: the label must be computed from the SAME inputs as the
-      // dispatch, or it describes a decision that will not be taken. Both were
-      // omitted in the first revision of this change.
-      //
-      // The live case is `--pin-cc-api`: the dispatch forces Cloud Control and,
-      // without `forceCcApi` here, the label computed `sdk` and dropped the
-      // `[CC API]` tag from a resource still going through Cloud Control. NOT
-      // `--recreate-via-cc-api`, which an earlier revision of this comment
-      // cited: that flag is refused at pre-flight on a record already `cc-api`
-      // (`blockedAlreadyCcApi`), and on a record that says `'sdk'` the
-      // exemption never engages. Note the scope of that claim -- it is about
-      // THIS label path. The dispatch's own replacement site DOES feed
-      // `forceCcApi` from `recreateViaCcApi`, deliberately and load-bearingly;
-      // what does not reach here is `recreateTargets`.
-      previousProperties: existingState?.properties,
-      forceCcApi,
-    });
-    return decision.provisionedBy;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Whether a property change's `requiresReplacement` is only a CEILING the diff
- * set before the value could be known — a synthetic change from in-place
- * attribute propagation or replacement propagation (go-to-k/cdkd#3662). The
- * UPDATE arm lowers such a ceiling when the resolved value equals the record.
- */
-function isReplacementCeiling(pc: PropertyChange): boolean {
-  return (
-    pc.requiresReplacement && (pc.inPlacePropagated === true || pc.replacementPropagated === true)
-  );
-}
-
-/**
- * `JSON.stringify` with every object's keys in sorted order, arrays kept
- * positional: the equality the replacement-ceiling lowering and the
- * post-readback skip compare with (go-to-k/cdkd#3803 review). The diff raised
- * the ceiling through `DiffCalculator.valuesEqual`, which ignores key order,
- * and a template and a `JSON.parse`d record can spell the same create-only
- * object in different orders; an order-sensitive compare there read an equal
- * value as moved and replaced the resource.
- */
-function keyOrderFreeJson(value: unknown): string {
-  return JSON.stringify(value, (_key, node: unknown) => {
-    if (node === null || typeof node !== 'object' || Array.isArray(node)) return node;
-    // Null prototype, so a `__proto__` key stays an own key.
-    const sorted = Object.create(null) as Record<string, unknown>;
-    for (const key of Object.keys(node).sort()) {
-      sorted[key] = (node as Record<string, unknown>)[key];
-    }
-    return sorted;
-  });
-}
-
-/**
- * Why a create-only path carrying a fresh `NoEcho` value kept its replacement
- * ceiling (go-to-k/cdkd#3729), or `held` when AWS confirmed it may be lowered.
- * The class is all a log line says: never a value, never an error's text.
- *
- *  - `not-readable` — no provider readback for the record's route, the
- *    readback returned nothing, or it did not report the property at all;
- *  - `read-failed` — the readback threw, or outlived its cap;
- *  - `differs` — the property was read, and some fresh position does not hold
- *    exactly this value (a different string, a non-string, an array that does
- *    not reach that index).
- */
-type FreshNoEchoCeilingVerdict = 'held' | 'not-readable' | 'read-failed' | 'differs';
-
-/** The result of reading a reader back once for its fresh-`NoEcho` ceilings. */
-type FreshNoEchoReadback =
-  | { live: Record<string, unknown> }
-  | { failure: 'not-readable' | 'read-failed' };
-
-/**
- * Does `live` hold every fresh leaf's plaintext at that leaf's position, with
- * strict string equality (go-to-k/cdkd#3729)? `live` is the readback's value for
- * one top-level property; each leaf's path is relative to it. ALL must hold.
- * Anything this walk cannot follow counts as a difference: a missing key, an
- * index past the end of an array, a container where a string should be. That
- * is the direction that keeps the replacement, which is today's behaviour.
- */
-function liveHoldsFreshLeaves(live: unknown, leaves: readonly FreshNoEchoLeaf[]): boolean {
-  for (const leaf of leaves) {
-    let node: unknown = live;
-    for (const segment of leaf.path) {
-      if (typeof segment === 'number') {
-        if (!Array.isArray(node) || segment >= node.length) return false;
-        node = node[segment];
-        continue;
-      }
-      if (node === null || typeof node !== 'object' || Array.isArray(node)) return false;
-      if (!Object.prototype.hasOwnProperty.call(node, segment)) return false;
-      node = (node as Record<string, unknown>)[segment];
-    }
-    if (typeof node !== 'string' || node !== leaf.plaintext) return false;
-  }
-  return true;
-}
-
-/**
- * Structural equality for resolved Outputs maps (issue #875).
- *
- * Output values are intrinsic-resolved primitives or nested objects/arrays
- * and key order is irrelevant. Used by the no-change deploy path to decide
- * whether an Outputs-only change (a new Export added because a downstream
- * stack now references this one, with no resource diff) must be persisted.
- */
-function outputMapsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-  return deepEqualValue(a, b);
-}
-
-function deepEqualValue(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a == null || b == null) return a === b;
-  if (typeof a !== typeof b) return false;
-  if (typeof a !== 'object') return false;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((v, i) => deepEqualValue(v, b[i]));
-  }
-  const ao = a as Record<string, unknown>;
-  const bo = b as Record<string, unknown>;
-  const ak = Object.keys(ao);
-  if (ak.length !== Object.keys(bo).length) return false;
-  for (const k of ak) {
-    if (!Object.prototype.hasOwnProperty.call(bo, k)) return false;
-    if (!deepEqualValue(ao[k], bo[k])) return false;
-  }
-  return true;
 }
 
 /**
