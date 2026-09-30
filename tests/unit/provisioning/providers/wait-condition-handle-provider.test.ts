@@ -47,12 +47,16 @@ describe('WaitConditionHandleProvider', () => {
 
   describe('getAttribute', () => {
     it('throws — the type has no Fn::GetAtt attributes', async () => {
-      await expect(provider.getAttribute('existing-id', TYPE, 'Anything')).rejects.toThrow(
-        ProvisioningError
-      );
-      await expect(provider.getAttribute('existing-id', TYPE, 'Anything')).rejects.toThrow(
-        /Anything/
-      );
+      await expect(
+        provider.getAttribute('existing-id', TYPE, 'Anything', 'Placeholder')
+      ).rejects.toThrow(ProvisioningError);
+      await expect(
+        provider.getAttribute('existing-id', TYPE, 'Anything', 'Placeholder')
+      ).rejects.toThrow(/Anything/);
+      // The LOGICAL id in the logical-id slot (go-to-k/cdkd#4222).
+      await expect(
+        provider.getAttribute('existing-id', TYPE, 'Anything', 'Placeholder')
+      ).rejects.toMatchObject({ logicalId: 'Placeholder', physicalId: 'existing-id' });
     });
   });
 

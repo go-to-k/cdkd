@@ -706,11 +706,19 @@ describe('ASGProvider getAttribute', () => {
       ],
     });
     const provider = new ASGProvider();
-    expect(await provider.getAttribute('my-asg', RESOURCE_TYPE, 'Arn')).toBe(
+    expect(await provider.getAttribute('my-asg', RESOURCE_TYPE, 'Arn', 'MyAsg')).toBe(
       'arn:aws:autoscaling:us-east-1:123:my-asg'
     );
-    expect(await provider.getAttribute('my-asg', RESOURCE_TYPE, 'LaunchTemplateID')).toBe(
+    expect(await provider.getAttribute('my-asg', RESOURCE_TYPE, 'LaunchTemplateID', 'MyAsg')).toBe(
       'lt-zzzz9999'
+    );
+  });
+
+  it('names the LOGICAL id in the not-found error, and the group name as its physical id (#4222)', async () => {
+    mockSend.mockResolvedValue({ AutoScalingGroups: [] });
+    const provider = new ASGProvider();
+    await expect(provider.getAttribute('my-asg', RESOURCE_TYPE, 'Arn', 'MyAsg')).rejects.toMatchObject(
+      { name: 'ProvisioningError', logicalId: 'MyAsg', physicalId: 'my-asg' }
     );
   });
 });

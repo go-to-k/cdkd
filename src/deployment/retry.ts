@@ -230,6 +230,15 @@ export interface WithRetryOptions {
   isRetryable?: (classificationText: string, error: unknown) => boolean;
 }
 
+/**
+ * The auxiliary mark's owner (go-to-k/cdkd#4222): a fixed word, never the
+ * label. A label can carry a physical name — `<table name> (<dimension>)`, a
+ * policy name, and an all-alphanumeric physical name reads no differently from
+ * a logical id — and the mark is the one `logicalId` `maskSecretsInError`
+ * copies verbatim.
+ */
+const RETRY_MARK_OWNER = 'withRetry';
+
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -398,7 +407,7 @@ export async function withRetry<T>(
   // `CloudControlOperationFailedError` carries the owner's id and no `cause`.
   // `markReplayMayCollide` is read by the collision classifier alone, so it
   // closes that gap without widening the update-path cost above. The mark's
-  // id is `shownId`, the sanitized label: the anchor needs only the
+  // owner is `RETRY_MARK_OWNER`, never the label: the anchor needs only the
   // `/auxiliary` suffix, never the id before it.
   //
   // Both also silence the #2902 orphan advice on an ordinary CREATE, since it
@@ -406,7 +415,7 @@ export async function withRetry<T>(
   // collided resource is most likely this run's own orphan. Tracked as #3984.
   let replayMayCollide = false;
   const settle = (error: unknown): unknown =>
-    replayMayCollide ? markReplayMayCollide(markAuxiliaryFailure(error, shownId)) : error;
+    replayMayCollide ? markReplayMayCollide(markAuxiliaryFailure(error, RETRY_MARK_OWNER)) : error;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {

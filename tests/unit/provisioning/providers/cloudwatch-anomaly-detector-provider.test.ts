@@ -350,14 +350,19 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
 
   describe('getAttribute', () => {
     it('resolves Id to the physical id without an AWS call', async () => {
-      await expect(provider.getAttribute('the-id', TYPE, 'Id')).resolves.toBe('the-id');
+      await expect(provider.getAttribute('the-id', TYPE, 'Id', 'Detector')).resolves.toBe('the-id');
       expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('rejects unknown attributes', async () => {
-      await expect(provider.getAttribute('the-id', TYPE, 'Arn')).rejects.toThrow(
+      await expect(provider.getAttribute('the-id', TYPE, 'Arn', 'Detector')).rejects.toThrow(
         'Unknown attribute Arn'
       );
+      // The LOGICAL id in the logical-id slot (go-to-k/cdkd#4222).
+      await expect(provider.getAttribute('the-id', TYPE, 'Arn', 'Detector')).rejects.toMatchObject({
+        logicalId: 'Detector',
+        physicalId: 'the-id',
+      });
     });
   });
 

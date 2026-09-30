@@ -150,7 +150,7 @@ describe('AWS network fence — fires on real AWS traffic', () => {
     try {
       const provider = new BudgetsBudgetProvider();
       const error = await provider
-        .getAttribute('cdkd-fence-probe-budget', 'AWS::Budgets::Budget', 'Arn')
+        .getAttribute('cdkd-fence-probe-budget', 'AWS::Budgets::Budget', 'Arn', 'Budget')
         .catch((e: unknown) => e);
 
       // The `getAwsClients` half WAS isolated — that is exactly why the hole is
