@@ -177,8 +177,9 @@ let stubBin: string | undefined;
  * one line opens can close on a later one: `the owner's record` /
  * `holds the stack's value "x$(touch OWNED)".` runs nothing line by line and
  * runs the substitution pasted whole, under bash and zsh alike. Every run, not
- * just the whole message, because a syntax error on a line OUTSIDE the
- * selection stops the whole-message span before it reaches the straddle.
+ * just the whole message, because under the harness's `bash -c` a syntax error
+ * on a line OUTSIDE the selection stops the whole-message span before it
+ * reaches the straddle (an interactive bash drops that line and goes on).
  */
 export function segmentsOf(message: string): Set<string> {
   const out = new Set<string>();
@@ -318,9 +319,16 @@ function runUnder(
  */
 export function expectZshRunsTheDisplay(message: string, dir: string, value: string): void {
   const ran: string[] = [];
+  const lineRuns = new Map<string, readonly string[]>();
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, { shells: ['zsh'] });
     if (run.touched.length === 0) continue;
+    if (span.includes('\n')) {
+      // Judged against its lines, and not counted as the display running:
+      // the display's own line is a span of its own (go-to-k/cdkd#4133).
+      expectNoMoreThanItsLines(span, run.touched, dir, { shells: ['zsh'] }, lineRuns);
+      continue;
+    }
     ran.push(span);
     // What ran is the DISPLAY: no stubbed verb, and the span holds the value
     // (raw or JSON-escaped), so a run caused by something else in the message
@@ -336,6 +344,37 @@ export function expectZshRunsTheDisplay(message: string, dir: string, value: str
   } else {
     expect(ran, `zsh ran an inert family for ${value}`).toEqual([]);
   }
+}
+
+/**
+ * A MULTI-LINE span that ran is judged against its own lines
+ * (go-to-k/cdkd#4133, the round-3 ruling that a block is a line): pasting the
+ * lines together may run only what pasting each line alone runs. Every line is
+ * itself a span and takes the single-line checks, so a legitimate command on a
+ * line of its own may run here (its stub marker is not refused), while a file
+ * only the JOINED input touches (a quote one line opens closing on another)
+ * is refused. `lineRuns` caches each line's own run for the caller's loop.
+ */
+function expectNoMoreThanItsLines(
+  span: string,
+  touched: readonly string[],
+  dir: string,
+  options: PasteRunOptions,
+  lineRuns: Map<string, readonly string[]>
+): void {
+  const byLines = new Set<string>();
+  for (const line of span.split('\n')) {
+    let lineTouched = lineRuns.get(line);
+    if (lineTouched === undefined) {
+      lineTouched = spanRun(line, dir, options).touched;
+      lineRuns.set(line, lineTouched);
+    }
+    for (const f of lineTouched) byLines.add(f);
+  }
+  expect(
+    touched.filter((f) => !byLines.has(f)),
+    `pasting these lines together runs more than pasting each alone: ${span}`
+  ).toEqual([]);
 }
 
 /** Every span of `message` ({@link segmentsOf}) that touched a file. */
@@ -421,10 +460,15 @@ export function expectOnlyDisplayResidual(
  */
 export function expectRuntimeResidual(message: string, dir: string, value: string): string[] {
   const ran: string[] = [];
+  const lineRuns = new Map<string, readonly string[]>();
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, {});
     if (run.touched.length === 0) continue;
     ran.push(span);
+    if (span.includes('\n')) {
+      expectNoMoreThanItsLines(span, run.touched, dir, {}, lineRuns);
+      continue;
+    }
     // The marker a stubbed verb writes when it is INVOKED, under either shell.
     expect(run.verbRan, `a span that ran also ran a stubbed cdkd / aws: ${span}`).toBe(false);
     // The value must sit INSIDE a paired JSON span: strip every properly
@@ -513,9 +557,10 @@ const PASTEABLE_COMMAND = new RegExp(
  * A block is a LINE (the maintainer's go-to-k/cdkd#4127 round-3 ruling): a
  * line that displays the value must carry no command, and a command on a line
  * of its own is not beside it. Pasting such a message whole runs what pasting
- * the value's line alone runs, so the command line adds no execution. The
- * caveat is a span that crosses lines through a straddling quote, which is
- * go-to-k/cdkd#4133's.
+ * the value's line alone runs, so the command line adds no execution. A span
+ * that crosses lines through a straddling quote is the runtime half's to see:
+ * {@link expectOnlyDisplayResidual} refuses a multi-line span that runs more
+ * than its lines do (go-to-k/cdkd#4133).
  *
  * {@link expectOnlyDisplayResidual} runs this by default; on its own it is
  * what an S1 row's block-rule case asserts, until the row describes the value
