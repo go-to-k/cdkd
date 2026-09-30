@@ -102,12 +102,21 @@ export function createReadOnlyAttributeHealerFactory(options: {
   const logger = getLogger().child('ReadOnlyAttributeHealer');
   const memo = new Map<string, Promise<StaleAttributeHealOutcome>>();
   return (stackName, region) => (logicalId, resource) => {
-    if (isHealExcludedType(resource.resourceType)) {
-      return Promise.resolve({ kind: 'not-attempted' });
+    // Guarded, because the record is an unchecked cast of state.json: a
+    // hand-edited row with a non-string `resourceType` throws inside
+    // `isHealExcludedType`, and a healer must never throw. Synchronous rather
+    // than inside the `async` wrapper below, so the memo stays single-flight.
+    let key: string;
+    try {
+      if (isHealExcludedType(resource.resourceType)) {
+        return Promise.resolve({ kind: 'not-attempted' });
+      }
+      // Encoded, never joined (go-to-k/cdkd#3496): every part is unvalidated
+      // text, and a joined key could let two records share one entry.
+      key = injectiveKey(stackName, region, logicalId, resource.physicalId);
+    } catch (error) {
+      return Promise.resolve({ kind: 'failed', error });
     }
-    // Encoded, never joined (go-to-k/cdkd#3496): every part is unvalidated
-    // text, and a joined key could let two records share one entry.
-    const key = injectiveKey(stackName, region, logicalId, resource.physicalId);
     const inFlight = memo.get(key);
     if (inFlight) return inFlight;
     // An `async` wrapper so a SYNCHRONOUS throw — `getProvider` for a type this

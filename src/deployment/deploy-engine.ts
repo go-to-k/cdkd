@@ -4458,9 +4458,11 @@ export class DeployEngine {
           );
 
           // Issue #1852: a heal the outputs pass (or the diff pass above) read
-          // must reach state even when nothing else changed — otherwise every
-          // later deploy pays the same read again and a read-only consumer
-          // (`cdkd diff`, `cdkd drift`) never sees the attribute at all.
+          // must reach state even when nothing else changed. Otherwise every
+          // later deploy pays the same read again, `cdkd diff` repeats it on
+          // every run (its healer is read-only and saves nothing,
+          // go-to-k/cdkd#3456), and `cdkd drift`, which re-reads nothing,
+          // never sees the attribute at all.
           const healedAttributesPending = this.hasUnpersistedHeals(currentState.resources);
 
           if (

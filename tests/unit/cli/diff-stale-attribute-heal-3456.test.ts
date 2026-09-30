@@ -34,7 +34,20 @@ const importImpl = vi.hoisted(() => ({
 const clientRegions = vi.hoisted(() => [] as Array<string | undefined>);
 const scopeRegions = vi.hoisted(() => [] as string[]);
 const registryRegions = vi.hoisted(() => [] as Array<string | undefined>);
-const currentScope = vi.hoisted(() => ({ region: undefined as string | undefined }));
+// The AWS scope as `AsyncLocalStorage`, like the real `runWithStackAwsClients`
+// (`src/utils/stack-aws-scope.ts`): a scope held in a plain variable would be
+// gone after the first `await`, so a provider building its clients later, or a
+// second read in the same scope, would read no region.
+const currentScope = await vi.hoisted(async () => {
+  const { AsyncLocalStorage } = await import('node:async_hooks');
+  const store = new AsyncLocalStorage<string | undefined>();
+  return {
+    store,
+    get region(): string | undefined {
+      return store.getStore();
+    },
+  };
+});
 const routingInputs = vi.hoisted(() => [] as unknown[]);
 const clientDestroys = vi.hoisted(() => [] as Array<string | undefined>);
 const clientProfiles = vi.hoisted(() => [] as Array<string | undefined>);
@@ -81,15 +94,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(() => ({ destroy: vi.fn() })),
   runWithStackAwsClients: vi.fn(
-    (clients: { configuredRegion?: string }, fn: () => unknown): unknown => {
-      const previous = currentScope.region;
-      currentScope.region = clients.configuredRegion;
-      try {
-        return fn();
-      } finally {
-        currentScope.region = previous;
-      }
-    }
+    (clients: { configuredRegion?: string }, fn: () => unknown): unknown =>
+      currentScope.store.run(clients.configuredRegion, fn)
   ),
 }));
 
@@ -128,6 +134,9 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
         provisionedBy: 'sdk',
         provider: {
           import: async (input: Record<string, unknown>) => {
+            // Read the scope AFTER an await, as a provider's lazily built
+            // client does: only a scope that survives the await answers.
+            await Promise.resolve();
             routingInputs.push(routed);
             importCalls.push({ ...input, registryRegion: builtIn, scopeRegion: currentScope.region });
             return importImpl.fn!(input);
@@ -370,6 +379,19 @@ describe('cdkd diff heals a stale attribute map read-only (go-to-k/cdkd#3456)', 
           provisionedBy: 'sdk',
         },
       },
+      // A second record: its read starts after the first one's awaits, so
+      // it answers from the stack's region only if the scope survives them.
+      {
+        logicalId: 'Bucket2',
+        orphanedAt: 1,
+        state: {
+          physicalId: 'orphan-bucket-2',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'orphan-bucket-2' },
+          attributes: {},
+          provisionedBy: 'sdk',
+        },
+      },
     ];
     stateForDiff.value = record;
     const [stack] = (await mockSynthesize()).stacks;
@@ -378,16 +400,44 @@ describe('cdkd diff heals a stale attribute map read-only (go-to-k/cdkd#3456)', 
       Type: 'AWS::S3::Bucket',
       Properties: { BucketName: 'orphan-bucket' },
     };
+    template.Resources.Bucket2 = {
+      Type: 'AWS::S3::Bucket',
+      Properties: { BucketName: 'orphan-bucket-2' },
+    };
     mockSynthesize.mockResolvedValue({ stacks: [{ ...stack, template }] });
 
     await runDiffJson(['UrlStack', '--state-bucket', 'b']);
-    const adoptionRead = importCalls.find((c) => c['logicalId'] === 'Bucket');
-    expect(adoptionRead).toMatchObject({
-      knownPhysicalId: 'orphan-bucket',
-      region: 'eu-west-1',
-      registryRegion: 'eu-west-1',
-      scopeRegion: 'eu-west-1',
-    });
+    const adoptionReads = importCalls.filter((c) => String(c['logicalId']).startsWith('Bucket'));
+    expect(adoptionReads).toHaveLength(2);
+    for (const read of adoptionReads) {
+      expect(read).toMatchObject({
+        region: 'eu-west-1',
+        registryRegion: 'eu-west-1',
+        scopeRegion: 'eu-west-1',
+      });
+    }
+  }, 30_000);
+
+  it('destroys the stack-region clients when the command throws after building them', async () => {
+    // `--fail` over the UPDATE the heal previews: the command throws
+    // (`DiffDetectedError`, exit 1) after the heal built the eu-west-1 scope.
+    let code: number | undefined;
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((c?: number) => {
+      code = c;
+      throw new Error('__process_exit__');
+    }) as never);
+    try {
+      await createDiffCommand().parseAsync(['UrlStack', '--state-bucket', 'b', '--fail'], {
+        from: 'user',
+      });
+    } catch (err) {
+      if (!(err instanceof Error) || err.message !== '__process_exit__') throw err;
+    } finally {
+      exitSpy.mockRestore();
+    }
+    expect(code).toBe(1);
+    expect(clientRegions).toContain('eu-west-1');
+    expect(clientDestroys).toContain('eu-west-1');
   }, 30_000);
 
   it('writes nothing: no state save, and the loaded record keeps its empty attributes', async () => {

@@ -78,6 +78,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   [ -n "${SYNTH_DIR:-}" ] && rm -rf "${SYNTH_DIR}"
+  [ -n "${DIFF_ERR_FILE:-}" ] && rm -f "${DIFF_ERR_FILE}"
   # By PHYSICAL NAME first, then state: a state destroy that cannot read a
   # damaged record must not be the only thing standing between a failed run
   # and a leaked parameter.
@@ -230,14 +231,19 @@ echo "    OK: the record no longer holds Arn"
 # --- Phase 3: cdkd diff is read-only ----------------------------------------
 echo "==> Phase 3: cdkd diff of v2 writes no state"
 IDENTITY_BEFORE_DIFF=$(state_object_identity)
+# The report (logger `info`) is stdout; a `warn` line is stderr. Kept apart so
+# an interleaved warning cannot land between a row and the value read under it.
+DIFF_ERR_FILE=$(mktemp)
 set +e
 DIFF_OUT=$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>"${DIFF_ERR_FILE}")
 DIFF_RC=$?
 set -e
+DIFF_ERR=$(cat "${DIFF_ERR_FILE}")
 if [ "${DIFF_RC}" -ne 0 ]; then
   echo "FAIL: cdkd diff exited ${DIFF_RC}" >&2
   echo "${DIFF_OUT}" >&2
+  echo "${DIFF_ERR}" >&2
   exit 1
 fi
 IDENTITY_AFTER_DIFF=$(state_object_identity)
@@ -257,6 +263,7 @@ echo "    OK: state object identity unchanged (${IDENTITY_AFTER_DIFF})"
 if ! grep -qF -- "[+] ParamArn" <<<"${DIFF_OUT}"; then
   echo "FAIL: cdkd diff did not preview the ParamArn output as an addition" >&2
   echo "${DIFF_OUT}" >&2
+  echo "${DIFF_ERR}" >&2
   exit 1
 fi
 # The value is read off the line UNDER the `[+] ParamArn` row, so another
@@ -265,6 +272,7 @@ PARAM_ARN_ROW_VALUE=$(awk '/\[\+\] ParamArn$/ { getline; sub(/^ +/, ""); print; 
 if [ "${PARAM_ARN_ROW_VALUE}" != "new: \"${REAL_ARN}\"" ]; then
   echo "FAIL: cdkd diff previewed ParamArn as '${PARAM_ARN_ROW_VALUE}', not the ARN AWS reports (${REAL_ARN}) — it did not re-read the stale record" >&2
   echo "${DIFF_OUT}" >&2
+  echo "${DIFF_ERR}" >&2
   exit 1
 fi
 echo "    OK: the diff previews ParamArn = ${REAL_ARN} without writing it"

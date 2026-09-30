@@ -171,9 +171,14 @@ missing read permission, say — the row previews as it would without the read,
 and the diff does not fail. Custom resources and nested stacks are never
 re-read: their attributes come from the handler's response or the child's
 outputs, not from an AWS read. A value the read reports masked is never used.
+
 An attribute that is itself a credential and that AWS returns unmasked, such
-as a Cognito user pool client's `ClientSecret`, previews as that value, just
-as it does when the record already holds it.
+as a Cognito user pool client's `ClientSecret`, is printed. The records this
+read serves never held it: an older cdkd wrote them, or
+`--migrate-from-cloudformation` imported them with no attributes. So for such
+a record, `cdkd diff` now prints the live secret where it used to print the
+unresolved reference, in its rows, in `--json`, and in the `--verbose` log.
+`cdkd deploy` reads and stores the same value.
 
 ## Outputs
 

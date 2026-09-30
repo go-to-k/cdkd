@@ -240,6 +240,38 @@ describe('createReadOnlyAttributeHealerFactory (go-to-k/cdkd#3456)', () => {
     await expect(heal2('Param', record())).resolves.toMatchObject({ kind: 'failed' });
   });
 
+  it('never throws: a record with a non-string resourceType becomes a failed outcome', async () => {
+    const getProvider = vi.fn();
+    const heal = createReadOnlyAttributeHealerFactory({ getProvider, inRegion: passThrough })(
+      'S',
+      'us-east-1'
+    );
+    // A hand-edited state row: the record is an unchecked cast.
+    const torn = record({ resourceType: 42 as unknown as string });
+    let outcome: Promise<unknown> | undefined;
+    expect(() => {
+      outcome = heal('Param', torn);
+    }).not.toThrow();
+    await expect(outcome).resolves.toMatchObject({ kind: 'failed' });
+    expect(getProvider).not.toHaveBeenCalled();
+  });
+
+  it('memoizes a REJECTED read: a second ask with the same key issues no second import()', async () => {
+    const denied = Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+    const provider = providerAnswering(() => {
+      throw denied;
+    });
+    const factory = createReadOnlyAttributeHealerFactory({
+      getProvider: () => provider,
+      inRegion: passThrough,
+    });
+    const first = await factory('S', 'us-east-1')('Param', record());
+    const second = await factory('S', 'us-east-1')('Param', record());
+    expect(first).toEqual({ kind: 'failed', error: denied });
+    expect(second).toBe(first);
+    expect(provider.import).toHaveBeenCalledTimes(1);
+  });
+
   it('a throwing debug log does not turn a completed read into failed', async () => {
     const provider = providerAnswering((id) => ({ physicalId: id!, attributes: { Arn: 'arn:x' } }));
     const heal = createReadOnlyAttributeHealerFactory({ getProvider: () => provider, inRegion: passThrough })(

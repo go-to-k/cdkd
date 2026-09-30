@@ -45,7 +45,14 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
-import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
+import {
+  buildDiffTree,
+  computeStackDiff,
+  diffTreeToJson,
+  renderChangeLines,
+  renderOutputChangeLines,
+  type DiffTreeNode,
+} from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { createReadOnlyAttributeHealerFactory } from '../../../src/deployment/read-only-attribute-healer.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
@@ -78,6 +85,8 @@ const live: Record<string, Record<string, unknown>> = {
   '/app/p': { Arn: PARAM_ARN, Type: 'String' },
   db1: { 'Endpoint.Address': ENDPOINT, 'Endpoint.Port': '5432' },
   [`arn:aws:lambda:us-east-1:123456789012:function:fn`]: { FunctionUrl: URL },
+  // An endpoint whose live value equals a NoEcho parameter's (go-to-k/cdkd#4049).
+  'db-secret': { 'Endpoint.Address': 'noecho-plain-7731' },
 };
 
 let importCalls: Array<{ logicalId: string; knownPhysicalId?: string; stackName: string }>;
@@ -437,5 +446,80 @@ describe("buildDiffTree heals a nested child's Parameters against the parent's s
       expect.objectContaining({ path: 'Value', oldValue: URL, newValue: { Ref: 'UrlIn' } }),
     ]);
     expect(importCalls).toEqual([]);
+  });
+});
+
+describe('a healed value that equals a NoEcho parameter value previews masked (go-to-k/cdkd#4049 x go-to-k/cdkd#3456)', () => {
+  const NOECHO = 'noecho-plain-7731';
+
+  it('masks it in the property row, the Outputs row and --json', async () => {
+    const state = st('S', {
+      Db: {
+        physicalId: 'db-secret',
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: { Engine: 'postgres' },
+        attributes: {},
+      },
+      Endpoint: {
+        physicalId: 'endpoint-param',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Type: 'String', Value: 'db-secret' },
+        attributes: {},
+      },
+    });
+    const template = {
+      Parameters: { DbUser: { Type: 'String', NoEcho: true, Default: NOECHO } },
+      Resources: {
+        Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
+        Endpoint: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+        },
+      },
+      Outputs: { DbEndpoint: { Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } } },
+    } as unknown as CloudFormationTemplate;
+
+    const result = await computeStackDiff(
+      state,
+      template,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      { attributeHealer: healerFor()('S', 'us-east-1') }
+    );
+    // Premise: the heal served the value (the row changed because of it).
+    expect(importCalls).toEqual([{ logicalId: 'Db', knownPhysicalId: 'db-secret', stackName: 'S' }]);
+
+    expect(result.changes.get('Endpoint')?.propertyChanges).toEqual([
+      expect.objectContaining({ path: 'Value', newValue: '***' }),
+    ]);
+    expect(result.outputChanges).toEqual([
+      expect.objectContaining({ name: 'DbEndpoint', changeType: 'ADD', newValue: '***' }),
+    ]);
+
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      changes: result.changes,
+      ccApiRoutes: new Map(),
+      outputChanges: result.outputChanges,
+      adoptedOrphans: [],
+      blocking: [],
+      unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
+      children: [],
+    };
+    const lines: string[] = [];
+    renderChangeLines(node.changes, (line) => lines.push(line));
+    renderOutputChangeLines(node.outputChanges, (line) => lines.push(line));
+    const human = lines.join('\n');
+    const json = JSON.stringify(diffTreeToJson(node));
+    expect(human).toContain('new: "***"');
+    expect(human).not.toContain(NOECHO);
+    expect(json).toContain('"newValue":"***"');
+    expect(json).not.toContain(NOECHO);
   });
 });
