@@ -485,7 +485,8 @@ aws cognito-idp update-user-pool --user-pool-id <id> --deletion-protection ACTIV
 
 A command cdkd prints carries the run's `--profile` when you passed one
 (`aws --profile prod rds modify-db-cluster ...`), or a `'<role-profile>'`
-placeholder to fill in when the run also assumed a role with `--role-arn`; add yours to the commands above
+placeholder to fill in when the run assumed a role with `--role-arn` (with or without
+`--profile`); add yours to the commands above
 when you type them by hand, or they run against your default profile. DocDB and
 Neptune take the same `modify-db-cluster` / `modify-db-instance` form under
 `aws docdb` / `aws neptune`. `update-user-pool` resets the pool
