@@ -64,6 +64,7 @@ import { assertRegionMatch } from '../provisioning/region-check.js';
 import { CC_BROKEN_REASON, ccBrokenReason } from '../provisioning/provider-registry.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { getLogger } from '../utils/logger.js';
+import { plainIdentOr } from '../utils/display-safe.js';
 import type { Logger } from '../types/config.js';
 import { withRetry } from './retry.js';
 import { isThrottlingError } from './retryable-errors.js';
@@ -653,7 +654,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     );
     for (const blocked of validation.blockedStatefulTargets) {
       lines.push(
-        `  - ${blocked.logicalId} (${blocked.resourceType}) — ` +
+        `  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)}) — ` +
           `${renderStatefulReason(blocked.statefulReason)}`
       );
     }
@@ -677,8 +678,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         : undefined;
       const shown =
         templateType && templateType !== blocked.resourceType
-          ? `${blocked.resourceType} in state, ${templateType} in the template`
-          : blocked.resourceType;
+          ? `${recordedTypeShown(blocked.resourceType)} in state, ${templateType} in the template`
+          : recordedTypeShown(blocked.resourceType);
       lines.push(`  - ${blocked.logicalId} (${shown})`);
     }
     lines.push(
@@ -734,10 +735,10 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `reverse migration is a no-op):`
     );
     for (const blocked of validation.blockedAlreadySdk) {
-      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+      lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);
     }
     lines.push(
-      `  Fix: remove --recreate-via-sdk-provider <id> for these resources. ` +
+      `  Fix: drop these logical ids from --recreate-via-sdk-provider. ` +
         `They are already SDK-managed (or pre-v7 legacy state, treated as SDK).`
     );
   }
@@ -751,10 +752,10 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `migration is a no-op):`
     );
     for (const blocked of validation.blockedAlreadyCcApi) {
-      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+      lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);
     }
     lines.push(
-      `  Fix: remove --recreate-via-cc-api <id> for these resources. ` +
+      `  Fix: drop these logical ids from --recreate-via-cc-api. ` +
         `They are already CC-managed; a destroy + recreate cycle would ` +
         `produce the same end state at the cost of unnecessary downtime.`
     );
@@ -772,8 +773,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  The recreate deletes the existing resource first and then creates it ` +
         `through Cloud Control, which would fail and leave the resource deleted. ` +
-        `None of these resources was touched. Fix: remove --recreate-via-cc-api <id> ` +
-        `for these resources; they stay on their current route. There is no bypass flag.`
+        `None of these resources was touched. Fix: drop these logical ids from ` +
+        `--recreate-via-cc-api; they stay on their current route. There is no bypass flag.`
     );
   }
 
@@ -789,8 +790,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  cdkd keeps these types on their SDK provider whatever the flag says, so the ` +
         `recreate would delete each resource and create it again on the same SDK route. ` +
-        `None of these resources was touched. Fix: remove --recreate-via-cc-api <id> ` +
-        `for these resources.`
+        `None of these resources was touched. Fix: drop these logical ids from ` +
+        `--recreate-via-cc-api.`
     );
   }
 
@@ -801,10 +802,10 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `resource(s) of types cdkd has no SDK provider for (Tier 2 CC-only):`
     );
     for (const blocked of validation.blockedNoSdkProvider) {
-      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+      lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);
     }
     lines.push(
-      `  Fix: remove --recreate-via-sdk-provider <id> for these resources. ` +
+      `  Fix: drop these logical ids from --recreate-via-sdk-provider. ` +
         `The destroy + recreate would route via Cloud Control anyway — there's ` +
         `no SDK alternative available.`
     );
@@ -820,20 +821,29 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     );
     for (const overlap of validation.ambiguousIntentSdk) {
       lines.push(
-        `  - ${overlap.logicalId} (${overlap.resourceType}) — template uses ` +
+        `  - ${overlap.logicalId} (${recordedTypeShown(overlap.resourceType)}) — template uses ` +
           `${overlap.property}; the default-on CC auto-route would re-route ` +
           `the recreated resource back to CC immediately`
       );
     }
     lines.push(
-      `  Fix: pass --prefer-sdk-route <Type>:<Prop> for each ` +
-        `silent-drop property so the recreated resource stays on SDK with the ` +
+      `  Fix: pass each silent-drop property to --prefer-sdk-route as TYPE:PROPERTY ` +
+        `so the recreated resource stays on SDK with the ` +
         `property explicitly dropped. Or drop --recreate-via-sdk-provider — ` +
         `the resource already routes via CC and honors the property.`
     );
   }
 
   return lines.length > 0 ? lines.join('\n') : null;
+}
+
+/**
+ * A refusal row's type is the STATE record's, chosen by a state-bucket writer
+ * (go-to-k/cdkd#4165): a plain type prints as before, any other is described,
+ * so no pasted span of the refusal runs and no newline forges a row.
+ */
+function recordedTypeShown(resourceType: string): string {
+  return plainIdentOr(resourceType, 'a resource type that is not a plain identifier');
 }
 
 /**

@@ -1139,7 +1139,7 @@ describe('validateRecreateTargets — #665 symmetric forward refusal (--recreate
     const error = renderRecreateTargetsErrors(v);
     expect(error).toContain('ALREADY sticky on Cloud Control API');
     expect(error).toContain('migration is a no-op');
-    expect(error).toContain('remove --recreate-via-cc-api');
+    expect(error).toContain('Fix: drop these logical ids from --recreate-via-cc-api.');
   });
 
   it('accepts --recreate-via-cc-api on a resource currently provisionedBy: sdk (legitimate forward migration)', () => {

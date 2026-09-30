@@ -355,18 +355,14 @@ describe('findDownstreamConsumers (#650)', () => {
       expect(rendered).not.toContain('assembled from a secret reference');
     });
 
-    it('prints a redacted NAME as its expression, never as the plaintext', () => {
+    it('describes a redacted NAME rather than printing its expression', () => {
       // `exportName` on a flagged row comes from `outputReads[].outputName`,
       // which is itself redacted — so when BOTH names were assembled from one
-      // secret, the rendered line carries a `{{resolve:...}}`. That is not a
-      // leak and must not be "fixed": the expression IS the safe form, and it
-      // tells the operator which reference cdkd could not resolve.
-      //
-      // An earlier version of this case asserted the line contains no
-      // `{{resolve:`, which is a protection the renderer does not perform and
-      // passed only because the fixture used a literal name. The property that
-      // is actually true, and worth fencing, is that the PLAINTEXT never
-      // appears.
+      // secret, the record carries a `{{resolve:...}}`. The expression is not a
+      // leak, but its braces are not a plain identifier: braces around a `,`
+      // are bash brace expansion (`{touch,OWNED}` runs `touch OWNED`), so the
+      // row describes it like any other non-plain record value
+      // (go-to-k/cdkd#4165).
       const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password::}}';
       const rendered = renderDownstreamConsumers('Producer', [
         {
@@ -377,15 +373,19 @@ describe('findDownstreamConsumers (#650)', () => {
           producerUnresolvable: true,
         },
       ]);
-      expect(rendered).toContain(EXPR);
+      expect(rendered).toContain(
+        '    - StackB (us-east-1) reads an output whose name is not a plain identifier via ' +
+          'Fn::GetStackOutput from a producer cdkd CANNOT NAME'
+      );
+      expect(rendered).not.toContain('{{resolve:');
     });
 
     it('PASSES ITS INPUT THROUGH -- it is not a masking boundary', () => {
       // Stated as a positive fact rather than fenced as a protection, because
       // it is not one. An earlier version asserted the rendered line contains
       // no plaintext, over a fixture whose input held none: unfalsifiable by
-      // construction, AND a claim the renderer does not enforce -- it prints
-      // `exportName` verbatim. A record written before the persist redaction
+      // construction, AND a claim the renderer does not enforce -- it prints a
+      // plain `exportName` verbatim (a non-plain one is described, #4165). A record written before the persist redaction
       // still carries a plaintext `outputName`, and that reaches this prompt.
       //
       // Redaction happens at PERSIST. Moving a mask here would only cover rows

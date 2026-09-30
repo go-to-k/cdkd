@@ -43,6 +43,8 @@ import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { getLogger } from '../../utils/logger.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { plainIdentOr } from '../../utils/display-safe.js';
+import { plainOrDescribed } from '../../utils/pasteable-command.js';
 
 /**
  * One downstream consumer of a recreate target's outputs.
@@ -250,6 +252,22 @@ export function renderDownstreamConsumers(
     `  Downstream consumers of ${producerStack}'s outputs (will need re-deploy after this run):`,
   ];
   for (const c of consumers) {
+    // Every value in a row is record-derived: the consumer's name and region
+    // from its state KEY, the name it reads from its `state.json`, all chosen
+    // by a state-bucket writer. A plain value prints as before; any other is
+    // described, so no pasted span of this data-loss prompt runs and no value
+    // carrying a newline forges a row (go-to-k/cdkd#4165). A redacted
+    // `{{resolve:...}}` or `***` name is described too: braces around a `,`
+    // are brace expansion, and bash runs `{touch,OWNED}` as `touch OWNED`.
+    const consumer =
+      `${plainOrDescribed(c.consumerStack, 'stack name')} ` +
+      `(${plainOrDescribed(c.consumerRegion, 'region')}) reads ` +
+      plainIdentOr(
+        c.exportName,
+        c.intrinsic === 'ImportValue'
+          ? 'an export whose name is not a plain identifier'
+          : 'an output whose name is not a plain identifier'
+      );
     // Issue #3289. A flagged row is a "cannot rule this out", not a match, and
     // the line says so in its own words rather than by a symbol — this text is
     // read once, under a data-loss prompt, by someone deciding whether to
@@ -261,16 +279,13 @@ export function renderDownstreamConsumers(
     // above that fence.
     if (c.producerUnresolvable === true) {
       lines.push(
-        `    - ${c.consumerStack} (${c.consumerRegion}) reads ${c.exportName} via ` +
-          `Fn::${c.intrinsic} from a producer cdkd CANNOT NAME: that stack name ` +
+        `    - ${consumer} via Fn::${c.intrinsic} from a producer cdkd CANNOT NAME: that stack name ` +
           `carried a secret, so it is stored redacted and cannot be compared to a ` +
           `live stack name. It may or may not be this stack.`
       );
       continue;
     }
-    lines.push(
-      `    - ${c.consumerStack} (${c.consumerRegion}) reads ${c.exportName} via Fn::${c.intrinsic}`
-    );
+    lines.push(`    - ${consumer} via Fn::${c.intrinsic}`);
   }
   return lines.join('\n');
 }
