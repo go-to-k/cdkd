@@ -253,6 +253,20 @@ function logicalIdShown(logicalId: string): string {
   return plainOrDescribed(logicalId, 'logical id');
 }
 
+/**
+ * A CloudFormation type name: alphanumeric `::`-joined segments, the later
+ * ones also admitting `_`, `@` and `-` (`Custom::My-Thing`). No character here
+ * expands or redirects at the start of a pasted line.
+ */
+const RESOURCE_TYPE_SHAPE = /^[A-Za-z0-9]+(?:::[A-Za-z0-9_@-]+)+$/;
+
+/** The resource type as the refusal head prints it, or a description. */
+function resourceTypeShown(resourceType: string): string {
+  return RESOURCE_TYPE_SHAPE.test(resourceType) && plainIdentOr(resourceType, '') === resourceType
+    ? resourceType
+    : 'a resource type that is not a plain identifier';
+}
+
 /** Render `<a>|<b>|<c>` from the segment names. */
 function idShape(segments: readonly CompositeIdSegment[]): string {
   return segments.map((segment) => `<${segment.name}>`).join(COMPOSITE_ID_SEPARATOR);
@@ -297,8 +311,10 @@ export function compositeIdSeparatorRefusal(
 
   // `resourceType` selects the provider on the delete path, so it is a
   // registered type there, and it is template text elsewhere; it is still held
-  // to the plain-identifier rule (which admits `::`) rather than printed raw.
-  const typeShown = plainIdentOr(resourceType, 'a resource type that is not a plain identifier');
+  // to the CloudFormation type shape rather than printed raw, since it is the
+  // FIRST word of a pasted line, where `plainIdentOr` alone would admit a
+  // command path (`./x`) or an assignment (`A=b`).
+  const typeShown = resourceTypeShown(resourceType);
   return (
     `${typeShown} ${logicalIdShown(logicalId)}: ${named} contains '${COMPOSITE_ID_SEPARATOR}', which cdkd uses ` +
     `as the separator in this type's physical id (${idShape(segments)}). Recording it would ` +

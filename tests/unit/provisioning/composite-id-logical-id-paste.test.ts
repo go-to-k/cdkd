@@ -84,8 +84,9 @@ describe('the composite-id message heads never print a raw logical id (go-to-k/c
     for (const value of payloads) {
       for (const m of messagesFor(value)) rendered.push({ value, ...m });
     }
-    // Five sites per payload; a site that stopped producing a message would
-    // otherwise drop out of the population silently.
+    // Five sites per payload. `messagesFor` always returns five entries, so a
+    // site that stopped producing a message is caught by the `any(String)`
+    // assertion below, not by this count.
     expect(rendered).toHaveLength(payloads.length * 5);
     withPasteDir((dir) => {
       for (const { value, site, message } of rendered) {
@@ -118,8 +119,17 @@ describe('the composite-id message heads never print a raw logical id (go-to-k/c
     withPasteDir((dir) => {
       expect(spansThatRun(refusal, dir)).toEqual([]);
     });
-    expect(compositeIdSeparatorRefusal('Custom::MyThing', 'MyTable', REFUSED)).toMatch(
-      /^Custom::MyThing MyTable: /
-    );
+    for (const type of ['Custom::MyThing', 'Custom::My-Thing', 'AWS::Serverless::Function']) {
+      expect(compositeIdSeparatorRefusal(type, 'MyTable', REFUSED)).toMatch(
+        new RegExp(`^${type} MyTable: `)
+      );
+    }
+    // Plain to `displayIdent`, but a command path, a tilde expansion, an
+    // assignment or an option at the start of a pasted line.
+    for (const type of ['./x', '~u/x', 'A=b', '-x', '/bin/x', 'AWS::', '::Glue', 'AWS::Glue::Table ']) {
+      expect(compositeIdSeparatorRefusal(type, 'MyTable', REFUSED), JSON.stringify(type)).toMatch(
+        new RegExp(`^${TYPE_DESCRIBED} MyTable: `)
+      );
+    }
   }, 60_000);
 });
