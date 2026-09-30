@@ -149,9 +149,10 @@ gets through:
   it.** A `Ref` or `Fn::Sub` variable serving one records the value for that
   resource, so an event whose message quotes it is masked. Nothing re-derives
   it elsewhere: a `cdkd rollback` run in its own process re-resolves a journal
-  that names no parameter, so its events are not masked. A FRAGMENT of the
-  value (`Fn::Split` over it) is not recorded either, and a 1-3 character value
-  inside a longer message is not substituted, per the first bullet.
+  that names no parameter, so its events are not masked. A piece of the value
+  (`Fn::Split` over it, or a nested child's list parameter split out of it) is
+  recorded too, but a 1-3 character value or piece inside a longer message is
+  not substituted, per the first bullet.
 
 Treat `deployments/*.jsonl` as sensitive on that basis, and rotate any secret
 whose plaintext a run is known to have quoted — masking a later write does not

@@ -71,6 +71,8 @@ import {
   recordLogOnlyParameterValue,
   unionOfSecretBags,
   carryLogOnlyValuesCarriedBy,
+  carryLogOnlyValues,
+  recordLogOnlySplitFragments,
   hasMaskableValues,
   hasLogOnlyValues,
   recordSecretExpression,
@@ -4920,25 +4922,26 @@ export class IntrinsicFunctionResolver {
       // event masking and this resolver's own lines mask it. Never a map entry:
       // persistence is unchanged.
       this.recordNoEchoParameterValue(paramDef, value, context);
-      // Masked BEFORE the pair is recorded below, which is why it goes through
-      // `displayMasked` (which consults `context.inheritedSecrets`) rather
-      // than relying on `recordedSecretValues`: at this instant that bag is
-      // still empty for this resource, so masking against it alone would print
-      // the plaintext. `stringifyParameterForLog` only covers the author's own
-      // `NoEcho` declaration, and a CDK-synthesized nested-stack parameter
-      // never carries one.
+      // Issue #1903 / #2087: a nested-stack child records the parent's
+      // already-resolved secret HERE, at the point a resource actually
+      // consumes the parameter, so the pair lands in that resource's own bag.
+      // The NAME goes with it since issue #2291 round 2 -- it is what selects
+      // this parameter's own expression over the collapsed map's survivor.
+      // Recorded BEFORE the debug line below (go-to-k/cdkd#4049): a list
+      // parameter split out of a parent's `NoEcho` string is masked only by
+      // the element fragments this carries, which the inherited bag lacks.
+      this.recordInheritedParameterSecrets(logicalId, value, context);
+      // Through `displayMasked`, which consults `context.inheritedSecrets`
+      // too: a pass that records nothing (no `recordedSecretValues`) still
+      // masks the parent's plaintext. `stringifyParameterForLog` only covers
+      // the author's own `NoEcho` declaration, and a CDK-synthesized
+      // nested-stack parameter never carries one.
       this.logger.debug(
         `Resolved Ref to parameter: ${this.displayMasked(logicalId, context)} -> ${this.displayMasked(
           stringifyParameterForLog(paramDef, this.maskValueLeaves(value, context)),
           context
         )}`
       );
-      // Issue #1903 / #2087: a nested-stack child records the parent's
-      // already-resolved secret HERE, at the point a resource actually
-      // consumes the parameter, so the pair lands in that resource's own bag.
-      // The NAME goes with it since issue #2291 round 2 -- it is what selects
-      // this parameter's own expression over the collapsed map's survivor.
-      this.recordInheritedParameterSecrets(logicalId, value, context);
       return value;
     }
 
@@ -8937,15 +8940,68 @@ export class IntrinsicFunctionResolver {
     }
 
     const result = resolvedValue.split(delimiter);
+    // go-to-k/cdkd#4049: a piece holding part of a LOG-ONLY needle (a `NoEcho`
+    // parameter's value) becomes a log-only needle itself, recorded BEFORE the
+    // debug line below so that line masks it, and into the pass's bag so the
+    // provider's masker and the error / event masking do too. LOG-ONLY, so
+    // nothing persisted moves. The print-only corpus's pieces go into that
+    // corpus alone, as `resolveBase64` records its encodings.
+    //
+    // A context with no pass bag (an inherited-only one) records nothing it
+    // could keep, so the pieces go into a bag of THIS call's own, read as a
+    // print-only corpus by this call's line alone: it must not rely on some
+    // earlier resolution having recorded them.
+    let lineContext = context;
+    if (this.hasLogOnlyNeedles(context)) {
+      if (context.recordedSecretValues) {
+        recordLogOnlySplitFragments(
+          [context.inheritedSecrets, context.recordedSecretValues],
+          context.recordedSecretValues,
+          resolvedValue,
+          String(delimiter)
+        );
+      } else {
+        const linePieces: RecordedSecretValues = new Map();
+        if (context.printingSecrets !== undefined) {
+          carryLogOnlyValues(context.printingSecrets, linePieces);
+        }
+        recordLogOnlySplitFragments(
+          [context.inheritedSecrets],
+          linePieces,
+          resolvedValue,
+          String(delimiter)
+        );
+        lineContext = { ...context, printingSecrets: linePieces };
+      }
+    }
+    if (context.printingSecrets !== undefined && hasLogOnlyValues(context.printingSecrets)) {
+      recordLogOnlySplitFragments(
+        [context.printingSecrets],
+        context.printingSecrets,
+        resolvedValue,
+        String(delimiter)
+      );
+    }
     // Issue #3100: a piece of a string an earlier write masked keeps its part
     // of that mask, on this line and on an outer Join over the pieces.
-    const pieceTwins = this.splitLogTwins(resolvedValue, delimiter, result, context);
+    // An EMPTY delimiter splits into single characters, which no needle can
+    // mask without every character becoming one (go-to-k/cdkd#4049): when the
+    // value carries a masked needle, the line prints every piece as `***`.
+    // (That covers this line only: an `Fn::Join` / `Fn::Sub` over the pieces
+    // prints them character-spaced, a documented residual. Registering each
+    // character as a log twin would close it, but a twin also feeds the
+    // `Fn::Base64` persist detector, which would move state.)
+    const pieceTwins =
+      String(delimiter) === '' &&
+      this.maskRenderedNeedlesForLog(resolvedValue, lineContext) !== resolvedValue
+        ? result.map(() => SECRET_MASK)
+        : this.splitLogTwins(resolvedValue, delimiter, result, context);
     this.logger.debug(
       // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
       // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)). The
       // delimiter through the builder (issue #3479): it is raw template text,
       // and a structural operand is still arbitrary JSON.
-      `Resolved Fn::Split: split by ${quotedRender(this.displayMasked(String(delimiter), context), '"', 'a delimiter (not shown: it is not a plain identifier)')} -> ${JSON.stringify(this.maskValueLeaves(pieceTwins, context))}`
+      `Resolved Fn::Split: split by ${quotedRender(this.displayMasked(String(delimiter), lineContext), '"', 'a delimiter (not shown: it is not a plain identifier)')} -> ${JSON.stringify(this.maskValueLeaves(pieceTwins, lineContext))}`
     );
     return result;
   }

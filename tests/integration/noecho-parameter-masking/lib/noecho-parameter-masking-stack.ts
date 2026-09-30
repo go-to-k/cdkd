@@ -33,9 +33,40 @@ import { Construct } from 'constructs';
  *   second `NoEcho` parameter (`CDKD_TEST_NOECHO_ALIAS_TOKEN`), so every
  *   deploy refuses the alias: it reaches neither state nor the exports index,
  *   and the warning names it masked.
+ * - `NoEchoSplitConsumer` (go-to-k/cdkd#4049): an SSM String parameter whose
+ *   value is the SECOND piece of an `Fn::Split` over a third `NoEcho`
+ *   parameter holding two comma-separated pieces
+ *   (`CDKD_TEST_NOECHO_SPLIT_TOKEN`), so the resolver's `Resolved Fn::Split`
+ *   line carries both pieces. `NoEchoSplitAliasProbe` exports under the FIRST
+ *   piece, so every deploy refuses that alias too.
+ * - `SplitChild` (go-to-k/cdkd#4049): a nested stack whose
+ *   `CommaDelimitedList` parameter `ListIn` is fed that same `NoEcho` STRING,
+ *   so the child engine receives it split and trimmed, and prints both
+ *   elements on its `Resolved Ref to parameter: ListIn` line unless the
+ *   inherited needle is carried element by element. Its SSM parameter holds
+ *   the first element.
  *
- * covers: AWS::SSM::Parameter, AWS::SNS::Topic
+ * covers: AWS::SSM::Parameter, AWS::SNS::Topic, AWS::CloudFormation::Stack
  */
+/**
+ * `SplitChild`: reads its list parameter's first element. A CDK-synthesized
+ * nested parameter never says `NoEcho`, so only the parent's value knows it.
+ */
+class SplitChild extends cdk.NestedStack {
+  constructor(scope: Construct, id: string, props: cdk.NestedStackProps) {
+    super(scope, id, props);
+    // Pinned so the child's cdkd state key is `<parent>~SplitChild`.
+    (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('SplitChild');
+    const listIn = new cdk.CfnParameter(this, 'ListIn', { type: 'CommaDelimitedList' });
+    listIn.overrideLogicalId('ListIn');
+    new ssm.CfnParameter(this, 'SplitChildConsumer', {
+      name: `cdkd-test-noecho-splitchild-${cdk.Stack.of(this).account}`,
+      type: 'String',
+      value: cdk.Fn.select(0, listIn.valueAsList),
+    });
+  }
+}
+
 export class NoechoParameterMaskingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -69,6 +100,25 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'NoEchoAliasProbe', {
       value: 'alias-probe-value',
       exportName: aliasToken.valueAsString,
+    });
+
+    const splitToken = new cdk.CfnParameter(this, 'NoEchoSplitToken', {
+      type: 'String',
+      noEcho: true,
+      default: process.env['CDKD_TEST_NOECHO_SPLIT_TOKEN'] ?? 'CdkdSplitUnsetA,CdkdSplitUnsetB',
+    });
+    const pieces = cdk.Fn.split(',', splitToken.valueAsString);
+    new ssm.CfnParameter(this, 'NoEchoSplitConsumer', {
+      name: `cdkd-test-noecho-split-${account}`,
+      type: 'String',
+      value: cdk.Fn.select(1, pieces),
+    });
+    new cdk.CfnOutput(this, 'NoEchoSplitAliasProbe', {
+      value: 'split-alias-probe-value',
+      exportName: cdk.Fn.select(0, pieces),
+    });
+    new SplitChild(this, 'SplitChild', {
+      parameters: { ListIn: splitToken.valueAsString },
     });
 
     if (process.env['CDKD_TEST_NOECHO_REJECT'] === 'true') {

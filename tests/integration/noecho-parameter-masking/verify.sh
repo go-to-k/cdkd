@@ -7,10 +7,10 @@
 # masker, the engine's error text, the deployments/*.jsonl events), and what
 # cdkd PERSISTS is unchanged except for an export alias. So do the diff's
 # `requires replacement` line and `cdkd diff`'s own rendering, human and --json
-# (go-to-k/cdkd#4049). Still open on #4049: the deploy summary's Outputs
-# display, the CommaDelimitedList / Fn::Split coverage edges, and the forwarded
-# synth output. An `Export.Name` holding a NoEcho value is REFUSED
-# (go-to-k/cdkd#4043): nothing is published to state or the exports index.
+# (go-to-k/cdkd#4049), and so are the PIECES of an `Fn::Split` over a NoEcho
+# value (#4049's coverage-edges row). An `Export.Name` holding a NoEcho value,
+# or a split piece of one, is REFUSED (go-to-k/cdkd#4043): nothing is published
+# to state or the exports index.
 #
 # Phases:
 #   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: token=...` line
@@ -20,6 +20,13 @@
 #      NoEchoAliasProbe's Export.Name IS a second NoEcho value: the alias is
 #      refused with a masked warning, and neither state.json, its exportNames
 #      nor the exports index holds it (#4043).
+#      NoEchoSplitConsumer reads the second piece of an Fn::Split over a third
+#      NoEcho value: the `Resolved Fn::Split` line prints neither piece, AWS
+#      and state.json hold the piece, and NoEchoSplitAliasProbe's Export.Name,
+#      the first piece, is refused (#4049). The nested SplitChild receives
+#      the same value as its CommaDelimitedList ListIn: its `Resolved Ref to
+#      parameter: ListIn` line prints neither element, and AWS and its own
+#      state.json hold the first. No later phase prints a piece.
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
@@ -114,6 +121,22 @@ if [ "${#ALIAS_TOKEN}" -lt 20 ]; then
   exit 1
 fi
 export CDKD_TEST_NOECHO_ALIAS_TOKEN="${ALIAS_TOKEN}"
+# NoEchoSplitToken (#4049): two pieces, each distinct and long enough for the
+# substring mask, joined by the delimiter the template splits on.
+SPLIT_A="CdkdSplitA$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+SPLIT_B="CdkdSplitB$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+if [ "${#SPLIT_A}" -lt 20 ] || [ "${#SPLIT_B}" -lt 20 ]; then
+  echo "FAIL: premise: could not generate the NoEcho split pieces" >&2
+  exit 1
+fi
+export CDKD_TEST_NOECHO_SPLIT_TOKEN="${SPLIT_A},${SPLIT_B}"
+SPLIT_NAME="cdkd-test-noecho-split-${ACCOUNT_ID}"
+# The nested SplitChild (#4049): its own state key is a SIBLING prefix of the
+# parent's, so it is swept by its own prefix too.
+SPLIT_CHILD_NAME="cdkd-test-noecho-splitchild-${ACCOUNT_ID}"
+CHILD_STACK="${STACK}~SplitChild"
+CHILD_STATE_KEY="cdkd/${CHILD_STACK}/${REGION}/state.json"
+CHILD_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
 RENAME_OLD_ARN="${RENAME_TOPIC_PREFIX}-a"
 RENAME_NEW_ARN="${RENAME_TOPIC_PREFIX}-${TOKEN}"
 
@@ -126,10 +149,18 @@ SCRATCH_FILES=()
 # the value: these paths exist to detect a masking regression, and echoing the
 # log there would print exactly what failed to be masked.
 diag_output() { # diag_output <text>
-  if [[ "$1" == *"${TOKEN}"* ]]; then
-    echo "    (output withheld: it carries the NoEcho value)" >&2
+  if [[ "$1" == *"${TOKEN}"* ]] || [[ "$1" == *"${SPLIT_A}"* ]] || [[ "$1" == *"${SPLIT_B}"* ]]; then
+    echo "    (output withheld: it carries a NoEcho value or split piece)" >&2
   else
     printf '%s\n' "$1" | tail -40 >&2
+  fi
+}
+
+# A split piece of NoEchoSplitToken in a captured output is a #4049 leak.
+assert_no_split_piece() { # assert_no_split_piece <label> <text>
+  if [[ "$2" == *"${SPLIT_A}"* ]] || [[ "$2" == *"${SPLIT_B}"* ]]; then
+    echo "FAIL: $1 carries a split piece of the NoEcho value in plaintext (issue #4049)" >&2
+    exit 1
   fi
 }
 
@@ -147,7 +178,7 @@ cleanup() {
   fi
   # By exact name, in case state destroy missed them. NoEchoReject exists only
   # if AWS stopped rejecting the value.
-  aws ssm delete-parameters --names "${CONSUMER_NAME}" "${REJECT_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws ssm delete-parameters --names "${CONSUMER_NAME}" "${REJECT_NAME}" "${SPLIT_NAME}" "${SPLIT_CHILD_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -155,6 +186,11 @@ cleanup() {
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    if [ "${destroy_rc}" -eq 0 ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" >/dev/null 2>&1 || true
+    fi
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CHILD_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_PREFIX:-}" noncurrent || true
     # NONCURRENT only here: this also runs from the failure traps, where a live
     # state.json may still be the only record of standing resources. The
     # success path does the full sweep and asserts it.
@@ -311,6 +347,102 @@ if ! gone_probe aws s3api get-object --bucket "${STATE_BUCKET}" --key "${INDEX_K
 fi
 echo "    OK: the NoEcho export alias is refused, masked in its warning, and in neither state nor the exports index"
 
+# SPLIT PIECES (#4049). PREMISE: the template declares NoEchoSplitToken NoEcho
+# with this run's two pieces as its Default, NoEchoSplitConsumer reads the
+# second piece through Fn::Select over Fn::Split, and NoEchoSplitAliasProbe
+# exports under the first.
+SPLIT_SHAPE=$(jq -r --arg tok "${SPLIT_A},${SPLIT_B}" '
+  {"Fn::Split": [",", {"Ref": "NoEchoSplitToken"}]} as $sp
+  | (.Parameters.NoEchoSplitToken.NoEcho == true and .Parameters.NoEchoSplitToken.Default == $tok)
+  and ([.Resources[] | select(.Type == "AWS::SSM::Parameter") | .Properties.Value
+        | select(. == {"Fn::Select": [1, $sp]})] | length == 1)
+  and (.Outputs.NoEchoSplitAliasProbe.Export.Name == {"Fn::Select": [0, $sp]})
+' "${SYNTH_TEMPLATE}" 2>/dev/null || echo "unparsable")
+if [ "${SPLIT_SHAPE}" != "true" ]; then
+  echo "FAIL: premise: the synthesized template does not split the NoEcho NoEchoSplitToken (this run's Default) into NoEchoSplitConsumer's Value and NoEchoSplitAliasProbe's Export.Name (got ${SPLIT_SHAPE})" >&2
+  exit 1
+fi
+# PREMISE: the resolver logged its split line. The SENTINEL is its fixed
+# prefix, which carries no piece.
+if [[ "${DEPLOY_OUT_P1}" != *'Resolved Fn::Split: split by ","'* ]]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Fn::Split' line -- the split arm did not run" >&2
+  diag_output "${DEPLOY_OUT_P1}"
+  exit 1
+fi
+assert_no_split_piece "the Phase 1 --verbose log" "${DEPLOY_OUT_P1}"
+echo "    OK: the --verbose log masks both split pieces"
+SPLIT_VALUE=$(aws ssm get-parameter --name "${SPLIT_NAME}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+if [ "${SPLIT_VALUE}" != "${SPLIT_B}" ]; then
+  echo "FAIL: ${SPLIT_NAME} does not hold the second split piece -- the value AWS received was altered (issue #4049)" >&2
+  exit 1
+fi
+P1_SPLIT_PERSISTED=$(jq -r '.resources.NoEchoSplitConsumer.properties.Value // "<absent>"' "${P1_STATE}")
+if [ "${P1_SPLIT_PERSISTED}" != "${SPLIT_B}" ]; then
+  echo "FAIL: state.json does not hold the split piece as deployed -- what cdkd persists changed (issue #4049)" >&2
+  exit 1
+fi
+echo "    OK: AWS and state.json hold the real piece (persistence unchanged)"
+# The split alias: refused (the #4049 widening of the #4043 verdict), and
+# published nowhere -- the index check above counts no entry for this stack.
+if ! grep -qF -- "Output NoEchoSplitAliasProbe ${REFUSAL_TEXT}" <<< "${DEPLOY_OUT_P1}"; then
+  echo "FAIL: the Phase 1 deploy printed no export-name refusal for NoEchoSplitAliasProbe -- an Export.Name holding a split piece was not refused (issue #4049)" >&2
+  diag_output "$(grep -F 'NoEchoSplitAliasProbe' <<< "${DEPLOY_OUT_P1}" || true)"
+  exit 1
+fi
+# Not a raw grep of the blob: state holds the whole NoEcho value in the clear
+# by design (the SplitChild row's Parameters), and the value contains the
+# piece. The alias would live in the outputs KEYS and exportNames.
+P1_SPLIT_KEYS=$(jq -r --arg p "${SPLIT_A}" '[(.outputs // {} | keys[]), (.exportNames // [])[] | select(contains($p))] | length' "${P1_STATE}")
+if [ "${P1_SPLIT_KEYS}" != "0" ]; then
+  echo "FAIL: state.json holds an outputs key or exportName carrying the first split piece -- the refused split alias was published (issue #4049)" >&2
+  exit 1
+fi
+P1_SPLIT_ALIAS_KEYS=$(jq -r '[(.outputs // {} | to_entries[] | select(.value == "split-alias-probe-value") | .key)] | join(",")' "${P1_STATE}")
+if [ "${P1_SPLIT_ALIAS_KEYS}" != "NoEchoSplitAliasProbe" ]; then
+  echo "FAIL: state.json holds NoEchoSplitAliasProbe's value under another key -- the split alias was published (issue #4049)" >&2
+  exit 1
+fi
+echo "    OK: the Export.Name holding a split piece is refused and published nowhere"
+
+# THE NESTED CHILD's LIST PARAMETER (#4049 (a)). PREMISE: the parent feeds
+# SplitChild's ListIn the NoEcho value by a bare Ref, and the child declares
+# ListIn a CommaDelimitedList its SSM parameter reads the first element of.
+SPLIT_CHILD_TEMPLATE=$(jq -r '.Resources.SplitChild.Metadata["aws:asset:path"] // empty' "${SYNTH_TEMPLATE}")
+CHILD_SHAPE=$(jq -r --slurpfile parent "${SYNTH_TEMPLATE}" '
+  ($parent[0].Resources.SplitChild.Properties.Parameters.ListIn == {"Ref": "NoEchoSplitToken"})
+  and (.Parameters.ListIn.Type == "CommaDelimitedList")
+  and ([.Resources[] | select(.Type == "AWS::SSM::Parameter") | .Properties.Value
+        | select(. == {"Fn::Select": [0, {"Ref": "ListIn"}]})] | length == 1)
+' "cdk.out/${SPLIT_CHILD_TEMPLATE:-<absent>}" 2>/dev/null || echo "unparsable")
+if [ "${CHILD_SHAPE}" != "true" ]; then
+  echo "FAIL: premise: SplitChild does not receive the NoEcho NoEchoSplitToken as its CommaDelimitedList ListIn read through Fn::Select (got ${CHILD_SHAPE})" >&2
+  exit 1
+fi
+# The child engine's own line for the list, found by its fixed prefix (the
+# SENTINEL: it carries no element), must print neither element.
+P1_LISTIN_LINE=$(grep -m1 -F 'Resolved Ref to parameter: ListIn ->' <<< "${DEPLOY_OUT_P1}" || true)
+if [ -z "${P1_LISTIN_LINE}" ]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Ref to parameter: ListIn' line -- the child's list arm did not run" >&2
+  exit 1
+fi
+assert_no_split_piece "SplitChild's 'Resolved Ref to parameter: ListIn' line" "${P1_LISTIN_LINE}"
+SPLIT_CHILD_VALUE=$(aws ssm get-parameter --name "${SPLIT_CHILD_NAME}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+if [ "${SPLIT_CHILD_VALUE}" != "${SPLIT_A}" ]; then
+  echo "FAIL: ${SPLIT_CHILD_NAME} does not hold the first list element -- the value AWS received was altered (issue #4049)" >&2
+  exit 1
+fi
+P1_CHILD_STATE=$(mktemp)
+SCRATCH_FILES+=("${P1_CHILD_STATE}")
+aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" "${P1_CHILD_STATE}" --quiet
+P1_CHILD_PERSISTED=$(jq -r '.resources.SplitChildConsumer.properties.Value // "<absent>"' "${P1_CHILD_STATE}")
+if [ "${P1_CHILD_PERSISTED}" != "${SPLIT_A}" ]; then
+  echo "FAIL: SplitChild's state.json does not hold the list element as deployed -- what cdkd persists changed (issue #4049)" >&2
+  exit 1
+fi
+echo "    OK: the nested child's list line masks both elements; AWS and its state.json hold the real one"
+
 # --- Phase 2: the provider rejection quotes the value ------------------------
 echo "==> Phase 2: probe deploy whose SSM Tier is the NoEcho value, which SSM rejects quoting it"
 assert_gone "premise: ${REJECT_NAME} already exists before its probe deploy" \
@@ -335,6 +467,7 @@ if [[ "${P2_CDKD_OUT}" == *"${TOKEN}"* ]]; then
   echo "FAIL: the Phase 2 deploy output carries the NoEcho value in plaintext (issue #1998)" >&2
   exit 1
 fi
+assert_no_split_piece "the Phase 2 deploy output" "${DEPLOY_OUT_P2}"
 if [ "${P2_RC}" -eq 0 ]; then
   echo "FAIL: premise: the Phase 2 deploy exited 0 -- SSM accepted the NoEcho value as a Tier, so nothing was quoted back" >&2
   diag_output "${P2_CDKD_OUT}"
@@ -380,6 +513,7 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
     echo "FAIL: deployment events object ${event_key} carries the NoEcho value in plaintext (issue #1998)" >&2
     exit 1
   fi
+  assert_no_split_piece "deployment events object ${event_key}" "$(cat "${EVENT_FILE}")"
   if grep -F 'Failed to create SSM parameter NoEchoReject' "${EVENT_FILE}" | grep -qiE "${REJECTION_RE}"; then
     EVENTS_REJECTION=$((EVENTS_REJECTION + 1))
   fi
@@ -425,6 +559,13 @@ if [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}" == *"${TOKEN}"* ]]; then
   echo "FAIL: the Phase 3a 'cdkd diff --json' output carries the NoEcho value in plaintext (issue #4049)" >&2
   exit 1
 fi
+# The diff resolves NoEchoSplitConsumer too: its split line runs, piece-free.
+if [[ "${DIFF_OUT_P3A}" != *'Resolved Fn::Split: split by ","'* ]]; then
+  echo "FAIL: premise: 'cdkd diff --verbose' logged no 'Resolved Fn::Split' line -- the split arm did not run on the diff" >&2
+  diag_output "${DIFF_OUT_P3A}"
+  exit 1
+fi
+assert_no_split_piece "the Phase 3a 'cdkd diff' output" "${DIFF_OUT_P3A}${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}"
 # The exit codes are unchanged: a plain diff exits 0 over a change, and
 # --fail exits 1 because the change is still REPORTED, only masked.
 if [ "${DIFF_RC_P3A}" -ne 0 ]; then
@@ -520,6 +661,7 @@ if [[ "${DEPLOY_OUT_P3}" != *"${REPLACE_LINE}"* ]]; then
   exit 1
 fi
 echo "    OK: the replacement line masks the NoEcho value"
+assert_no_split_piece "the Phase 3 deploy output" "${DEPLOY_OUT_P3}"
 # AWS holds the REAL name, and the old topic is gone.
 if gone_probe aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"; then
   echo "FAIL: the replacement topic named with the real NoEcho value does not exist -- the name AWS received was altered (issue #4049)" >&2
@@ -566,6 +708,7 @@ fi
 assert_gone "the value-named topic still exists after Phase 4" \
   aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"
 echo "    OK: the replacement back masks the old, value-bearing name"
+assert_no_split_piece "the Phase 4 deploy output" "${DEPLOY_OUT_P4}"
 
 # --- Phase 5: destroy --------------------------------------------------------
 echo "==> Phase 5: destroy"
@@ -577,6 +720,12 @@ assert_gone "SSM parameter '${CONSUMER_NAME}' still exists after destroy" \
   aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}"
 assert_gone "SSM parameter '${REJECT_NAME}' exists after destroy" \
   aws ssm get-parameter --name "${REJECT_NAME}" --region "${REGION}"
+assert_gone "SSM parameter '${SPLIT_NAME}' still exists after destroy" \
+  aws ssm get-parameter --name "${SPLIT_NAME}" --region "${REGION}"
+assert_gone "SSM parameter '${SPLIT_CHILD_NAME}' still exists after destroy" \
+  aws ssm get-parameter --name "${SPLIT_CHILD_NAME}" --region "${REGION}"
+assert_gone "child state file s3://${STATE_BUCKET}/${CHILD_STATE_KEY} still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}"
 assert_gone "SNS topic NoEchoRenamed still exists after destroy" \
   aws sns get-topic-attributes --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}"
 assert_gone "the value-named SNS topic exists after destroy" \
@@ -593,5 +742,7 @@ cleanup
 trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "noecho-parameter-masking state teardown"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_PREFIX}" "noecho-parameter-masking SplitChild state teardown"
 
-echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event, resolver and replacement-line surfaces, an Export.Name holding one is refused, and the rest of persistence is unchanged"
+echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event, resolver and replacement-line surfaces, and so are its Fn::Split pieces, an Export.Name holding one is refused, and the rest of persistence is unchanged"
