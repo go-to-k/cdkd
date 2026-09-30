@@ -46,7 +46,7 @@ cloudtrail-trail	2026-09-28T07:22:06Z	PASS	196	verify.sh	#3885 log-group sweep; 
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-09-28T17:37:17Z	PASS	71	verify.sh	rc ok, orph clean (#3996, after merging main)
 codebuild-project	2026-09-27T19:00:18Z	PASS	116	verify.sh	rc ok, orph clean (#3887)
-codecommit	2026-09-30T09:47:02Z	PASS	171	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers; Phase 2b: foreign holder refused on update and destroy, orphan remedy works
+codecommit	2026-09-30T10:28:04Z	PASS	165	verify.sh	PR #4208 (#4157) re-run on the head rebased over #4217 (DeployEngine mixin move); rc ok, destroy 0 errors, no state/lock/CFn leftovers
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-09-25T19:22:55Z	PASS	245	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 cognito-custom-attribute-add	2026-09-05T21:47:13Z	PASS	51	verify.sh	PR2662 gate run; 3 phases, destroy 0 errors, 0 orphans
@@ -267,7 +267,7 @@ replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCo
 replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, orph clean
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-09-30T09:49:49Z	PASS	161	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+rollback-command	2026-09-30T10:32:09Z	PASS	150	verify.sh	PR #4208 (#4157) re-run on the head rebased over #4217 (DeployEngine mixin move); rc ok, destroy 0 errors, no state/lock/CFn leftovers
 rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph clean (#3595 lane)
 rollback-deletion-policy-snapshot	2026-09-29T08:18:12Z	PASS	120	verify.sh	rc ok, orph clean (#4029 PR #4072)
 rollback-explicit-name-rewrite	2026-09-29T17:59:17Z	PASS	211	verify.sh	rc ok, orph clean (PR #4141 generic name segments)
@@ -331,7 +331,7 @@ throttle-wide-dag	2026-09-28T10:21:55Z	PASS	191	verify.sh	#3939 PR #3947 rebased
 type-change-replacement	2026-09-29T15:45:35Z	PASS	201	verify.sh	PR #4121 (#4073 log group + Glue Tags through the shared reader) @bf15c97; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 unrecognized-key-autoroute	2026-09-25T10:33:55Z	PASS	105	verify.sh	rc ok, orph clean; sha 9b61a0dd0 (#3713, post-rebase)
 update-policy-mutations	2026-09-05T03:27:04Z	PASS	71	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (property-driven Retain)
-update-replace	2026-09-30T09:51:22Z	PASS	90	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+update-replace	2026-09-30T10:29:32Z	PASS	85	verify.sh	PR #4208 (#4157) re-run on the head rebased over #4217 (DeployEngine mixin move); rc ok, destroy 0 errors, no state/lock/CFn leftovers
 vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 err, hyperplane ENIs cleared, orph clean
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
