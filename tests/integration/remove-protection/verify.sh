@@ -171,14 +171,19 @@ cleanup() {
     # refuses and the destroy below leaks the NLB (and the VPC behind it).
     # A create that landed while the CLI still failed leaves the id unset:
     # find it by the tag step 4b gives it.
-    # A failed lookup is reported and skipped: the destroy below still runs.
+    # Only one backed by THIS run's NLB. A failed lookup is reported and
+    # skipped (stderr apart, so a CLI warning is not read as an id): the
+    # destroy below still runs.
     if [ -z "${OOB_ENDPOINT_SERVICE_ID}" ] && [ -n "${NLB_ARN}" ]; then
+      lookup_err="$(mktemp)"
       if ! OOB_ENDPOINT_SERVICE_ID="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
           --filters "Name=tag:Name,Values=${STACK}-4b" \
-          --query "ServiceConfigurations[?ServiceState!='Deleted'].ServiceId" --output text 2>&1)"; then
-        echo "[verify] could not look up the step-4b endpoint service by tag: ${OOB_ENDPOINT_SERVICE_ID}"
+          --query "ServiceConfigurations[?ServiceState!='Deleted' && contains(NetworkLoadBalancerArns, '${NLB_ARN}')].ServiceId" \
+          --output text 2>"${lookup_err}")"; then
+        echo "[verify] could not look up the step-4b endpoint service by tag: $(cat "${lookup_err}")"
         OOB_ENDPOINT_SERVICE_ID=""
       fi
+      rm -f "${lookup_err}"
       [ "${OOB_ENDPOINT_SERVICE_ID}" = "None" ] && OOB_ENDPOINT_SERVICE_ID=""
     fi
     # Every live one the lookup found (an earlier run may have left another),
@@ -362,6 +367,9 @@ case "${OOB_ENDPOINT_SERVICE_ID}" in
   vpce-svc-?*) ;;
   *)
     echo "[verify] FAIL: create-vpc-endpoint-service-configuration returned '${OOB_ENDPOINT_SERVICE_ID}'"
+    # Cleared, so the cleanup finds a service that may still have been created
+    # by its tag instead of trying to delete this non-id.
+    OOB_ENDPOINT_SERVICE_ID=""
     exit 1
     ;;
 esac
@@ -390,6 +398,11 @@ ${CLI} destroy "${STACK}" --remove-protection --state-bucket "${STATE_BUCKET}" -
 rc=$?
 set -e
 cat "${DESTROY_4B_LOG}"
+# The NLB's own delete failure, pulled out: if this arm goes red, it tells an
+# AWS refusal worded as retryable (the re-enable never runs) apart from a
+# regression in the fix.
+echo "[verify] step 4b NLB delete failure line(s):"
+grep -F "Failed to delete LoadBalancer" "${DESTROY_4B_LOG}" || echo "[verify]   (none found)"
 if [ "${rc}" -eq 0 ]; then
   echo "[verify] FAIL: destroy succeeded although the user pool carries an out-of-band domain and the NLB an endpoint service"
   exit 1

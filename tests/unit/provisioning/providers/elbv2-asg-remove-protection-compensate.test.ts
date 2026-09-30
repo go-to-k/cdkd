@@ -274,6 +274,11 @@ function disableCalls(site: Site): Cmd[] {
 
 const CTX = { removeProtection: true, expectedRegion: 'us-east-1' };
 
+/** Live entries in a provider's private flip registry. */
+function flipRegistrySize(provider: unknown): number {
+  return (provider as { protectionFlips: { size: number } }).protectionFlips.size;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   elbv2Send.mockReset();
@@ -319,8 +324,10 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     expect(reEnableCalls(site)).toHaveLength(0);
     expect(childLogger.warn).not.toHaveBeenCalled();
     expect(childLogger.error).not.toHaveBeenCalled();
-    // Released: a later terminal failure of the same key whose readback sees
-    // the guard off inherits nothing to restore.
+    // Released: the registry holds nothing for it ...
+    expect(flipRegistrySize(provider)).toBe(0);
+    // ... so a later terminal failure of the same key whose readback sees the
+    // guard off inherits nothing to restore.
     site.send.mockReset();
     script(site, { observe: false, del: terminalRefusal() });
     await expect(del(provider)).rejects.toThrow(REFUSAL);
@@ -332,6 +339,10 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     await expect(del()).rejects.toThrow(REFUSAL);
     expect(disableCalls(site)).toHaveLength(1);
     expect(reEnableCalls(site)).toHaveLength(0);
+    // Nothing narrated either: a line about a guard cdkd never touched would
+    // be false (an ERROR here claims the resource is LIVE with its guard off).
+    expect(childLogger.error).not.toHaveBeenCalled();
+    expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
   it('never compensates when the pre-flip readback failed ("do not know")', async () => {
@@ -340,12 +351,16 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     // The flip still goes out: nothing else rides it.
     expect(disableCalls(site)).toHaveLength(1);
     expect(reEnableCalls(site)).toHaveLength(0);
+    expect(childLogger.error).not.toHaveBeenCalled();
+    expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
   it('does not compensate a flip AWS rejected', async () => {
     script(site, { observe: true, disable: new Error('flip refused'), del: terminalRefusal() });
     await expect(del()).rejects.toThrow(REFUSAL);
     expect(reEnableCalls(site)).toHaveLength(0);
+    expect(childLogger.error).not.toHaveBeenCalled();
+    expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
   it('does not compensate once AWS ACCEPTED the delete', async () => {
@@ -496,7 +511,7 @@ describe('AutoScalingGroup: the restore puts back the LEVEL the flip removed', (
   }
 
   it.each(['prevent-force-deletion', 'prevent-all-deletion'])(
-    'a group observed at %s gets %s back',
+    'a group observed at %s gets that same level back',
     async (level) => {
       scriptLevel(level, { del: terminalRefusal() });
       await expect(
