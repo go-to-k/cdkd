@@ -452,15 +452,13 @@ export function registerNoEchoAttributes(
  * "A resolution", not "an `Fn::GetAtt`": the pushers are
  * `noteAttributeSecrecy`, `reresolveCrossStackValue` and — since the issue
  * #2847 review — `noteRefStateMask`, the `Ref` branch that reads a recovery
- * key out of the same persisted bags. {@link maskedRecordRemedyFor} is the
- * authority on the full shape list.
+ * key out of the same persisted bags. {@link DeployEngine.maskedRecordRemedyFor}
+ * is the authority on the full shape list.
  *
- * This block sits DIRECTLY above its subject, and the previous revision's did
- * not: `maskedRecordRemedyFor` was inserted between the two, so JavaScript's
- * "only the LAST of two consecutive block comments attaches" rule (the same
- * one `cloud-control-provider.ts`'s `import()` doc warns about) silently
- * re-pointed 25 lines of doc at the wrong function and left this one with
- * none. Keep a new helper OUT of the gap.
+ * Keep this block DIRECTLY above its function: only the LAST of two
+ * consecutive block comments attaches (the rule `cloud-control-provider.ts`'s
+ * `import()` doc warns about), so a helper inserted into the gap silently
+ * takes this doc.
  */
 export function refuseRedactedAttributeReads(
   this: DeployEngine,
