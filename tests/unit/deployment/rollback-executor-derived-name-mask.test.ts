@@ -40,16 +40,28 @@ const SPACED_EXPR = '{{resolve:secretsmanager:spaced-name:SecretString:name::}}'
 /** A secret CONTAINING the derived name `KEPT` (issue #4193). */
 const LONGER_SECRET = 'MyStack-alice-example-com owner hunter2x';
 const LONGER_EXPR = '{{resolve:secretsmanager:longer-name:SecretString:name::}}';
-const smSend = vi.fn(async (cmd?: { input?: { SecretId?: string } }) => ({
-  SecretString: JSON.stringify({
-    name:
-      cmd?.input?.SecretId === 'spaced-name'
-        ? SPACED_NAME
-        : cmd?.input?.SecretId === 'longer-name'
-          ? LONGER_SECRET
-          : SECRET_NAME,
-  }),
-}));
+/** A secret INSIDE the derived name `KEPT` (issue #4193). */
+const INNER_EXPR = '{{resolve:secretsmanager:inner-name:SecretString:name::}}';
+/** A secret whose fetch fails, with an error quoting the role (issue #4193). */
+const UNREADABLE_EXPR = '{{resolve:secretsmanager:unreadable:SecretString:name::}}';
+const smSend = vi.fn(async (cmd?: { input?: { SecretId?: string } }) => {
+  const id = cmd?.input?.SecretId;
+  if (id === 'unreadable') {
+    throw new Error('Secret for role MyStack-alice-example-com is unreadable');
+  }
+  return {
+    SecretString: JSON.stringify({
+      name:
+        id === 'spaced-name'
+          ? SPACED_NAME
+          : id === 'longer-name'
+            ? LONGER_SECRET
+            : id === 'inner-name'
+              ? 'alice'
+              : SECRET_NAME,
+    }),
+  };
+});
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({ secretsManager: { send: smSend }, ssm: { send: vi.fn() } }),
   setAwsClients: vi.fn(),
@@ -385,11 +397,51 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     const result = await replayKept(() => replayRollback([op], state, STACK, ctx));
 
     expect(result.failures).toBe(1);
+    // The derived name occurs in the text but only INSIDE the longer secret,
+    // so the op's masker withholds the whole failure detail (over-masking).
     const failed = lines.find((l) => l.includes('Rollback failed for R'));
-    expect(failed).toContain("Description '***' is invalid.");
+    expect(failed).toBe('  Rollback failed for R (UPDATE): ***');
     for (const line of lines) expect(line).not.toContain('hunter2x');
     const event = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED');
-    expect(event?.error?.message).toContain("Description '***' is invalid.");
+    expect(event?.error?.message).toContain('***');
+    expect(event?.error?.message).not.toContain('hunter2x');
+  });
+
+  it('masks a derived name whose inside a secret resolved AFTER the needles were added rewrites (#4193)', async () => {
+    // The in-place revert adds the record's ids as needles first, then resolves
+    // the desired side (recording `alice`, which is INSIDE the id), then fails
+    // resolving the live side with an error quoting the id. The shared catch
+    // masks with needles built BEFORE `alice` was recorded, so each needle must
+    // be rendered against the bag as it is when the line is masked.
+    const update = vi.fn();
+    const { ctx, lines, events } = makeCtx({ update });
+    const op: CompletedOperation = {
+      logicalId: 'R',
+      changeType: 'UPDATE',
+      resourceType: ROLE,
+      physicalId: KEPT,
+      provisionedBy: 'sdk',
+      previousState: role(KEPT, SECRET_EXPR, {
+        properties: { RoleName: SECRET_EXPR, Description: INNER_EXPR, Path: '/' },
+      }),
+    };
+    const state = {
+      R: role(KEPT, SECRET_EXPR, {
+        properties: { RoleName: SECRET_EXPR, Description: UNREADABLE_EXPR, Path: '/' },
+      }),
+    };
+
+    const result = await replayKept(() => replayRollback([op], state, STACK, ctx));
+
+    // Non-vacuity: the live side's fetch failed, so no update ran.
+    expect(result.failures).toBe(1);
+    expect(update).not.toHaveBeenCalled();
+    expect(smSend.mock.calls.some((c) => c[0]?.input?.SecretId === 'unreadable')).toBe(true);
+    const failed = lines.find((l) => l.includes('Rollback failed for R'));
+    expect(failed).toContain('Secret for role *** is unreadable');
+    for (const line of lines) expect(leaks(line), line).toBe(false);
+    const event = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED');
+    expect(leaks(event!.error!.message)).toBe(false);
   });
 
   // The two in-place arms resolve BOTH sides, and each side's name derives

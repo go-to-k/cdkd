@@ -982,7 +982,9 @@ describe('derived physical names (issue #2177 security review)', () => {
       () => new Error('resolved instead of rejecting'),
       (e: unknown) => e as Error
     );
-    expect(error.message).toContain(`Description '${SECRET_MASK}' is invalid.`);
+    // The name occurs only INSIDE the longer secret, so the AWS detail is
+    // withheld whole (over-masking) rather than printed around a mask.
+    expect(error.message).toBe(`Failed to create IAM role MyRole: ${SECRET_MASK}`);
     expect(error.message).not.toContain('owner hunter2x');
     expect(allLines()).not.toContain('owner hunter2x');
   });

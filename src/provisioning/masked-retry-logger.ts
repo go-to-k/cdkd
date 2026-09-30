@@ -211,12 +211,20 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  * already hides it whole. The needles are rendered on EVERY call, not once
  * here: the base can read a bag that grows after these sinks are built, and a
  * needle rendered against the older bag would no longer match once a newly
- * recorded secret rewrites its inside. The residual, accepted: a recorded
- * secret that STRADDLES a needle's edge in the text rewrites the needle
- * differently there than alone, so the needle's part outside that secret
- * prints. That part can be a fragment of secret plaintext, since a derived
- * name may be a folded copy of the secret; the needles-first order printed
- * the straddling secret's outside part instead.
+ * recorded secret rewrites its inside.
+ *
+ * A recorded secret that STRADDLES a needle's edge in the text rewrites that
+ * occurrence differently than the needle alone, so the rendered needle misses
+ * it and the needle's part outside the secret would print — a fragment of
+ * secret plaintext, since a derived name may be a folded copy of the secret.
+ * So the WHOLE line is withheld (`***`) when the base's output holds fewer
+ * occurrences of a rendered needle than the text holds of the name. The false
+ * positive is an occurrence the base hid INSIDE a longer secret: withholding
+ * that line is over-masking, the direction this module prefers. A needle
+ * under {@link BASE_MASKER_SUBSTRING_FLOOR} is not checked (the base leaves it
+ * as-is, so the check has nothing to compare); its straddle stays a residual,
+ * no worse than the needles-first order, which printed the straddling
+ * secret's outside part instead.
  */
 export function withDerivedNameMasks(
   logger: { debug(message: string): void; warn(message: string): void },
@@ -236,20 +244,29 @@ export function withDerivedNameMasks(
     .map(([, derived]) => derived);
   if (derivedNames.length === 0) return sinks;
   const mask: MaskerFn = (text: string) => {
-    // Each needle as it reads in the BASE's output NOW (see the ordering note
-    // above). The same marker the depth cap substitutes, which is fenced
-    // against `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
-    const needles = [
-      ...new Set(
-        derivedNames.map((derived) =>
-          derived.length < BASE_MASKER_SUBSTRING_FLOOR ? derived : base(derived)
-        )
-      ),
-    ]
+    // Each name as it reads in the BASE's output NOW (see the ordering note
+    // above): below the floor the name itself.
+    const rendered = derivedNames.map(
+      (derived) =>
+        [derived, derived.length < BASE_MASKER_SUBSTRING_FLOOR ? derived : base(derived)] as const
+    );
+    const masked = base(text);
+    // A straddled occurrence withholds the whole line (see the note above).
+    for (const [derived, needle] of rendered) {
+      if (derived.length < BASE_MASKER_SUBSTRING_FLOOR || needle === MASK_WALK_DEPTH_CAP_MARKER) {
+        continue;
+      }
+      if (occurrences(text, derived) > occurrences(masked, needle)) {
+        return MASK_WALK_DEPTH_CAP_MARKER;
+      }
+    }
+    // The same marker the depth cap substitutes, which is fenced against
+    // `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
+    const needles = [...new Set(rendered.map(([, needle]) => needle))]
       .filter((needle) => needle !== '' && needle !== MASK_WALK_DEPTH_CAP_MARKER)
       // Longest first, so a needle that contains another is replaced whole.
       .sort((a, b) => b.length - a.length);
-    let out = base(text);
+    let out = masked;
     for (const needle of needles) out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
     return out;
   };
@@ -259,6 +276,11 @@ export function withDerivedNameMasks(
     debug: (message: string) => logger.debug(mask(message)),
     warn: (message: string) => logger.warn(mask(message)),
   };
+}
+
+/** How many times `needle` occurs in `text`, non-overlapping. */
+function occurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
 }
 
 /**

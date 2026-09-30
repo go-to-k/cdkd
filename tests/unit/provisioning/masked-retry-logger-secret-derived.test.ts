@@ -87,9 +87,10 @@ describe('withDerivedNameMasks runs the base masker before its needles (issue #4
       ['hunter2', 'app-hunter2-db owner'],
       [['app-hunter2-db', 'app-hunter2-db']]
     );
-    expect(sinks.mask("Description 'app-hunter2-db owner' is invalid.")).toBe(
-      "Description '***' is invalid."
-    );
+    // The name occurs only INSIDE the longer secret, so the line is withheld.
+    const embedded = sinks.mask("Description 'app-hunter2-db owner' is invalid.");
+    expect(embedded).toBe('***');
+    expect(embedded).not.toContain('owner');
     // The bare name still masks whole, not as `app-***-db`.
     expect(sinks.mask("Name 'app-hunter2-db' is taken.")).toBe("Name '***' is taken.");
   });
@@ -107,6 +108,45 @@ describe('withDerivedNameMasks runs the base masker before its needles (issue #4
     );
     expect(sinks.mask('arn:aws:iam::123456789012:role/stack-alice-example-com')).toBe(
       'arn:aws:iam::123456789012:role/***'
+    );
+  });
+
+  it('withholds a line where a recorded secret STRADDLES either edge of the derived name', () => {
+    // The base rewrites the straddled occurrence differently than the name
+    // alone, so no rendered needle matches it; without the check the part of
+    // the name outside the straddling secret would print.
+    const sinks = needled(
+      ['alice@example.com', 'com-hunter22', 'hunter22-stack'],
+      [['alice@example.com', 'stack-alice-example-com']]
+    );
+    // Premise: the base alone prints part of the name at each edge.
+    const base = createSecretMasker(bagOf('alice@example.com', 'com-hunter22', 'hunter22-stack'));
+    expect(base('x stack-alice-example-com-hunter22 y')).toBe('x stack-alice-example-*** y');
+    expect(base('x hunter22-stack-alice-example-com y')).toBe('x ***-alice-example-com y');
+    expect(sinks.mask('x stack-alice-example-com-hunter22 y')).toBe('***');
+    expect(sinks.mask('x hunter22-stack-alice-example-com y')).toBe('***');
+    // An ADJACENT secret is not a straddle: the name still matches whole.
+    expect(sinks.mask('x stack-alice-example-com hunter22-stackx y')).toBe('x *** ***x y');
+  });
+
+  it('withholds a line where only ONE of two occurrences is straddled', () => {
+    // One occurrence still matches the rendered needle, so a presence check
+    // would pass; the check compares COUNTS.
+    const sinks = needled(
+      ['alice@example.com', 'com-hunter22'],
+      [['alice@example.com', 'stack-alice-example-com']]
+    );
+    expect(sinks.mask('a stack-alice-example-com b stack-alice-example-com-hunter22 c')).toBe(
+      '***'
+    );
+  });
+
+  it('does not withhold a line for a name below the floor contained in a longer secret', () => {
+    // The 3-character case above: the base hides the longer secret whole, and
+    // the line keeps its wording.
+    const sinks = needled(['pdb', 'pdb owner hunter2x'], [['pdb', 'pdb']]);
+    expect(sinks.mask("Description 'pdb owner hunter2x' and 'pdb'.")).toBe(
+      "Description '***' and '***'."
     );
   });
 
