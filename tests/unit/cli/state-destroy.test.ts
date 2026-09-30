@@ -265,6 +265,8 @@ describe('cdkd state destroy', () => {
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
     const callArgs = mockRunDestroyForStack.mock.calls[0];
     expect(callArgs?.[2].removeProtection).toBe(false);
+    // go-to-k/cdkd#4150: a top-level state destroy opts in to secret-principal resolution.
+    expect(callArgs?.[2].resolveSecretDerivedPrincipals).toEqual({});
   });
 
   /**

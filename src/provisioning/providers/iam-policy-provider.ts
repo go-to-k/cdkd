@@ -18,6 +18,12 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
 import { readPrincipalLists, recordedPrincipalsRepair } from '../iam-policy-targets.js';
+import {
+  isResolvableSecretPrincipalList,
+  resolveSecretDerivedPrincipals,
+} from '../secret-principal-resolution.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { injectiveKey } from '../../state/record-keys.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -64,6 +70,17 @@ export const POLICY_MALFORMED_TARGET_SKIP_REASON =
   'malformed Roles/Groups/Users in state — no delete issued';
 
 /**
+ * The short `ResourceDeleteResult.reason` for a destroy that resolved a
+ * secret-derived principal list and found a principal the CURRENT value names
+ * without this inline policy (go-to-k/cdkd#4150). The value may have rotated,
+ * so the grant may still sit on a principal only the OLD value named: the
+ * record is kept rather than read as deleted, which would drop the last trace
+ * of it.
+ */
+export const POLICY_SECRET_PRINCIPAL_LACKS_GRANT_SKIP_REASON =
+  "the secret's current value names a principal that lacks this grant; the value may have rotated";
+
+/**
  * The deploy-side caveat the skip warning in this file carries (issue
  * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
  *
@@ -97,6 +114,8 @@ interface MalformedPolicyTargets {
   malformed: PolicyTargetKind[];
   /** The malformed kinds holding a dynamic reference or its mask (go-to-k/cdkd#3907). */
   secretDerived: PolicyTargetKind[];
+  /** The well-formed kinds, as `PolicyTargetLists` would hold them. */
+  wellFormed: PolicyTargetLists;
 }
 
 /**
@@ -118,8 +137,11 @@ function readPolicyTargetLists(
     Groups: bag?.['Groups'],
     Users: bag?.['Users'],
   });
-  if ('malformed' in read) return { malformed: read.malformed, secretDerived: read.secretDerived };
-  return { roles: read.lists.Roles, groups: read.lists.Groups, users: read.lists.Users };
+  const lists = { roles: read.lists.Roles, groups: read.lists.Groups, users: read.lists.Users };
+  if ('malformed' in read) {
+    return { malformed: read.malformed, secretDerived: read.secretDerived, wellFormed: lists };
+  }
+  return lists;
 }
 
 /** The note a secret-derived kind carries: it is never repaired in state.json. */
@@ -678,9 +700,16 @@ export class IAMPolicyProvider implements ResourceProvider {
     const targets = readPolicyTargetLists(properties);
     const malformedKinds = 'malformed' in targets ? targets.malformed : [];
     const secretDerivedKinds = 'malformed' in targets ? targets.secretDerived : [];
-    const { roles, groups, users } =
+    let { roles, groups, users } =
       'malformed' in targets ? { roles: undefined, groups: undefined, users: undefined } : targets;
-    const legacyRoleFromPhysicalId =
+    // Masks every principal name a log line or error below prints. Identity
+    // unless the names were resolved from a secret (go-to-k/cdkd#4150).
+    let mask: (text: string) => string = (text) => text;
+    let maskError: <T>(error: T) => T = (error) => error;
+    // Whether a secret supplied this principal name (not a plain sibling).
+    let fromSecret: (kind: string, name: string) => boolean = () => false;
+    let resolvedFromSecret = false;
+    let legacyRoleFromPhysicalId =
       !roles && !groups && !users && physicalId.includes(':')
         ? physicalId.split(':')[1]
         : undefined;
@@ -703,7 +732,58 @@ export class IAMPolicyProvider implements ResourceProvider {
       return { outcome: 'skipped', reason: POLICY_NAME_SKIP_REASON };
     }
 
-    if (malformedKinds.length > 0) {
+    // go-to-k/cdkd#4150: a list that is malformed ONLY because it holds secret
+    // references is resolved, on a caller that opts in (a destroy; see
+    // `DeleteContext.resolveSecretDerivedPrincipals` for why a deploy must
+    // not), to the names the CURRENT secret value holds. Anything the helper
+    // cannot resolve keeps the skip below.
+    // A mask never resolves, so a list holding one is not attempted (and its
+    // skip does not say "fix that and re-run").
+    const optIn = context?.resolveSecretDerivedPrincipals;
+    const recordedLists: Record<string, unknown> = {
+      Roles: properties?.['Roles'],
+      Groups: properties?.['Groups'],
+      Users: properties?.['Users'],
+    };
+    const resolutionAttempted =
+      malformedKinds.length > 0 &&
+      optIn !== undefined &&
+      malformedKinds.every((k) => isResolvableSecretPrincipalList(recordedLists[k]));
+    if (resolutionAttempted && 'malformed' in targets) {
+      const values = Object.fromEntries(malformedKinds.map((k) => [k, recordedLists[k]]));
+      // A retry of this delete reuses the first attempt's resolution (and does
+      // not repeat its warning).
+      const memo = optIn.retryMemo;
+      const reused = memo?.resolved;
+      const resolved =
+        reused ??
+        (await resolveSecretDerivedPrincipals(
+          values,
+          context?.expectedRegion,
+          optIn.importedProducerRegions
+        ));
+      if (resolved && memo) memo.resolved = resolved;
+      if (resolved) {
+        roles = (resolved.lists['Roles'] as string[] | undefined) ?? targets.wellFormed.roles;
+        groups = (resolved.lists['Groups'] as string[] | undefined) ?? targets.wellFormed.groups;
+        users = (resolved.lists['Users'] as string[] | undefined) ?? targets.wellFormed.users;
+        mask = resolved.mask;
+        maskError = resolved.maskError;
+        fromSecret = (kind, name) => resolved.resolvedNames[kind]?.has(name) === true;
+        resolvedFromSecret = true;
+        // The lists name the principals now; the legacy segment is only for
+        // a record with none.
+        legacyRoleFromPhysicalId = undefined;
+        const kinds = malformedKinds.join(' / ');
+        if (reused === undefined) {
+          this.logger.warn(
+            safeMsg`IAM policy ${logicalId}: the recorded ${kinds} holds a secret reference, resolved to the principals the secret names NOW. If its value changed since the policy was attached, a principal only the OLD value named keeps the inline policy (delete it from that principal by hand), and a principal only the CURRENT value names loses a same-named inline policy it held from elsewhere.`
+          );
+        }
+      }
+    }
+
+    if (malformedKinds.length > 0 && !resolvedFromSecret) {
       // go-to-k/cdkd#3907: a secret-derived kind stays `{{resolve:...}}` (or
       // `***`) in state by design, so "repair state.json" would have the user
       // write the secret-derived name into it; it is named apart, with the way
@@ -717,7 +797,12 @@ export class IAMPolicyProvider implements ResourceProvider {
             `names and re-run, or delete the inline policy by hand.`
           : `The recorded ${secretDerivedKinds.join(' / ')} is secret-derived (cdkd keeps the ` +
             `dynamic reference or its mask in state), so do not write the name into ` +
-            `state.json: cdkd will keep skipping this record` +
+            `state.json` +
+            (resolutionAttempted
+              ? `; cdkd could not resolve the reference (its region, access to it, or its ` +
+                `value), so fix that and re-run, or`
+              : `:`) +
+            ` cdkd will keep skipping this record` +
             (plainKinds.length > 0
               ? `, whatever is repaired in the recorded ${plainKinds.join(' / ')}`
               : '') +
@@ -774,7 +859,21 @@ export class IAMPolicyProvider implements ResourceProvider {
     // the client region is still meaningful when the destroy run is
     // pointing at a different account/region than where the stack was
     // deployed.
-    const onNotFound = async (target: string): Promise<void> => {
+    // go-to-k/cdkd#4150: a principal the secret's CURRENT value names that
+    // lacks the policy means the value may have rotated since the attachment,
+    // so the grant may still sit on a principal only the OLD value named.
+    // Reporting DELETED would drop the record, the last trace of that grant.
+    // An earlier attempt of THIS delete (the runner's retry) that detached it
+    // is not that: `detached` remembers those.
+    let secretPrincipalLacksGrant = false;
+    const detached = context?.resolveSecretDerivedPrincipals?.retryMemo?.detached;
+    const onDetached = (kind: string, name: string): void => {
+      if (fromSecret(kind, name)) detached?.add(injectiveKey(kind, name));
+    };
+    const onNotFound = async (
+      target: string,
+      principal?: { kind: string; name: string }
+    ): Promise<void> => {
       const clientRegion = await this.iamClient.config.region();
       assertRegionMatch(
         clientRegion,
@@ -783,6 +882,13 @@ export class IAMPolicyProvider implements ResourceProvider {
         logicalId,
         `${physicalId} (${target})`
       );
+      if (
+        principal !== undefined &&
+        fromSecret(principal.kind, principal.name) &&
+        detached?.has(injectiveKey(principal.kind, principal.name)) !== true
+      ) {
+        secretPrincipalLacksGrant = true;
+      }
     };
 
     try {
@@ -798,10 +904,10 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyName: policyName,
             })
           );
-          this.logger.debug(`Deleted inline policy ${policyName} from role ${firstRole}`);
+          this.logger.debug(`Deleted inline policy ${policyName} from role ${mask(firstRole)}`);
         } catch (error) {
           if (error instanceof NoSuchEntityException) {
-            await onNotFound(`role ${firstRole}`);
+            await onNotFound(`role ${mask(firstRole)}`);
           } else {
             throw error;
           }
@@ -818,10 +924,11 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: policyName,
               })
             );
-            this.logger.debug(`Deleted inline policy ${policyName} from role ${roleName}`);
+            onDetached('Roles', roleName);
+            this.logger.debug(`Deleted inline policy ${policyName} from role ${mask(roleName)}`);
           } catch (error) {
             if (error instanceof NoSuchEntityException) {
-              await onNotFound(`role ${roleName}`);
+              await onNotFound(`role ${mask(roleName)}`, { kind: 'Roles', name: roleName });
             } else {
               throw error;
             }
@@ -839,10 +946,11 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: policyName,
               })
             );
-            this.logger.debug(`Deleted inline policy ${policyName} from group ${groupName}`);
+            onDetached('Groups', groupName);
+            this.logger.debug(`Deleted inline policy ${policyName} from group ${mask(groupName)}`);
           } catch (error) {
             if (error instanceof NoSuchEntityException) {
-              await onNotFound(`group ${groupName}`);
+              await onNotFound(`group ${mask(groupName)}`, { kind: 'Groups', name: groupName });
             } else {
               throw error;
             }
@@ -860,10 +968,11 @@ export class IAMPolicyProvider implements ResourceProvider {
                 PolicyName: policyName,
               })
             );
-            this.logger.debug(`Deleted inline policy ${policyName} from user ${userName}`);
+            onDetached('Users', userName);
+            this.logger.debug(`Deleted inline policy ${policyName} from user ${mask(userName)}`);
           } catch (error) {
             if (error instanceof NoSuchEntityException) {
-              await onNotFound(`user ${userName}`);
+              await onNotFound(`user ${mask(userName)}`, { kind: 'Users', name: userName });
             } else {
               throw error;
             }
@@ -871,15 +980,27 @@ export class IAMPolicyProvider implements ResourceProvider {
         }
       }
 
+      if (secretPrincipalLacksGrant) {
+        this.logger.warn(
+          safeMsg`IAM policy ${logicalId}: a principal the secret's CURRENT value names does not hold this inline policy. The value may have rotated since the policy was attached, so a principal only the OLD value named may still hold it; or an earlier cdkd run already removed it there, or that principal was deleted first. The record is KEPT rather than read as deleted: delete the inline policy from any old principal by hand (the principals the current value names are done), then drop this record with 'cdkd orphan <constructPath>', or, with no CDK app, 'cdkd state orphan <stack> --stack-region <region>' once it is the stack's last record.`
+        );
+        return { outcome: 'skipped', reason: POLICY_SECRET_PRINCIPAL_LACKS_GRANT_SKIP_REASON };
+      }
       this.logger.debug(`Successfully deleted IAM policy ${logicalId}`);
     } catch (error) {
+      // go-to-k/cdkd#4150: the whole chain is masked, cause included — an SDK
+      // error body can quote a principal name resolved from a secret. The
+      // clone keeps each link's prototype, `$metadata` and markers, so the
+      // retry classifiers read it as before.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete IAM policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw maskError(
+        new ProvisioningError(
+          `Failed to delete IAM policy ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        )
       );
     }
   }

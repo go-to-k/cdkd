@@ -144,7 +144,7 @@ iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final 
 iam-propagation-stress	2026-09-29T09:52:03Z	PASS	116	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean; swept the runtime-created WorkerFn log group
 iam-role-policies-drift-clean	2026-09-29T23:41:49Z	PASS	111	verify.sh	PR #4155 (#4152) @543dc0d4: rc ok, Phase 2b rename left only the new-named policy on the retained role, post-rename drift clean, 7 deleted 0 errors, orph clean
 iam-role-prefixed-name-update	2026-09-29T12:17:37Z	PASS	105	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
-iam-secret-derived-principals	2026-09-30T06:12:50Z	PASS	185	verify.sh	PR #4189 (#4186 orphan GetAtt takes the recorded attribute over a live answer) @09cebd2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+iam-secret-derived-principals	2026-09-30T07:07:45Z	PASS	201	verify.sh	rc ok, orph clean; #4150 destroy deleted both secret-derived records itself
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)

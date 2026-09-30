@@ -5,7 +5,7 @@ import {
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
-import { displaySafe, displayStackName } from '../../utils/display-safe.js';
+import { displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
@@ -59,6 +59,10 @@ import {
   type DeploymentEventRecorder,
 } from '../../types/deployment-events.js';
 import { withResourceDeadline } from '../../deployment/resource-deadline.js';
+import {
+  destroyProducerRegions,
+  holdsSecretDerivedPrincipalRecord,
+} from '../../provisioning/secret-principal-resolution.js';
 import {
   isMarkedNonRetryable,
   isRetryableTransientError,
@@ -167,6 +171,14 @@ export interface DestroyRunnerContext {
    * cannot honor it. Mirrors `DeployEngineOptions.skipFinalSnapshot`.
    */
   skipFinalSnapshot?: boolean;
+
+  /**
+   * `cdkd destroy` / `cdkd state destroy` (and a cascading nested destroy)
+   * only; never set by a deploy's nested-stack removal (go-to-k/cdkd#4150,
+   * `DeleteContext.resolveSecretDerivedPrincipals`). A nested child carries
+   * the parent's producer regions, which its own state does not record.
+   */
+  resolveSecretDerivedPrincipals?: { inheritedProducerRegions?: readonly string[] };
 
   /**
    * Per-resource warn threshold (ms). Mirrors `DeployEngineOptions` so
@@ -1512,8 +1524,8 @@ export async function runDestroyForStack(
 
   // Build the partial-destroy snapshot persisted by both the incremental
   // writes and the final preserve-write (issue #804). `outputs` / `imports`
-  // / `outputReads` are CLEARED in every persisted destroy snapshot, NOT
-  // carried over from the loaded `state`:
+  // / `outputReads` are CLEARED in a persisted destroy snapshot (one
+  // exception, below), NOT carried over from the loaded `state`:
   //
   //   - `outputs` is keyed by output NAME, not logical id, so it cannot be
   //     pruned precisely as the backing resources are deleted. A partially
@@ -1525,7 +1537,9 @@ export async function runDestroyForStack(
   //     `outputReads` (its `Fn::GetStackOutput` records) are likewise
   //     meaningless once the stack is being torn down; clearing them keeps
   //     another producer's `scanActiveConsumers` from treating a
-  //     mid-teardown stack as a live importer.
+  //     mid-teardown stack as a live importer. go-to-k/cdkd#4150 is the
+  //     one exception: they are KEPT while a remaining record still needs
+  //     them (`keepEvidence` below).
   //
   // This does NOT disturb the destroy's OWN strong-reference check: that
   // reads the in-memory `state.outputs` (lines ~323 / ~412) BEFORE this
@@ -1536,13 +1550,49 @@ export async function runDestroyForStack(
   // view that self-heals on the next deploy / fallback scan — see
   // export-index-store.ts), but the canonical state.json no longer carries
   // the phantom outputs.
+  // go-to-k/cdkd#4150: read ONCE, from the record as loaded, before a
+  // snapshot below can strip the evidence.
+  // A nested child destroyed ON ITS OWN (`cdkd state destroy
+  // '<parent>~<child>'`) has no parent to hand down the regions its parent
+  // reads from, so its evidence is incomplete: it resolves nothing (skips).
+  const secretPrincipalRegions =
+    ctx.resolveSecretDerivedPrincipals !== undefined &&
+    (state.parentStack === undefined ||
+      ctx.resolveSecretDerivedPrincipals.inheritedProducerRegions !== undefined)
+      ? destroyProducerRegions(state, ctx.resolveSecretDerivedPrincipals.inheritedProducerRegions)
+      : undefined;
+  if (
+    ctx.resolveSecretDerivedPrincipals !== undefined &&
+    secretPrincipalRegions === undefined &&
+    Object.values(state.resources ?? {}).some((r) => holdsSecretDerivedPrincipalRecord(r))
+  ) {
+    logger.warn(
+      safeMsg`${stackName}: this nested child's secret-derived principal records resolve when destroyed through its parent stack; destroyed on its own they are skipped.`
+    );
+  }
   const buildDestroySnapshot = (): StackState => {
     // Strip `imports` / `outputReads` entirely (rather than writing `[]`) to
     // keep the persisted shape identical to a freshly-deployed stack that
     // has none — the deploy engine omits both keys when empty.
     const { imports: _imports, outputReads: _outputReads, ...rest } = state;
+    // go-to-k/cdkd#4150: EXCEPT while a remaining record's secret-derived
+    // principal list still needs that producer-region evidence, or a re-run
+    // would classify its reference `local` where this run read `ambiguous`.
+    // A remaining nested stack counts too on a resolving destroy: its child
+    // inherits THESE regions, which its own state does not record. (A
+    // consumer scan then still sees this stack as an importer: the safe side.)
+    const keepEvidence = Object.values(remainingResources).some(
+      (r) =>
+        holdsSecretDerivedPrincipalRecord(r) ||
+        (secretPrincipalRegions !== undefined &&
+          typeof r === 'object' &&
+          r !== null &&
+          r.resourceType === 'AWS::CloudFormation::Stack')
+    );
     return {
       ...rest,
+      ...(keepEvidence && _imports !== undefined && { imports: _imports }),
+      ...(keepEvidence && _outputReads !== undefined && { outputReads: _outputReads }),
       resources: { ...remainingResources },
       outputs: {},
       // The bag is REWRITTEN (empty), so its export set is known — and empty
@@ -1813,6 +1863,15 @@ export async function runDestroyForStack(
           // back-compat `void` return) means "deleted"; a `'skipped'` outcome
           // means no AWS call was issued and the resource may still be alive.
           let deleteResult: ResourceDeleteResult | undefined;
+          // go-to-k/cdkd#4150: ONE opt-in object per resource, so every retry
+          // below shares its `retryMemo`.
+          const secretPrincipalOptIn =
+            secretPrincipalRegions !== undefined
+              ? {
+                  importedProducerRegions: secretPrincipalRegions,
+                  retryMemo: { detached: new Set<string>() },
+                }
+              : undefined;
 
           // Wrap the entire retry loop in the per-resource deadline so a
           // genuinely-stuck delete (e.g. a hung Custom Resource handler or
@@ -1842,6 +1901,9 @@ export async function runDestroyForStack(
                       // already in `policy`).
                       deletionPolicy: policy ?? 'Delete',
                       ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                      ...(secretPrincipalOptIn !== undefined && {
+                        resolveSecretDerivedPrincipals: secretPrincipalOptIn,
+                      }),
                     }
                   );
                   // Assign INSIDE the loop, not after it: the loop can

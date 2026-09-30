@@ -2756,6 +2756,9 @@ async function stateDestroyCommand(
                 skipConfirmation: options.yes,
                 removeProtection: options.removeProtection === true,
                 skipFinalSnapshot: options.skipFinalSnapshot === true,
+                // go-to-k/cdkd#4150: a top-level destroy may resolve a
+                // secret-derived principal list; a deploy never does.
+                resolveSecretDerivedPrincipals: {},
                 exportIndexStore: setup.exportIndexStore,
                 ...(options.allowUnsupportedTypes?.length && {
                   allowUnsupportedTypes: options.allowUnsupportedTypes,
