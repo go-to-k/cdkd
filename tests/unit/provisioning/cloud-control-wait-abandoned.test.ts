@@ -95,6 +95,7 @@ import {
 import { isWaitAbandonedError } from '../../../src/provisioning/wait-abandoned.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { displaySafe } from '../../../src/utils/display-safe.js';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
 /** The grace `waitForOperation` allows one unbroken run of failures. */
 const GRACE_MS = 2 * 60 * 1000;
@@ -708,6 +709,22 @@ describe('CloudControlProvider.waitForOperation transport fence (#3236)', () => 
     function neverClears(message = 'connect ECONNREFUSED 100.72.0.178:443', code = 'ECONNREFUSED') {
       return transportError(message, code);
     }
+
+    it("the resume command carries the run's explicit --profile (go-to-k/cdkd#3959)", async () => {
+      setPasteableAwsProfile('prod');
+      try {
+        wireCreate('tok-abandon-me', [neverClears()]);
+        const error = (await provider.create('R', 'AWS::RDS::DBInstance', {}).then(
+          () => undefined,
+          (e: unknown) => e
+        )) as CloudControlWaitAbandonedError;
+        expect(error.message).toContain(
+          'aws --profile prod cloudcontrol get-resource-request-status --request-token tok-abandon-me --region ap-northeast-1'
+        );
+      } finally {
+        setPasteableAwsProfile(undefined);
+      }
+    });
 
     it('throws CloudControlWaitAbandonedError carrying the token and a resume command', async () => {
       wireCreate('tok-abandon-me', [neverClears()]);

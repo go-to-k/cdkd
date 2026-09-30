@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import { shellQuote } from '../../../src/utils/pasteable-command.js';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const sink = { setLevel: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -246,7 +247,14 @@ beforeEach(() => {
 });
 
 describe('Phase 1A: the Cause line renders the waiter rethrow through displayAwsMessage', () => {
-  it('folds and bounds it', async () => {
+  afterEach(() => setPasteableAwsProfile(undefined));
+
+  it.each([
+    [undefined, 'aws cloudformation'],
+    // go-to-k/cdkd#3959: the check carries the run's explicit --profile.
+    ['prod', 'aws --profile prod cloudformation'],
+  ])('folds and bounds it (profile %s)', async (profile, awsHead) => {
+    setPasteableAwsProfile(profile);
     // The waiter rejects and DescribeChangeSet fails too, so the ORIGINAL
     // waiter error is rethrown bare into the Cause line.
     waitChangeSetCreate.mockRejectedValue(new Error(PLANTED));
@@ -282,7 +290,7 @@ describe('Phase 1A: the Cause line renders the waiter rethrow through displayAws
     expect(err.message).toContain(
       "No stack was imported. A failed IMPORT can leave CloudFormation stack 'Root' behind, and a " +
         're-run is refused while it exists. Check that it holds no resources:\n' +
-        '  aws cloudformation list-stack-resources --stack-name Root\n' +
+        `  ${awsHead} list-stack-resources --stack-name Root\n` +
         'then delete it, and re-run with: cdkd export Root'
     );
     expect(err.message).not.toContain('already-imported children will be adopted');

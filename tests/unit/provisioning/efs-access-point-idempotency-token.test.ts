@@ -40,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { withRetry } from '../../../src/deployment/retry.js';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 import {
   isMarkedNonRetryable,
   isNameCollisionError,
@@ -756,6 +757,24 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
           const message = await declineMessage({ FileSystemId: 'fs-0123456789abcdef0' });
 
           expect(message).toMatch(/access point fsap-001 has a different RootDirectory/);
+        }
+      );
+
+      it.each([
+        [undefined, 'find it with: aws efs describe-access-points --query'],
+        ['prod', 'find it with: aws --profile prod efs describe-access-points --query'],
+      ])(
+        "the find-it command carries the run's explicit profile (%s, go-to-k/cdkd#3959)",
+        async (profile, expected) => {
+          setPasteableAwsProfile(profile);
+          try {
+            aws.loseNextResponse = true;
+            aws.describeRootDirectoryOverride = { Path: '/other' };
+            const message = await declineMessage();
+            expect(message).toContain(expected);
+          } finally {
+            setPasteableAwsProfile(undefined);
+          }
         }
       );
 

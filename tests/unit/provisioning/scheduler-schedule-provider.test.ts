@@ -61,6 +61,7 @@ import {
 /** Every family, the opt-in clause break included (go-to-k/cdkd#3950). */
 const PAYLOADS = [...PASTE_PAYLOADS, CLAUSE_BREAK_PAYLOAD];
 import { hasClauseBreak, shellQuote } from '../../../src/utils/pasteable-command.js';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
 const TYPE = 'AWS::Scheduler::Schedule';
 const GROUP = 'my-custom-group';
@@ -307,6 +308,20 @@ describe('SchedulerScheduleProvider', () => {
       expect(warned).toContain(
         "delete it manually: aws scheduler delete-schedule --name my-sched --group-name '<group>'"
       );
+    });
+
+    it("carries the run's explicit --profile in the manual delete hint (go-to-k/cdkd#3959)", async () => {
+      setPasteableAwsProfile('prod');
+      try {
+        mockSend.mockResolvedValueOnce({});
+        await provider.delete('Sched', 'my-sched', TYPE, undefined);
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain(
+          "delete it manually: aws --profile prod scheduler delete-schedule --name my-sched --group-name '<group>'"
+        );
+      } finally {
+        setPasteableAwsProfile(undefined);
+      }
     });
 
     /**

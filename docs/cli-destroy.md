@@ -483,8 +483,12 @@ aws logs put-log-group-deletion-protection --log-group-identifier <name> --delet
 aws cognito-idp update-user-pool --user-pool-id <id> --deletion-protection ACTIVE
 ```
 
-DocDB and Neptune take the same `modify-db-cluster` / `modify-db-instance`
-form under `aws docdb` / `aws neptune`. `update-user-pool` resets the pool
+A command cdkd prints carries the run's `--profile` when you passed one
+(`aws --profile prod rds modify-db-cluster ...`), or a `'<role-profile>'`
+placeholder to fill in when the run also assumed a role with `--role-arn`; add yours to the commands above
+when you type them by hand, or they run against your default profile. DocDB and
+Neptune take the same `modify-db-cluster` / `modify-db-instance` form under
+`aws docdb` / `aws neptune`. `update-user-pool` resets the pool
 settings it omits (self sign-up, Lambda triggers and advanced security among
 them), so send the pool's complete configuration alongside
 `--deletion-protection` rather than the flag alone.

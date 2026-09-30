@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
+import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
 
@@ -273,6 +274,49 @@ describe('DynamoDBGlobalTableProvider partial-create cleanup (Issue #376-class)'
     // the `aws dynamodb delete-table` recovery hint.
     expect(warns).toContain('aws dynamodb delete-table');
   });
+
+  it.each([
+    [undefined, 'aws dynamodb'],
+    ['prod', 'aws --profile prod dynamodb'],
+  ])(
+    'the cleanup warnings print pasteable commands (profile %s, go-to-k/cdkd#3959)',
+    async (profile, head) => {
+      setPasteableAwsProfile(profile);
+      try {
+        mockSend.mockResolvedValueOnce({}); // CreateTable
+        mockSend.mockResolvedValueOnce({
+          Table: { TableName: 'my-test-table-xxx', TableStatus: 'ACTIVE', TableArn: 'a' },
+        });
+        mockSend.mockResolvedValueOnce({}); // UpdateTable Create eu-west-1
+        mockSend.mockResolvedValueOnce({
+          Table: { Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }] },
+        });
+        mockSend.mockRejectedValueOnce(new Error('replica boom'));
+        mockSend.mockResolvedValueOnce({ Table: { Replicas: [{ RegionName: 'eu-west-1' }] } });
+        mockSend.mockRejectedValueOnce(new Error('cleanup delete-replica boom'));
+        mockSend.mockRejectedValueOnce(new Error('cleanup delete-table boom'));
+
+        await expect(
+          provider.create('MyTable', RESOURCE_TYPE, {
+            ...baseProps,
+            StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+            Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }, { Region: 'ap-south-1' }],
+          })
+        ).rejects.toThrow(/replica boom/);
+
+        const warns = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warns).toContain(
+          `Run: ${head} update-table --table-name my-test-table-xxx ` +
+            `--replica-updates 'Delete={RegionName=eu-west-1}' --region us-east-1`
+        );
+        expect(warns).toContain(
+          `To remove the orphaned AWS-side table, run: ${head} delete-table --table-name my-test-table-xxx`
+        );
+      } finally {
+        setPasteableAwsProfile(undefined);
+      }
+    }
+  );
 
   it('uses CreateTableCommand as the first call (sanity)', async () => {
     // Defensive guard against future refactors accidentally swapping the
