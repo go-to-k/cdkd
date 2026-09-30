@@ -8,7 +8,6 @@ import {
 } from '../../../src/deployment/secret-redaction.js';
 import {
   isMarkedNonRetryable,
-  isNameCollisionErrorFrom,
   isThrottlingError,
   markNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
@@ -16,6 +15,7 @@ import {
   isAuxiliaryFailure,
   markAuxiliaryFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 // go-to-k/cdkd#4190: `maskSecretsInError` masked each link's `message` and
 // `stack` and copied every other own field verbatim, so an AWS SDK exception's
@@ -286,22 +286,28 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
     expect(masked.Message).toBe('*** on a request');
   });
 
-  it('keeps the `logicalId` anchor verbatim, so collision and auxiliary verdicts survive a needle in the id', () => {
-    const needle = new Map([['Bucket', EXPRESSION]]);
-    // The Cloud Control arm: an exact `ccErrorCode` behind the `logicalId` anchor.
-    const collision = Object.assign(new Error('Bucket my-bucket-x failed'), {
-      logicalId: 'MyBucket',
-      ccErrorCode: 'AlreadyExists',
-    });
-    const maskedCollision = maskSecretsInError(collision, needle);
-    expect(maskedCollision).not.toBe(collision);
-    expect(maskedCollision.logicalId).toBe('MyBucket');
-    expect(isNameCollisionErrorFrom(collision, 'MyBucket')).toBe(true);
-    expect(isNameCollisionErrorFrom(maskedCollision, 'MyBucket')).toBe(true);
+  it('MASKS a `logicalId` holding a recorded value: providers put a physical id there (#4222)', () => {
+    // The shape of e.g. `asg-provider.ts`'s getAttribute refusal: the
+    // physical id is passed in the logical-id slot.
+    const physical = `asg-${SECRET}`;
+    const original = new ProvisioningError(
+      `AutoScalingGroup ${physical} not found`,
+      'AWS::AutoScaling::AutoScalingGroup',
+      physical,
+      physical
+    );
+    const masked = maskSecretsInError(original, bag());
+    expect(masked.message).not.toContain(SECRET);
+    expect(masked.physicalId).toBe(`asg-${SECRET_MASK}`);
+    expect(masked.logicalId).toBe(`asg-${SECRET_MASK}`);
+    expect(inspect(masked, { depth: 10 })).not.toContain(SECRET);
+    expect(original.logicalId).toBe(physical);
+  });
 
+  it('keeps an auxiliary-failure `logicalId` mark verbatim, so isAuxiliaryFailure survives a needle in it', () => {
     const auxiliary = markAuxiliaryFailure(new Error('Bucket policy failed'), 'MyBucket');
     // `auxiliary` reaches the suffix `isAuxiliaryFailure` reads, so a masked
-    // id would stop classifying.
+    // mark would stop classifying.
     const maskedAuxiliary = maskSecretsInError(
       auxiliary,
       new Map([

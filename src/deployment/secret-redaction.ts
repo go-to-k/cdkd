@@ -8117,14 +8117,14 @@ function maskDescriptorValue(
 
 /**
  * The own fields of an error link that `retryable-errors.ts`'s classifiers
- * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`, and the
- * `logicalId` anchor `auxiliary-failure.ts` also reads — a template key, not
- * echoed text), plus the SDK's other code fields. {@link maskSecretsInError}
- * copies such a field verbatim when its value is a STRING; any other value is
- * masked like every field.
+ * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`), plus the
+ * SDK's other code fields. {@link maskSecretsInError} copies such a field
+ * verbatim when its value is a STRING; any other value is masked like every
+ * field. `logicalId` is NOT one: providers pass a PHYSICAL id, which a secret
+ * can name, in `ProvisioningError`'s logical-id slot (go-to-k/cdkd#4222). See
+ * {@link isAuxiliaryAnchor} for the one `logicalId` shape kept.
  */
 const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
-  'logicalId',
   'name',
   'code',
   'Code',
@@ -8132,6 +8132,16 @@ const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
   'ccErrorCode',
   'ccOperation',
 ]);
+
+/**
+ * `markAuxiliaryFailure`'s mark (`<owner logical id>/auxiliary`, read by
+ * `isAuxiliaryFailure`'s suffix test): the one `logicalId` copied verbatim.
+ * Its owner is the template logical id, never a physical id; any other
+ * `logicalId` is masked like every field.
+ */
+function isAuxiliaryAnchor(key: PropertyKey, value: unknown): boolean {
+  return key === 'logicalId' && typeof value === 'string' && value.endsWith('/auxiliary');
+}
 
 function isPlainContainer(value: object): boolean {
   const proto: unknown = Object.getPrototypeOf(value);
@@ -8333,7 +8343,9 @@ function maskErrorFieldValue(value: unknown, maskText: (text: string) => string)
  * are the exception, copied verbatim: a retry / collision classifier matches
  * them EXACTLY, so a recorded value occurring inside one (`Throttling` in
  * `ThrottlingException`) would flip its verdict, and each holds an AWS- or
- * cdkd-authored code rather than echoed text.
+ * cdkd-authored code rather than echoed text. So is an auxiliary-failure
+ * `logicalId` mark ({@link isAuxiliaryAnchor}); every other `logicalId` is
+ * masked, since a provider can put a physical id there.
  *
  * **Why `stack` is re-defined as DATA rather than copied.** V8 installs `stack`
  * as an own ACCESSOR whose getter reads a slot the engine attaches to an error
@@ -8398,9 +8410,10 @@ export function maskSecretsInError<T>(
       const descriptor = Object.getOwnPropertyDescriptor(link, key);
       if (!descriptor) continue;
       descriptors[key] =
-        typeof key === 'string' &&
-        CLASSIFIER_IDENTIFIER_FIELDS.has(key) &&
-        typeof descriptor.value === 'string'
+        (typeof key === 'string' &&
+          CLASSIFIER_IDENTIFIER_FIELDS.has(key) &&
+          typeof descriptor.value === 'string') ||
+        isAuxiliaryAnchor(key, descriptor.value)
           ? descriptor
           : maskDescriptorValue(descriptor, maskText);
       if (descriptors[key] !== descriptor) changed = true;
