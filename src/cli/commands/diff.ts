@@ -356,9 +356,9 @@ async function diffCommand(
     // The READ-ONLY stale-attribute heal (issue go-to-k/cdkd#3456): the SAME
     // provider `import()` read `cdkd deploy` takes when a `Fn::GetAtt` over a
     // stale attribute map is about to fall back to the physical id, so the
-    // preview resolves the reference to the value the deploy will. Served for
-    // this run only; nothing is written to state. In the stack's region, like
-    // the adoption check.
+    // preview resolves the reference to the value that read returns. Served
+    // for this run only; nothing is written to state. In the stack's region,
+    // like the adoption check.
     const attributeHealerFor = createReadOnlyAttributeHealerFactory({
       getProvider: (resource, healRegion) =>
         stackRegionScope(healRegion).registry.getProviderFor({
