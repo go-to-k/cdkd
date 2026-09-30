@@ -507,6 +507,10 @@ describe('stale attribute heal — resolver (#1852)', () => {
         'if they already have it, the name is a writable property rather than an attribute — ' +
         'reference the value the template sets instead.';
       const DEPLOY_GRANT = 'Grant the deploy role cloudformation:DescribeType and deploy again';
+      // The whole preview sentence, contiguous, so no clause of it can drop out.
+      const PREVIEW_FULL =
+        `${PREVIEW_WITHHELD}: it could not confirm that this is a read-only attribute of the ` +
+        `type, and an unconfirmed value is never used. ${PREVIEW_GRANT}`;
 
       it('the *Arn refusal (unenrichedRemedy)', async () => {
         const outcome = { kind: 'read', attributes: {}, withheldKeys: ['Arn'] } as const;
@@ -518,8 +522,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
             )
           );
         const preview = (await refuse(true)).message;
-        expect(preview).toContain(PREVIEW_WITHHELD);
-        expect(preview).toContain(PREVIEW_GRANT);
+        expect(preview).toContain(PREVIEW_FULL);
         expect(preview).not.toContain('deploy role');
         expect((await refuse(false)).message).toContain(DEPLOY_GRANT);
       });
@@ -545,7 +548,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
           return String(warnSpy.mock.calls.at(-1)![0]);
         };
         const preview = await warned(true);
-        expect(preview).toContain(PREVIEW_GRANT);
+        expect(preview).toContain(PREVIEW_FULL);
         expect(preview).not.toContain('deploy role');
         expect(await warned(false)).toContain(DEPLOY_GRANT);
       });
@@ -570,7 +573,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
             )
           );
         const preview = (await refuse(true)).message;
-        expect(preview).toContain(PREVIEW_GRANT);
+        expect(preview).toContain(PREVIEW_FULL);
         expect(preview).not.toContain('deploy role');
         expect((await refuse(false)).message).toContain(DEPLOY_GRANT);
       });
