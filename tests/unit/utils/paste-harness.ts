@@ -333,9 +333,10 @@ export function spansThatRun(message: string, dir: string, options: PasteRunOpti
 export interface ResidualOptions {
   /**
    * Set ONLY for a classified S1 row of go-to-k/cdkd#3950 whose source fix has
-   * not landed: the row's block rule is then asserted by its own case, and
-   * this helper skips it. The text must name the row and carry the
-   * `go-to-k/cdkd#3950` reference; remove it as the row's fix lands.
+   * not landed: the row's block rule is asserted by its own case, and this
+   * helper asserts that the row still violates it (so the option cannot spread
+   * to another row or outlive the fix). The text must name the row and carry
+   * the `go-to-k/cdkd#3950` reference; remove it as the row's fix lands.
    */
   readonly unfixedS1Row?: string;
 }
@@ -352,7 +353,8 @@ export interface ResidualOptions {
  * double quotes do not stop `$( )` or a backtick, so a prose span that parses
  * can still run. His criterion is therefore per BLOCK — a block carrying an
  * untrusted value carries no pasteable command, and what it displays is
- * go-to-k/cdkd#3232's class. This helper pins the RUNTIME half of it: no span
+ * go-to-k/cdkd#3232's class. This helper pins both halves. The RUNTIME half,
+ * through {@link expectRuntimeResidual}: no span
  * that runs also runs a stubbed `cdkd` / `aws` (its marker, not a verb token
  * in the text: `Could not … cdkd force-unlock …` runs `Could`, with `cdkd` as
  * an argument, go-to-k/cdkd#3950), and every one that runs holds THE VALUE
@@ -363,8 +365,9 @@ export interface ResidualOptions {
  * today, its test asserts `spansThatRun(...)` empty instead — the stronger
  * contract — and this helper is for the site whose display genuinely runs.
  * The TEXT half, a command quoted beside the display on the same line, is
- * {@link expectNoCommandBesideDisplay}, which this helper runs first unless the
- * caller names an unfixed S1 row ({@link ResidualOptions.unfixedS1Row}).
+ * {@link expectNoCommandBesideDisplay}, which this helper runs first; for a
+ * caller naming an unfixed S1 row ({@link ResidualOptions.unfixedS1Row}) it
+ * asserts instead that the row still VIOLATES the rule.
  */
 export function expectOnlyDisplayResidual(
   message: string,
@@ -483,8 +486,10 @@ const PASTEABLE_COMMAND = new RegExp(
  * The BLOCK rule, stated over the message text (go-to-k/cdkd#3486 round 3; the
  * S1 rows of go-to-k/cdkd#3950): a block that DISPLAYS the untrusted `value`
  * carries no pasteable command ({@link PASTEABLE_COMMAND}), whether it is a
- * directive or quoted in prose. "Displays" means the value appears raw or
- * JSON-escaped, a JSON-quoted path around it included. Pass a HOSTILE value: a
+ * directive or quoted in prose. "Displays" means a line holds the value raw or
+ * JSON-escaped, a JSON-quoted path around it included, or, for a payload, a
+ * line holding its sentinel. A value split across lines by its own newline is
+ * therefore covered only when it carries the sentinel. Pass a HOSTILE value: a
  * plain one may be named beside its own command.
  *
  * A block is a LINE (the maintainer's go-to-k/cdkd#4127 round-3 ruling): a

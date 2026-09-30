@@ -292,6 +292,12 @@ describe('pasteable messages — nothing runs at any granularity', () => {
     // A cut display with no command: passes.
     const long = 'x$(touch OWNED)-long';
     expectNoCommandBesideDisplay('Stack x$(touch OWNED) [cut] not found', long);
+    // Each whole-value arm on its own, with a value that carries no sentinel,
+    // so the sentinel arm cannot match first (go-to-k/cdkd#4127 M15). The value
+    // holds a `"`, so its raw and JSON-escaped forms differ and each case
+    // reaches one arm only: shown raw, and shown JSON-escaped.
+    refusesFor('Nothing for x"$(id). Run cdkd deploy', 'x"$(id)');
+    refusesFor('Nothing for "x\\"$(id)". Run cdkd deploy', 'x"$(id)');
     // The sentinel counts only for a value that carries it: another line
     // mentioning it beside a command does not display `x$(id)`.
     expectNoCommandBesideDisplay('Nothing for "x$(id)" here.\nRun: cdkd deploy # touch OWNED', 'x$(id)');
