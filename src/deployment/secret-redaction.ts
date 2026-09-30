@@ -8119,8 +8119,9 @@ function maskDescriptorValue(
  * The own fields of an error link that `retryable-errors.ts`'s classifiers
  * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`, and the
  * `logicalId` anchor `auxiliary-failure.ts` also reads — a template key, not
- * echoed text), plus the SDK's other code fields. {@link maskSecretsInError} copies such a field verbatim
- * when its value is a STRING; any other value is masked like every field.
+ * echoed text), plus the SDK's other code fields. {@link maskSecretsInError}
+ * copies such a field verbatim when its value is a STRING; any other value is
+ * masked like every field.
  */
 const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
   'logicalId',
@@ -8139,27 +8140,6 @@ function isPlainContainer(value: object): boolean {
     : proto === Object.prototype || proto === null;
 }
 
-/**
- * An error's own field value with `maskText` applied to a string, and to every
- * string reachable through PLAIN objects and arrays (go-to-k/cdkd#4190) — the
- * returned value is a COPY when anything changed and `value` itself otherwise;
- * the original is never written.
- *
- * Bounds, each keeping the value AS IT IS (the masking floor):
- * - a class instance (`Date`, `Map`, an `Error`, the SDK's `$response`) is
- *   not entered, and an accessor is not invoked (a getter can throw or have
- *   effects); nor is a plain object's KEY masked;
- * - nothing deeper than {@link ERROR_CAUSE_MASK_MAX_DEPTH} levels is entered;
- * - a node whose read throws (only a Proxy's trap can: a revoked one, a
- *   hostile one) is kept by reference and not entered, its siblings masked;
- *   each node is read ONCE, so the copy invokes no trap a second time.
- *
- * Breadth-first with a visited set, so a node is entered at its SHALLOWEST
- * depth, a cycle terminates in linear work, and a node shared by two parents
- * WITHIN this value stays shared in the copy. A non-extensible node's copy is
- * made non-extensible too, and each property keeps its own attributes (an
- * array's `length` included).
- */
 /** One entered node, read ONCE so the copy pass invokes no trap a second time. */
 interface FieldNode {
   proto: object | null;
@@ -8191,6 +8171,27 @@ function readFieldNode(node: object): FieldNode | undefined {
   }
 }
 
+/**
+ * An error's own field value with `maskText` applied to a string, and to every
+ * string reachable through PLAIN objects and arrays (go-to-k/cdkd#4190) — the
+ * returned value is a COPY when anything changed and `value` itself otherwise;
+ * the original is never written.
+ *
+ * Bounds, each keeping the value AS IT IS (the masking floor):
+ * - a class instance (`Date`, `Map`, an `Error`, the SDK's `$response`) is
+ *   not entered, and an accessor is not invoked (a getter can throw or have
+ *   effects); nor is a plain object's KEY masked;
+ * - nothing deeper than {@link ERROR_CAUSE_MASK_MAX_DEPTH} levels is entered;
+ * - a node whose read throws (only a Proxy's trap can: a revoked one, a
+ *   hostile one) is kept by reference and not entered, its siblings masked;
+ *   each node is read ONCE, so the copy invokes no trap a second time.
+ *
+ * Breadth-first with a visited set, so a node is entered at its SHALLOWEST
+ * depth, a cycle terminates in linear work, and a node shared by two parents
+ * WITHIN this value stays shared in the copy. A non-extensible node's copy is
+ * made non-extensible too, and each property keeps its own attributes (an
+ * array's `length` included).
+ */
 function maskErrorFieldValue(value: unknown, maskText: (text: string) => string): unknown {
   if (typeof value === 'string') return maskText(value);
   if (typeof value !== 'object' || value === null) return value;

@@ -300,8 +300,19 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
     expect(isNameCollisionErrorFrom(maskedCollision, 'MyBucket')).toBe(true);
 
     const auxiliary = markAuxiliaryFailure(new Error('Bucket policy failed'), 'MyBucket');
-    const maskedAuxiliary = maskSecretsInError(auxiliary, needle);
+    // `auxiliary` reaches the suffix `isAuxiliaryFailure` reads, so a masked
+    // id would stop classifying.
+    const maskedAuxiliary = maskSecretsInError(
+      auxiliary,
+      new Map([
+        ['Bucket', EXPRESSION],
+        ['auxiliary', EXPRESSION],
+      ])
+    );
     expect(maskedAuxiliary).not.toBe(auxiliary);
+    expect((maskedAuxiliary as Error & { logicalId: string }).logicalId).toBe(
+      (auxiliary as Error & { logicalId: string }).logicalId
+    );
     expect(isAuxiliaryFailure(auxiliary)).toBe(true);
     expect(isAuxiliaryFailure(maskedAuxiliary)).toBe(true);
   });
@@ -314,6 +325,27 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
     expect(masked.Error.m).toBe(SECRET_MASK);
     expect(masked.Error.p).toBe(proxy);
     expect(original.Error.m).toBe(SECRET);
+  });
+
+  it('reads each node ONCE: a Proxy whose ownKeys throws on a second call is still masked', () => {
+    let calls = 0;
+    const once = new Proxy(
+      { Message: SECRET },
+      {
+        ownKeys(target) {
+          calls += 1;
+          if (calls > 1) throw new Error('second ownKeys');
+          return Reflect.ownKeys(target);
+        },
+      }
+    );
+    const original = Object.assign(new Error('x'), { Error: once });
+    const masked = maskSecretsInError(original, bag());
+    expect(calls).toBe(1);
+    // Compared by identity, never handed to `expect`: its formatter would
+    // list the proxy's keys (the trap's second call).
+    expect(masked.Error === once).toBe(false);
+    expect(masked.Error.Message).toBe(SECRET_MASK);
   });
 
   it('masks a SYMBOL key inside a nested plain object, holding a string or an object', () => {
