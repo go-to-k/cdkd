@@ -1562,4 +1562,54 @@ describe('recorded attributes are served before a live read (#4186)', () => {
       expect(result.unresolvable).toHaveLength(3);
     });
   }
+
+  it("does not serve an AppSync API key's ApiKey, the x-api-key value itself", async () => {
+    const KEY = 'da2-plaintextapikeyvalue123';
+    // The AppSync provider's `getAttribute` answers `undefined` for everything.
+    const result = await rewriteResourceReferences(
+      repoState({ ApiKey: KEY, Arn: 'arn:aws:appsync:us-east-1:1:apis/a/apikey/k' }, 'ApiKey', 'AWS::AppSync::ApiKey'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => undefined))
+    );
+    expect(JSON.stringify(result.rewrites)).not.toContain(KEY);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(KEY);
+    expect(result.unresolvable).toHaveLength(3);
+    // CONTROL: the same record's Arn is served.
+    const arn = await rewriteResourceReferences(
+      repoState({ ApiKey: KEY, Arn: 'arn:aws:appsync:us-east-1:1:apis/a/apikey/k' }, 'Arn', 'AWS::AppSync::ApiKey'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => undefined))
+    );
+    expect((arn.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+      'arn:aws:appsync:us-east-1:1:apis/a/apikey/k'
+    );
+  });
+
+  for (const [label, value] of [
+    ['a top-level Password leaf', { Host: 'h', Password: 'pw-plaintext-1' }],
+    ['a nested credential leaf', { Conn: [{ Credentials: 'pw-plaintext-1' }] }],
+  ] as const) {
+    it(`does not serve an innocently named object holding ${label}; reads live instead`, async () => {
+      const getAttribute = vi.fn(async () => 'live-value');
+      const result = await rewriteResourceReferences(
+        repoState({ Endpoint: value }, 'Endpoint', 'AWS::RDS::DBCluster'),
+        ['Repo'],
+        fakeRegistry(getAttribute)
+      );
+      expect(JSON.stringify(result.rewrites)).not.toContain('pw-plaintext-1');
+      expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
+        'live-value'
+      );
+    });
+  }
+
+  it('CONTROL: an object whose keys are identifiers only is served whole', async () => {
+    const value = { Address: 'db.example', Port: '5432', SecretArn: 'arn:s' };
+    const result = await rewriteResourceReferences(
+      repoState({ Endpoint: value }, 'Endpoint', 'AWS::RDS::DBCluster'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live-value'))
+    );
+    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toEqual(value);
+  });
 });

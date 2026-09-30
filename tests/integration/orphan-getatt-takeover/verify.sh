@@ -142,6 +142,12 @@ if ! gone_probe aws iam get-role --role-name "${ROLE_NAME}"; then
   echo "FAIL: role ${ROLE_NAME} already exists - clean up first." >&2
   exit 1
 fi
+# Before `DEPLOYED=1`, so a leftover or concurrent same-named parameter makes
+# the run exit without `cleanup` deleting it.
+if ! gone_probe aws ssm get-parameter --region "${REGION}" --name "${PARAMETER_NAME}"; then
+  echo "FAIL: parameter ${PARAMETER_NAME} already exists - clean up first." >&2
+  exit 1
+fi
 
 echo "==> Phase 1: deploy"
 DEPLOYED=1

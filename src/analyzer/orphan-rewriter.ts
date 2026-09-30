@@ -140,14 +140,38 @@ export interface OrphanRewriteOptions {
 }
 
 /**
+ * Attributes whose recorded VALUE is a secret although their NAME passes
+ * `isSensitiveAttributeName` — so the name rule cannot see them. Keyed by
+ * resource type, read by own key. `AWS::AppSync::ApiKey`'s `ApiKey` is the
+ * `x-api-key` value itself, recorded in plaintext at create.
+ */
+const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
+  ['AWS::AppSync::ApiKey', ['ApiKey']],
+]);
+
+/**
+ * Whether any OBJECT KEY inside `value`, at any depth, is credential-named: an
+ * attribute that is itself innocently named can hold a `{Password: ...}` leaf,
+ * and serving it whole would print that leaf in the audit table.
+ */
+function carriesSensitiveNamedLeaf(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(carriesSensitiveNamedLeaf);
+  return Object.entries(value).some(
+    ([key, leaf]) => isSensitiveAttributeName(key) || carriesSensitiveNamedLeaf(leaf)
+  );
+}
+
+/**
  * The orphan's RECORDED value for `attribute`, when the record holds one the
  * deploy-time resolver would serve as-is (go-to-k/cdkd#4186).
  *
  * WHY RECORDED BEFORE LIVE. `IntrinsicFunctionResolver.resolveGetAtt` serves a
- * sibling's `Fn::GetAtt` from this same `attributes` map whenever it holds the
- * key, so the recorded value IS what every earlier deploy sent the sibling and
- * what its next one would send. Substituting it makes the orphan a no-op for
- * the sibling's resolved properties. The live `provider.getAttribute(...)` read
+ * `Fn::GetAtt` from this same `attributes` map whenever it holds the key, so
+ * this chooses the same value the resolver would — not necessarily the value
+ * a rewritten sibling was deployed with (a row still holding its intrinsic
+ * never went through the resolver), and not necessarily the value AWS holds
+ * today for an attribute AWS changes later (an instance's `PublicIp`). The live `provider.getAttribute(...)` read
  * is addressed by the recorded NAME for most SDK providers, so after the
  * resource was deleted out of band and a DIFFERENT one took its name — the
  * situation `cdkd orphan` is the documented remedy for — it answered with the
@@ -176,7 +200,9 @@ export interface OrphanRewriteOptions {
  *   the predicate the resolver's log redaction uses): `AWS::IAM::AccessKey`
  *   records `SecretAccessKey` in plaintext, and no mask covers it;
  * - every attribute of a custom resource, whose `Data` names certify nothing
- *   and which a record written before `NoEcho` masking holds in plaintext.
+ *   and which a record written before `NoEcho` masking holds in plaintext;
+ * - an attribute in {@link SECRET_VALUED_ATTRIBUTES}, a secret the name rule
+ *   cannot see, and a value holding a credential-named leaf at any depth.
  * The one reshaping the resolver applies is applied too: a legacy
  * comma-joined Route 53 `NameServers` string becomes the list it stands for.
  * The dotted-path walk over a nested `attributes` object (issue #381) is the
@@ -189,7 +215,8 @@ function servableRecordedAttribute(
   if (
     (orphan.resourceType === 'AWS::EC2::VPC' && attribute === 'Ipv6CidrBlocks') ||
     isSensitiveAttributeName(attribute) ||
-    isCustomResourceType(orphan.resourceType)
+    isCustomResourceType(orphan.resourceType) ||
+    SECRET_VALUED_ATTRIBUTES.get(orphan.resourceType)?.includes(attribute)
   ) {
     return { served: false };
   }
@@ -224,7 +251,12 @@ function servableRecordedAttribute(
     }
     value = cursor;
   }
-  if (value === undefined || carriesSecretMask(value) || carriesDynamicReference(value)) {
+  if (
+    value === undefined ||
+    carriesSecretMask(value) ||
+    carriesDynamicReference(value) ||
+    carriesSensitiveNamedLeaf(value)
+  ) {
     return { served: false };
   }
   return { served: true, value };
