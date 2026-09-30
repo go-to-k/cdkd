@@ -185,6 +185,14 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
     expect(await createFailureFor(`Bad id ${lookalike}.`)).toBe(`Bad id ${lookalike}.`);
   });
 
+  it('restores a long trailing run of dots in linear time', async () => {
+    const dots = '.'.repeat(100_000);
+    const started = Date.now();
+    expect(await createFailureFor(`${arnOf(TINY)}${dots}a`)).toBe('***');
+    expect(await createFailureFor(`${arnOf(TINY)}${dots}`)).toBe(`***${dots}`);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
   it('scans a long run with no whitespace in linear time', async () => {
     const run = 'arn:a:secretsmanager:::secret:'.repeat(30_000);
     const started = Date.now();

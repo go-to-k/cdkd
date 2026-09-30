@@ -732,7 +732,10 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     // secret this operation does not name (`qx` against `qx-AbCdEf-more`), and
     // over-masking the rest of the run is the safe direction. The arm runs on
     // the RAW text, before the needles and the base masker, so neither can
-    // rewrite part of the ARN (a secret equal to `secret`) and defeat it.
+    // rewrite part of the ARN (a secret equal to `secret`) and defeat it. The
+    // mirror residual of that order, accepted: another bag secret that EMBEDS
+    // this ARN plus text outside the run (`<arn>,pw=...`) no longer occurs
+    // once the ARN is masked, so its outside part prints.
     const ARN_SEGMENT = /arn:[^:\s]+:secretsmanager:[^:\s]*:[^:\s]*:secret:([A-Za-z0-9/_+=.@-]+)/g;
     const maskArnSegment = (whole: string, run: string): string => {
       for (const name of secretNames) {
@@ -741,8 +744,12 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
           /^-[A-Za-z0-9]{6}(?![A-Za-z0-9])/.test(run.slice(name.length))
         ) {
           // A trailing `.` is sentence punctuation far more often than a name
-          // character, and restoring it reveals nothing.
-          return MASK_WALK_DEPTH_CAP_MARKER + (/\.+$/.exec(run)?.[0] ?? '');
+          // character, and restoring it reveals nothing. A loop, not `/\.+$/`,
+          // which is quadratic on a long run of dots followed by another
+          // character.
+          let end = run.length;
+          while (end > 0 && run[end - 1] === '.') end -= 1;
+          return MASK_WALK_DEPTH_CAP_MARKER + run.slice(end);
         }
       }
       return whole;
