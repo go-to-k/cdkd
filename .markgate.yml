@@ -128,6 +128,7 @@ gates:
       # out of scope. `deploy-value-equality.ts` decides whether a
       # create-only change lowers to UPDATE or REPLACES (deletes) the resource.
       - "src/deployment/deploy-engine-name-collision.ts"
+      - "src/deployment/deploy-engine-observed-capture.ts"
       - "src/deployment/deploy-engine-options.ts"
       - "src/deployment/deploy-engine-outputs.ts"
       - "src/deployment/deploy-engine-rollback.ts"

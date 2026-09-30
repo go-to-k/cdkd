@@ -197,6 +197,13 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
         stripComments(source).includes('outputs: currentState.outputs,'),
         `${file} carries the outputs bag — move that save site into deploy-engine.ts`
       ).toBe(false);
+      // Every engine save goes through `withParentInfo` -> `redactStateForPersist`
+      // (the choke point `observed-properties-redaction-population` relies on);
+      // a mixin calling the backend directly would bypass it.
+      expect(
+        stripComments(source).includes('saveState('),
+        `${file} saves state itself — every save belongs in deploy-engine.ts, behind the persist choke point`
+      ).toBe(false);
     }
   });
 
