@@ -1605,6 +1605,10 @@ denied call quotes the caller's account, role and session.
 
 `cdkd diff` issues the same re-read, so its preview shows the value the deploy
 will use, but it never writes the value to state: the next deploy records it.
+When that read fails or finds no resource, the diff's message says `This
+preview re-read the attributes from AWS, but ...` where the deploy's says `cdkd
+tried to re-read the attributes from AWS to heal the record, but ...`, because
+the preview heals nothing.
 The other read-only commands (`cdkd drift`, `cdkd export`) never re-read and
 never write state. Until a deploy has healed the record they report an `*Arn` /
 `*Url` reference as unresolved, and resolve any other attribute to the physical

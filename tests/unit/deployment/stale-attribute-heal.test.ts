@@ -27,9 +27,10 @@ import {
   readHealedAttribute,
   type StaleAttributeHealOutcome,
 } from '../../../src/deployment/stale-attribute-heal.js';
+import { createReadOnlyAttributeHealerFactory } from '../../../src/deployment/read-only-attribute-healer.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
-import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -342,6 +343,134 @@ describe('stale attribute heal — resolver (#1852)', () => {
         )
       );
       expect(error.message).not.toContain('\u001b');
+    });
+  });
+
+  // go-to-k/cdkd#4163: `cdkd diff`'s healer (`read-only-attribute-healer.ts`)
+  // writes nothing, so a failed read there must not say cdkd tried to heal the
+  // record or retries on every deploy. Each case runs BOTH polarities: the
+  // same outcome from a writing healer keeps the deploy wording.
+  describe('a read-only healer words the remedy as the preview (go-to-k/cdkd#4163)', () => {
+    const healerOf = (
+      outcome: StaleAttributeHealOutcome,
+      readOnly: boolean
+    ): NonNullable<ResolverContext['attributeHealer']> => {
+      const heal = vi.fn().mockResolvedValue(outcome);
+      return readOnly ? Object.assign(heal, { readOnly: true as const }) : heal;
+    };
+    const DEPLOY_ONLY = ['to heal the record', 'retries the read on every deploy', 'deploy again'];
+
+    it('FAILED read, *Arn refusal: the preview names its own read and hands healing to deploy', async () => {
+      const outcome = { kind: 'failed', error: accessDenied() } as const;
+      const refuse = (readOnly: boolean): Promise<Error> =>
+        refusalOf(
+          resolver.resolve(
+            { 'Fn::GetAtt': ['Param', 'Arn'] },
+            mkContext({ Param: staleParameter() }, healerOf(outcome, readOnly))
+          )
+        );
+      const preview = (await refuse(true)).message;
+      expect(preview).toContain('This preview re-read the attributes from AWS, but the provider read failed');
+      expect(preview).toContain('AccessDeniedException, HTTP 403');
+      expect(preview).toContain(
+        "A preview writes nothing to state; 'cdkd deploy' issues the same read and heals the record once it succeeds."
+      );
+      for (const phrase of [...DEPLOY_ONLY, 'tried to re-read']) expect(preview).not.toContain(phrase);
+      const deploy = (await refuse(false)).message;
+      expect(deploy).toContain('cdkd tried to re-read the attributes from AWS to heal the record');
+      expect(deploy).toContain('retries the read on every deploy');
+      expect(deploy).not.toContain('This preview');
+    });
+
+    it('FAILED read, warn-level physical-id fallback: the same split', async () => {
+      const outcome = { kind: 'failed', error: accessDenied() } as const;
+      const record = (): ResourceState => ({
+        physicalId: 'mydb',
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: {},
+        attributes: {},
+      });
+      const warned = async (readOnly: boolean): Promise<string> => {
+        warnSpy.mockClear();
+        expect(
+          await resolver.resolve(
+            { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] },
+            mkContext({ Db: record() }, healerOf(outcome, readOnly))
+          )
+        ).toBe('mydb');
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        return String(warnSpy.mock.calls[0]![0]);
+      };
+      const preview = await warned(true);
+      expect(preview).toContain('returning physical ID. This preview re-read the attributes from AWS');
+      for (const phrase of [...DEPLOY_ONLY, 'tried to re-read']) expect(preview).not.toContain(phrase);
+      const deploy = await warned(false);
+      expect(deploy).toContain('cdkd tried to re-read the attributes from AWS to heal the record');
+      expect(deploy).toContain('retries the read on every deploy');
+    });
+
+    it('NOT FOUND: the preview does not claim a heal attempt', async () => {
+      const refuse = (readOnly: boolean): Promise<Error> =>
+        refusalOf(
+          resolver.resolve(
+            { 'Fn::GetAtt': ['Param', 'Arn'] },
+            mkContext({ Param: staleParameter() }, healerOf({ kind: 'not-found' }, readOnly))
+          )
+        );
+      const preview = (await refuse(true)).message;
+      expect(preview).toContain(
+        'This preview re-read the attributes from AWS, but AWS reports no resource behind the recorded physical id'
+      );
+      expect(preview).not.toContain('to heal the record');
+      expect(preview).not.toContain('tried to re-read');
+      expect((await refuse(false)).message).toContain(
+        'cdkd tried to re-read the attributes from AWS to heal the record, but AWS reports no resource'
+      );
+    });
+
+    it('NOT ATTEMPTED: the preview does not say "this deploy" wrote the record', async () => {
+      // The placeholder-ARN refusal is a `staleRecordRemedy` site that a
+      // `not-attempted` outcome reaches (the `*Arn` fallback words that one
+      // through `unenrichedRemedy` instead).
+      const dataSource = (): ResourceState => ({
+        physicalId: 'abc|ds',
+        resourceType: 'AWS::AppSync::DataSource',
+        properties: {},
+        attributes: { DataSourceArn: 'arn:aws:appsync:*:*:apis/abc/datasources/ds' },
+      });
+      const refuse = (readOnly: boolean): Promise<Error> =>
+        refusalOf(
+          resolver.resolve(
+            { 'Fn::GetAtt': ['Ds', 'DataSourceArn'] },
+            mkContext({ Ds: dataSource() }, healerOf({ kind: 'not-attempted' }, readOnly))
+          )
+        );
+      const preview = (await refuse(true)).message;
+      expect(preview).toContain(
+        'cdkd did not re-read it from AWS (this resource type has no read-only lookup); change any property'
+      );
+      expect(preview).not.toContain('this deploy');
+      expect((await refuse(false)).message).toContain(
+        'cdkd did not re-read it from AWS (the record was written by this deploy, or this resource type has no read-only lookup)'
+      );
+    });
+
+    it("cdkd diff's own healer (the real factory) takes the preview wording", async () => {
+      const healerFor = createReadOnlyAttributeHealerFactory({
+        getProvider: () =>
+          ({ import: vi.fn().mockRejectedValue(accessDenied()) }) as unknown as ResourceProvider,
+        inRegion: (_region, fn) => fn(),
+      });
+      const healer = healerFor('MyStack', 'us-east-1');
+      expect(healer.readOnly).toBe(true);
+      const error = await refusalOf(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Param', 'Arn'] },
+          mkContext({ Param: staleParameter() }, healer)
+        )
+      );
+      expect(error.message).toContain('This preview re-read the attributes from AWS, but the provider read failed');
+      expect(error.message).not.toContain('tried to re-read');
     });
   });
 
