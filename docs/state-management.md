@@ -951,6 +951,7 @@ genuinely has none. A string enumerates one fabricated logical id per character.
 | `cdkd deploy --dry-run` | **Refuses**, identically — the plan a dry run prints comes from the same comparison |
 | `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`) — the map is the list of what to delete, so an unreadable one counted as zero resources and the run removed `state.json` down the empty-stack fast path |
 | `cdkd orphan`, `cdkd import`, `cdkd rollback` | **Refuse** (`STATE_RESOURCES_MALFORMED`, exit `1`) — each carries the bag into a save |
+| `cdkd export` | **Refuses** the named stack at the load, before the lock, and every nested child record before any changeset (`STATE_RESOURCES_MALFORMED`, exit `1`), under `--dry-run` too — a child whose map cannot be read contributes no nested stacks of its own, so migrating past it would leave that subtree out |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
 | `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
 | `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
