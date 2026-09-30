@@ -503,7 +503,7 @@ export class DocDBProvider implements ResourceProvider {
     context: DeleteContext | undefined,
     flip: ProtectionFlipRecord
   ): Promise<void> {
-    this.logger.debug(`Deleting DocDB DBCluster ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting DocDB DBCluster ${logicalId}`);
 
     try {
       // `--remove-protection`: flip DeletionProtection off in-place
@@ -537,7 +537,7 @@ export class DocDBProvider implements ResourceProvider {
         } catch (disableError) {
           if (!isDocDBNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
+              `Could not disable deletion protection for DocDB DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -557,9 +557,11 @@ export class DocDBProvider implements ResourceProvider {
       // AWS took the delete: a later throw is the WAIT failing, and the guard
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
+      // Not the identifier: it embeds the physical id, which may be secret-derived
+      // (#4111). It is `<physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
-          `Deleting DocDB DBCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+          `Deleting DocDB DBCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`
         );
       }
 
@@ -577,7 +579,7 @@ export class DocDBProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DocDB DBCluster ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(`DocDB DBCluster ${logicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;

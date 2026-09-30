@@ -214,9 +214,19 @@ cost and latency are unwanted, and the escape hatch for the refusal below.
 | `AWS::Redshift::Cluster` | Pre-delete `CreateClusterSnapshot`, waited to `available`, then the delete. |
 | `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the delete. Redis only. |
 
-Generated snapshot identifiers are deterministic and logged:
-`<physicalId>-final-<utcTimestamp>` (sanitized to the snapshot-identifier
-character rules).
+Generated snapshot identifiers are deterministic:
+`<physicalId>-final-<utcTimestamp>` (lowercased and sanitized to the
+snapshot-identifier character rules). The three pre-delete types log the
+identifier as they create it. The five atomic-parameter types log only that
+the delete takes a final snapshot, under the resource's logical id: the
+identifier spells the physical id, which may come from a secret. Find that
+snapshot among the service's manual snapshots by the `<physicalId>-final-`
+prefix, for example:
+
+```bash
+aws rds describe-db-cluster-snapshots --snapshot-type manual \
+  --query "DBClusterSnapshots[?starts_with(DBClusterSnapshotIdentifier, 'my-cluster-final-')].DBClusterSnapshotIdentifier"
+```
 
 Three of those rows carry behaviour worth knowing before you rely on them:
 

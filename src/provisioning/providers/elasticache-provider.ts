@@ -661,7 +661,7 @@ export class ElastiCacheProvider implements ResourceProvider {
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting CacheCluster ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting CacheCluster ${logicalId}`);
 
     try {
       // `DeletionPolicy: Snapshot` (issue #1352): pass the atomic
@@ -695,9 +695,11 @@ export class ElastiCacheProvider implements ResourceProvider {
         }
         this.logger.debug(safeMsg`CacheCluster ${logicalId} is already deleting; waiting for it`);
       }
+      // Not the identifier: it embeds the physical id, which may be secret-derived
+      // (#4111). It is `<physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
-          `Deleting CacheCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+          `Deleting CacheCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`
         );
       }
 
@@ -715,7 +717,7 @@ export class ElastiCacheProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`CacheCluster ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(`CacheCluster ${logicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
