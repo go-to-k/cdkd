@@ -234,7 +234,7 @@ describe.each(ARMS)('$label Snapshot-policy delete log lines (#4111)', (arm) => 
   it('names the logical id when the wait for the delete times out', async () => {
     stubAws(arm, 'wait-times-out');
     let now = 0;
-    vi.spyOn(Date, 'now').mockImplementation(() => (now += 60 * 60 * 1000));
+    vi.spyOn(Date, 'now').mockImplementation(() => (now += 5 * 60 * 1000));
 
     const failure = await arm
       .make()
@@ -247,6 +247,8 @@ describe.each(ARMS)('$label Snapshot-policy delete log lines (#4111)', (arm) => 
     expect(failure).toBeInstanceOf(Error);
     const message = (failure as Error).message;
     expect(message).toContain(`Timed out waiting for ${arm.subject} MyRes to be deleted`);
+    // The loop polled before giving up, so its status line is covered here too.
+    expect(childLogger.debug).toHaveBeenCalledWith(`${arm.subject} MyRes status: deleting`);
     expect(message).not.toContain(SECRET_WORD);
     expect(message).not.toContain(snap);
     expectNoIdentifierLogged(snap);
