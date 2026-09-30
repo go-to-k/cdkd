@@ -212,9 +212,10 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  * occurrence a recorded secret crosses or contains renders otherwise, and its
  * part outside that secret would print (a fragment of secret plaintext, since
  * a derived name may be a folded copy of the secret). The needles then only
- * replace with the mask, so for occurrences that do not overlap one another
- * the helper never reveals what the base hides: what it prints is a subset of
- * what the base alone prints.
+ * replace with the mask, so the helper never reveals what the base hides:
+ * what it prints is a subset of what the base alone prints. Occurrences that
+ * overlap one another may not be masked whole (the split / join residual
+ * below).
  *
  * Exempt from the check, as residuals:
  *
