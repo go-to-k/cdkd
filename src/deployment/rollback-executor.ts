@@ -3195,6 +3195,9 @@ async function replaySingle(
             // Issue #4029: the classified policy, so a Cloud Control-routed
             // RDS delete under `Delete` avoids the registry handler's snapshot.
             deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
+            // Issue #4157. `classifyRollbackOp` reaches this arm only with a
+            // record naming `op.physicalId`.
+            recordedAttributes: stateResources[op.logicalId]?.attributes,
           }
         );
         throwIfDeleteSkipped(
@@ -3310,6 +3313,7 @@ async function replaySingle(
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
               deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+              recordedAttributes: current.attributes,
             }
           );
           // Issue #1762: BEFORE the state re-point, so a skip cannot leave
@@ -3914,6 +3918,7 @@ async function replaySingle(
                 expectedRegion: ctx.region,
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                 deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+                recordedAttributes: current.attributes,
               }
             );
             // Issue #1762: this delete exists to release the name the
@@ -4155,6 +4160,7 @@ async function replaySingle(
                 expectedRegion: ctx.region,
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                 deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+                recordedAttributes: current.attributes,
               }
             );
             // Issue #1762: the old resource is already re-created and state
@@ -4790,6 +4796,9 @@ export async function replayFailedOperations(
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
+              // Issue #4157; as on the completed-CREATE arm, the record names
+              // `op.physicalId` here.
+              recordedAttributes: stateResources[op.logicalId]?.attributes,
             }
           );
           // Issue #1762: the partially-created resource is still there, so
