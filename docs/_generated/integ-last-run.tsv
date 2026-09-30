@@ -242,7 +242,7 @@ nested-stack-rollback	2026-09-30T11:33:23Z	PASS	100	verify.sh	rc ok, orph clean 
 nested-stack-secret	2026-09-30T10:20:59Z	PASS	210	verify.sh	rc ok, orph clean; PR #4221 (#4094 bound child params + conditions)
 nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 24 deleted 0 errors, 0 orphans (VPC/ENI clean)
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
-noecho-parameter-masking	2026-09-30T08:48:50Z	PASS	120	verify.sh	rc ok, orph clean, index clean (#4043 Phase A review round 3; revert probes red at Phase 1 refusal and Phase 3a alias row)
+noecho-parameter-masking	2026-09-30T14:14:02Z	PASS	140	verify.sh	rc ok, orph clean, index clean (#4049 split pieces + nested CommaDelimitedList child, parent-review round); revert probes red at Phase 1: pre-fix index publishes the split alias, pre-fix log prints a split piece, list-carry-only revert prints the child's ListIn elements
 opensearch-domain-getatt	2026-08-10T08:05:51Z	PASS	1798	verify.sh	0810 P2 sweep b13; 60m CC delete floor ok, 0 err 0 orph
 orphan-getatt-takeover	2026-09-30T12:15:09Z	PASS	50	verify.sh	rc ok, orph clean (#4228)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean

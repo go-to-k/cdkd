@@ -88,6 +88,7 @@ import {
   wholeStringLeavesOf,
   TEMPLATE_SOURCED_RULES,
   recordLogOnlyParameterValue,
+  literalSplitDelimitersOf,
   createUnionSecretMasker,
   unionOfSecretBags,
   type RecordedSecretValues,
@@ -1188,9 +1189,17 @@ export class DeployEngine {
   ): SecretMasker {
     const inherited = this.options.inheritedSecrets;
     const noEchoValues: RecordedSecretValues = new Map();
+    // The pieces of every literal `Fn::Split` over a `NoEcho` value too
+    // (go-to-k/cdkd#4049), for a property that stopped reading one.
+    const noEchoNames = new Set(
+      Object.entries(template.Parameters ?? {})
+        .filter(([, definition]) => definition?.NoEcho === true)
+        .map(([name]) => name)
+    );
+    const splitDelimiters = literalSplitDelimitersOf(template, noEchoNames);
     for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
       if (definition?.NoEcho === true && Object.hasOwn(parameterValues, name)) {
-        recordLogOnlyParameterValue(noEchoValues, parameterValues[name]);
+        recordLogOnlyParameterValue(noEchoValues, parameterValues[name], splitDelimiters);
       }
     }
     return createUnionSecretMasker([diffSecrets, noEchoValues, inherited]);

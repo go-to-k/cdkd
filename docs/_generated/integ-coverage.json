@@ -631,6 +631,7 @@
         "nested-stack-replace-guard",
         "nested-stack-rollback",
         "nested-stack-secret",
+        "noecho-parameter-masking",
         "recreate-nested-logical-id-collision",
         "rollback-nested-cross-region-secret",
         "scrub-nested-child"
@@ -667,6 +668,9 @@
           "literal"
         ],
         "nested-stack-secret": [
+          "literal"
+        ],
+        "noecho-parameter-masking": [
           "literal"
         ],
         "recreate-nested-logical-id-collision": [
