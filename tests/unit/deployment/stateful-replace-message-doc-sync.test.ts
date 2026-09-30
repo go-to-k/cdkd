@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const SOURCE_PATHS = {
   engine: join(repoRoot, 'src', 'deployment', 'deploy-engine.ts'),
+  engineOptions: join(repoRoot, 'src', 'deployment', 'deploy-engine-options.ts'),
   // `renderStatefulReason` lives here, so the data-loss reason every refusal
   // interpolates is NOT in the engine source at all — a fence that looked only
   // at the engine could never see it drift.
@@ -207,7 +208,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     );
   });
 
-  it("the doc sentence deploy-engine.ts's JSDoc quotes still exists", () => {
+  it("the doc sentence deploy-engine-options.ts's JSDoc quotes still exists", () => {
     // `DeployEngineOptions.forceStatefulRecreation`'s JSDoc defers the
     // EXEMPTION enumeration to this page by quoting the sentence that
     // introduces it, rather than restating the list. Nothing else reds when a
@@ -218,7 +219,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     // pointer ambiguous, zero orphans it.
     const anchor = flattenWhitespace('Three exemptions apply to this trigger specifically');
     expect(occurrences(flattenWhitespace(doc), anchor)).toBe(1);
-    expect(occurrences(sources.engine, anchor)).toBe(1);
+    expect(occurrences(sources.engineOptions, anchor)).toBe(1);
   });
 
   for (const { phrase, source, docOccurrences } of SHARED_PHRASES) {
