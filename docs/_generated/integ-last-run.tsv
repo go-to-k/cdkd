@@ -298,7 +298,7 @@ scrub-nested-child	2026-09-29T14:13:29Z	PASS	180	verify.sh	rc ok, orph clean (#4
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
 secrets-array-nested	2026-09-27T14:43:09Z	PASS	386	verify.sh	rc ok, orph clean (#3866)
-secrets-dynamic-ref	2026-09-29T14:20:55Z	PASS	646	verify.sh	rc ok, orph clean (#4084 @cb30f8feb)
+secrets-dynamic-ref	2026-09-30T04:32:52Z	PASS	592	verify.sh	PR #4173 (#4001) run; Phase 1b7 first run; pre-fix probe red at 1b7; rc ok, orph clean
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-09-29T11:22:33Z	PASS	83	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean

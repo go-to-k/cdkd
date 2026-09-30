@@ -469,6 +469,20 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         }),
       });
     }
+    // Issue #4001: the same shape with the password's tail `-123` SUBSTITUTED
+    // by its full-width spelling (U+FF0D U+FF11 U+FF12 U+FF13), which folds
+    // to ASCII under NFKC, so the name reads as the password. Before #4001
+    // no detection form folded it and the name was published. Its own gate
+    // and probe deploy (Phase 1b7), dropped from state afterwards like 1b6.
+    if (process.env.CDKD_TEST_FULLWIDTH_EXPORT === 'true') {
+      new cdk.CfnOutput(this, 'FullWidthExport', {
+        value: `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}`,
+        exportName: cdk.Fn.sub('cdkd-dynref-fw-split-${Head}${Wide}', {
+          Head: 'cdkd-known-pw',
+          Wide: '\uff0d\uff11\uff12\uff13',
+        }),
+      });
+    }
     // A literal OUTPUT embedding the two-character reference (issue #2516):
     // the same leaf shape as DB_PORT_LITERAL, walked by the outputs
     // redaction against the template's `Outputs`. verify.sh asserts
