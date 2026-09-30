@@ -811,6 +811,8 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(region.patches).toEqual([]);
     expect(logLines()).toContain("Exports index entry Ghost");
     expect(logLines()).toContain('has no key of that name');
+    // --dry-run writes nothing, and says so in its own tense.
+    expect(logLines()).toContain('nothing would be written for it');
   });
 
   describe('names the stack and the export inside their own boundaries (go-to-k/cdkd#3638)', () => {

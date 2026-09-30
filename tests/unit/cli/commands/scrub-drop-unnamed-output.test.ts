@@ -750,6 +750,19 @@ describe('cdkd scrub - review round 4 (go-to-k/cdkd#4120)', () => {
     );
   });
 
+  it("masks a recorded secret in a reading consumer's stack NAME", async () => {
+    seed(
+      record({}, {
+        imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Gone' }],
+      } as never, `C-${SM_PLAINTEXT}`)
+    );
+
+    await run(legacyRecord());
+
+    expect(warnLines.join('\n')).toContain('reads Gone via Fn::ImportValue');
+    expect(warnLines.join('\n')).not.toContain(SM_PLAINTEXT);
+  });
+
   it('a v8 record (outputReads known, imports known) is no reader (negative control)', async () => {
     seed({ ...record({}, {}, 'Recent'), version: 8 } as StackState);
 
