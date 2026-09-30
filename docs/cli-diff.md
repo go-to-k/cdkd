@@ -768,6 +768,11 @@ printed under a `Nested stack: <name>` header carrying the full `~`-joined state
 name, matching `cdkd state show --show-nested`. Children with no changes are
 walked silently, so the output shows only what the next deploy would do.
 
+A child's input `Parameters` are resolved the way `cdkd deploy` passes them:
+against the parent's parameters as bound (a `Default`, or an SSM-typed
+lookup) and its evaluated conditions, so a `Ref` to a parent parameter or an
+`Fn::If` in the row diffs as the value the deploy sends.
+
 The walk previews the full next deploy:
 
 - A nested child with **no state file yet** diffs as all-CREATE.

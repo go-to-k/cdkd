@@ -35,6 +35,7 @@ import { DiffCalculator, INTRINSIC_KEYS } from '../../analyzer/diff-calculator.j
 import type { CanonicalizePropertiesFn } from '../../analyzer/diff-calculator.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import {
+  AWS_NO_VALUE,
   IntrinsicFunctionResolver,
   carriesDynamicReference,
   parameterTypeMayLoseSecretIdentity,
@@ -720,6 +721,22 @@ export interface StackDiffResult {
    * need not declare `NoEcho`.
    */
   printingSecrets: RecordedSecretValues;
+  /**
+   * The parameter bag and the condition verdicts this node's resolver used
+   * (go-to-k/cdkd#4094), for resolving a nested child's input `Parameters`
+   * the way the deploy does: against the parent's BOUND parameters (template
+   * defaults and SSM-typed lookups included) and its evaluated conditions, not
+   * only the parameters handed to this node. A failed binding returns the
+   * input bag (undefined at the root); a skipped condition evaluation returns
+   * undefined.
+   *
+   * UNMASKED, unlike `changes` / `outputChanges`: a `NoEcho` parameter's bound
+   * value is here as the resolver needs it. It feeds resolution only; a line
+   * printing a value derived from it is masked by `printingSecrets`, which
+   * already holds every `NoEcho` value of this bag.
+   */
+  resolvedParameters: Record<string, unknown> | undefined;
+  conditions: Record<string, boolean> | undefined;
 }
 
 /**
@@ -1894,6 +1911,8 @@ export async function computeStackDiff(
     deployRefusals: shownDeployRefusals,
     effectiveTemplate,
     printingSecrets,
+    resolvedParameters: mergedParameters,
+    conditions,
   };
 }
 
@@ -1917,9 +1936,39 @@ function withFailedOutputsUndefined(
 }
 
 /**
+ * A resolved list-typed parameter value: an array of scalars. An array holding
+ * anything else (an unresolved intrinsic) is left as it is — the deploy
+ * refuses it, and joining it would print `[object Object]`.
+ */
+function isScalarList(value: unknown): value is Array<string | number | boolean> {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (element) =>
+        typeof element === 'string' || typeof element === 'number' || typeof element === 'boolean'
+    )
+  );
+}
+
+/**
  * Resolve a nested-stack child's input `Parameters` (declared on the parent's
  * `AWS::CloudFormation::Stack` row under `Properties.Parameters`) to scalar
- * values against the PARENT's deployed state + already-resolved parameters.
+ * values against the PARENT's deployed state, its BOUND parameters and its
+ * evaluated conditions (go-to-k/cdkd#4094) — the parent's
+ * {@link StackDiffResult.resolvedParameters} / `conditions`, not the bag
+ * handed to the parent. The deploy resolves this row on the parent engine's
+ * context, which holds the template defaults, the SSM-typed lookups and the
+ * condition verdicts; the input bag alone left a `Ref` to a parent template
+ * parameter unresolved, and an `Fn::If` in the row took its FALSE branch.
+ *
+ * A LIST value is joined on `,`, as `NestedStackProvider.extractParameters`
+ * puts it on the wire: the bound bag holds a list-typed parameter as an ARRAY,
+ * which the child's binding would otherwise ignore (it takes scalars only) and
+ * then diff against its own `Default`. A redacted token bound as an array of
+ * expressions (`tokenValueForComparison`) joins back to the token itself, the
+ * value the input bag used to carry — up to that split's per-element trim and
+ * the comma a JSON-key slot may hold, both recorded on that helper; the deploy
+ * trims the same way.
  *
  * This is the diff-time analogue of `NestedStackProvider.extractParameters`:
  * the deploy engine resolves these same `Parameters` against the parent's
@@ -1945,6 +1994,7 @@ async function resolveChildStackParameters(
   parentStackName: string,
   stateBackend: S3StateBackend,
   parentParameters: Record<string, unknown> | undefined,
+  parentConditions: Record<string, boolean> | undefined,
   cfnFallback?: boolean,
   /**
    * The PARENT node's printing corpus (go-to-k/cdkd#4049): this resolver's
@@ -1966,7 +2016,7 @@ async function resolveChildStackParameters(
   const resolved: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(rawParams as Record<string, unknown>)) {
     try {
-      resolved[name] = await resolver.resolve(value, {
+      const resolvedValue = await resolver.resolve(value, {
         template: parentTemplate,
         resources: parentState.resources,
         stateBackend,
@@ -1975,6 +2025,7 @@ async function resolveChildStackParameters(
         // parameter is expected (caught + omitted below), not warn-worthy.
         bestEffort: true,
         ...(parentParameters && { parameters: parentParameters }),
+        ...(parentConditions && { conditions: parentConditions }),
         ...(printingSecrets &&
           hasMaskableValues(printingSecrets) && { inheritedSecrets: printingSecrets }),
         // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED here
@@ -1993,6 +2044,12 @@ async function resolveChildStackParameters(
         skipDynamicReferences: true,
         ...(attributeHealer && { attributeHealer }),
       });
+      // An `Fn::If` selecting `AWS::NoValue`: the deploy's resolver drops the
+      // key from the row's `Parameters`, so the child binds its own Default.
+      if (resolvedValue === AWS_NO_VALUE) continue;
+      resolved[name] = isScalarList(resolvedValue)
+        ? resolvedValue.map((element) => String(element)).join(',')
+        : resolvedValue;
     } catch {
       // Unresolvable (e.g. references a not-yet-deployed resource): omit it so
       // the child diff falls back to the intrinsic-vs-resolved comparison.
@@ -2265,6 +2322,8 @@ export async function buildDiffTree(args: {
     deployRefusals: adoptedDeployRefusals,
     effectiveTemplate,
     printingSecrets,
+    resolvedParameters,
+    conditions,
   } = stackDiff;
   // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
   // off each record for the sticky-Cloud-Control annotation, and an adopted
@@ -2376,10 +2435,11 @@ export async function buildDiffTree(args: {
       rewriteTemplateAssetReferences(childTemplate, assetRedirect);
     }
     // Resolve the child's input `Parameters` (declared on this parent's
-    // `AWS::CloudFormation::Stack` row) against THIS node's deployed state +
-    // already-resolved parameters, so the child's diff resolver can resolve a
-    // `Ref` to one of those parameters — mirroring the deploy engine's
-    // parent->child `DeployEngineOptions.parameters` forwarding.
+    // `AWS::CloudFormation::Stack` row) against THIS node's deployed state,
+    // its BOUND parameters and its condition verdicts (go-to-k/cdkd#4094), so
+    // the child's diff resolver can resolve a `Ref` to one of those parameters
+    // — mirroring the deploy engine's parent->child
+    // `DeployEngineOptions.parameters` forwarding.
     //
     // `stateAfterAdoption`, not `state`: a child parameter whose value is a
     // `Ref` / `Fn::GetAtt` to a resource this node just adopted resolves on
@@ -2392,7 +2452,8 @@ export async function buildDiffTree(args: {
       region,
       stackName,
       stateBackend,
-      parameters,
+      resolvedParameters,
+      conditions,
       cfnFallback,
       printingSecrets,
       attributeHealer
