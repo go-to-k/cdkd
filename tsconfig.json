@@ -13,6 +13,7 @@
     "rootDir": "./src",
     "outDir": "./dist",
     "removeComments": true,
+    "stripInternal": true,
     "importHelpers": false,
 
     // Interop Constraints

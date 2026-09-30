@@ -582,16 +582,20 @@ function unionCrossStackReads<T>(
 }
 
 export class DeployEngine {
-  private logger = getLogger().child('DeployEngine');
-  private resolver: IntrinsicFunctionResolver;
-  private interrupted = false;
+  /** @internal */
+  logger = getLogger().child('DeployEngine');
+  /** @internal */
+  resolver: IntrinsicFunctionResolver;
+  /** @internal */
+  interrupted = false;
   /**
    * Why `interrupted` was set — first cause wins. `'user'` = SIGINT;
    * `'sibling-failure'` = a resource failed and the remaining work is being
    * cancelled. Drives the {@link InterruptedError} message so cancelled
    * siblings don't misreport a Ctrl+C nobody pressed.
    */
-  private interruptCause: InterruptCause | null = null;
+  /** @internal */
+  interruptCause: InterruptCause | null = null;
 
   /**
    * In-flight `provider.readCurrentState` promises kicked off after a
@@ -604,14 +608,16 @@ export class DeployEngine {
    * if the provider does not implement `readCurrentState` or the call
    * threw — never rejects, so an unhandled-rejection cannot escape.
    */
-  private observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
+  /** @internal */
+  observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
     new Map();
   /**
    * The cap on the readback that decides a fresh-`NoEcho` replacement ceiling
    * (go-to-k/cdkd#3729). Outliving it keeps the replacement. A field rather
    * than a constant only so a test can shorten it.
    */
-  private noEchoCeilingReadbackTimeoutMs = 30_000;
+  /** @internal */
+  noEchoCeilingReadbackTimeoutMs = 30_000;
   /**
    * The bags a masked-baseline re-capture produced (issue #3595). Each is the
    * PREVIOUS baseline with some masks replaced, already redacted, so
@@ -622,14 +628,22 @@ export class DeployEngine {
    * or a replacement whose provider takes no capture of its own) never
    * receives a bag describing the resource it replaced.
    */
-  private recapturedBaselines = new WeakMap<object, object>();
-  private stateBackend: S3StateBackend;
-  private lockManager: LockManager;
-  private dagBuilder: DagBuilder;
-  private diffCalculator: DiffCalculator;
-  private templateParser = new TemplateParser();
-  private providerRegistry: ProviderRegistry;
-  private options: DeployEngineOptions;
+  /** @internal */
+  recapturedBaselines = new WeakMap<object, object>();
+  /** @internal */
+  stateBackend: S3StateBackend;
+  /** @internal */
+  lockManager: LockManager;
+  /** @internal */
+  dagBuilder: DagBuilder;
+  /** @internal */
+  diffCalculator: DiffCalculator;
+  /** @internal */
+  templateParser = new TemplateParser();
+  /** @internal */
+  providerRegistry: ProviderRegistry;
+  /** @internal */
+  options: DeployEngineOptions;
   /**
    * Optional persistent exports index store. When supplied, all
    * `Fn::ImportValue` resolutions in this deploy session prefer the
@@ -639,13 +653,15 @@ export class DeployEngine {
    * a single `cdkd deploy --all` invocation so the in-memory cache
    * survives across stacks.
    */
-  private exportIndexStore: ExportIndexStore | undefined;
+  /** @internal */
+  exportIndexStore: ExportIndexStore | undefined;
   /**
    * Per-deploy-session bag the resolver pushes resolved
    * `Fn::ImportValue` entries into. Reset at the start of each
    * `deploy()` call and persisted to `newState.imports` at the end.
    */
-  private recordedImports: StateImportEntry[] = [];
+  /** @internal */
+  recordedImports: StateImportEntry[] = [];
   /**
    * Per-deploy-session bag the resolver pushes resolved
    * `Fn::GetStackOutput` entries into (schema v8+, issue #668).
@@ -653,7 +669,8 @@ export class DeployEngine {
    * `newState.outputReads` at the end. Sibling of `recordedImports`
    * for the weak-reference `Fn::GetStackOutput` intrinsic.
    */
-  private recordedOutputReads: StateOutputReadEntry[] = [];
+  /** @internal */
+  recordedOutputReads: StateOutputReadEntry[] = [];
   /**
    * PER-RESOURCE map of resolved SECRET dynamic-reference values
    * (plaintext -> `{{resolve:...}}` expression) the resolver records for each
@@ -670,7 +687,8 @@ export class DeployEngine {
    * still redact an AWS-readback secret (Cognito `client_secret`). Reset per
    * `deploy()`. See `secret-redaction.ts`.
    */
-  private perResourceSecrets = new Map<string, RecordedSecretValues>();
+  /** @internal */
+  perResourceSecrets = new Map<string, RecordedSecretValues>();
   /**
    * Logical ids whose provider declared THIS RUN's `attributes` sensitive
    * (`ResourceCreateResult.noEchoAttributes` — issue
@@ -693,7 +711,8 @@ export class DeployEngine {
    * `NoEcho` response); a SET names the sensitive members only (a nested
    * stack's `Outputs.<Key>` entries — see `NoEchoAttributesResult`).
    */
-  private noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
+  /** @internal */
+  noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
   /**
    * PER-RESOURCE unresolved TEMPLATE properties, keyed by logicalId (issues
    * #1904 / #1900). The redaction choke point uses this as the POSITION source:
@@ -704,7 +723,8 @@ export class DeployEngine {
    * populate `perResourceSecrets`, where the unresolved bag is already in hand.
    * Reset per `deploy()`.
    */
-  private perResourceTemplateProps = new Map<string, Record<string, unknown>>();
+  /** @internal */
+  perResourceTemplateProps = new Map<string, Record<string, unknown>>();
 
   /**
    * The resource TYPE each logical id was resolved as during THIS deploy
@@ -719,14 +739,16 @@ export class DeployEngine {
    * needles went empty, and the plaintext survived into `state.json`. The
    * real-AWS secret fixture caught it.
    */
-  private perResourceResolvedType = new Map<string, string>();
+  /** @internal */
+  perResourceResolvedType = new Map<string, string>();
   /**
    * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
    * whose Value resolves a `{{resolve:...}}` reference). Separate from the
    * per-resource maps for the same anti-cross-contamination reason. Reset per
    * `deploy()`.
    */
-  private outputSecrets: RecordedSecretValues = new Map();
+  /** @internal */
+  outputSecrets: RecordedSecretValues = new Map();
   /**
    * The outputs pass's own recording map(s), one per `resolveOutputs` call
    * this deploy, so every redaction of the outputs bag re-reads them rather
@@ -736,7 +758,8 @@ export class DeployEngine {
    * save, the exports index and the deploy summary all run after that copy.
    * Reset per `deploy()`.
    */
-  private outputsPassSecretMaps: RecordedSecretValues[] = [];
+  /** @internal */
+  outputsPassSecretMaps: RecordedSecretValues[] = [];
   /**
    * UNRESOLVED template `Outputs` values, keyed by output name (issue #1910) —
    * the outputs' POSITION source, the sibling of `perResourceTemplateProps` for
@@ -754,7 +777,8 @@ export class DeployEngine {
    * writes to it, so the initialiser matches the reset rather than standing as
    * a second guard.
    */
-  private outputsTemplateSource: Record<string, unknown> = Object.create(null) as Record<
+  /** @internal */
+  outputsTemplateSource: Record<string, unknown> = Object.create(null) as Record<
     string,
     unknown
   >;
@@ -768,7 +792,8 @@ export class DeployEngine {
    * at the top of every `resolveOutputs`, so it is only meaningful right
    * after that call returns — read it there, not later.
    */
-  private resolvedExportNames: string[] = [];
+  /** @internal */
+  resolvedExportNames: string[] = [];
   /**
    * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
    * (the resolver threw under the default arm of
@@ -781,7 +806,8 @@ export class DeployEngine {
    * lifetime rule as `resolvedExportNames`: reset at the top of every
    * `resolveOutputs`, meaningful only right after that call returns.
    */
-  private skippedOutputs: Record<string, string> | undefined;
+  /** @internal */
+  skippedOutputs: Record<string, string> | undefined;
   /**
    * Whether {@link outputsTemplateSource} may be used to POSITION the outputs
    * redaction. False once an outputs pass threw partway: the post-loop
@@ -789,7 +815,8 @@ export class DeployEngine {
    * the throw — a partial source built from THIS template, while the bag the
    * failure path then redacts is the PREVIOUS deploy's. Reset per `deploy()`.
    */
-  private outputsSourceUsable = true;
+  /** @internal */
+  outputsSourceUsable = true;
 
   /**
    * Per-logical-id snapshot of the intrinsic-RESOLVED desired properties
@@ -798,7 +825,8 @@ export class DeployEngine {
    * `attemptedProperties` so `cdkd rollback --revert-failed` can generate a
    * patch that undoes a half-applied update.
    */
-  private attemptedResolvedProps = new Map<string, Record<string, unknown>>();
+  /** @internal */
+  attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
    * The live-progress label `provisionResource` gave each resource, and whether
@@ -808,7 +836,8 @@ export class DeployEngine {
    * re-labels it here if the resolved value keeps the replacement, and the
    * slow-resource warning reads the current label rather than the first one.
    */
-  private liveTaskLabels = new Map<
+  /** @internal */
+  liveTaskLabels = new Map<
     string,
     { label: string; replacing: boolean; warnSuffix?: string }
   >();
@@ -845,7 +874,8 @@ export class DeployEngine {
    * Cleared per `deploy()` alongside the other per-run maps: a `false` here
    * must mean "this deploy deleted it", never "a previous run said so".
    */
-  private retainedOldOnReplacement = new Set<string>();
+  /** @internal */
+  retainedOldOnReplacement = new Set<string>();
 
   /**
    * The pre-deploy state records, as loaded — the #1852 heal's eligibility
@@ -859,7 +889,8 @@ export class DeployEngine {
    * a provider call — its attributes object survives the spread, a create /
    * update result's does not.
    */
-  private healBaseline: Readonly<Record<string, ResourceState>> = {};
+  /** @internal */
+  healBaseline: Readonly<Record<string, ResourceState>> = {};
 
   /**
    * Single-flight + per-deploy memo of the #1852 heal, keyed by logical id and
@@ -869,7 +900,8 @@ export class DeployEngine {
    * the same record awaits the one read — and never deleting an entry is what
    * bounds it: one read per record per deploy, success or failure, no retry.
    */
-  private attributeHeals = new Map<string, Promise<StaleAttributeHealOutcome>>();
+  /** @internal */
+  attributeHeals = new Map<string, Promise<StaleAttributeHealOutcome>>();
 
   /**
    * What the heals of this deploy read, waiting for the next state save.
@@ -882,7 +914,8 @@ export class DeployEngine {
    * attribute goes through. A path that saves NOTHING (`--dry-run`) persists
    * nothing and the next deploy re-heals.
    */
-  private healedAttributes = new Map<
+  /** @internal */
+  healedAttributes = new Map<
     string,
     { physicalId: string; resourceType: string; attributes: Record<string, unknown> }
   >();
@@ -892,7 +925,8 @@ export class DeployEngine {
    * region-prefixed S3 state key and recorded in state.json for
    * cross-region destroy.
    */
-  private stackRegion: string;
+  /** @internal */
+  stackRegion: string;
 
   constructor(
     stateBackend: S3StateBackend,
