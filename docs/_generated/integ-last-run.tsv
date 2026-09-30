@@ -104,9 +104,9 @@ ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit 
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-29T11:14:03Z	PASS	60	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 ecs-bluegreen	2026-09-30T21:08:17Z	PASS	205	verify.sh	rc ok, orph clean
-ecs-fargate	2026-09-30T21:16:45Z	PASS	410	verify.sh	PR #4269 (#2177 ECS masker threading) @9e0e25c69; rc ok, destroy 0 errors, no state/IAM/VPC/ECS/log leftovers
+ecs-fargate	2026-09-30T22:18:34Z	PASS	401	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
 ecs-schedule-targets	2026-09-30T21:08:17Z	PASS	70	verify.sh	rc ok, orph clean
-ecs-service-update-props	2026-09-30T21:19:12Z	PASS	135	verify.sh	PR #4269 (#2177 ECS masker threading) @9e0e25c69; rc ok, destroy 0 errors, no state/IAM/VPC/ECS/log leftovers
+ecs-service-update-props	2026-09-30T22:20:55Z	PASS	141	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
 efs-immutable-replacement	2026-09-30T08:37:29Z	PASS	75	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-09-30T08:37:29Z	PASS	161	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
@@ -265,7 +265,7 @@ rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok,
 replace-squatter-refusal	2026-09-30T17:28:22Z	PASS	80	verify.sh	rc ok, orph clean
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, orph clean
-replacement-rename-onto-holder	2026-09-30T21:08:17Z	PASS	176	verify.sh	rc ok, orph clean
+replacement-rename-onto-holder	2026-09-30T22:24:02Z	PASS	185	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-09-30T10:32:09Z	PASS	150	verify.sh	PR #4208 (#4157) re-run on the head rebased over #4217 (DeployEngine mixin move); rc ok, destroy 0 errors, no state/lock/CFn leftovers
