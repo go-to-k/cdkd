@@ -344,7 +344,7 @@ Verdicts for a leaf a parameter served:
 | --- | --- | --- |
 | `held` | nothing to send; skip if nothing else moved | lowered to in place, as #3729 |
 | `differs` | UPDATE | REPLACEMENT |
-| `not-readable` (write-only, or no `readCurrentState`) | UPDATE: the value is re-sent on every deploy (question 5) | see question 1 |
+| `not-readable` (write-only, or no `readCurrentState`) | UPDATE: the value is re-sent on every deploy, with one info line per resource (decision 4) | not replaced; every deploy warns that a change goes undetected and names `--recreate-via-*` (decision 1) |
 | `read-failed` | UPDATE | the resource fails with a retry message; no replacement on a transient error |
 
 A nested stack's `AWS::CloudFormation::Stack` row is one `not-readable`
@@ -357,7 +357,8 @@ The two classes are told apart by the source: the positional arm, or a
 `NoEcho` parameter name in the pass's fresh set. A write-only create-only
 property raises no ceiling for a promoted reader
 (`diff-calculator.ts:752-786`). So such a path reaches the engine as an
-in-place change, and question 1 decides what the engine sends.
+in-place change, and decision 1 decides what the engine does: it sends no
+replacement.
 
 ### 4.3 `cdkd drift`, `--accept` and `--revert`
 
@@ -456,7 +457,7 @@ inherits it through `redactOutputs`.
 - **Out of process.** A consumer deployed by an earlier or a separate run is
   refused as a `cross-stack` redacted read. This is today's behavior for a
   custom-resource `NoEcho` output. It is a new refusal for parameter-served
-  outputs (question 2).
+  outputs (decision 2).
 - **Nested children, output direction.** A child's `NoEcho`-served output
   reaches the parent row through `noEchoAttributeNames`
   (`nested-stack-provider.ts:275`), as a custom-resource value does now.
@@ -492,7 +493,7 @@ inherits it through `redactOutputs`.
   `:62`). The resource is left in place and the record is kept. The runner
   then exits 2, on a deploy that removes the resource too, unless
   `--allow-unaddressed` (`.claude/rules/provider-delete-path.md`). A parameter
-  that feeds a delete address newly reaches that skip (question 3).
+  that feeds a delete address newly reaches that skip (decision 3).
 - **`masked-baseline-recapture.ts:68-75`** skips a record whose `properties`
   carry `***`. That is correct for a marked leaf, because the value is not
   recapturable from `properties`.
@@ -606,7 +607,7 @@ So readers never infer redaction from `version`. They read
 resource as it is (a witness, or `held`) or updates it with the value in hand.
 The only new refusals are these:
 
-- an out-of-process consumer of a parameter-served output (question 2);
+- an out-of-process consumer of a parameter-served output (decision 2);
 - a create-only leaf whose readback FAILED (`read-failed` in section 4.2),
   which fails the resource with a retry message rather than replacing it;
 - a `Fn::GetAtt` consumer of an attribute that echoes the value, when the
@@ -619,13 +620,15 @@ The only new refusals are these:
   (`intrinsic-function-resolver.ts:4681`) refuses it;
 - a rollback re-create with no live resource.
 
-The costs that are not refusals are named by questions 1 and 5: a create-only
-write-only leaf whose change is not detected, and an updatable write-only leaf
-re-sent on every deploy.
+The costs that are not refusals are decisions 1 and 4: a create-only
+write-only leaf whose change is not detected (warned on every deploy), and an
+updatable write-only leaf re-sent on every deploy (one info line per
+resource).
 
 **Noncurrent S3 versions** of `state.json` keep the old plaintext. Migration
-does not purge them (question 4). A value ever stored in the clear must be
-rotated, as `docs/cli-scrub.md` already says for secrets.
+does not purge them (decision 5). The docs direct the user to rotate a value
+ever stored in the clear, as `docs/cli-scrub.md` already does for secrets.
+Phase B adds that guidance to `docs/state-management.md`.
 
 **Gates.**
 
@@ -641,9 +644,10 @@ Open PRs hold files this work must edit:
 
 - #4130 holds `src/deployment/secret-redaction.ts` and
   `src/deployment/intrinsic-function-resolver.ts`. Phase B waits for it.
-- #4173 holds `src/deployment/outputs-export-alias.ts` and
-  `docs/cli-scrub.md`. Phase A waits for it, and so does Phase C's
-  `docs/cli-scrub.md` edit.
+- #4173 (the #4001 export-name fold) holds
+  `src/deployment/outputs-export-alias.ts` and `docs/cli-scrub.md`. Phase A
+  waits for it, and so does Phase C's `docs/cli-scrub.md` edit. Phase A builds
+  on its fold.
 - #4140, named on the issue as holding `src/deployment/deploy-engine.ts`, has
   merged. Phase B builds on it, and on #4169. The `deploy-engine.ts` and
   `diff-recursive.ts` line numbers in this page are at `428ce7347`, before
@@ -652,7 +656,7 @@ Open PRs hold files this work must edit:
 | Phase | Scope | Files |
 | --- | --- | --- |
 | A | Refuse an `Export.Name` equal to or embedding a `NoEcho` value, from the log-only set | `src/deployment/outputs-export-alias.ts`, `.claude/rules/layout-deployment-secrets.md` (the publication-verdict rule), the `noecho-parameter-masking` fixture, unit tests, a changelog entry |
-| B | Both arms, `noEchoParameterLeaves`, the v11 bump and migration, the diff and `cdkd diff` promotion, the generalized readback | `secret-redaction.ts`, `intrinsic-function-resolver.ts`, `deploy-engine.ts`, `diff-calculator.ts`, `diff-recursive.ts`, `src/types/state.ts`, `.claude/rules/state-schema.md`, `.claude/rules/layout-deployment-secrets.md`, `docs/state-management.md`, new `schema-v10-to-v11-migration` fixture |
+| B | Both arms, `noEchoParameterLeaves`, the v11 bump and migration, the diff and `cdkd diff` promotion, the generalized readback with the decision 1 warning and the decision 4 info line, and the decision 5 rotation guidance | `secret-redaction.ts`, `intrinsic-function-resolver.ts`, `deploy-engine.ts`, `diff-calculator.ts`, `diff-recursive.ts`, `src/types/state.ts`, `.claude/rules/state-schema.md`, `.claude/rules/layout-deployment-secrets.md`, `docs/state-management.md`, new `schema-v10-to-v11-migration` fixture |
 | C | Readers without a template: rollback replay readback, drift bucket and writers, import and refresh-observed coordinate masking, scrub migration rule, `cdkd export` allowance | `rollback-executor.ts`, `src/cli/commands/rollback.ts`, `drift.ts`, `state.ts` (CLI), `import.ts`, `scrub.ts`, `export.ts`, `docs/cli-drift.md`, `docs/cli-rollback.md`, `docs/cli-scrub.md` |
 
 **Phase B also flips every map reader the log-only doc kept blind**
@@ -700,7 +704,10 @@ lanes once B merges.
 - **B, readers.** Cover each case:
   - an unchanged value, readable: skipped, with no provider call;
   - a changed value: UPDATE;
-  - write-only updatable: UPDATE;
+  - write-only updatable: UPDATE on every deploy, and exactly one info line
+    per resource (decision 4);
+  - write-only create-only (`not-readable`): no replacement, and a warning
+    naming `--recreate-via-*` on every deploy (decision 1);
   - create-only `differs`: REPLACEMENT;
   - `read-failed` on create-only: no replacement;
   - pre-v11 witness equal: skipped with NO readback call;
@@ -769,7 +776,7 @@ consumer. The assertions:
 
 - The in-process recovery serves the consumer in one `deploy --all`.
 - A separate `cdkd deploy` of the consumer alone is refused as a `cross-stack`
-  redacted read (question 2's default).
+  redacted read (decision 2).
 - The child's record masks the inherited value, through
   `carryFreshNoEchoMark`.
 
@@ -788,52 +795,35 @@ consumer. The assertions:
 - The run sweeps every object version, because the pre-migration versions hold
   the token.
 
-## 9. Open questions for the maintainer
+## 9. Decisions
 
-Each question has a recommended default. The design above assumes the
-default.
+The maintainer answered the design's five open questions on #4043, each with
+the recommended default. The sections above follow them.
 
-1. **A create-only property AWS never returns (write-only), fed by a `NoEcho`
-   parameter.** An example is `AWS::DirectoryService::SimpleAD.Password`. No
-   readback can confirm it. #3729 keeps the replacement on every uncertainty,
-   which for a parameter would replace the resource on every deploy.
-   **Recommended: do not replace; warn each deploy that a change to that value
-   is not detected, and name `--recreate-via-cc-api` /
-   `--recreate-via-sdk-provider` as the way to apply one.** The alternative,
-   keeping #3729's rule, replaces or fails (stateful types) on every deploy.
-2. **An output served by a `NoEcho` parameter, read by a consumer in another
-   `cdkd` run.** **Recommended: persist `***` and refuse at the consumer**, as a
-   custom-resource `NoEcho` output is today, with the remedy "deploy producer
-   and consumer in one `cdkd deploy`". The alternative refuses such an output at
-   the producer.
-3. **A `NoEcho` parameter feeding a property a provider deletes by** (for
-   example a Route 53 record value). **Recommended: keep the existing fail-safe
-   skip** (`redactedDeleteAddressSkip`: the resource is left in place, the
-   record is kept, and every destroy, and every deploy that removes the
-   resource, exits 2 until it is cleaned up by hand, unless
-   `--allow-unaddressed`). A deploy-time delete does hold the template, so a
-   re-resolved address confirmed by a readback is a possible later refinement. The alternative
-   re-resolves the address from today's template, but a changed parameter
-   would then address the wrong record, and a "not found" reads as already
-   deleted.
-4. **Noncurrent S3 versions of `state.json` holding the old plaintext after
-   migration.** **Recommended: do not purge.** Those versions are the state
-   recovery path, and the scrub docs already say a value ever stored in the
-   clear must be rotated. The alternative purges them per migrated key, with
-   the noncurrent-version purge `src/state/s3-noncurrent-version-purge.ts`
-   already implements.
-5. **An UPDATABLE property AWS never returns, fed by a `NoEcho` parameter.**
-   This is the commonest use of `NoEcho`: `AWS::RDS::DBInstance.MasterUserPassword`,
+1. **A create-only, write-only property fed by a `NoEcho` parameter is not
+   replaced** (for example `AWS::DirectoryService::SimpleAD.Password`). No
+   readback can confirm it, and #3729's keep-the-replacement rule would
+   replace, or fail on a stateful type, every deploy. Every deploy warns that a
+   change to that value goes undetected, and names `--recreate-via-cc-api` /
+   `--recreate-via-sdk-provider` as the way to apply one. See section 4.2.
+2. **An output served by a `NoEcho` parameter persists as `***`**, and a
+   consumer in another `cdkd` run refuses it, as for a custom-resource
+   `NoEcho` output today. The remedy is to deploy producer and consumer in one
+   `cdkd deploy`. See section 4.7.
+3. **A `NoEcho` value in a delete-address property keeps the existing skip**
+   (`redactedDeleteAddressSkip`). The resource is left in place and the record
+   is kept, and every destroy, and every deploy that removes the resource,
+   exits 2 until it is cleaned up by hand, unless `--allow-unaddressed`. See
+   section 4.8.
+4. **An updatable, write-only property is re-sent on every deploy**, with one
+   info line per resource saying why it updated. This is the commonest use of
+   `NoEcho`: `AWS::RDS::DBInstance.MasterUserPassword`,
    `AWS::IAM::User.LoginProfile.Password`,
-   `AWS::SecretsManager::Secret.SecretString`. The readback answers
-   `not-readable`, so nothing can confirm the value unchanged, and the engine
-   sends an UPDATE on every deploy, a no-op deploy included. CloudFormation
-   compares its stored parameter values and sends nothing.
-   **Recommended: accept the re-send, and log one info line per resource
-   saying why it updated.** The value always reaches AWS, so a changed password
-   is never missed. The alternative skips the re-send and warns that a change
-   is not detected, as question 1 recommends for the create-only twin. That
-   trades a mutating API call per deploy for a silently kept old password.
+   `AWS::SecretsManager::Secret.SecretString`. The value always reaches AWS, so
+   a changed password is never missed. See section 4.2.
+5. **Noncurrent S3 versions of `state.json` that still hold the plaintext are
+   not purged.** They are the state recovery path. The docs direct the user to
+   rotate the value, as the scrub docs already do. See section 6.
 
 ## Rejected alternatives
 
