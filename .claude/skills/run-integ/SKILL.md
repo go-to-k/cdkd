@@ -27,7 +27,8 @@ verify, clean up.
    Then `vp run build` so `dist/` is current — the LAST build in this tree until
    the run ends: `/check`, `/verify-pr` and a building `verify.sh` all rewrite
    `dist/`, and a live fixture's next `node dist/cli.js` (its cleanup trap's
-   too) then dies `ERR_MODULE_NOT_FOUND`. After one, re-scan per steps 6-7.
+   too) then dies `ERR_MODULE_NOT_FOUND`. After such a build mid-run, re-scan
+   per steps 6-7, record that fixture `FAIL`, and re-run it.
 
 2. **List available tests**: `ls tests/integration/` — never a hardcoded list.
 
@@ -215,13 +216,14 @@ verify, clean up.
    PR's own worktree on the PR branch, and if any success condition failed, do
    NOT set the marker. The auto-mode classifier can refuse the parent's
    `markgate set`, and step 11's ledger commit and push, even after a yes in
-   chat: never retry — hand them to the user. One step is this ONE line (the
-   same for `integ-schema-migration` below); several go in a short-path script,
-   `! bash /tmp/<n>.sh`, since a long line wraps on paste and a pasted `!` does
-   not enter bash mode — the user types the `!`:
+   chat: never retry — hand them to the user as a short-path script
+   (`/tmp/<n>.sh`) holding the steps, for them to TYPE `!` and then paste
+   `bash /tmp/<n>.sh` (a long line wraps on paste, and a pasted `!` does not
+   enter bash mode). For the marker (the same for `integ-schema-migration`
+   below) the script holds:
 
    ```text
-   ! cd <tree> && mise trust && mise exec -- markgate set integ-destroy && mise exec -- markgate status | grep integ-destroy
+   cd <tree> && mise trust && mise exec -- markgate set integ-destroy && mise exec -- markgate status | grep integ-destroy
    ```
 
    **Also set `integ-schema-migration`, and ONLY for a test named

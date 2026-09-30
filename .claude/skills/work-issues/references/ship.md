@@ -18,12 +18,11 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
-  integ AFTER the flatten/rebase below (`references/verify.md` §8-b). A rebase
-  over a `main` commit to a file THIS branch also changes re-stales it; one
-  over anything else keeps it `match`. While such a file is busy on `main`
-  (go-to-k/cdkd#4183 re-ran its set three times), run the whole fixture set as
-  ONE parallel batch (no `verify.sh` in it that builds), then set the marker,
-  record, push and merge without pausing.
+  integ AFTER the flatten/rebase below (`references/verify.md` §8-b says which
+  rebases stale it). While a scoped file this branch changes is busy on `main`
+  (go-to-k/cdkd#4183), run the set as ONE parallel batch, each `verify.sh` that
+  builds (`grep -l 'vp run build' <dir>/verify.sh`) alone BEFORE it, then set
+  the marker, record, push and merge without pausing.
 - **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
   a lane stopped at merge-ready drains no queue: re-send, confirm in the TREE.
 
@@ -58,14 +57,15 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   commit ITS output. Take upstream whole when it derives the file from the tree.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. Its `merge=union` keeps both LOCALLY,
-  but GitHub ignores that driver: every `main` commit adding ledger rows turns
-  the PR CONFLICTING, and CI never fires. Rebase locally, then run
+  but GitHub ignores that driver: a `main` commit adding ledger rows next to
+  this PR's turns it CONFLICTING, and CI never fires. Rebase locally, then run
   `vp run integ-ledger-normalize` and commit it before the push.
 
 ### Merge
 
 ```bash
 gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
+# -R on every gh call below too: "Could not resolve to a PullRequest" is no permissions error
 ```
 
 - **Read the merge state before you watch CI**: at `mergeable=CONFLICTING` CI
