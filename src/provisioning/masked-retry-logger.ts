@@ -194,34 +194,60 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  * over-masking unrelated text in this operation's lines, never disclosure.
  *
  * The derived name is replaced wherever it OCCURS — including inside an ARN
- * built from it — before the base masker runs, and the returned `mask` is the
- * extended one, so a `pasteableAwsCommand(mask)` WITHHOLDS a command naming it.
+ * built from it — and the returned `mask` is the extended one, so a
+ * `pasteableAwsCommand(mask)` WITHHOLDS a command naming it.
+ *
+ * THE BASE MASKER RUNS FIRST, the needles after it (issue
+ * [#4193](https://github.com/go-to-k/cdkd/issues/4193)). The base is one
+ * longest-first pass over the recorded secrets, so a needle replaced BEFORE it
+ * could cut a longer recorded secret containing the needle, which then no
+ * longer occurs whole and its remainder prints. Base first means the needles
+ * see exactly what the base alone would print, and they only replace with the
+ * mask, so they can add masking but never undo it. Each needle is itself
+ * passed through the base first (at {@link BASE_MASKER_SUBSTRING_FLOOR} or
+ * longer; below it the base's substring arm leaves the text alone too), so a
+ * needle whose INSIDE the base rewrites still matches the rewritten text; a
+ * needle the base turns into exactly the mask is dropped, because the base
+ * already hides it whole. The residual, accepted: a recorded secret that
+ * STRADDLES a needle's edge in the text rewrites the needle differently there
+ * than alone, so the needle's part outside that secret prints — part of the
+ * derived name, never part of a secret the base hid.
  */
 export function withDerivedNameMasks(
   logger: { debug(message: string): void; warn(message: string): void },
   sinks: MaskedLogSinks,
   pairs: ReadonlyArray<readonly [raw: unknown, derived: string | undefined]>
 ): MaskedLogSinks {
-  const needles = pairs
+  const base = sinks.mask;
+  const derivedNames = pairs
     .filter(
       (pair): pair is readonly [string, string] =>
         typeof pair[0] === 'string' &&
         pair[0] !== '' &&
         typeof pair[1] === 'string' &&
         pair[1] !== '' &&
-        isSecretDerivedValue(pair[0], sinks.mask)
+        isSecretDerivedValue(pair[0], base)
     )
-    .map(([, derived]) => derived)
+    .map(([, derived]) => derived);
+  if (derivedNames.length === 0) return sinks;
+  // Each needle as it reads in the BASE's output (see the ordering note above).
+  // The same marker the depth cap substitutes, which is fenced against
+  // `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
+  const needles = [
+    ...new Set(
+      derivedNames.map((derived) =>
+        derived.length < BASE_MASKER_SUBSTRING_FLOOR ? derived : base(derived)
+      )
+    ),
+  ]
+    .filter((needle) => needle !== '' && needle !== MASK_WALK_DEPTH_CAP_MARKER)
     // Longest first, so a needle that contains another is replaced whole.
     .sort((a, b) => b.length - a.length);
   if (needles.length === 0) return sinks;
-  const base = sinks.mask;
   const mask: MaskerFn = (text: string) => {
-    let out = text;
-    // The same marker the depth cap substitutes, which is fenced against
-    // `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
+    let out = base(text);
     for (const needle of needles) out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
-    return base(out);
+    return out;
   };
   return {
     mask,
@@ -256,6 +282,18 @@ export const MASK_WALK_MAX_DEPTH = 8;
  * test that imports both.
  */
 export const MASK_WALK_DEPTH_CAP_MARKER = '***';
+
+/**
+ * The length below which the deploy's base masker leaves a SUBSTRING alone
+ * (it still masks a whole value of any length), so a derived-name needle this
+ * short is stored as-is rather than passed through the base first — see
+ * {@link withDerivedNameMasks}.
+ *
+ * MUST equal `MIN_NEEDLE_LENGTH` in `src/deployment/secret-redaction.ts`,
+ * spelled here for the same leaf-module reason as
+ * {@link MASK_WALK_DEPTH_CAP_MARKER} and fenced against drift the same way.
+ */
+export const BASE_MASKER_SUBSTRING_FLOOR = 4;
 
 /**
  * Mask every string LEAF and KEY of an arbitrary value, returning a structure
