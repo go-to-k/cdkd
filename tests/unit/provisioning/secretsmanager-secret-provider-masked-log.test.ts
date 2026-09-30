@@ -141,6 +141,36 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
     expect((err.cause as Error).message).toContain(arnOf(TINY));
   });
 
+  /** The create-failure message for AWS text `aws`, with `TINY` as the secret Name. */
+  async function createFailureFor(aws: string): Promise<string> {
+    mockSend.mockRejectedValue(new Error(aws));
+    const err = await thrown(() =>
+      provider.create('Secret', TYPE, { Name: TINY, SecretString: 'v' }, { maskSecrets })
+    );
+    return err.message.replace('Failed to create secret Secret: ', '');
+  }
+
+  it.each([
+    ['JSON-quoted, beside another suffixed token', `{"SecretId":"${arnOf(TINY)}","Other":"a-bcdefg"}`, '{"SecretId":"***","Other":"a-bcdefg"}'],
+    ['comma-joined with an ordinary ARN', `${arnOf(TINY)},${arnOf('plain-name')}`, `***,${arnOf('plain-name')}`],
+    ['followed by a path that is legal in a name', `${arnOf(TINY)}/version-AbCdEf`, '***/version-AbCdEf'],
+    ['followed by a second suffix', `${arnOf(TINY)}-ZZZZZZ.`, '***-ZZZZZZ.'],
+  ])('masks a quoted secret ARN %s, and only that ARN', async (_shape, aws, masked) => {
+    expect(await createFailureFor(aws)).toBe(masked);
+  });
+
+  it('keeps a token that only LOOKS like the secret ARN (a 7-character suffix)', async () => {
+    const lookalike = `arn:aws:secretsmanager:us-east-1:123456789012:secret:${TINY}-AbCdEfg`;
+    expect(await createFailureFor(`Bad id ${lookalike}.`)).toBe(`Bad id ${lookalike}.`);
+  });
+
+  it('scans a long run with no whitespace in linear time', async () => {
+    const run = 'arn:a:secretsmanager:::secret:'.repeat(30_000);
+    const started = Date.now();
+    expect(await createFailureFor(run)).toBe(run);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it('keeps a 2-character secret that occurs in cdkd wording from masking that wording', async () => {
     // `se` is in `secret`: below the needle floor it is no needle, so the fixed
     // wording survives while the ARN naming it is masked whole.

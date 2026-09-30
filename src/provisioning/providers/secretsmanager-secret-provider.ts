@@ -723,16 +723,30 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     }
     const needled = withDerivedNameMasks(logger, base, needlePairs);
     if (secretNames.size === 0) return needled;
+    // A secret ARN QUOTED inside other text (an AWS error): the prefix plus
+    // the longest run of characters a secret name may hold (letters, digits,
+    // `/_+=.@-`). A name can itself contain `-XXXXXX`, and the run can go on
+    // past the suffix (`/version-...`), so each secret name is tried as a
+    // PREFIX of the run followed by a 6-character suffix, rather than parsing
+    // one name out of it; the rest of the run is kept.
+    const ARN_SEGMENT =
+      /(arn:[^:\s]+:secretsmanager:[^:\s]*:[^:\s]*:secret:)([A-Za-z0-9/_+=.@-]+)/g;
+    const byLength = [...secretNames].sort((a, b) => b.length - a.length);
+    const maskArnSegment = (whole: string, _prefix: string, run: string): string => {
+      for (const name of byLength) {
+        if (
+          run.startsWith(name) &&
+          /^-[A-Za-z0-9]{6}(?![A-Za-z0-9])/.test(run.slice(name.length))
+        ) {
+          return MASK_WALK_DEPTH_CAP_MARKER + run.slice(name.length + 7);
+        }
+      }
+      return whole;
+    };
     const mask: MaskerFn = (text: string) =>
       secretNames.has(text) || secretNames.has(arnName(text) ?? '')
         ? MASK_WALK_DEPTH_CAP_MARKER
-        : needled.mask(
-            text.replace(
-              /arn:[^:\s]+:secretsmanager:[^:\s]*:[^:\s]*:secret:(\S+)-[A-Za-z0-9]{6}(?![A-Za-z0-9])/g,
-              (arn: string, name: string) =>
-                secretNames.has(name) ? MASK_WALK_DEPTH_CAP_MARKER : arn
-            )
-          );
+        : needled.mask(text.replace(ARN_SEGMENT, maskArnSegment));
     return {
       mask,
       value: (value: unknown) => mask(String(value)),
