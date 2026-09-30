@@ -43,6 +43,7 @@ Outputs:
 - cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/us-east-1/state.json`)
 - Both print outputs to stdout after a successful deploy
 - Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
+- Both print an output whose value comes from a `NoEcho` parameter in the clear (cdkd masks a resolved `{{resolve:...}}` dynamic-reference secret and a `NoEcho` custom-resource attribute). An output is published data, so keep secrets out of outputs.
 
 ## Related
 
