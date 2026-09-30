@@ -940,6 +940,45 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     });
   });
 
+  it('refuses an ECS cluster rename onto an ACTIVE cluster before CreateCluster adopts it', async () => {
+    h = makeHarness('AWS::ECS::Cluster');
+    h.importResult = { physicalId: 'their-cluster' };
+
+    const err = await provision(makeEngine(h), {
+      type: 'AWS::ECS::Cluster',
+      nameProperty: 'ClusterName',
+      recorded: 'my-cluster',
+      desired: 'their-cluster',
+    });
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).toContain('another existing resource (their-cluster)');
+    expect(err!.message).toContain('Nothing was created or deleted');
+    expect(h.callOrder).toEqual(['import']);
+    expect(h.provider.import).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resourceType: 'AWS::ECS::Cluster',
+        properties: expect.objectContaining({ ClusterName: 'their-cluster' }),
+      })
+    );
+  });
+
+  it('proceeds with an ECS cluster rename onto a free name (negative control)', async () => {
+    h = makeHarness('AWS::ECS::Cluster');
+    h.importResult = null;
+    h.createIds = ['free-cluster'];
+
+    const err = await provision(makeEngine(h), {
+      type: 'AWS::ECS::Cluster',
+      nameProperty: 'ClusterName',
+      recorded: 'my-cluster',
+      desired: 'free-cluster',
+    });
+
+    expect(err).toBeNull();
+    expect(h.callOrder).toEqual(['import', 'create', 'delete']);
+  });
+
   it('refuses an S3 bucket rename onto a bucket that already exists', async () => {
     h = makeHarness('AWS::S3::Bucket');
     h.importResult = { physicalId: 'their-bucket' };

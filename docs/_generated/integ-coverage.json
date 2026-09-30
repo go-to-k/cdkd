@@ -3145,7 +3145,8 @@
         "local-start-alb",
         "local-start-alb-from-state",
         "local-start-service",
-        "local-start-service-watch-fast"
+        "local-start-service-watch-fast",
+        "replacement-rename-onto-holder"
       ],
       "signals": {
         "drift-revert": [
@@ -3179,6 +3180,10 @@
         ],
         "local-start-service-watch-fast": [
           "l1"
+        ],
+        "replacement-rename-onto-holder": [
+          "l1",
+          "literal"
         ]
       }
     },

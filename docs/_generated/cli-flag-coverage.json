@@ -1783,6 +1783,7 @@
     "--cluster-id",
     "--cluster-identifier",
     "--cluster-ids",
+    "--cluster-name",
     "--clusters",
     "--code-interpreter-id",
     "--code-signing-config-arn",

@@ -135,8 +135,9 @@ export function replacementRequestsDifferentName(input: {
  * Types whose SDK create does not refuse a name another resource already
  * holds: it RETURNS that resource (SQS `CreateQueue` with matching attributes,
  * SNS `CreateTopic`, Step Functions `CreateStateMachine` with an identical
- * definition) or OVERWRITES it (EventBridge `PutRule`, CloudWatch
- * `PutMetricAlarm`), or — S3 — the provider reads `BucketAlreadyOwnedByYou`
+ * definition, ECS `CreateCluster` for an ACTIVE cluster — measured) or
+ * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or —
+ * S3 — the provider reads `BucketAlreadyOwnedByYou`
  * (and the `us-east-1` legacy 200) as success and configures the existing
  * bucket. A replacement renamed onto such a name "succeeds" with
  * someone else's resource, which the deploy then records as its own and a
@@ -148,7 +149,7 @@ export function replacementRequestsDifferentName(input: {
  * Not here yet, though their creates adopt too (go-to-k/cdkd#3937 tracks
  * them): ELBv2 load balancers and target groups (idempotent on identical
  * settings, per the API reference) have no name lookup in their provider's
- * `import()` and a provider-rewritten name; ECS clusters are unconfirmed.
+ * `import()` and a provider-rewritten name.
  *
  * The lookup and the create are two calls, so a resource created under the
  * name between them is not seen: the probe narrows the window, it cannot
@@ -156,6 +157,7 @@ export function replacementRequestsDifferentName(input: {
  */
 const NAME_ADOPTING_SDK_CREATE_TYPES: ReadonlySet<string> = new Set([
   'AWS::CloudWatch::Alarm',
+  'AWS::ECS::Cluster',
   'AWS::Events::Rule',
   'AWS::S3::Bucket',
   'AWS::SNS::Topic',
