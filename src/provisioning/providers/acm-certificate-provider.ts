@@ -906,7 +906,7 @@ export class ACMCertificateProvider implements ResourceProvider {
     for (const v of validations) {
       if (v.ValidationMethod === 'DNS' && v.ResourceRecord) {
         const r = v.ResourceRecord;
-        lines.push(`  ${v.DomainName} — ${r.Type} ${r.Name} -> ${r.Value}`);
+        lines.push(`  ${v.DomainName} — ${r.Type} ${r.Name} with value ${r.Value}`);
       } else if (v.ValidationMethod === 'EMAIL' && (v.ValidationEmails ?? []).length > 0) {
         lines.push(
           `  ${v.DomainName} — confirmation email sent to: ${v.ValidationEmails!.join(', ')}`

@@ -390,7 +390,7 @@ export class IAMRoleProvider implements ResourceProvider {
     if (needsReplacement) {
       const reason = newRoleName !== physicalId ? 'RoleName' : 'Path';
       log.debug(
-        `${reason} changed, replacing role: ${v(physicalId)} (${reason}: ${reason === 'RoleName' ? `${v(physicalId)} -> ${v(newRoleName)}` : `${v(oldPath)} -> ${v(newPath)}`})`
+        `${reason} changed, replacing role: ${v(physicalId)} (${reason}: ${reason === 'RoleName' ? `from ${v(physicalId)} to ${v(newRoleName)}` : `from ${v(oldPath)} to ${v(newPath)}`})`
       );
 
       // Create new role. The masker is forwarded (issue #2177) and NOTHING

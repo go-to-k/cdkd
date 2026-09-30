@@ -238,9 +238,10 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     // UpdateMicrovmImage input has no name field, so a Name change would be
     // silently dropped if it ever slipped through.
     if (properties['Name'] !== previousProperties['Name']) {
+      const shownName = (v: unknown): string => (v === undefined ? 'no value' : String(v));
       throw new ProvisioningError(
         `MicroVM image ${logicalId} Name is create-only and cannot be changed in place ` +
-          `(${String(previousProperties['Name'])} -> ${String(properties['Name'])}); this requires replacement.`,
+          `(from ${shownName(previousProperties['Name'])} to ${shownName(properties['Name'])}); this requires replacement.`,
         resourceType,
         logicalId,
         physicalId

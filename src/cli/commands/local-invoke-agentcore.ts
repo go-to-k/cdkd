@@ -1700,7 +1700,7 @@ export async function resolveFromS3BucketIntrinsic(
   }
   s3Source.bucket = result.value;
   getLogger().info(
-    `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} -> ${result.value}`
+    `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} resolved to ${result.value}`
   );
 }
 

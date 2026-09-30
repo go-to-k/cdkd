@@ -338,6 +338,10 @@ describe('cdkd state migrate', () => {
       await runMigrate(['migrate', '--region', 'us-east-1']);
 
       expect(readlineQuestion).toHaveBeenCalledTimes(1);
+      // go-to-k/cdkd#4239: 'from <a> to <b>', never a pasteable '->' redirect.
+      expect(String(readlineQuestion.mock.calls[0]![0])).toMatch(
+        /Copy 1 object\(s\) from cdkd-state-\S+ to cdkd-state-\S+ \(source bucket will be kept\)\?/
+      );
       expect(infoSpy).toHaveBeenCalledWith('Migration cancelled.');
     });
   });
@@ -467,6 +471,9 @@ describe('cdkd state migrate', () => {
 
     expect(infoSpy).toHaveBeenCalledWith(expect.stringMatching(/Copied 2 object\(s\)/));
     expect(infoSpy).toHaveBeenCalledWith('✓ Object count verified at destination');
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^✓ Migration complete: from cdkd-state-\S+ to cdkd-state-\S+$/)
+    );
     expect(infoSpy).toHaveBeenCalledWith(expect.stringMatching(/kept\. Pass --remove-legacy/));
     // Source bucket still there: no DeleteBucketCommand was planned for it.
   });

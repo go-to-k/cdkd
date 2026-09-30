@@ -188,7 +188,9 @@ export async function promptMigrationConfirm(
       `resource(s) whose AWS physical name is still prefixed with the stack name:`
   );
   for (const r of renames) {
-    logger.warn(`  - ${r.logicalId} (${r.resourceType}): ${r.oldPhysicalId} -> ${r.newPhysicalId}`);
+    logger.warn(
+      `  - ${r.logicalId} (${r.resourceType}): from ${r.oldPhysicalId} to ${r.newPhysicalId}`
+    );
   }
   logger.warn(
     'These resources will be REPLACED because the new naming convention drops ' +

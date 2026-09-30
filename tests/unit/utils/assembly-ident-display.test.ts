@@ -137,7 +137,7 @@ describe('the nested-template tree refusal', () => {
     );
 
     expect(text).toContain(`under stack ${SHOWN} contains a cycle`);
-    expect(text).toContain(`${SHOWN} (/out/a.json) -> ${SHOWN} (/out/a.json)`);
+    expect(text).toContain(`${SHOWN} (/out/a.json) then ${SHOWN} (/out/a.json)`);
     // The CLOSING row, named on its own.
     expect(text).toContain(`. Nested stack ${SHOWN} (declared in stack `);
     // The OWNING stack is built from the same values, `~`-joined.
