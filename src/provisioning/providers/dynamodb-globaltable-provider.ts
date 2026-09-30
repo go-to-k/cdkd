@@ -1283,8 +1283,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // unquoted, zsh's `BRACE_CCL` would expand them. A line flipped by
             // an apostrophe in `msg` (AWS error text) leaves them unquoted, but
             // the words stay glued to prose, so the worst case is an aws parse
-            // error, not a run. `region` comes from `DescribeTable`, an AWS
-            // region name, which holds no quote.
+            // error, not a run. `region` is an AWS region name read from
+            // `DescribeTable`, so it holds no quote.
             warn(
               `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
                 `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates 'Delete={RegionName='${region}'}' --region ${currentRegion}`.render()}`
