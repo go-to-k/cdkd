@@ -41,7 +41,6 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -2522,14 +2521,11 @@ describe('ApiGatewayProvider', () => {
           );
         });
 
-        it('shell-quotes a forged value in each of the three arguments', async () => {
-          expectQuotedAfter(await warnFor({ RestApiId: FORGED_QUOTE }), '--rest-api-id ', FORGED_QUOTE);
-          expectQuotedAfter(
-            await warnFor({ ResourceId: FORGED_QUOTE }),
-            '--resource-id ',
-            FORGED_QUOTE
-          );
-          expectQuotedAfter(await warnFor({ HttpMethod: FORGED_QUOTE }), '--http-method ', FORGED_QUOTE);
+        // A shell-active character withholds the command (go-to-k/cdkd#3950).
+        it('withholds the command for a shell-active character in any one of the three arguments', async () => {
+          expectWithheld(await warnFor({ RestApiId: FORGED_QUOTE }), 'aws apigateway delete-method');
+          expectWithheld(await warnFor({ ResourceId: FORGED_QUOTE }), 'aws apigateway delete-method');
+          expectWithheld(await warnFor({ HttpMethod: FORGED_QUOTE }), 'aws apigateway delete-method');
         });
 
         it('withholds the command when any one argument carries a control byte', async () => {

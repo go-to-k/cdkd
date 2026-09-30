@@ -1,7 +1,8 @@
 /**
  * The PASTE fence: the message SHAPES this lane introduced, plus the pure
  * message builders it touched, fed to real shells (bash, and zsh where it is
- * installed) at three granularities with
+ * installed) at line, sentence and clause granularity and as runs of
+ * consecutive lines, with
  * four payload families — through `paste-harness.ts`, which the test file of
  * every other touched site (`gc.test.ts`, `export-composite-identifier.test.ts`,
  * `rollback-executor-retain-new-resource.test.ts`,
@@ -126,7 +127,19 @@ describe('pasteable messages — nothing runs at any granularity', () => {
           expect(message, `${site} did not render the command this case expects`).toContain(
             expects
           );
-          expect(spansThatRun(message, dir), `${label} ran in ${site}`).toEqual([]);
+          // KNOWN VIOLATION, go-to-k/cdkd#4205: `pasteableCommand` names the
+          // separator payload shell-quoted, and `record's` on the line above
+          // flips the quote parity when both lines are pasted as one block
+          // (go-to-k/cdkd#4133), so the payload's `;` runs as bare shell under
+          // bash. Pinned to exactly that two-line span; #4205's fix withholds
+          // the value and removes this arm.
+          const known4205 = site === 'gated stack' && label === 'separator';
+          expect(spansThatRun(message, dir, { shells: ['bash'] }), `${label} ran in ${site}`).toEqual(
+            known4205 ? [message] : []
+          );
+          if (PASTE_SHELLS.includes('zsh')) {
+            expect(spansThatRun(message, dir, { shells: ['zsh'] }), `${label} ran in ${site} (zsh)`).toEqual([]);
+          }
         }
       });
     }, 120_000);
@@ -191,6 +204,41 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         expect(filesTouchedBy(joined, dir, BASH_ONLY), JSON.stringify(separator)).toEqual([]);
         expect(spansThatRun(joined, dir, BASH_ONLY), JSON.stringify(separator)).toEqual([clause]);
       }
+    });
+  }, 120_000);
+
+  it('pastes runs of consecutive LINES, which a quote opened on one line can join (go-to-k/cdkd#4133)', () => {
+    withPasteDir((dir) => {
+      // Each line on its own leaves a quote open, so neither runs; pasted as
+      // one block, `owner's` and `stack's` pair up across the line break and
+      // the substitution is left outside single quotes. Under both shells.
+      const opens = "Resource it is gone; the owner's record";
+      const closes = `holds the stack's value "x$(touch OWNED)".`;
+      const straddle = `${opens}\n${closes}`;
+      for (const shell of PASTE_SHELLS) {
+        const only = { shells: [shell] } as const;
+        expect(filesTouchedBy(opens, dir, only), `${shell}: line one alone`).toEqual([]);
+        expect(filesTouchedBy(closes, dir, only), `${shell}: line two alone`).toEqual([]);
+        expect(spansThatRun(straddle, dir, only), shell).toEqual([straddle]);
+      }
+      // Every run of lines, not only the whole message: under `bash -c` a
+      // syntax error on a line OUTSIDE the selection (bash's stop at
+      // `record(s)`, BASH ONLY for the reason the case above gives) keeps the
+      // whole message inert, and
+      // only the two-line run reaches the straddle.
+      const BASH_ONLY = { shells: ['bash'] } as const;
+      const three = `Found 2 resource record(s)\n${straddle}`;
+      expect(filesTouchedBy(three, dir, BASH_ONLY), 'the whole message must be inert').toEqual([]);
+      expect(spansThatRun(three, dir, BASH_ONLY)).toEqual([straddle]);
+      // A run of THREE lines, not only adjacent pairs: a quote-free middle
+      // line keeps the straddle from closing inside any two-line run.
+      const block = `${opens}\nwas read from the bucket\n${closes}`;
+      for (const shell of PASTE_SHELLS) {
+        expect(spansThatRun(block, dir, { shells: [shell] }), `${shell}: three lines`).toEqual([block]);
+      }
+      const four = `Found 2 resource record(s)\n${block}`;
+      expect(filesTouchedBy(four, dir, BASH_ONLY), 'the four-line message must be inert').toEqual([]);
+      expect(spansThatRun(four, dir, BASH_ONLY)).toEqual([block]);
     });
   }, 120_000);
 
@@ -337,6 +385,48 @@ describe('pasteable messages — nothing runs at any granularity', () => {
           /also ran a stubbed cdkd \/ aws/
         );
       }
+      // MULTI-LINE spans are judged against their lines (go-to-k/cdkd#4133).
+      // A command on a line of its own runs when the block is pasted whole,
+      // and the round-3 ruling allows it: the joined span runs nothing its
+      // lines do not.
+      const ownLine = `No stack "${hostile}" was found.\ncdkd state list`;
+      expectOnlyDisplayResidual(ownLine, dir, hostile);
+      // A file only the JOINED lines touch is refused, under both helpers:
+      // each line leaves a quote open and runs nothing, and pasted together
+      // the apostrophes pair and the trailing `touch OTHER` runs.
+      const joinedOnly = `The owner's record\nholds "${hostile}" (us-east-1) and it's gone; touch OTHER`;
+      for (const line of joinedOnly.split('\n')) expect(filesTouchedBy(line, dir), line).toEqual([]);
+      expect(filesTouchedBy(joinedOnly, dir)).toContain('OTHER');
+      expect(() => expectRuntimeResidual(joinedOnly, dir, hostile)).toThrow(
+        /runs more than pasting each alone/
+      );
+      // The join's run cannot hide behind a line that creates the SAME file
+      // alone: the display line creates `OWNED`, and the join runs the last
+      // line's own `touch OWNED` once the apostrophes pair around the display.
+      const sameName = `The owner's record\nStack "${hostile}" is gone.\nholds it's; touch OWNED`;
+      expect(() => expectRuntimeResidual(sameName, dir, hostile)).toThrow(
+        /runs more than pasting each alone/
+      );
+      // Judged per shell: line one acts alone under bash only (its ` # it's`
+      // is a comment there), so under zsh it stays in the join, where its
+      // apostrophe pairs with line two's and `touch OTHER` runs.
+      if (PASTE_SHELLS.includes('zsh')) {
+        const perShell = `Stack "${hostile}" gone # it's\nx'; touch OTHER`;
+        expect(() => expectRuntimeResidual(perShell, dir, hostile)).toThrow(
+          /runs more than pasting each alone/
+        );
+      }
+      // Nor a VERB only the join invokes.
+      const joinedVerb = `Stack "${hostile}" gone.\nThe owner's record\nholds it's; cdkd destroy --force`;
+      expect(() => expectRuntimeResidual(joinedVerb, dir, hostile)).toThrow(
+        /runs more than pasting each alone/
+      );
+      // And a join that ONLY runs a verb, with no display running anywhere:
+      // the gate on a multi-line span is "touched or ran a verb".
+      const verbOnlyJoin = "The owner's record\nholds it's; cdkd destroy --force";
+      expect(() => expectRuntimeResidual(verbOnlyJoin, dir, hostile)).toThrow(
+        /runs more than pasting each alone/
+      );
       // A verb only ZSH runs (go-to-k/cdkd#4127 review M4): the trailing
       // `x(N)` is a bash syntax error, so bash runs nothing, while zsh reads a
       // glob qualifier and runs both the substitution and the verb. The
@@ -374,6 +464,17 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         expect(() =>
           expectZshRunsTheDisplay(`cdkd deploy "${hostile}" x(N)`, dir, hostile)
         ).toThrow(/also ran a stubbed cdkd/);
+        // The multi-line judgement holds in the zsh reason too: a command on
+        // a line of its own is accepted, and a file only the join touches is
+        // refused.
+        expectZshRunsTheDisplay(`Nothing for "${hostile}" (us-east-1).\n  cdkd state list`, dir, hostile);
+        expect(() =>
+          expectZshRunsTheDisplay(
+            `The owner's record\nholds "${hostile}" (us-east-1) and it's gone; touch OTHER`,
+            dir,
+            hostile
+          )
+        ).toThrow(/runs more than pasting each alone/);
         const zshOnlyVerb = `cdkd deploy "${hostile}" x(N)`;
         expect(filesTouchedBy(zshOnlyVerb, dir, { shells: ['bash'] })).toEqual([]);
         expect(() => expectRuntimeResidual(zshOnlyVerb, dir, hostile)).toThrow(

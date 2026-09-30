@@ -112,12 +112,13 @@ absence test.
 **A template is not enough on its own.** The name a reader would type into it
 comes from the clause ABOVE, and `safeIdentifier` composes `displaySafe`, which
 TRIMS — so a record keyed `"prod-api "` opens as `State for 'prod-api' (...)`,
-byte-identical to a HEALTHY sibling, and an operator orphaning "the record the
-line above names" would delete the intact one. So the remedy sentence is GATED on
-both identifiers rendering EXACTLY (compared against the raw values); when either
-does not, the text names no removal target and sends the reader to
-`cdkd state list --json` — never `--long`, which trims the name it could not
-print (go-to-k/cdkd#3420).
+byte-identical to a HEALTHY sibling, which an operator would then orphan.
+So the remedy sentence is GATED on
+both identifiers rendering EXACTLY; when either does not, the text names no
+removal target and sends the reader to `cdkd state list --json` — never
+`--long`, which trims the name it could not print (go-to-k/cdkd#3420). That
+listing is JSON, so a hole is filled with the value DECODED, then shell-quoted
+(`JSON_LISTING_HOLE_VALUE`, go-to-k/cdkd#3908).
 
 `S3StateBackend.getState` normalizes a region-scoped record's `region` to its
 KEY's region and warns on a body that disagreed (`adoptKeyRegion`), so every

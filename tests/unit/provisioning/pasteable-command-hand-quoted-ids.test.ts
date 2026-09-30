@@ -24,14 +24,13 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
  *  - `s3-bucket-provider.ts` — both partial-create cleanup arms
  *    (`aws s3api delete-bucket --bucket`), which share one clause.
  *
- * WHY THESE FOUR VALUES. `displaySafe(asciiOnly)` is a positive allowlist over
- * printable ASCII, so the discriminating inputs split into two outcomes and
- * BOTH have to be pinned or the fence proves only half of the rule:
+ * WHY THESE FOUR VALUES. Each non-clean input reaches suppression by a
+ * different gate, and each gate has to be pinned or the fence proves only
+ * part of the rule:
  *
- *  - a `'` is printable ASCII, so sanitizing does NOT change it and the command
- *    is still shown — SHELL-QUOTED, which is the whole point. Asserting
- *    "suppressed" for this one would have been wrong, and asserting nothing
- *    would leave the breakout unfenced.
+ *  - a `'` is printable ASCII, so sanitizing does NOT change it; it is a
+ *    shell-active character, so the whole command is SUPPRESSED
+ *    (go-to-k/cdkd#3950, `PASTE_ARG_UNSAFE`) rather than shown hand-quoted.
  *  - a control byte, a newline and a non-ASCII character are each replaced (and
  *    the result trimmed), so the value CHANGES and the whole command is
  *    SUPPRESSED — naming the sanitized value would address a DIFFERENT
@@ -128,7 +127,8 @@ const CASES: ReadonlyArray<{
   readonly rendered: 'bare' | 'quoted' | 'suppressed';
 }> = [
   { label: 'a clean value', suffix: 'clean', rendered: 'bare' },
-  { label: 'a single quote', suffix: "it's-mine", rendered: 'quoted' },
+  // A shell-active character suppresses the command (go-to-k/cdkd#3950, PASTE_ARG_UNSAFE).
+  { label: 'a single quote', suffix: "it's-mine", rendered: 'suppressed' },
   { label: 'a control byte', suffix: `a${CONTROL_BYTE}b`, rendered: 'suppressed' },
   { label: 'a newline', suffix: 'a\nb', rendered: 'suppressed' },
   { label: 'a non-ASCII character', suffix: 'aΩb', rendered: 'suppressed' },
@@ -168,7 +168,7 @@ function expectRendering(
   }
 }
 
-describe('pasteable provider commands sanitize, quote and suppress their id (#3136)', () => {
+describe('pasteable provider commands sanitize and suppress their id (#3136)', () => {
   beforeEach(() => {
     // `mockReset` as well as `clearAllMocks`, per this directory's rule: the
     // latter leaves a `*Once` queue intact across tests.
@@ -222,10 +222,10 @@ describe('pasteable provider commands sanitize, quote and suppress their id (#31
       // problem, because it left the value byte-identical. So a secret-bearing
       // id is suppressed exactly as a sanitized one is.
       //
-      // The quote in the value is what makes the case discriminate: without it
-      // `shellQuote` leaves the bytes contiguous and the message-level mask
-      // still reaches them.
-      await runFailedCleanup("/cdkd/o'brien-s3cr3t", (t) => t.replace(/s3cr3t/g, '<redacted>'));
+      // The name carries no quote: since go-to-k/cdkd#3950 a `'` is withheld by
+      // the shell-active gate whatever the masker says, so a quote-free secret
+      // name is the one only the masker gate withholds.
+      await runFailedCleanup('/cdkd/obrien-s3cr3t', (t) => t.replace(/s3cr3t/g, '<redacted>'));
       expect(warnings()).not.toContain('s3cr3t');
       expect(warnings()).not.toContain(BEFORE);
       expect(warnings()).toContain('via the console');
@@ -421,8 +421,7 @@ describe('pasteable provider commands sanitize, quote and suppress their id (#31
       withPasteDir((dir) => {
         for (const { explicit, message } of rendered) {
           expect(message, explicit).toContain(`from an ARN (${JSON.stringify(explicit)})`);
-          // The PROSE, not the `aws ssm get-parameter` command after it, which
-          // shell-quotes the value on purpose.
+          // The PROSE, not the `aws ssm get-parameter` command after it.
           const prose = message.split(' Read the name AWS holds')[0]!;
           expect(prose, explicit).not.toContain(`'${explicit}'`);
           // S1 (go-to-k/cdkd#3950): inert under BASH, pinned here; its zsh
@@ -440,22 +439,26 @@ describe('pasteable provider commands sanitize, quote and suppress their id (#31
     }, 120_000);
 
     // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until its source row
-    // lands, which flips both cases: the block displays the explicit ARN (JSON)
-    // AND carries the `aws ssm get-parameter` remedy, and under zsh the `(` no
-    // longer stops a pasted line.
+    // lands, which flips both cases. `pasteableArg` now withholds the
+    // `aws ssm get-parameter` command for a payload ARN (`PASTE_ARG_UNSAFE`),
+    // but the line that displays the ARN (JSON) still carries the `--resource`
+    // remedy, and under zsh the `(` no longer stops a pasted line, so the
+    // display's `$( )` runs beside it.
     const payloadArnRefusals = async (): Promise<Array<{ explicit: string; message: string }>> => {
       const out: Array<{ explicit: string; message: string }> = [];
       for (const { value } of PASTE_PAYLOADS) {
         const explicit = `arn:aws:ssm:us-east-1:111122223333:parameter/${value}`;
         const message = await refusalMessage(explicit);
-        // The row itself, found before the rule is asked.
-        expect(message, explicit).toContain('aws ssm get-parameter');
+        // The row itself, found before the rule is asked: the read command is
+        // withheld, and the `--resource` remedy is what keeps the row S1.
+        expect(message, explicit).not.toContain('aws ssm get-parameter');
+        expect(message, explicit).toContain("--resource MyParam='<parameterName>'");
         out.push({ explicit, message });
       }
       return out;
     };
 
-    it('S1 SSM ARN-adopt refusal: a payload ARN block still carries a command (block rule)', async () => {
+    it('S1 SSM ARN-adopt refusal: a payload ARN block still carries the --resource remedy (block rule)', async () => {
       for (const { explicit, message } of await payloadArnRefusals()) {
         expect(() => expectNoCommandBesideDisplay(message, explicit), explicit).toThrow(
           /also carries a pasteable command/
@@ -550,9 +553,14 @@ describe('pasteable provider commands sanitize, quote and suppress their id (#31
       mockSend.mockReset();
       await runIndeterminate(bucket);
       const second = warnings();
-      const quoted = `${BEFORE} '${bucket.replace(/'/g, `'\\''`)}'`;
-      expect(first).toContain(quoted);
-      expect(second).toContain(quoted);
+      // The `'` suppresses the command in both (go-to-k/cdkd#3950).
+      const suppressed =
+        'Manual deletion may be required before the next deploy, via the console: the bucket name ' +
+        'cannot be reproduced safely on a command line';
+      expect(first).toContain(suppressed);
+      expect(second).toContain(suppressed);
+      expect(first).not.toContain(BEFORE);
+      expect(second).not.toContain(BEFORE);
     });
 
     it.each([
@@ -566,7 +574,9 @@ describe('pasteable provider commands sanitize, quote and suppress their id (#31
         // engine sink), and once they do, `shellQuote`'s `'\''` escaping would
         // still put a quote-carrying secret past a message-level mask. So the
         // arm masks, and the renderer suppresses.
-        await run("cdkd-o'brien-s3cr3t", (t: string) => t.replace(/s3cr3t/g, '<redacted>'));
+        // Quote-free, so the masker gate alone withholds it (a `'` would be
+        // withheld by the shell-active gate anyway, go-to-k/cdkd#3950).
+        await run('cdkd-obrien-s3cr3t', (t: string) => t.replace(/s3cr3t/g, '<redacted>'));
         expect(warnings()).not.toContain('s3cr3t');
         expect(warnings()).toContain('<redacted>');
         expect(warnings()).not.toContain(BEFORE);

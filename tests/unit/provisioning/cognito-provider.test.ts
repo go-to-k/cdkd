@@ -45,7 +45,6 @@ import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cog
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
@@ -2913,12 +2912,14 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       // Issue #3136: the pool id is the `state.json`-borne physical id, so the
-      // check command renders through `pasteableAwsCommand` — quoted, or
-      // withheld when it cannot be printed exactly.
+      // check command renders through `pasteableAwsCommand` — withheld when it
+      // cannot be printed exactly or holds a character that changes it once unquoted
+      // (go-to-k/cdkd#3950).
       it.each([
-        ['quoted', `us-east-1_abc${FORGED_QUOTE}`],
-        ['withheld', `us-east-1_abc${FORGED_CTRL}`],
-      ])('the failed-restore check command is %s for a forged pool id', async (outcome, poolId) => {
+        ['bare', 'a clean', 'us-east-1_abc123'],
+        ['withheld', 'a shell-active', `us-east-1_abc${FORGED_QUOTE}`],
+        ['withheld', 'a control-byte', `us-east-1_abc${FORGED_CTRL}`],
+      ])('the failed-restore check command is %s for %s pool id', async (outcome, _label, poolId) => {
         mockSend.mockResolvedValueOnce(liveOnSingle); // GetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig (first)
         mockSend.mockRejectedValueOnce(
@@ -2935,8 +2936,8 @@ describe('CognitoUserPoolProvider', () => {
         const warned = childLogger.warn.mock.calls
           .map((c) => String(c[0]))
           .find((m) => m.includes('restoring the previous one also failed'))!;
-        if (outcome === 'quoted') {
-          expectQuotedAfter(warned, 'aws cognito-idp get-user-pool-mfa-config --user-pool-id ', poolId);
+        if (outcome === 'bare') {
+          expect(warned).toContain(`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${poolId}`);
         } else {
           expectWithheld(warned, 'aws cognito-idp');
         }

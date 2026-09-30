@@ -32,8 +32,10 @@ import {
 
 /**
  * Read `resource`'s attributes through `provider.import()` with
- * `knownPhysicalId`, the way `DeployEngine.readStaleAttributes` does, and
- * return what the read observed. REJECTS when `import()` does, and for a
+ * `knownPhysicalId` and return what the read observed. The ONE copy of the
+ * read: `DeployEngine.readStaleAttributes` calls it too, so a guard or masking
+ * rule cannot land in one command's read and not the other's
+ * (go-to-k/cdkd#4196). Each command still serves its OWN read's answer. REJECTS when `import()` does, and for a
  * provider that answered for a different physical id;
  * {@link createReadOnlyAttributeHealerFactory}'s healer turns both into a
  * `failed` outcome.
@@ -59,16 +61,19 @@ export async function readRecordAttributes(input: {
   if (found.physicalId !== resource.physicalId) {
     // The `orphan-adoption.ts` guard: nothing enforces a provider's contract to
     // treat `knownPhysicalId` as ground truth, and one that searches instead
-    // can answer for a DIFFERENT resource, whose attributes must not be served.
+    // can answer for a DIFFERENT resource, whose attributes must not be served
+    // (nor, on the deploy, merged into the record).
     // not-in-class: the resolver renders this message at debug only, masked.
     throw new Error(
       `the provider answered for a different resource (${found.physicalId}) than the one asked about (${resource.physicalId})`
     );
   }
   // A value carrying `SECRET_MASK` is not a value: `CloudControlProvider.import`
-  // masks every leaf it cannot certify as a read-only attribute. Dropped here,
-  // and named in `withheldKeys` so a refusal does not claim the read reported
-  // nothing.
+  // masks every leaf it cannot certify as a read-only attribute — every leaf
+  // at all when `DescribeType` is denied. Served, it would be re-applied to AWS
+  // as the literal mask under a green deploy, and merged into the record it
+  // would block every later heal. Dropped here, and named in `withheldKeys` so
+  // a refusal does not claim the read reported nothing.
   const reported = Object.entries(normalizeHealedAttributes(found.attributes));
   const attributes = Object.fromEntries(reported.filter(([, value]) => !carriesSecretMask(value)));
   const withheldKeys = reported.filter(([, value]) => carriesSecretMask(value)).map(([key]) => key);

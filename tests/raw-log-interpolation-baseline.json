@@ -99,7 +99,7 @@
   "src/provisioning/providers/ec2-provider.ts": 151,
   "src/provisioning/providers/ecr-provider.ts": 16,
   "src/provisioning/providers/ecs-provider.ts": 30,
-  "src/provisioning/providers/efs-provider.ts": 36,
+  "src/provisioning/providers/efs-provider.ts": 11,
   "src/provisioning/providers/elasticache-provider.ts": 20,
   "src/provisioning/providers/elbv2-provider.ts": 56,
   "src/provisioning/providers/emr-cluster-provider.ts": 17,

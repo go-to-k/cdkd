@@ -40,7 +40,6 @@ import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -191,15 +190,15 @@ describe('RDSProvider createDBCluster partial-create cleanup (Issue #376)', () =
       return String(warnSpy.mock.calls[0][0]);
     }
 
-    it('shell-quotes an identifier carrying a quote in both commands', async () => {
-      const msg = await warnFor(FORGED_QUOTE);
-      expectQuotedAfter(msg, 'aws rds modify-db-cluster --db-cluster-identifier ', FORGED_QUOTE);
-      expectQuotedAfter(msg, 'aws rds delete-db-cluster --db-cluster-identifier ', FORGED_QUOTE);
+    // A shell-active character withholds them (go-to-k/cdkd#3950).
+    it('withholds both commands for an identifier carrying a quote', async () => {
+      expectWithheld(await warnFor(FORGED_QUOTE), '--db-cluster-identifier');
     });
 
-    it('the no-protection arm (delete only) quotes or withholds too', async () => {
+    it('the no-protection arm (delete only) renders bare or withholds too', async () => {
       for (const [id, outcome] of [
-        [FORGED_QUOTE, 'quoted'],
+        ['my-cluster', 'bare'],
+        [FORGED_QUOTE, 'withheld'],
         [FORGED_CTRL, 'withheld'],
       ] as const) {
         warnSpy.mockReset();
@@ -211,8 +210,8 @@ describe('RDSProvider createDBCluster partial-create cleanup (Issue #376)', () =
         ).rejects.toThrow('Waiter failed');
         const msg = String(warnSpy.mock.calls[0][0]);
         expect(msg).not.toContain('modify-db-cluster');
-        if (outcome === 'quoted') {
-          expectQuotedAfter(msg, 'aws rds delete-db-cluster --db-cluster-identifier ', id);
+        if (outcome === 'bare') {
+          expect(msg).toContain(`aws rds delete-db-cluster --db-cluster-identifier ${id}`);
         } else {
           expectWithheld(msg, '--db-cluster-identifier');
         }

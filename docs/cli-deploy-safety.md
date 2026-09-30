@@ -1277,7 +1277,10 @@ that turns protection off with the immutable-property change reverted, then one
 that re-applies it with the replace flags.
 
 Six types name this dead end explicitly in their own refusals, each reading its
-own protection property and naming the command that turns it off:
+own protection property and naming the command that turns it off, or pointing
+at the console when the resource's id cannot be printed safely on a command
+line (it would be changed by sanitizing, or it holds whitespace or a character
+a shell acts on, such as a quote or a backtick):
 `AWS::Logs::LogGroup`, `AWS::ElasticLoadBalancingV2::LoadBalancer`,
 `AWS::EMR::Cluster`, `AWS::Cognito::UserPool`, `AWS::DynamoDB::GlobalTable` and
 `AWS::AutoScaling::AutoScalingGroup`. Every one of them knows only what cdkd

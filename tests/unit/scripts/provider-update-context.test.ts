@@ -193,6 +193,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'DynamoDBGlobalTableProvider',
       'DynamoDBTableProvider',
       'EC2Provider',
+      'EFSProvider',
       'ELBv2Provider',
       'GlueConnectionProvider',
       'GlueCrawlerProvider',
@@ -226,10 +227,10 @@ describe('provider UpdateContext fence — the real tree', () => {
     // Issue #2613's own measurement grepped `async update(` and so could see
     // NEITHER of these — they fell out of both of its buckets, which is part of
     // why its 17 / 60 over 77 files is 18 / 67 over 85 classes here.
-    // ServiceDiscoveryProvider DECLARES the parameter; EFSProvider omits it.
+    // Both now DECLARE the parameter (EFSProvider since the #2177 EFS slice).
     const byName = new Map(report.classes.map((c) => [c.name, c.verdict]));
     expect(byName.get('ServiceDiscoveryProvider')).toBe('declares');
-    expect(byName.get('EFSProvider')).toBe('omits');
+    expect(byName.get('EFSProvider')).toBe('declares');
   });
 });
 

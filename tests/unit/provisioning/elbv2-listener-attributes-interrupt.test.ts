@@ -63,7 +63,6 @@ import { getLogger } from '../../../src/utils/logger.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -221,11 +220,13 @@ describe('ELBv2 ModifyListenerAttributes aborts on Ctrl-C (#2053)', () => {
   // Issue #3136: the listener ARN (AWS-minted, off the create response) goes
   // through `pasteableAwsCommand` in BOTH manual-delete commands this path can
   // print — the interrupt handle printed before the delete, and the
-  // cleanup-failure warn after it.
+  // cleanup-failure warn after it. A shell-active character withholds them
+  // (go-to-k/cdkd#3950).
   it.each([
-    ['quoted', `${LISTENER_ARN}${FORGED_QUOTE}`],
-    ['withheld', `${LISTENER_ARN}${FORGED_CTRL}`],
-  ])('CREATE: a forged listener ARN is %s in both manual-delete commands', async (outcome, arn) => {
+    ['bare', 'a clean', LISTENER_ARN],
+    ['withheld', 'a shell-active', `${LISTENER_ARN}${FORGED_QUOTE}`],
+    ['withheld', 'a control-byte', `${LISTENER_ARN}${FORGED_CTRL}`],
+  ])('CREATE: both manual-delete commands are %s for %s listener ARN', async (outcome, _label, arn) => {
     mockSend.mockImplementation((command: unknown) => {
       if (command instanceof CreateListenerCommand) {
         return Promise.resolve({ Listeners: [{ ListenerArn: arn }] });
@@ -254,8 +255,8 @@ describe('ELBv2 ModifyListenerAttributes aborts on Ctrl-C (#2053)', () => {
     const interrupted = warns.find((m) => m.includes('Interrupted after creating Listener'))!;
     const failed = warns.find((m) => m.includes('Failed to clean up partially-created Listener'))!;
     for (const msg of [interrupted, failed]) {
-      if (outcome === 'quoted') {
-        expectQuotedAfter(msg, 'aws elbv2 delete-listener --listener-arn ', arn);
+      if (outcome === 'bare') {
+        expect(msg).toContain(`aws elbv2 delete-listener --listener-arn ${arn}`);
       } else {
         expectWithheld(msg, 'aws elbv2 delete-listener');
       }
