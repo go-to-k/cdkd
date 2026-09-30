@@ -250,28 +250,20 @@ describe('maskSecretsInError - the clone stays classifiable (issue #2038)', () =
     expect(Object.getOwnPropertyDescriptor(maskedEnum, 'cause')?.enumerable).toBe(true);
   });
 
-  // DOCUMENTED RESIDUAL, not a passing behavior: a non-Error cause is carried
-  // through UNMASKED, secret or not. The previous version of this case used a
-  // secret-FREE string, so it asserted the identity carry-through in the one
-  // direction where nothing is at stake and read as coverage of the case that
-  // matters. The reachability is speculative — no cdkd or AWS SDK site
-  // constructs a non-Error cause — but `src/cli/index.ts`'s
-  // `console.error('Fatal error:', error)` renders one through `util.inspect`,
-  // so if such a site ever appears the plaintext reaches the terminal. This
-  // asserts the residual as it IS so a future fix has to update the test.
-  it('does NOT mask a non-Error cause — carried through verbatim (residual)', () => {
+  // A non-Error cause was once carried through verbatim, secret or not
+  // (`console.error` renders it through `util.inspect`). It is an own field
+  // like any other now, and is masked as one (go-to-k/cdkd#4190).
+  it('masks a non-Error (string) cause as a field', () => {
     const stringCause = `a string containing ${SECRET}`;
     const outer = new Error(`Value '${SECRET}' at 'x' failed`, { cause: stringCause });
 
     const masked = maskSecretsInError(outer, bag());
 
-    // The Error links ARE masked ...
     expect(masked.message).toContain(SECRET_MASK);
     expect(masked.message).not.toContain(SECRET);
-    // ... and the string cause is NOT. Asserted positively, both ways, so the
-    // day this changes the assertion fails rather than silently staying green.
-    expect(masked.cause).toBe(stringCause);
-    expect(masked.cause).toContain(SECRET);
+    expect(masked.cause).toBe(`a string containing ${SECRET_MASK}`);
+    // The original is untouched.
+    expect(outer.cause).toBe(stringCause);
   });
 });
 

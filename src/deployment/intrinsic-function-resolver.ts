@@ -10972,7 +10972,8 @@ export class IntrinsicFunctionResolver {
    * that is the point: `formatError` renders `Caused by: <cause>`, so masking
    * only a fresh top-level message leaves the original message one link down
    * and prints it anyway. The clone keeps the class, every own descriptor
-   * (`markNonRetryable`'s non-enumerable symbol, `$metadata`, `Code`, `name`)
+   * (`markNonRetryable`'s non-enumerable symbol, `$metadata`, and `Code` /
+   * `name` verbatim), other data values masked,
    * and the chain shape, so every reader that classifies this error still
    * does — see `maskSecretsInError`'s own doc.
    *
