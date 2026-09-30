@@ -185,7 +185,11 @@ const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 // Went 12 -> 13 in the parent review round: the pending-record refusal names
 // the stack, the parent whose journal it could not read, and the top-level
 // stack to roll back (one render more than the parent-only wording).
-const EXPECTED_STACK_NAME_RENDERS = 13;
+//
+// Went 13 -> 11 in go-to-k/cdkd#3950's S1 rows: the divergent-record-region
+// refusal and the nothing-to-roll-back error carry a remedy, so they name the
+// stack through `plainOrDescribed`, which caps at the stack-ref width itself.
+const EXPECTED_STACK_NAME_RENDERS = 11;
 
 /**
  * Bare `safe` references in the same file -- 1 declaration plus every render of
@@ -220,8 +224,11 @@ const EXPECTED_STACK_NAME_RENDERS = 13;
  *
  * Went 65 -> 63 in the next round: those two error texts render through
  * `backendErrorText`, like every other backend error in the file.
+ *
+ * Went 63 -> 61 in go-to-k/cdkd#3950's S1 rows: the same two messages name
+ * their region through `plainOrDescribed`.
  */
-const EXPECTED_SAFE_REFERENCES = 63;
+const EXPECTED_SAFE_REFERENCES = 61;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the single role-ARN
@@ -3433,7 +3440,10 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
     }
   });
 
-  it('every payload name is JSON-bounded, and no pasted span of any message runs a command', async () => {
+  /** The sites whose block carries a remedy, so a non-plain name is described there. */
+  const DESCRIBING_SITES: ReadonlySet<string> = new Set(['divergent record region', 'nothing to roll back']);
+
+  it('every payload name is JSON-bounded or described, and no pasted span of a message that shows it runs a command', async () => {
     const rendered: Array<{ value: string; site: string; message: string }> = [];
     for (const { value } of PASTE_PAYLOADS) {
       for (const [site, message] of Object.entries(await messagesFor(value))) {
@@ -3447,43 +3457,62 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
       for (const { value, site, message } of rendered) {
         const label = `${site}: ${value}`;
         // The boundary, pinned DIRECTLY: the paste alone cannot see it where a
-        // parenthesis after the name aborts the span anyway.
+        // parenthesis after the name aborts the span anyway. The two blocks
+        // that carry a remedy describe the name instead (the S1 cases below).
+        if (DESCRIBING_SITES.has(site)) {
+          expect(message, label).toContain('a stack name that is not a plain identifier (us-east-1)');
+          expect(message, label).not.toContain(value);
+          continue;
+        }
         expect(message, label).toContain(`${displayStackName(value)} (us-east-1)`);
         expect(message, label).not.toContain(`'${displayStackName(value)}'`);
         expect(message, label).not.toContain(`'${value}'`);
-        // The two S1 rows skip the default block rule until their fix lands;
-        // their own cases below assert it.
         // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
         // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
-        expectOnlyDisplayResidual(
-          message,
-          dir,
-          value,
-          site === 'divergent record region' || site === 'nothing to roll back'
-            ? { unfixedS1Row: `go-to-k/cdkd#3950 rollback ${site}` }
-            : {}
-        );
+        expectOnlyDisplayResidual(message, dir, value);
       }
     });
   }, 120_000);
 
-  // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): one case per row,
-  // each flipped as its source fix lands. A block that displays an untrusted
-  // value carries no pasteable command; measured on the tree that added these
-  // cases, each site below still does. Each row's command is asserted before
-  // the rule is asked, so a mistyped site key or a message that lost its
-  // command cannot satisfy the case.
+  it('both remedy-carrying refusals describe a hostile REGION too (go-to-k/cdkd#3950)', async () => {
+    // The region is a state-key segment, so it is as untrusted as the name,
+    // and it sits on the same line as the remedy.
+    const region = 'us-east-1$(touch OWNED)';
+    const listStacks = vi.fn().mockResolvedValue([{ stackName: 'S', region }]);
+    const thrownBy = async (): Promise<string> => {
+      const e = await rollbackCommand('S', { ...baseOpts }).catch((err: unknown) => err);
+      return e instanceof Error ? e.message : String(e);
+    };
+    installSetup({ listStacks });
+    const nothing = await thrownBy();
+    installSetup({
+      listStacks,
+      getState: vi.fn().mockResolvedValue(readAtKeyRegion(stateWith('S', 'eu-west-1') as never, region)),
+      loadRollbackJournal: vi.fn().mockResolvedValue(journalWith('S', false)),
+    });
+    const divergent = await thrownBy();
+    expect(nothing).toContain("Nothing to roll back for S (a region that is not a plain identifier). Run 'cdkd deploy'");
+    expect(divergent).toContain('cdkd will not roll back S (a region that is not a plain identifier): the state record');
+    for (const message of [nothing, divergent]) {
+      expect(message).not.toContain(region);
+      expectNoCommandBesideDisplay(message, region);
+    }
+  });
+
+  // Former S1 rows (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): a block
+  // that displays an untrusted value carries no pasteable command. Both keep
+  // their remedy and describe a stack name or region that is not plain. The
+  // remedy is asserted first, so a mistyped site key or a message that lost
+  // its remedy cannot pass for the wrong reason.
   for (const [site, command] of [
     ['divergent record region', 'Re-run with --verbose'],
     ['nothing to roll back', "Run 'cdkd deploy'"],
   ] as const) {
-    it(`S1 ${site}: a block that displays a payload still carries a pasteable command`, async () => {
+    it(`${site}: a block that carries a remedy displays no payload`, async () => {
       for (const { value } of PASTE_PAYLOADS) {
         const message = (await messagesFor(value))[site];
         expect(message, `${site}: ${value}`).toContain(command);
-        expect(() => expectNoCommandBesideDisplay(message!, value), `${site}: ${value}`).toThrow(
-          /also carries a pasteable command/
-        );
+        expectNoCommandBesideDisplay(message!, value);
       }
     });
   }

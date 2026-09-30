@@ -70,7 +70,15 @@ import {
   type ParameterNamingVerdict,
   type ParameterTaint,
 } from '../../analyzer/parameter-dependence.js';
-import { displayIdent, displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  displayStackName,
+  isPasteableIdent,
+  safeMsg,
+} from '../../utils/display-safe.js';
+import { commandHole } from '../../utils/pasteable-command.js';
+import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
@@ -1545,9 +1553,14 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
         logicalId,
         resourceType: resource.Type,
         outcome: 'skipped-not-found',
+        // The `--resource` fragment names the logical id only when
+        // `isPasteableIdent` admits it, and both placeholders are quoted holes:
+        // a bare `<physicalId>` redirects when the line is pasted
+        // (go-to-k/cdkd#3950).
         reason:
           'no matching AWS resource — pass --resource ' +
-          `${logicalId}=<physicalId> to adopt it explicitly`,
+          `${isPasteableIdent(logicalId) ? logicalId : commandHole('logicalId')}=${commandHole('physicalId')} ` +
+          'to adopt it explicitly',
       };
     }
     return {
@@ -1559,7 +1572,13 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    logger.error(`Failed to import ${logicalId} (${resource.Type}): ${msg}`);
+    // The provider refusals end in a `--resource` remedy, so this line names
+    // the logical id and type only when plain and describes them otherwise
+    // (go-to-k/cdkd#3950's S1 rule, judged per line): printed raw, they put back
+    // the value the refusal itself describes.
+    logger.error(
+      `Failed to import ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.Type)}): ${msg}`
+    );
     return {
       logicalId,
       resourceType: resource.Type,
@@ -2991,7 +3010,11 @@ function printSummary(rows: ImportRow[]): void {
     const tag = formatOutcome(r.outcome);
     const detail =
       r.outcome === 'imported' ? ` (${r.physicalId})` : r.reason ? ` — ${r.reason}` : '';
-    logger.info(`  ${tag} ${r.logicalId} (${r.resourceType})${detail}`);
+    // A row's reason can carry the `--resource` remedy, so the logical id and
+    // type are named only when plain (go-to-k/cdkd#3950).
+    logger.info(
+      `  ${tag} ${logicalIdShown(r.logicalId)} (${resourceTypeShown(r.resourceType)})${detail}`
+    );
   }
   logger.info('');
   logger.info(

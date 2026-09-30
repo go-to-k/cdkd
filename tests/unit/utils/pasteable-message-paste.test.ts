@@ -43,7 +43,6 @@ import {
   expectNoCommandBesideDisplay,
   expectRuntimeResidual,
   expectOnlyDisplayResidual,
-  expectZshRunsTheDisplay,
   OPERATOR_FLIP,
   checkedDisplays,
   filesTouchedBy,
@@ -460,7 +459,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
     );
   });
 
-  it('the per-block helper refuses a span that runs a stubbed verb and a boundary-less display, and the S1 zsh reason holds both ways', () => {
+  it('the per-block helper refuses a span that runs a stubbed verb and a boundary-less display', () => {
     // `expectOnlyDisplayResidual` is what the site fences lean on for a
     // displayed value whose span genuinely runs (gc's withheld value, and
     // since go-to-k/cdkd#3950 every site zsh runs past a ` (` on), so each
@@ -490,7 +489,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // lines do not.
       const ownLine = `No stack "${hostile}" was found.\ncdkd state list`;
       expectOnlyDisplayResidual(ownLine, dir, hostile);
-      // A file only the JOINED lines touch is refused, under both helpers:
+      // A file only the JOINED lines touch is refused:
       // each line leaves a quote open and runs nothing, and pasted together
       // the apostrophes pair and the trailing `touch OTHER` runs.
       const joinedOnly = `The owner's record\nholds "${hostile}" (us-east-1) and it's gone; touch OTHER`;
@@ -531,49 +530,6 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // glob qualifier and runs both the substitution and the verb. The
       // marker must be the UNION over the shells, not bash's alone.
       if (PASTE_SHELLS.includes('zsh')) {
-        // `expectZshRunsTheDisplay`, the S1 rows' zsh reason, in both
-        // directions: it accepts the ` (` shape zsh runs past, refuses a
-        // substitution family zsh did NOT run (the reason gone), and refuses
-        // an inert family that DID run (another reason).
-        expectZshRunsTheDisplay(`Nothing for "${hostile}" (us-east-1).`, dir, hostile);
-        expect(() =>
-          expectZshRunsTheDisplay(`Nothing for '${hostile}' (us-east-1).`, dir, hostile)
-        ).toThrow(/zsh ran nothing/);
-        const separator = 'x; touch OWNED; #';
-        expect(() => expectZshRunsTheDisplay(`Nothing for ${separator}`, dir, separator)).toThrow(
-          /zsh ran an inert family/
-        );
-        // A run the display did not cause: an unrelated substitution in a
-        // sentence of its own, a span that does not hold the value.
-        expect(() =>
-          expectZshRunsTheDisplay(
-            `Nothing for "${hostile}" (us-east-1). Then $(touch OTHER) (x).`,
-            dir,
-            hostile
-          )
-        ).toThrow(/without the displayed value/);
-        // Each arm of the "span holds the value" check on its own, with a value
-        // JSON escaping changes (go-to-k/cdkd#4127 round-3 optional): shown
-        // only JSON-escaped, and shown only raw.
-        const quoted = 'x"$(touch OWNED)';
-        expectZshRunsTheDisplay(`Nothing for ${JSON.stringify(quoted)} (us-east-1).`, dir, quoted);
-        expectZshRunsTheDisplay(`Nothing for ${quoted}" here (us-east-1).`, dir, quoted);
-        // A run that also invokes a stubbed verb (the M4 shape: `x(N)` lets zsh
-        // go on to run the verb after the substitution).
-        expect(() =>
-          expectZshRunsTheDisplay(`cdkd deploy "${hostile}" x(N)`, dir, hostile)
-        ).toThrow(/also ran a stubbed cdkd/);
-        // The multi-line judgement holds in the zsh reason too: a command on
-        // a line of its own is accepted, and a file only the join touches is
-        // refused.
-        expectZshRunsTheDisplay(`Nothing for "${hostile}" (us-east-1).\n  cdkd state list`, dir, hostile);
-        expect(() =>
-          expectZshRunsTheDisplay(
-            `The owner's record\nholds "${hostile}" (us-east-1) and it's gone; touch OTHER`,
-            dir,
-            hostile
-          )
-        ).toThrow(/runs more than pasting each alone/);
         const zshOnlyVerb = `cdkd deploy "${hostile}" x(N)`;
         expect(filesTouchedBy(zshOnlyVerb, dir, { shells: ['bash'] })).toEqual([]);
         expect(() => expectRuntimeResidual(zshOnlyVerb, dir, hostile)).toThrow(

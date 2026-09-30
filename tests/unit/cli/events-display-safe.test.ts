@@ -1312,9 +1312,6 @@ describe('a record value in events prose is never inside cdkd quotes (go-to-k/cd
     );
   });
 
-  /** The classified S1 rows among this file's sites (go-to-k/cdkd#3950). */
-  const S1_SITES: ReadonlySet<string> = new Set(['EVENTS_NOT_FOUND', 'prune pruned runs', 'prune removed empty index']);
-
   it('every payload is JSON-bounded, and no pasted span runs a command', async () => {
     const rendered: Array<{ value: string; site: string; message: string; shown: string }> = [];
     for (const { value } of PASTE_PAYLOADS) {
@@ -1328,40 +1325,29 @@ describe('a record value in events prose is never inside cdkd quotes (go-to-k/cd
         expect(message, label).toContain(shown);
         expect(message, label).not.toContain(`'${displayIdent(value)}'`);
         expect(message, label).not.toContain(`'${value}'`);
-        // The three S1 rows skip the default block rule until their fix lands;
-        // their own cases below assert it.
         // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
         // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
-        expectOnlyDisplayResidual(
-          message,
-          dir,
-          value,
-          S1_SITES.has(site) ? { unfixedS1Row: `go-to-k/cdkd#3950 events ${site}` } : {}
-        );
+        expectOnlyDisplayResidual(message, dir, value);
       }
     });
   }, 120_000);
 
-  // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): one case per row,
-  // each flipped as its source fix lands. A block that displays an untrusted
-  // value carries no pasteable command; measured on the tree that added these
-  // cases, each site below still does. The command each row carries is
-  // asserted before the rule is asked, so a mistyped site key or a message
-  // that lost its command cannot satisfy the case. The two prune rows carry
-  // it only in `NONCURRENT_VERSIONS_SURVIVE_NOTE`'s prose (`which cdkd
-  // bootstrap enables`): a `cdkd` invocation quoted in prose counts.
-  for (const [site, command] of [
-    ['EVENTS_NOT_FOUND', "'cdkd deploy'"],
-    ['prune pruned runs', 'which cdkd bootstrap enables'],
-    ['prune removed empty index', 'which cdkd bootstrap enables'],
+  // Former S1 rows (go-to-k/cdkd#3950, the maintainer's 11:51Z rule): a block
+  // that displays an untrusted value carries no pasteable command. Each named
+  // `cdkd deploy` / `cdkd destroy` / `cdkd bootstrap` only in prose, so the
+  // prose now names the commands without spelling an invocation, and the
+  // stack name stays shown. The reworded sentence is asserted first, so a
+  // mistyped site key cannot pass for the wrong reason.
+  for (const [site, prose] of [
+    ['EVENTS_NOT_FOUND', "Events are recorded by cdkd's deploy and destroy commands"],
+    ['prune pruned runs', 'which bootstrapping with cdkd enables'],
+    ['prune removed empty index', 'which bootstrapping with cdkd enables'],
   ] as const) {
-    it(`S1 ${site}: a block that displays a payload still carries a pasteable command`, async () => {
+    it(`${site}: a block that displays a payload carries no pasteable command`, async () => {
       for (const { value } of PASTE_PAYLOADS) {
         const message = (await messagesFor(value)).find((m) => m.site === site)?.message;
-        expect(message, `${site}: ${value}`).toContain(command);
-        expect(() => expectNoCommandBesideDisplay(message!, value), `${site}: ${value}`).toThrow(
-          /also carries a pasteable command/
-        );
+        expect(message, `${site}: ${value}`).toContain(prose);
+        expectNoCommandBesideDisplay(message!, value);
       }
     });
   }

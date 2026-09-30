@@ -18,7 +18,6 @@ import {
   displaySafe,
   isPasteableIdent,
   SECRET_REF_MAX_CODE_POINTS,
-  STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import { commandHole } from '../../utils/pasteable-command.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -867,11 +866,32 @@ export class SSMParameterProvider implements ResourceProvider {
     // deploy / destroy / rollback start the run recorder, and `import` is the
     // only caller of `provider.import` (security review of issue #3136
     // corrected an earlier claim here that it did).
-    const readCommand = renderDisableCommand({
-      before: 'aws ssm get-parameter --name',
-      identifier: explicit,
-      after: '--query Parameter.Name --output text',
-    });
+    // A block that displays an untrusted value carries no pasteable command
+    // (go-to-k/cdkd#3950's S1 rule), and this block carries two: the read
+    // command below and the `--resource` remedy. So `explicit` is shown, and
+    // named in the read command, only when it is plain in `displayIdent`'s
+    // sense (every character literal inside single quotes, no whitespace,
+    // tested first because the round-trip alone admits a value ending in
+    // `displayIdent`'s own cut marker); otherwise it is described and the
+    // console wording replaces the command. The logical id follows the
+    // `--resource` fragment's own predicate, `isPasteableIdent`, so it is
+    // either named in both or in neither. Displayed, a JSON-bounded `$( )`
+    // value ran when the sentence was pasted into zsh, which the `(` around
+    // it does not stop.
+    const explicitPlain =
+      !/\s/.test(explicit) &&
+      displayIdent(explicit, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS }) === explicit;
+    const readCommand = explicitPlain
+      ? renderDisableCommand({
+          before: 'aws ssm get-parameter --name',
+          identifier: explicit,
+          after: '--query Parameter.Name --output text',
+        })
+      : '';
+    const subject = isPasteableIdent(input.logicalId)
+      ? `SSM parameter ${input.logicalId}`
+      : 'an SSM parameter whose logical id is not a plain identifier';
+    const shown = explicitPlain ? explicit : 'not shown: it is not a plain identifier';
     const howToRead = readCommand
       ? ` Read the name AWS holds with: ${readCommand}`
       : // The "via the console" wording the sibling sites use, with both reasons
@@ -880,19 +900,13 @@ export class SSMParameterProvider implements ResourceProvider {
         'safely on a command line (sanitizing would change it, so a command would read a ' +
         'different parameter, or it holds a character a pasted shell line would act on).';
     throw new ProvisioningError(
-      // The `explicit` clause is PROSE, not a pasteable span, so it is
-      // displayed rather than suppressed (issue #3269). The
-      // logical id beside it takes `displayIdent`'s boundary rather than bare
-      // `displaySafe` (go-to-k/cdkd#3436's paste fence measured the bare form:
-      // an id `x; touch OWNED; #` ran when this sentence was pasted, the `#`
-      // commenting out everything after it). A plain id still renders bare, and
-      // the cap is the stack-ref one the `--resource` fragment's gate uses, so a
-      // 256-1152 code-point id is not named there under prose that cuts it.
-      // `explicit` takes the same boundary, inside cdkd's parenthesis and NOT
-      // inside a hand-written `'...'` (go-to-k/cdkd#3950): a `'` in the value
-      // closed that quote and left the rest of a pasted clause as bare shell.
-      // Its cap is the ARN ceiling, so a legitimate ARN is never cut.
-      `Cannot adopt SSM parameter ${displayIdent(input.logicalId, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} from ${shape} (${displayIdent(explicit, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): cdkd records ` +
+      // The logical id and `explicit` are shown only when plain and described
+      // otherwise (see `subject` / `shown` above). Neither ever sits inside a
+      // hand-written `'...'` (go-to-k/cdkd#3950): a `'` in the value closed
+      // that quote and left the rest of a pasted clause as bare shell. A plain
+      // ARN is shown whole, at the ARN ceiling, so a legitimate one is never
+      // cut.
+      `Cannot adopt ${subject} from ${shape} (${shown}): cdkd records ` +
         `a parameter's NAME as its physical id, because SSM's write APIs accept only the name ` +
         `(PutParameter and DeleteParameter both reject an ARN, and a name cannot contain ':'), ` +
         `so the next cdkd deploy and cdkd destroy would fail with a ValidationException. ` +

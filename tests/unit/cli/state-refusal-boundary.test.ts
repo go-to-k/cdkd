@@ -22,10 +22,7 @@ import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
-  expectZshRunsTheDisplay,
-  itUnderZsh,
   spansThatRun,
-  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -355,58 +352,31 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
       expect(lines(warnSpy)).toContain('No state found for stack S in us-east-1, skipping');
     });
 
-    // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule, classified in the
-    // go-to-k/cdkd#4127 review M1) until its source row lands, which flips the
-    // last two cases: the line displays the name (JSON) AND carries
-    // `--stack-region eu-west-1`, a `--flag` in prose, which the rule counts
-    // whether it is a directive or not. Under bash the ` (` after the name
-    // stops a pasted line before the name's `$( )` runs; under zsh it does not.
-    const hostileSkipLines = async (): Promise<Array<{ value: string; message: string }>> => {
+    it('describes a hostile name on the --stack-region skip line, and no pasted span runs under either shell', async () => {
+      // A former S1 row (go-to-k/cdkd#3950, classified in the go-to-k/cdkd#4127
+      // review M1): the line carries `--stack-region eu-west-1`, a `--flag` in
+      // prose, so a name that is not plain is described rather than displayed.
+      // Under bash the ` (` after a displayed name stopped a pasted line; zsh
+      // ran a `$( )` name past it.
       const messages: Array<{ value: string; message: string }> = [];
       for (const value of HOSTILE) {
         warnSpy.mockClear();
         mockListStacks.mockResolvedValue([{ stackName: value, region: 'us-east-1' }]);
         // eslint-disable-next-line no-await-in-loop
         await runState(['destroy', value, '--stack-region', 'eu-west-1', '--yes']);
-        const message = lines(warnSpy).join('\n');
-        // The row itself, found before any rule is asked.
-        expect(message, value).toContain(`Skipping ${JSON.stringify(value)} (no state record`);
-        expect(message, value).toContain('--stack-region eu-west-1');
-        messages.push({ value, message });
+        messages.push({ value, message: lines(warnSpy).join('\n') });
       }
-      return messages;
-    };
-
-    it('no pasted span of a hostile --stack-region skip line runs anything under bash', async () => {
-      const messages = await hostileSkipLines();
       withPasteDir((dir) => {
         for (const { value, message } of messages) {
-          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
-          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
-          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
-          expect(spansThatRunBesideTheDisplay(message, dir, value, { shells: ['bash'] }), value).toEqual([]);
+          expect(message, value).toContain(
+            'Skipping a stack name that is not a plain identifier (no state record matches --stack-region eu-west-1)'
+          );
+          expect(message, value).not.toContain(value);
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), value).toEqual([]);
         }
       });
     }, 120_000);
-
-    it('S1 state destroy skip line: a hostile name block still carries a --flag (block rule)', async () => {
-      for (const { value, message } of await hostileSkipLines()) {
-        expect(() => expectNoCommandBesideDisplay(message, value), value).toThrow(
-          /also carries a pasteable command/
-        );
-      }
-    });
-
-    itUnderZsh(
-      'S1 state destroy skip line: under zsh a hostile name runs its display (paste)',
-      async () => {
-        const messages = await hostileSkipLines();
-        withPasteDir((dir) => {
-          for (const { value, message } of messages) expectZshRunsTheDisplay(message, dir, value);
-        });
-      },
-      120_000
-    );
 
     it('names the --stack-region skip without cdkd quotes', async () => {
       mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);

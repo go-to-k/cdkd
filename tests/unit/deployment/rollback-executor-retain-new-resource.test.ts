@@ -28,10 +28,7 @@ import { displayIdent } from '../../../src/utils/display-safe.js';
 import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
-  expectZshRunsTheDisplay,
-  itUnderZsh,
   spansThatRun,
-  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -393,10 +390,10 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // records NO old type, which is the first refusal in
       // `resolveReplacementOldType`, so the replay classifies the op as
       // `refuse-replacement-routing` and throws through the per-op catch.
-      const errors: Array<{ message?: string }> = [];
+      const errors: Array<{ logicalId?: string; message?: string }> = [];
       const { ctx } = makeCtx({ create: vi.fn(), delete: vi.fn() });
       ctx.recordEvent = (e) => {
-        if (e.error) errors.push(e.error);
+        if (e.error) errors.push({ logicalId: e.logicalId, message: e.error.message });
       };
       const unroutable = (logicalId: string): CompletedOperation => ({
         logicalId,
@@ -419,19 +416,23 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // Positive control: the arm under test fired for every id.
       expect(text.match(/Cannot reverse the replacement of/g)).toHaveLength(ids.length);
       // Each refusal as `replayRollback` rendered it — the named arm, the
-      // withheld arm, and one per payload family (withheld, with the id still
-      // displayed in prose) — is found by the id it names and its remedy
-      // spelling asserted (named for `B`, the quoted hole for every other).
-      // Then each is pasted at line, sentence and clause granularity with
-      // decoys planted for every hole: the NAMED arm to bash and zsh, every
-      // other to bash, and a payload id's zsh paste is the S1 case below
-      // (go-to-k/cdkd#3950).
+      // withheld arm, and one per payload family (withheld, and described in
+      // the prose rather than displayed, go-to-k/cdkd#3950) — is found by the
+      // event's logical id and its remedy spelling asserted (named for `B`,
+      // the quoted hole for every other). Then each is pasted, to bash and
+      // zsh, at line, sentence and clause granularity with decoys planted
+      // for every hole.
       withPasteDir((dir) => {
         for (const id of ids) {
-          const message = errors
-            .map((e) => e.message ?? '')
-            .find((m) => m.includes(`replacement of ${displayIdent(id)} (`));
-          expect(message, id).toBeDefined();
+          // Found by the event's logicalId: a withheld id is described, not
+          // displayed, so the text cannot tell two of them apart.
+          const message = errors.find((e) => e.logicalId === id)?.message;
+          expect(message, id).toMatch(
+            id === 'B'
+              ? /^Cannot reverse the replacement of B \(/
+              : /^Cannot reverse the replacement of a resource whose logical id is not a plain CloudFormation logical id \(/
+          );
+          if (id !== 'B') expect(message, id).not.toContain(id);
           // The remedy is the message's labelled LAST line, on its own: an
           // over-selection of the old mid-sentence form passed the next word
           // (`to`) as the stack argument.
@@ -441,22 +442,17 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
           } else {
             expect(message, id).toMatch(/\nTo orphan it: cdkd rollback --orphan '<id>'$/);
             expect(message, id).toContain(
-              'The id is withheld from that command: it is not a plain CloudFormation logical id'
+              'The id is left out of the prose above and of that command: it is not a plain'
             );
             expect(message, id).toContain('read it from cdkd events and fill the quoted hole.');
           }
-          // The named arm is inert at EVERY granularity, under both shells. A
-          // withheld id's block also carries the command, so it is an S1 row
-          // (go-to-k/cdkd#3950): under BASH the `(` after the displayed id
-          // stops every span, pinned here for every id; under zsh it does
-          // not, which the S1 case below pins.
-          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
-          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
-          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
-          expect(
-            spansThatRunBesideTheDisplay(message!, dir, id, id === 'B' ? {} : { shells: ['bash'] }),
-            id
-          ).toEqual([]);
+          // Inert at EVERY granularity, under both shells, and the block
+          // rule holds (go-to-k/cdkd#3950's S1 rule): a withheld id is
+          // described rather than displayed beside the command. Displayed,
+          // zsh ran a `$( )` id past the ` (` after it. A plain id may be
+          // named beside its own command, so the rule is asked of the others.
+          if (id !== 'B') expectNoCommandBesideDisplay(message!, id);
+          expect(spansThatRun(message!, dir), id).toEqual([]);
         }
       });
       // Named arm: a CloudFormation logical id is printed bare, on the line.
@@ -477,64 +473,6 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       expect(text).not.toContain('`cdkd deploy`');
     }, 120_000);
 
-    // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until its source row
-    // lands, which flips both cases. Per LINE (the go-to-k/cdkd#4127 round-3
-    // ruling) the `To orphan it:` line carries only the hole, but the line
-    // displaying the id (JSON) also carries `fix forward with cdkd deploy`, a
-    // `cdkd` invocation in prose; and under zsh the ` (AWS::SQS::Queue)` no
-    // longer stops a pasted line.
-    const unroutablePayloadRefusals = async (): Promise<Array<{ id: string; message: string }>> => {
-      const errors: Array<{ logicalId?: string; message: string }> = [];
-      const { ctx } = makeCtx({ create: vi.fn(), delete: vi.fn() });
-      ctx.recordEvent = (e) => {
-        if (e.error) errors.push({ logicalId: e.logicalId, message: e.error.message ?? '' });
-      };
-      const ids = PASTE_PAYLOADS.map(({ value }) => value);
-      const state: Record<string, ResourceState> = Object.fromEntries(
-        ids.map((id) => [id, res({ physicalId: 'phys-new' })])
-      );
-      await replayRollback(
-        ids.map((logicalId) => ({
-          logicalId,
-          changeType: 'UPDATE' as const,
-          resourceType: 'AWS::SQS::Queue',
-          physicalId: 'phys-new',
-          previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
-        })),
-        state,
-        'S',
-        ctx,
-        { isInterrupted: () => false }
-      );
-      // Found by the event's logicalId, never by the id's display, and the
-      // row itself asserted before the rule is asked: a lookup that missed,
-      // or a refusal that lost its command, would otherwise satisfy it.
-      return ids.map((id) => {
-        const message = errors.find((e) => e.logicalId === id)?.message;
-        expect(message, id).toMatch(/^Cannot reverse the replacement of /);
-        expect(message, id).toMatch(/\nTo orphan it: cdkd rollback --orphan '<id>'$/);
-        return { id, message: message! };
-      });
-    };
-
-    it('S1 UNROUTABLE refusal: a payload id block still carries a command (block rule)', async () => {
-      for (const { id, message } of await unroutablePayloadRefusals()) {
-        expect(() => expectNoCommandBesideDisplay(message, id), id).toThrow(
-          /also carries a pasteable command/
-        );
-      }
-    });
-
-    itUnderZsh(
-      'S1 UNROUTABLE refusal: under zsh a payload id block runs its display (paste)',
-      async () => {
-        const refusals = await unroutablePayloadRefusals();
-        withPasteDir((dir) => {
-          for (const { id, message } of refusals) expectZshRunsTheDisplay(message, dir, id);
-        });
-      },
-      120_000
-    );
 
     it("in a nested child's own rollback, both refusals' --orphan command names the child stack (go-to-k/cdkd#3859)", async () => {
       // The child's own failure segment is replayed only by a rollback of the
@@ -601,6 +539,92 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       });
     }, 120_000);
 
+    it("in a nested child's own rollback, a payload id is described beside the stack clause's --orphan (go-to-k/cdkd#3950)", async () => {
+      // In a nested child's own rollback the collision refusal's resume
+      // sentence names the nested stack rather than `re-run cdkd rollback`, so
+      // the line displaying the id reached S1 through the stack clause's prose
+      // `--orphan` (go-to-k/cdkd#4127 round-4 note). Both arms, with every
+      // payload family as the logical id.
+      const errors: Array<{ logicalId?: string; message: string }> = [];
+      const collide = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
+      const { ctx } = makeCtx({ create: collide, delete: vi.fn() });
+      ctx.nestedChildStack = 'Top~Child';
+      ctx.recordEvent = (e) => {
+        if (e.error?.message) errors.push({ logicalId: e.logicalId, message: e.error.message });
+      };
+      const ids = PASTE_PAYLOADS.map(({ value }) => value);
+      const collisions = ids.map((id) => ({ ...replacementOp(), logicalId: `C${id}` }));
+      const unrouted: CompletedOperation[] = ids.map((id) => ({
+        logicalId: `U${id}`,
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'phys-new',
+        previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
+      }));
+      const state: Record<string, ResourceState> = Object.fromEntries([
+        ...collisions.map((op) => [
+          op.logicalId,
+          res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
+        ]),
+        ...unrouted.map((op) => [op.logicalId, res({ physicalId: 'phys-new' })]),
+      ]);
+      await replayRollback([...collisions, ...unrouted], state, 'Top~Child', ctx, {
+        isInterrupted: () => false,
+      });
+      withPasteDir((dir) => {
+        for (const op of [...collisions, ...unrouted]) {
+          const message = errors.find((e) => e.logicalId === op.logicalId)?.message;
+          // The stack clause, found before the rule is asked.
+          expect(message, op.logicalId).toContain(
+            'only a rollback of the nested stack itself honours --orphan for this op'
+          );
+          expect(message, op.logicalId).toContain(
+            'Cannot reverse the replacement of a resource whose logical id is not a plain CloudFormation logical id ('
+          );
+          expect(message, op.logicalId).not.toContain(op.logicalId);
+          expectNoCommandBesideDisplay(message!, op.logicalId);
+          expect(spansThatRun(message!, dir), op.logicalId).toEqual([]);
+        }
+      });
+    }, 120_000);
+
+    it('inside a nested child revert, a described payload id points at cdkd events (go-to-k/cdkd#3950)', async () => {
+      // No command is offered in this arm, so the pointer is the only way an
+      // operator finds an id the prose describes; a plain id needs none.
+      const errors: Array<{ logicalId?: string; message: string }> = [];
+      const { ctx } = makeCtx({ create: vi.fn(), delete: vi.fn() });
+      ctx.nestedChildRevert = true;
+      ctx.recordEvent = (e) => {
+        if (e.error?.message) errors.push({ logicalId: e.logicalId, message: e.error.message });
+      };
+      const ids = ['B', ...PASTE_PAYLOADS.map(({ value }) => value)];
+      await replayRollback(
+        ids.map((logicalId) => ({
+          logicalId,
+          changeType: 'UPDATE' as const,
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'phys-new',
+          previousState: { ...res({ physicalId: 'phys-old', properties: { a: 1 } }), resourceType: '' },
+        })),
+        Object.fromEntries(ids.map((id) => [id, res({ physicalId: 'phys-new' })])),
+        'S',
+        ctx,
+        { isInterrupted: () => false }
+      );
+      const pointer = 'The id is left out of the prose above: it is not a plain CloudFormation logical id — read it from cdkd events.';
+      for (const id of ids) {
+        const message = errors.find((e) => e.logicalId === id)?.message;
+        expect(message, id).toContain("where cdkd rollback --orphan cannot reach it");
+        if (id === 'B') {
+          expect(message, id).not.toContain(pointer);
+        } else {
+          expect(message, id).toContain(pointer);
+          expect(message, id).not.toContain(id);
+          expectNoCommandBesideDisplay(message!, id);
+        }
+      }
+    });
+
     it('inside a nested child revert, neither refusal offers an --orphan command (go-to-k/cdkd#3845)', async () => {
       // `cdkd rollback --orphan` reaches only the replay of the stack it is
       // run on, and a direct rollback of the child is refused while the
@@ -639,7 +663,9 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         // No command naming an id: the prose mentions the flag only to say it
         // cannot reach this replay.
         expect(message).not.toMatch(/--orphan (?:B|U|'<id>')/);
-        expect(message).not.toContain('\n');
+        // No remedy line either: the only line break is the collision
+        // refusal's own `Underlying collision:` line (go-to-k/cdkd#3950).
+        expect(message.split('\n').filter((l) => !l.startsWith('Underlying collision: '))).toHaveLength(1);
         expect(message).not.toContain('To orphan it:');
         expect(message).not.toContain('command below');
         expect(message).toContain(
@@ -652,15 +678,50 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       expect(unrouted).toContain('fix forward with cdkd deploy. This op is reverted inside');
     });
 
+    it('the collision refusal keeps provider text that echoes the id off the prose line (go-to-k/cdkd#3950)', async () => {
+      // A provider's collision text can echo the logical id. It sits on its own
+      // `Underlying collision:` line, so the prose line (which names `cdkd
+      // rollback`) and the `--orphan` line carry no copy of a payload id.
+      const errors: Array<{ logicalId?: string; message?: string }> = [];
+      const create = vi.fn((logicalId: string) => Promise.reject(awsSdkError(`Queue ${logicalId} already exists`)));
+      const { ctx } = makeCtx({ create, delete: vi.fn() });
+      ctx.recordEvent = (e) => {
+        if (e.error) errors.push({ logicalId: e.logicalId, message: e.error.message });
+      };
+      const ids = PASTE_PAYLOADS.map(({ value }) => value);
+      const state: Record<string, ResourceState> = Object.fromEntries(
+        ids.map((id) => [
+          id,
+          res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
+        ])
+      );
+      await replayRollback(
+        ids.map((id) => ({ ...replacementOp(), logicalId: id })),
+        state,
+        'S',
+        ctx,
+        { isInterrupted: () => false }
+      );
+      for (const id of ids) {
+        const message = errors.find((e) => e.logicalId === id)?.message;
+        expect(message, id).toContain('UpdateReplacePolicy: Retain pins that new resource in place');
+        const lines = message!.split('\n');
+        // The premise: the provider text does echo the id, on its own line.
+        expect(lines.find((l) => l.startsWith('Underlying collision: ')), id).toContain(id);
+        expect(lines[0], id).not.toContain(id);
+        expectNoCommandBesideDisplay(message!, id);
+      }
+    });
+
     it('the collision refusal names the pinning policy and the recovery path', async () => {
       // Separated from the case above because the refusal is caught per-op:
       // the replay never rethrows it, so the assertion has to reach the error
       // through the recorded event rather than through `rejects`.
-      const errors: Array<{ message?: string }> = [];
+      const errors: Array<{ logicalId?: string; message?: string }> = [];
       const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
       const { ctx } = makeCtx({ create, delete: vi.fn() });
       ctx.recordEvent = (e) => {
-        if (e.error) errors.push(e.error);
+        if (e.error) errors.push({ logicalId: e.logicalId, message: e.error.message });
       };
       // `B` plus a withheld plain id plus one id per payload family, so the
       // paste fence below drives THIS refusal's renderer with every family —
@@ -711,95 +772,38 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // literal, so the `--orphan` needle above says nothing about it.
       expect(text).toContain('then re-run cdkd rollback — the');
       expect(text).not.toContain('`cdkd rollback`');
-      // Per id, as in the unroutable case above: each refusal's spelling and
-      // its paste here, and a payload id's zsh paste in the S1 case below
-      // (go-to-k/cdkd#3950).
+      // Per id, as in the unroutable case above: each refusal's spelling, its
+      // block rule and its paste to both shells (go-to-k/cdkd#3950).
       withPasteDir((dir) => {
         for (const id of ids) {
-          const message = errors
-            .map((e) => e.message ?? '')
-            .find((m) => m.includes(`of ${displayIdent(id)} `));
-          expect(message, id).toBeDefined();
+          // Found by the event's logicalId, as in the unroutable case above.
+          const message = errors.find((e) => e.logicalId === id)?.message;
+          expect(message, id).toMatch(
+            id === 'B'
+              ? /^Cannot reverse the replacement of B \(/
+              : /^Cannot reverse the replacement of a resource whose logical id is not a plain CloudFormation logical id \(/
+          );
+          if (id !== 'B') expect(message, id).not.toContain(id);
           if (id === 'B') {
             expect(message).toMatch(/\nTo orphan it: cdkd rollback --orphan B$/);
             expect(message).not.toContain('withheld');
           } else {
             expect(message, id).toMatch(/\nTo orphan it: cdkd rollback --orphan '<id>'$/);
             expect(message, id).toContain(
-              'The id is withheld from that command: it is not a plain CloudFormation logical id'
+              'The id is left out of the prose above and of that command: it is not a plain'
             );
           }
-          // The named arm is inert at EVERY granularity, under both shells. A
-          // withheld id's block also carries the command, so it is an S1 row
-          // (go-to-k/cdkd#3950): under BASH the `(` after the displayed id
-          // stops every span, pinned here for every id; under zsh it does
-          // not, which the S1 case below pins.
-          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
-          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
-          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
-          expect(
-            spansThatRunBesideTheDisplay(message!, dir, id, id === 'B' ? {} : { shells: ['bash'] }),
-            id
-          ).toEqual([]);
+          // Inert at EVERY granularity, under both shells, and the block
+          // rule holds (go-to-k/cdkd#3950's S1 rule): a withheld id is
+          // described rather than displayed beside the command. Displayed,
+          // zsh ran a `$( )` id past the ` (` after it. A plain id may be
+          // named beside its own command, so the rule is asked of the others.
+          if (id !== 'B') expectNoCommandBesideDisplay(message!, id);
+          expect(spansThatRun(message!, dir), id).toEqual([]);
         }
       });
     }, 120_000);
 
-    // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until its source row
-    // lands, which flips both cases. Per LINE (the go-to-k/cdkd#4127 round-3
-    // ruling) the `To orphan it:` line carries only the hole, but the line
-    // displaying the id (JSON) also carries `re-run cdkd rollback`, a `cdkd`
-    // invocation in prose; and under zsh the ` (AWS::SQS::Queue)` no longer
-    // stops a pasted line.
-    const collisionPayloadRefusals = async (): Promise<Array<{ id: string; message: string }>> => {
-      const errors: Array<{ logicalId?: string; message: string }> = [];
-      const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
-      const { ctx } = makeCtx({ create, delete: vi.fn() });
-      ctx.recordEvent = (e) => {
-        if (e.error) errors.push({ logicalId: e.logicalId, message: e.error.message ?? '' });
-      };
-      const ids = PASTE_PAYLOADS.map(({ value }) => value);
-      const state: Record<string, ResourceState> = Object.fromEntries(
-        ids.map((id) => [
-          id,
-          res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 }, updateReplacePolicy: 'Retain' }),
-        ])
-      );
-      await replayRollback(
-        ids.map((id) => ({ ...replacementOp(), logicalId: id })),
-        state,
-        'S',
-        ctx,
-        { isInterrupted: () => false }
-      );
-      // Found by the event's logicalId, and the row asserted first (see the
-      // unroutable twin above).
-      return ids.map((id) => {
-        const message = errors.find((e) => e.logicalId === id)?.message;
-        expect(message, id).toContain('UpdateReplacePolicy: Retain pins that new resource in place');
-        expect(message, id).toMatch(/\nTo orphan it: cdkd rollback --orphan '<id>'$/);
-        return { id, message: message! };
-      });
-    };
-
-    it('S1 collision refusal: a payload id block still carries a command (block rule)', async () => {
-      for (const { id, message } of await collisionPayloadRefusals()) {
-        expect(() => expectNoCommandBesideDisplay(message, id), id).toThrow(
-          /also carries a pasteable command/
-        );
-      }
-    });
-
-    itUnderZsh(
-      'S1 collision refusal: under zsh a payload id block runs its display (paste)',
-      async () => {
-        const refusals = await collisionPayloadRefusals();
-        withPasteDir((dir) => {
-          for (const { id, message } of refusals) expectZshRunsTheDisplay(message, dir, id);
-        });
-      },
-      120_000
-    );
   });
 
   describe('reverse-replacement-readopt (the old resource is still alive)', () => {

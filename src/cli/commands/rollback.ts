@@ -332,7 +332,12 @@ function refuseDivergentRecordRegionForRollback(
       : `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`;
   throw markNonRetryable(
     new CdkdError(
-      `cdkd will not roll back ${safeStack(stackName)} (${safe(keyRegion)}): the state record ` +
+      // The stack and region are NAMED only when plain, described otherwise:
+      // this block ends in a `--verbose` remedy, and a block that displays an
+      // untrusted value carries no pasteable command (go-to-k/cdkd#3950's S1
+      // rule; under zsh a `$( )` name runs when the sentence is pasted).
+      `cdkd will not roll back ${plainOrDescribed(stackName, 'stack name')} ` +
+        `(${plainOrDescribed(keyRegion, 'region')}): the state record ` +
         `read from that region's key carries a 'region' of its own ` +
         `(${describeRegionValueKind(divergentBodyRegion)}) that is not the key's, and ${lists} — ` +
         `so cdkd cannot tell which region they are in. cdkd stamps the key's region into every ` +
@@ -664,7 +669,10 @@ export async function rollbackCommand(
       }
       if (!journal || (journal.segments.length === 0 && orphanedPending === 0)) {
         throw new Error(
-          `Nothing to roll back for ${safeStack(stackName)} (${safe(region)}). ` +
+          // Named only when plain, described otherwise: the block carries the
+          // `cdkd deploy` / `cdkd destroy` remedy (go-to-k/cdkd#3950's S1 rule).
+          `Nothing to roll back for ${plainOrDescribed(stackName, 'stack name')} ` +
+            `(${plainOrDescribed(region, 'region')}). ` +
             "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
         );
       }

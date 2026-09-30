@@ -215,14 +215,14 @@ describe('provider prose renders resolved values display-safe (#3269)', () => {
       throw new Error('import() did not refuse the unwritable physical id');
     };
 
-    it('sanitizes the prose value, behind a JSON boundary rather than cdkd quotes', async () => {
+    it('describes an altered prose value rather than showing it', async () => {
       const message = await refusal(`arn:aws:ssm:us-east-1:111122223333:parameter/${HOSTILE}`);
       expectNoForgers(message);
-      // `displayIdent`'s boundary (go-to-k/cdkd#3950): an altered value is
-      // JSON-quoted, never wrapped in a hand-written `'...'` it could close.
-      expect(message).toContain(
-        `(${JSON.stringify(`arn:aws:ssm:us-east-1:111122223333:parameter/${HOSTILE_SHOWN}`)})`
-      );
+      // Not plain, and the block carries the `--resource` remedy, so it is
+      // described (go-to-k/cdkd#3950's S1 rule): neither JSON-quoted beside
+      // the command nor wrapped in a hand-written `'...'` it could close.
+      expect(message).toContain('from an ARN (not shown: it is not a plain identifier)');
+      expect(message).not.toContain(HOSTILE_SHOWN);
     });
 
     it('renders a clean value byte-identically, and bare', async () => {
