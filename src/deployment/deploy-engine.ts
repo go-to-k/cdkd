@@ -60,9 +60,9 @@ import {
 import {
   isHealExcludedType,
   mergeHealedAttributes,
-  normalizeHealedAttributes,
   type StaleAttributeHealOutcome,
 } from './stale-attribute-heal.js';
+import { readRecordAttributes } from './read-only-attribute-healer.js';
 import { withSharedDrainBudget } from './drain-budget.js';
 import {
   markSameGenerationBag,
@@ -2692,40 +2692,17 @@ export class DeployEngine {
       // that wrote the record instead of moving to Cloud Control.
       previousProperties: resource.properties,
     });
-    if (!provider.import) return { kind: 'not-attempted' };
-    const found = await provider.import({
+    // The read's logic is shared with `cdkd diff`'s read-only healer, so a
+    // guard or masking rule cannot land in only one of them (go-to-k/cdkd#4196).
+    const outcome = await readRecordAttributes({
+      provider,
       logicalId,
-      resourceType: resource.resourceType,
+      resource,
       stackName,
       region: this.stackRegion,
-      properties: resource.properties,
-      knownPhysicalId: resource.physicalId,
     });
-    if (found === null) return { kind: 'not-found' };
-    if (found.physicalId !== resource.physicalId) {
-      // The `orphan-adoption.ts` guard: a provider is contracted to treat
-      // `knownPhysicalId` as ground truth, but nothing enforces it, and one that
-      // searches instead can answer for a DIFFERENT resource. Its attributes
-      // must reach neither this deploy's properties nor the record.
-      // not-in-class: the error's MESSAGE is rendered at debug only, masked.
-      throw new Error(
-        `the provider answered for a different resource (${found.physicalId}) than the one asked about (${resource.physicalId})`
-      );
-    }
-    // A key whose value carries `SECRET_MASK` is NOT a value.
-    // `CloudControlProvider.import` masks every leaf it cannot certify as a
-    // read-only attribute — every leaf at all when `DescribeType` is denied —
-    // on the premise that a masked read is REFUSED downstream. Served from
-    // here it would be re-applied to AWS as the literal mask under a green
-    // deploy, and merged into the record it would block every later heal.
-    // Dropped, the key falls to the fallback's refusal exactly as before.
-    const reported = Object.entries(normalizeHealedAttributes(found.attributes));
-    const attributes = Object.fromEntries(
-      reported.filter(([, value]) => !carriesSecretMask(value))
-    );
-    const withheldKeys = reported
-      .filter(([, value]) => carriesSecretMask(value))
-      .map(([key]) => key);
+    if (outcome.kind !== 'read') return outcome;
+    const { attributes } = outcome;
     if (Object.keys(attributes).length > 0) {
       this.healedAttributes.set(logicalId, {
         physicalId: resource.physicalId,
@@ -2736,7 +2713,7 @@ export class DeployEngine {
     this.logger.debug(
       `Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for (#1852): ${Object.keys(attributes).length} attribute(s) read`
     );
-    return { kind: 'read', attributes, ...(withheldKeys.length > 0 && { withheldKeys }) };
+    return outcome;
   }
 
   /**
@@ -2794,7 +2771,7 @@ export class DeployEngine {
         // same pass a provider-recorded attribute does. That pass has no needles
         // for an UNCHANGED record (nothing resolved for it this deploy), so what
         // keeps a sensitive value out is the read itself: masked keys are
-        // dropped in `readStaleAttributes`, and custom resources / nested stacks
+        // dropped in `readRecordAttributes`, and custom resources / nested stacks
         // are never read.
         this.withHealedAttributes(logicalId, record),
         secrets ?? new Map<string, string>(),
