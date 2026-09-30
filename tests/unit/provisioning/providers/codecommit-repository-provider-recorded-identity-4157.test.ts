@@ -97,6 +97,8 @@ function primeAccount(opts: {
   getFails?: unknown;
   holderWithoutId?: boolean;
   deleteReturnsNullId?: boolean;
+  /** DeleteRepository reports deleting this id instead (a swap after the read). */
+  deleteReturnsId?: string;
 }): void {
   mockSend.mockImplementation(
     (cmd: { constructor: { name: string }; input: Record<string, unknown> }) => {
@@ -118,6 +120,9 @@ function primeAccount(opts: {
         case 'GetRepositoryTriggersCommand':
           return Promise.resolve({ triggers: [] });
         case 'DeleteRepositoryCommand':
+          if (opts.deleteReturnsId !== undefined) {
+            return Promise.resolve({ repositoryId: opts.deleteReturnsId });
+          }
           return Promise.resolve(
             opts.deleteReturnsNullId || opts.holderId === undefined
               ? {}
@@ -232,7 +237,58 @@ describe('CodeCommitRepositoryProvider — recorded RepositoryId on a non-rename
       })
     );
     expectRefusal(error);
+    // The remedy names a free RepositoryName: orphaning alone collides again.
+    expect(error.message).toContain('a name no repository holds');
     expect(sentNames()).toEqual(['GetRepositoryCommand']);
+  });
+});
+
+describe('CodeCommitRepositoryProvider — recorded RepositoryId on update: other read answers (#4157)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const context = { recordedAttributes: { RepositoryId: RECORDED_ID } };
+
+  it('a holder whose read carries no id is not refused (nothing identifies it as foreign)', async () => {
+    primeAccount({ holderId: RECORDED_ID, holderWithoutId: true });
+    const provider = new CodeCommitRepositoryProvider();
+    await provider.update('Repo', NAME, TYPE, DESIRED, RECORDED, context);
+    expect(writesSent()).toContain('UpdateRepositoryDescriptionCommand');
+  });
+
+  it('a recorded name held by nothing fails the update, retryably, before any write', async () => {
+    primeAccount({ holderId: undefined });
+    const provider = new CodeCommitRepositoryProvider();
+    const error = await caught(provider.update('Repo', NAME, TYPE, DESIRED, RECORDED, context));
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(isMarkedNonRetryable(error)).toBe(false);
+    expect(error.message).toContain('Failed to update CodeCommit Repository Repo');
+    expect(writesSent()).toEqual([]);
+  });
+
+  it("a denied read names the error class, never AWS's text", async () => {
+    primeAccount({
+      holderId: RECORDED_ID,
+      getFails: awsSdkError(
+        'User: arn:aws:sts::123456789012:assumed-role/role/session is not authorized',
+        'AccessDeniedException'
+      ),
+    });
+    const provider = new CodeCommitRepositoryProvider();
+    const error = await caught(provider.update('Repo', NAME, TYPE, DESIRED, RECORDED, context));
+    expect(error.message).toContain('AccessDeniedException');
+    expect(error.message).not.toContain('assumed-role');
+    expect(writesSent()).toEqual([]);
+  });
+
+  it('a MASKED recorded id is no id: the by-name update is kept, not a refusal of its own repository', async () => {
+    primeAccount({ holderId: FOREIGN_ID });
+    const provider = new CodeCommitRepositoryProvider();
+    await provider.update('Repo', NAME, TYPE, DESIRED, RECORDED, {
+      recordedAttributes: { RepositoryId: '***' },
+    });
+    expect(sentNames()[0]).toBe('UpdateRepositoryDescriptionCommand');
   });
 });
 
@@ -347,5 +403,93 @@ describe('CodeCommitRepositoryProvider — recorded RepositoryId before DeleteRe
     });
     expect(sentNames()).toEqual(['GetRepositoryCommand', 'DeleteRepositoryCommand']);
     expect(result?.indeterminateGuards?.[0]?.guard).toBe(RECORDED_IDENTITY_DELETE_GUARD);
+  });
+});
+
+describe('CodeCommitRepositoryProvider — delete: region, transient reads, guard propagation (#4157)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const context = { recordedAttributes: { RepositoryId: RECORDED_ID } };
+
+  it('a client in another region is refused before the identity read, not reported as a foreign repository', async () => {
+    primeAccount({ holderId: FOREIGN_ID });
+    const provider = new CodeCommitRepositoryProvider();
+    const error = await caught(
+      provider.delete('Repo', NAME, TYPE, RECORDED, { ...context, expectedRegion: 'eu-west-1' })
+    );
+    expect(error.message).toMatch(/region/i);
+    expect(error.message).not.toContain('cdkd orphan');
+    expect(sentNames()).toEqual([]);
+  });
+
+  const transient: Array<[string, () => unknown]> = [
+    [
+      'a 5xx',
+      () =>
+        Object.assign(awsSdkError('Service unavailable', 'ServiceUnavailableException'), {
+          $metadata: { httpStatusCode: 503 },
+        }),
+    ],
+    ['a lost connection', () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+    ['a client timeout', () => Object.assign(new Error('timed out'), { name: 'TimeoutError' })],
+  ];
+  for (const [label, make] of transient) {
+    it(`${label} on the identity read is rethrown: the delete is not sent`, async () => {
+      primeAccount({ holderId: FOREIGN_ID, getFails: make() });
+      const provider = new CodeCommitRepositoryProvider();
+      const error = await caught(provider.delete('Repo', NAME, TYPE, RECORDED, context));
+      expect(isMarkedNonRetryable(error)).toBe(false);
+      expect(writesSent()).toEqual([]);
+    });
+  }
+
+  it('the guard reason names what could not be answered', async () => {
+    primeAccount({
+      holderId: RECORDED_ID,
+      getFails: awsSdkError('denied', 'AccessDeniedException'),
+    });
+    const provider = new CodeCommitRepositoryProvider();
+    const result = await provider.delete('Repo', NAME, TYPE, RECORDED, context);
+    const reason = result?.indeterminateGuards?.[0]?.reason ?? '';
+    expect(reason).toContain('could not be read to compare its id');
+    expect(reason).toContain('AccessDeniedException');
+  });
+
+  it('the no-id guard reason says so', async () => {
+    primeAccount({ holderId: RECORDED_ID, holderWithoutId: true });
+    const provider = new CodeCommitRepositoryProvider();
+    const result = await provider.delete('Repo', NAME, TYPE, RECORDED, context);
+    expect(result?.indeterminateGuards?.[0]?.reason).toContain('no repository id');
+  });
+
+  it('the guard survives a delete that found the repository already gone (a null id)', async () => {
+    primeAccount({
+      holderId: RECORDED_ID,
+      getFails: awsSdkError('denied', 'AccessDeniedException'),
+      deleteReturnsNullId: true,
+    });
+    const provider = new CodeCommitRepositoryProvider();
+    const result = await provider.delete('Repo', NAME, TYPE, RECORDED, context);
+    expect(result?.indeterminateGuards?.[0]?.guard).toBe(RECORDED_IDENTITY_DELETE_GUARD);
+  });
+
+  it('a MASKED recorded id proceeds with the delete and reports the guard', async () => {
+    primeAccount({ holderId: FOREIGN_ID });
+    const provider = new CodeCommitRepositoryProvider();
+    const result = await provider.delete('Repo', NAME, TYPE, RECORDED, {
+      recordedAttributes: { RepositoryId: '***' },
+    });
+    expect(sentNames()).toEqual(['DeleteRepositoryCommand']);
+    expect(result?.indeterminateGuards?.[0]?.reason).toContain('masked');
+  });
+
+  it('a delete that removed another id than the one checked is reported', async () => {
+    primeAccount({ holderId: RECORDED_ID, deleteReturnsId: 'id-swapped' });
+    const provider = new CodeCommitRepositoryProvider();
+    await provider.delete('Repo', NAME, TYPE, RECORDED, context);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('was not the one cdkd recorded');
   });
 });
