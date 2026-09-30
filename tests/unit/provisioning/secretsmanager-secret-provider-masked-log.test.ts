@@ -202,8 +202,9 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
 
   it.each([
     // Pins the base-masked-needle rule (`prod-db` masks to `***` and is
-    // dropped as a needle), not the step order: the order is pinned by the
-    // `pdb`, ARN-embedding, `qx-AbCdEf-more` and `secret` cases.
+    // dropped as a needle), not the ordering against the base masker, which
+    // lives in `withDerivedNameMasks`; the `pdb` row, the ARN-embedding,
+    // `qx-AbCdEf-more` and `secret` cases pin this provider's wiring of it.
     ['a Name that IS a bag secret', 'prod-db', ['prod-db', 'prod-db owner hunter2x']],
     ['a 3-character Name', 'pdb', ['pdb', 'pdb owner hunter2x']],
   ])(
@@ -224,7 +225,9 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
   );
 
   it('masks a longer bag secret containing a Name that EMBEDS a secret whole', async () => {
-    // `app-hunter2-db` is secret-derived because it embeds `hunter2`.
+    // `app-hunter2-db` is secret-derived because it embeds `hunter2`. The
+    // recorded secret CONTAINS the name, so the helper withholds the whole
+    // AWS text rather than render it around the name.
     mockSend.mockRejectedValue(new Error("Description 'app-hunter2-db owner' is invalid."));
     const err = await thrown(() =>
       provider.create(
@@ -235,7 +238,7 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
       )
     );
     expect(err.message).not.toContain('owner');
-    expect(err.message).toBe("Failed to create secret Secret: Description '***' is invalid.");
+    expect(err.message).toBe('Failed to create secret Secret: ***');
   });
 
   it('keeps a 2-character secret that occurs in cdkd wording from masking that wording', async () => {
@@ -443,9 +446,9 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
     expect(err.message).toBe('Failed to update secret Secret: ***');
   });
 
-  it('masks a longer bag secret whole rather than split it by the name needle', async () => {
-    // `qx-AbCdEf-more` is a bag secret, not a name this operation interpolates:
-    // the base masker takes it whole before the `:secret:qx-` needle runs.
+  it('withholds AWS text where a longer bag secret contains the quoted-ARN needle', async () => {
+    // `qx-AbCdEf-more` is a bag secret containing `:secret:qx-`'s name: the
+    // helper's crossing check withholds the whole AWS text.
     const longer = `${TINY}-AbCdEf-more`;
     mockSend.mockRejectedValue(new Error(`Denied: ${arnOf(longer)}.`));
     const err = await thrown(() =>
@@ -459,12 +462,10 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
       )
     );
     expect(err.message).not.toContain('more');
-    expect(err.message).toBe(
-      'Failed to update secret Secret: Denied: arn:aws:secretsmanager:us-east-1:123456789012:secret:***-AbCdEf.'
-    );
+    expect(err.message).toBe('Failed to update secret Secret: ***');
   });
 
-  it('masks a bag secret that EMBEDS the ARN plus text outside it whole', async () => {
+  it('withholds AWS text where a bag secret EMBEDS the ARN plus text outside it', async () => {
     const embedding = `${arnOf(TINY)},pw=hunter2x`;
     mockSend.mockRejectedValue(new Error(`Bad value '${embedding}'.`));
     const err = await thrown(() =>
@@ -478,7 +479,7 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
       )
     );
     expect(err.message).not.toContain('pw=');
-    expect(err.message).toBe("Failed to update secret Secret: Bad value '***'.");
+    expect(err.message).toBe('Failed to update secret Secret: ***');
   });
 
   it('masks a 3-character desired Name AWS quotes back when the physical id names another secret', async () => {
