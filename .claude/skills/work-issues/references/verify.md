@@ -5,10 +5,9 @@
 ### 8-a. Fix cascades — a round's fix producing the next round's blocker
 
 - **After round two, name what the rounds have in common**, then take the narrow
-  fix and FILE the structural one — across PRs too: narrowing a classifier that
-  gates a DELETE met a deeper feeder each review (#3826 → #3972 → #3978), and
-  the bound is an ownership proof at the deleting consumer (#3979, still open).
-  Ask for that guard first.
+  fix and FILE the structural one — across PRs too: narrowing a DELETE's
+  classifier met a deeper feeder each review (#3826 → #3972 → #3978); the bound
+  was an ownership proof at the deleting consumer (#3979). Ask for it first.
 - **A cascade stops when the artifact CLAIMS LESS** — tally the blockers by
   PART of the diff and offer that part's DELETION; stop reviewing the patch and
   question its SHAPE.
@@ -150,9 +149,8 @@ run AGENTS.md's leftover check, which the `deployments/` store survives.
 **The independent review round is the ORCHESTRATOR's; a LANE's own reviewers
 never substitute for it** (go-to-k/cdkd#2383) — they are its children and
 inherit its premise. The parent runs its round once the lane reports
-merge-ready, ONCE, on the final sha; a later fix round is re-checked by
-messaging the same reviewer with the delta. **The reviewer set**: one by
-default, all three axes when the `src/**` diff exceeds 400 lines or 8 files,
-plus `pr-security-reviewer` on any secret / credential / redaction /
-process-launch surface, and 3-axis plus security for a schema bump or a
-security fix. The FIXTURE is part of that diff.
+merge-ready, ONCE, on the final sha — brief each reviewer to fetch it into a
+NAMED ref and read by explicit sha: `FETCH_HEAD` is shared across worktrees, so
+a peer's fetch mid-read hands a reviewer another PR's content. A later fix
+round goes to the same reviewer with the delta. **The reviewer set is
+`/review-pr`'s**, which sizes `src/**` only: count the FIXTURE into it too.
