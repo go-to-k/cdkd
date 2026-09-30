@@ -18,15 +18,19 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
  */
 const DEPLOYMENT_DIR = fileURLToPath(new URL('../../../src/deployment/', import.meta.url));
 
-const AUGMENTATION = /declare module '(?:\.\.?\/)+deploy-engine\.js' \{\s*interface DeployEngine \{([\s\S]*?)\n {2}\}/;
+const AUGMENTATION =
+  /declare module '(?:\.\.?\/)+deploy-engine\.js' \{\s*interface DeployEngine \{([\s\S]*?)\n {2}\}/g;
+
+/** A member line: `name:`, `name?:`, `readonly name:`, or a method `name(` / `name<`. */
+const MEMBER = /^\s+(?:readonly\s+)?(\w+)\??\s*[:(<]/gm;
 
 function mixinModules(): Array<{ file: string; names: string[] }> {
   return readdirSync(DEPLOYMENT_DIR, { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
     .flatMap((file) => {
-      const block = AUGMENTATION.exec(readFileSync(`${DEPLOYMENT_DIR}${file}`, 'utf8'));
-      if (!block) return [];
-      const names = [...block[1]!.matchAll(/^\s+(\w+)\s*[:(<]/gm)].map((m) => m[1]!);
+      const blocks = [...readFileSync(`${DEPLOYMENT_DIR}${file}`, 'utf8').matchAll(AUGMENTATION)];
+      if (blocks.length === 0) return [];
+      const names = blocks.flatMap((b) => [...b[1]!.matchAll(MEMBER)].map((m) => m[1]!));
       return [{ file, names }];
     });
 }
