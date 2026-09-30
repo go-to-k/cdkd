@@ -63,6 +63,9 @@ const ROTATED_OLD = 'jv';
 const arnOf = (name: string): string =>
   `arn:aws:secretsmanager:us-east-1:123456789012:secret:${name}-AbCdEf`;
 
+/** A quoted ARN of the 2-character `TINY` once its `:secret:qx-` needle masked it. */
+const TINY_ARN_MASKED = 'arn:aws:secretsmanager:us-east-1:123456789012***AbCdEf';
+
 function bagOf(...values: string[]): RecordedSecretValues {
   return new Map(values.map((v) => [v, `{{resolve:secretsmanager:${v}}}`]));
 }
@@ -129,14 +132,14 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
     );
   });
 
-  it('masks the ARN of a 2-character secret Name that a CreateSecret failure quotes back', async () => {
-    // No pair names the ARN before CreateSecret answers, and the name is below
-    // the needle floor: only the in-text ARN arm can mask it.
+  it('masks the name inside a quoted ARN of a 2-character secret Name (the `:secret:<name>-` needle)', async () => {
+    // No pair names the ARN before CreateSecret answers, and a 2-character name
+    // is a needle only in the shape an ARN quotes it in.
     mockSend.mockRejectedValue(new Error(`Conflict on ${arnOf(TINY)}.`));
     const err = await thrown(() =>
       provider.create('Secret', TYPE, { Name: TINY, SecretString: 'v' }, { maskSecrets })
     );
-    expect(err.message).toBe('Failed to create secret Secret: Conflict on ***.');
+    expect(err.message).toBe(`Failed to create secret Secret: Conflict on ${TINY_ARN_MASKED}.`);
     // The cause is threaded UNMASKED, so the retry classifiers still read it.
     expect((err.cause as Error).message).toContain(arnOf(TINY));
   });
@@ -151,22 +154,18 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
   }
 
   it.each([
-    ['JSON-quoted, beside another suffixed token', `{"SecretId":"${arnOf(TINY)}","Other":"a-bcdefg"}`, '{"SecretId":"***","Other":"a-bcdefg"}'],
-    ['comma-joined with an ordinary ARN', `${arnOf(TINY)},${arnOf('plain-name')}`, `***,${arnOf('plain-name')}`],
-    // The run's character class stops at `,`: wider, the ordinary ARN's run
-    // would swallow the secret one after it and print it.
-    ['after an ordinary ARN', `${arnOf('plain-name')},${arnOf(TINY)}`, `${arnOf('plain-name')},***`],
-    // The rest of a name-legal run goes with the ARN: it may hold a longer
-    // secret, and over-masking is the safe direction.
-    ['followed by a path that is legal in a name', `${arnOf(TINY)}/version-AbCdEf`, '***'],
-    ['followed by a second suffix', `${arnOf(TINY)}-ZZZZZZ.`, '***.'],
-  ])('masks a quoted secret ARN %s, and only that ARN', async (_shape, aws, masked) => {
+    ['JSON-quoted, beside another suffixed token', `{"SecretId":"${arnOf(TINY)}","Other":"a-bcdefg"}`, `{"SecretId":"${TINY_ARN_MASKED}","Other":"a-bcdefg"}`],
+    ['comma-joined with an ordinary ARN', `${arnOf(TINY)},${arnOf('plain-name')}`, `${TINY_ARN_MASKED},${arnOf('plain-name')}`],
+    ['after an ordinary ARN', `${arnOf('plain-name')},${arnOf(TINY)}`, `${arnOf('plain-name')},${TINY_ARN_MASKED}`],
+    ['followed by a path that is legal in a name', `${arnOf(TINY)}/version-AbCdEf`, `${TINY_ARN_MASKED}/version-AbCdEf`],
+    ['followed by a second suffix', `${arnOf(TINY)}-ZZZZZZ.`, `${TINY_ARN_MASKED}-ZZZZZZ.`],
+  ])('masks the name of a quoted secret ARN %s, and only that name', async (_shape, aws, masked) => {
     expect(await createFailureFor(aws)).toBe(masked);
   });
 
-  it('masks the quoted ARN even when another bag secret equals part of its fixed text', async () => {
-    // A secret equal to `secret`, run first, would rewrite the ARN's own
-    // wording and defeat the arm; the arm runs on the raw text instead.
+  it('masks the quoted ARN name even when another bag secret equals part of its fixed text', async () => {
+    // The base masker rewrites `secret` inside the ARN before the needles run:
+    // the `:secret:qx-` needle is passed through it too, so it still matches.
     mockSend.mockRejectedValue(new Error(`on ${arnOf(TINY)} end`));
     const err = await thrown(() =>
       provider.create(
@@ -177,28 +176,63 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
       )
     );
     expect(err.message).not.toContain(`${TINY}-`);
-    expect(err.message).toMatch(/: on \*\*\* end$/);
+    expect(err.message).toMatch(/: on arn:aws:\*\*\*smanager:us-east-1:123456789012\*\*\*AbCdEf end$/);
   });
 
-  it('keeps a token that only LOOKS like the secret ARN (a 7-character suffix)', async () => {
+  it('masks the quoted ARN name when another bag secret is the account id', async () => {
+    mockSend.mockRejectedValue(new Error(`Conflict on ${arnOf(TINY)}.`));
+    const err = await thrown(() =>
+      provider.create(
+        'Secret',
+        TYPE,
+        { Name: TINY, SecretString: 'v' },
+        { maskSecrets: createSecretMasker(bagOf(TINY, '123456789012')) }
+      )
+    );
+    expect(err.message).not.toContain(`${TINY}-`);
+    expect(err.message).toBe('Failed to create secret Secret: Conflict on arn:aws:secretsmanager:us-east-1:******AbCdEf.');
+  });
+
+  it('over-masks a token that only LOOKS like the secret ARN (a 7-character suffix): the safe direction', async () => {
     const lookalike = `arn:aws:secretsmanager:us-east-1:123456789012:secret:${TINY}-AbCdEfg`;
-    expect(await createFailureFor(`Bad id ${lookalike}.`)).toBe(`Bad id ${lookalike}.`);
+    const masked = await createFailureFor(`Bad id ${lookalike}.`);
+    expect(masked).not.toContain(`${TINY}-`);
+    expect(masked).toBe('Bad id arn:aws:secretsmanager:us-east-1:123456789012***AbCdEfg.');
   });
 
-  it('restores a long trailing run of dots in linear time', async () => {
-    const dots = '.'.repeat(300_000);
-    const started = Date.now();
-    expect(await createFailureFor(`${arnOf(TINY)}${dots}a`)).toBe('***');
-    expect(await createFailureFor(`${arnOf(TINY)}${dots}`)).toBe(`***${dots}`);
-    expect(Date.now() - started).toBeLessThan(5000);
-  });
+  it.each([
+    ['a Name that IS a bag secret', 'prod-db', ['prod-db', 'prod-db owner hunter2x']],
+    ['a 3-character Name', 'pdb', ['pdb', 'pdb owner hunter2x']],
+  ])(
+    'masks a longer bag secret containing %s whole, not split by the name needle',
+    async (_shape, name, secrets) => {
+      mockSend.mockRejectedValue(new Error(`Description '${secrets[1]}' is invalid.`));
+      const err = await thrown(() =>
+        provider.create(
+          'Secret',
+          TYPE,
+          { Name: name, SecretString: 'v' },
+          { maskSecrets: createSecretMasker(bagOf(...secrets)) }
+        )
+      );
+      expect(err.message).not.toContain('hunter2x');
+      expect(err.message).toBe("Failed to create secret Secret: Description '***' is invalid.");
+    }
+  );
 
-  it('scans a long run with no whitespace in linear time', async () => {
-    const run = 'arn:a:secretsmanager:::secret:'.repeat(30_000);
-    const started = Date.now();
-    expect(await createFailureFor(run)).toBe(run);
-    // Generous: the quadratic scan this pins took seconds at a third of this size.
-    expect(Date.now() - started).toBeLessThan(5000);
+  it('masks a longer bag secret containing a Name that EMBEDS a secret whole', async () => {
+    // `app-hunter2-db` is secret-derived because it embeds `hunter2`.
+    mockSend.mockRejectedValue(new Error("Description 'app-hunter2-db owner' is invalid."));
+    const err = await thrown(() =>
+      provider.create(
+        'Secret',
+        TYPE,
+        { Name: 'app-hunter2-db', SecretString: 'v' },
+        { maskSecrets: createSecretMasker(bagOf('hunter2', 'app-hunter2-db owner')) }
+      )
+    );
+    expect(err.message).not.toContain('owner');
+    expect(err.message).toBe("Failed to create secret Secret: Description '***' is invalid.");
   });
 
   it('keeps a 2-character secret that occurs in cdkd wording from masking that wording', async () => {
@@ -406,11 +440,9 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
     expect(err.message).toBe('Failed to update secret Secret: ***');
   });
 
-  it('masks a longer bag secret whole rather than split it at the ARN arm', async () => {
-    // `qx-AbCdEf-more` is a secret of this deploy's bag, not a name this
-    // operation interpolates. The ARN arm, keyed on the desired Name `qx`,
-    // matches its first `qx-AbCdEf`: masking only that would print `-more`,
-    // so the arm masks the WHOLE name-legal run.
+  it('masks a longer bag secret whole rather than split it by the name needle', async () => {
+    // `qx-AbCdEf-more` is a bag secret, not a name this operation interpolates:
+    // the base masker takes it whole before the `:secret:qx-` needle runs.
     const longer = `${TINY}-AbCdEf-more`;
     mockSend.mockRejectedValue(new Error(`Denied: ${arnOf(longer)}.`));
     const err = await thrown(() =>
@@ -424,7 +456,56 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
       )
     );
     expect(err.message).not.toContain('more');
-    expect(err.message).toBe('Failed to update secret Secret: Denied: ***.');
+    expect(err.message).toBe(
+      'Failed to update secret Secret: Denied: arn:aws:secretsmanager:us-east-1:123456789012:secret:***-AbCdEf.'
+    );
+  });
+
+  it('masks a bag secret that EMBEDS the ARN plus text outside it whole', async () => {
+    const embedding = `${arnOf(TINY)},pw=hunter2x`;
+    mockSend.mockRejectedValue(new Error(`Bad value '${embedding}'.`));
+    const err = await thrown(() =>
+      provider.update(
+        'Secret',
+        arnOf(TINY),
+        TYPE,
+        { Name: TINY, SecretString: 'new' },
+        { Name: TINY, SecretString: 'old' },
+        { maskSecrets: createSecretMasker(bagOf(TINY, embedding)) }
+      )
+    );
+    expect(err.message).not.toContain('pw=');
+    expect(err.message).toBe("Failed to update secret Secret: Bad value '***'.");
+  });
+
+  it('masks a physical id that names another secret when only the DESIRED Name is secret', async () => {
+    // The desired-Name / physical-id pair is the only source marking this ARN.
+    await provider.update(
+      'Secret',
+      arnOf('other-name'),
+      TYPE,
+      { Name: TINY, SecretString: 'v' },
+      { SecretString: 'v' },
+      { maskSecrets }
+    );
+    expect(debugLines()).toContain('Updating secret Secret: ***');
+  });
+
+  it('masks the state-borne refusal text through the operation masker', async () => {
+    // A state-borne bag still refuses a non-string literal; that arm of the
+    // catch wraps the message too.
+    const err = await thrown(() =>
+      provider.update(
+        'Secret',
+        arnOf('plain-name'),
+        TYPE,
+        { Name: 'plain-name', SecretString: 42 },
+        { Name: 'plain-name', SecretString: 'old' },
+        { maskSecrets: markingMasker, replayingState: true }
+      )
+    );
+    expect(err.message).toBe(`Failed to update secret Secret: ${MARK}SecretString must be a string, got number`);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('routes every update line through the sink: tag warning and generate-skip warning included', async () => {
@@ -448,7 +529,7 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
     expect(debugLines().filter((l) => !l.startsWith(MARK))).toEqual([]);
   });
 
-  it('masks the template-path refusal text RAW before it joins the sentence', async () => {
+  it('routes the template-path refusal text through the operation masker', async () => {
     const err = await thrown(() =>
       provider.update(
         'Secret',

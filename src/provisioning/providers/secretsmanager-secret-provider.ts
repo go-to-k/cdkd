@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
-import { redactSecretsForState } from '../../deployment/secret-redaction.js';
+import { MIN_NEEDLE_LENGTH, redactSecretsForState } from '../../deployment/secret-redaction.js';
 import {
   SecretsManagerClient,
   CreateSecretCommand,
@@ -32,7 +32,6 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
 import {
   createMaskedLogSinks,
   isSecretDerivedValue,
-  withDerivedNameMasks,
   MASK_WALK_DEPTH_CAP_MARKER,
   type MaskedLogSinks,
   type MaskerFn,
@@ -672,29 +671,42 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   }
 
   /**
-   * The masked sinks ONE `create()` / `update()` logs through (issue #2177),
-   * the Glue slice's shape: `createMaskedLogSinks` over the context's masker,
-   * extended by `pairs` of `[raw template value, name derived from it]`. Each
-   * derived name whose raw value is secret-derived (`isSecretDerivedValue`:
-   * the masker changes it, it still spells a `{{resolve:` reference, or it is
-   * exactly `***`) is:
+   * The masked sinks ONE `create()` / `update()` logs through (issue #2177):
+   * `createMaskedLogSinks` over the context's masker, extended by `pairs` of
+   * `[raw template value, name derived from it]`. A derived name counts when
+   * its raw value is secret-derived (`isSecretDerivedValue`: the masker changes
+   * it, it still spells a `{{resolve:` reference, or it is exactly `***`);
+   * an ARN pair names two spellings, the ARN and its name segment. The mask
+   * runs three steps, in this order:
    *
-   *  - rendered as `***` wherever a sink masks it as a WHOLE value, at any
-   *    length -- and so is a secret ARN whose NAME segment is one of them,
-   *    whether it is the whole value (the ARN `CreateSecret` returns) or
-   *    OCCURS inside other text (an AWS error quoting the ARN, which on
-   *    `create()` no pair can name up front);
-   *  - and, at 3 characters or longer, a substring needle
-   *    (`withDerivedNameMasks`), so the bare name is also masked where an AWS
-   *    error quotes it back.
+   *  1. WHOLE value: text that IS one of those spellings, or a secret ARN
+   *     whose name segment is one (the ARN `CreateSecret` returns, which no
+   *     pair can name up front), renders as `***`, at any length.
+   *  2. The BASE masker over the whole text, longest bag secret first. That is
+   *     exactly the masking a thrown message got before this provider masked
+   *     anything, so a longer bag secret CONTAINING a name is still masked
+   *     whole, not split by a name needle first.
+   *  3. The NEEDLES, longest first, each replaced with `***`: a spelling of 3
+   *     or more characters as itself (so a bare name AWS quotes back is
+   *     masked, and a rotated name no bag of this deploy holds), a shorter one
+   *     only as `:secret:<name>-`, the shape an ARN quotes it in, so a 1-2
+   *     character needle cannot mask letters of cdkd's own wording. A needle
+   *     of 4 or more characters is itself passed through the base masker
+   *     first, so it still matches after step 2 rewrote a bag secret inside it
+   *     (one equal to `secret`, or an account id).
    *
-   * The floor limits a needle masking letters of cdkd's own wording, whose
-   * positions would hint at the secret; it narrows that rather than closing it
-   * (a 3-character `ret` still masks part of `secret`). Below it, a 1-2
-   * character name is still hidden at every site cdkd interpolates, but an AWS
-   * error quoting that BARE name prints it: accepted, as in the Glue slice, for
-   * a secret that short. A short secret merely EMBEDDED in a longer `Name`
-   * does not count as secret-derived at all (the masker's substring floor).
+   * Step 2 is exactly the old masking, and steps 1 and 3 only replace text
+   * with `***`, so everything the old masking hid stays hidden. This is why
+   * the mask is built here rather than with the shared `withDerivedNameMasks`,
+   * which runs its needles BEFORE the base masker and so can split a longer
+   * bag secret containing a name (go-to-k/cdkd#4193).
+   *
+   * Accepted: the 3-character floor limits a needle masking letters of cdkd's
+   * wording, whose positions would hint at the secret, without closing it (a
+   * 3-character `ret` still masks part of `secret`), as in the Glue slice. A
+   * bare 1-2 character name AWS quotes back prints. A short secret merely
+   * embedded in a longer `Name` does not count as secret-derived at all (the
+   * masker's substring floor).
    *
    * Built per call, never cached: the provider is a singleton serving
    * concurrent resources.
@@ -710,54 +722,28 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     const arnName = (text: string): string | undefined =>
       /^arn:[^:]+:secretsmanager:[^:]*:[^:]*:secret:(.+)-[A-Za-z0-9]{6}$/.exec(text)?.[1];
     const secretNames = new Set<string>();
-    const needlePairs: Array<readonly [unknown, string]> = [];
+    const needleSet = new Set<string>();
     for (const [raw, name] of pairs) {
       if (typeof name !== 'string' || name === '') continue;
-      // An ARN pair names two spellings of the secret: the ARN and its name.
+      if (!isSecretDerivedValue(raw, base.mask)) continue;
       const embedded = arnName(name);
-      const secret = isSecretDerivedValue(raw, base.mask);
       for (const spelling of embedded === undefined ? [name] : [name, embedded]) {
-        if (secret) secretNames.add(spelling);
-        if (spelling.length >= 3) needlePairs.push([raw, spelling]);
+        secretNames.add(spelling);
+        const candidate = spelling.length >= 3 ? spelling : `:secret:${spelling}-`;
+        const needle = candidate.length < MIN_NEEDLE_LENGTH ? candidate : base.mask(candidate);
+        if (needle !== MASK_WALK_DEPTH_CAP_MARKER) needleSet.add(needle);
       }
     }
-    const needled = withDerivedNameMasks(logger, base, needlePairs);
-    if (secretNames.size === 0) return needled;
-    // A secret ARN QUOTED inside other text (an AWS error): the prefix plus
-    // the longest run of characters a secret name may hold (letters, digits,
-    // `/_+=.@-`). A name can itself contain `-XXXXXX`, and the run can go on
-    // past the suffix (`/version-...`), so each secret name is tried as a
-    // PREFIX of the run followed by a 6-character suffix. On a match the WHOLE
-    // run is masked, not only the name and suffix: the run may hold a longer
-    // secret this operation does not name (`qx` against `qx-AbCdEf-more`), and
-    // over-masking the rest of the run is the safe direction. The arm runs on
-    // the RAW text, before the needles and the base masker, so neither can
-    // rewrite part of the ARN (a secret equal to `secret`) and defeat it. The
-    // mirror residual of that order, accepted: another bag secret that EMBEDS
-    // this ARN plus text outside the run (`<arn>,pw=...`) no longer occurs
-    // once the ARN is masked, so its outside part prints.
-    const ARN_SEGMENT = /arn:[^:\s]+:secretsmanager:[^:\s]*:[^:\s]*:secret:([A-Za-z0-9/_+=.@-]+)/g;
-    const maskArnSegment = (whole: string, run: string): string => {
-      for (const name of secretNames) {
-        if (
-          run.startsWith(name) &&
-          /^-[A-Za-z0-9]{6}(?![A-Za-z0-9])/.test(run.slice(name.length))
-        ) {
-          // A trailing `.` is sentence punctuation far more often than a name
-          // character, and restoring it reveals nothing. A loop, not `/\.+$/`,
-          // which is quadratic on a long run of dots followed by another
-          // character.
-          let end = run.length;
-          while (end > 0 && run[end - 1] === '.') end -= 1;
-          return MASK_WALK_DEPTH_CAP_MARKER + run.slice(end);
-        }
+    if (secretNames.size === 0) return base;
+    const needles = [...needleSet].sort((x, y) => y.length - x.length);
+    const mask: MaskerFn = (text: string) => {
+      if (secretNames.has(text) || secretNames.has(arnName(text) ?? '')) {
+        return MASK_WALK_DEPTH_CAP_MARKER;
       }
-      return whole;
+      let out = base.mask(text);
+      for (const needle of needles) out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
+      return out;
     };
-    const mask: MaskerFn = (text: string) =>
-      secretNames.has(text) || secretNames.has(arnName(text) ?? '')
-        ? MASK_WALK_DEPTH_CAP_MARKER
-        : needled.mask(text.replace(ARN_SEGMENT, maskArnSegment));
     return {
       mask,
       value: (value: unknown) => mask(String(value)),
