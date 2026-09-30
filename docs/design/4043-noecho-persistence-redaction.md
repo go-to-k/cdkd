@@ -31,12 +31,13 @@ When a `Ref` serves a `NoEcho` parameter (`resolveRef`,
 `intrinsic-function-resolver.ts:4852`, recording at `:4908`), or an `Fn::Sub`
 variable does (`:8410`), the resolver calls `recordNoEchoParameterValue`
 (`:4632`). That calls `recordLogOnlyParameterValue`
-(`src/deployment/secret-redaction.ts:1102`). The value goes into the
-`logOnlyValuesOf` side set (`secret-redaction.ts:1006`). It never reaches the
-`RecordedSecretValues` map. The side set's own doc (`secret-redaction.ts:970-1005`)
-states the #1998 contract: nothing that persists reads it. `redactSecretsForState`
-(`:7432`) and `scrubResourceRecord` (`:7808`) walk the map alone, so every
-persisted copy below is plaintext.
+(`src/deployment/secret-redaction.ts:1102`).
+
+The value goes into the `logOnlyValuesOf` side set (`secret-redaction.ts:1006`).
+It never reaches the `RecordedSecretValues` map. The side set's own doc
+(`secret-redaction.ts:970-1005`) states the #1998 contract: nothing that
+persists reads it. `redactSecretsForState` (`:7432`) and `scrubResourceRecord`
+(`:7808`) walk the map alone, so every persisted copy below is plaintext.
 
 ## 1. Every persisted surface that holds the value today
 
@@ -58,12 +59,20 @@ They write through `S3StateBackend.saveState`
 | Exports index | `ExportIndexStore.writeIndex`, `src/state/export-index-store.ts:592` | values from `redactOutputs`; keys never redacted | yes, value and key |
 | Rollback journal | `appendRollbackJournalSegment`, `s3-state-backend.ts:1124`, from `deploy-engine.ts:6000` | `redactOperationsForJournal`, `deploy-engine.ts:2550` | yes |
 | Nested journal `previousOutputs` | copied from the previous state | none (a copy) | when that state held it |
-| `deployments/*.jsonl` events | deploy `deploy-engine.ts:6452`; rollback `src/cli/commands/rollback.ts:907`; destroy `src/cli/commands/destroy-runner.ts:2091` | deploy: `maskSecretsInEvent` (`:6470`) masks `error.message` and `reason`; rollback masks `error.message` with the op masker (`rollback-executor.ts:249-261`) and persists `reason` raw; destroy: none | `physicalId`; a rollback or destroy message quoting the value |
+| `deployments/*.jsonl` events | deploy `deploy-engine.ts:6452`; rollback `src/cli/commands/rollback.ts:907`; destroy `src/cli/commands/destroy-runner.ts:2091` | per writer, in the note below | `physicalId`; a rollback or destroy message quoting the value |
 | `cdkd state refresh-observed` | `src/cli/commands/state.ts:3986` | position walk with an empty map (`state.ts:3952`) | yes |
 | `cdkd drift --accept` / `--revert` | `src/cli/commands/drift.ts:3930`, `:6391` | `redactSecretsForState`, map only | yes |
 | `cdkd import` | `import.ts:2413` (properties), `:2523` (attributes), `:3450` (observed) | map only | yes (the bound `Default`) |
 | `cdkd scrub` | `scrub.ts:7232` and siblings | map only | yes; scrub cannot see it either |
 | `cdkd rollback` restore | `redactRollbackRecord`, `src/deployment/rollback-executor.ts:2610` | `scrubResourceRecord`, map only | carries what the journal held |
+
+Event masking per writer:
+
+- **deploy:** `maskSecretsInEvent` (`deploy-engine.ts:6470`) masks
+  `error.message` and `reason`.
+- **rollback:** masks `error.message` with the op masker
+  (`rollback-executor.ts:249-261`) and persists `reason` raw.
+- **destroy:** no masking.
 
 Not affected:
 
@@ -72,7 +81,7 @@ Not affected:
 - The lock file, asset manifests and synth output. These hold no resolved
   values.
 
-## 2. Decisions
+## 2. Design choices
 
 1. **The marker is the existing whole-leaf mask `***`** (`SECRET_MASK`,
    `secret-redaction.ts:56`). The mask-only class is reused. A `NoEcho`
@@ -104,9 +113,11 @@ also calls `recordFreshNoEchoValuesIn` (`secret-redaction.ts:897`) over the
 same spellings. That writes `plaintext -> ***` into the map through
 `recordMaskOnlyValue` (`:665`), marks the value FRESH (`freshNoEchoValuesOf`,
 `:830`), and marks it as a containment needle. So a leaf that EMBEDS the value
-is flattened whole (#2453). This is the arm that already serves a
-custom-resource `NoEcho` value and a recovered cross-stack output. So
-`carriesFreshNoEchoValue` (`:1254`), `freshNoEchoLeafPositions` (`:1295`),
+is flattened whole (#2453).
+
+This is the arm that already serves a custom-resource `NoEcho` value and a
+recovered cross-stack output. So `carriesFreshNoEchoValue` (`:1254`),
+`freshNoEchoLeafPositions` (`:1295`),
 `carryFreshNoEchoMark` (`:941`) and the readers of `carriesSecretMask` (`:800`)
 see a parameter value with no new predicate. It still does not fit in three
 places:
@@ -195,14 +206,18 @@ interface ResourceState {
 the value into an attribute: `AWS::SSM::Parameter` returns `attributes.Value`
 (`src/provisioning/providers/ssm-parameter-provider.ts:430-432`), and the
 fixture's `NoEchoConsumer` is that producer. The in-memory record keeps the
-real attribute for same-run reads. `noteAttributeSecrecy`
+real attribute for same-run reads.
+
+`noteAttributeSecrecy`
 (`intrinsic-function-resolver.ts:5681`) registers a fresh needle in a
 CONSUMER's bag only for an attribute listed in `noEchoAttributeResources`
 (`:5684-5697`), which today only custom resources and nested stacks fill. Left
 alone, a consumer of `Fn::GetAtt NoEchoConsumer.Value` would persist the
 plaintext on its first deploy, then read the producer's persisted `***` and be
 refused by `refuseRedactedAttributeReads` (`deploy-engine.ts:2462`) on every
-later one. So at the producer's create or update site, an attribute is added
+later one.
+
+So at the producer's create or update site, an attribute is added
 to `noEchoAttributeResources` for that logical id, the existing #2274
 mechanism, when its leaf matches a fresh value of the producer. A match is
 either of two things:
@@ -216,6 +231,7 @@ The CONSUMER's positional arm also treats a `Fn::GetAtt` (or `${X.Attr}`)
 whose target attribute is declared this way as a position that reads the
 parameter. So the consumer's leaf persists `***` whatever the value's type or
 length.
+
 That covers the run in which the producer is created or updated. On a LATER
 deploy the producer is `held` and skipped, so its record holds
 `attributes.Value = '***'`, and the consumer's `Fn::GetAtt` would be refused
@@ -344,7 +360,7 @@ Verdicts for a leaf a parameter served:
 | --- | --- | --- |
 | `held` | nothing to send; skip if nothing else moved | lowered to in place, as #3729 |
 | `differs` | UPDATE | REPLACEMENT |
-| `not-readable` (write-only, or no `readCurrentState`) | UPDATE: the value is re-sent on every deploy, with one info line per resource (decision 4) | not replaced; every deploy warns that a change goes undetected and names `--recreate-via-*` (decision 1) |
+| `not-readable` (write-only, or the provider has no `readCurrentState`) | UPDATE: the value is re-sent on every deploy, with one info line per resource (maintainer decision 4, §9) | not replaced; every deploy warns that a change goes undetected and names `--recreate-via-*` (maintainer decision 1, §9) |
 | `read-failed` | UPDATE | the resource fails with a retry message; no replacement on a transient error |
 
 A nested stack's `AWS::CloudFormation::Stack` row is one `not-readable`
@@ -357,8 +373,18 @@ The two classes are told apart by the source: the positional arm, or a
 `NoEcho` parameter name in the pass's fresh set. A write-only create-only
 property raises no ceiling for a promoted reader
 (`diff-calculator.ts:752-786`). So such a path reaches the engine as an
-in-place change, and decision 1 decides what the engine does: it sends no
-replacement.
+in-place change, and maintainer decision 1 (§9) decides what the engine does:
+it sends no replacement.
+
+**Decision 1 covers every unreadable create-only property**, not only a
+write-only one. The maintainer confirmed that scope in #4043 comment
+5904913259: a
+property whose provider has no `readCurrentState` is not replaced either, warns
+on every deploy, and names `--recreate-via-*`. Today the diff exempts only a
+write-only property from the replacement ceiling (`diff-calculator.ts:752-786`),
+so a promoted reader whose provider cannot read back still gets one. Phase B
+lowers that ceiling for every property the readback cannot serve, and the
+engine applies the same no-replace verdict.
 
 ### 4.3 `cdkd drift`, `--accept` and `--revert`
 
@@ -401,20 +427,22 @@ Today `refuseMaskedReplayBaseline` (`rollback-executor.ts:2294`) throws
   applies in process and in `cdkd rollback` alike. The replay reads the
   resource back with the #3729 helper shape: routed by the record, and handed
   the masked record. It substitutes the live value at each marked coordinate.
-  A live value that is absent, or that itself carries the mask (a provider
-  echoing the masked record it was handed, the reason
-  `deploy-engine.ts:3049-3054` hands it that record), is `not-readable` and
-  keeps `ROLLBACK_REDACTED_BASELINE`. So `***` is never substituted. Each
-  substituted value is recorded as a mask-only needle in the op's bag, AND as a
-  log-only needle (`recordLogOnlyParameterValue`, no length floor, every
-  printed spelling), so a short or numeric value is masked in lines and events
-  too. The provider masker,
-  the re-redacted record and an event's `error.message`
-  (`maskedRollbackEventError`, `rollback-executor.ts:249-261`) then mask it.
-  An event's `reason` / `survivorReason` is persisted RAW (the note above
-  `rollback-executor.ts:295`). Phase C routes both through the same op masker
-  before `ctx.recordEvent`, which closes the #4043 rollback-events item. The
-  leaf is left exactly as AWS holds it.
+  - A live value that is absent, or that itself carries the mask (a provider
+    echoing the masked record it was handed, the reason
+    `deploy-engine.ts:3049-3054` hands it that record), is `not-readable` and
+    keeps `ROLLBACK_REDACTED_BASELINE`. So `***` is never substituted.
+  - Each substituted value is recorded as a mask-only needle in the op's bag,
+    AND as a log-only needle (`recordLogOnlyParameterValue`, no length floor,
+    every printed spelling), so a short or numeric value is masked in lines
+    and events too.
+  - The provider masker, the re-redacted record and an event's
+    `error.message` (`maskedRollbackEventError`,
+    `rollback-executor.ts:249-261`) then mask it.
+  - An event's `reason` / `survivorReason` is persisted RAW (the note above
+    `rollback-executor.ts:295`). Phase C routes both through the same op
+    masker before `ctx.recordEvent`, which closes the #4043 rollback-events
+    item.
+  - The leaf is left exactly as AWS holds it.
   - A parameter change made by the reverted op is therefore not reverted.
     The next deploy with the old value restores it.
   - An unreadable leaf keeps the refusal, with a parameter-specific remedy.
@@ -457,7 +485,7 @@ inherits it through `redactOutputs`.
 - **Out of process.** A consumer deployed by an earlier or a separate run is
   refused as a `cross-stack` redacted read. This is today's behavior for a
   custom-resource `NoEcho` output. It is a new refusal for parameter-served
-  outputs (decision 2).
+  outputs (maintainer decision 2, §9).
 - **Nested children, output direction.** A child's `NoEcho`-served output
   reaches the parent row through `noEchoAttributeNames`
   (`nested-stack-provider.ts:275`), as a custom-resource value does now.
@@ -493,7 +521,7 @@ inherits it through `redactOutputs`.
   `:62`). The resource is left in place and the record is kept. The runner
   then exits 2, on a deploy that removes the resource too, unless
   `--allow-unaddressed` (`.claude/rules/provider-delete-path.md`). A parameter
-  that feeds a delete address newly reaches that skip (decision 3).
+  that feeds a delete address newly reaches that skip (maintainer decision 3, §9).
 - **`masked-baseline-recapture.ts:68-75`** skips a record whose `properties`
   carry `***`. That is correct for a marked leaf, because the value is not
   recapturable from `properties`.
@@ -507,29 +535,32 @@ collide. Publishing it would put the value in `state.json`, `exportNames` and
 the bucket-wide exports index, which any stack's reader can list.
 
 - `exportNameSecretExposure` (`src/deployment/outputs-export-alias.ts:666`) is
-  called with two bags (`deploy-engine.ts:10613`): the name's own recording
-  bag `nameSecrets`, counted wholesale, and the pass map as
-  `recordedThisPass`, scanned by bounded containment (`secretsPresentIn`,
-  `outputs-export-alias.ts:518`). `nameSecrets`'s map entries are the name's
-  own. Its log-only set is SHARED with the
-  whole outputs pass (`shareLogOnlyValues`, `deploy-engine.ts:10517`), so it
-  cannot be counted wholesale: one output reading a `NoEcho` value would
+  called with two bags (`deploy-engine.ts:10613`):
+  - the name's own recording bag `nameSecrets`, counted wholesale;
+  - the pass map as `recordedThisPass`, scanned by bounded containment
+    (`secretsPresentIn`, `outputs-export-alias.ts:518`).
+
+  `nameSecrets`'s map entries are the name's own. Its log-only set is SHARED
+  with the whole outputs pass (`shareLogOnlyValues`, `deploy-engine.ts:10517`),
+  so it cannot be counted wholesale: one output reading a `NoEcho` value would
   refuse every export name.
   - **Phase A** adds the log-only needles to the containment test only. The
     set is module-private (`secret-redaction.ts:1006`), but
     `printingCorpusOf` (`:1126`) returns the map plus each log-only needle as
     an entry. Phase A hands that corpus to `secretsPresentIn`
-    (`outputs-export-alias.ts:518`) as a second containment corpus. So the
+    (`outputs-export-alias.ts:518`) as a second containment corpus.
+  - So the
     log-only needles get the same canonical and detection haystacks
     (`secretScanHaystacks`, `:523-551`) a secret gets today, and the fold
-    #4173 adds. A raw `maskSecretsInText` comparison would miss a value
+    #4173 added. A raw `maskSecretsInText` comparison would miss a value
     spelled with compatibility or invisible characters, the #2874 / #4001
-    class. That scan's floor is the one wanted: a name equal to a value is
-    refused at any length, and a name embedding one at 4 or more characters. It deliberately reverses the #4049 rule that a
-    publication verdict never reads log-only needles
-    (`.claude/rules/layout-deployment-secrets.md`, and the side-set doc at
-    `secret-redaction.ts:991-995`). Phase A updates the rule file. The doc
-    comment is in a file #4130 holds, so Phase B updates it.
+    class.
+  - That scan's floor is the one wanted. A name equal to a value is refused
+    at any length, and a name embedding one at 4 or more characters.
+  - It deliberately reverses the #4049 rule that a publication verdict never
+    reads log-only needles (`.claude/rules/layout-deployment-secrets.md`, and
+    the side-set doc at `secret-redaction.ts:991-995`). Phase A updates the
+    rule file and the side-set doc comment.
   - **Phase B** makes the value a map entry of the name's own bag. Its
     wholesale arm then refuses it, still from 4 characters, because the
     mask-only floor applies.
@@ -544,8 +575,9 @@ the bucket-wide exports index, which any stack's reader can list.
 - **The containment scan is pass-wide from Phase A on.** The corpus
   `printingCorpusOf(nameSecrets)` holds the log-only set the whole outputs pass
   shares (`deploy-engine.ts:10517`), so it sees every `NoEcho` value ANY
-  output of the pass read. Phase B sees the same set through the map. A name that merely contains one at 4 or more characters is refused. For
-  a low-entropy value (`prod`), that refuses ordinary names. This is the same
+  output of the pass read. Phase B sees the same set through the map. A name
+  that merely contains one at 4 or more characters is refused. For a
+  low-entropy value (`prod`), that refuses ordinary names. This is the same
   bound #1919 accepted for secrets, and the warning names the output.
 - **A stack that is never redeployed** keeps a published alias in `outputs`,
   `exportNames` and the exports index. `cdkd scrub` cannot rewrite a key
@@ -607,7 +639,7 @@ So readers never infer redaction from `version`. They read
 resource as it is (a witness, or `held`) or updates it with the value in hand.
 The only new refusals are these:
 
-- an out-of-process consumer of a parameter-served output (decision 2);
+- an out-of-process consumer of a parameter-served output (maintainer decision 2, §9);
 - a create-only leaf whose readback FAILED (`read-failed` in section 4.2),
   which fails the resource with a retry message rather than replacing it;
 - a `Fn::GetAtt` consumer of an attribute that echoes the value, when the
@@ -620,13 +652,13 @@ The only new refusals are these:
   (`intrinsic-function-resolver.ts:4681`) refuses it;
 - a rollback re-create with no live resource.
 
-The costs that are not refusals are decisions 1 and 4: a create-only
+The costs that are not refusals are maintainer decisions 1 and 4 (§9): a create-only
 write-only leaf whose change is not detected (warned on every deploy), and an
 updatable write-only leaf re-sent on every deploy (one info line per
 resource).
 
 **Noncurrent S3 versions** of `state.json` keep the old plaintext. Migration
-does not purge them (decision 5). The docs direct the user to rotate a value
+does not purge them (maintainer decision 5, §9). The docs direct the user to rotate a value
 ever stored in the clear, as `docs/cli-scrub.md` already does for secrets.
 Phase B adds that guidance to `docs/state-management.md`.
 
@@ -640,24 +672,53 @@ Phase B adds that guidance to `docs/state-management.md`.
 
 ## 7. Phasing
 
-Open PRs hold files this work must edit:
+Each phase lane re-checks, at lane start, which open PRs hold its files:
+`gh pr list --state open --json number,files`. A snapshot is not a plan.
 
-- #4130 holds `src/deployment/secret-redaction.ts` and
-  `src/deployment/intrinsic-function-resolver.ts`. Phase B waits for it.
-- #4173 (the #4001 export-name fold) holds
-  `src/deployment/outputs-export-alias.ts` and `docs/cli-scrub.md`. Phase A
-  waits for it, and so does Phase C's `docs/cli-scrub.md` edit. Phase A builds
-  on its fold.
-- #4140, named on the issue as holding `src/deployment/deploy-engine.ts`, has
-  merged. Phase B builds on it, and on #4169. The `deploy-engine.ts` and
-  `diff-recursive.ts` line numbers in this page are at `428ce7347`, before
-  those merges.
+- #4130 (`secret-redaction.ts`, `intrinsic-function-resolver.ts`) has merged
+  (`b29fc0fe3`), and so has #4173, the #4001 export-name fold
+  (`outputs-export-alias.ts`, `docs/cli-scrub.md`, `d7efdc46a`). Phase A
+  builds on that fold.
+- #4140 and #4169 have also merged. So the line numbers in this page, all at
+  `428ce7347`, have moved in `deploy-engine.ts`, `diff-recursive.ts`,
+  `secret-redaction.ts` and `intrinsic-function-resolver.ts`. For example,
+  `redactSecretsForState` moved from 7432 to 7504, and `MIN_NEEDLE_LENGTH`
+  from 3221 to 3293. Each lane re-derives its lines on its own base.
 
 | Phase | Scope | Files |
 | --- | --- | --- |
-| A | Refuse an `Export.Name` equal to or embedding a `NoEcho` value, from the log-only set | `src/deployment/outputs-export-alias.ts`, `.claude/rules/layout-deployment-secrets.md` (the publication-verdict rule), the `noecho-parameter-masking` fixture, unit tests, a changelog entry |
-| B | Both arms, `noEchoParameterLeaves`, the v11 bump and migration, the diff and `cdkd diff` promotion, the generalized readback with the decision 1 warning and the decision 4 info line, and the decision 5 rotation guidance | `secret-redaction.ts`, `intrinsic-function-resolver.ts`, `deploy-engine.ts`, `diff-calculator.ts`, `diff-recursive.ts`, `src/types/state.ts`, `.claude/rules/state-schema.md`, `.claude/rules/layout-deployment-secrets.md`, `docs/state-management.md`, new `schema-v10-to-v11-migration` fixture |
-| C | Readers without a template: rollback replay readback, drift bucket and writers, import and refresh-observed coordinate masking, scrub migration rule, `cdkd export` allowance | `rollback-executor.ts`, `src/cli/commands/rollback.ts`, `drift.ts`, `state.ts` (CLI), `import.ts`, `scrub.ts`, `export.ts`, `docs/cli-drift.md`, `docs/cli-rollback.md`, `docs/cli-scrub.md` |
+| A | Export-name refusal (section 5) | `outputs-export-alias.ts`, `layout-deployment-secrets.md`, fixture, tests, changelog |
+| B | The core: both arms, the v11 bump and migration, diff promotion, readback | the resolver, redaction, engine and diff files; `state.ts`; rules; a new fixture |
+| C | Readers without a template (section 4.3-4.8) | the rollback, drift, state, import, scrub and export commands; their docs |
+
+**Phase A** refuses an `Export.Name` equal to or embedding a `NoEcho` value,
+from the log-only set. Files: `src/deployment/outputs-export-alias.ts`,
+`.claude/rules/layout-deployment-secrets.md` (the publication-verdict rule),
+the side-set doc comment in `src/deployment/secret-redaction.ts`, the
+`noecho-parameter-masking` fixture, unit tests, and a changelog entry.
+
+**Phase B** covers:
+
+- both arms, `noEchoParameterLeaves`, and the v11 bump and migration;
+- the diff and `cdkd diff` promotion;
+- the generalized readback, with the maintainer decision 1 warning and the
+  decision 4 info line (§9);
+- the diff's create-only ceiling lowered for every property the readback cannot
+  serve, which is decision 1's confirmed scope (section 4.2);
+- the decision 5 rotation guidance.
+
+Its files: `secret-redaction.ts`, `intrinsic-function-resolver.ts`,
+`deploy-engine.ts`, `src/analyzer/diff-calculator.ts`, `diff-recursive.ts`,
+`src/types/state.ts`, `.claude/rules/state-schema.md`,
+`.claude/rules/layout-deployment-secrets.md`, `docs/state-management.md`, and
+a new `schema-v10-to-v11-migration` fixture.
+
+**Phase C** covers the rollback replay readback, the drift bucket and writers,
+import and refresh-observed coordinate masking, the scrub migration rule, and
+the `cdkd export` allowance. Files: `rollback-executor.ts`,
+`src/cli/commands/rollback.ts`, `drift.ts`, `state.ts` (CLI), `import.ts`,
+`scrub.ts`, `export.ts`, `docs/cli-drift.md`, `docs/cli-rollback.md`, and
+`docs/cli-scrub.md`.
 
 **Phase B also flips every map reader the log-only doc kept blind**
 (`secret-redaction.ts:986-1000`). Each is re-audited in B:
@@ -705,9 +766,9 @@ lanes once B merges.
   - an unchanged value, readable: skipped, with no provider call;
   - a changed value: UPDATE;
   - write-only updatable: UPDATE on every deploy, and exactly one info line
-    per resource (decision 4);
+    per resource (maintainer decision 4, §9);
   - write-only create-only (`not-readable`): no replacement, and a warning
-    naming `--recreate-via-*` on every deploy (decision 1);
+    naming `--recreate-via-*` on every deploy (maintainer decision 1, §9);
   - create-only `differs`: REPLACEMENT;
   - `read-failed` on create-only: no replacement;
   - pre-v11 witness equal: skipped with NO readback call;
@@ -776,7 +837,7 @@ consumer. The assertions:
 
 - The in-process recovery serves the consumer in one `deploy --all`.
 - A separate `cdkd deploy` of the consumer alone is refused as a `cross-stack`
-  redacted read (decision 2).
+  redacted read (maintainer decision 2, §9).
 - The child's record masks the inherited value, through
   `carryFreshNoEchoMark`.
 
@@ -806,6 +867,10 @@ the recommended default. The sections above follow them.
    replace, or fail on a stateful type, every deploy. Every deploy warns that a
    change to that value goes undetected, and names `--recreate-via-cc-api` /
    `--recreate-via-sdk-provider` as the way to apply one. See section 4.2.
+
+   The scope is every create-only property cdkd cannot read back, including
+   one whose provider has no `readCurrentState` (confirmed in #4043 comment
+   5904913259).
 2. **An output served by a `NoEcho` parameter persists as `***`**, and a
    consumer in another `cdkd` run refuses it, as for a custom-resource
    `NoEcho` output today. The remedy is to deploy producer and consumer in one
