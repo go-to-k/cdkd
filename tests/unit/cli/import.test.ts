@@ -220,6 +220,12 @@ vi.mock('node:readline/promises', () => ({
 import { createImportCommand } from '../../../src/cli/commands/import.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -1831,6 +1837,86 @@ describe('cdkd import', () => {
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
     expect(mockSaveState).not.toHaveBeenCalled();
   });
+
+  it('names no payload logical id or type beside a --resource remedy on the import lines (go-to-k/cdkd#3950)', async () => {
+    // The provider refusals this command prints end in a `--resource` remedy,
+    // and so does the not-found row. The `Failed to import` line and the plan
+    // row describe a logical id or type that is not plain instead of
+    // re-printing it beside that remedy, and the not-found row's fragment holes
+    // it. Driven with each payload family as the logical id (the failed arm)
+    // and as the logical id of a resource the provider cannot find.
+    for (const { value } of PASTE_PAYLOADS) {
+      errorSpy.mockClear();
+      infoSpy.mockClear();
+      const tmpl = template({
+        [value]: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/Failed' } },
+        [`${value}2`]: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/Missing' } },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async (input: { logicalId: string }) => {
+          if (input.logicalId === value) {
+            throw new Error("Cannot adopt it. Pass the parameter NAME instead: --resource '<logicalId>'='<parameterName>'.");
+          }
+          return null;
+        }),
+      });
+      await runImport(['import', '--app', 'x', '--yes']);
+      const lines = [...errorSpy.mock.calls, ...infoSpy.mock.calls].map((c) => String(c[0]));
+      const failed = lines.find((l) => l.startsWith('Failed to import '));
+      expect(failed, value).toContain('Failed to import a logical id that is not a plain identifier (AWS::S3::Bucket)');
+      const missing = lines.find((l) => l.includes('no matching AWS resource'));
+      expect(missing, value).toContain("pass --resource '<logicalId>'='<physicalId>' to adopt it explicitly");
+      const planRows = lines.filter((l) => l.includes('a logical id that is not a plain identifier (AWS::S3::Bucket)'));
+      expect(planRows.length, value).toBeGreaterThanOrEqual(2);
+      withPasteDir((dir) => {
+        for (const line of [failed!, missing!, ...planRows]) {
+          expectNoCommandBesideDisplay(line, value);
+          expect(spansThatRun(line, dir), `${value}: ${line}`).toEqual([]);
+        }
+      });
+    }
+  }, 120_000);
+
+  it('names no payload resource type beside a --resource remedy on the import lines (go-to-k/cdkd#3950)', async () => {
+    // The type half of the case above: each payload family as the `Type` of a
+    // plainly named resource, through the failed arm and the not-found arm.
+    // The logical ids stay plain, so only `resourceTypeShown` can describe
+    // the payload on the `Failed to import` line and the plan rows.
+    for (const { value } of PASTE_PAYLOADS) {
+      errorSpy.mockClear();
+      infoSpy.mockClear();
+      const tmpl = template({
+        Failed: { Type: value, Properties: {}, Metadata: { 'aws:cdk:path': 'S/Failed' } },
+        Missing: { Type: value, Properties: {}, Metadata: { 'aws:cdk:path': 'S/Missing' } },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async (input: { logicalId: string }) => {
+          if (input.logicalId === 'Failed') {
+            throw new Error("Cannot adopt it. Pass the parameter NAME instead: --resource '<logicalId>'='<parameterName>'.");
+          }
+          return null;
+        }),
+      });
+      await runImport(['import', '--app', 'x', '--yes']);
+      const lines = [...errorSpy.mock.calls, ...infoSpy.mock.calls].map((c) => String(c[0]));
+      const failed = lines.find((l) => l.startsWith('Failed to import '));
+      expect(failed, value).toContain('Failed to import Failed (a resource type that is not a plain identifier)');
+      const planRows = lines.filter(
+        (l) => l !== failed && /\b(Failed|Missing) \(a resource type that is not a plain identifier\)/.test(l)
+      );
+      expect(planRows.length, value).toBe(2);
+      withPasteDir((dir) => {
+        for (const line of [failed!, ...planRows]) {
+          expectNoCommandBesideDisplay(line, value);
+          expect(spansThatRun(line, dir), `${value}: ${line}`).toEqual([]);
+        }
+      });
+    }
+  }, 120_000);
 
   describe('selective vs auto mode (CDK CLI parity)', () => {
     const tmpl3 = () =>

@@ -5,6 +5,12 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { ProvisioningError, formatError } from '../../../src/utils/error-handler.js';
 
+// No real AWS client: the create-only DescribeType prefetch reads the
+// process-global client factory (see _inert-cloudformation-client.ts).
+vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
+  (await import('./_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
+);
+
 // Issue #2038 acceptance item 1, deploy-engine half. The audit the issue asked
 // for named `deploy-engine.ts:4631` (`DeployEngine.withRetry`) as deserving the
 // same check as the rollback replay, and it leaked for the same reason: the raw

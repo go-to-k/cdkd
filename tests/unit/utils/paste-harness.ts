@@ -64,7 +64,7 @@
  * skip there would be a harness quietly measuring less than it claims.
  */
 
-import { expect, it } from 'vite-plus/test';
+import { expect } from 'vite-plus/test';
 import {
   chmodSync,
   mkdirSync,
@@ -146,16 +146,6 @@ const ZSH_AVAILABLE = spawnSync('zsh', ['-f', '-c', 'exit 0'], { encoding: 'utf8
  * See the header for why a missing zsh is a FAILURE under `CI`.
  */
 export const PASTE_SHELLS: readonly ('bash' | 'zsh')[] = ZSH_AVAILABLE ? ['bash', 'zsh'] : ['bash'];
-
-/**
- * `it` where zsh is driven, skipped where it is not (a local run without zsh;
- * under `CI` a missing zsh fails {@link withPasteDir} instead). For an S1 row's
- * ZSH paste case (go-to-k/cdkd#3950), which pins the row's current violation
- * with {@link expectZshRunsTheDisplay} and flips when its source fix lands.
- */
-export function itUnderZsh(name: string, fn: () => Promise<void> | void, timeout?: number): void {
-  (ZSH_AVAILABLE ? it : it.skip)(name, fn, timeout);
-}
 
 /** How long a span may run before the child is killed (SIGKILL). */
 export const PASTE_CHILD_TIMEOUT_MS = 5_000;
@@ -371,46 +361,6 @@ function runUnder(
     }
   }
   return { touched: touched.filter((f) => f !== VERB_RAN), verbRan: touched.includes(VERB_RAN) };
-}
-
-/**
- * An S1 row's zsh paste reason, pinned (go-to-k/cdkd#4127 review M0 / M2): a
- * `$( )` or backtick family displayed in the row's block RUNS when the message
- * is pasted into zsh, which a ` (` after it no longer stops, while every other
- * family stays inert. Asserted per value, so a case cannot pass on some other
- * failure. The bash side of the same row is asserted inert by the site's own
- * case (`{ shells: ['bash'] }`). When the row's source fix lands, the site
- * asserts `spansThatRun(...)` empty under both shells instead.
- */
-export function expectZshRunsTheDisplay(message: string, dir: string, value: string): void {
-  const ran: string[] = [];
-  const lineDoes = new Map<string, boolean>();
-  for (const span of segmentsOf(message)) {
-    const run = spanRun(span, dir, { shells: ['zsh'] });
-    if (span.includes('\n')) {
-      // Judged against its lines, and not counted as the display running:
-      // the display's own line is a span of its own (go-to-k/cdkd#4133).
-      if (run.touched.length > 0 || run.verbRan) {
-        expectNoMoreThanItsLines(flipJudged(span, value), dir, { shells: ['zsh'] }, lineDoes);
-      }
-      continue;
-    }
-    if (run.touched.length === 0) continue;
-    ran.push(span);
-    // What ran is the DISPLAY: no stubbed verb, and the span holds the value
-    // (raw or JSON-escaped), so a run caused by something else in the message
-    // cannot stand in for the row's reason.
-    expect(run.verbRan, `a zsh span that ran also ran a stubbed cdkd / aws: ${span}`).toBe(false);
-    expect(
-      span.includes(value) || span.includes(JSON.stringify(value).slice(1, -1)),
-      `a zsh span ran without the displayed value: ${span}`
-    ).toBe(true);
-  }
-  if (/\$\(|`/.test(value)) {
-    expect(ran.length, `zsh ran nothing for ${value}`).toBeGreaterThan(0);
-  } else {
-    expect(ran, `zsh ran an inert family for ${value}`).toEqual([]);
-  }
 }
 
 /**

@@ -25,6 +25,12 @@ import type { ResourceChange, ResourceState, StackState } from '../../../src/typ
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
+// No real AWS client: the create-only DescribeType prefetch reads the
+// process-global client factory (see _inert-cloudformation-client.ts).
+vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
+  (await import('./_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
+);
+
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
     setLevel: vi.fn(),

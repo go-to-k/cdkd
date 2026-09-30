@@ -460,12 +460,14 @@ export class SchedulerScheduleProvider implements ResourceProvider {
   async getAttribute(
     physicalId: string,
     resourceType: string,
-    attributeName: string
+    attributeName: string,
+    logicalId: string
   ): Promise<unknown> {
     if (attributeName !== 'Arn') {
       throw new ProvisioningError(
         `Unknown attribute ${attributeName} for ${resourceType}`,
         resourceType,
+        logicalId,
         physicalId
       );
     }
@@ -481,7 +483,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Failed to resolve Arn for Schedule ${physicalId}: ${cause?.message ?? String(error)}.${customGroupHint}`,
         resourceType,
-        physicalId,
+        logicalId,
         physicalId,
         cause
       );

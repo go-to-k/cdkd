@@ -15,6 +15,12 @@ import type { ResourceChange } from '../../../src/types/state.js';
 // bound to the wrong / an empty bag would satisfy a presence check and fix
 // nothing.
 
+// No real AWS client: the create-only DescribeType prefetch reads the
+// process-global client factory (see _inert-cloudformation-client.ts).
+vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
+  (await import('./_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
+);
+
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),

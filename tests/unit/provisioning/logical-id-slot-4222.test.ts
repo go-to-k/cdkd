@@ -38,20 +38,14 @@ const LOGICAL_ID_SLOT: ReadonlyMap<string, number> = new Map([
 ]);
 
 /**
- * Sites still passing something other than a logical id, one entry per SITE:
+ * Sites allowed to pass something other than a logical id, one entry per SITE:
  * file, constructor, the slot's argument text and the start of the message
- * argument (see {@link siteKey}). The offending set must EQUAL this list, so a
- * fixed site leaves a stale entry that fails, and a new bad site in the same
- * file cannot take a fixed one's place.
- *
- * `scheduler-schedule-provider.ts`: its two `getAttribute` sites wait for open
- * PR go-to-k/cdkd#4218, which holds that file; fix them and drop these entries
- * once it merges (go-to-k/cdkd#4222).
+ * argument (see {@link siteKey}). EMPTY: every site passes a logical id
+ * (go-to-k/cdkd#4222). The offending set must EQUAL this list, so an empty
+ * list admits no site at all, and an entry added later goes stale — and
+ * fails — as soon as its site is fixed.
  */
-const KNOWN_SITES: readonly string[] = [
-  'src/provisioning/providers/scheduler-schedule-provider.ts | ProvisioningError | physicalId | `Unknown attribute ${attributeName} for ${resourceType}`',
-  'src/provisioning/providers/scheduler-schedule-provider.ts | ProvisioningError | physicalId | `Failed to resolve Arn for Schedule ${physicalId}: ${cause?.',
-];
+const KNOWN_SITES: readonly string[] = [];
 
 /** A name that says it holds a logical id: `logicalId`, `ownerLogicalId`. */
 const LOGICAL_ID_NAME = /(?:^l|L)ogicalId$/;
@@ -163,14 +157,14 @@ describe('the logical-id slot of ProvisioningError / ResourceUpdateNotSupportedE
     expect(unexpected).toEqual([]);
   });
 
-  it('each known site is still there, exactly once (a stale entry fails)', () => {
-    const offending = constructions.filter((c) => !c.ok).map(siteKey);
-    for (const site of KNOWN_SITES) {
-      expect({ site, count: offending.filter((k) => k === site).length }).toEqual({
-        site,
-        count: 1,
-      });
-    }
+  it('the offending set EQUALS the known sites (exact, whether the list is empty or not)', () => {
+    // One comparison, not a loop over KNOWN_SITES: a loop over an empty list
+    // checks nothing. A stale entry, a duplicate site and a new site all fail.
+    const offending = constructions
+      .filter((c) => !c.ok)
+      .map(siteKey)
+      .sort();
+    expect(offending).toEqual([...KNOWN_SITES].sort());
   });
 
   it('the classifier accepts the logical-id spellings in use and refuses the rest', () => {

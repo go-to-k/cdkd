@@ -60,6 +60,7 @@ import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { buildProgram } from '../../../src/cli/program.js';
+import { PASTE_PAYLOADS, expectNoCommandBesideDisplay } from '../utils/paste-harness.js';
 import {
   setPasteableRunFlags,
   setPasteableVerbFlags,
@@ -194,6 +195,54 @@ describe('a collision with a resource the new one does not hold refuses delete-n
     expect(failed[0]).toContain('another resource holds the colliding name');
     expect(failed[0]).toContain('Nothing was deleted');
     expect(failed[0]).toContain(KINESIS_COLLISION);
+  });
+});
+
+describe('the name-holder collision refusal describes a payload logical id (go-to-k/cdkd#3950)', () => {
+  it('a payload id is described on the prose line and the --orphan line', async () => {
+    // The refusal's first line carries `re-run cdkd rollback` in prose and the
+    // message ends in the `--orphan` line, so a logical id that is not plain is
+    // described, using the same predicate that gates the command
+    // (go-to-k/cdkd#3950's S1 rule).
+    const refusals: Array<{ id: string; message: string }> = [];
+    for (const { value: id } of PASTE_PAYLOADS) {
+      stubKinesis(['collide', 'ok']);
+      const provider = new KinesisStreamProvider();
+      vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
+      const errors: string[] = [];
+      const ctx = ctxFor(provider, {
+        recordEvent: (e) => {
+          if (e.error?.message) errors.push(e.error.message);
+        },
+      });
+      const op: CompletedOperation = {
+        logicalId: id,
+        changeType: 'UPDATE',
+        resourceType: KINESIS,
+        physicalId: 'stream-new',
+        previousState: res(KINESIS, { physicalId: 'stream', properties: { ...OLD_STREAM } }),
+      };
+      const state: Record<string, ResourceState> = {
+        [id]: res(KINESIS, { physicalId: 'stream-new', properties: { ...OLD_STREAM, Name: 'stream-new' } }),
+      };
+      await replayRollback([op], state, 'CdkdX', ctx);
+      const message = errors.find((m) => m.includes('another resource holds the colliding name'));
+      expect(message, id).toContain(
+        'Cannot reverse the replacement of a resource whose logical id is not a plain CloudFormation logical id ('
+      );
+      refusals.push({ id, message: message! });
+    }
+    for (const { id, message } of refusals) {
+      // The prose line (with `re-run cdkd rollback`) and the `--orphan` line
+      // carry no copy of the id. The provider's own collision text, which can
+      // echo it (`Failed to create Kinesis stream <id>`), is on a line of its
+      // own with no command on it; that raw AWS-text display is a separate
+      // residual this PR does not claim.
+      const [prose] = message.split('\n');
+      expect(prose, id).not.toContain(id);
+      expect(message.split('\n').at(-1), id).toBe("To orphan it: cdkd rollback --orphan '<id>'");
+      expectNoCommandBesideDisplay(message, id);
+    }
   });
 });
 

@@ -49,6 +49,12 @@ import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 
 const warnSpy = vi.hoisted(() => vi.fn());
+// No real AWS client: the create-only DescribeType prefetch reads the
+// process-global client factory (see _inert-cloudformation-client.ts).
+vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
+  (await import('./_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
+);
+
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
     setLevel: vi.fn(),
@@ -608,7 +614,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     // The sibling call already had this fence in `analyzer/outputs-diff.test.ts`;
     // the identical one was not written here.
     const engineSource = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/deployment/deploy-engine.ts'),
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/deployment/deploy-engine-outputs.ts'),
       'utf8'
     );
     const args = /exportAliasCollisionWarning\(([\s\S]*?)\)\s*\);/.exec(engineSource)?.[1] ?? '';

@@ -162,7 +162,7 @@ export async function purgeEventsAfterDestroy(
     if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
       logger.info(
         `  Purged deployment-event history for ${displaySafe(stackName)} (${displaySafe(region)}). Where the state ` +
-          `bucket is versioned — which cdkd bootstrap enables — earlier versions of those ` +
+          `bucket is versioned — which bootstrapping with cdkd enables — earlier versions of those ` +
           `keys survive and stay readable with GetObject and a VersionId.`
       );
     }
@@ -1044,7 +1044,7 @@ export function createDestroyCommand(): Command {
       '--purge-events',
       "After a clean destroy, also delete the stack's deployment-event history " +
         '(issue #808 store) so an object listing of the state bucket comes back empty. Where ' +
-        'the state bucket is versioned — which cdkd bootstrap enables — earlier versions of ' +
+        'the state bucket is versioned — which bootstrapping with cdkd enables — earlier versions of ' +
         'those keys survive and stay readable with GetObject and a VersionId. By default ' +
         'events survive destroy as post-mortem context. ' +
         'Skipped when the destroy fails or is interrupted (those events aid the retry). ' +
