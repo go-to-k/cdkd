@@ -14,8 +14,9 @@ import {
 } from '../../../src/deployment/secret-redaction.js';
 
 // go-to-k/cdkd#4049: the export-alias WARNINGS mask a `NoEcho` parameter's
-// value (a LOG-ONLY needle of the pass bag), while every verdict that decides
-// what is PUBLISHED or reported keeps reading the map alone (#4043's decision).
+// value (a LOG-ONLY needle of the pass bag). Of the verdicts, only the
+// `Export.Name` refusal reads it (go-to-k/cdkd#4043); the state-key scan keeps
+// reading the map alone.
 const NOECHO = 'hunter2NoEchoName';
 
 function logOnlyBag(...needles: string[]): RecordedSecretValues {
@@ -69,10 +70,12 @@ describe('export-alias warnings mask a log-only needle (go-to-k/cdkd#4049)', () 
   });
 });
 
-describe('the verdicts stay map-only (go-to-k/cdkd#4049, persistence is #4043)', () => {
-  it('does not refuse an Export.Name carrying only a log-only needle', () => {
+describe('which verdicts read a log-only needle (go-to-k/cdkd#4043)', () => {
+  it('refuses an Export.Name carrying only a log-only needle', () => {
     const bag = logOnlyBag(NOECHO);
-    expect(exportNameSecretExposure(`Exp${NOECHO}`, bag, bag)).toBeUndefined();
+    expect([...(exportNameSecretExposure(`Exp${NOECHO}`, bag, bag)?.keys() ?? [])]).toEqual([
+      NOECHO,
+    ]);
   });
 
   it("does not report a state key carrying only a log-only needle (scrub's --fail scan)", () => {

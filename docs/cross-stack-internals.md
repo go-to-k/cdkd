@@ -142,6 +142,35 @@ either edge, or ending in an open Hangul syllable, whose other letters are
 spelled in compatibility characters (the edge can recompose with its
 neighbour in the name).
 
+**An `Export.Name` holding a `NoEcho: true` parameter's value is refused the
+same way** ([#4043](https://github.com/go-to-k/cdkd/issues/4043)). The alias
+is not published to `state.outputs`, `exportNames` or the exports index. The
+deploy warns with the name masked, or withheld when its only hit is a spelling
+the Unicode folding above finds. The next deploy that re-resolves the outputs
+drops an alias an earlier deploy published. A consumer's `Fn::ImportValue` on that
+name stops resolving. CloudFormation publishes such a name, so this is a
+deliberate divergence, the same one the secret refusal takes.
+
+- **Which values count.** A value counts when an output value of the stack
+  reads it, or the `Export.Name` of the same output or of one declared before
+  it.
+- **When a name is refused.** The name is refused when it equals the value.
+  It is also refused when it contains the value and the value is 4 or more
+  characters long. The Unicode folding above applies.
+- **What is still published:**
+  - a value only a resource reads, or only a later output's `Export.Name`;
+  - a value that reaches the name through an attribute, a nested stack
+    output, `Fn::ImportValue` or a `Fn::Select` fragment;
+  - a 1-3 character value inside a longer name;
+  - the alias of an output that fails to resolve on a deploy with no resource
+    change, which is carried forward from the previous record.
+- **Preview.** `cdkd diff` previews the same verdict, so a refused alias is
+  not shown as an addition.
+
+An alias published before this refusal keeps the value in earlier versions of
+`state.json` and of the exports index, because the bucket is versioned.
+Rotate the value.
+
 **Two outputs sharing ONE `Export.Name`** (with no output of that name) is
 NOT guarded, deliberately. Both bags stay consistent there — one iteration
 writes the value and its source together — so it is not the corruption

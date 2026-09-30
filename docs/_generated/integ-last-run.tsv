@@ -242,7 +242,7 @@ nested-stack-rollback	2026-09-30T03:35:51Z	PASS	105	verify.sh	PR #4158 (#3909 ac
 nested-stack-secret	2026-09-30T02:41:33Z	PASS	386	verify.sh	rc ok, orph clean; #4130 round 2
 nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 24 deleted 0 errors, 0 orphans (VPC/ENI clean)
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
-noecho-parameter-masking	2026-09-29T17:34:31Z	PASS	110	verify.sh	rc ok, orph clean (#4126 parent-review round; Phase 3a revert probe red earlier)
+noecho-parameter-masking	2026-09-30T08:48:50Z	PASS	120	verify.sh	rc ok, orph clean, index clean (#4043 Phase A review round 3; revert probes red at Phase 1 refusal and Phase 3a alias row)
 opensearch-domain-getatt	2026-08-10T08:05:51Z	PASS	1798	verify.sh	0810 P2 sweep b13; 60m CC delete floor ok, 0 err 0 orph
 orphan-getatt-takeover	2026-09-30T06:09:41Z	PASS	50	verify.sh	PR #4189 (#4186 orphan GetAtt takes the recorded attribute over a live answer) @09cebd2; rc ok, destroy 0 errors, no state/lock/CFn leftovers; first run of the new fixture, Phase 4 load-bearing (recorded RoleId kept after a name takeover)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
