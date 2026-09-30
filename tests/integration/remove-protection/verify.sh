@@ -175,7 +175,7 @@ cleanup() {
     # skipped (stderr apart, so a CLI warning is not read as an id): the
     # destroy below still runs.
     if [ -z "${OOB_ENDPOINT_SERVICE_ID}" ] && [ -n "${NLB_ARN}" ]; then
-      lookup_err="$(mktemp)"
+      lookup_err="$(mktemp)" || lookup_err=/dev/null
       if ! OOB_ENDPOINT_SERVICE_ID="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
           --filters "Name=tag:Name,Values=${STACK}-4b" \
           --query "ServiceConfigurations[?ServiceState!='Deleted' && contains(NetworkLoadBalancerArns, '${NLB_ARN}')].ServiceId" \
@@ -183,7 +183,7 @@ cleanup() {
         echo "[verify] could not look up the step-4b endpoint service by tag: $(cat "${lookup_err}")"
         OOB_ENDPOINT_SERVICE_ID=""
       fi
-      rm -f "${lookup_err}"
+      [ "${lookup_err}" = /dev/null ] || rm -f "${lookup_err}"
       [ "${OOB_ENDPOINT_SERVICE_ID}" = "None" ] && OOB_ENDPOINT_SERVICE_ID=""
     fi
     # Every live one the lookup found (an earlier run may have left another),
