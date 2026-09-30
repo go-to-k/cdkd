@@ -29,6 +29,7 @@ import {
   hasReadableResources,
   isReadableResourceEntry,
   malformedResourcesWarning,
+  refuseMalformedState,
   displayLogicalId,
   SHORT_NAME_MAX_CODE_POINTS,
 } from '../../state/malformed-resources-bag.js';
@@ -2853,6 +2854,19 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       );
     }
     const { state, etag, migrationPending } = stateData;
+    // A record whose `resources` is not a readable map is refused HERE, by name,
+    // rather than left to `buildImportPlan` below: a `null` or absent bag makes
+    // its first `state.resources[logicalId]` read throw a bare `TypeError`, and
+    // any other shape reads every row as "not deployed by cdkd" (issue #3188).
+    // The nested tree's CHILD records get the same refusal in
+    // `runPerStackImportLoop`, since the tree walk returns such a child
+    // childless instead of throwing.
+    refuseMalformedState(
+      state,
+      resolvedStackName,
+      migrationPending ? undefined : targetRegion,
+      lockRecovery
+    );
 
     // Guard (issue #1183): a rollback journal means the stack is in a failed,
     // not-yet-reverted state. Exporting that half-deployed state to
@@ -4471,12 +4485,12 @@ async function walkCdkdStateStackTree(
   // `stateShowCommand`'s `--show-nested` is the read-only one. `exportCommand`
   // (this file) also walks, to migrate a cdkd state tree to CloudFormation, and
   // there a record whose bag cannot be read must NOT be treated as a stack with
-  // no children and quietly migrated: it is refused, but EARLIER and by a
-  // different check — every template row resolves `state.resources[logicalId]`
-  // against the same non-object bag, is marked `blocked`, and the run throws on
-  // the blocked rows before the leaf-first import loop runs. So returning
-  // childless here is safe for export only because that backstop exists; if it
-  // ever moves, this function is where export would start silently migrating a
+  // no children and quietly migrated. `runPerStackImportLoop` refuses every
+  // tree node through `refuseMalformedState` before its pre-flight reads a bag
+  // (issue #3188, pinned end to end in
+  // `tests/unit/cli/export-malformed-child-bag.test.ts`). Returning childless
+  // here is safe for export only because that refusal exists; if it ever
+  // moves, this function is where export would start silently migrating a
   // truncated tree.
   if (!hasReadableResources(state)) return { stackName, region, state, nestedChildren };
 
@@ -8090,6 +8104,18 @@ export async function runPerStackImportLoop(args: {
     }
   }
 
+  // Every node's `resources` bag must be a readable map before anything reads
+  // it (issue #3188). `walkCdkdStateStackTree` returns a node whose bag is not
+  // one CHILDLESS rather than throwing, so without this the subtree below it
+  // would drop out of the migration; the refusal names the record instead of
+  // leaving `buildImportPlan` to throw a bare `TypeError` on a `null` bag, or to
+  // report every row as not deployed. It runs before the first AWS call and the
+  // first lock of the loop.
+  for (const n of leafFirst) {
+    const meta = nodesByCdkdName.get(n.stackName)!;
+    refuseMalformedState(meta.state, meta.cdkdStackName, meta.region, args.lockRecovery);
+  }
+
   // ---- Pre-flight: build per-stack plans + classify ----
   interface PerStackPlan {
     cdkdName: string;
@@ -8673,12 +8699,11 @@ export async function runPerStackImportLoop(args: {
               // node for a record whose `resources` is not a readable map, so a
               // parent with an unreadable bag contributes no `nestedStackRows`
               // while `buildImportPlan` reads the same bag. It stays unreachable
-              // in PRACTICE because `cdkd export` is backstopped earlier: every
-              // template row resolves `state.resources[logicalId]` against that
-              // same non-object bag, marks the row `blocked`, and the run throws
-              // at the blocked-rows check below before this loop is reached. So
-              // the guard is defence in depth against that backstop moving, not
-              // against a hypothetical future edit.
+              // in PRACTICE because `cdkd export` refuses such a record earlier:
+              // `refuseMalformedState` runs on every tree node before the
+              // pre-flight plans any of them (issue #3188). So the guard is
+              // defence in depth against that refusal moving, not against a
+              // hypothetical future edit.
               throw new Error(
                 `runPerStackImportLoop: nested-stack child ${quotedOrNotShown(row.childStackName)} has no ` +
                   `recorded CFn ARN when processing parent ${quotedOrNotShown(plan.cdkdName)}. Leaf-first ` +
