@@ -2,9 +2,10 @@
 
 ## 9. Ship: merge → pull → rebuild → cleanup
 
-The PARENT's serialization point: grant one merge-ready lane at a time its turn
-and run your own review round (`references/verify.md` §8-i — before EVERY merge,
-even when the lane's reviewers passed; go-to-k/cdkd#3906), `/run-integ` and
+The PARENT's serialization point: run your own review round on a merge-ready
+lane (`references/verify.md` §8-i — before EVERY merge, even when the lane's
+reviewers passed; go-to-k/cdkd#3906), grant it its turn only once that round is
+CLEAN (one lane at a time), then run `/run-integ` and
 `gh pr merge` yourself FROM THAT LANE'S WORKTREE — never the lane agent, whose
 real-AWS integ and merge the auto-mode classifier can refuse, and a refused one
 is the user's call, not a retry (go-to-k/cdkd#4059). While that tree is
