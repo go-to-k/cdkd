@@ -531,7 +531,7 @@ export const JSON_LISTING_HOLE_VALUE = 'the value decoded from its JSON string, 
  */
 const LISTING_SOURCE_TAIL =
   `which prints each name as a JSON string, escaped but never trimmed or sanitized, and act ` +
-  `on the one whose key matches`;
+  `on the one whose stackName and region match`;
 const LISTING_SOURCE = `'cdkd state list --json', ${LISTING_SOURCE_TAIL}`;
 
 /**
@@ -553,8 +553,8 @@ function listingSource(flagged: boolean): string {
  * Where the three DESTROY withhold arms send the reader for the exact name
  * (go-to-k/cdkd#3420): {@link malformedDestroyResourcesRefusalMessage},
  * {@link malformedDestroyOrphansRefusalMessage} and
- * {@link divergentRecordRegionRefusalMessage}. Completes "List the records as
- * stored with ".
+ * {@link divergentRecordRegionRefusalMessage}. Completes "List the records
+ * with ".
  *
  * `--json`, never `--long`: each arm is reached exactly when the identity did
  * NOT render exactly, and `--long` renders through `displayIdent`, which TRIMS
@@ -3185,7 +3185,8 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
       `and do NOT fill the 'Drop the record' command's stack hole with that name` +
       (verdict.region === undefined
         ? ''
-        : `; its region is a hole too, to be taken from the 'Find the exact name' command below`)
+        : `; its region is a hole too, to be taken from the 'Find the exact name' command ` +
+          `below, replacing its quoted hole, quotes included, with ${JSON_LISTING_HOLE_VALUE}`)
     );
   }
   // A region beginning with `-` is `--stack-region`'s VALUE, which Commander

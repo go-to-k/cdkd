@@ -1699,8 +1699,8 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
           'operator can be sent to a healthy same-rendering record'
       ).not.toContain('cdkd state orphan');
       expect(m).toContain('does NOT render exactly');
-      // The raw listing, for the reason the orphans DESTROY text's case gives
-      // (go-to-k/cdkd#3420).
+      // The `--json` listing, which keeps the padding `--long` trims, for the
+      // reason the orphans DESTROY text's case gives (go-to-k/cdkd#3420).
       expect(m).toContain("List the records with 'cdkd state list --json'");
       expect(m).toContain('replacing each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted');
       // The listing is JSON, not raw text: it escapes `"`, `\` and the control
@@ -5587,7 +5587,9 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         const text = malformedOrphanResourcePropertiesRefusalMessage('-x', 'us-east-1 ', ['A']);
         expect(dropOf(text)).toBe("cdkd state orphan '<stack>' --stack-region '<region>'");
         expect(text).toContain(
-          `${NO_FILL}; its region is a hole too, to be taken from the 'Find the exact name' command below.`
+          `${NO_FILL}; its region is a hole too, to be taken from the 'Find the exact name' command ` +
+            `below, replacing its quoted hole, quotes included, with the value decoded from its JSON ` +
+            `string, then shell-quoted.`
         );
         expect(text).toMatch(/^Find the exact name: cdkd state list --json$/m);
       });
@@ -7946,7 +7948,8 @@ describe('the inspect command explains a withheld value before its label (go-to-
   ];
   const FILL =
     "Take the values from 'cdkd state list --json', which prints each name as a JSON string, " +
-    'escaped but never trimmed or sanitized, and act on the one whose key matches, replacing ' +
+    'escaped but never trimmed or sanitized, and act on the one whose stackName and region ' +
+    'match, replacing ' +
     'each quoted hole in the command at the end of this line, quotes included, with the value ' +
     'decoded from its JSON string, then shell-quoted. ';
   /** The no-fill rule where the stack's reason is `altered` / `too-long`, so it restates the parse. */
