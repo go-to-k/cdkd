@@ -1,6 +1,7 @@
 /**
  * The PASTE harness: feed a rendered cdkd message to real shells (bash, and zsh
- * where it is installed) at three granularities and report which spans RAN.
+ * where it is installed) at three granularities within a line, plus runs of
+ * consecutive lines, and report which spans RAN.
  *
  * Shared by `pasteable-message-paste.test.ts` (the shapes) and by per-site
  * test files of go-to-k/cdkd#3436's fold-in, so a site drives ITS OWN renderer
@@ -23,7 +24,9 @@
  * the vulnerable build, pasting whole LINES found 0 instances — the line also
  * held `resource record(s)`, whose `(` is a bash syntax error that stops the
  * line before the payload — while sentences found 2 and clauses found 2. An
- * operator selects a phrase, not a line.
+ * operator selects a phrase, not a line. And a BLOCK: every run of two or more
+ * consecutive lines is a span too (go-to-k/cdkd#4133), because a quote one line
+ * opens can close on a later one and leave what sits between them bare.
  *
  * DECOYS, because an execution sentinel alone is blind to REDIRECTION: a bare
  * `<stack>` reads stdin from a file named `stack` and `>` TRUNCATES the next
@@ -167,14 +170,29 @@ const STUBBED_VERBS = ['cdkd', 'aws'] as const;
  */
 let stubBin: string | undefined;
 
-/** Lines, sentences and clauses — what an operator actually selects. */
+/**
+ * Lines, sentences and clauses — what an operator actually selects — plus
+ * every run of two or more CONSECUTIVE lines, the whole message included
+ * (go-to-k/cdkd#4133). A block pasted at once is one shell input, so a quote
+ * one line opens can close on a later one: `the owner's record` /
+ * `holds the stack's value "x$(touch OWNED)".` runs nothing line by line and
+ * runs the substitution pasted whole, under bash and zsh alike. Every run, not
+ * just the whole message, because a syntax error on a line OUTSIDE the
+ * selection stops the whole-message span before it reaches the straddle.
+ */
 export function segmentsOf(message: string): Set<string> {
   const out = new Set<string>();
-  for (const line of message.split('\n')) {
+  const lines = message.split('\n');
+  for (const line of lines) {
     out.add(line);
     for (const sentence of line.split(/(?<=[.!?])\s+/)) {
       out.add(sentence);
       for (const clause of sentence.split(/: | — | -- /)) out.add(clause);
+    }
+  }
+  for (let first = 0; first < lines.length; first++) {
+    for (let last = first + 1; last < lines.length; last++) {
+      out.add(lines.slice(first, last + 1).join('\n'));
     }
   }
   return out;
@@ -320,7 +338,7 @@ export function expectZshRunsTheDisplay(message: string, dir: string, value: str
   }
 }
 
-/** Every span of `message`, at all three granularities, that touched a file. */
+/** Every span of `message` ({@link segmentsOf}) that touched a file. */
 export function spansThatRun(message: string, dir: string, options: PasteRunOptions = {}): string[] {
   const out: string[] = [];
   for (const span of segmentsOf(message)) {
