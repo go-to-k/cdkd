@@ -141,6 +141,53 @@ describe('withDerivedNameMasks runs the base masker before its needles (issue #4
     );
   });
 
+  it('withholds a straddle that an unrelated segment rendering the same way would offset', () => {
+    // `bobby-example-com` masks to the name's rendering too, so a COUNT of
+    // renderings would balance the straddled occurrence; each occurrence is
+    // checked on its own instead.
+    const secrets = ['alice@example.com', 'alice', 'bobby', 'com-hunter22', 'hunter22'];
+    const pairs = [['alice@example.com', 'alice-example-com']] as const;
+    expect(needled(secrets, pairs).mask('x alice-example-com-hunter22 y; also bobby-example-com')).toBe(
+      '***'
+    );
+    // Same bag, no straddle: a coincidental rendering only over-masks.
+    expect(needled(secrets, pairs).mask('x alice-example-com y; also bobby-example-com')).toBe(
+      'x *** y; also ***'
+    );
+  });
+
+  it('masks the main path whole, and withholds a line where a longer secret contains the name', () => {
+    const pairs = [['dbadmin01', 'MyStack-dbadmin01']] as const;
+    expect(needled(['dbadmin01'], pairs).mask('Created IAM role MyStack-dbadmin01')).toBe(
+      'Created IAM role ***'
+    );
+    expect(
+      needled(['dbadmin01', 'MyStack-dbadmin01 owner'], pairs).mask(
+        'Created IAM role MyStack-dbadmin01 owner'
+      )
+    ).toBe('***');
+  });
+
+  it('over-masks when a prefix of the line coincidentally equals a short recorded secret', () => {
+    // `ab` is below the base's substring floor, but the prefix slice IS that
+    // whole value, so the occurrence does not read as its rendering: withheld.
+    const sinks = needled(
+      ['alice@example.com', 'ab'],
+      [['alice@example.com', 'stack-alice-example-com']]
+    );
+    expect(sinks.mask('abstack-alice-example-com')).toBe('***');
+    expect(sinks.mask('ab stack-alice-example-com')).toBe('ab ***');
+  });
+
+  it('renders a name that is itself a recorded secret like the base alone (the *** exemption)', () => {
+    // The documented residual: the name's rendering is `***`, so it is not
+    // checked, and a secret crossing it prints as the base alone prints it.
+    const secrets = ['prod-db', 'xx-prod'];
+    const sinks = needled(secrets, [['prod-db', 'prod-db']]);
+    const base = createSecretMasker(bagOf(...secrets));
+    expect(sinks.mask('xx-prod-db')).toBe(base('xx-prod-db'));
+  });
+
   it('does not withhold a line for a name below the floor contained in a longer secret', () => {
     // The 3-character case above: the base hides the longer secret whole, and
     // the line keeps its wording.

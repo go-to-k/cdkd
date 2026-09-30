@@ -201,30 +201,31 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  * [#4193](https://github.com/go-to-k/cdkd/issues/4193)). The base is one
  * longest-first pass over the recorded secrets, so a needle replaced BEFORE it
  * could cut a longer recorded secret containing the needle, which then no
- * longer occurs whole and its remainder prints. Base first means the needles
- * see exactly what the base alone would print, and they only replace with the
- * mask, so they can add masking but never undo it. Each needle is itself
- * passed through the base first (at {@link BASE_MASKER_SUBSTRING_FLOOR} or
- * longer; below it the base's substring arm leaves the text alone too), so a
- * needle whose INSIDE the base rewrites still matches the rewritten text; a
- * needle the base turns into exactly the mask is dropped, because the base
- * already hides it whole. The needles are rendered on EVERY call, not once
- * here: the base can read a bag that grows after these sinks are built, and a
- * needle rendered against the older bag would no longer match once a newly
- * recorded secret rewrites its inside.
+ * longer occurs whole and its remainder prints. Each name is rendered as the
+ * base renders it, on EVERY call (the base can read a bag that grows after
+ * these sinks are built), and that rendering is the needle applied to the
+ * base's output.
  *
- * A recorded secret that STRADDLES a needle's edge in the text rewrites that
- * occurrence differently than the needle alone, so the rendered needle misses
- * it and the needle's part outside the secret would print — a fragment of
- * secret plaintext, since a derived name may be a folded copy of the secret.
- * So the WHOLE line is withheld (`***`) when the base's output holds fewer
- * occurrences of a rendered needle than the text holds of the name. The false
- * positive is an occurrence the base hid INSIDE a longer secret: withholding
- * that line is over-masking, the direction this module prefers. A needle
- * under {@link BASE_MASKER_SUBSTRING_FLOOR} is not checked (the base leaves it
- * as-is, so the check has nothing to compare); its straddle stays a residual,
- * no worse than the needles-first order, which printed the straddling
- * secret's outside part instead.
+ * THE INVARIANT: every occurrence of a derived name left in the line reads as
+ * exactly `base(name)` in the base's output, or the WHOLE line is `***`. An
+ * occurrence a recorded secret crosses or contains renders otherwise, and its
+ * part outside that secret would print (a fragment of secret plaintext, since
+ * a derived name may be a folded copy of the secret). The needles then only
+ * replace with the mask, so the helper never reveals what the base hides: what
+ * it prints is a subset of what the base alone prints.
+ *
+ * Exempt from the check, as residuals:
+ *
+ *  - a name shorter than {@link BASE_MASKER_SUBSTRING_FLOOR} is applied as a
+ *    raw needle and not checked, for the FALSE-POSITIVE rate (a short name
+ *    sits inside unrelated secrets); a recorded secret crossing one can print
+ *    at most two of its characters;
+ *  - a name whose rendering is exactly `***` is a recorded secret itself, and
+ *    renders as the base alone renders it.
+ *
+ * False positives over-mask, the direction this module prefers: a recorded
+ * secret crossing or containing an occurrence, or a prefix / suffix of the
+ * line that coincidentally equals a short recorded secret, withholds the line.
  */
 export function withDerivedNameMasks(
   logger: { debug(message: string): void; warn(message: string): void },
@@ -244,30 +245,35 @@ export function withDerivedNameMasks(
     .map(([, derived]) => derived);
   if (derivedNames.length === 0) return sinks;
   const mask: MaskerFn = (text: string) => {
-    // Each name as it reads in the BASE's output NOW (see the ordering note
-    // above): below the floor the name itself.
-    const rendered = derivedNames.map(
-      (derived) =>
-        [derived, derived.length < BASE_MASKER_SUBSTRING_FLOOR ? derived : base(derived)] as const
-    );
     const masked = base(text);
-    // A straddled occurrence withholds the whole line (see the note above).
-    for (const [derived, needle] of rendered) {
-      if (derived.length < BASE_MASKER_SUBSTRING_FLOOR || needle === MASK_WALK_DEPTH_CAP_MARKER) {
+    const needles: string[] = [];
+    for (const derived of new Set(derivedNames)) {
+      // The base never sees a name this short as a substring: a raw needle.
+      if (derived.length < BASE_MASKER_SUBSTRING_FLOOR) {
+        needles.push(derived);
         continue;
       }
-      if (occurrences(text, derived) > occurrences(masked, needle)) {
-        return MASK_WALK_DEPTH_CAP_MARKER;
+      const rendered = base(derived);
+      // The base hides it whole.
+      if (rendered === MASK_WALK_DEPTH_CAP_MARKER) continue;
+      // Each occurrence must read as `rendered` in the base's output (the
+      // invariant above), or a recorded secret crosses or contains it.
+      for (let i = text.indexOf(derived); i !== -1;) {
+        const j = i + derived.length;
+        if (masked !== base(text.slice(0, i)) + rendered + base(text.slice(j))) {
+          return MASK_WALK_DEPTH_CAP_MARKER;
+        }
+        i = text.indexOf(derived, j);
       }
+      needles.push(rendered);
     }
-    // The same marker the depth cap substitutes, which is fenced against
+    // Longest first, so a needle that contains another is replaced whole. The
+    // same marker the depth cap substitutes, which is fenced against
     // `SECRET_MASK` (see {@link MASK_WALK_DEPTH_CAP_MARKER}).
-    const needles = [...new Set(rendered.map(([, needle]) => needle))]
-      .filter((needle) => needle !== '' && needle !== MASK_WALK_DEPTH_CAP_MARKER)
-      // Longest first, so a needle that contains another is replaced whole.
-      .sort((a, b) => b.length - a.length);
     let out = masked;
-    for (const needle of needles) out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
+    for (const needle of needles.sort((a, b) => b.length - a.length)) {
+      out = out.split(needle).join(MASK_WALK_DEPTH_CAP_MARKER);
+    }
     return out;
   };
   return {
@@ -276,11 +282,6 @@ export function withDerivedNameMasks(
     debug: (message: string) => logger.debug(mask(message)),
     warn: (message: string) => logger.warn(mask(message)),
   };
-}
-
-/** How many times `needle` occurs in `text`, non-overlapping. */
-function occurrences(text: string, needle: string): number {
-  return text.split(needle).length - 1;
 }
 
 /**
