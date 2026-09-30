@@ -428,8 +428,8 @@ describe('CodeCommitRepositoryProvider — delete: region, transient reads, guar
     [
       'a 5xx',
       () =>
-        Object.assign(awsSdkError('Service unavailable', 'ServiceUnavailableException'), {
-          $metadata: { httpStatusCode: 503 },
+        Object.assign(awsSdkError('Internal error', 'InternalServerException'), {
+          $metadata: { httpStatusCode: 500 },
         }),
     ],
     ['a lost connection', () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],

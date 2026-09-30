@@ -44,7 +44,6 @@ import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   isAmbiguousOutcomeError,
   isThrottlingError,
-  isTransientServerError,
   markNonRetryable,
 } from '../../deployment/retryable-errors.js';
 import { withIndeterminateGuard } from '../../deployment/delete-outcome.js';
@@ -1141,12 +1140,12 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     try {
       holder = await this.getRepositoryMetadata(physicalId);
     } catch (error) {
-      // A throttle, a 5xx or a lost connection is no answer about identity:
+      // A throttle, a 5xx or a lost connection (`isAmbiguousOutcomeError`
+      // covers both of the last two) is no answer about identity:
       // rethrown, so the delete is not sent and the caller's retry asks again.
       if (
         error instanceof RepositoryDoesNotExistException ||
         isThrottlingError(error) ||
-        isTransientServerError(error) ||
         isAmbiguousOutcomeError(error)
       ) {
         throw error;
