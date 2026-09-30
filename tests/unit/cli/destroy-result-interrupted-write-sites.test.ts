@@ -148,20 +148,6 @@ const ALLOWED: Array<{ statement: string; rationale: string }> = [
       'a stack that still exists.',
   },
   {
-    statement: 'this.interrupted = false;',
-    rationale:
-      "A DIFFERENT owner: `DeployEngine`'s own instance field, which answers " +
-      '"was this engine run interrupted" and never reaches a ' +
-      '`DestroyRunnerResult`. In the population only because the file also ' +
-      'names the runner result type.',
-  },
-  {
-    statement: 'this.interrupted = true;',
-    rationale:
-      "Same different owner as above (`DeployEngine`'s instance field); three " +
-      'sites share this statement text.',
-  },
-  {
     statement: 'interrupted: (): boolean => interrupted,',
     rationale:
       "A GETTER on the command-level watch's returned handle, exposing the " +
