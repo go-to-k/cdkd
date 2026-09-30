@@ -11,7 +11,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
+  spansThatRun,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -438,9 +440,68 @@ describe('toCloudControlIdentifier', () => {
           expect(message, label).toContain(shown);
           expect(message, label).not.toContain(`'${value}'`);
           expect(message, label).not.toContain(`'${JSON.stringify(value)}'`);
-          expectOnlyDisplayResidual(message, dir, value);
+          // The five S1 refusals skip the default block rule until their fix
+          // lands; their own case below asserts it.
+          expectOnlyDisplayResidual(
+            message,
+            dir,
+            value,
+            S1_SITES.has(site) ? { unfixedS1Row: `go-to-k/cdkd#3950 composite-id ${site}` } : {}
+          );
         }
       });
     }, 120_000);
+
+    // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule, classified in the
+    // go-to-k/cdkd#4127 review M9) until the row's source fix lands, which
+    // flips the block-rule case: each refusal displays the payload (JSON) in a
+    // block that ends in the `--resource` remedy. The two debug notes carry no
+    // command and stay under the residual criterion above.
+    const S1_SITES: ReadonlySet<string> = new Set([
+      'unplaceable id',
+      'wrong arity',
+      'id equal to a template value',
+      'hostile logical id',
+      'hostile resource type',
+    ]);
+    const s1Refusals = (): Array<{ value: string; site: string; message: string }> => {
+      const out: Array<{ value: string; site: string; message: string }> = [];
+      for (const { value } of PASTE_PAYLOADS) {
+        for (const { site, message } of messagesFor(value)) {
+          if (!S1_SITES.has(site)) continue;
+          // The row itself, found before any rule is asked.
+          expect(message, `${site}: ${value}`).toContain('Pass the Cloud Control identifier instead: --resource ');
+          out.push({ value, site, message });
+        }
+      }
+      expect(out).toHaveLength(PASTE_PAYLOADS.length * S1_SITES.size);
+      return out;
+    };
+
+    it('S1 composite-id refusals: a payload physical id runs nothing when pasted, under either shell', () => {
+      // Measured per site: the three physical-id refusals run nothing under
+      // bash or zsh, so they are pinned inert under both. The logical-id and
+      // resource-type refusals display the payload at the head of a clause,
+      // where it runs under BOTH shells with no verb: the residual the case
+      // above asserts, as on `main`. Neither has a zsh-only difference, so
+      // this row has no zsh paste case; its violation is the block rule's.
+      const refusals = s1Refusals().filter(({ site }) =>
+        ['unplaceable id', 'wrong arity', 'id equal to a template value'].includes(site)
+      );
+      expect(refusals).toHaveLength(PASTE_PAYLOADS.length * 3);
+      withPasteDir((dir) => {
+        for (const { value, site, message } of refusals) {
+          expect(spansThatRun(message, dir), `${site}: ${value}`).toEqual([]);
+        }
+      });
+    }, 120_000);
+
+    it('S1 composite-id refusals: a payload block still carries the --resource remedy (block rule)', () => {
+      for (const { value, site, message } of s1Refusals()) {
+        expect(() => expectNoCommandBesideDisplay(message, value), `${site}: ${value}`).toThrow(
+          /also carries a pasteable command/
+        );
+      }
+    });
   });
 });

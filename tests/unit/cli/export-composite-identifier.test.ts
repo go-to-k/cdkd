@@ -1486,7 +1486,7 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
   it('pastes nothing runnable at any granularity, through buildImportPlan itself', async () => {
     // The paste fence for THIS site: the refusal rendered by `buildImportPlan`
     // with each payload family as the logical id (withheld) and a plain one
-    // (named), fed to bash at line, sentence and clause granularity with decoys
+    // (named), fed to bash and zsh at line, sentence and clause granularity with decoys
     // planted for every hole — `tests/unit/utils/paste-harness.ts`.
     const reasonFor = async (logicalId: string): Promise<string> => {
       const state = stateWith({
