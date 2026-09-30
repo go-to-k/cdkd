@@ -634,7 +634,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     );
     for (const overlap of validation.ambiguousIntent) {
       lines.push(
-        `  - ${overlap.logicalId} (${recordedTypeShown(overlap.resourceType)}) — both ` +
+        `  - ${overlap.logicalId} (${overlap.resourceType}) — both ` +
           `--recreate-via-cc-api ${overlap.logicalId} (would migrate to CC, ` +
           `honoring ${overlap.property}) AND ` +
           `--prefer-sdk-route ${overlap.resourceType}:${overlap.property} ` +
@@ -702,7 +702,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `replica regions is more involved than the single-region path):`
     );
     for (const blocked of validation.blockedMultiRegionTargets) {
-      lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);
+      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
     }
     lines.push(
       `  No --force-stateful-recreation bypass — this category is structurally ` +
@@ -827,8 +827,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
       );
     }
     lines.push(
-      `  Fix: pass --prefer-sdk-route <Type>:<Prop> for each ` +
-        `silent-drop property so the recreated resource stays on SDK with the ` +
+      `  Fix: pass each silent-drop property to --prefer-sdk-route as TYPE:PROPERTY ` +
+        `so the recreated resource stays on SDK with the ` +
         `property explicitly dropped. Or drop --recreate-via-sdk-provider — ` +
         `the resource already routes via CC and honors the property.`
     );

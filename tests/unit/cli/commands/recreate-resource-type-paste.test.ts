@@ -93,6 +93,13 @@ function listRefusal(list: BlockedList, resourceType: string): string {
   return renderRecreateTargetsErrors({ ...cleanValidation(), [list]: [target(resourceType)] })!;
 }
 
+function inverseIntentRefusal(resourceType: string): string {
+  return renderRecreateTargetsErrors({
+    ...cleanValidation(),
+    ambiguousIntentSdk: [{ logicalId: 'Bucket', resourceType, property: 'Tags' }],
+  })!;
+}
+
 function nestedRefusal(resourceType: string, templateNested: boolean): string {
   return renderRecreateTargetsErrors({
     ...cleanValidation(),
@@ -114,6 +121,9 @@ describe('recreate target rows — no non-plain recorded resource type printed r
     );
     expect(nestedRefusal('AWS::CloudFormation::Stack', false)).toContain(
       '  - Bucket (AWS::CloudFormation::Stack)'
+    );
+    expect(inverseIntentRefusal('AWS::S3::Bucket')).toContain(
+      '  - Bucket (AWS::S3::Bucket) — template uses Tags;'
     );
     for (const list of LISTS) {
       expect(listRefusal(list, 'AWS::S3::Bucket'), list).toContain('  - Bucket (AWS::S3::Bucket)\n');
@@ -146,12 +156,37 @@ describe('recreate target rows — no non-plain recorded resource type printed r
       render: (v) => nestedRefusal(v, false),
       described: `  - Bucket (${DESCRIBED})`,
     },
+    {
+      label: 'inverse ambiguous-intent refusal row',
+      render: (v) => inverseIntentRefusal(v),
+      described: `  - Bucket (${DESCRIBED}) — template uses Tags;`,
+    },
     ...LISTS.map((list) => ({
       label: `${list} refusal row`,
       render: (v: string) => listRefusal(list, v),
       described: `  - Bucket (${DESCRIBED})\n`,
     })),
   ];
+
+  it('no Fix: line of any refusal block carries a `<...>` hole', () => {
+    // `remove --recreate-via-cc-api <id> for these resources.`, pasted, is a
+    // redirection: `<id>` reads a file and `> for` truncates one. Every block
+    // is rendered at once, with plain values, so a hole in any Fix: line reds
+    // here whichever block it is in.
+    const t = target('AWS::S3::Bucket');
+    const message = renderRecreateTargetsErrors({
+      ...cleanValidation(),
+      blockedAlreadySdk: [t],
+      blockedAlreadyCcApi: [t],
+      blockedNoSdkProvider: [t],
+      blockedNoCcRoute: [{ ...t, templateType: 'AWS::S3::Bucket', reason: 'no CC handler' }],
+      blockedCcBroken: [{ ...t, templateType: 'AWS::S3::Bucket' }],
+      ambiguousIntentSdk: [{ logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', property: 'Tags' }],
+    })!;
+    const fixLines = message.split('\n').filter((l) => l.includes('Fix:'));
+    expect(fixLines).toHaveLength(6);
+    for (const line of fixLines) expect(line).not.toMatch(/[<>]/);
+  });
 
   for (const { label, render, described } of SITES) {
     it(`${label}: describes a payload type, never shows it, and no pasted span runs`, async () => {
