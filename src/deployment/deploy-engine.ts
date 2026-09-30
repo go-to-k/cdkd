@@ -6027,6 +6027,7 @@ export class DeployEngine {
           forceDataDelete: this.options.forceStatefulRecreation === true,
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           ...this.replacementDeleteContext(updateReplacePolicy),
+          recordedAttributes: currentResource.attributes,
         }
       );
     } catch (deleteError) {
@@ -7122,6 +7123,7 @@ export class DeployEngine {
                       finalSnapshotIdentifier: recreateFinalSnapshotId,
                     }),
                     ...this.replacementDeleteContext(updateReplacePolicy),
+                    recordedAttributes: currentResource.attributes,
                   }
                 );
               } catch (deleteError) {
@@ -7591,6 +7593,7 @@ export class DeployEngine {
                         finalSnapshotIdentifier: cleanupFinalSnapshotId,
                       }),
                       ...this.replacementDeleteContext(updateReplacePolicy),
+                      recordedAttributes: currentResource.attributes,
                     }
                   );
                 } catch (deleteError) {
@@ -8109,6 +8112,7 @@ export class DeployEngine {
                         finalSnapshotIdentifier: fallbackFinalSnapshotId,
                       }),
                       ...this.replacementDeleteContext(fallbackUpdateReplacePolicy),
+                      recordedAttributes: currentResource.attributes,
                     }
                   );
                 } catch (deleteError) {
@@ -8721,6 +8725,8 @@ export class DeployEngine {
                   // Issue #4029: absent is CloudFormation's `Delete` here.
                   deletionPolicy: governingPolicy ?? 'Delete',
                   ...(this.options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                  // Issue #4157: the identity evidence of the record deleted.
+                  recordedAttributes: currentResource.attributes,
                 }
               ),
             logicalId,

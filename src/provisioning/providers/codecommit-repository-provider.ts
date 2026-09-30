@@ -27,6 +27,8 @@ import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
+  IndeterminateGuard,
+  ResourceDeleteResult,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -39,7 +41,13 @@ import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  isAmbiguousOutcomeError,
+  isThrottlingError,
+  markNonRetryable,
+  markRedactedCause,
+} from '../../deployment/retryable-errors.js';
+import { withIndeterminateGuard } from '../../deployment/delete-outcome.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 
@@ -160,6 +168,37 @@ function toSdkTriggers(triggers: CfnTrigger[] | undefined): RepositoryTrigger[] 
  */
 function triggersEqual(a: RepositoryTrigger[], b: RepositoryTrigger[]): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * The guard id a delete reports when it could not read the live resource's id
+ * to compare with the recorded one (go-to-k/cdkd#4157), and deleted anyway.
+ * Names the guard, not the type: another name-addressed provider making the
+ * same comparison reuses it.
+ */
+export const RECORDED_IDENTITY_DELETE_GUARD = 'delete-recorded-identity';
+
+/**
+ * The `RepositoryId` cdkd recorded for the resource, or `undefined` for a
+ * record that holds none (one from before the attribute existed) or holds it
+ * MASKED: a mask is no id, and comparing it would refuse the resource's own
+ * repository.
+ */
+function recordedRepositoryId(
+  attributes: Readonly<Record<string, unknown>> | undefined
+): string | undefined {
+  const value = attributes?.['RepositoryId'];
+  return typeof value === 'string' && value.length > 0 && !holdsSecretDerivedEntry(value)
+    ? value
+    : undefined;
+}
+
+/** A recorded `RepositoryId` that is present but masked (go-to-k/cdkd#4157). */
+function recordedRepositoryIdMasked(
+  attributes: Readonly<Record<string, unknown>> | undefined
+): boolean {
+  const value = attributes?.['RepositoryId'];
+  return typeof value === 'string' && holdsSecretDerivedEntry(value);
 }
 
 // ─── List reads (go-to-k/cdkd#3989) ─────────────────────────────────
@@ -476,24 +515,27 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       'pre-update'
     );
     // The repository id cdkd recorded for this resource (go-to-k/cdkd#4051):
-    // the identity a rename-retry probe is verified against.
-    const recordedIdValue = context?.recordedAttributes?.['RepositoryId'];
-    const recordedId =
-      typeof recordedIdValue === 'string' && recordedIdValue.length > 0
-        ? recordedIdValue
-        : undefined;
+    // the identity every call below is verified against.
+    const recordedId = recordedRepositoryId(context?.recordedAttributes);
+    const renameTo = properties['RepositoryName'];
+    const renaming = typeof renameTo === 'string' && renameTo.length > 0 && renameTo !== physicalId;
+    // An update that does not rename addresses the recorded name only, so on
+    // that path the repository holding it must be the recorded one before
+    // anything is read for, or written to, it (go-to-k/cdkd#4157); the rename
+    // path checks the same before renaming. A record with no RepositoryId
+    // keeps the historical by-name update: nothing identifies a foreign holder.
+    if (!renaming && recordedId !== undefined) {
+      await this.assertRecordedHolder(logicalId, resourceType, physicalId, recordedId);
+    }
     // A recorded Triggers cdkd cannot read is replaced by the live set, read
     // before the rename so a failed read changes nothing. A retry after a
     // rename that already landed finds the repository under the NEW name.
-    const renameTo = properties['RepositoryName'];
     const liveTriggers =
       prevTriggers.kind === 'malformed'
         ? await this.readLiveTriggers(
             logicalId,
             physicalId,
-            typeof renameTo === 'string' && renameTo.length > 0 && renameTo !== physicalId
-              ? renameTo
-              : undefined,
+            renaming ? renameTo : undefined,
             recordedId,
             resourceType
           )
@@ -506,8 +548,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     let currentName = physicalId;
 
     try {
-      const newName = properties['RepositoryName'] as string | undefined;
-      if (newName && newName !== physicalId) {
+      const newName = renaming ? (renameTo as string) : undefined;
+      if (newName !== undefined) {
         // Read the repository's id BEFORE renaming, and remember it: a retry
         // then adopts the repository under the new name only when it is the
         // same one (go-to-k/cdkd#4042). A repository under the recorded name
@@ -785,6 +827,51 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   }
 
   /**
+   * Refuse an update whose recorded name is now held by a repository that is
+   * not the recorded one (go-to-k/cdkd#4157): nothing is sent to it. Any other
+   * failure to read it fails the update as before, retryable.
+   */
+  private async assertRecordedHolder(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    recordedId: string
+  ): Promise<void> {
+    let holder: RepositoryMetadata | undefined;
+    try {
+      holder = await this.getRepositoryMetadata(physicalId);
+    } catch (error) {
+      throw this.wrapHolderReadError(logicalId, resourceType, physicalId, error);
+    }
+    if (holder?.repositoryId !== undefined && holder.repositoryId !== recordedId) {
+      throw this.wrapNotThisRepositoryError(logicalId, resourceType, physicalId, 'recorded-name');
+    }
+  }
+
+  /**
+   * The update's failed identity read, wrapped. The class, never AWS's text
+   * (it quotes the caller's role and session); a redacted message is stamped
+   * so the retry classifier still reads the cause's text (an IAM grant still
+   * propagating, go-to-k/cdkd#2302).
+   */
+  private wrapHolderReadError(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    error: unknown
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    const wrapped = new ProvisioningError(
+      `Failed to update CodeCommit Repository ${logicalId}: ${failure.summary}`,
+      resourceType,
+      logicalId,
+      physicalId,
+      error instanceof Error ? error : undefined
+    );
+    return failure.redacted ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
    * The live trigger set, for a recorded `Triggers` cdkd cannot read
    * (go-to-k/cdkd#3989). A failed read throws before any write; it is not
    * marked non-retryable, since a throttled read is worth the retry.
@@ -917,8 +1004,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           `that repository. If this resource's repository was renamed outside cdkd and you ` +
           `can find it, set RepositoryName to its current name: cdkd adopts it by the ` +
           `repository id it holds. If it was deleted outside cdkd, drop ` +
-          `this resource's record so the next deploy creates a new repository (fill in the ` +
-          `resource's construct path):\n` +
+          `this resource's record and set RepositoryName to a name no repository holds, so the ` +
+          `next deploy creates a new repository (fill in the resource's construct path):\n` +
           pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command
         : `The repository cdkd recorded for this resource no longer holds its recorded name ` +
           `(it was deleted or renamed outside cdkd), and the repository now holding that name ` +
@@ -926,8 +1013,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           `sent to that repository. Changing RepositoryName does not clear this. Leave that ` +
           `repository alone. If the recorded repository was renamed and you can find it, ` +
           `re-adopt it under its new name with cdkd import (--resource, --force) instead; ` +
-          `otherwise drop this resource's record so the next deploy creates a new repository ` +
-          `(fill in the resource's construct path):\n` +
+          `otherwise drop this resource's record and set RepositoryName to a name no ` +
+          `repository holds, so the next deploy creates a new repository (fill in the ` +
+          `resource's construct path):\n` +
           pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command;
     return markNonRetryable(
       new ProvisioningError(
@@ -951,6 +1039,18 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * being treated as idempotent success. A
    * `RepositoryDoesNotExistException` is additionally handled (same
    * check) for defense in depth.
+   *
+   * `DeleteRepository` takes a NAME, so with a recorded `RepositoryId`
+   * (`DeleteContext.recordedAttributes`, go-to-k/cdkd#4157) the repository
+   * holding the name is read first and a holder with another id is REFUSED,
+   * with nothing deleted: returning normally would drop the record while the
+   * foreign repository stays, and deleting it destroys a repository the stack
+   * never created. A read that cannot confirm the holder's identity and is
+   * not a retryable transient failure (a denied `GetRepository`, an
+   * unavailable KMS key, any other error) proceeds with a warn and reports an
+   * `IndeterminateGuard`, so cdkd's own repository is never wedged; a
+   * throttled, 5xx or connection-level read is retried.
+   * A record with no `RepositoryId` keeps the historical by-name delete.
    */
   async delete(
     logicalId: string,
@@ -958,16 +1058,39 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting CodeCommit Repository ${logicalId}: ${physicalId}`);
 
+    const recordedId = recordedRepositoryId(context?.recordedAttributes);
+    let guard: IndeterminateGuard | undefined;
+    if (recordedId !== undefined || recordedRepositoryIdMasked(context?.recordedAttributes)) {
+      // A client in another region would read a same-named repository there
+      // and refuse it as foreign, naming a remedy that drops the record of the
+      // live one: compare regions first, as the update does.
+      assertRegionMatch(
+        context?.expectedRegion ? await this.getClient().config.region() : undefined,
+        context?.expectedRegion,
+        resourceType,
+        logicalId,
+        physicalId,
+        'pre-delete'
+      );
+    }
+    if (recordedId === undefined && recordedRepositoryIdMasked(context?.recordedAttributes)) {
+      guard = this.proceedUnconfirmed(logicalId, 'the recorded repository id is masked');
+    }
     let deletedRepositoryId: string | undefined;
     try {
+      if (recordedId !== undefined) {
+        guard = await this.confirmDeleteTarget(logicalId, resourceType, physicalId, recordedId);
+      }
       const response = await this.getClient().send(
         new DeleteRepositoryCommand({ repositoryName: physicalId })
       );
       deletedRepositoryId = response.repositoryId;
     } catch (error) {
+      // The identity refusal: already named and marked non-retryable.
+      if (error instanceof ProvisioningError) throw error;
       if (error instanceof RepositoryDoesNotExistException) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
@@ -978,7 +1101,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           physicalId
         );
         this.logger.debug(`CodeCommit Repository ${physicalId} does not exist, skipping deletion`);
-        return;
+        return withIndeterminateGuard(undefined, guard);
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -997,9 +1120,101 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       const clientRegion = await this.getClient().config.region();
       assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
       this.logger.debug(`CodeCommit Repository ${physicalId} does not exist, skipping deletion`);
-      return;
+      return withIndeterminateGuard(undefined, guard);
+    }
+    if (recordedId !== undefined && deletedRepositoryId !== recordedId) {
+      // The name changed hands between the read and the delete (CodeCommit has
+      // no delete by id): say so, since it cannot be undone.
+      this.logger.warn(
+        safeMsg`CodeCommit Repository ${logicalId}: the repository deleted under the recorded name was not the one cdkd recorded (its repository id is not the recorded one).`
+      );
     }
     this.logger.debug(`Successfully deleted CodeCommit Repository ${logicalId}`);
+    return withIndeterminateGuard(undefined, guard);
+  }
+
+  /**
+   * Before `DeleteRepository`, confirm the repository holding `physicalId` is
+   * the recorded one (go-to-k/cdkd#4157). Three outcomes:
+   *
+   * - the recorded id, or the name held by nothing
+   *   (`RepositoryDoesNotExistException`, rethrown to the idempotent arm):
+   *   `undefined`, and the delete goes ahead;
+   * - another id: THROWS a non-retryable refusal, and nothing is deleted;
+   * - no answer (ANY read failure below, or a read with no id): the delete
+   *   goes ahead with a warn and the guard reported — a denied read, an
+   *   `EncryptionKey*` failure, an unexpected error alike, since a destroy of
+   *   cdkd's own repository must not wedge on them and the delete was by name
+   *   before this check existed. A throttled, 5xx or connection-level
+   *   failure is rethrown instead, so the caller's retry asks again. A
+   *   connection never made (`ECONNREFUSED`, `ENOTFOUND`) is not ambiguous and
+   *   takes the proceed arm; the delete that follows fails the same way.
+   *
+   * The guard stays on every return, an already-gone repository included: it
+   * reports that the check did not run, whatever the delete then found.
+   *
+   * Name and id address the same repository only at the moment of the read:
+   * CodeCommit has no delete-by-id, so a swap between the two calls is not
+   * caught.
+   */
+  private async confirmDeleteTarget(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    recordedId: string
+  ): Promise<IndeterminateGuard | undefined> {
+    let holder: RepositoryMetadata | undefined;
+    try {
+      holder = await this.getRepositoryMetadata(physicalId);
+    } catch (error) {
+      // A throttle, a 5xx or a lost connection (`isAmbiguousOutcomeError`
+      // covers both of the last two) is no answer about identity:
+      // rethrown, so the delete is not sent and the caller's retry asks again.
+      if (
+        error instanceof RepositoryDoesNotExistException ||
+        isThrottlingError(error) ||
+        isAmbiguousOutcomeError(error)
+      ) {
+        throw error;
+      }
+      // The class, never AWS's text (it quotes the caller's role and session).
+      const failure = describeAwsFailure(error);
+      this.logger.debug(
+        safeMsg`GetRepository failed while confirming CodeCommit Repository ${logicalId}: ${failure.detail}`
+      );
+      return this.proceedUnconfirmed(
+        logicalId,
+        `the repository could not be read to compare its id with the recorded one: ${failure.summary}`
+      );
+    }
+    const liveId = holder?.repositoryId;
+    if (liveId === undefined) {
+      return this.proceedUnconfirmed(logicalId, 'GetRepository returned no repository id');
+    }
+    if (liveId === recordedId) return undefined;
+    throw markNonRetryable(
+      new ProvisioningError(
+        `CodeCommit Repository ${logicalId}: the repository holding the name cdkd recorded for ` +
+          `this resource is not this resource's (its repository id is not the one cdkd holds; ` +
+          `the recorded repository was deleted or renamed outside cdkd) — cdkd did not delete ` +
+          `it. Leave that repository alone. If cdkd still records this resource under that ` +
+          `name (a destroy, or a deploy removing the resource), drop that record and re-run; a ` +
+          `later deploy that creates this resource again needs a RepositoryName no repository ` +
+          `holds (fill in the resource's construct path):\n` +
+          pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /** The proceed-anyway arm of {@link confirmDeleteTarget}, reported. */
+  private proceedUnconfirmed(logicalId: string, reason: string): IndeterminateGuard {
+    this.logger.warn(
+      safeMsg`Could not confirm that CodeCommit Repository ${logicalId} is the repository cdkd recorded: ${reason.replace(/[.\s]+$/, '')}. Proceeding with the delete.`
+    );
+    return { guard: RECORDED_IDENTITY_DELETE_GUARD, reason };
   }
 
   /**

@@ -44,6 +44,10 @@ One stack:
 7. **Update**: `UpdateRepositoryDescription`, plus tag change AND tag
    REMOVAL via `UntagResource` (the ECR issue #981 regression class).
 8. **Destroy**: `DeleteRepository` + SNS topic + state cleanup.
+9. **Recorded identity** (issue #4157): a repository recreated out of band
+   under the recorded name is refused by an in-place update and by destroy
+   (nothing written, nothing deleted, record kept); `cdkd orphan` plus a free
+   `RepositoryName` recovers.
 
 ## Run
 
@@ -55,7 +59,9 @@ Phases: (1) deploy + assert description/tags/Ref-id + Code seed (GetFile) +
 Triggers (GetRepositoryTriggers), (1b) drift clean after deploy → out-of-band
 description change detected as drift → revert, (2) `CDKD_TEST_UPDATE=true`
 re-deploy with rename + description change + `env` tag change + `team` tag
-removal, (3) destroy + assert the repository, SNS topic, and state file are
+removal, (2b) replace the repository out of band with a foreign one →
+update refused → destroy refused → `cdkd orphan` + a fresh name deploys a new
+repository, (3) destroy + assert the repository, SNS topic, and state file are
 gone.
 
 If Phase 1 fails with a new-customer access error, the AWS account has not

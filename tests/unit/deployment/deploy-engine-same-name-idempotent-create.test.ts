@@ -264,7 +264,7 @@ describe('DeployEngine — same-name replacement with a name-idempotent Create A
       OLD_URL,
       TYPE,
       expect.objectContaining({ QueueName: 'my-queue.fifo' }),
-      { expectedRegion: 'us-east-1', forceDataDelete: false, deletionPolicy: 'Delete' }
+      { expectedRegion: 'us-east-1', forceDataDelete: false, deletionPolicy: 'Delete', recordedAttributes: {} }
     );
     expect(stateResources['Queue']!.physicalId).toBe(NEW_URL);
   });
@@ -299,7 +299,7 @@ describe('DeployEngine — same-name replacement with a name-idempotent Create A
       OLD_URL,
       TYPE,
       expect.objectContaining({ QueueName: 'my-queue.fifo' }),
-      { expectedRegion: 'us-east-1', forceDataDelete: false, deletionPolicy: 'Delete' }
+      { expectedRegion: 'us-east-1', forceDataDelete: false, deletionPolicy: 'Delete', recordedAttributes: {} }
     );
     // State reflects the re-created resource with the NEW properties.
     expect(stateResources['Queue']!.physicalId).toBe(OLD_URL);

@@ -752,8 +752,12 @@ export interface UpdateContext extends SecretMaskingContext {
    *
    * Read-only evidence. ABSENT, or a key missing from it, means "no recorded
    * identity" — a record from before the attribute existed — and a provider
-   * must then REFUSE to adopt an unverifiable resource rather than assume it is
-   * its own. Values are as recorded: a secret-derived one is redacted, so
+   * must then REFUSE to adopt an unverifiable resource under a name the record
+   * does not hold rather than assume it is its own; the recorded name itself
+   * keeps the historical by-name update. Present, the holder of the recorded
+   * name is compared before any write to it (go-to-k/cdkd#4157), and
+   * `DeleteContext.recordedAttributes` is the delete twin. Values are as
+   * recorded: a secret-derived one is redacted, so
    * compare only non-secret identities (ids AWS generates).
    */
   recordedAttributes?: Readonly<Record<string, unknown>> | undefined;
