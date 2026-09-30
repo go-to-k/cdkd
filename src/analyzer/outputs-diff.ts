@@ -1152,7 +1152,9 @@ export async function resolveTemplateOutputs(
  *   one, which rewrites `state.outputs` IN PLACE: scrub redacts what it has a
  *   needle or a template position for. A key today's template cannot name
  *   whose value it cannot identify is DROPPED (go-to-k/cdkd#4120), except
- *   one that may be a live export alias this run could not reproduce, one
+ *   one it rewrote only in part (the text it keeps beside the reference is
+ *   withheld per key below), one that may be a live export alias this run
+ *   could not reproduce, one
  *   another stack still reads, every one when the other records could not be
  *   read, and one whose NAME holds a secret (#1919) — so a scrubbed bag
  *   holding one redacted key can still exonerate such a kept key's surviving

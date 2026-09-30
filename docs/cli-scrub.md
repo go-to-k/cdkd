@@ -359,7 +359,7 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | Code | Meaning |
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
-| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, or an undeclared key another stack still reads. |
+| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, an undeclared key another stack still reads or one that may be a live export alias, or an exports index entry that has no key left in `state.outputs` and still holds a secret this run recorded. |
 | `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, the exports index was left incomplete, or the other stacks' state could not be read before a drop (`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED`). |
 
 The full cross-command table is in the
@@ -878,10 +878,12 @@ secret is not rewritten, and its undeclared keys stay as they are.
 
 These keys are **kept**:
 
-- one no string of which can be a plaintext after the rewrite — only whole
-  `{{resolve:...}}` references (a key a pass rewrote whole), or no string at
-  all. A key a pass rewrote only in part (`postgres://u:{{resolve:...}}@host`)
-  is dropped like any other: the text beside the reference is unidentified;
+- one a pass rewrote, whole or in part — it now carries the reference, and the
+  [exports index](#the-exports-index) entry of that name is converged to it.
+  Text a part-rewritten value keeps beside the reference
+  (`postgres://u:{{resolve:...}}@host`) is withheld by `cdkd diff` itself;
+- one no string of which can be a plaintext — only whole `{{resolve:...}}`
+  references, or no string at all;
 - one whose name holds a secret this run recorded — the
   [state KEY leak](#exit-codes) scrub reports and cannot rewrite, because the
   exports index still publishes that name;
@@ -909,8 +911,18 @@ These keys are **kept**:
   and `--fail` exits `1`. Stop the consumer reading it (or declare the output
   again) and deploy, then re-run.
 
+  This protects the reads cdkd **recorded**, and no others. Two residuals of the
+  version test: it misses a record older than schema v8 that a command other
+  than `cdkd deploy` has rewritten since (`cdkd scrub`, `cdkd drift --accept`,
+  `cdkd import`, the `cdkd state` commands), because every write stamps the
+  current version while carrying no `outputReads` — such a record reads as
+  having no readers; and it over-refuses, because one old record ANYWHERE in the
+  bucket, related or not, keeps every stack's drop candidates, and `--fail`
+  red, until that record is redeployed.
+
 When the listing or any record cannot be read — a listed record that reads as
-absent counts — **no** key is dropped from that stack, the rest of it is still scrubbed, and the run ends with
+absent counts — **no** key is dropped from that stack, the rest of it is still
+scrubbed, and the run ends with
 `SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` (exit `2`, with or without `--fail`).
 
 ## Cross-stack read names
@@ -1033,7 +1045,7 @@ even when every `state.json` already holds the expression.
 ### What the index pass reports rather than writing
 
 Three cases produce a message and no write. The first exits `2`; the other two
-do not affect the exit code.
+do not affect the exit code, with one exception noted under the second.
 
 - **An entry it could not write.** S3 refused the `PutObject`, or a concurrent
   writer exhausted the If-Match retry budget. The run fails with
@@ -1045,7 +1057,12 @@ do not affect the exit code.
   the re-run writes the remainder.
 - **An owned entry whose name is not a key of `state.outputs`.** There is no
   value to converge it to, so it keeps what it holds. Redeploy that producer,
-  which rewrites the index from its own outputs.
+  which rewrites the index from its own outputs. When that entry's value still
+  holds a secret this run recorded — typically after scrub
+  [dropped the key](#a-key-the-template-can-no-longer-name-is-dropped) — it is
+  a FINDING instead: the stack is not reported clean and `--fail` exits `1`.
+  An alias-shaped name this run dropped or kept is withheld on these lines,
+  as it was on the drop line.
 - **An entry published by a producer this run did not scrub.** `--all` targets
   every stack in the SYNTHESIZED APP, not every stack with a state record, and
   one bucket and region are legitimately shared by several CDK apps. Those

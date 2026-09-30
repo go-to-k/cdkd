@@ -63,8 +63,9 @@ key the record HOLDS (accounted is not enough: defaults can compute a name the
 deploy never wrote), and a #1919 secret-bearing key. A key another record
 READS is kept as a finding, never refused: refusing strands the plaintext the
 rest of the record repairs. A record predating `imports`/`outputReads` (v4/v8)
-is an unknown reader; an unreadable one keeps every key (exit 2). A partly
-rewritten key is not "rewritten": only a whole-token value is exempt.
+is an unknown reader (fail-open once a non-deploy write restamps it); an
+unreadable one keeps every key (exit 2). A partly rewritten key is KEPT: its
+index entry converges to it, and dropping it left the plaintext there.
 
 ## Cross-stack reads
 
