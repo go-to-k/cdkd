@@ -112,7 +112,7 @@ efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 de
 efs-standalone	2026-09-30T08:37:29Z	PASS	161	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
 elasticache-replicationgroup-getatt	2026-09-29T14:00:50Z	PASS	776	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 elbv2-same-name-replacement	2026-09-29T02:36:21Z	PASS	75	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, same-name --replace still delete-first, 12 deleted 0 errors, orph clean
-emr-cluster	2026-09-30T06:28:26Z	PASS	831	verify.sh	PR #4189 (#4186 orphan GetAtt takes the recorded attribute over a live answer) @09cebd2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+emr-cluster	2026-09-30T17:19:24Z	PASS	715	verify.sh	PR #4246 (#2204 EMR --remove-protection compensation wraps delete) @ceb272363; rc ok, destroy 0 errors, no state/IAM/VPC/cluster leftovers
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
