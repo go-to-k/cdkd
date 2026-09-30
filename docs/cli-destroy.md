@@ -215,13 +215,21 @@ cost and latency are unwanted, and the escape hatch for the refusal below.
 | `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the delete. Redis only. |
 
 Generated snapshot identifiers are deterministic:
-`<physicalId>-final-<utcTimestamp>` (lowercased and sanitized to the
-snapshot-identifier character rules). The three pre-delete types log the
-identifier as they create it. The five atomic-parameter types log only that
-the delete takes a final snapshot, under the resource's logical id: the
-identifier spells the physical id, which may come from a secret. Find that
-snapshot among the service's manual snapshots by the `<physicalId>-final-`
-prefix, for example:
+`<base>-final-<utcTimestamp>`, where the timestamp is `yyyymmdd-hhmmss` in UTC
+and `<base>` is the physical id with these rules applied:
+
+| Step | Rule |
+| --- | --- |
+| Case | Lowercased. |
+| Characters | Every character outside `a-z`, `0-9` and `-` becomes `-`; runs of `-` collapse to one; leading and trailing `-` are dropped. |
+| First character | `r` is prepended when it does not start with a letter. |
+| Length | ElastiCache only: cut to the first 28 characters, then any trailing `-` is dropped. |
+
+The three pre-delete types log the identifier as they create it. The five
+atomic-parameter types log only that the delete takes a final snapshot, under
+the resource's logical id: the identifier spells the physical id, which may
+come from a secret. Find that snapshot among the service's manual snapshots by
+its `<base>-final-` prefix, for example:
 
 ```bash
 aws rds describe-db-cluster-snapshots --snapshot-type manual \

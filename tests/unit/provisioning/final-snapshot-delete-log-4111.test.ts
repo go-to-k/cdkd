@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 /**
  * Issue #4111: a `DeletionPolicy: Snapshot` delete of an atomic-final-snapshot
@@ -70,6 +70,8 @@ interface Arm {
   deleteCommand: string;
   describeCommand: string;
   describeKey: string;
+  /** The status field the wait-for-deleted poll reads. */
+  statusKey: string;
   notFound: string;
   /** Whether `--remove-protection` flips a DeletionProtection guard here. */
   protection: boolean;
@@ -84,6 +86,7 @@ const ARMS: Arm[] = [
     deleteCommand: 'DeleteDBInstanceCommand',
     describeCommand: 'DescribeDBInstancesCommand',
     describeKey: 'DBInstances',
+    statusKey: 'DBInstanceStatus',
     notFound: 'DBInstanceNotFoundFault',
     protection: true,
   },
@@ -95,6 +98,7 @@ const ARMS: Arm[] = [
     deleteCommand: 'DeleteDBClusterCommand',
     describeCommand: 'DescribeDBClustersCommand',
     describeKey: 'DBClusters',
+    statusKey: 'Status',
     notFound: 'DBClusterNotFoundFault',
     protection: true,
   },
@@ -106,6 +110,7 @@ const ARMS: Arm[] = [
     deleteCommand: 'DeleteDBClusterCommand',
     describeCommand: 'DescribeDBClustersCommand',
     describeKey: 'DBClusters',
+    statusKey: 'Status',
     notFound: 'DBClusterNotFoundFault',
     protection: true,
   },
@@ -117,6 +122,7 @@ const ARMS: Arm[] = [
     deleteCommand: 'DeleteDBClusterCommand',
     describeCommand: 'DescribeDBClustersCommand',
     describeKey: 'DBClusters',
+    statusKey: 'Status',
     notFound: 'DBClusterNotFoundFault',
     protection: true,
   },
@@ -128,15 +134,17 @@ const ARMS: Arm[] = [
     deleteCommand: 'DeleteCacheClusterCommand',
     describeCommand: 'DescribeCacheClustersCommand',
     describeKey: 'CacheClusters',
+    statusKey: 'CacheClusterStatus',
     notFound: 'CacheClusterNotFoundFault',
     protection: false,
   },
 ];
 
-type Scenario = 'deleted' | 'already-gone' | 'protection-flip-fails';
+type Scenario = 'deleted' | 'already-gone' | 'protection-flip-fails' | 'wait-times-out';
 
 function stubAws(arm: Arm, scenario: Scenario): void {
   let deleted = false;
+  let pollsAfterDelete = 0;
   mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
     const name = cmd.constructor.name;
     const notFound = () =>
@@ -147,7 +155,16 @@ function stubAws(arm: Arm, scenario: Scenario): void {
       return Promise.resolve({});
     }
     if (name === arm.describeCommand) {
-      if (deleted || scenario !== 'protection-flip-fails') return notFound();
+      if (deleted) {
+        // Real AWS reads `deleting` on the first poll after the delete, which
+        // is what makes the wait loop log its status line.
+        pollsAfterDelete++;
+        if (scenario === 'wait-times-out' || pollsAfterDelete === 1) {
+          return Promise.resolve({ [arm.describeKey]: [{ [arm.statusKey]: 'deleting' }] });
+        }
+        return notFound();
+      }
+      if (scenario !== 'protection-flip-fails') return notFound();
       return Promise.resolve({
         [arm.describeKey]: [{ DeletionProtection: true, Status: 'available' }],
       });
@@ -181,6 +198,16 @@ function expectNoIdentifierLogged(snap: string): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  for (const provider of [RDSProvider, DocDBProvider, NeptuneProvider, ElastiCacheProvider]) {
+    vi.spyOn(
+      provider.prototype as unknown as { sleep: (ms: number) => Promise<void> },
+      'sleep'
+    ).mockResolvedValue(undefined);
+  }
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe.each(ARMS)('$label Snapshot-policy delete log lines (#4111)', (arm) => {
@@ -200,6 +227,28 @@ describe.each(ARMS)('$label Snapshot-policy delete log lines (#4111)', (arm) => 
       `Deleting ${arm.subject} MyRes with a final snapshot (DeletionPolicy: Snapshot)`
     );
     expect(childLogger.debug).toHaveBeenCalledWith(`Deleting ${arm.subject} MyRes`);
+    expect(childLogger.debug).toHaveBeenCalledWith(`${arm.subject} MyRes status: deleting`);
+    expectNoIdentifierLogged(snap);
+  });
+
+  it('names the logical id when the wait for the delete times out', async () => {
+    stubAws(arm, 'wait-times-out');
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => (now += 60 * 60 * 1000));
+
+    const failure = await arm
+      .make()
+      .delete('MyRes', SECRET_ID, arm.resourceType, {}, { finalSnapshotIdentifier: snap })
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain(`Timed out waiting for ${arm.subject} MyRes to be deleted`);
+    expect(message).not.toContain(SECRET_WORD);
+    expect(message).not.toContain(snap);
     expectNoIdentifierLogged(snap);
   });
 

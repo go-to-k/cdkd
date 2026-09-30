@@ -1044,7 +1044,7 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`Successfully initiated deletion of DBCluster ${logicalId}`);
 
       // Wait for cluster to be fully deleted
-      await this.waitForClusterDeleted(physicalId, RDS_DELETE_WAIT_MS);
+      await this.waitForClusterDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
       if (error instanceof GlobalClusterDetachError) {
         // Non-retryable so the destroy / deploy classifiers never read an AWS
@@ -1500,7 +1500,7 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`Successfully initiated deletion of DBInstance ${logicalId}`);
 
       // Wait for instance to be fully deleted
-      await this.waitForInstanceDeleted(physicalId, RDS_DELETE_WAIT_MS);
+      await this.waitForInstanceDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
@@ -1731,6 +1731,7 @@ export class RDSProvider implements ResourceProvider {
    * Wait for a DBCluster to be deleted
    */
   private async waitForClusterDeleted(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1742,7 +1743,7 @@ export class RDSProvider implements ResourceProvider {
         const cluster = await this.describeDBCluster(dbClusterIdentifier);
         const status = cluster?.Status;
 
-        this.logger.debug(`DBCluster ${dbClusterIdentifier} status: ${status}`);
+        this.logger.debug(`DBCluster ${logicalId} status: ${status}`);
 
         if (!cluster) return;
       } catch (error) {
@@ -1756,7 +1757,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for DBCluster ${dbClusterIdentifier} to be deleted`);
+    throw new Error(`Timed out waiting for DBCluster ${logicalId} to be deleted`);
   }
 
   /**
@@ -1788,6 +1789,7 @@ export class RDSProvider implements ResourceProvider {
    * Wait for a DBInstance to be deleted
    */
   private async waitForInstanceDeleted(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1799,7 +1801,7 @@ export class RDSProvider implements ResourceProvider {
         const instance = await this.describeDBInstance(dbInstanceIdentifier);
         const status = instance?.DBInstanceStatus;
 
-        this.logger.debug(`DBInstance ${dbInstanceIdentifier} status: ${status}`);
+        this.logger.debug(`DBInstance ${logicalId} status: ${status}`);
 
         if (!instance) return;
       } catch (error) {
@@ -1813,7 +1815,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for DBInstance ${dbInstanceIdentifier} to be deleted`);
+    throw new Error(`Timed out waiting for DBInstance ${logicalId} to be deleted`);
   }
 
   private sleep(ms: number): Promise<void> {

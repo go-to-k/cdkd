@@ -751,7 +751,7 @@ export class NeptuneProvider implements ResourceProvider {
       this.logger.debug(`Successfully initiated deletion of Neptune DBCluster ${logicalId}`);
 
       // Wait for cluster to be fully deleted
-      await this.waitForClusterDeleted(physicalId);
+      await this.waitForClusterDeleted(logicalId, physicalId);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
@@ -1141,6 +1141,7 @@ export class NeptuneProvider implements ResourceProvider {
    * Wait for a DBCluster to be deleted (no SDK waiter — manual poll).
    */
   private async waitForClusterDeleted(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1152,7 +1153,7 @@ export class NeptuneProvider implements ResourceProvider {
         const cluster = await this.describeDBCluster(dbClusterIdentifier);
         const status = cluster?.Status;
 
-        this.logger.debug(`Neptune DBCluster ${dbClusterIdentifier} status: ${status}`);
+        this.logger.debug(`Neptune DBCluster ${logicalId} status: ${status}`);
 
         if (!cluster) return;
       } catch (error) {
@@ -1166,7 +1167,7 @@ export class NeptuneProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for Neptune DBCluster ${dbClusterIdentifier} to be deleted`);
+    throw new Error(`Timed out waiting for Neptune DBCluster ${logicalId} to be deleted`);
   }
 
   /**
