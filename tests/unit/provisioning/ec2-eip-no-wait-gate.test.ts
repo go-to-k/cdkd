@@ -54,7 +54,6 @@ import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -277,10 +276,9 @@ describe('EC2 EIP --no-wait repair command (issue #3136)', () => {
   it.each([
     ['create', createWarn],
     ['update', updateWarn],
-  ] as const)('%s: a forged InstanceId is shell-quoted in both commands, or withholds them', async (_arm, warnFor) => {
-    const quoted = await warnFor(`i-1${FORGED_QUOTE}`);
-    expectQuotedAfter(quoted, 'aws ec2 describe-instances --instance-ids ', `i-1${FORGED_QUOTE}`);
-    expectQuotedAfter(quoted, ' --instance-id ', `i-1${FORGED_QUOTE}`);
+  ] as const)('%s: a forged InstanceId withholds both commands', async (_arm, warnFor) => {
+    // A shell-active character withholds them (go-to-k/cdkd#3950).
+    expectWithheld(await warnFor(`i-1${FORGED_QUOTE}`), 'aws ec2');
     warnMock.mockReset();
     const withheld = await warnFor(`i-1${FORGED_CTRL}`);
     expectWithheld(withheld, 'aws ec2');

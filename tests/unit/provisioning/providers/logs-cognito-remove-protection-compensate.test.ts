@@ -495,10 +495,13 @@ describe('logGroupProtectionSite / userPoolProtectionSite', () => {
     );
   });
 
-  it('shell-quote a state-borne log group name carrying a space', () => {
-    expect(logGroupProtectionSite('lg 1', undefined).commands().restoreLive).toBe(
-      "aws logs put-log-group-deletion-protection --log-group-identifier 'lg 1' --deletion-protection-enabled"
-    );
+  // A shell-active character withholds them (go-to-k/cdkd#3950).
+  it('WITHHOLD every log group command for a state-borne name carrying a space', () => {
+    expect(logGroupProtectionSite('lg 1', undefined).commands()).toEqual({
+      check: WITHHELD_AWS_COMMAND,
+      restoreAfterNotFound: WITHHELD_AWS_COMMAND,
+      restoreLive: WITHHELD_AWS_COMMAND,
+    });
   });
 
   it.each([

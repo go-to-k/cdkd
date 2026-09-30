@@ -47,7 +47,6 @@ import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -435,8 +434,11 @@ describe('EC2Provider partial-create recovery commands (issue #3136)', () => {
     ['Subnet', subnetWarn, 'aws ec2 delete-subnet --subnet-id '],
     ['SecurityGroup', sgWarn, 'aws ec2 delete-security-group --group-id '],
     ['Instance', instanceWarn, 'aws ec2 terminate-instances --instance-ids '],
-  ] as const)('%s: a forged id is shell-quoted, or withholds the command', async (_t, warnFor, flag) => {
-    expectQuotedAfter(await warnFor(`id-1${FORGED_QUOTE}`), flag, `id-1${FORGED_QUOTE}`);
+  ] as const)('%s: a clean id is bare; a forged one withholds the command', async (_t, warnFor, flag) => {
+    expect(await warnFor('id-1abc')).toContain(`${flag}id-1abc`);
+    warnSpy.mockReset();
+    // A shell-active character withholds it (go-to-k/cdkd#3950).
+    expectWithheld(await warnFor(`id-1${FORGED_QUOTE}`), flag.trim());
     warnSpy.mockReset();
     expectWithheld(await warnFor(`id-1${FORGED_CTRL}`), flag.trim());
   });

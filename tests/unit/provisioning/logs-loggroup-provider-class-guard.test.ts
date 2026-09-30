@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
@@ -326,12 +327,13 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
    * an AWS-minted literal, and this site used to hand-quote it as
    * `'${physicalId}'`. It now goes through `renderDisableCommand`, so it gets
    * the identical treatment the five `protectedReplacementAdvice` callers get:
-   * `displaySafe(asciiOnly)`, then `shellQuote`, and the WHOLE command
-   * suppressed when sanitizing changed the id. Each case below names the id
+   * `displaySafe(asciiOnly)`, and the WHOLE command suppressed when sanitizing
+   * changed the id or the id holds a shell-active character
+   * (go-to-k/cdkd#3950). Each case below names the id
    * shape and the property it exercises; the PROTECTED arm is used throughout
    * so the command is the thing under test rather than the branch.
    */
-  describe('the disable command sanitizes, quotes or suppresses the state-borne id (#2669)', () => {
+  describe('the disable command sanitizes or suppresses the state-borne id (#2669)', () => {
     const refuseWithId = async (physicalId: string): Promise<string> => {
       const err = await provider
         .update(
@@ -346,15 +348,14 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
       return (err as Error).message;
     };
 
-    it('shell-quotes an id carrying a single quote instead of pasting it raw', async () => {
+    it('withholds the command for an id carrying a single quote instead of pasting it raw', async () => {
       // A `'` breaks out of the old hand-quoting: `'a'b'` pastes as `a` then a
-      // bare `b`. `shellQuote` spells it `'a'\''b'` — one argument again.
-      // ASCII throughout, so nothing is sanitized and the command survives.
+      // bare `b`. Nothing is sanitized (ASCII throughout), but a shell-active
+      // character suppresses the command (go-to-k/cdkd#3950).
       const message = await refuseWithId("/cdkd/it's-a-group");
-      expect(message).toContain(
-        "aws logs put-log-group-deletion-protection --log-group-identifier '/cdkd/it'\\''s-a-group' --no-deletion-protection-enabled"
-      );
-      expect(message).not.toContain("--log-group-identifier '/cdkd/it's-a-group'");
+      expect(message).not.toContain('put-log-group-deletion-protection');
+      expect(message).not.toContain("it's-a-group");
+      expect(message).toContain('cannot be reproduced safely on a command line');
     });
 
     it('SUPPRESSES the whole command for an id carrying a control byte, and says why', async () => {
@@ -380,6 +381,32 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
       expect(message).not.toContain('put-log-group-deletion-protection');
       expect(message).toContain('cannot be reproduced safely on a command line');
     });
+
+    it('keeps the command for a real name with a mid-word # (go-to-k/cdkd#3950)', async () => {
+      // `#` is valid in a log group name and literal mid-word under bash and
+      // zsh, so the gate must not take this remedy away.
+      const message = await refuseWithId('/app#blue');
+      expect(message).toContain('aws logs put-log-group-deletion-protection --log-group-identifier ');
+      expect(message).toContain('/app#blue');
+    });
+
+    it('pastes nothing runnable for any payload as the log group name (go-to-k/cdkd#3950)', async () => {
+      // The second site that prints the command inside markdown backticks.
+      // Each payload family, plus a space-free backtick payload, as the id.
+      // This sentence carries no apostrophe, so no payload outside whitespace,
+      // `$` and a backtick can run here: the paste is defence in depth, and
+      // the spelling assertion is what reds a narrowed gate (go-to-k/cdkd#4198
+      // R5).
+      const ids = [...PASTE_PAYLOADS.map((p) => p.value), 'x`touch${IFS}OWNED`y', 'x;>OWNED;#'];
+      const messages: Array<{ id: string; message: string }> = [];
+      for (const id of ids) messages.push({ id, message: await refuseWithId(id) });
+      withPasteDir((dir) => {
+        for (const { id, message } of messages) {
+          expect(spansThatRun(message, dir), id).toEqual([]);
+          expect(message, id).not.toContain('put-log-group-deletion-protection');
+        }
+      });
+    }, 120_000);
 
     it('leaves a clean id bare — the shape the loggroup-class-guard fixture greps', async () => {
       // The CONTROL: a real CloudWatch Logs name (`[A-Za-z0-9._/#-]`) needs no

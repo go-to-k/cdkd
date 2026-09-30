@@ -1274,9 +1274,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             await this.waitForReplicaGone(tableName, region, logicalId);
           } catch (replicaCleanupErr) {
             const msg = describeAwsFailure(replicaCleanupErr).detail;
+            // `Delete={RegionName=` and `}` are cdkd's own text, so they sit in
+            // the template's literal part: passed as a value, their `{` and `}`
+            // would withhold the command for every table (`PASTE_ARG_UNSAFE`,
+            // go-to-k/cdkd#3950). The literal is single-quoted around the
+            // value, so in a normal paste the shell sees one word,
+            // `Delete={RegionName=<region>}`, with the braces never exposed:
+            // unquoted, zsh's `BRACE_CCL` would expand them. A line flipped by
+            // an apostrophe in `msg` (AWS error text) leaves them unquoted, but
+            // the words stay glued to prose, so the worst case is an aws parse
+            // error, not a run. `region` is an AWS region name read from
+            // `DescribeTable`, so it holds no quote.
             warn(
               `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
-                `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates ${`Delete={RegionName=${region}}`} --region ${currentRegion}`.render()}`
+                `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates 'Delete={RegionName='${region}'}' --region ${currentRegion}`.render()}`
             );
           }
         }

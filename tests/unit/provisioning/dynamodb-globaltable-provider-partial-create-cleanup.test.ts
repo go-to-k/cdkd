@@ -307,7 +307,7 @@ describe('DynamoDBGlobalTableProvider partial-create cleanup (Issue #376-class)'
         const warns = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
         expect(warns).toContain(
           `Run: ${head} update-table --table-name my-test-table-xxx ` +
-            `--replica-updates 'Delete={RegionName=eu-west-1}' --region us-east-1`
+            `--replica-updates 'Delete={RegionName='eu-west-1'}' --region us-east-1`
         );
         expect(warns).toContain(
           `To remove the orphaned AWS-side table, run: ${head} delete-table --table-name my-test-table-xxx`

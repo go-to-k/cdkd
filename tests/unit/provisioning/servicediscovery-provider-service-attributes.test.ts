@@ -46,7 +46,6 @@ import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -334,11 +333,11 @@ describe('ServiceDiscoveryProvider manual delete-service commands (issue #3136)'
     }
   });
 
-  it('shell-quotes a forged id in both commands', async () => {
-    const id = `srv-1${FORGED_QUOTE}`;
-    const { interrupted, failed } = await warnsFor(id);
+  // A shell-active character withholds them (go-to-k/cdkd#3950).
+  it('withholds both commands for a forged id carrying a quote', async () => {
+    const { interrupted, failed } = await warnsFor(`srv-1${FORGED_QUOTE}`);
     for (const msg of [interrupted, failed]) {
-      expectQuotedAfter(msg, 'aws servicediscovery delete-service --id ', id);
+      expectWithheld(msg, 'aws servicediscovery delete-service');
     }
   });
 

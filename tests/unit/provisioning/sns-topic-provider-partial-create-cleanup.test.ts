@@ -34,7 +34,6 @@ import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -139,9 +138,9 @@ describe('SNSTopicProvider partial-create cleanup (Issue #376)', () => {
       expect(await warnFor(TOPIC_ARN)).toContain(`aws sns delete-topic --topic-arn ${TOPIC_ARN}`);
     });
 
-    it('shell-quotes an ARN carrying a quote', async () => {
-      const arn = `${TOPIC_ARN}${FORGED_QUOTE}`;
-      expectQuotedAfter(await warnFor(arn), 'aws sns delete-topic --topic-arn ', arn);
+    // A shell-active character withholds it (go-to-k/cdkd#3950).
+    it('withholds the command for an ARN carrying a quote', async () => {
+      expectWithheld(await warnFor(`${TOPIC_ARN}${FORGED_QUOTE}`), 'aws sns delete-topic');
     });
 
     it('withholds the command for an ARN carrying a control byte', async () => {

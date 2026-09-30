@@ -104,11 +104,9 @@ import {
   interruptWatchTestSeam,
 } from '../../../../src/provisioning/interrupt-watch.js';
 import type { DeleteContext } from '../../../../src/provisioning/region-check.js';
-import { shellQuote } from '../../../../src/utils/pasteable-command.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from '../pasteable-aws-command-assert.js';
 import {
@@ -1203,7 +1201,8 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
 
 // Issue #3136: the table name is the TEMPLATE-chosen / `state.json`-borne
 // physical id, so both arms' remediation commands render through
-// `pasteableAwsCommand` — quoted, or withheld when it cannot be printed exactly.
+// `pasteableAwsCommand` — withheld when it cannot be printed exactly or holds a
+// character that changes it once unquoted (go-to-k/cdkd#3950).
 describe('compensateRemovedDeletionProtection: pasteable remediation commands (#3136)', () => {
   async function lines(physicalId: string, reEnableError: unknown, region?: string): Promise<string> {
     const out: string[] = [];
@@ -1230,23 +1229,16 @@ describe('compensateRemovedDeletionProtection: pasteable remediation commands (#
   const inUse = (): unknown =>
     Object.assign(new Error('Table is being updated'), { name: 'ResourceInUseException' });
 
-  it('the ResourceNotFound arm quotes a forged table name in both commands', async () => {
-    const msg = await lines(FORGED_QUOTE, rnf(), 'eu-west-1');
-    expectQuotedAfter(msg, 'aws dynamodb describe-table --table-name ', FORGED_QUOTE);
-    expectQuotedAfter(msg, 'aws dynamodb update-table --table-name ', FORGED_QUOTE);
-    expect(msg).toContain(`${shellQuote(FORGED_QUOTE)} --region eu-west-1`);
+  it('the ResourceNotFound arm withholds both commands for a forged table name carrying a quote', async () => {
+    expectWithheld(await lines(FORGED_QUOTE, rnf(), 'eu-west-1'), 'aws dynamodb');
   });
 
   it('the ResourceNotFound arm withholds both commands for a control byte', async () => {
     expectWithheld(await lines(FORGED_CTRL, rnf()), 'aws dynamodb');
   });
 
-  it('the live-table ERROR arm quotes or withholds its restore command', async () => {
-    expectQuotedAfter(
-      await lines(FORGED_QUOTE, inUse()),
-      'aws dynamodb update-table --table-name ',
-      FORGED_QUOTE
-    );
+  it('the live-table ERROR arm withholds its restore command for a quote and for a control byte', async () => {
+    expectWithheld(await lines(FORGED_QUOTE, inUse()), 'aws dynamodb');
     const withheld = await lines(FORGED_CTRL, inUse());
     expectWithheld(withheld, 'aws dynamodb');
     expect(withheld).toContain('LIVE with its deletion protection still off');

@@ -44,7 +44,6 @@ import { CloudFrontDistributionProvider } from '../../../src/provisioning/provid
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -315,14 +314,14 @@ describe('CloudFrontDistributionProvider', () => {
 
     // Issue #3136: the distribution id is AWS-minted (off the create
     // response) and still routed through `pasteableAwsCommand` at both wait
-    // hints — quoted, or withheld when it cannot be printed exactly.
-    it('the default-path wait hint quotes a forged distribution id, or withholds it', async () => {
+    // hints — withheld when it cannot be printed exactly or holds a character that changes it once
+    // unquoted (go-to-k/cdkd#3950).
+    it('the default-path wait hint withholds a forged distribution id', async () => {
       mockSend.mockResolvedValueOnce({ Distribution: { Id: `E1${FORGED_QUOTE}`, DomainName: 'd' } });
       await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', createInput);
-      expectQuotedAfter(
+      expectWithheld(
         childLogger.info.mock.calls.map((c) => String(c[0])).join('\n'),
-        'aws cloudfront wait distribution-deployed --id ',
-        `E1${FORGED_QUOTE}`
+        'aws cloudfront wait'
       );
 
       childLogger.info.mockClear();
@@ -334,7 +333,7 @@ describe('CloudFrontDistributionProvider', () => {
       );
     });
 
-    it('the --full-wait timeout hint quotes a forged distribution id', async () => {
+    it('the --full-wait timeout hint withholds a distribution id carrying a shell-active character', async () => {
       process.env['CDKD_FULL_WAIT'] = 'true';
       const id = `E1${FORGED_QUOTE}`;
       mockSend.mockResolvedValueOnce({ Distribution: { Id: id, DomainName: 'd' } });
@@ -355,7 +354,7 @@ describe('CloudFrontDistributionProvider', () => {
       }
       const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warn).toContain('did not reach Deployed');
-      expectQuotedAfter(warn, 'aws cloudfront wait distribution-deployed --id ', id);
+      expectWithheld(warn, 'aws cloudfront wait');
     });
 
     it('the --full-wait timeout hint withholds a distribution id carrying a control byte', async () => {

@@ -53,7 +53,6 @@ import { getLogger } from '../../../src/utils/logger.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -832,12 +831,15 @@ describe('IAMManagedPolicyProvider partial-create manual-cleanup commands (issue
     return warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('Manual deletion'))!;
   }
 
-  it('shell-quotes a forged ARN in every command', async () => {
-    const arn = `arn:aws:iam::123456789012:policy/$(id)/${FORGED_QUOTE}`;
-    const msg = await warnFor(arn);
-    expectQuotedAfter(msg, 'aws iam list-entities-for-policy --policy-arn ', arn);
-    expectQuotedAfter(msg, 'aws iam list-policy-versions --policy-arn ', arn);
-    expectQuotedAfter(msg, 'aws iam delete-policy --policy-arn ', arn);
+  it('renders a clean ARN bare in every command, and withholds every command for a forged one', async () => {
+    const clean = await warnFor(ARN);
+    expect(clean).toContain(`aws iam list-entities-for-policy --policy-arn ${ARN}`);
+    expect(clean).toContain(`aws iam list-policy-versions --policy-arn ${ARN}`);
+    expect(clean).toContain(`aws iam delete-policy --policy-arn ${ARN}`);
+
+    // A shell-active character withholds them (go-to-k/cdkd#3950).
+    warn.mockClear();
+    expectWithheld(await warnFor(`arn:aws:iam::123456789012:policy/$(id)/${FORGED_QUOTE}`), '--policy-arn');
   });
 
   it('withholds every command for an ARN carrying a control byte', async () => {
