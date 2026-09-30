@@ -319,16 +319,18 @@ function runUnder(
  */
 export function expectZshRunsTheDisplay(message: string, dir: string, value: string): void {
   const ran: string[] = [];
-  const lineRuns = new Map<string, readonly string[]>();
+  const lineDoes = new Map<string, boolean>();
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, { shells: ['zsh'] });
-    if (run.touched.length === 0) continue;
     if (span.includes('\n')) {
       // Judged against its lines, and not counted as the display running:
       // the display's own line is a span of its own (go-to-k/cdkd#4133).
-      expectNoMoreThanItsLines(span, run.touched, dir, { shells: ['zsh'] }, lineRuns);
+      if (run.touched.length > 0 || run.verbRan) {
+        expectNoMoreThanItsLines(span, dir, { shells: ['zsh'] }, lineDoes);
+      }
       continue;
     }
+    if (run.touched.length === 0) continue;
     ran.push(span);
     // What ran is the DISPLAY: no stubbed verb, and the span holds the value
     // (raw or JSON-escaped), so a run caused by something else in the message
@@ -347,34 +349,45 @@ export function expectZshRunsTheDisplay(message: string, dir: string, value: str
 }
 
 /**
- * A MULTI-LINE span that ran is judged against its own lines
+ * A MULTI-LINE span that did anything is judged against its own lines
  * (go-to-k/cdkd#4133, the round-3 ruling that a block is a line): pasting the
- * lines together may run only what pasting each line alone runs. Every line is
- * itself a span and takes the single-line checks, so a legitimate command on a
- * line of its own may run here (its stub marker is not refused), while a file
- * only the JOINED input touches (a quote one line opens closing on another)
- * is refused. `lineRuns` caches each line's own run for the caller's loop.
+ * lines together may do only what pasting each line alone does. Every line is
+ * itself a span and takes the single-line checks, so here each line that does
+ * something on its own (a display that runs, a legitimate command on a line of
+ * its own) is replaced by `:` and the joined rest is pasted again: it must
+ * touch nothing and run no stubbed verb. Comparing file NAMES instead would
+ * let a join that runs `touch OWNED` hide behind a display line that creates
+ * the same `OWNED` alone, and a verb only the join invokes would not show.
+ *
+ * Bound: a line that runs alone yet leaves its own quote open (a command
+ * before an unterminated quote, or a bash `#` comment holding an apostrophe)
+ * is replaced whole, which can close the straddle it took part in; that line
+ * still takes the single-line checks. `lineDoes` caches each line's own run
+ * for the caller's loop.
  */
 function expectNoMoreThanItsLines(
   span: string,
-  touched: readonly string[],
   dir: string,
   options: PasteRunOptions,
-  lineRuns: Map<string, readonly string[]>
+  lineDoes: Map<string, boolean>
 ): void {
-  const byLines = new Set<string>();
-  for (const line of span.split('\n')) {
-    let lineTouched = lineRuns.get(line);
-    if (lineTouched === undefined) {
-      lineTouched = spanRun(line, dir, options).touched;
-      lineRuns.set(line, lineTouched);
-    }
-    for (const f of lineTouched) byLines.add(f);
-  }
+  const rest = span
+    .split('\n')
+    .map((line) => {
+      let does = lineDoes.get(line);
+      if (does === undefined) {
+        const run = spanRun(line, dir, options);
+        does = run.touched.length > 0 || run.verbRan;
+        lineDoes.set(line, does);
+      }
+      return does ? ':' : line;
+    })
+    .join('\n');
+  const run = spanRun(rest, dir, options);
   expect(
-    touched.filter((f) => !byLines.has(f)),
+    { touched: run.touched, verbRan: run.verbRan },
     `pasting these lines together runs more than pasting each alone: ${span}`
-  ).toEqual([]);
+  ).toEqual({ touched: [], verbRan: false });
 }
 
 /** Every span of `message` ({@link segmentsOf}) that touched a file. */
@@ -460,15 +473,16 @@ export function expectOnlyDisplayResidual(
  */
 export function expectRuntimeResidual(message: string, dir: string, value: string): string[] {
   const ran: string[] = [];
-  const lineRuns = new Map<string, readonly string[]>();
+  const lineDoes = new Map<string, boolean>();
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, {});
-    if (run.touched.length === 0) continue;
-    ran.push(span);
-    if (span.includes('\n')) {
-      expectNoMoreThanItsLines(span, run.touched, dir, {}, lineRuns);
+    if (span.includes('\n') && (run.touched.length > 0 || run.verbRan)) {
+      expectNoMoreThanItsLines(span, dir, {}, lineDoes);
+      if (run.touched.length > 0) ran.push(span);
       continue;
     }
+    if (run.touched.length === 0) continue;
+    ran.push(span);
     // The marker a stubbed verb writes when it is INVOKED, under either shell.
     expect(run.verbRan, `a span that ran also ran a stubbed cdkd / aws: ${span}`).toBe(false);
     // The value must sit INSIDE a paired JSON span: strip every properly

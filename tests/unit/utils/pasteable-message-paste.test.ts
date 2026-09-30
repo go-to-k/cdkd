@@ -400,6 +400,18 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       expect(() => expectRuntimeResidual(joinedOnly, dir, hostile)).toThrow(
         /runs more than pasting each alone/
       );
+      // The join's run cannot hide behind a line that creates the SAME file
+      // alone: the display line creates `OWNED`, and the join runs the last
+      // line's own `touch OWNED` once the apostrophes pair around the display.
+      const sameName = `The owner's record\nStack "${hostile}" is gone.\nholds it's; touch OWNED`;
+      expect(() => expectRuntimeResidual(sameName, dir, hostile)).toThrow(
+        /runs more than pasting each alone/
+      );
+      // Nor a VERB only the join invokes.
+      const joinedVerb = `Stack "${hostile}" gone.\nThe owner's record\nholds it's; cdkd destroy --force`;
+      expect(() => expectRuntimeResidual(joinedVerb, dir, hostile)).toThrow(
+        /runs more than pasting each alone/
+      );
       // A verb only ZSH runs (go-to-k/cdkd#4127 review M4): the trailing
       // `x(N)` is a bash syntax error, so bash runs nothing, while zsh reads a
       // glob qualifier and runs both the substitution and the verb. The
@@ -437,7 +449,10 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         expect(() =>
           expectZshRunsTheDisplay(`cdkd deploy "${hostile}" x(N)`, dir, hostile)
         ).toThrow(/also ran a stubbed cdkd/);
-        // The multi-line judgement holds in the zsh reason too.
+        // The multi-line judgement holds in the zsh reason too: a command on
+        // a line of its own is accepted, and a file only the join touches is
+        // refused.
+        expectZshRunsTheDisplay(`Nothing for "${hostile}" (us-east-1).\n  cdkd state list`, dir, hostile);
         expect(() =>
           expectZshRunsTheDisplay(
             `The owner's record\nholds "${hostile}" (us-east-1) and it's gone; touch OTHER`,
