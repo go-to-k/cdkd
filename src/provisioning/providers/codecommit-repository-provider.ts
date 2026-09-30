@@ -965,7 +965,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           `shows its id, ARN, description and creation date), and re-adopt it only then; ` +
           `otherwise choose a RepositoryName no other repository holds.\nRe-adopt with:\n` +
           // Unwrapped, on its own line, last; every value through the shared
-          // gate (a hole when it cannot be printed exactly).
+          // gate (a hole when it cannot be printed exactly, or is not inert
+          // with its quotes stripped, go-to-k/cdkd#4205). The joining `=` is
+          // mid-word, which the measured predicate admits.
           pasteableCommand('cdkd import', [
             { hole: 'stack' },
             {

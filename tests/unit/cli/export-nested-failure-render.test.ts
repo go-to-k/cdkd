@@ -13,7 +13,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import {
+  OPERATOR_FLIP,
+  PASTE_PAYLOADS,
+  filesTouchedBy,
+  segmentsOf,
+  spanRun,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
+
+/**
+ * The files go-to-k/cdkd#4230's hole inversion creates or truncates (see its
+ * case): each a `>` target spelled from cdkd's OWN text around a quoted hole,
+ * its apostrophes consumed by the shell's quoting. Sorted, as the case sorts.
+ */
+const KNOWN_4230: string[] = [
+  '\n  For the record targeting CloudFormation stack ChildBCfn: The next lines',
+  '\n  cdkd state orphan Root~B --stack-region us-east-1\nOnce this stacks',
+  '\nOnce this stacks',
+  ' --stack-region ',
+];
 import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
@@ -298,6 +318,60 @@ describe('Phase 1A: the Cause line renders the waiter rethrow through displayAws
   });
 });
 
+describe('Phase 1A with nothing imported names no shell-active stack in its two commands (go-to-k/cdkd#4205)', () => {
+  it('holes a payload root name in both commands, and no pasted span runs', async () => {
+    // cdkd's own text on these lines carries no unpaired apostrophe; the flip
+    // comes from AWS's text in the `Cause:` line, which can hold a `'` (here
+    // planted: `the stack's changeset`), or from whatever the operator selects
+    // above the message. Either flips the quote parity of a shell-quoted name
+    // in `list-stack-resources --stack-name` or `cdkd export` once the lines
+    // are pasted as one block. The payload rides the cdkd name (with a valid
+    // CloudFormation override) and the override itself.
+    const messages: Array<[string, string]> = [];
+    // The payload as the cdkd name (with a valid CloudFormation override, as
+    // the name check requires) and as the override itself.
+    const shapes = PASTE_PAYLOADS.flatMap(({ label, value }) => [
+      { label: `${label} cdkd name`, value, cfn: 'RootCfn' },
+      { label: `${label} cfn override`, value: 'Root', cfn: value },
+    ]);
+    for (const { label, value, cfn } of shapes) {
+      waitChangeSetCreate.mockRejectedValue(new Error("the stack's changeset was rejected"));
+      const tree: CdkdStateStackTree = {
+        stackName: value,
+        region: 'us-east-1',
+        state: state(value, { MyBucket: bucket('b1') }),
+        nestedChildren: new Map(),
+      };
+      const message = await runPerStackImportLoop({
+        lockRecovery: {},
+        rootStackName: value,
+        rootRegion: 'us-east-1',
+        rootStackInfoNestedTemplates: {},
+        rootTemplateFormat: 'json',
+        tree,
+        rootTemplate: { Resources: { MyBucket: { Type: 'AWS::S3::Bucket', Properties: {} } } },
+        cfnStackNameOverrides: { root: cfn, childMap: new Map() },
+        rootParameters: [],
+        deps: deps(cfnClient({ describeChangeSetThrows: true })),
+        options: OPTIONS,
+      }).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      const stackName = cfn === 'RootCfn' ? 'RootCfn' : "'<stack-name>'";
+      const root = value === 'Root' ? 'Root' : "'<stack>'";
+      expect(message, label).toContain(
+        `\n  aws cloudformation list-stack-resources --stack-name ${stackName}\n` +
+          `then delete it, and re-run with: cdkd export ${root}`
+      );
+      messages.push([label, message]);
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+    });
+  }, 120_000);
+});
+
 describe('Phase 1A failing after a stack was imported gives the whole-tree recovery (go-to-k/cdkd#3910)', () => {
   let tmp: string;
   beforeEach(() => {
@@ -447,7 +521,7 @@ describe('Phase 1A failing after a stack was imported gives the whole-tree recov
         'the same way:'
     );
     expect(err.message).not.toContain('must also adopt');
-    expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(err.message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
   });
 });
 
@@ -571,7 +645,7 @@ describe('the nested pre-delete renders its failure like the single-stack path',
     );
     // The recovery a partly migrated tree needs: what moved, what did not,
     // that re-running does not resume it, and the record clean-up.
-    expect(err.message).toContain('Stacks IMPORTed so far (each CFn-managed): Root → Root.');
+    expect(err.message).toContain("Stacks IMPORTed so far (each CFn-managed): 'Root' → 'Root'.");
     expect(err.message).toContain(
       'Re-running cdkd export is refused for the whole tree'
     );
@@ -839,7 +913,7 @@ describe('a nested pre-delete failure in a child names the stacks after it', () 
       (e: unknown) => e as Error
     );
     expect(err.message).toContain('pre-delete of ChildPolicy');
-    expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(err.message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
     expect(err.message).toContain('"Nest an existing stack"');
     // The clean-up names the FAILED stack, not the first one in the loop.
     expect(err.message).toMatch(
@@ -920,7 +994,7 @@ describe('a nested pre-delete failure in the ROOT, after its child was imported'
       (e: unknown) => e as Error
     );
     expect(err.message).toContain('pre-delete of RootPolicy');
-    expect(err.message).toContain('Root~Child → Root-Child');
+    expect(err.message).toContain("'Root~Child' → 'Root-Child'");
     expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): (none).');
     // The child finished phase 2 and still holds cdkd state: its clean-up is
     // given too, or a later `cdkd destroy Root` deletes CFn-managed resources.
@@ -1199,7 +1273,7 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
       /clean up its record the same way:\n {2}cdkd state orphan '?Root~Child'? --stack-region '?us-east-1'?\n/
     );
     // Root was never imported.
-    expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(err.message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
     expect(err.message).toContain('"Nest an existing stack"');
     // No failure points at another message the operator never saw (go-to-k/cdkd#3988).
     expect(err.message).toContain('"Nest an existing stack" procedure.');
@@ -1285,7 +1359,7 @@ describe('a failure in the MIDDLE of a 3-stack tree gives the whole-tree recover
         'of IMPORT_COMPLETE, for the adoption by its parent) succeed by hand, clean up its record ' +
         "the same way:\n  cdkd state orphan 'Root~Child' --stack-region us-east-1\n"
     );
-    expect(message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
     // The by-hand IMPORT of the root is described, without pointing the
     // reader at "the Phase 1B adoption failure message": this is that message.
     expect(message).toContain('"Nest an existing stack" procedure.');
@@ -1905,6 +1979,38 @@ describe('the nested resume tail notes each withheld orphan command above it (go
     expect(lines[lines.indexOf(noteLine('Root-A')) + 1]).toBe(HOLES);
   });
 
+  it('the not-yet-imported list names no payload stack raw, and its clause runs nothing (go-to-k/cdkd#4205)', async () => {
+    // The list printed each cdkd name through the raw `safeSegment`, so
+    // selecting the clause after `Stacks not yet imported (still
+    // cdkd-managed): ` ran a planted name with no flip at all. Failing at the
+    // SECOND changeset leaves the root not yet imported, and a payload root
+    // name (with a valid CloudFormation override) is the one listed.
+    const lines: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      waitChangeSetCreate.mockReset();
+      const message = (await runTree({ A: 'us-east-1', B: 'us-east-1' }, 2, { root: `R${value}` })).message;
+      const line = message.split('\n').find((l) => l.includes('Stacks not yet imported'));
+      expect(line, label).toBeDefined();
+      expect(line, label).toContain(
+        'Stacks not yet imported (still cdkd-managed): (not shown: it is not a plain identifier).'
+      );
+      lines.push([label, line!]);
+    }
+    // `quotedOrNotShown` holds the one predicate too: `displayIdent` renders
+    // `=Root` and `~root` plain, but neither is inert unquoted (zsh's `=cmd`,
+    // tilde expansion), so each is described rather than quoted.
+    for (const name of ['=Root', '~root']) {
+      waitChangeSetCreate.mockReset();
+      const message = (await runTree({ A: 'us-east-1', B: 'us-east-1' }, 2, { root: name })).message;
+      expect(message, name).toContain(
+        'Stacks not yet imported (still cdkd-managed): (not shown: it is not a plain identifier).'
+      );
+    }
+    withPasteDir((dir) => {
+      for (const [label, line] of lines) expect(spansThatRun(line, dir), label).toEqual([]);
+    });
+  }, 120_000);
+
   it('phase 1B: pastes nothing runnable from the tail for payload names and regions, named or withheld', async () => {
     const messages: string[] = [];
     for (const { value } of PASTE_PAYLOADS) {
@@ -1923,13 +2029,46 @@ describe('the nested resume tail notes each withheld orphan command above it (go
       }
     }
     withPasteDir((dir) => {
+      const flipOutcomes: Array<{ touched: string[]; verbRan: boolean }> = [];
       for (const message of messages) {
         const at = message.indexOf('Re-running cdkd export');
         expect(at, message).toBeGreaterThan(-1);
         const tail = message.slice(at);
         expect(tail).toContain('cdkd state orphan');
-        expect(spansThatRun(tail, dir), message).toEqual([]);
+        // Every span INSIDE the message stays strict.
+        for (const span of segmentsOf(tail)) {
+          if (span.startsWith(OPERATOR_FLIP)) {
+            // The files are the RAW span's. The verb is judged with each line
+            // that runs a command ON ITS OWN set aside (the remedy lines the
+            // operator is meant to paste, as the harness's lines judgement
+            // does), so `verbRan` answers whether the FLIP made a verb run
+            // that pasting the lines one by one would not.
+            const { touched } = spanRun(span, dir, {});
+            const judged = span
+              .split('\n')
+              .map((line) => {
+                const alone = spanRun(line, dir, {});
+                return alone.verbRan || alone.touched.length > 0 ? ':' : line;
+              })
+              .join('\n');
+            const { verbRan } = spanRun(judged, dir, {});
+            if (touched.length > 0 || verbRan) flipOutcomes.push({ touched, verbRan });
+            continue;
+          }
+          expect(filesTouchedBy(span, dir), span).toEqual([]);
+        }
       }
+      // CLASSIFIED residual, go-to-k/cdkd#4230: behind the OPERATOR_FLIP (text
+      // above the message with an unpaired `'`), the note line's apostrophes
+      // (`line's`, `record's`) leave the parity odd at `cdkd state orphan
+      // '<stack>' --stack-region '<region>'`, so the quoted holes invert:
+      // `<stack` reads the `stack` file and `>` truncates a file named by
+      // cdkd's own next word. No planted value is involved, and no stubbed verb
+      // runs beyond the command lines cdkd prints to be run. Pinned EXACTLY,
+      // so #4230's hole spelling flips it red.
+      expect(flipOutcomes.length).toBeGreaterThan(0);
+      expect([...new Set(flipOutcomes.flatMap((o) => o.touched))].sort()).toEqual(KNOWN_4230);
+      expect(flipOutcomes.some((o) => o.verbRan)).toBe(false);
     });
   }, 120_000);
 
@@ -2145,7 +2284,7 @@ describe('every failure after a Phase 1A IMPORT gives the recovery, and names on
       `Once this stack's ${FLIP_STEP} succeeds by hand, clean up its record the same way:\n` +
         "  cdkd state orphan 'Root~Child' --stack-region us-east-1\n"
     );
-    expect(message).toContain('Stacks not yet imported (still cdkd-managed): Root.');
+    expect(message).toContain("Stacks not yet imported (still cdkd-managed): 'Root'.");
   });
 
   it('B: a failed read of a MIDDLE stack right after its IMPORT still asks for its adoption', async () => {

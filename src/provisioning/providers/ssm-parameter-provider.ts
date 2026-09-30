@@ -403,8 +403,9 @@ export class SSMParameterProvider implements ResourceProvider {
           const manualStep = deleteCommand
             ? `Manual deletion may be required before the next deploy: ${deleteCommand}`
             : 'Manual deletion may be required before the next deploy, via the console: the ' +
-              'parameter name cannot be reproduced safely on a command line, and a command ' +
-              'naming the sanitized form would delete a DIFFERENT parameter.';
+              'parameter name cannot be reproduced safely on a command line: a command naming ' +
+              'the sanitized form would delete a DIFFERENT parameter, and one naming a name ' +
+              'that is not inert unquoted could run part of it as shell.';
           warn(
             `Failed to clean up partially-created SSM parameter ${displaySafe(logicalId)} (${displaySafe(mask(name))}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
           );

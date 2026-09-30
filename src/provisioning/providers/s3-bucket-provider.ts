@@ -154,8 +154,8 @@ function manualBucketDeletionClause(bucketName: string, maskSecrets: MaskerFn): 
   return command
     ? `Manual deletion may be required before the next deploy: ${command}`
     : 'Manual deletion may be required before the next deploy, via the console: the bucket name ' +
-        'cannot be reproduced safely on a command line, so any command shown here would act on a ' +
-        'different bucket.';
+        'cannot be reproduced safely on a command line, so any command shown here could act on a ' +
+        'different bucket or run part of the name as shell.';
 }
 
 /**

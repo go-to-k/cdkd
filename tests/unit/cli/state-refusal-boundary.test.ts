@@ -25,6 +25,7 @@ import {
   expectZshRunsTheDisplay,
   itUnderZsh,
   spansThatRun,
+  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -204,6 +205,8 @@ describe('resolveSingleRegion refusals (go-to-k/cdkd#3179, go-to-k/cdkd#3950)', 
           refusal(() => resolveSingleRegion(value, refs, 'eu-west-1')),
           refusal(() => resolveSingleRegion(value, refs, undefined)),
         ]) {
+          // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+          // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
           expectOnlyDisplayResidual(message, dir, value);
         }
       }
@@ -273,6 +276,8 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
           expect(message.split('\n'), value).toContain(
             "Run 'cdkd state list' to see available stacks."
           );
+          // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+          // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
           expectOnlyDisplayResidual(message, dir, value);
         }
       });
@@ -376,7 +381,10 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
       const messages = await hostileSkipLines();
       withPasteDir((dir) => {
         for (const { value, message } of messages) {
-          expect(spansThatRun(message, dir, { shells: ['bash'] }), value).toEqual([]);
+          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
+          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
+          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
+          expect(spansThatRunBesideTheDisplay(message, dir, value, { shells: ['bash'] }), value).toEqual([]);
         }
       });
     }, 120_000);

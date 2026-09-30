@@ -1,4 +1,4 @@
-import { shellQuote } from '../state/lock-contention-message.js';
+import { isInertUnquoted, pasteableCommand } from '../utils/pasteable-command.js';
 import { getCurrentStackName, looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';
 import type { ChangeType } from '../types/state.js';
 import { displaySafe } from '../utils/display-safe.js';
@@ -161,6 +161,17 @@ export function orphanedNameCollisionAdvice(
   const safeId = displaySafe(physicalId, { asciiOnly: true });
   const safeStack = displaySafe(stackName, { asciiOnly: true });
   const safeLogicalId = displaySafe(logicalId, { asciiOnly: true });
+  // The PROSE names each only while its sanitized spelling is inert with its
+  // quotes stripped, and DESCRIBES it otherwise (go-to-k/cdkd#4205): printed
+  // bare, a `;` runs, and inside `displayIdent`'s JSON quotes a `$( )` or a
+  // backtick still runs when the clause is pasted (the display residual
+  // go-to-k/cdkd#3950 tracks), so a description, which runs nothing, is the
+  // spelling for anything else.
+  const idShown = isInertUnquoted(safeId);
+  const shownId = idShown ? safeId : 'a name that cannot be shown safely here';
+  const shownLogicalId = isInertUnquoted(safeLogicalId)
+    ? safeLogicalId
+    : 'A resource whose logical id cannot be shown safely here';
 
   // The CloudFormation comparison is stated as a DIFFERENCE, not a
   // similarity, and that is the correction this wording carries. Both engines
@@ -177,7 +188,7 @@ export function orphanedNameCollisionAdvice(
   // which is why the sentence says "unnamed" rather than claiming CFn never
   // collides.)
   const diagnosis =
-    `${safeLogicalId}: the name AWS reports as taken (${safeId}) is one cdkd DERIVED from ` +
+    `${shownLogicalId}: the name AWS reports as taken (${shownId}) is one cdkd DERIVED from ` +
     `the logical id, and that derivation has no random component — so this is most likely a ` +
     `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
     `DeletionPolicy: Retain in AWS and drops it from state, as CloudFormation does; what ` +
@@ -185,7 +196,7 @@ export function orphanedNameCollisionAdvice(
     `and redeploy clean, whereas cdkd asks again for the name the orphan still holds — so ` +
     `re-running does not clear this.`;
   const deleteArm =
-    `If it is not a resource you want to keep, delete ${safeId} in AWS — after ` +
+    `If it is not a resource you want to keep, delete ${idShown ? safeId : 'it'} in AWS — after ` +
     `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`;
 
   // Only advise `cdkd import` for a type that can actually be imported.
@@ -221,11 +232,11 @@ export function orphanedNameCollisionAdvice(
   // DIFFERENT questions, and an earlier revision of this comment got the
   // second one wrong:
   //
-  // - `shellQuote` makes the command SAFE TO RUN. It single-quotes anything
-  //   outside a conservative safe set and escapes embedded quotes, so a `$()`
-  //   payload — which `looksLikeCdkdGeneratedName` admits, its skeleton
-  //   stripping every non-alphanumeric before comparing — pastes as an inert
-  //   literal. `=` is outside that set, so the argument is always quoted.
+  // - The shared gate makes the command SAFE TO RUN. A `$()` payload —
+  //   which `looksLikeCdkdGeneratedName` admits, its skeleton stripping every
+  //   non-alphanumeric before comparing — is not inert with its quotes
+  //   stripped, so it prints as a quoted hole (go-to-k/cdkd#4205); quoting it
+  //   held only while the quote parity before the command was even.
   // - Comparing the SANITISED value against the original decides whether the
   //   command would name the RIGHT RESOURCE. It is not about printing: the
   //   prose above already prints the sanitised name in every branch. When
@@ -253,12 +264,26 @@ export function orphanedNameCollisionAdvice(
     return `${diagnosis} ${why}, so the way forward is to delete it. ${deleteArm}`;
   }
 
+  // Through the shared gate, on a line of its OWN and last (go-to-k/cdkd#4205):
+  // inlined in the sentence, a `shellQuote`d stack name (from the assembly,
+  // unvalidated) or id ran once the quote parity before it flipped. A value
+  // that is not inert with its quotes stripped is a quoted hole.
+  const adopt = pasteableCommand('cdkd import', [
+    { value: stackName, hole: 'stack' },
+    { flag: '--resource', value: `${logicalId}=${physicalId}`, hole: 'logicalId=physicalId' },
+  ]);
+  const holeNote =
+    adopt.withheld.length === 0
+      ? ''
+      : ` The command below prints a quoted hole in place of a value cdkd will not name on a ` +
+        `command line; replace it whole, quotes included, with your stack name or ` +
+        `'<logicalId>=<name>', shell-quoted.`;
   return (
-    `${diagnosis} To recover, adopt it back into state instead of re-creating it: ` +
-    `cdkd import ${shellQuote(safeStack)} --resource ${shellQuote(`${safeLogicalId}=${safeId}`)} ` +
-    `(a selective import merges into existing state and needs no --force while the resource ` +
-    `is absent from it). CONFIRM IT IS YOURS FIRST — a name cdkd derives is predictable, so ` +
-    `for a globally-namespaced type it can belong to another account, and the same stack ` +
-    `deployed in another region derives the same name. ${deleteArm}`
+    `${diagnosis} To recover, adopt it back into state instead of re-creating it, with the ` +
+    `command below (a selective import merges into existing state and needs no --force while ` +
+    `the resource is absent from it). CONFIRM IT IS YOURS FIRST — a name cdkd derives is ` +
+    `predictable, so for a globally-namespaced type it can belong to another account, and ` +
+    `the same stack deployed in another region derives the same name. ${deleteArm}` +
+    `${holeNote}\nAdopt with: ${adopt.command}`
   );
 }

@@ -44,8 +44,13 @@ import {
   expectRuntimeResidual,
   expectOnlyDisplayResidual,
   expectZshRunsTheDisplay,
+  OPERATOR_FLIP,
+  checkedDisplays,
   filesTouchedBy,
+  lineStarts,
+  segmentsOf,
   spansThatRun,
+  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from './paste-harness.js';
 
@@ -86,13 +91,16 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         message:
           `This record's name could not be read — inspect the object at that key.` +
           `\nInspect it with: ${gated.command}`,
-        expects: `\nInspect it with: cdkd state show ${shellQuote(payload)} --stack-region us-east-1`,
+        // Every payload is shell-active, so the gate HOLES it (go-to-k/cdkd#4205):
+        // quoted, the separator payload ran once `record's` above and the
+        // command were pasted as one block.
+        expects: `\nInspect it with: cdkd state show '<stack>' --stack-region us-east-1`,
       },
       {
         // The same, with the REGION as the hostile value.
         label: 'gated region',
         message: `The stack's region doesn't render exactly.\nInspect it with: ${exact.command}`,
-        expects: `\nInspect it with: cdkd state show MyStack --stack-region ${shellQuote(payload)}`,
+        expects: `\nInspect it with: cdkd state show MyStack --stack-region '<region>'`,
       },
       {
         // A hole-only command, which is what a fully withheld site prints.
@@ -105,7 +113,8 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       },
       {
         // The real builders hold both values to `plainIdent`, so a payload is
-        // a HOLE there where the synthetic gate above names it shell-quoted.
+        // a HOLE there too, for the `not-plain` reason rather than
+        // `shell-active`.
         label: 'malformedOutputsWarning',
         message: malformedOutputsWarning(payload, 'us-east-1'),
         expects: ` with: cdkd state show '<stack>' --stack-region us-east-1 --json`,
@@ -127,19 +136,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
           expect(message, `${site} did not render the command this case expects`).toContain(
             expects
           );
-          // KNOWN VIOLATION, go-to-k/cdkd#4205: `pasteableCommand` names the
-          // separator payload shell-quoted, and `record's` on the line above
-          // flips the quote parity when both lines are pasted as one block
-          // (go-to-k/cdkd#4133), so the payload's `;` runs as bare shell under
-          // bash. Pinned to exactly that two-line span; #4205's fix withholds
-          // the value and removes this arm.
-          const known4205 = site === 'gated stack' && label === 'separator';
-          expect(spansThatRun(message, dir, { shells: ['bash'] }), `${label} ran in ${site}`).toEqual(
-            known4205 ? [message] : []
-          );
-          if (PASTE_SHELLS.includes('zsh')) {
-            expect(spansThatRun(message, dir, { shells: ['zsh'] }), `${label} ran in ${site} (zsh)`).toEqual([]);
-          }
+          expect(spansThatRun(message, dir), `${label} ran in ${site}`).toEqual([]);
         }
       });
     }, 120_000);
@@ -239,6 +236,108 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       const four = `Found 2 resource record(s)\n${block}`;
       expect(filesTouchedBy(four, dir, BASH_ONLY), 'the four-line message must be inert').toEqual([]);
       expect(spansThatRun(four, dir, BASH_ONLY)).toEqual([block]);
+    });
+  }, 120_000);
+
+  it('pastes the message after text ABOVE it that holds an unpaired quote (OPERATOR_FLIP, go-to-k/cdkd#4205)', () => {
+    withPasteDir((dir) => {
+      // A shell-quoted value with no apostrophe anywhere in the message: every
+      // span INSIDE the message is inert, and only the flip, text the operator
+      // selects above the message, turns the quote inside out.
+      const message = `Nothing matched.\nInspect it with: cdkd state show ${shellQuote('x; touch OWNED; #')}`;
+      const flipped = `${OPERATOR_FLIP}\n${message}`;
+      for (const span of segmentsOf(message)) {
+        if (span.startsWith(OPERATOR_FLIP)) continue;
+        expect(filesTouchedBy(span, dir), span).toEqual([]);
+      }
+      expect(segmentsOf(message).has(flipped)).toBe(true);
+      expect(spansThatRun(message, dir)).toEqual([flipped]);
+      // Every prefix ending at a line end is flipped, and nothing else.
+      const three = 'a\nb\nc';
+      expect([...segmentsOf(three)].filter((s) => s.startsWith(OPERATOR_FLIP))).toEqual([
+        `${OPERATOR_FLIP}\na`,
+        `${OPERATOR_FLIP}\na\nb`,
+        `${OPERATOR_FLIP}\na\nb\nc`,
+      ]);
+      // The classified display residual: a JSON-bounded display of a value
+      // holding `'` runs under the flip (go-to-k/cdkd#3950), which the
+      // beside-the-display variant sets aside...
+      // `;` is literal inside the JSON quotes, so the display is inert on
+      // every in-message span and runs only under the flip.
+      const v = "x'; touch OWNED; #";
+      const display = `No stack ${JSON.stringify(v)} was found.`;
+      expect(spansThatRun(display, dir)).toEqual([`${OPERATOR_FLIP}\n${display}`]);
+      expect(spansThatRunBesideTheDisplay(display, dir, v)).toEqual([]);
+      // ...while a command naming the SAME value it displays still reds beside
+      // it. The separator family, because a single flip makes only a `'`-free
+      // value's shell-quoted spelling run (see OPERATOR_FLIP).
+      const sep = 'x; touch OWNED; #';
+      const shown = `No stack ${JSON.stringify(sep)} was found.`;
+      expect(spansThatRunBesideTheDisplay(shown, dir, sep)).toEqual([]);
+      const commanded = `${shown}\nRun: cdkd deploy ${shellQuote(sep)}`;
+      expect(spansThatRunBesideTheDisplay(commanded, dir, sep)).toEqual([`${OPERATOR_FLIP}\n${commanded}`]);
+      // Only an EXACT display is set aside (go-to-k/cdkd#4205 review S-m5): a
+      // stray `"` earlier on the line re-pairs the quotes around a command
+      // naming the value, and matching on "the span contains the value" set
+      // that command aside too, though it runs under both shells.
+      const sub = 'x$(touch OWNED)';
+      const stray =
+        `Cause: AWS said "Invalid name; re-run with cdkd state show '${sub}' --json. ` +
+        `Stack ${JSON.stringify(sub)} was refused.\nThe record's copy is kept.`;
+      // The command's own `'` closes the operator's quote and `x$(touch OWNED)`
+      // is bare; the next line's apostrophe closes the rest, so the block parses.
+      expect(filesTouchedBy(`${OPERATOR_FLIP}\n${stray}`, dir)).toContain('OWNED');
+      expect(spansThatRunBesideTheDisplay(stray, dir, sub)).toContain(`${OPERATOR_FLIP}\n${stray}`);
+      // ...and a site cannot widen the set-aside by hand: a `displays` entry
+      // must be a JSON display OF the value and must not hold the spelling a
+      // command names it by (go-to-k/cdkd#4205 review).
+      const strayPair = /"(?:[^"\\]|\\.)*"/.exec(stray)![0];
+      expect(strayPair).toContain(shellQuote(sub));
+      expect(() => spansThatRunBesideTheDisplay(stray, dir, sub, {}, [strayPair])).toThrow(
+        /holds a command spelling of the value/
+      );
+      expect(() => spansThatRunBesideTheDisplay(stray, dir, sub, {}, ['"zzz"'])).toThrow(
+        /is not a JSON display of the value/
+      );
+      // A command quoting a larger word that holds the value (`'L=<v>'`) holds
+      // no `shellQuote(value)`; the quote and the verb outside the value refuse it.
+      const composite =
+        `Cause: AWS said "Invalid name; re-run with cdkd import --resource 'L=${sub}' --json. ` +
+        `Stack ${JSON.stringify(sub)} was refused.\nThe record's copy is kept.`;
+      const compositePair = /"(?:[^"\\]|\\.)*"/.exec(composite)![0];
+      expect(compositePair).not.toContain(shellQuote(sub));
+      expect(() => checkedDisplays(sub, [compositePair])).toThrow(/holds a command spelling/);
+      // A PLAIN value is its own shell-quoted spelling and is still accepted.
+      expect(checkedDisplays('Root', [JSON.stringify('cdkd/Root/state.json')])).toHaveLength(1);
+      expect(() => checkedDisplays(sub, ['not json'])).toThrow(/is not a JSON display/);
+      expect(checkedDisplays(sub, [JSON.stringify(`cdkd/${sub}/state.json`)])).toHaveLength(1);
+    });
+  }, 120_000);
+
+  it('starts a run of lines MID-LINE too, so a `(`-stopped line opening cannot hide a straddle (go-to-k/cdkd#4205 M1)', () => {
+    // BASH ONLY, for the reason the cases above give: the stop at `(` is
+    // bash's. Line one's OPENING is a syntax error on its own, so every run
+    // starting at the line start stops there; the clause after its `: ` opens
+    // a quote the next line closes, and only a run starting at that clause
+    // reaches the substitution.
+    const BASH_ONLY = { shells: ['bash'] } as const;
+    withPasteDir((dir) => {
+      const opens = "SkippedDelete (phys-1): the owner's record";
+      const closes = `holds the stack's value "x$(touch OWNED)".`;
+      const message = `${opens}\n${closes}`;
+      expect(filesTouchedBy(message, dir, BASH_ONLY), 'the whole block must be inert').toEqual([]);
+      expect(filesTouchedBy(opens, dir, BASH_ONLY)).toEqual([]);
+      expect(filesTouchedBy(closes, dir, BASH_ONLY)).toEqual([]);
+      const midLine = `the owner's record\n${closes}`;
+      expect(segmentsOf(message).has(midLine)).toBe(true);
+      expect(spansThatRun(message, dir, BASH_ONLY)).toEqual([midLine]);
+      // Each break the single-line splitter knows starts a run: a sentence
+      // break, and the three clause breaks.
+      for (const brk of ['. ', ': ', ' — ', ' -- ']) {
+        expect(lineStarts(`a (b)${brk}c`), JSON.stringify(brk)).toEqual([5 + brk.length]);
+      }
+      // ...and a break at the very end of a line starts nothing.
+      expect(lineStarts('a (b): ')).toEqual([]);
     });
   }, 120_000);
 
@@ -647,17 +746,15 @@ describe('pasteable messages — nothing runs at any granularity', () => {
     // the maintainer's go-to-k/cdkd#3486 round-3 finding (16 executing spans
     // in a revert-plan block), and the reason his criterion is per BLOCK: a
     // block that carries untrusted values carries no pasteable command, and
-    // what such a block DISPLAYS is go-to-k/cdkd#3232's class, not this
+    // what such a block DISPLAYS is the display residual go-to-k/cdkd#3950 tracks, not this
     // fence's. Measured here rather than asserted, so the line between the two
     // renderers cannot drift back into a comment.
     withPasteDir((dir) => {
       const hostile = 'x$(touch OWNED)';
 
-      // INSIDE a command: live through displayIdent, inert through the gate —
-      // and the difference is the QUOTE KIND, not withholding. This value
-      // renders exactly (printable ASCII, no leading `-`, no pattern
-      // character), so the gate NAMES it, shell-quoted; `shellQuote` is what
-      // makes `$( )` inert in argv.
+      // INSIDE a command: live through displayIdent, inert through the gate.
+      // Since go-to-k/cdkd#4205 the gate WITHHOLDS this value (it is not
+      // inert with its quotes stripped), so the command carries a hole.
       const viaDisplay =
         `Repair with: cdkd import ${commandHole('stack')} --resource ` +
         `${displayIdent(hostile, { maxCodePoints: 255 })}=${commandHole('physicalId')} --force`;
@@ -672,7 +769,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
           ]).command
         }=${commandHole('physicalId')} --force`;
       expect(filesTouchedBy(viaGate, dir), 'the gated form must be inert').toEqual([]);
-      expect(viaGate).toContain(`--resource 'x$(touch OWNED)'`);
+      expect(viaGate).toContain(`--resource '<logicalId>'`);
       expect(viaDisplay).toContain(`--resource "x$(touch OWNED)"`);
 
       // In PROSE, both ways a sentence can run. With no apostrophe the word

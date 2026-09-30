@@ -84,6 +84,7 @@ import {
   validateContainerRepoName,
   readBootstrapMarkerBody,
   AssetModeResolver,
+  assertAssetBucketRegion,
   type BootstrapMarker,
 } from '../../../src/assets/asset-storage.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -2330,4 +2331,147 @@ describe('a marker naming an invalid bucket or repository is malformed (go-to-k/
       `${head} It recorded container repository "org/it's"; storage under those names is no longer tracked by cdkd.`
     );
   });
+});
+
+describe('the bootstrap hints name no shell-active region (go-to-k/cdkd#4205)', () => {
+  // Each message below printed a planted region shell-quoted in its
+  // `Bootstrap with:` / `Tear it down with:` command. What flips the quote
+  // parity differs by message: `bucket's` in `assertAssetBucketRegion`'s
+  // remedy; `region's` in the name-conflict refusal; an AWS error that may
+  // carry a `'` in the auto-create warning; and in the legacy notice (whose
+  // only quotes are the paired `'cdk gc'`) nothing of cdkd's own, so there it
+  // is the text the operator pastes ABOVE the message, the harness's
+  // OPERATOR_FLIP. Three of them also wrapped the raw region in cdkd's own
+  // `'...'` in the prose itself, so `x'$(touch OWNED)` ran from that one line.
+  // A region reaches these from a stack's `env.region`, which a prebuilt cloud
+  // assembly can plant.
+  const run = (label: string, message: string, dir: string): void => {
+    expect(spansThatRun(message, dir), label).toEqual([]);
+  };
+
+  it('assertAssetBucketRegion: both refusals hole the region and run nothing pasted', async () => {
+    const messages: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      // The region ANSWERED by S3 differs from the one requested.
+      const foreign = await assertAssetBucketRegion(
+        { send: vi.fn() },
+        'shared-assets',
+        value,
+        ACCOUNT,
+        awsErrorInRegion('Unknown', 301, 'ap-northeast-1')
+      ).catch((e: Error) => e.message);
+      // No region header, and the probe cannot determine one.
+      const unknown = await assertAssetBucketRegion(
+        { send: vi.fn().mockRejectedValue(awsError('AccessDenied', 403)) },
+        'shared-assets',
+        value,
+        ACCOUNT,
+        awsError('Unknown', 400)
+      ).catch((e: Error) => e.message);
+      for (const [arm, message] of [
+        ['foreign', foreign],
+        ['unknown', unknown],
+      ] as const) {
+        expect(message, `${arm} ${label}`).toMatch(
+          /\nBootstrap with: cdkd bootstrap --region '<region>' --asset-bucket '<name>'$/
+        );
+        expect(message, `${arm} ${label}`).toContain('this deploy region');
+        messages.push([`${arm} ${label}`, message as string]);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) run(label, message, dir);
+    });
+  }, 120_000);
+
+  it('ensureAssetStorage: the name-conflict refusal holes the region and runs nothing pasted', async () => {
+    const messages: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      const message = await ensureAssetStorage({
+        s3Client: new S3Client({ region: REGION }) as S3Client,
+        ecrClient: new ECRClient({}) as ECRClient,
+        stateBackend: {
+          putRawObject: vi.fn(),
+          getRawObject: vi.fn().mockResolvedValue(JSON.stringify(validMarker())),
+        } as unknown as S3StateBackend,
+        accountId: ACCOUNT,
+        region: value,
+        force: false,
+        assetBucketName: 'my-org-cdkd-assets',
+      }).then(
+        () => '',
+        (e: Error) => e.message
+      );
+      expect(message, label).toContain('Region that is not a plain identifier is already bootstrapped');
+      expect(message, label).toMatch(/\nTear it down with: cdkd bootstrap --destroy --region '<region>'$/);
+      messages.push([label, message]);
+    }
+    // A plain region is still quoted in the prose and named in the command.
+    const plain = await ensureAssetStorage({
+      s3Client: new S3Client({ region: REGION }) as S3Client,
+      ecrClient: new ECRClient({}) as ECRClient,
+      stateBackend: {
+        putRawObject: vi.fn(),
+        getRawObject: vi.fn().mockResolvedValue(JSON.stringify(validMarker())),
+      } as unknown as S3StateBackend,
+      accountId: ACCOUNT,
+      region: REGION,
+      force: false,
+      assetBucketName: 'my-org-cdkd-assets',
+    }).then(
+      () => '',
+      (e: Error) => e.message
+    );
+    expect(plain).toContain(`Region '${REGION}' is already bootstrapped`);
+    expect(plain).toMatch(new RegExp(`\\nTear it down with: cdkd bootstrap --destroy --region ${REGION}$`));
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) run(label, message, dir);
+    });
+  }, 120_000);
+
+  it('AssetModeResolver: the legacy notice and the auto-create warning hole the region and run nothing pasted', async () => {
+    const messages: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      mockLoggerInfo.mockClear();
+      mockLoggerWarn.mockClear();
+      // The legacy notice: no marker, no auto-create.
+      await new AssetModeResolver(
+        { getRawObject: vi.fn().mockResolvedValue(null) } as unknown as S3StateBackend,
+        ACCOUNT
+      ).resolve(value);
+      const notice = mockLoggerInfo.mock.calls.map((c) => String(c[0])).find((m) => m.includes('cdk gc'));
+      expect(notice, label).toMatch(/\nBootstrap with: cdkd bootstrap --region '<region>'$/);
+      expect(notice, label).toContain('Assets for region that is not a plain identifier are published');
+      messages.push([`notice ${label}`, notice!]);
+      // The auto-create warning, with an AWS error whose text carries a `'`,
+      // the shape the issue marks conditional on AWS's wording.
+      mockS3Send.mockImplementation((cmd: { _type: string }) => {
+        if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+        if (cmd._type === 'CreateBucket') {
+          return Promise.reject(awsError("AccessDenied: the principal's policy denies it", 403));
+        }
+        return Promise.resolve({});
+      });
+      let stored: string | null = null;
+      await new AssetModeResolver(
+        {
+          getRawObject: vi.fn().mockImplementation(async () => stored),
+          putRawObject: vi.fn().mockImplementation(async (_k: string, b: string) => {
+            stored = b;
+          }),
+        } as unknown as S3StateBackend,
+        ACCOUNT,
+        { autoCreate: { confirm: vi.fn().mockResolvedValue(true) } }
+      ).resolve(value);
+      const warned = mockLoggerWarn.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes('Failed to auto-create cdkd asset storage'));
+      expect(warned, label).toMatch(/\nBootstrap with: cdkd bootstrap --region '<region>'$/);
+      expect(warned, label).toContain('for region that is not a plain identifier:');
+      messages.push([`auto-create ${label}`, warned!]);
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) run(label, message, dir);
+    });
+  }, 120_000);
 });

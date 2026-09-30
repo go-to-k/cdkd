@@ -31,7 +31,12 @@ import {
 // the builder could not have reached them here. Re-exported because this
 // module's own callers and `.claude/rules/lock-contention-message.md` name
 // this path.
-import { commandHole, pasteableCommand, shellQuote } from '../utils/pasteable-command.js';
+import {
+  commandHole,
+  isInertUnquoted,
+  pasteableCommand,
+  shellQuote,
+} from '../utils/pasteable-command.js';
 
 export { commandHole, shellQuote };
 import { DEFAULT_STATE_PREFIX } from './state-prefix.js';
@@ -226,7 +231,8 @@ export interface RecoveryCommandFlags {
   /** The flags, in `--profile` / `--state-bucket` / `--state-prefix` order. */
   flags: string[];
   /**
-   * False when any supplied fragment is one `displaySafe` would ALTER. Its flag
+   * False when any supplied fragment is one `displaySafe` would ALTER, or one
+   * that would not be inert with its quotes stripped (go-to-k/cdkd#4205). Its flag
    * is then a quoted {@link commandHole} (`'<profile>'` / `'<bucket>'` / `'<prefix>'`) rather than the value:
    * never the altered spelling (it names a different account or key space) and
    * never omitted (that silently resolves the ambient default).
@@ -248,9 +254,18 @@ export interface RecoveryCommandFlags {
  * refusal prints the hole.
  */
 export function recoveryCommandFlags(recovery?: LockRecoveryContext): RecoveryCommandFlags {
-  const profile = sanitizeRecoveryValue(recovery?.profile);
-  const stateBucket = sanitizeRecoveryValue(recovery?.stateBucket);
-  const statePrefix = sanitizeRecoveryValue(recovery?.statePrefix);
+  // A value that would not be inert with its quotes stripped counts as
+  // INEXACT too (go-to-k/cdkd#4205), the `'shell-active'` arm of the shared
+  // gate: `shellQuote` holds only while the quote parity before the command
+  // is even, and cdkd cannot control what the operator pastes above it. Its
+  // flag becomes the hole, and `buildForceUnlockCommand` suppresses.
+  const gated = (value: string | undefined): { text: string; exact: boolean } => {
+    const v = sanitizeRecoveryValue(value);
+    return { text: v.text, exact: v.exact && isInertUnquoted(v.text) };
+  };
+  const profile = gated(recovery?.profile);
+  const stateBucket = gated(recovery?.stateBucket);
+  const statePrefix = gated(recovery?.statePrefix);
   const flags: string[] = [];
   // The SANITIZED value, not the raw one: they are byte-equal wherever a value
   // is printed (an inexact one prints as a hole instead), and quoting the
@@ -354,10 +369,11 @@ export const UNREPRODUCIBLE_LOCK_VALUES = 'the name, region, profile, state buck
 export const UNREPRODUCIBLE_LOCK_CLAUSE =
   `Inspect the lock object directly: ${UNREPRODUCIBLE_LOCK_VALUES} recorded for ` +
   `this stack cannot be reproduced safely on a command line (changed by sanitizing, ` +
-  `unrenderable, empty, too long, or beginning with '-', which cdkd refuses rather ` +
+  `unrenderable, empty, too long, beginning with '-', which cdkd refuses rather ` +
   `than risk it parsing ` +
-  `as an option), so no command is shown: one built from it could address a ` +
-  `different lock.`;
+  `as an option, or holding whitespace or a character a shell treats specially), so no ` +
+  `command is shown: one built from it could address a different lock or run part of ` +
+  `it as shell.`;
 
 /**
  * The force-quit banner's recovery sentence.
@@ -469,10 +485,11 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
       `${head} ${advice}. ` +
       `No recovery command can be shown: ${UNREPRODUCIBLE_LOCK_VALUES} recorded ` +
       `for this lock cannot be reproduced safely on a command line (changed by ` +
-      `sanitizing, unrenderable, empty, too long, or beginning with '-', which cdkd ` +
+      `sanitizing, unrenderable, empty, too long, beginning with '-', which cdkd ` +
       `refuses rather than risk it ` +
-      `parsing as an option), so no command is shown: one built from it could ` +
-      `address a different lock — inspect the lock object directly.`
+      `parsing as an option, or holding whitespace or a character a shell treats ` +
+      `specially), so no command is shown: one built from it could ` +
+      `address a different lock or run part of it as shell — inspect the lock object directly.`
     );
   }
 

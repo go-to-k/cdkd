@@ -25,7 +25,9 @@ hint included.
   and builds through the shared `pasteableCommand` gate, SUPPRESSING the whole
   command on any withheld value — so a leading `-` (`--state-bucket=attacker`
   parses as the FLAG once the shell strips the quotes) and a name past the
-  stack-ref cap suppress beside an altered or empty one (go-to-k/cdkd#3436).
+  stack-ref cap suppress beside an altered or empty one (go-to-k/cdkd#3436),
+  and so does any value, the three recovery flags included, that is not inert
+  with its quotes stripped (go-to-k/cdkd#4205).
 - `DEFAULT_STATE_PREFIX` comes from `src/state/state-prefix.ts`; importing it
   from `src/cli/commands/` inverts the layering.
 
