@@ -70,8 +70,8 @@ describe('pasteableAwsProfileFlag', () => {
   });
 
   it('keeps a non-ASCII profile name, which is legitimate', () => {
-    setPasteableAwsProfile('本番');
-    expect(pasteableAwsProfileFlag()).toBe(`--profile '本番'`);
+    setPasteableAwsProfile('prod-\u00e9');
+    expect(pasteableAwsProfileFlag()).toBe(`--profile 'prod-\u00e9'`);
   });
 
   it.each([
