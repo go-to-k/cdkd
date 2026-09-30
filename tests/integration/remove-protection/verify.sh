@@ -103,23 +103,29 @@ DESTROY_4B_LOG=""
 # stays associated until it is. Returns non-zero when it is still there after
 # 2 min.
 wait_endpoint_service_gone() { # usage: wait_endpoint_service_gone <service id>
-  local state=""
+  local state="" err=""
+  err="$(mktemp)"
   for _ in $(seq 1 24); do
     # ONE read, classified here: a probe followed by a second read would fail
-    # the wait when the service went away between the two.
+    # the wait when the service went away between the two. stderr apart, so a
+    # CLI warning on a successful read does not read as a state.
     if ! state="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
-        --service-ids "$1" --query 'ServiceConfigurations[0].ServiceState' --output text 2>&1)"; then
-      if printf '%s' "${state}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+        --service-ids "$1" --query 'ServiceConfigurations[0].ServiceState' --output text 2>"${err}")"; then
+      if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' "${err}"; then
+        rm -f "${err}"
         return 0
       fi
-      echo "[verify] endpoint service ${1}: probe undetermined: ${state}" >&2
+      echo "[verify] endpoint service ${1}: probe undetermined: $(cat "${err}")" >&2
+      rm -f "${err}"
       return 1
     fi
     if [ "${state}" = "Deleted" ] || [ "${state}" = "None" ]; then
+      rm -f "${err}"
       return 0
     fi
     sleep 5
   done
+  rm -f "${err}"
   echo "[verify] endpoint service ${1} is still '${state}' 2 min after its delete" >&2
   return 1
 }
@@ -169,19 +175,20 @@ cleanup() {
     if [ -z "${OOB_ENDPOINT_SERVICE_ID}" ] && [ -n "${NLB_ARN}" ]; then
       if ! OOB_ENDPOINT_SERVICE_ID="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
           --filters "Name=tag:Name,Values=${STACK}-4b" \
-          --query 'ServiceConfigurations[0].ServiceId' --output text 2>&1)"; then
+          --query "ServiceConfigurations[?ServiceState!='Deleted'].ServiceId" --output text 2>&1)"; then
         echo "[verify] could not look up the step-4b endpoint service by tag: ${OOB_ENDPOINT_SERVICE_ID}"
         OOB_ENDPOINT_SERVICE_ID=""
       fi
       [ "${OOB_ENDPOINT_SERVICE_ID}" = "None" ] && OOB_ENDPOINT_SERVICE_ID=""
     fi
-    if [ -n "${OOB_ENDPOINT_SERVICE_ID}" ]; then
+    # Every live one the lookup found (an earlier run may have left another),
+    # or the one step 4b captured.
+    for svc in ${OOB_ENDPOINT_SERVICE_ID}; do
       aws ec2 delete-vpc-endpoint-service-configurations --region "${REGION}" \
-        --service-ids "${OOB_ENDPOINT_SERVICE_ID}" >/dev/null 2>&1 || true
-      # A subshell: gone_probe exits on an undetermined probe, which must not
-      # end the cleanup before its destroy.
-      (wait_endpoint_service_gone "${OOB_ENDPOINT_SERVICE_ID}") || true
-    fi
+        --service-ids "${svc}" >/dev/null 2>&1 || true
+      # A subshell, so nothing in the wait can end the cleanup before its destroy.
+      (wait_endpoint_service_gone "${svc}") || true
+    done
     echo "[verify] FAIL (exit ${rc}) — attempting destroy --remove-protection to clean up"
     ${CLI} destroy "${STACK}" --remove-protection \
       --state-bucket "${STATE_BUCKET}" --force || true
