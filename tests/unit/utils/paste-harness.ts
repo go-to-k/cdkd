@@ -1,6 +1,7 @@
 /**
  * The PASTE harness: feed a rendered cdkd message to real shells (bash, and zsh
- * where it is installed) at three granularities and report which spans RAN.
+ * where it is installed) at three granularities within a line, plus runs of
+ * consecutive lines, and report which spans RAN.
  *
  * Shared by `pasteable-message-paste.test.ts` (the shapes) and by per-site
  * test files of go-to-k/cdkd#3436's fold-in, so a site drives ITS OWN renderer
@@ -23,7 +24,9 @@
  * the vulnerable build, pasting whole LINES found 0 instances — the line also
  * held `resource record(s)`, whose `(` is a bash syntax error that stops the
  * line before the payload — while sentences found 2 and clauses found 2. An
- * operator selects a phrase, not a line.
+ * operator selects a phrase, not a line. And a BLOCK: every run of two or more
+ * consecutive lines is a span too (go-to-k/cdkd#4133), because a quote one line
+ * opens can close on a later one and leave what sits between them bare.
  *
  * DECOYS, because an execution sentinel alone is blind to REDIRECTION: a bare
  * `<stack>` reads stdin from a file named `stack` and `>` TRUNCATES the next
@@ -167,14 +170,30 @@ const STUBBED_VERBS = ['cdkd', 'aws'] as const;
  */
 let stubBin: string | undefined;
 
-/** Lines, sentences and clauses — what an operator actually selects. */
+/**
+ * Lines, sentences and clauses — what an operator actually selects — plus
+ * every run of two or more CONSECUTIVE lines, the whole message included
+ * (go-to-k/cdkd#4133). A block pasted at once is one shell input, so a quote
+ * one line opens can close on a later one: `the owner's record` /
+ * `holds the stack's value "x$(touch OWNED)".` runs nothing line by line and
+ * runs the substitution pasted whole, under bash and zsh alike. Every run, not
+ * just the whole message, because under the harness's `bash -c` a syntax error
+ * on a line OUTSIDE the selection stops the whole-message span before it
+ * reaches the straddle (an interactive bash drops that line and goes on).
+ */
 export function segmentsOf(message: string): Set<string> {
   const out = new Set<string>();
-  for (const line of message.split('\n')) {
+  const lines = message.split('\n');
+  for (const line of lines) {
     out.add(line);
     for (const sentence of line.split(/(?<=[.!?])\s+/)) {
       out.add(sentence);
       for (const clause of sentence.split(/: | — | -- /)) out.add(clause);
+    }
+  }
+  for (let first = 0; first < lines.length; first++) {
+    for (let last = first + 1; last < lines.length; last++) {
+      out.add(lines.slice(first, last + 1).join('\n'));
     }
   }
   return out;
@@ -300,8 +319,17 @@ function runUnder(
  */
 export function expectZshRunsTheDisplay(message: string, dir: string, value: string): void {
   const ran: string[] = [];
+  const lineDoes = new Map<string, boolean>();
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, { shells: ['zsh'] });
+    if (span.includes('\n')) {
+      // Judged against its lines, and not counted as the display running:
+      // the display's own line is a span of its own (go-to-k/cdkd#4133).
+      if (run.touched.length > 0 || run.verbRan) {
+        expectNoMoreThanItsLines(span, dir, { shells: ['zsh'] }, lineDoes);
+      }
+      continue;
+    }
     if (run.touched.length === 0) continue;
     ran.push(span);
     // What ran is the DISPLAY: no stubbed verb, and the span holds the value
@@ -320,7 +348,49 @@ export function expectZshRunsTheDisplay(message: string, dir: string, value: str
   }
 }
 
-/** Every span of `message`, at all three granularities, that touched a file. */
+/**
+ * A MULTI-LINE span that did anything is judged against its own lines
+ * (go-to-k/cdkd#4133, the round-3 ruling that a block is a line): pasting the
+ * lines together may do only what pasting each line alone does. Every line is
+ * itself a span and takes the single-line checks, so here each line that does
+ * something on its own (a display that runs, a legitimate command on a line of
+ * its own) is replaced by `:` and the joined rest is pasted again: it must
+ * touch nothing and run no stubbed verb. Comparing file NAMES instead would
+ * let a join that runs `touch OWNED` hide behind a display line that creates
+ * the same `OWNED` alone, and a verb only the join invokes would not show.
+ *
+ * Judged under ONE shell at a time (the caller passes each shell in turn): a
+ * line may act alone under one shell only (bash reads ` # it's` as a comment,
+ * an interactive zsh does not), and replacing it under the other would remove
+ * the quote that shell's straddle opens. `lineDoes` caches each line's own run
+ * for that shell.
+ */
+function expectNoMoreThanItsLines(
+  span: string,
+  dir: string,
+  options: PasteRunOptions,
+  lineDoes: Map<string, boolean>
+): void {
+  const rest = span
+    .split('\n')
+    .map((line) => {
+      let does = lineDoes.get(line);
+      if (does === undefined) {
+        const run = spanRun(line, dir, options);
+        does = run.touched.length > 0 || run.verbRan;
+        lineDoes.set(line, does);
+      }
+      return does ? ':' : line;
+    })
+    .join('\n');
+  const run = spanRun(rest, dir, options);
+  expect(
+    { touched: run.touched, verbRan: run.verbRan },
+    `pasting these lines together runs more than pasting each alone: ${span}`
+  ).toEqual({ touched: [], verbRan: false });
+}
+
+/** Every span of `message` ({@link segmentsOf}) that touched a file. */
 export function spansThatRun(message: string, dir: string, options: PasteRunOptions = {}): string[] {
   const out: string[] = [];
   for (const span of segmentsOf(message)) {
@@ -403,8 +473,25 @@ export function expectOnlyDisplayResidual(
  */
 export function expectRuntimeResidual(message: string, dir: string, value: string): string[] {
   const ran: string[] = [];
+  const lineDoesByShell = new Map<PasteShell, Map<string, boolean>>();
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, {});
+    if (span.includes('\n') && (run.touched.length > 0 || run.verbRan)) {
+      // Per shell, with a cache per shell (see `expectNoMoreThanItsLines`).
+      for (const shell of PASTE_SHELLS) {
+        const one = { shells: [shell] } as const;
+        const alone = spanRun(span, dir, one);
+        if (alone.touched.length === 0 && !alone.verbRan) continue;
+        let cache = lineDoesByShell.get(shell);
+        if (cache === undefined) {
+          cache = new Map<string, boolean>();
+          lineDoesByShell.set(shell, cache);
+        }
+        expectNoMoreThanItsLines(span, dir, one, cache);
+      }
+      if (run.touched.length > 0) ran.push(span);
+      continue;
+    }
     if (run.touched.length === 0) continue;
     ran.push(span);
     // The marker a stubbed verb writes when it is INVOKED, under either shell.
@@ -495,9 +582,10 @@ const PASTEABLE_COMMAND = new RegExp(
  * A block is a LINE (the maintainer's go-to-k/cdkd#4127 round-3 ruling): a
  * line that displays the value must carry no command, and a command on a line
  * of its own is not beside it. Pasting such a message whole runs what pasting
- * the value's line alone runs, so the command line adds no execution. The
- * caveat is a span that crosses lines through a straddling quote, which is
- * go-to-k/cdkd#4133's.
+ * the value's line alone runs, so the command line adds no execution. A span
+ * that crosses lines through a straddling quote is the runtime half's to see:
+ * {@link expectOnlyDisplayResidual} refuses a multi-line span that runs more
+ * than its lines do (go-to-k/cdkd#4133).
  *
  * {@link expectOnlyDisplayResidual} runs this by default; on its own it is
  * what an S1 row's block-rule case asserts, until the row describes the value
