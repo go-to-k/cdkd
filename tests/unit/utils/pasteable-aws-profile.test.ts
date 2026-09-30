@@ -234,12 +234,9 @@ describe('the shared renderers carry the profile (go-to-k/cdkd#3959)', () => {
 });
 
 describe('a hostile profile inside the backtick-wrapped advice runs nothing when pasted', () => {
-  it.each([
-    ...PASTE_PAYLOADS.map((p) => [p.label, p.value] as const),
-    // Space-free, so only the non-whitespace part of the gate can stop it.
-    ['space-free backtick', 'x`touch${IFS}OWNED`y'] as const,
-    ['space-free substitution', 'x$(touch${IFS}OWNED)'] as const,
-  ])(
+  // The per-character case above pins the gate itself; this pins the
+  // end-to-end outcome for the harness's own payload families.
+  it.each(PASTE_PAYLOADS.map((p) => [p.label, p.value] as const))(
     '%s',
     (_label, profile) => {
       setPasteableAwsProfile(profile);
