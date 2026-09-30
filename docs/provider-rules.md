@@ -285,9 +285,11 @@ implementation. Three details are worth copying:
     nothing else in cdkd — passes the optional 4th parameter
     `context?: CreateContext` with `replayingState: true` (issue
     [#1463](https://github.com/go-to-k/cdkd/issues/1463)). The deploy engine's
-    five create sites (CREATE, the property-driven replacement, the
+    six create sites (CREATE, the property-driven replacement, the
     `--recreate-via-*` destroy-then-create, the `--replace` delete-first
-    fallback, the update-failure replacement) are driven by freshly resolved
+    fallback, the update-failure replacement, and `createFirstThenDeleteOld`,
+    which `--recreate-via-*` and the update-failure replacement take for a
+    renamed resource) are driven by freshly resolved
     TEMPLATE properties and never set `replayingState`, so the refusal stands
     where the user can actually act on it. (They DO pass a context — every
     provider call now carries `maskSecrets`, see the `maskSecrets` bullet below — so the test

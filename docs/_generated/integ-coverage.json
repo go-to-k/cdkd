@@ -3091,6 +3091,7 @@
         "local-start-service",
         "migrate-from-cfn",
         "replace-squatter-refusal",
+        "replacement-rename-onto-holder",
         "stage-assets"
       ],
       "signals": {
@@ -3120,6 +3121,10 @@
           "literal"
         ],
         "replace-squatter-refusal": [
+          "l1",
+          "literal"
+        ],
+        "replacement-rename-onto-holder": [
           "l1",
           "literal"
         ],
@@ -5764,6 +5769,7 @@
         "nested-stack-3level",
         "noecho-parameter-masking",
         "replacement-fanout",
+        "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
         "s3-lifecycle",
         "scheduled-task",
@@ -5870,6 +5876,10 @@
         ],
         "replacement-fanout": [
           "l2",
+          "literal"
+        ],
+        "replacement-rename-onto-holder": [
+          "l1",
           "literal"
         ],
         "retain-orphan-redeploy": [
@@ -5997,6 +6007,7 @@
         "nested-required-preflight",
         "nested-stack-rollback",
         "rename-refactor",
+        "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
         "rollback-command",
@@ -6121,6 +6132,10 @@
         ],
         "rename-refactor": [
           "l2",
+          "literal"
+        ],
+        "replacement-rename-onto-holder": [
+          "l1",
           "literal"
         ],
         "retain-orphan-redeploy": [
