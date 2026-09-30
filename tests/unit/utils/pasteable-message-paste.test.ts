@@ -52,9 +52,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
    * own, through spans that also carry a command, so they opt out; the
    * default itself is pinned by the block-rule self-test.
    */
-  const RUNTIME_ONLY = {
-    unfixedS1Row: 'go-to-k/cdkd#3950 harness self-test: the runtime half on its own',
-  } as const;
+  const RUNTIME_ONLY = { selfTestRuntimeHalfOnly: true } as const;
 
   /**
    * The messages, each with the command line its renderer is EXPECTED to
@@ -281,6 +279,18 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       v
     );
     refuses(`No stack ${shown} was found. Run 'cdkd state list' to see available stacks.`);
+    // A value carrying a newline is displayed across lines: a line holding a
+    // piece of it and a command refuses (go-to-k/cdkd#4127 M12).
+    const multi = 'x\n$(touch OWNED)';
+    expect(() =>
+      expectNoCommandBesideDisplay(`Stack ${multi} not found; run cdkd deploy`, multi)
+    ).toThrow(/also carries a pasteable command/);
+    // A display no line holds whole (cut, sanitized), with the payload's
+    // sentinel still there, refuses rather than pass (M12).
+    const long = 'x$(touch OWNED) and more';
+    expect(() =>
+      expectNoCommandBesideDisplay('Stack x$(touch OWNED) [cut] not found', long)
+    ).toThrow(/a form the rule cannot see/);
     // Every top-level command starts an invocation (one per command, so a
     // dropped alternative is seen), and the list IS `buildProgram()`'s.
     for (const command of CDKD_TOP_LEVEL_COMMANDS) refuses(`${JSON.stringify(v)} -- cdkd ${command} x`);
@@ -487,6 +497,14 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       expect(() => expectOnlyDisplayResidual(joined, dir, v, { unfixedS1Row: 'some row' })).toThrow(
         /names its go-to-k\/cdkd#3950 row/
       );
+      // The reference is anchored (`#39500` is another issue), and an opt-out
+      // on a row that no longer violates the rule refuses (M13).
+      expect(() =>
+        expectOnlyDisplayResidual(joined, dir, v, { unfixedS1Row: 'go-to-k/cdkd#39500 row' })
+      ).toThrow(/names its go-to-k\/cdkd#3950 row/);
+      expect(() =>
+        expectOnlyDisplayResidual(split, dir, v, { unfixedS1Row: 'go-to-k/cdkd#3950 fixed row' })
+      ).toThrow(/no longer violates the block rule/);
     });
   }, 120_000);
 

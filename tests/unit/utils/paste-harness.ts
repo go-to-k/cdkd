@@ -338,6 +338,12 @@ export interface ResidualOptions {
    * `go-to-k/cdkd#3950` reference; remove it as the row's fix lands.
    */
   readonly unfixedS1Row?: string;
+  /**
+   * The harness's OWN self-test only (`pasteable-message-paste.test.ts`): drive
+   * the runtime half on its own, through spans that also carry a command. Not
+   * the S1 escape hatch, which asserts its row still violates the rule.
+   */
+  readonly selfTestRuntimeHalfOnly?: true;
 }
 
 /**
@@ -375,12 +381,18 @@ export function expectOnlyDisplayResidual(
   // The TEXT half first, by default (the maintainer's go-to-k/cdkd#4127 M11):
   // a row nobody classified reds here instead of passing on its runtime half
   // alone. A classified S1 row names itself to skip it until its fix lands.
-  if (options.unfixedS1Row === undefined) {
-    expectNoCommandBesideDisplay(message, value);
-  } else {
+  if (options.unfixedS1Row !== undefined) {
     expect(options.unfixedS1Row, 'an unfixedS1Row names its go-to-k/cdkd#3950 row').toMatch(
-      /go-to-k\/cdkd#3950/
+      /go-to-k\/cdkd#3950\b/
     );
+    // The opt-out must still be a VIOLATION (M13): it cannot spread to a
+    // harness-only row, or outlive its row's fix.
+    expect(
+      () => expectNoCommandBesideDisplay(message, value),
+      `unfixedS1Row "${options.unfixedS1Row}" no longer violates the block rule; remove it`
+    ).toThrow(/also carries a pasteable command/);
+  } else if (options.selfTestRuntimeHalfOnly !== true) {
+    expectNoCommandBesideDisplay(message, value);
   }
   const ran: string[] = [];
   for (const span of segmentsOf(message)) {
@@ -483,13 +495,29 @@ const PASTEABLE_COMMAND = new RegExp(
  */
 export function expectNoCommandBesideDisplay(message: string, value: string): void {
   const escaped = JSON.stringify(value).slice(1, -1);
+  // A value carrying a newline is displayed raw across lines, so a line holding
+  // any non-empty piece of it counts as displaying it (go-to-k/cdkd#4127 M12).
+  // Only `\n` splits: a bare `\r` stays inside its line, the conservative
+  // direction, since a terminal paste reads `\r` as Enter.
+  const pieces = value.includes('\n') ? value.split(/\r?\n/).filter((p) => p !== '') : [value];
+  let displayed = false;
   for (const line of message.split('\n')) {
-    if (!line.includes(value) && !line.includes(escaped)) continue;
+    if (!line.includes(escaped) && !pieces.some((p) => line.includes(p))) continue;
+    displayed = true;
     expect(line, 'a line that displays the value also carries a pasteable command').not.toMatch(
       PASTEABLE_COMMAND
     );
   }
+  // No line holds the value, yet the payload's sentinel is there: the value is
+  // shown sanitized, cut or re-quoted, which the containment test above
+  // cannot see, so the rule refuses rather than pass it (M12).
+  if (!displayed && value.includes(PAYLOAD_SENTINEL) && message.includes(PAYLOAD_SENTINEL)) {
+    expect.fail(`the value is displayed in a form the rule cannot see: ${message}`);
+  }
 }
+
+/** The command every payload family carries, whatever shape its display takes. */
+const PAYLOAD_SENTINEL = 'touch OWNED';
 
 /**
  * A scratch directory seeded with the decoys, beside a stub `bin` the child's
