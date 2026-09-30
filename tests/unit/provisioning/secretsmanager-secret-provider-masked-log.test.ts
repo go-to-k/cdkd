@@ -201,6 +201,9 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
   });
 
   it.each([
+    // Pins the base-masked-needle rule (`prod-db` masks to `***` and is
+    // dropped as a needle), not the step order: the order is pinned by the
+    // `pdb`, ARN-embedding, `qx-AbCdEf-more` and `secret` cases.
     ['a Name that IS a bag secret', 'prod-db', ['prod-db', 'prod-db owner hunter2x']],
     ['a 3-character Name', 'pdb', ['pdb', 'pdb owner hunter2x']],
   ])(
@@ -476,6 +479,24 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
     );
     expect(err.message).not.toContain('pw=');
     expect(err.message).toBe("Failed to update secret Secret: Bad value '***'.");
+  });
+
+  it('masks a 3-character desired Name AWS quotes back when the physical id names another secret', async () => {
+    // Only the desired Name's own pair makes `q7z` a needle: the physical id's
+    // name segment is `other-name`.
+    mockSend.mockRejectedValue(new Error('Secret q7z gone'));
+    const err = await thrown(() =>
+      provider.update(
+        'S',
+        arnOf('other-name'),
+        TYPE,
+        { Name: 'q7z', SecretString: 'n' },
+        { SecretString: 'o' },
+        { maskSecrets: createSecretMasker(bagOf('q7z')) }
+      )
+    );
+    expect(err.message).not.toContain('q7z');
+    expect(err.message).toBe('Failed to update secret S: Secret *** gone');
   });
 
   it('masks a physical id that names another secret when only the DESIRED Name is secret', async () => {

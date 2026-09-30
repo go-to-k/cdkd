@@ -686,8 +686,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    *     exactly the masking a thrown message got before this provider masked
    *     anything, so a longer bag secret CONTAINING a name is still masked
    *     whole, not split by a name needle first.
-   *  3. The NEEDLES, longest first, each replaced with `***`: a spelling of 3
-   *     or more characters as itself (so a bare name AWS quotes back is
+   *  3. The NEEDLES, longest first, each replaced with `***`: a spelling of
+   *     at least `SELF_NEEDLE_MIN_LENGTH` (3) characters as itself (so a bare name AWS quotes back is
    *     masked, and a rotated name no bag of this deploy holds), a shorter one
    *     only as `:secret:<name>-`, the shape an ARN quotes it in, so a 1-2
    *     character needle cannot mask letters of cdkd's own wording. A needle
@@ -701,12 +701,17 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * which runs its needles BEFORE the base masker and so can split a longer
    * bag secret containing a name (go-to-k/cdkd#4193).
    *
-   * Accepted: the 3-character floor limits a needle masking letters of cdkd's
+   * Accepted: the `SELF_NEEDLE_MIN_LENGTH` floor limits a needle masking letters of cdkd's
    * wording, whose positions would hint at the secret, without closing it (a
    * 3-character `ret` still masks part of `secret`), as in the Glue slice. A
    * bare 1-2 character name AWS quotes back prints. A short secret merely
    * embedded in a longer `Name` does not count as secret-derived at all (the
-   * masker's substring floor).
+   * masker's substring floor). A bag secret that STRADDLES a needle's edge
+   * (starting inside the name and running past it) lets step 2 rewrite part
+   * of the needle's text, so part of the name can print (`Name`
+   * `app-hunter2-db` with bag secrets `hunter2` and `db owner` renders
+   * `app-***-***`); that is no worse than the old masking, since step 2 is
+   * exactly that pass.
    *
    * Built per call, never cached: the provider is a singleton serving
    * concurrent resources.
@@ -721,6 +726,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     // Manager appends to it.
     const arnName = (text: string): string | undefined =>
       /^arn:[^:]+:secretsmanager:[^:]*:[^:]*:secret:(.+)-[A-Za-z0-9]{6}$/.exec(text)?.[1];
+    // The shortest spelling that is a needle as itself (as the Glue slice's
+    // floor); a shorter one is a needle only in its quoted-ARN shape.
+    const SELF_NEEDLE_MIN_LENGTH = 3;
     const secretNames = new Set<string>();
     const needleSet = new Set<string>();
     for (const [raw, name] of pairs) {
@@ -729,7 +737,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       const embedded = arnName(name);
       for (const spelling of embedded === undefined ? [name] : [name, embedded]) {
         secretNames.add(spelling);
-        const candidate = spelling.length >= 3 ? spelling : `:secret:${spelling}-`;
+        const candidate =
+          spelling.length >= SELF_NEEDLE_MIN_LENGTH ? spelling : `:secret:${spelling}-`;
         const needle = candidate.length < MIN_NEEDLE_LENGTH ? candidate : base.mask(candidate);
         if (needle !== MASK_WALK_DEPTH_CAP_MARKER) needleSet.add(needle);
       }
