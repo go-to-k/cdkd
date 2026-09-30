@@ -29,12 +29,21 @@ import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import {
+  createMaskedLogSinks,
+  isSecretDerivedValue,
+  withDerivedNameMasks,
+  MASK_WALK_DEPTH_CAP_MARKER,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
 
@@ -287,9 +296,16 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating secret ${logicalId}`);
+    // Issue #2177: ONE masked sink per operation, every bag-derived value
+    // masked RAW. `context` is read for the masker only (see below).
+    const log = this.operationSinks(context?.maskSecrets, [
+      [properties['Name'], properties['Name']],
+    ]);
+    const { value: v } = log;
+    log.debug(`Creating secret ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
@@ -309,8 +325,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       if (rawGenerate != null) {
         // DELIBERATE DEVIATION from the replay downgrade, recorded rather than
         // left implicit (`.claude/rules/provider-replay-and-refusals.md`
-        // requires it to be stated). `create()` declares no `CreateContext`,
-        // so the rollback executor's reverse-replacement arm cannot downgrade
+        // requires it to be stated). `create()` reads its `CreateContext` for
+        // the masker only, never `replayingState`, so the rollback executor's
+        // reverse-replacement arm does not downgrade
         // this refusal, and a state record CAN carry a malformed container
         // (pre-#3032 the old code minted a bare password and the create
         // succeeded) — so the replay could have succeeded, which is NOT the
@@ -324,7 +341,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         // silently. A failed rollback is loud; its remedy is a hand-edit of
         // the record in `state.json` (the value cannot be fixed from the
         // template), which is still a remedy where the two silent outcomes
-        // have none. Threading the context would not change that answer, so
+        // have none. Reading `replayingState` would not change that answer, so
         // the refusal stands on a replay too — a decision, not a gap.
         const generateConfig = requireConfigObject(
           rawGenerate,
@@ -347,7 +364,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         // meant, and on the reverse-replacement replay-create it is the shape
         // a record whose block `update()` DROPPED arrives in (issue #3048,
         // `retainPreviousGenerateBlock`) — so it must not pass in silence.
-        this.logger.warn(
+        log.warn(
           `AWS::SecretsManager::Secret ${logicalId} declares no secret value (neither ` +
             `GenerateSecretString nor a non-empty SecretString); the secret is created with NO ` +
             `version. Consumers reading it will fail until a value is set.`
@@ -379,7 +396,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         throw new Error('CreateSecret did not return ARN');
       }
 
-      this.logger.debug(`Successfully created secret ${logicalId}: ${secretArn}`);
+      log.debug(`Successfully created secret ${logicalId}: ${v(secretArn)}`);
 
       return {
         physicalId: secretArn,
@@ -390,7 +407,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create secret ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create secret ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         name,
@@ -415,7 +432,18 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating secret ${logicalId}: ${physicalId}`);
+    // Issue #2177: ONE masked sink per operation. The physical id is an ARN
+    // embedding the secret's NAME, so it is masked whenever that name is
+    // secret-derived: from the desired `Name`, or, after a rotated secret,
+    // from the recorded one, which state persists as its dynamic reference
+    // while the old plaintext is in no bag of this deploy.
+    const log = this.operationSinks(context?.maskSecrets, [
+      [properties['Name'], properties['Name']],
+      [properties['Name'], physicalId],
+      [previousProperties['Name'], physicalId],
+    ]);
+    const { value: v } = log;
+    log.debug(`Updating secret ${logicalId}: ${v(physicalId)}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
     // (read as empty, it would untag every recorded key).
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -427,12 +455,17 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       context?.replayingState === true || context?.desiredFromAwsReadback === true;
     let changedValue: { value: string | undefined; skippedGenerate: boolean };
     try {
-      changedValue = this.changedSecretValue(properties, previousProperties, stateBorneDesired);
+      changedValue = this.changedSecretValue(
+        properties,
+        previousProperties,
+        stateBorneDesired,
+        log.warn
+      );
     } catch (error) {
       // A state-borne bag can still throw here (the literal `SecretString`
       // shape refusal runs on every caller), and its remedy is not a template
       // edit — so only the template path is told to fix the template.
-      const message = error instanceof Error ? error.message : String(error);
+      const message = v(error instanceof Error ? error.message : String(error));
       throw new ProvisioningError(
         stateBorneDesired
           ? `Failed to update secret ${logicalId}: ${message}`
@@ -530,7 +563,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       const tagPlan = planTagDiff(previousProperties['Tags'], properties['Tags']);
       const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
       if (tagWarning !== undefined) {
-        this.logger.warn(tagWarning);
+        log.warn(tagWarning);
       }
       if (tagPlan.remove.length > 0) {
         await this.smClient.send(
@@ -549,7 +582,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         );
       }
       if (tagPlan.remove.length > 0 || tagPlan.set.size > 0) {
-        this.logger.debug(`Updated tags for secret ${physicalId}`);
+        log.debug(`Updated tags for secret ${v(physicalId)}`);
       }
 
       // Update ReplicaRegions if changed
@@ -591,10 +624,10 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
             );
           }
         }
-        this.logger.debug(`Updated replica regions for secret ${physicalId}`);
+        log.debug(`Updated replica regions for secret ${v(physicalId)}`);
       }
 
-      this.logger.debug(`Successfully updated secret ${logicalId}`);
+      log.debug(`Successfully updated secret ${logicalId}`);
 
       return {
         physicalId,
@@ -629,13 +662,86 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update secret ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update secret ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
     }
+  }
+
+  /**
+   * The masked sinks ONE `create()` / `update()` logs through (issue #2177),
+   * the Glue slice's shape: `createMaskedLogSinks` over the context's masker,
+   * extended by `pairs` of `[raw template value, name derived from it]`. A
+   * derived name counts when its raw value is secret-derived
+   * (`isSecretDerivedValue`: the masker changes it, it still spells a
+   * `{{resolve:` reference, or it is exactly `***`); an ARN pair names two
+   * spellings, the ARN and its name segment. Each such spelling is:
+   *
+   *  - rendered as `***` wherever a sink masks it as a WHOLE value, at any
+   *    length -- and so is a secret ARN whose name segment is one (the ARN
+   *    `CreateSecret` returns, which no pair can name up front);
+   *  - a needle for `withDerivedNameMasks`: as itself at
+   *    `SELF_NEEDLE_MIN_LENGTH` (3) or more characters, so a bare name AWS
+   *    quotes back is masked (a rotated name no bag of this deploy holds
+   *    too), and a shorter one only as `:secret:<name>-`, the shape an ARN
+   *    quotes it in, so it cannot mask letters of cdkd's own wording.
+   *
+   * The ordering against the base masker, the needle rendering, and the check
+   * that withholds a line where a recorded secret crosses or contains a name
+   * all live in `withDerivedNameMasks` (go-to-k/cdkd#4193).
+   *
+   * Accepted: the floor limits a needle masking letters of cdkd's wording,
+   * whose positions would hint at the secret, without closing it (a
+   * 3-character `ret` still masks part of `secret`), as in the Glue slice. A
+   * bare 1-2 character name AWS quotes back prints. A short secret merely
+   * embedded in a longer `Name` does not count as secret-derived at all (the
+   * masker's substring floor).
+   *
+   * Built per call, never cached: the provider is a singleton serving
+   * concurrent resources.
+   */
+  private operationSinks(
+    maskSecrets: MaskerFn | undefined,
+    pairs: ReadonlyArray<readonly [raw: unknown, name: unknown]>
+  ): MaskedLogSinks {
+    const logger = this.logger;
+    const base = createMaskedLogSinks(logger, maskSecrets);
+    // The shortest spelling that is a needle as itself (the Glue slice's
+    // floor); a shorter one is a needle only in its quoted-ARN shape.
+    const SELF_NEEDLE_MIN_LENGTH = 3;
+    // The name segment of a secret ARN, minus the 6-character suffix Secrets
+    // Manager appends to it.
+    const arnName = (text: string): string | undefined =>
+      /^arn:[^:]+:secretsmanager:[^:]*:[^:]*:secret:(.+)-[A-Za-z0-9]{6}$/.exec(text)?.[1];
+    const secretNames = new Set<string>();
+    const needlePairs: Array<readonly [unknown, string]> = [];
+    for (const [raw, name] of pairs) {
+      if (typeof name !== 'string' || name === '') continue;
+      if (!isSecretDerivedValue(raw, base.mask)) continue;
+      const embedded = arnName(name);
+      for (const spelling of embedded === undefined ? [name] : [name, embedded]) {
+        secretNames.add(spelling);
+        needlePairs.push([
+          raw,
+          spelling.length >= SELF_NEEDLE_MIN_LENGTH ? spelling : `:secret:${spelling}-`,
+        ]);
+      }
+    }
+    if (secretNames.size === 0) return base;
+    const needled = withDerivedNameMasks(logger, base, needlePairs);
+    const mask: MaskerFn = (text: string) =>
+      secretNames.has(text) || secretNames.has(arnName(text) ?? '')
+        ? MASK_WALK_DEPTH_CAP_MARKER
+        : needled.mask(text);
+    return {
+      mask,
+      value: (value: unknown) => mask(String(value)),
+      debug: (message: string) => logger.debug(mask(message)),
+      warn: (message: string) => logger.warn(mask(message)),
+    };
   }
 
   /**
@@ -832,7 +938,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     // The desired bag is a cdkd STATE record (a rollback revert arm, or
     // `cdkd drift --revert`), so a malformed `GenerateSecretString` warn-skips;
     // `false` (a template-path update) makes it THROW instead — issue #3740.
-    stateBorneDesired: boolean
+    stateBorneDesired: boolean,
+    // The update's masked `warn` sink (issue #2177), for the skip warning.
+    warn: (message: string) => void
   ): { value: string | undefined; skippedGenerate: boolean } {
     const rawGenerate = properties['GenerateSecretString'];
     // `!= null`, NOT truthiness: a FALSY malformed container (`''`, `0`) would
@@ -881,7 +989,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // template-path-create clause, so this one adds only what IS specific to
       // the site: what happens to the live value.
       const skip = (m: string): void =>
-        this.logger.warn(
+        warn(
           `${m} No new secret value is generated; the secret keeps the value AWS ` +
             `currently holds.`
         );

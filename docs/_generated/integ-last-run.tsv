@@ -264,9 +264,9 @@ remove-protection	2026-09-30T09:27:57Z	PASS	1352	verify.sh	PR #4217 deploy-engin
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-09-29T02:36:16Z	PASS	70	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, phase C refused naming the sent name (N + squatter untouched), phase D same-name delete-first ok, orph clean
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
-replacement-immutable-name	2026-09-29T02:37:21Z	PASS	135	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, 6 types replaced, 7 deleted 0 errors, orph clean
+replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, orph clean
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
+retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-09-30T02:44:41Z	PASS	170	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 rollback-cross-region-secret	2026-09-25T15:33:11Z	PASS	195	verify.sh	rc ok, orph clean (#3595 lane)
 rollback-deletion-policy-snapshot	2026-09-29T08:18:12Z	PASS	120	verify.sh	rc ok, orph clean (#4029 PR #4072)
@@ -299,9 +299,9 @@ scrub-nested-child	2026-09-30T04:58:05Z	PASS	146	verify.sh	rc ok, orph clean (PR
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
 secrets-array-nested	2026-09-27T14:43:09Z	PASS	386	verify.sh	rc ok, orph clean (#3866)
-secrets-dynamic-ref	2026-09-30T04:32:52Z	PASS	592	verify.sh	PR #4173 (#4001) run; Phase 1b7 first run; pre-fix probe red at 1b7; rc ok, orph clean
+secrets-dynamic-ref	2026-09-30T09:35:14Z	PASS	646	verify.sh	PR #4184 (#2177 Secrets Manager masker) re-run after merging main (#4182, #4201, #4206) @8cf6460; rc ok, 0 surviving state versions
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
-secretsmanager-update-value-source	2026-09-29T11:22:33Z	PASS	83	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+secretsmanager-update-value-source	2026-09-30T09:35:14Z	PASS	85	verify.sh	PR #4184 (#2177 Secrets Manager masker) re-run after merging main (#4182, #4201, #4206) @8cf6460; rc ok, 0 surviving state versions (an earlier attempt failed on a host-sleep signature expiry and was discarded)
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 servicediscovery	2026-09-25T20:09:32Z	PASS	116	verify.sh	rc ok, orph clean (#3136 PR #3793)
 servicediscovery-namespaces	2026-09-25T20:09:32Z	PASS	130	verify.sh	rc ok, orph clean (#3136 PR #3793)
