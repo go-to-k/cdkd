@@ -1468,6 +1468,9 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     // Kept, and the record is otherwise clean, so nothing is written.
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
     expect(logLines()).not.toContain(`No plaintext secrets found in MyStack`);
+    expect(logLines()).toContain(
+      '1 stack(s) keep an undeclared output key another stack still reads'
+    );
     await expect(scrubCommand([], commandOptions())).resolves.toBeUndefined();
   });
 

@@ -375,6 +375,15 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
       expect(saved!.outputs['Old-Export']).toBe(GONE_PLAINTEXT);
     });
 
+    it('on a record with no export set, a LITERAL own-name export still counts as reproduced', async () => {
+      const { saved } = await scrub(
+        record({ Out: SSM_PLAINTEXT, Sm: SM_EXPR, Gone: GONE_PLAINTEXT }),
+        { ...DECLARED, Out: { Value: SSM_EXPR, Export: { Name: 'Out' } } }
+      );
+
+      expect(saved!.outputs).not.toHaveProperty('Gone');
+    });
+
     it('on a record with no export set, an intrinsic name matching a plain Output proves nothing', async () => {
       const { saved } = await scrub(
         record({ Out: SSM_PLAINTEXT, Sm: SM_EXPR, Lit: 'bucket-1', 'prod-Lit': 'bucket-1' }),
@@ -649,13 +658,27 @@ describe('findDroppedOutputReaders', () => {
       findDroppedOutputReaders('Producer', 'us-east-1', keys, [
         rec({ imports: [{ sourceStack: 42, sourceRegion: 'us-east-1', exportName: 'Gone' }] }),
       ])
-    ).toHaveLength(1);
+    ).toEqual([
+      {
+        consumerStack: 'Consumer',
+        consumerRegion: 'us-east-1',
+        key: undefined,
+        intrinsic: 'Fn::ImportValue',
+        damaged: true,
+      },
+    ]);
     expect(
       findDroppedOutputReaders('Producer', 'us-east-1', keys, [
         rec({ imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 7 }] }),
       ])
     ).toEqual([
-      { consumerStack: 'Consumer', consumerRegion: 'us-east-1', key: undefined, intrinsic: 'Fn::ImportValue' },
+      {
+        consumerStack: 'Consumer',
+        consumerRegion: 'us-east-1',
+        key: undefined,
+        intrinsic: 'Fn::ImportValue',
+        damaged: true,
+      },
     ]);
   });
 

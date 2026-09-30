@@ -2369,6 +2369,8 @@ interface DroppedOutputReader {
   /** The key read; `undefined` when the stored entry's name is redacted and cannot be compared. */
   key: string | undefined;
   intrinsic: 'Fn::ImportValue' | 'Fn::GetStackOutput';
+  /** Set when the entry is DAMAGED (a name that is not a string), not redacted. */
+  damaged?: true;
 }
 
 /** One state record's cross-stack reads, as `findDroppedOutputReaders` reads them. */
@@ -2441,18 +2443,23 @@ export function findDroppedOutputReaders(
     if (record.stackName === producerStack && canonicalizeRegion(record.region) === region) {
       continue;
     }
-    const reader = (key: string | undefined, intrinsic: DroppedOutputReader['intrinsic']): void => {
+    const reader = (
+      key: string | undefined,
+      intrinsic: DroppedOutputReader['intrinsic'],
+      damaged = false
+    ): void => {
       readers.push({
         consumerStack: record.stackName,
         consumerRegion: record.region,
         key,
         intrinsic,
+        ...(damaged && { damaged: true as const }),
       });
     };
     const matchKey = (name: unknown, intrinsic: DroppedOutputReader['intrinsic']): void => {
       if (typeof name === 'string' && keys.has(name)) reader(name, intrinsic);
       else if (typeof name !== 'string' || producerNameIsUnresolved(name)) {
-        reader(undefined, intrinsic);
+        reader(undefined, intrinsic, typeof name !== 'string');
       }
     };
     for (const entry of entriesOf(record.imports, 'imports', record.stackName)) {
@@ -2462,7 +2469,7 @@ export function findDroppedOutputReaders(
       if (typeof e.sourceStack === 'string' && e.sourceStack !== producerStack) continue;
       if (!regionMayMatch(e.sourceRegion)) continue;
       if (typeof e.sourceStack !== 'string') {
-        reader(undefined, 'Fn::ImportValue');
+        reader(undefined, 'Fn::ImportValue', true);
         continue;
       }
       matchKey(e.exportName, 'Fn::ImportValue');
@@ -7892,7 +7899,9 @@ export async function scrubStack(
               (r) =>
                 safeMsg`${displayStackName(r.consumerStack)} (${displayIdent(r.consumerRegion)}) reads ` +
                 (r.key === undefined
-                  ? `a name stored redacted, which cannot be compared,`
+                  ? r.damaged
+                    ? `an entry whose name is not a string (a damaged record), which cannot be compared,`
+                    : `a name stored redacted, which cannot be compared,`
                   : shownKeys([r.key])) +
                 ` via ${r.intrinsic}`
             );
