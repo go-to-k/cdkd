@@ -1758,8 +1758,9 @@ const arn = bucketState.attributes['Arn'];
    adds them to the record at the next state save. Only keys the record does
    not already hold are added (a wildcard placeholder ARN from an old release
    is the one value that is overwritten), an empty value is never added, and no
-   other field of the record is touched. `--dry-run` reads but records nothing,
-   and read-only commands (`cdkd diff`, `cdkd drift`) never re-read. See
+   other field of the record is touched. `--dry-run` reads but records nothing.
+   `cdkd diff` issues the same read for its preview and records nothing; other
+   read-only commands (`cdkd drift`) never re-read. See
    ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed).
 
 ```typescript

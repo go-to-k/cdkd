@@ -17,6 +17,9 @@
  * read-only `import()` ONCE per deploy, serves the value from that read, and
  * hands the read-back map to the deploy engine, which merges it into the record
  * at the state-save choke point. Design: `docs/design/1852-stale-attribute-heal.md`.
+ * `cdkd diff` supplies a READ-ONLY healer
+ * (`read-only-attribute-healer.ts`, issue #3456) issuing the same read, so its
+ * preview resolves what the deploy will; that one persists nothing.
  *
  * A LEAF on purpose — types only from `../types/**` — so both the resolver and
  * the deploy engine import it without touching the import ring they sit on.
@@ -54,7 +57,8 @@ export type StaleAttributeHealOutcome =
 
 /**
  * Supplied by a caller that can route a record to its provider. Single-flight
- * and memoized per deploy by the supplier; MUST NOT throw.
+ * and memoized per run (a deploy, or a `cdkd diff`) by the supplier; MUST NOT
+ * throw.
  */
 export type StaleAttributeHealer = (
   logicalId: string,

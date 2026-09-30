@@ -55,6 +55,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(() => ({ destroy: vi.fn() })),
+  // The adoption preview runs in the stack's AWS scope (go-to-k/cdkd#3456).
+  runWithStackAwsClients: vi.fn((_clients: unknown, fn: () => unknown) => fn()),
 }));
 
 vi.mock('../../../src/utils/role-arn.js', () => ({

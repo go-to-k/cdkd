@@ -1603,7 +1603,9 @@ The error above appears only when that re-read could not help:
 `--verbose` prints the AWS error text, which is withheld by default because a
 denied call quotes the caller's account, role and session.
 
-Read-only commands (`cdkd diff`, `cdkd drift`, `cdkd export`) never re-read and
+`cdkd diff` issues the same re-read, so its preview shows the value the deploy
+will use, but it never writes the value to state: the next deploy records it.
+The other read-only commands (`cdkd drift`, `cdkd export`) never re-read and
 never write state. Until a deploy has healed the record they report an `*Arn` /
 `*Url` reference as unresolved, and resolve any other attribute to the physical
 ID with a warning.

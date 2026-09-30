@@ -135,7 +135,7 @@ change: the deploy still takes the resource back into state and rewrites the
 state file without the orphan record.
 
 `cdkd diff` runs the same verification the deploy runs before it draws this
-row: the resource must still exist, still answer to the recorded physical id,
+row, in the stack's own region: the resource must still exist, still answer to the recorded physical id,
 and be claimed by no other cdkd stack. A record that fails any of those is not
 adopted, and the row stays a create — which is what the deploy will attempt.
 A record that fails the ownership check is reported under `Blocking` instead;
@@ -146,9 +146,34 @@ ordinary update, and the last thing you saw this resource do was fail and drop
 out of state — so an unannotated `[~]` reads as cdkd having quietly kept
 managing it.
 
-This is the only part of `cdkd diff` that calls an AWS resource provider, and
-it runs only for a stack whose state holds orphan records. A stack that has
+This check is one of the two places `cdkd diff` calls an AWS resource provider
+(the other is [a state record missing an attribute](#a-state-record-missing-an-attribute)),
+and it runs only for a stack whose state holds orphan records. A stack that has
 never had a rollback orphan anything pays nothing for it.
+
+### A state record missing an attribute
+
+A state record can lack an attribute an `Fn::GetAtt` reads: an older cdkd
+wrote it before it recorded that attribute, an import recorded none, or AWS had
+not assigned the value yet (the endpoint of an RDS instance deployed with
+`--no-wait`). An old release may also have recorded a placeholder ARN with
+wildcard region and account fields. `cdkd deploy` re-reads such a resource
+from AWS when a reference needs the missing or placeholder attribute, and
+resolves the reference to the value AWS reports. `cdkd diff` issues the same read, so a property or output reading the
+attribute previews the value the deploy will use — not the unresolved
+reference, and not the resource's physical id — and a resource whose property
+will change because of it previews as an UPDATE.
+
+The read is made only when a reference needs that attribute, at most
+once per resource per run, in the stack's own region. The diff never writes
+what it reads to state; the next deploy records it. If the read fails — a
+missing read permission, say — the row previews as it would without the read,
+and the diff does not fail. Custom resources and nested stacks are never
+re-read: their attributes come from the handler's response or the child's
+outputs, not from an AWS read. A value the read reports masked is never used.
+An attribute that is itself a credential and that AWS returns unmasked, such
+as a Cognito user pool client's `ClientSecret`, previews as that value, just
+as it does when the record already holds it.
 
 ## Outputs
 
