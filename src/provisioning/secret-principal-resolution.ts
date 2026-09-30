@@ -7,9 +7,7 @@ import {
 import {
   createSecretMasker,
   dynamicReferenceTokens,
-  ERROR_CAUSE_MASK_MAX_DEPTH,
   maskSecretsInError,
-  maskSecretsInText,
   SECRET_MASK,
   type RecordedSecretValues,
   type SecretMasker,
@@ -165,67 +163,11 @@ export async function resolveSecretDerivedPrincipals<K extends string>(
   return {
     lists,
     mask: createSecretMasker(secrets),
-    maskError: (error) =>
-      maskErrorFields(maskSecretsInError(error, secrets), error, (text) =>
-        maskSecretsInText(text, secrets)
-      ),
+    // Own fields too (an awsQuery exception's `Error.Message` quotes
+    // `role/<name>`): `maskSecretsInError` masks them (go-to-k/cdkd#4190).
+    maskError: (error) => maskSecretsInError(error, secrets),
     resolvedNames,
   };
-}
-
-/**
- * `maskSecretsInError` masks each link's `message` and `stack` and COPIES its
- * other own fields as they are, but an AWS SDK (awsQuery) exception also
- * carries the error body as an own `Error: { Type, Code, Message }`, whose
- * `Message` quotes `role/<name>` (measured on `@aws-sdk/client-iam`). On the
- * CLONED chain it returns, mask every string reachable through a plain object /
- * array own field too. The original chain is never touched: when nothing was
- * cloned (`masked === original`, no link's message or stack held a name) this
- * returns it as is, so a name ONLY in such a field stays: go-to-k/cdkd#4190.
- * awsQuery derives `message` from `Error.Message`, so the two change together.
- */
-function maskErrorFields<T>(masked: T, original: T, maskText: (text: string) => string): T {
-  if (masked === original || !(masked instanceof Error)) return masked;
-  const deep = (value: unknown, depth: number): unknown => {
-    if (typeof value === 'string') return maskText(value);
-    if (typeof value !== 'object' || value === null || depth > 8) return value;
-    const proto: unknown = Object.getPrototypeOf(value);
-    if (Array.isArray(value)) {
-      const out = value.map((v) => deep(v, depth + 1));
-      return out.some((v, i) => v !== value[i]) ? out : value;
-    }
-    if (proto !== Object.prototype && proto !== null) return value;
-    let changed = false;
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) {
-      out[k] = deep(v, depth + 1);
-      if (out[k] !== v) changed = true;
-    }
-    return changed ? out : value;
-  };
-  // Bounded like `maskSecretsInError`'s own walk: past that depth the links
-  // are the ORIGINAL chain's (it clones no further), which is never touched.
-  const seen = new Set<Error>();
-  for (
-    let link: unknown = masked;
-    link instanceof Error && !seen.has(link) && seen.size < ERROR_CAUSE_MASK_MAX_DEPTH;
-    link = (link as { cause?: unknown }).cause
-  ) {
-    seen.add(link);
-    for (const key of Reflect.ownKeys(link)) {
-      if (key === 'message' || key === 'stack' || key === 'cause') continue;
-      const descriptor = Object.getOwnPropertyDescriptor(link, key);
-      if (!descriptor || !('value' in descriptor)) continue;
-      const value = deep(descriptor.value, 0);
-      if (value === descriptor.value) continue;
-      try {
-        Object.defineProperty(link, key, { ...descriptor, value });
-      } catch {
-        // A non-configurable field keeps its value: the masking floor.
-      }
-    }
-  }
-  return masked;
 }
 
 /**
