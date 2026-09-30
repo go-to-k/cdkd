@@ -1445,7 +1445,7 @@ describe('cdkd state list', () => {
       ['a double quote', 'prod"api'],
       ['a backslash', 'prod\\api'],
       ['ESC', 'prod\u001bapi'],
-      ['a bidi override', 'prod‮api'],
+      ['a bidi override', 'prod\u202eapi'],
     ])('prints a name holding %s ESCAPED, and it decodes back to the stored name', async (_label, name) => {
       mockListStacks.mockResolvedValue([{ stackName: name, region: 'us-east-1' }]);
 

@@ -813,7 +813,7 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
       // (go-to-k/cdkd#3420).
       expect(message).not.toContain('cdkd state orphan');
       expect(message).toContain(
-        "List the records as stored with 'cdkd state list --json', which prints each name as a JSON string"
+        "List the records with 'cdkd state list --json', which prints each name as a JSON string"
       );
       expect(message).not.toContain('--long');
       // The hole remedy, and NOT "shell-quote it": the command below already

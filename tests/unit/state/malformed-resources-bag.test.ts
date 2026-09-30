@@ -830,7 +830,7 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       expect(withheld).not.toContain('cdkd state orphan <stack>');
       // `--json`, not `--long`: the listing this arm names must hand back the
       // spelling the gate refused, and `--long` trims it (go-to-k/cdkd#3420).
-      expect(withheld).toContain("List the records as stored with 'cdkd state list --json'");
+      expect(withheld).toContain("List the records with 'cdkd state list --json'");
       expect(withheld).toContain('replacing each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted');
       expect(withheld).not.toMatch(/\braw\b/);
       expect(withheld).not.toContain('--long');
@@ -1701,7 +1701,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       expect(m).toContain('does NOT render exactly');
       // The raw listing, for the reason the orphans DESTROY text's case gives
       // (go-to-k/cdkd#3420).
-      expect(m).toContain("List the records as stored with 'cdkd state list --json'");
+      expect(m).toContain("List the records with 'cdkd state list --json'");
       expect(m).toContain('replacing each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted');
       // The listing is JSON, not raw text: it escapes `"`, `\` and the control
       // class, so the decode step is not optional (go-to-k/cdkd#3908).

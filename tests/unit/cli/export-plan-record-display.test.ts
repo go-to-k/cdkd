@@ -316,7 +316,7 @@ function infoLines(): string[] {
 /** `orphanCommandFor`'s note for a region `displaySafe` alters (go-to-k/cdkd#3436). */
 const REGION_ALT_NOTE =
   "The next line's command names neither value, because its record's region does NOT " +
-  'render exactly (another record may render identically). List the records as stored with ' +
+  'render exactly (another record may render identically). List the records with ' +
   "'cdkd state list --json' and act on the one whose stackName and region match, replacing " +
   'each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted.';
 

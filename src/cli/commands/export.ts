@@ -4320,7 +4320,7 @@ function orphanCommandFor(stackName: unknown, region: unknown): OrphanCommand {
     // listing several records prints one note line above each command line.
     note:
       ` The next line's command names neither value, because its record's ` +
-      `${reasons.join('; and its ')}. List the records as stored with ` +
+      `${reasons.join('; and its ')}. List the records with ` +
       `'cdkd state list --json' and ` +
       (dashName
         ? `repair or remove the one whose stackName and region match by hand — this stack ` +

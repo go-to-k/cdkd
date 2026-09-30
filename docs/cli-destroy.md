@@ -816,7 +816,8 @@ so it would show the healthy one's spelling. `--json` keeps the padding, but it
 prints each stack name and region as a JSON string, which escapes a `"`, a `\`
 and control, format and separator characters (ESC prints as `\u001b`). Decode
 the value from its JSON string first, then replace each quoted hole in the
-command, quotes included, with the shell-quoted result: the escaped spelling,
+`Inspect the record:` command the refusal prints, or in the `cdkd state orphan`
+template above, quotes included, with the shell-quoted result: the escaped spelling,
 shell-quoted, names a record that does not exist. A record listed with
 `"region": null` is a legacy one — leave `--stack-region` out of the
 `cdkd state orphan` template rather than filling its hole, as above.

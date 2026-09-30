@@ -877,7 +877,7 @@ export function malformedDestroyResourcesRefusalMessage(
       `flag must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly — what is printed above is a ` +
       `sanitized form, and another record may render identically — so this message names no ` +
-      `target and offers no command against one. List the records as stored with ` +
+      `target and offers no command against one. List the records with ` +
       `${listing.pointer}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses ` +
@@ -1110,7 +1110,7 @@ export function divergentRecordRegionRefusalMessage(
       dropRecordTemplate(recovery)
     : `This record's stack name or region does NOT render exactly — what any surrounding output ` +
       `shows is a sanitized form, and another record may render identically — so this message ` +
-      `names no target and offers no command against one. List the records as stored with ` +
+      `names no target and offers no command against one. List the records with ` +
       (listing.line === undefined
         ? `${WITHHELD_LISTING_POINTER}. Inspect it with: ${inspectCommand(undefined, undefined)}`
         : `${listing.pointer}.` +
@@ -1948,7 +1948,7 @@ export function malformedDestroyOrphansRefusalMessage(
       `${confirmKeyListing(recovery)} — a legacy record shows none, and for one of those the ` +
       `flag must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly, so this message names no ` +
-      `target and offers no command against one. List the records as stored with ` +
+      `target and offers no command against one. List the records with ` +
       `${listing.pointer}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses rather than continuing: an unreadable ` +
