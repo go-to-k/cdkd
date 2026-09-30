@@ -122,12 +122,6 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
 }
 
 /**
- * Perform best-effort rollback of completed operations (issue #1183:
- * extracted into `rollback-executor.ts` so the standalone `cdkd rollback`
- * command drives identical semantics). Thin wrapper that builds the
- * executor context from the engine's collaborators and delegates.
- */
-/**
  * Re-adopt what a previous rollback left in AWS, before the diff runs
  * (issue #2934).
  *
@@ -203,6 +197,12 @@ export async function adoptRollbackOrphans(
   return plan;
 }
 
+/**
+ * Perform best-effort rollback of completed operations (issue #1183:
+ * extracted into `rollback-executor.ts` so the standalone `cdkd rollback`
+ * command drives identical semantics). Thin wrapper that builds the
+ * executor context from the engine's collaborators and delegates.
+ */
 export async function performRollback(
   this: DeployEngine,
   completedOperations: CompletedOperation[],

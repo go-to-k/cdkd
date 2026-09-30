@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
 
@@ -177,6 +177,27 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
         (text) => `${SOURCE}:${writers.find((w) => w.text === text)?.line ?? 'MISSING'}  ${text}`
       )
     );
+  });
+
+  it('no DeployEngine mixin module writes these records or carries the outputs bag (#4200)', () => {
+    // The method groups split out of the engine (`deploy-engine-<group>.ts`)
+    // are outside the positional compare above, which reads one file. A save
+    // path moved into one would write here unseen, so every mixin must hold
+    // NONE: a save site belongs in the engine, where it is enumerated.
+    const dir = `${REPO_ROOT}src/deployment/`;
+    const mixins = readdirSync(dir).filter((f) => /^deploy-engine-.+\.ts$/.test(f));
+    expect(mixins.length, 'no mixin module found; this case is reading nothing').toBeGreaterThan(0);
+    for (const file of mixins) {
+      const source = readFileSync(`${dir}${file}`, 'utf8');
+      expect(
+        scanWriters(source).map((w) => `${file}:${w.line}  ${w.text}`),
+        `${file} writes imports / outputReads / exportNames — move that save site into deploy-engine.ts`
+      ).toEqual([]);
+      expect(
+        stripComments(source).includes('outputs: currentState.outputs,'),
+        `${file} carries the outputs bag — move that save site into deploy-engine.ts`
+      ).toBe(false);
+    }
   });
 
   it('the scan actually SEES a wholesale write (positive control)', () => {

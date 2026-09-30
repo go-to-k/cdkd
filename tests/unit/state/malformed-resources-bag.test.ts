@@ -3187,7 +3187,9 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     const rollback = code('src/deployment/deploy-engine-rollback.ts');
     const fnAt = rollback.indexOf('export async function adoptRollbackOrphans(');
     expect(fnAt, 'adoptRollbackOrphans moved or was renamed').toBeGreaterThan(-1);
-    const fnBody = rollback.slice(fnAt, rollback.indexOf('\n}\n', fnAt));
+    const fnEnd = rollback.indexOf('\n}\n', fnAt);
+    expect(fnEnd, 'the end of adoptRollbackOrphans was not found').toBeGreaterThan(fnAt);
+    const fnBody = rollback.slice(fnAt, fnEnd);
     // The SAME pattern the population derivation matches, so every shape the
     // exclusion hides is counted — not only a direct container dereference.
     const reads = (text: string): number =>
@@ -3212,6 +3214,10 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'src/deployment/deploy-engine-rollback.ts',
       'src/deployment/deploy-engine.ts',
     ]);
+    expect(
+      rollback.split('adoptRollbackOrphans(').length - 1,
+      'the rollback mixin calls adoptRollbackOrphans itself, outside the engine guard'
+    ).toBe(1);
     expect(
       code('src/deployment/deploy-engine.ts').split('this.adoptRollbackOrphans(').length - 1,
       'the engine calls adoptRollbackOrphans more than once; each call owes the ROW anchor'
