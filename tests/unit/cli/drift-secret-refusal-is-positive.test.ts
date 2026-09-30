@@ -27,7 +27,12 @@ const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const DRIFT_SOURCE = `${REPO_ROOT}src/cli/commands/drift.ts`;
 
 /** Every refusal code the module raises. Both must be raised the SAME way. */
-const REFUSAL_CODES = ['DRIFT_SECRET_REGION_AMBIGUOUS', 'DRIFT_SECRET_TOKEN_SCAN_MISMATCH'];
+const REFUSAL_CODES = [
+  'DRIFT_SECRET_REGION_AMBIGUOUS',
+  'DRIFT_SECRET_TOKEN_SCAN_MISMATCH',
+  // go-to-k/cdkd#4213: a nested child whose ancestors' regions could not be established.
+  'DRIFT_SECRET_REGION_UNKNOWN',
+];
 
 function driftSource(): string {
   return readFileSync(DRIFT_SOURCE, 'utf8');
@@ -61,10 +66,11 @@ describe('a drift secret refusal declares itself by CLASS, not by an enumerated 
       ).not.toContain('===');
     }
 
-    // Both refusals are constructed as the class. `regionAmbiguousDriftSecretError`
-    // is the factory for one; the token-scan guard throws the other inline.
+    // Every refusal is constructed as the class. `regionAmbiguousDriftSecretError`
+    // is the factory for one; the token-scan guard and the unknown-ancestor
+    // guard (go-to-k/cdkd#4213) throw the others inline.
     const constructions = source.split('new DriftSecretRefusalError(').length - 1;
-    expect(constructions, 'both refusals must construct DriftSecretRefusalError').toBe(
+    expect(constructions, 'every refusal must construct DriftSecretRefusalError').toBe(
       REFUSAL_CODES.length
     );
   });

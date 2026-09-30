@@ -1821,3 +1821,186 @@ describe('cdkd drift --accept reports a refusal and a read failure together (#22
     expect(mockSaveState).not.toHaveBeenCalled();
   });
 });
+
+describe("cdkd drift on a NESTED child classifies with its ancestors' producer regions (go-to-k/cdkd#4213)", () => {
+  const CHILD = 'Consumer~Child';
+
+  /** A state per `<name>|<region>` key; anything else reads as absent. */
+  function states(map: Record<string, StackState | 'throw'>): void {
+    mockGetState.mockImplementation(async (name: string, region: string) => {
+      const entry = map[`${name}|${region}`];
+      if (entry === 'throw') throw new Error('AccessDenied reading the parent');
+      return entry === undefined ? null : { state: entry, etag: '"e"' };
+    });
+  }
+
+  /** A child record with NO reads of its own: its expression is the parent's. */
+  /** `parentStack: null` builds a record that names no parent at all. */
+  function child(name = CHILD, parentStack: string | null = 'Consumer'): StackState {
+    return {
+      ...makeState({ Fn: lambdaResource(NAME_EXPR) }, []).state,
+      stackName: name,
+      ...(parentStack !== null && { parentStack, parentRegion: CONSUMER_REGION }),
+    };
+  }
+
+  function parent(regions: string[], name = 'Consumer', parentStack?: string): StackState {
+    return {
+      ...makeState({}, regions, 'outputReads').state,
+      stackName: name,
+      ...(parentStack !== undefined && { parentStack, parentRegion: CONSUMER_REGION }),
+    };
+  }
+
+  function provider(update: ReturnType<typeof vi.fn>, live = IRELAND_PASSWORD): void {
+    mockListStacks.mockResolvedValue([{ stackName: CHILD, region: CONSUMER_REGION }]);
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(live, 'tampered'),
+      update,
+    });
+  }
+
+  it("--revert REFUSES a parent-supplied region-less reference when the PARENT reads across a region, though the child's own reads do not", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    provider(update);
+    states({
+      [`${CHILD}|${CONSUMER_REGION}`]: child(),
+      [`Consumer|${CONSUMER_REGION}`]: parent([PRODUCER_REGION]),
+    });
+
+    await runDrift([CHILD, '--revert', '--yes']);
+
+    // THE discriminator: before the fix the child classified `local`, asked
+    // the stack's own region and wrote the Tokyo password to the live resource.
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
+    const text = logText();
+    expect(text).toContain(`producer region(s) on record: ${PRODUCER_REGION}`);
+    expect(text).toContain('refused to re-resolve');
+  });
+
+  it("walks the WHOLE chain: a grandparent's foreign read reaches a grandchild through a same-region middle", async () => {
+    const GRAND = `${CHILD}~Grand`;
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    provider(update);
+    mockListStacks.mockResolvedValue([{ stackName: GRAND, region: CONSUMER_REGION }]);
+    states({
+      [`${GRAND}|${CONSUMER_REGION}`]: child(GRAND, CHILD),
+      [`${CHILD}|${CONSUMER_REGION}`]: parent([], CHILD, 'Consumer'),
+      [`Consumer|${CONSUMER_REGION}`]: parent([PRODUCER_REGION]),
+    });
+
+    await runDrift(['Consumer~Child~Grand', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
+    expect(logText()).toContain(`producer region(s) on record: ${PRODUCER_REGION}`);
+  });
+
+  it("a parent record that cannot be read makes the evidence INCOMPLETE: refused, naming why", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    provider(update);
+    states({ [`${CHILD}|${CONSUMER_REGION}`]: child() });
+
+    await runDrift([CHILD, '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
+    expect(logText()).toContain("parent stacks' cross-region reads could not be established");
+  });
+
+  it('a `~` key whose record lost its parentStack still walks to the parent by its key', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    provider(update);
+    states({
+      [`${CHILD}|${CONSUMER_REGION}`]: child(CHILD, null),
+      [`Consumer|${CONSUMER_REGION}`]: parent([PRODUCER_REGION]),
+    });
+
+    await runDrift([CHILD, '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(logText()).toContain(`producer region(s) on record: ${PRODUCER_REGION}`);
+  });
+
+  it('CONTROL: a parent with no foreign read resolves in the stack region and writes, as before', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    provider(update, TOKYO_PASSWORD);
+    states({
+      [`${CHILD}|${CONSUMER_REGION}`]: child(),
+      [`Consumer|${CONSUMER_REGION}`]: parent([CONSUMER_REGION]),
+    });
+
+    await runDrift([CHILD, '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(secretCtorRegions()).toEqual([CONSUMER_REGION]);
+  });
+
+  it('an unreadable parent refuses PER RESOURCE: the secret-bearing one is notCompared, the secret-free one is still compared and its drift exits 1', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: CHILD, region: CONSUMER_REGION }]);
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+    const plainFn = lambdaResource('literal-no-reference');
+    states({
+      [`${CHILD}|${CONSUMER_REGION}`]: {
+        ...child(),
+        resources: { Fn: lambdaResource(NAME_EXPR), Plain: plainFn },
+      },
+    });
+
+    const { output } = await runDrift([CHILD, '--json']);
+
+    expect(secretSends).toHaveLength(0);
+    const parsed = JSON.parse(output) as Array<StackDriftJson & { error?: unknown }>;
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.error).toBeUndefined();
+    expect(parsed[0]!.notCompared.map((c) => c.logicalId)).toEqual(['Fn']);
+    expect(parsed[0]!.notCompared[0]!.cause).toBe('refused');
+    // The secret-free resource WAS compared: it reports a real drift (its
+    // readback differs), so the refusal did not abort the stack.
+    expect(parsed[0]!.drifted.map((d) => d.logicalId)).toEqual(['Plain']);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("a middle stack with no parentRegion reads ITS parent in its own region, not the grandchild's", async () => {
+    const GRAND_KEY = 'Consumer~Child~Grand';
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    provider(update);
+    mockListStacks.mockResolvedValue([{ stackName: GRAND_KEY, region: CONSUMER_REGION }]);
+    states({
+      [`${GRAND_KEY}|${CONSUMER_REGION}`]: { ...child(GRAND_KEY, CHILD), parentRegion: PRODUCER_REGION },
+      // The middle record names its parent but NO parentRegion: its parent is
+      // then read in the region the MIDDLE lives in, not the grandchild's.
+      [`${CHILD}|${PRODUCER_REGION}`]: (() => {
+        const { parentRegion: _dropped, ...rest } = parent([], CHILD, 'Consumer');
+        return rest as StackState;
+      })(),
+      [`Consumer|${PRODUCER_REGION}`]: parent([PRODUCER_REGION]),
+    });
+
+    await runDrift(['Consumer~Child~Grand', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(logText()).toContain(`producer region(s) on record: ${PRODUCER_REGION}`);
+  });
+
+  it('detection reports the child NOT compared rather than baselining against the wrong region', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: CHILD, region: CONSUMER_REGION }]);
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+    states({
+      [`${CHILD}|${CONSUMER_REGION}`]: child(),
+      [`Consumer|${CONSUMER_REGION}`]: parent([PRODUCER_REGION]),
+    });
+
+    const { output } = await runDrift([CHILD, '--json']);
+
+    expect(secretSends).toHaveLength(0);
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    expect(parsed[0]!.notCompared.map((c) => c.logicalId)).toEqual(['Fn']);
+    expect(output).not.toContain('producerRegions');
+  });
+});
