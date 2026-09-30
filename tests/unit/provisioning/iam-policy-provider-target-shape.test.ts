@@ -87,6 +87,16 @@ const sent = (): string[] =>
 const inputs = (): Array<Record<string, unknown>> =>
   mockSend.mock.calls.map((c) => (c[0] as { input: Record<string, unknown> }).input);
 
+/**
+ * A context whose `inlinePolicyClaimed` answers `true` for exactly these
+ * (kind, principal, name) triples, as spelled: the case-insensitive match is
+ * the engine predicate's (`inline-policy-claims.test.ts`).
+ */
+const claims = (list: Array<{ kind: string; principal: string; policyName: string }>) => ({
+  inlinePolicyClaimed: (kind: string, principal: string, policyName: string) =>
+    list.some((c) => c.kind === kind && c.principal === principal && c.policyName === policyName),
+});
+
 beforeEach(() => {
   mockSend.mockReset();
   mockSend.mockResolvedValue({});
@@ -473,10 +483,9 @@ describe('IAMPolicyProvider.update removes the OLD-named policy on a rename (go-
     ]);
   });
 
-  it('known limit: two policies swapping names on one role remove each other (fail-closed)', async () => {
-    // Pinned so a change here is deliberate: the update has no view of sibling
-    // AWS::IAM::Policy resources, so A (x -> y) then B (y -> x) on role R each
-    // remove the name the other now holds.
+  it('two policies swapping names on one role remove each other WITHOUT claims (the pre-#4156 behaviour)', async () => {
+    // The negative control for the claim cases below: no context, no view of
+    // the sibling, so A (x -> y) then B (y -> x) each remove the other's name.
     const provider = new IAMPolicyProvider();
     await provider.update(
       'A',
@@ -498,6 +507,94 @@ describe('IAMPolicyProvider.update removes the OLD-named policy on a rename (go-
       put('Role', 'R', 'x'),
       del('Role', 'R', 'y'),
     ]);
+  });
+
+  it('two policies swapping names on one role keep both when each is told the other claims it (go-to-k/cdkd#4156)', async () => {
+    const provider = new IAMPolicyProvider();
+    await provider.update(
+      'A',
+      'x',
+      TYPE,
+      { PolicyName: 'y', PolicyDocument: DOC, Roles: ['R'] },
+      { PolicyName: 'x', PolicyDocument: DOC, Roles: ['R'] },
+      claims([{ kind: 'role', principal: 'R', policyName: 'x' }])
+    );
+    await provider.update(
+      'B',
+      'y',
+      TYPE,
+      { PolicyName: 'x', PolicyDocument: DOC, Roles: ['R'] },
+      { PolicyName: 'y', PolicyDocument: DOC, Roles: ['R'] },
+      claims([{ kind: 'role', principal: 'R', policyName: 'y' }])
+    );
+    expect(inputs()).toEqual([put('Role', 'R', 'y'), put('Role', 'R', 'x')]);
+  });
+
+  it.each([
+    ['lower-case', 'role', 'mypol'],
+    ['upper-case', 'ROLE', 'MYPOL'],
+  ])(
+    'asks the predicate with the recorded principal and old name as spelled (%s), and keeps the name on true',
+    async (_what, recordedPrincipal, recordedName) => {
+      const inlinePolicyClaimed = vi.fn().mockReturnValue(true);
+      await new IAMPolicyProvider().update(
+        'A',
+        recordedName,
+        TYPE,
+        { PolicyName: 'renamed', PolicyDocument: DOC, Roles: [recordedPrincipal] },
+        { PolicyName: recordedName, PolicyDocument: DOC, Roles: [recordedPrincipal] },
+        { inlinePolicyClaimed }
+      );
+      expect(inlinePolicyClaimed.mock.calls).toEqual([['role', recordedPrincipal, recordedName]]);
+      expect(inputs()).toEqual([put('Role', recordedPrincipal, 'renamed')]);
+    }
+  );
+
+  it.each([
+    ['another kind', { kind: 'user', principal: 'R', policyName: 'x' }],
+    ['another principal', { kind: 'role', principal: 'other', policyName: 'x' }],
+    ['another name', { kind: 'role', principal: 'R', policyName: 'z' }],
+  ] as const)('a claim on %s does not stop the removal', async (_what, claim) => {
+    await new IAMPolicyProvider().update(
+      'A',
+      'x',
+      TYPE,
+      { PolicyName: 'y', PolicyDocument: DOC, Roles: ['R'] },
+      { PolicyName: 'x', PolicyDocument: DOC, Roles: ['R'] },
+      claims([claim])
+    );
+    expect(inputs()).toEqual([put('Role', 'R', 'y'), del('Role', 'R', 'x')]);
+  });
+
+  it('a claim keeps the name on a LEAVING principal of each kind, and only the claimed one', async () => {
+    // A leaves r / g / u while other resources hand `x` onto r and u; g keeps
+    // nothing, since no claim names it.
+    await new IAMPolicyProvider().update(
+      'A',
+      'x',
+      TYPE,
+      { PolicyName: 'x', PolicyDocument: DOC, Roles: ['kept'] },
+      { PolicyName: 'x', PolicyDocument: DOC, Roles: ['kept', 'r'], Groups: ['g'], Users: ['u'] },
+      claims([
+        { kind: 'role', principal: 'r', policyName: 'x' },
+        { kind: 'user', principal: 'u', policyName: 'x' },
+      ])
+    );
+    expect(inputs()).toEqual([put('Role', 'kept', 'x'), del('Group', 'g', 'x')]);
+  });
+
+  it('a claim on the recorded PolicyName alone keeps that name and still removes the physical id', async () => {
+    // A rollback-shaped record: the physical id and the recorded PolicyName
+    // differ, and each is a candidate old name, judged on its own.
+    await new IAMPolicyProvider().update(
+      'A',
+      'phys-pol',
+      TYPE,
+      { PolicyName: 'new-pol', PolicyDocument: DOC, Roles: ['R'] },
+      { PolicyName: 'recorded-pol', PolicyDocument: DOC, Roles: ['R'] },
+      claims([{ kind: 'role', principal: 'R', policyName: 'recorded-pol' }])
+    );
+    expect(inputs()).toEqual([put('Role', 'R', 'new-pol'), del('Role', 'R', 'phys-pol')]);
   });
 
   it('an old name already gone (NoSuchEntity) is skipped, and the rest still removed', async () => {
@@ -640,5 +737,86 @@ describe('IAMPolicyProvider.update rename edge cases (go-to-k/cdkd#4152)', () =>
       { PolicyName: '***', PolicyDocument: DOC, Roles: ['kept'] }
     );
     expect(sent()).toEqual(['PutRolePolicyCommand', 'PutRolePolicyCommand']);
+  });
+});
+
+describe('IAMPolicyProvider.delete keeps a name another resource of the deploy claims (go-to-k/cdkd#4156)', () => {
+  const del = (kind: 'Role' | 'Group' | 'User', name: string, policy: string) => ({
+    [`${kind}Name`]: name,
+    PolicyName: policy,
+  });
+
+  it('without claims, removes the name from every recorded principal (negative control)', async () => {
+    await new IAMPolicyProvider().delete('A', 'x', TYPE, {
+      PolicyName: 'x',
+      Roles: ['r'],
+      Groups: ['g'],
+      Users: ['u'],
+    });
+    expect(inputs()).toEqual([del('Role', 'r', 'x'), del('Group', 'g', 'x'), del('User', 'u', 'x')]);
+  });
+
+  it('skips each claimed principal of each kind, removes the rest, and reports deleted', async () => {
+    const result = await new IAMPolicyProvider().delete(
+      'A',
+      'x',
+      TYPE,
+      { PolicyName: 'x', Roles: ['r', 'r2'], Groups: ['g', 'g2'], Users: ['u', 'u2'] },
+      claims([
+        { kind: 'role', principal: 'r', policyName: 'x' },
+        { kind: 'group', principal: 'g', policyName: 'x' },
+        { kind: 'user', principal: 'u', policyName: 'x' },
+        // A claim of another name on a recorded principal keeps nothing.
+        { kind: 'role', principal: 'r2', policyName: 'y' },
+      ])
+    );
+    expect(result).toBeUndefined();
+    expect(inputs()).toEqual([del('Role', 'r2', 'x'), del('Group', 'g2', 'x'), del('User', 'u2', 'x')]);
+  });
+
+  it.each([
+    ['lower-case', 'r', 'x'],
+    ['upper-case', 'R', 'X'],
+  ])(
+    'asks the predicate with the recorded principal and name as spelled (%s)',
+    async (_what, recordedPrincipal, recordedName) => {
+      const inlinePolicyClaimed = vi.fn().mockReturnValue(true);
+      await new IAMPolicyProvider().delete(
+        'A',
+        recordedName,
+        TYPE,
+        { PolicyName: recordedName, Roles: [recordedPrincipal], Users: ['u'] },
+        { inlinePolicyClaimed }
+      );
+      expect(inlinePolicyClaimed.mock.calls).toEqual([
+        ['role', recordedPrincipal, recordedName],
+        ['user', 'u', recordedName],
+      ]);
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it('a predicate answering false removes the name (the claimant has not written yet)', async () => {
+    const inlinePolicyClaimed = vi.fn().mockReturnValue(false);
+    await new IAMPolicyProvider().delete(
+      'A',
+      'x',
+      TYPE,
+      { PolicyName: 'x', Roles: ['r'] },
+      { inlinePolicyClaimed }
+    );
+    expect(inlinePolicyClaimed).toHaveBeenCalledTimes(1);
+    expect(inputs()).toEqual([del('Role', 'r', 'x')]);
+  });
+
+  it('skips the legacy "<policyName>:<roleName>" role when it is claimed', async () => {
+    await new IAMPolicyProvider().delete(
+      'A',
+      'x:legacy',
+      TYPE,
+      undefined,
+      claims([{ kind: 'role', principal: 'legacy', policyName: 'x' }])
+    );
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

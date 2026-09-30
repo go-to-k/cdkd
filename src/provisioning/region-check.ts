@@ -1,5 +1,6 @@
 import { ProvisioningError } from '../utils/error-handler.js';
 import type { SecretPrincipalRetryMemo } from './secret-principal-resolution.js';
+import type { InlinePolicyClaimed } from '../types/resource.js';
 
 /**
  * Context passed to provider delete operations.
@@ -91,6 +92,14 @@ export interface DeleteContext {
    * went through (see its note above).
    */
   forceDataDelete?: boolean;
+
+  /**
+   * go-to-k/cdkd#4156: the delete twin of `UpdateContext.inlinePolicyClaimed`,
+   * set by the deploy's DELETE phase for an `AWS::IAM::Policy` (which runs
+   * after every create and update). Absent on `cdkd destroy`, a rollback, and
+   * a replacement's or fallback's delete of the old copy.
+   */
+  inlinePolicyClaimed?: InlinePolicyClaimed | undefined;
 
   /**
    * When set, the resource's `DeletionPolicy` is `Snapshot` (issue #1352) and

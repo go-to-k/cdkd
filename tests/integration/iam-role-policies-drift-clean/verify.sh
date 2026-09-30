@@ -22,6 +22,11 @@
 #      standalone role with a declared inline policy AND an addToPolicy()
 #      Default Policy sibling.
 #   2. Run `cdkd drift` (twice) and assert NO drift on any AWS::IAM::Role.
+#   2b. Rename an inline policy in place (go-to-k/cdkd#4152).
+#   2c. Hand inline policy names between resources on the role in ONE deploy
+#       (go-to-k/cdkd#4156): a swap of two policies' names, a delete beside a
+#       create of the same name, and a rename away from a name the role's own
+#       Policies takes. The receiving resource must keep each name.
 #   3. Destroy + assert the function / queue / role are gone and the cdkd
 #      state file is removed.
 #
@@ -81,7 +86,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    env -u CDKD_TEST_RENAME node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   QUEUE_URL="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
@@ -131,7 +136,7 @@ cleanup
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy Lambda-with-grant + standalone role"
-env -u CDKD_TEST_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 echo "    deploy complete"
 
@@ -140,16 +145,19 @@ echo "    deploy complete"
 # role compares clean against the (also-filtered) AWS-current snapshot. Run
 # twice — the first immediately after deploy (tightest race window), the
 # second after a short settle — both must be clean.
-assert_no_role_drift() { # usage: assert_no_role_drift <label> [rename:true|false]
+assert_no_role_drift() { # usage: assert_no_role_drift <label> [rename:true|false|handoff]
   local label="$1" rename="${2:-false}"
   local out
   # The template the drift synth reads must be the one deployed: RENAME only
-  # after Phase 2b.
-  if [ "${rename}" = "true" ]; then
-    out="$(CDKD_TEST_RENAME=true node "${LOCAL_DIST}" drift "${STACK}" \
+  # after Phase 2b, HANDOFF only after Phase 2c.
+  if [ "${rename}" = "handoff" ]; then
+    out="$(CDKD_TEST_RENAME=true CDKD_TEST_HANDOFF=true node "${LOCAL_DIST}" drift "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
+  elif [ "${rename}" = "true" ]; then
+    out="$(env -u CDKD_TEST_HANDOFF CDKD_TEST_RENAME=true node "${LOCAL_DIST}" drift "${STACK}" \
       --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
   else
-    out="$(env -u CDKD_TEST_RENAME node "${LOCAL_DIST}" drift "${STACK}" \
+    out="$(env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
       --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
   fi
   if printf '%s' "${out}" | grep -q 'AWS::IAM::Role'; then
@@ -191,7 +199,7 @@ if [ "${premise_ok}" -ne 1 ]; then
   echo "FAIL: premise: the role does not hold ${OLD_POLICY} after the first deploy (got: $(role_policies))" >&2
   exit 1
 fi
-CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_HANDOFF CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 # Polled: IAM reads are eventually consistent right after a write.
 renamed_ok=0
@@ -216,9 +224,84 @@ echo "    DeclaredInline kept"
 # The renamed policy is still a sibling the role's drift read filters out.
 assert_no_role_drift "after rename" true
 
+# --- Phase 2c: hand inline policy names over in one deploy (go-to-k/cdkd#4156)
+# Each name must end up held, with the RECEIVING resource's document (its own
+# action), so the check reads both the name and whose grant it carries.
+policy_action() { # usage: policy_action <policy-name> -> its first statement's action, or empty when absent
+  # Only NoSuchEntity reads as absent; any other probe failure is FAIL. Inside
+  # a $( ) the exit ends only the substitution, so the caller then reads an
+  # empty action, which never satisfies a wanted one: the phase still fails.
+  local out
+  if out="$(aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name "$1" \
+    --region "${REGION}" --query 'PolicyDocument.Statement[0].Action' --output text 2>&1)"; then
+    printf '%s' "${out}"
+    return 0
+  fi
+  if printf '%s' "${out}" | grep -q 'NoSuchEntity'; then
+    return 0
+  fi
+  echo "FAIL: get-role-policy $1 undetermined: ${out}" >&2
+  exit 1
+}
+# name -> the action of the resource that must hold it after the hand-off.
+HANDOFF_WANT=(
+  "cdkd-iam-drift-clean-swap-x=sqs:ListDeadLetterSourceQueues"
+  "cdkd-iam-drift-clean-swap-y=sqs:ListQueueTags"
+  "cdkd-iam-drift-clean-handoff=sqs:DeleteMessage"
+  "cdkd-iam-drift-clean-to-role=sqs:ReceiveMessage"
+  "cdkd-iam-drift-clean-to-role-moved=sqs:PurgeQueue"
+)
+handoff_mismatch() { # -> prints every name whose holder is wrong; empty when all match
+  local pair name want got
+  for pair in "${HANDOFF_WANT[@]}"; do
+    name="${pair%%=*}"
+    want="${pair#*=}"
+    got="$(policy_action "${name}")"
+    [ "${got}" = "${want}" ] || printf '%s (want %s, got %s) ' "${name}" "${want}" "${got:-<missing>}"
+  done
+}
+echo "==> Phase 2c: hand inline policy names over between resources on the role in one deploy"
+# Premise: before the hand-off each name is held by its FIRST owner, so the
+# phase moves real grants (a swap of two absent names would pass vacuously).
+premise_ok=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if [ "$(policy_action cdkd-iam-drift-clean-swap-x)" = "sqs:ListQueueTags" ] &&
+    [ "$(policy_action cdkd-iam-drift-clean-swap-y)" = "sqs:ListDeadLetterSourceQueues" ] &&
+    [ "$(policy_action cdkd-iam-drift-clean-handoff)" = "sqs:ChangeMessageVisibility" ] &&
+    [ "$(policy_action cdkd-iam-drift-clean-to-role)" = "sqs:PurgeQueue" ]; then
+    premise_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${premise_ok}" -ne 1 ]; then
+  echo "FAIL: premise: the role's hand-off policies are not held by their first owners (got: $(role_policies))" >&2
+  exit 1
+fi
+CDKD_TEST_RENAME=true CDKD_TEST_HANDOFF=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+handoff_ok=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if [ -z "$(handoff_mismatch)" ]; then
+    handoff_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${handoff_ok}" -ne 1 ]; then
+  echo "FAIL: after the hand-off the role lost or mis-holds: $(handoff_mismatch)(role holds: $(role_policies)) — a same-deploy hand-off removed the receiving resource's grant" >&2
+  exit 1
+fi
+echo "    every handed-off name is held by its new owner"
+if ! has_policy "DeclaredInline" || ! has_policy "${NEW_POLICY}"; then
+  echo "FAIL: the hand-off removed an unrelated policy (got: $(role_policies))" >&2
+  exit 1
+fi
+assert_no_role_drift "after hand-off" handoff
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
-CDKD_TEST_RENAME=true node "${LOCAL_DIST}" destroy "${STACK}" \
+CDKD_TEST_RENAME=true CDKD_TEST_HANDOFF=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "function ${FN_NAME} still exists after destroy" aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}"
@@ -233,4 +316,4 @@ echo "    queue deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — IAM Role with a sibling Default Policy shows no phantom drift after deploy; all phases passed, and an in-place rename left no old-named policy on the retained role"
+echo "[verify] PASS — IAM Role with a sibling Default Policy shows no phantom drift after deploy; all phases passed, an in-place rename left no old-named policy on the retained role, and a same-deploy hand-off kept every name with its new owner"

@@ -761,7 +761,30 @@ export interface UpdateContext extends SecretMaskingContext {
    * compare only non-secret identities (ids AWS generates).
    */
   recordedAttributes?: Readonly<Record<string, unknown>> | undefined;
+
+  /**
+   * go-to-k/cdkd#4156: answers, at the moment of each removal, whether ANOTHER
+   * resource of this deploy has already written the inline policy
+   * `policyName` onto `principal` (`src/deployment/inline-policy-claims.ts`).
+   * `IAMPolicyProvider` then keeps that name rather than strip the other
+   * resource's live grant. Only a COMPLETED write counts, read from what that
+   * resource recorded, so any doubt answers `false` and the removal proceeds.
+   * Set by the deploy's in-place UPDATE of an `AWS::IAM::Policy` only; absent
+   * elsewhere (a rollback revert, `drift --revert`), where every removal
+   * proceeds.
+   */
+  inlinePolicyClaimed?: InlinePolicyClaimed | undefined;
 }
+
+/** A principal kind an inline policy is written onto. */
+export type InlinePolicyPrincipalKind = 'role' | 'group' | 'user';
+
+/** See {@link UpdateContext.inlinePolicyClaimed}. */
+export type InlinePolicyClaimed = (
+  kind: InlinePolicyPrincipalKind,
+  principal: string,
+  policyName: string
+) => boolean;
 
 /**
  * Context passed to a provider's `create` method (issue #1463).

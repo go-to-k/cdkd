@@ -683,6 +683,9 @@ describe('cdkd drift --revert refuses a region-ambiguous secret reference (issue
     expect(update).toHaveBeenCalledTimes(1);
     const context = update.mock.calls[0]![5] as { recordedAttributes?: unknown };
     expect(context.recordedAttributes).toEqual(recorded);
+    // go-to-k/cdkd#4156: `--revert` builds its context without the deploy's
+    // inline-policy claim predicate, for every type.
+    expect(Object.keys(context)).not.toContain('inlinePolicyClaimed');
   });
 
   it('no cross-stack reads on record at all: resolves in the consumer region exactly as before', async () => {

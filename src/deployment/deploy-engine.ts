@@ -106,10 +106,15 @@ import {
   recaptureMaskedBaseline,
   resolveRecordSecrets,
 } from './masked-baseline-recapture.js';
+import {
+  isInlinePolicyClaimedByCompletedWriter,
+  type InlinePolicyWrite,
+} from './inline-policy-claims.js';
 import type {
   CloudFormationTemplate,
   CreateContext,
   EffectivePropertiesResult,
+  InlinePolicyClaimed,
   ResourceCreateResult,
   ResourceDeleteResult,
   ResourceProvider,
@@ -891,6 +896,18 @@ export class DeployEngine {
    */
   /** @internal */
   healBaseline: Readonly<Record<string, ResourceState>> = {};
+  /**
+   * go-to-k/cdkd#4156: this deploy's diff, read by `inlinePolicyClaimedFor` to
+   * tell whether a principal's completed update put its `Policies`.
+   * Per-deploy, like `healBaseline`.
+   */
+  private deployChanges: ReadonlyMap<string, ResourceChange> = new Map();
+  /**
+   * go-to-k/cdkd#4156: the resources whose provider create / update
+   * COMPLETED in this deploy, recorded right after their state record is
+   * written. Per-deploy, like `healBaseline`.
+   */
+  private inlinePolicyWriters = new Map<string, InlinePolicyWrite>();
 
   /**
    * Single-flight + per-deploy memo of the #1852 heal, keyed by logical id and
@@ -1015,6 +1032,8 @@ export class DeployEngine {
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
     this.healBaseline = {};
+    this.deployChanges = new Map();
+    this.inlinePolicyWriters = new Map();
     this.attributeHeals = new Map();
     this.healedAttributes = new Map();
     // Per-deploy-run counter: the resolver instance is engine-scoped and an
@@ -2662,6 +2681,37 @@ export class DeployEngine {
   }
 
   /**
+   * go-to-k/cdkd#4156: the live predicate handed to an `AWS::IAM::Policy`
+   * update or delete, so it does not remove a name another resource of this
+   * deploy has ALREADY written onto a principal
+   * (`src/deployment/inline-policy-claims.ts`). It reads the writers' records
+   * at call time. `undefined` for every other type.
+   */
+  private inlinePolicyClaimedFor(
+    resourceType: string,
+    logicalId: string,
+    stateResources: Record<string, ResourceState>
+  ): InlinePolicyClaimed | undefined {
+    if (resourceType !== 'AWS::IAM::Policy') return undefined;
+    const args = {
+      selfLogicalId: logicalId,
+      writers: this.inlinePolicyWriters,
+      changes: this.deployChanges,
+      stateResources,
+    };
+    return (kind, principal, policyName) =>
+      isInlinePolicyClaimedByCompletedWriter(args, kind, principal, policyName);
+  }
+
+  /**
+   * go-to-k/cdkd#4156: record a resource's completed provider write. Every
+   * type is recorded; the predicate reads only the IAM types' records.
+   */
+  private recordInlinePolicyWrite(logicalId: string, write: InlinePolicyWrite): void {
+    this.inlinePolicyWriters.set(logicalId, write);
+  }
+
+  /**
    * Build a sibling context for the deploy-time `observedProperties`
    * capture of an IAM principal (`AWS::IAM::Role` / `::User` / `::Group`)
    * so that inline policies managed by a SEPARATE `AWS::IAM::Policy`
@@ -4255,6 +4305,7 @@ export class DeployEngine {
     completedOperations: CompletedOperation[];
   }> {
     const concurrency = this.options.concurrency!;
+    this.deployChanges = changes;
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
     const actualCounts: ProvisionCounts = {
       created: 0,
@@ -6366,6 +6417,7 @@ export class DeployEngine {
           ...templateAttrs,
           provisionedBy: createDecision.provisionedBy,
         };
+        this.recordInlinePolicyWrite(logicalId, 'create');
 
         const createCaptureSiblings = await this.buildObservedCaptureSiblings(
           resourceType,
@@ -7680,6 +7732,7 @@ export class DeployEngine {
             ...this.extractTemplateAttributes(template, logicalId),
             provisionedBy: replaceDecision.provisionedBy,
           };
+          this.recordInlinePolicyWrite(logicalId, 'create');
 
           this.kickOffObservedCapture(
             replaceProvider,
@@ -7848,6 +7901,11 @@ export class DeployEngine {
           // observed-capture site, which relies on that same no-bags refusal. The property-driven replacement
           // twin above passes `replaceProvider` for the same reason.
           let captureProvider = updateProvider;
+          const inlinePolicyClaimed = this.inlinePolicyClaimedFor(
+            resourceType,
+            logicalId,
+            stateResources
+          );
           try {
             result = await this.withRetry(
               () =>
@@ -7892,6 +7950,7 @@ export class DeployEngine {
                       maskSecrets: createSecretMasker(updateSecrets),
                       expectedRegion: this.stackRegion,
                       recordedAttributes: currentResource.attributes,
+                      ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
                     }
                   )
                 ),
@@ -8628,6 +8687,11 @@ export class DeployEngine {
               observedBaselineRefusalReason: 'unverifiable-parameter' as const,
             }),
           };
+          // 'update' even after the replacement fallback: a principal then
+          // claims only on its own `Policies` change (the fewer claims).
+          if (updatePartialReason(result) === undefined) {
+            this.recordInlinePolicyWrite(logicalId, 'update');
+          }
 
           if (keepsParameterRefusal) {
             // No readback is TAKEN, not merely not persisted: a value that is
@@ -8746,6 +8810,11 @@ export class DeployEngine {
         // back-compat `void` return) means "deleted"; a `'skipped'` outcome
         // means the resource was NOT deleted and may still be alive.
         let deleteResult: void | ResourceDeleteResult = undefined;
+        const inlinePolicyClaimed = this.inlinePolicyClaimedFor(
+          resourceType,
+          logicalId,
+          stateResources
+        );
         try {
           deleteResult = await this.withRetry(
             () =>
@@ -8756,6 +8825,7 @@ export class DeployEngine {
                 currentResource.properties,
                 {
                   expectedRegion: this.stackRegion,
+                  ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
                   ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                   // Issue #4029: absent is CloudFormation's `Delete` here.
                   deletionPolicy: governingPolicy ?? 'Delete',
@@ -9312,7 +9382,7 @@ export class DeployEngine {
    * The strict arm's `cause` is masked as an OBJECT, through
    * `maskSecretsInError` — a clone of each `Error` link `errorCauseChain`
    * reaches (`ERROR_CAUSE_MASK_MAX_DEPTH` links, a cycle stops it; a
-   * non-`Error` cause is kept verbatim), symbols included, so
+   * non-`Error` cause is masked as a field), symbols included, so
    * `isMarkedNonRetryable`'s non-enumerable marker survives (the same reason
    * `provisionResource` uses it). No sink on the deploy path renders past
    * one level today (`formatError` prints `Caused by:` for a `CdkdError`'s
@@ -9321,8 +9391,8 @@ export class DeployEngine {
    * because its boundary masks with this same helper and it walks the same
    * bounded `errorCauseChain`. Masking here gives a renderer within that
    * bound nothing to leak. A thrown STRING is masked as text; any other
-   * non-`Error` value is not threaded as a cause at all (it would travel
-   * unmasked, and `markNonRetryable` cannot have marked it).
+   * non-`Error` value is not threaded as a cause at all (`markNonRetryable`
+   * cannot have marked it).
    */
   private handleOutputResolutionFailure(
     error: unknown,

@@ -544,6 +544,32 @@ describe('replayRollback', () => {
     });
   });
 
+  it('go-to-k/cdkd#4156: a revert of an AWS::IAM::Policy UPDATE or CREATE is handed no inline-policy claim predicate', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'x' });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ update, delete: del });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'A',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::IAM::Policy',
+        physicalId: 'x',
+        previousState: res({ physicalId: 'x', resourceType: 'AWS::IAM::Policy', properties: { Roles: ['r'] } }),
+      },
+      { logicalId: 'N', changeType: 'CREATE', resourceType: 'AWS::IAM::Policy', physicalId: 'n' },
+    ];
+    const state: Record<string, ResourceState> = {
+      A: res({ physicalId: 'x', resourceType: 'AWS::IAM::Policy', properties: { Roles: ['r', 's'] } }),
+      N: res({ physicalId: 'n', resourceType: 'AWS::IAM::Policy', properties: { PolicyName: 'n' } }),
+    };
+    const result = await replayRollback(ops, state, 'S', ctx);
+    expect(result.failures).toBe(0);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(Object.keys(update.mock.calls[0]![5] as object)).not.toContain('inlinePolicyClaimed');
+    expect(Object.keys((del.mock.calls[0]![4] ?? {}) as object)).not.toContain('inlinePolicyClaimed');
+  });
+
   it('reverts an UPDATE by calling provider.update with previous props', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx } = makeCtx({ update });
