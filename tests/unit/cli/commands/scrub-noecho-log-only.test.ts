@@ -97,6 +97,9 @@ function backends(state: StackState): { stateBackend: unknown; lockManager: unkn
     stateBackend: {
       getState: vi.fn().mockResolvedValue({ state, etag: 'etag-1' }),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      // Read when a record has an undeclared output key to DROP
+      // (go-to-k/cdkd#4120): no other stack reads it.
+      listStacks: vi.fn().mockResolvedValue([]),
     },
     lockManager: {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -261,7 +264,11 @@ describe('cdkd scrub - log-only needles change nothing scrub WRITES (go-to-k/cdk
       Resources: {
         P: { Type: 'AWS::SSM::Parameter', Properties: { Value: RECORD_OK, Tier: DYN_EXPR } },
       },
-      Outputs: { Out: { Value: RECORD_OK } },
+      // An `Export.Name` the record holds no key for: every export alias is
+      // then NOT reproduced, so the undeclared keys below may be a live alias
+      // and are KEPT rather than dropped (go-to-k/cdkd#4120) — which keeps them
+      // in reach of the union this case is about.
+      Outputs: { Out: { Value: RECORD_OK, Export: { Name: 'Out-export' } } },
     } as unknown as CloudFormationTemplate;
     const state = stateOf(
       {

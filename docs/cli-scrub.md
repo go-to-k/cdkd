@@ -521,6 +521,8 @@ These error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_PRODUCER_RECORD_UNREADABLE` | A stack imports from a PRODUCER whose own `outputs` map cannot be read, so this run could not tell whether that producer still holds the plaintext. Raised with or without `--fail`, `--dry-run` included. | `cdkd scrub '<producer>'` cannot run until that record is repaired — inspect it with `cdkd state show '<producer>' --stack-region '<region>' --json`, repair it, scrub the producer, then re-run. The importing stack was still scrubbed for everything else (audited, under `--dry-run`). |
 | `SCRUB_NESTED_CHILD_UNRESOLVABLE` | A [nested stack](#nested-stacks) has a state record, but `scrub` could not derive what its parent deployed it with. | Follow the remedy the message names for its cause. Every other stack was still scrubbed; when the cause is the parent's own failure, that failure is reported too. |
 | `SCRUB_NESTED_TEMPLATE_TREE_MALFORMED` | The nested template tree under a stack is cyclic, too deep or too large, or names an absolute or escaping `aws:asset:path` — a hand-modified or non-CDK assembly. | Re-synthesize the app with CDK. Nothing in that stack or under it was written; any nested record under it is refused too. |
+| `SCRUB_DROPPED_OUTPUT_STILL_READ` | An output key scrub [would drop](#a-key-the-template-can-no-longer-name-is-dropped) — the template no longer declares it — is still read by another stack's recorded `Fn::ImportValue` / `Fn::GetStackOutput`, or by one whose name is stored redacted. Raised under `--dry-run` too. | Stop the named consumer reading the key (or declare the output again) and deploy it, then re-run. Nothing was written for the refused stack. |
+| `SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` | scrub has a key to drop, and the state bucket's listing or another stack's record could not be read to confirm nothing reads it. | Fix the read (usually an S3 permission, or a damaged record the message names) and re-run. Nothing was written for the refused stack. |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a
@@ -844,6 +846,50 @@ value-matched rather than positioned for as long as the parameter stays
 unresolvable. Declare the export name literally, or give the parameter a
 `Default` the template resolves from, if you want that key positioned instead.
 
+### A key the template can no longer name is dropped
+
+A stored key the template can no longer name, whose value no pass rewrote, is
+**removed** from the outputs a scrub writes. Its value is one scrub cannot
+identify — most often the output was deleted, and the value may be a plaintext
+an older cdkd stored — and left beside the `{{resolve:...}}` references scrub
+writes, it would be read by `cdkd diff` as part of a redacted record and
+printed on the output's removal row. A deploy of today's template does not
+write the key either. Each dropped key is named, never its value:
+
+```text
+Dropped 1 output key(s) from MyStack that its template no longer declares: OldDbUrl. ...
+```
+
+`--dry-run` says `Would drop`, and counts the stack as one it would scrub, so
+`--dry-run --fail` exits `1` until a real run (or a deploy) removes the key. A
+name that holds a secret is masked or withheld. A dropped export alias leaves
+the record's export set too; its entry in the [exports index](#the-exports-index)
+is reported as a name `state.outputs` no longer holds, and a redeploy rewrites
+the index.
+
+Three kinds of key are **kept**:
+
+- one a pass rewrote — it now holds the reference;
+- one no string of which can be a plaintext — only whole `{{resolve:...}}`
+  references, or no string at all;
+- one that may be a **live export alias** whose name this run could not
+  reproduce. A key the record lists as an export (or any key, for a record
+  written before cdkd recorded which keys are exports) is dropped only when
+  every `Export.Name` in today's template resolved to a key the record holds;
+  otherwise — a parameterized name deployed with `--parameters`, one that does
+  not resolve here, or an export the last deploy did not write — scrub cannot
+  tell that alias from a deleted one, keeps the key, and warns: `... were LEFT
+  as they are`. Such a key's value can still be printed by `cdkd diff`; a
+  deploy rewrites the outputs.
+
+**A key another stack still reads is not dropped.** Before dropping, scrub
+reads every other stack's state record in the bucket. When one records an
+`Fn::ImportValue` or `Fn::GetStackOutput` of a key it would drop — or a read of
+this stack whose name is stored redacted, which cannot be compared — the stack
+is refused with `SCRUB_DROPPED_OUTPUT_STILL_READ` and nothing is written for
+it. When the listing or a record cannot be read, it is refused with
+`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED`. See [Refusals](#refusals).
+
 ## Cross-stack read names
 
 `state.imports` and `state.outputReads` record which producer a stack read a
@@ -902,8 +948,12 @@ into a CONSUMER stack's AWS call. Hence three rules:
 
 - **It never guesses.** When nothing this run recorded that plaintext — the
   secret was deleted, rotated away, or its reference is gone from the template
-  as well — the value is left exactly as it is, no key is invented, and no key
-  is removed. ROTATE the secret and redeploy; that rewrites the record. A
+  as well — the value is never rewritten onto a reference and no key is
+  invented. A key the template still names is left exactly as it is; one it
+  cannot name is dropped, as
+  [above](#a-key-the-template-can-no-longer-name-is-dropped), which ships no
+  token to a consumer — a key another stack reads is refused rather than
+  dropped. ROTATE the secret and redeploy; that rewrites the record. A
   degenerately short plaintext, under 4 characters, is excluded from the
   WIDENED match specifically: it is never used as a cross-resource needle,
   since it would match unrelated values. A key the template still names is

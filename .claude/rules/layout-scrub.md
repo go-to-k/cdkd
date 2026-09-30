@@ -35,10 +35,8 @@ ever stored in plaintext must be ROTATED.**
 1. A stored key today's template can still NAME (a declared output, or an
    `Export.Name` this run could FULLY compute) takes the POSITIONED pass, gated
    on the declared-output secrets map being non-empty. A name that did not fully
-   resolve is deliberately EXCLUDED from the accounted set, because the deploy
-   engine's alias write guards only on `typeof exportName !== 'string'` — a
-   warn-and-kept `${Foo}` really is written as a state key, so accounting for it
-   would exclude it from pass 2.
+   resolve is EXCLUDED from the accounted set: a deploy writes a warn-and-kept
+   `${Foo}` as a real key, which accounting would hide from pass 2.
 2. `redactUnaccountedOutputs` repairs every OTHER stored key by VALUE MATCH
    alone, against the union of the outputs map and every resource's, filtered to
    `secret-redaction.ts`'s exported `MIN_NEEDLE_LENGTH`. This is the only place
@@ -46,18 +44,24 @@ ever stored in plaintext must be ROTATED.**
    secret cannot rewrite another's coinciding literal, **so the resource walk
    must never see the union**. Each such key is scanned ONCE, from the STORED
    value rather than pass 1's output: re-scanning an already-positioned MIXED
-   leaf splices a union needle INTO the expression pass 1 just inserted
-   (`{{resolve:secretsmanager:{{resolve:ssm:/app/env}}/db:...}}`). An ACCOUNTED
-   key is never scanned against the union.
+   leaf splices a union needle INTO the expression pass 1 just inserted. An
+   ACCOUNTED key is never scanned against the union.
 
 **Nothing is rewritten unless its value genuinely MATCHES a recorded
 plaintext.** `state.outputs` is re-applied VERBATIM to consumer stacks (by
 `src/state/export-index-store.ts` and by `Fn::ImportValue` / `Fn::GetStackOutput`
 in the resolver), so a FABRICATED redaction would ship a literal `{{resolve:...}}`
-token into a consumer's own AWS call. An unrecoverable needle leaves the value
-untouched and invents or removes no key. Residual: a declared output whose
-template value no longer resolves a secret but whose stored value is a stale
-plaintext is not repaired — a redeploy rewrites it.
+token into a consumer's own AWS call. An unrecoverable needle never rewrites a
+value. Residual: a declared output whose template value no longer resolves a
+secret but whose stored value is a stale plaintext is not repaired — a redeploy
+rewrites it.
+
+**An unnamed key no pass rewrote is DROPPED** (#4120): beside a scrub-written
+`ssm` token, `cdkd diff`'s #1948 exoneration printed it. `planUnnamedOutputDrop`
+keeps a possible LIVE alias unless every declared `Export.Name` resolved to a
+key the record HOLDS (accounted is not enough: defaults can compute a name the
+deploy never wrote). A drop REFUSES on another record's read of the key,
+failing closed on an unreadable one.
 
 ## Cross-stack reads
 

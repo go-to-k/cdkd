@@ -766,10 +766,12 @@ describe('cdkd scrub - nested-stack child records (go-to-k/cdkd#2252)', () => {
     const err = await run([PARENT]);
 
     expect(err).toBeUndefined();
+    // `Plain` is not declared by the child's template and no pass rewrote it,
+    // so the child's own scrub DROPS it (go-to-k/cdkd#4120). The parent row's
+    // copy is not the child's output bag, and stays as it is.
     expect(stored(CHILD)!.outputs).toEqual({
       PwOut: SECRET_EXPR,
       ApiOut: API_EXPR,
-      Plain: 'not-a-secret',
     });
     expect(stored(PARENT)!.resources['ChildStack']!.attributes).toEqual({
       'Outputs.PwOut': SECRET_EXPR,

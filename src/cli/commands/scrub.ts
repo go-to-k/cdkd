@@ -94,7 +94,12 @@ import type { StackInfo } from '../../synthesis/assembly-reader.js';
 // scrub's `--all` order is producer-before-consumer for a RAW
 // `cdk.Fn.importValue` too — CDK emits no manifest dependency for one.
 import { inferCrossStackStackDeps } from '../../analyzer/cross-stack-deps.js';
-import { isUnresolvedValue, templateUsesSub } from '../../analyzer/outputs-diff.js';
+import { producerNameIsUnresolved } from './recreate-downstream-consumers.js';
+import {
+  isUnresolvedValue,
+  isWholeSecretReferenceToken,
+  templateUsesSub,
+} from '../../analyzer/outputs-diff.js';
 import {
   collectDeclaredOutputNames,
   exportAliasCollisionScrubWarning,
@@ -184,6 +189,36 @@ export class ScrubIndexInvariantError extends CdkdError {
     super(message, 'SCRUB_EXPORT_INDEX_INVARIANT');
     this.name = 'ScrubIndexInvariantError';
     Object.setPrototypeOf(this, ScrubIndexInvariantError.prototype);
+  }
+}
+
+/**
+ * A state-bag KEY (an export name, an output key) as one log line may print it,
+ * from the verdict `secretSafeKeyDisplay` returned for it.
+ *
+ * NON-ASCII IS WITHHELD on BOTH printable arms, the rule `maskedLabel` in
+ * `outputs-export-alias.ts` applies to the warnings: `displayIdent` blanks such
+ * a character to a space AFTER the verdict, so the printed text is no longer
+ * the tested text -- a name spelling `correct` + U+09BC (or NBSP) + `horse`
+ * beside a recorded `correct horse` printed the passphrase byte for byte.
+ */
+function renderStateKeyForLine(
+  shown: SecretSafeKeyDisplay,
+  withheldBecause = 'it holds a secret this run recorded'
+): string {
+  if (shown.kind !== 'withheld' && /[^ -~]/.test(shown.text)) {
+    return '(name withheld: it carries characters this line cannot show as tested)';
+  }
+  switch (shown.kind) {
+    case 'safe':
+      return displayIdent(shown.text);
+    case 'masked':
+      return `(masked: ${displayIdent(shown.text)})`;
+    // Masking left the name unchanged, so printing it would publish the
+    // secret under a label claiming it had been masked. The name is WITHHELD
+    // and the message still identifies the stack and region.
+    case 'withheld':
+      return `(name withheld: ${withheldBecause})`;
   }
 }
 
@@ -905,8 +940,10 @@ function nestedChildParameters(resolved: unknown): Record<string, string> | unde
  * DELETED in an ordinary refactor, but it is not the only one — a key this run
  * cannot COMPUTE is in it too, and a parameterized `Export.Name` (scrub has
  * only template defaults) leaves the deploy's real alias key unaccounted on
- * EVERY run. When nothing recorded the plaintext the value is left exactly as
- * it is: a scrub that cannot identify the needle must not guess, because
+ * EVERY run. When nothing recorded the plaintext the value is never rewritten
+ * onto a reference — the key is DROPPED instead, or kept when it may be a live
+ * export alias (go-to-k/cdkd#4120, `planUnnamedOutputDrop`) — because a scrub
+ * that cannot identify the needle must not guess:
  * `state.outputs` is re-applied VERBATIM to consumer stacks — by the exports
  * index (`src/state/export-index-store.ts`) and by `Fn::ImportValue` /
  * `Fn::GetStackOutput` (`src/deployment/intrinsic-function-resolver.ts`) — so a
@@ -1225,6 +1262,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         // an import may be one the user did not name (issue #2133 review).
         appStacks: allStacks,
         ...(nestedChild && { nestedChild }),
+        listStateRefs,
       });
     } catch (err) {
       // EVERY error, not only a `CdkdError` refusal. A stack whose state could
@@ -1353,29 +1391,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // rewrite (issue #1919). `--dry-run --fail` prints these lines on every
       // run of the documented CI gate, into CI logs, so a raw name here would
       // disclose on a schedule.
-      const named = (exportName: string): string => {
-        const shown = scrubbed.exportNameDisplay(exportName);
-        // NON-ASCII IS WITHHELD on BOTH printable arms, the rule
-        // `maskedLabel` in `outputs-export-alias.ts` applies to the warnings:
-        // `displayIdent` blanks such a character to a space AFTER the verdict,
-        // so the printed text is no longer the tested text -- a name spelling
-        // `correct` + U+09BC (or NBSP) + `horse` beside a recorded
-        // `correct horse` printed the passphrase byte for byte.
-        if (shown.kind !== 'withheld' && /[^ -~]/.test(shown.text)) {
-          return '(name withheld: it carries characters this line cannot show as tested)';
-        }
-        switch (shown.kind) {
-          case 'safe':
-            return displayIdent(shown.text);
-          case 'masked':
-            return `(masked: ${displayIdent(shown.text)})`;
-          // Masking left the name unchanged, so printing it would publish the
-          // secret under a label claiming it had been masked. The name is
-          // WITHHELD and the message still identifies the stack and region.
-          case 'withheld':
-            return '(name withheld: it holds a secret this run recorded)';
-        }
-      };
+      const named = (exportName: string): string =>
+        renderStateKeyForLine(scrubbed.exportNameDisplay(exportName));
       const unwrittenNames = new Set(repair.unwritten);
       for (const exportName of repair.unwritten) {
         indexUnwritten.push({ region: stackRegion, shown: named(exportName) });
@@ -2112,10 +2129,11 @@ function allRecordedSecrets(
  *    VERBATIM to consumer stacks by the exports index and by `Fn::ImportValue`
  *    / `Fn::GetStackOutput` (and by one more reader out of this command's
  *    reach — see the module doc), so a fabricated redaction ships a literal
- *    `{{resolve:...}}` token into a consumer's AWS call. No key is invented and
- *    no key is removed for the same reason. When nothing this run recorded the
- *    plaintext (the secret was deleted, rotated away, or the reference is gone
- *    from the template too) the value is LEFT ALONE — but note that behavior
+ *    `{{resolve:...}}` token into a consumer's AWS call. No key is invented for
+ *    the same reason. When nothing this run recorded the plaintext (the secret
+ *    was deleted, rotated away, or the reference is gone from the template too)
+ *    this pass LEAVES the value alone, and `planUnnamedOutputDrop` decides
+ *    whether the key is then dropped (go-to-k/cdkd#4120) — but note that behavior
  *    does NOT live in this function's `secrets.size === 0` guard, which is one
  *    of three redundant reasons and fences none of them; see the guard's own
  *    comment for what actually reaches it.
@@ -2205,6 +2223,182 @@ function redactUnaccountedOutputs(
     repaired[key] = next;
   }
   return repaired ?? positioned;
+}
+
+/**
+ * The stored output keys a scrub of this record DROPS, and the ones it cannot
+ * classify and so leaves as they are (issue go-to-k/cdkd#4120).
+ *
+ * A key today's template cannot name that {@link redactUnaccountedOutputs} did
+ * NOT rewrite holds a value scrub cannot identify: most often the output was
+ * deleted from the template, and its value may be a plaintext an older binary
+ * stored. Leaving it beside the `{{resolve:ssm:...}}` token scrub writes
+ * elsewhere in the bag is the defect: that token is the evidence `cdkd diff`'s
+ * issue #1948 exoneration reads as "this bag is redacted", so the unnamed value
+ * printed on its REMOVE row. So scrub removes it; the deploy that next writes
+ * the record would not re-create it either, since the template no longer
+ * declares it. Two such keys are kept: one the widened pass DID rewrite (its
+ * value is now the expression, and the exports-index step converges an entry
+ * against it), and one no string of which can be a plaintext (only whole
+ * secret-reference tokens, or no string at all), which a drop would rewrite a
+ * clean record over.
+ *
+ * What may NOT be dropped is a LIVE export alias whose name this run could not
+ * reproduce — a parameterized `Export.Name` resolved from template defaults, or
+ * one that did not resolve at all. From the key alone that alias and a deleted
+ * output's alias look the same, so the decision rests on two facts:
+ *
+ * - a key the record's `exportNames` (schema v9+) does NOT list is a plain
+ *   Output name, and every Output name today's template declares is in
+ *   `accountedKeys` literally, so it is a deleted output: DROP;
+ * - a key that is, or may be (a record with no readable `exportNames` makes
+ *   every key importable), an alias is dropped only when every `Export.Name`
+ *   today's template declares was REPRODUCED — resolved to a key the record
+ *   holds. Then every live alias is accounted and this one is not live.
+ *   Otherwise it is KEPT, and the caller says so.
+ *
+ * `rewritten` is the bag after both redaction passes; `stored` is the record's.
+ */
+export function planUnnamedOutputDrop(input: {
+  stored: Record<string, unknown>;
+  rewritten: Record<string, unknown>;
+  accountedKeys: ReadonlySet<string>;
+  /** The record's `exportNames`, as stored — any shape. */
+  exportNames: unknown;
+  /** Every declared `Export.Name` resolved to a key the record holds. */
+  everyExportAliasReproduced: boolean;
+}): { drop: string[]; keep: string[] } {
+  const drop: string[] = [];
+  const keep: string[] = [];
+  const knownExportNames = Array.isArray(input.exportNames)
+    ? new Set(input.exportNames.filter((n): n is string => typeof n === 'string'))
+    : undefined;
+  for (const [key, value] of Object.entries(input.stored)) {
+    if (input.accountedKeys.has(key)) continue;
+    const now = Object.hasOwn(input.rewritten, key) ? input.rewritten[key] : undefined;
+    // Rewritten by a redaction pass: its value is now the expression.
+    if (JSON.stringify(now) !== JSON.stringify(value)) continue;
+    // Nothing in it can be a plaintext: every string leaf is a whole
+    // secret-reference token (a record a post-GHSA deploy wrote), or there is
+    // no string at all. Dropping it would rewrite a clean record for nothing,
+    // and turn `--dry-run --fail` red over it.
+    if (!mayHoldPlaintext(value)) continue;
+    const mayBeAlias = knownExportNames === undefined || knownExportNames.has(key);
+    if (!mayBeAlias || input.everyExportAliasReproduced) drop.push(key);
+    else keep.push(key);
+  }
+  return { drop, keep };
+}
+
+/**
+ * Whether a stored value has a string leaf that is not one whole secret-bearing
+ * `{{resolve:...}}` token — i.e. text that could be a plaintext.
+ */
+function mayHoldPlaintext(value: unknown): boolean {
+  if (typeof value === 'string') return value.length > 0 && !isWholeSecretReferenceToken(value);
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some(mayHoldPlaintext);
+}
+
+/** Every non-empty string leaf of a stored value, as a display-corpus entry. */
+function addStoredStringLeaves(value: unknown, into: RecordedSecretValues): void {
+  if (typeof value === 'string') {
+    if (value.length > 0) into.set(value, '<stored output value withheld as possible plaintext>');
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  for (const member of Object.values(value as Record<string, unknown>)) {
+    addStoredStringLeaves(member, into);
+  }
+}
+
+/** Another stack's recorded read of an output key scrub is about to drop. */
+interface DroppedOutputReader {
+  consumerStack: string;
+  consumerRegion: string;
+  /** The key read; `undefined` when the stored entry's name is redacted and cannot be compared. */
+  key: string | undefined;
+  intrinsic: 'Fn::ImportValue' | 'Fn::GetStackOutput';
+}
+
+/**
+ * Every OTHER stack's recorded read of a key in `keys` on this producer
+ * (issue go-to-k/cdkd#4120): `state.imports[]` for an `Fn::ImportValue`,
+ * `state.outputReads[]` for an `Fn::GetStackOutput`.
+ *
+ * FAIL-CLOSED, unlike `findDownstreamConsumers`, whose caller only warns: a
+ * listing or a record that cannot be read THROWS, because an absent answer
+ * would let a drop break a live read unseen. An entry whose producer or key
+ * name is stored REDACTED (`producerNameIsUnresolved`) cannot be compared, so
+ * one in this region counts as a reader rather than being ruled out.
+ */
+async function findDroppedOutputReaders(
+  producerStack: string,
+  producerRegion: string,
+  keys: ReadonlySet<string>,
+  stateBackend: Pick<S3StateBackend, 'getState' | 'listStacks'>,
+  listStateRefs: () => Promise<Array<{ stackName: string; region?: string }>>
+): Promise<DroppedOutputReader[]> {
+  const region = canonicalizeRegion(producerRegion);
+  const refs = await listStateRefs();
+  const perStack = await Promise.all(
+    refs.map(async (ref) => {
+      const refRegion = ref.region ?? producerRegion;
+      if (ref.stackName === producerStack && canonicalizeRegion(refRegion) === region) return [];
+      const got = await stateBackend.getState(ref.stackName, refRegion);
+      if (!got) return [];
+      const readers: DroppedOutputReader[] = [];
+      const imports: unknown = got.state.imports;
+      for (const entry of Array.isArray(imports) ? (imports as StateImportEntry[]) : []) {
+        if (entry === null || typeof entry !== 'object') continue;
+        if (entry.sourceStack !== producerStack) continue;
+        if (canonicalizeRegion(String(entry.sourceRegion)) !== region) continue;
+        const name = String(entry.exportName);
+        if (keys.has(name)) {
+          readers.push({
+            consumerStack: ref.stackName,
+            consumerRegion: refRegion,
+            key: name,
+            intrinsic: 'Fn::ImportValue',
+          });
+        } else if (producerNameIsUnresolved(name)) {
+          readers.push({
+            consumerStack: ref.stackName,
+            consumerRegion: refRegion,
+            key: undefined,
+            intrinsic: 'Fn::ImportValue',
+          });
+        }
+      }
+      const outputReads: unknown = got.state.outputReads;
+      for (const entry of Array.isArray(outputReads)
+        ? (outputReads as StateOutputReadEntry[])
+        : []) {
+        if (entry === null || typeof entry !== 'object') continue;
+        if (canonicalizeRegion(String(entry.sourceRegion)) !== region) continue;
+        const source = String(entry.sourceStack);
+        if (source !== producerStack && !producerNameIsUnresolved(source)) continue;
+        const name = String(entry.outputName);
+        if (keys.has(name)) {
+          readers.push({
+            consumerStack: ref.stackName,
+            consumerRegion: refRegion,
+            key: name,
+            intrinsic: 'Fn::GetStackOutput',
+          });
+        } else if (producerNameIsUnresolved(name)) {
+          readers.push({
+            consumerStack: ref.stackName,
+            consumerRegion: refRegion,
+            key: undefined,
+            intrinsic: 'Fn::GetStackOutput',
+          });
+        }
+      }
+      return readers;
+    })
+  );
+  return perStack.flat();
 }
 
 /**
@@ -5653,6 +5847,13 @@ export async function scrubStack(
      * is raised once the record is known to exist.
      */
     nestedChild?: NestedChildScrubTarget | undefined;
+    /**
+     * The state bucket's stack listing, memoized by `scrubCommand` for the
+     * whole run. Read only when this record has output keys to DROP
+     * (go-to-k/cdkd#4120), to find another stack still reading one. Defaults
+     * to a fresh `stateBackend.listStacks()`.
+     */
+    listStateRefs?: (() => Promise<Array<{ stackName: string; region?: string }>>) | undefined;
   }
 ): Promise<ScrubStackResult> {
   const { logger } = opts;
@@ -6205,6 +6406,11 @@ export async function scrubStack(
     const ambiguousKeys = new Set<string>();
     const collisions: Array<[outputKey: string, exportName: string]> = [];
     let outputsSourceUntrusted = false;
+    // Whether every `Export.Name` today's template declares resolved to a key
+    // the record HOLDS (go-to-k/cdkd#4120) — the proof that every live export
+    // alias is accounted, which `planUnnamedOutputDrop` needs before it drops
+    // an unaccounted key that may be an alias.
+    let everyExportAliasReproduced = true;
     // Declared above the wrap because the block below it reads some of them.
 
     // ONE drain budget for the resolve LOOPS between here and the
@@ -6831,6 +7037,21 @@ export async function scrubStack(
         if (typeof exportName === 'string' && !exportNameUnresolved) {
           accountedOutputKeys.add(exportName);
         }
+        // REPRODUCED means more than accounted: the key must be in the record,
+        // or this run computed a name the deploy did not write (a parameter
+        // override, a suppressed or skipped output) and the deploy's real alias
+        // is one of the unaccounted keys.
+        if (
+          declaredExportName !== undefined &&
+          !(
+            typeof exportName === 'string' &&
+            !exportNameUnresolved &&
+            isReadableBag(state.outputs) &&
+            Object.hasOwn(state.outputs, exportName)
+          )
+        ) {
+          everyExportAliasReproduced = false;
+        }
         if (exportNameUnresolved) {
           outputsSourceUntrusted = true;
           logger.warn(
@@ -6976,7 +7197,23 @@ export async function scrubStack(
     // remedy is an `Export.Name` change plus a redeploy, per #1919). Repairing
     // a value and re-classifying a build are different changes and the second
     // one is not this issue's.
-    const secretBearingKeys: string[] = [];
+    //
+    // The WARNING is deferred to `reportSecretBearingKeys`, after the drop
+    // (go-to-k/cdkd#4120): a key this run DROPS is one scrub did remove, so it
+    // is neither warned as unscrubbable nor counted.
+    const secretBearingKeys: Array<{
+      key: string;
+      display: Exclude<SecretSafeKeyDisplay, { kind: 'safe' }>;
+    }> = [];
+    const reportSecretBearingKeys = (dropped: ReadonlySet<string>): number => {
+      let reported = 0;
+      for (const { key, display } of secretBearingKeys) {
+        if (dropped.has(key)) continue;
+        logger.warn(secretBearingStateKeyWarning(stack.stackName, display));
+        reported++;
+      }
+      return reported;
+    };
     for (const key of Object.keys(state.outputs ?? {})) {
       // ONE call decides both the guard and the message (issue #2874). The
       // previous shape took the verdict from the RAW key here and printed a
@@ -6987,8 +7224,7 @@ export async function scrubStack(
       // printed text.
       const display = secretSafeKeyDisplay(key, outputSecrets);
       if (!secretBearing(display)) continue;
-      secretBearingKeys.push(key);
-      logger.warn(secretBearingStateKeyWarning(stack.stackName, display));
+      secretBearingKeys.push({ key, display });
     }
 
     // The nested children this stack deploys (go-to-k/cdkd#2252): every
@@ -7137,7 +7373,7 @@ export async function scrubStack(
       // design has exactly this shape — zero needles — and reporting it clean
       // is the outcome issue #2133 exists to prevent.
       //
-      // `secretBearingKeys.length` is provably 0 on this branch and is carried
+      // The secret-bearing key count is provably 0 on this branch and is carried
       // for SHAPE only (issue #2133 review): `totalSecrets === 0` implies
       // `outputSecrets.size === 0`, and `stateKeySecretExposure` needs a needle
       // from that very map, so the loop above pushed nothing. TWO fields can be
@@ -7150,7 +7386,7 @@ export async function scrubStack(
       return {
         recordsChanged: 0,
         secretsFound: 0,
-        secretBearingKeys: secretBearingKeys.length,
+        secretBearingKeys: reportSecretBearingKeys(new Set()),
         unverifiableReads: prePassFindings.unverifiable.length,
         unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
         unverifiableLeaves,
@@ -7437,7 +7673,7 @@ export async function scrubStack(
     // halves of the scope decision, and for why the values it scans come from
     // `state.outputs` (the STORED bag) while its result is written over
     // `positionedOutputs`.
-    const newOutputs = redactUnaccountedOutputs(
+    const redactedOutputs = redactUnaccountedOutputs(
       positionedOutputs,
       state.outputs,
       accountedOutputKeys,
@@ -7454,6 +7690,116 @@ export async function scrubStack(
       allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
     );
     emitAbandonedScanNotes();
+    // THE DROP (go-to-k/cdkd#4120): a stored key today's template cannot name
+    // and neither pass rewrote is REMOVED from the bag this run writes, never
+    // left beside the expressions it writes — see `planUnnamedOutputDrop` for
+    // which keys, and which it must keep. Refused, with nothing written, when
+    // another stack still reads one: that read would break, and the remedy is
+    // the consumer's.
+    let newOutputs = redactedOutputs;
+    let newExportNames: unknown = state.exportNames;
+    let droppedKeys: ReadonlySet<string> = new Set<string>();
+    if (isReadableBag(state.outputs) && isReadableBag(redactedOutputs)) {
+      const stored = state.outputs as Record<string, unknown>;
+      const plan = planUnnamedOutputDrop({
+        stored,
+        rewritten: redactedOutputs as Record<string, unknown>,
+        accountedKeys: accountedOutputKeys,
+        exportNames: state.exportNames,
+        everyExportAliasReproduced,
+      });
+      if (plan.drop.length > 0 || plan.keep.length > 0) {
+        // A key is PRINTED, never its value. It is tested against every
+        // plaintext this run recorded (the log-only ones included) and against
+        // the stored value of every key in the plan, since a key built around
+        // a secret an older binary resolved may hold that value — fail-closed,
+        // so an innocent name sharing text with a dropped value is masked too.
+        const corpus: RecordedSecretValues = new Map(
+          printingCorpusOf(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets))
+        );
+        for (const key of [...plan.drop, ...plan.keep]) addStoredStringLeaves(stored[key], corpus);
+        const shownKeys = (keys: readonly string[]): string =>
+          keys
+            .map((key) =>
+              renderStateKeyForLine(
+                secretSafeKeyDisplay(key, corpus),
+                'it may contain a stored secret value'
+              )
+            )
+            .join(', ');
+        if (plan.drop.length > 0) {
+          const dropping = new Set(plan.drop);
+          let readers: DroppedOutputReader[];
+          try {
+            readers = await findDroppedOutputReaders(
+              stack.stackName,
+              region,
+              dropping,
+              stateBackend,
+              opts.listStateRefs ?? (() => stateBackend.listStacks())
+            );
+          } catch (err) {
+            throw new ScrubRefusalError(
+              `Scrub of ${shownStack}: its template no longer declares output key(s) ` +
+                `${shownKeys(plan.drop)}, which scrub drops from the record, but the other ` +
+                `stacks' state could not be read to confirm none of them still reads one ` +
+                `(${displaySafe(err instanceof Error ? err.message : String(err))}). Nothing ` +
+                `was written for ${shownStack}; fix the read and re-run cdkd scrub.`,
+              'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED'
+            );
+          }
+          if (readers.length > 0) {
+            const lines = readers.map(
+              (r) =>
+                `${displayStackName(r.consumerStack)} (${displayIdent(r.consumerRegion)}) reads ` +
+                (r.key === undefined
+                  ? `a name stored redacted, which cannot be compared,`
+                  : shownKeys([r.key])) +
+                ` via ${r.intrinsic}`
+            );
+            throw new ScrubRefusalError(
+              `Scrub of ${shownStack}: its template no longer declares output key(s) ` +
+                `${shownKeys(plan.drop)}, and scrub drops such a key rather than leave a value ` +
+                `it cannot identify beside the references it writes (cdkd diff would print ` +
+                `it) — but another stack still reads one: ${lines.join('; ')}. Dropping it ` +
+                `would break that read, so nothing was written for ${shownStack}. Stop the ` +
+                `consumer reading it (or declare the output again) and deploy, then re-run ` +
+                `cdkd scrub.`,
+              'SCRUB_DROPPED_OUTPUT_STILL_READ'
+            );
+          }
+          droppedKeys = dropping;
+          newOutputs = Object.fromEntries(
+            Object.entries(redactedOutputs as Record<string, unknown>).filter(
+              ([key]) => !dropping.has(key)
+            )
+          );
+          if (Array.isArray(state.exportNames)) {
+            newExportNames = (state.exportNames as unknown[]).filter(
+              (name) => !(typeof name === 'string' && dropping.has(name))
+            );
+          }
+          logger.info(
+            `${opts.dryRun ? 'Would drop' : 'Dropped'} ${plan.drop.length} output key(s) from ` +
+              `${shownStack} that its template no longer declares: ${shownKeys(plan.drop)}. ` +
+              `Their values are not printed: scrub could not identify them as a secret's ` +
+              `plaintext, and left beside the references it writes, cdkd diff would print ` +
+              `them. A deploy of today's template does not write them either.`
+          );
+        }
+        if (plan.keep.length > 0) {
+          logger.warn(
+            `${plan.keep.length} output key(s) in ${shownStack} that its template does not ` +
+              `declare were LEFT as they are: ${shownKeys(plan.keep)}. Each may be a live ` +
+              `export alias whose Export.Name this run could not reproduce (scrub resolves ` +
+              `with template defaults and takes no --parameters), so it is not dropped. If it ` +
+              `is a deleted output's, its value is still stored and cdkd diff can print it; ` +
+              `deploying ${shownStack} rewrites the outputs.`
+          );
+        }
+      }
+    }
+    const unscrubbableKeys = reportSecretBearingKeys(droppedKeys);
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
     // Whole-value rewrites of this record's outputs, as expression -> plaintext
     // pairs for `resolveRecordedExpressions` (see `outputRewrites`).
@@ -7515,6 +7861,9 @@ export async function scrubStack(
         // `{}` here would be a write this command never intended to make.
         // `newOutputs` IS `state.outputs`, unchanged, in exactly that case.
         outputs: newOutputs as StackState['outputs'],
+        // A dropped export alias leaves the export set with it
+        // (go-to-k/cdkd#4120); a record that never had the field gains none.
+        ...(newExportNames !== state.exportNames && { exportNames: newExportNames as string[] }),
         lastModified: Date.now(),
       };
       await stateBackend.saveState(stack.stackName, region, nextState, {
@@ -7525,7 +7874,7 @@ export async function scrubStack(
     return {
       recordsChanged,
       secretsFound: totalSecrets,
-      secretBearingKeys: secretBearingKeys.length,
+      secretBearingKeys: unscrubbableKeys,
       unverifiableReads: prePassFindings.unverifiable.length,
       unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
       unverifiableLeaves,
