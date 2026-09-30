@@ -42,6 +42,7 @@
 
 import readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
+import { plainIdentOr } from '../../utils/display-safe.js';
 import type { RecreateTarget } from '../../deployment/recreate-targets.js';
 import {
   isStatefulRecreateTargetForReplace,
@@ -172,9 +173,15 @@ export async function promptRecreateConfirm(input: {
       : unresolved
         ? ' — emptiness NOT established: the live probe failed, so cdkd does not know whether this resource holds data'
         : '';
-    logger.warn(
-      `  - ${dataLossPrefix}${t.logicalId} (${t.resourceType})${directionTag}${stateNote}`
+    // `resourceType` is the STATE record's, chosen by a state-bucket writer:
+    // a plain type prints as before, any other is described, so no pasted
+    // span of this data-loss prompt runs and no newline forges a row
+    // (go-to-k/cdkd#4165).
+    const shownType = plainIdentOr(
+      t.resourceType,
+      'a resource type that is not a plain identifier'
     );
+    logger.warn(`  - ${dataLossPrefix}${t.logicalId} (${shownType})${directionTag}${stateNote}`);
     if (stateful) {
       logger.warn(
         `    DATA: all data in ${t.logicalId} will be lost (no automatic data migration)`

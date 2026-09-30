@@ -64,6 +64,7 @@ import { assertRegionMatch } from '../provisioning/region-check.js';
 import { CC_BROKEN_REASON, ccBrokenReason } from '../provisioning/provider-registry.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { getLogger } from '../utils/logger.js';
+import { plainIdentOr } from '../utils/display-safe.js';
 import type { Logger } from '../types/config.js';
 import { withRetry } from './retry.js';
 import { isThrottlingError } from './retryable-errors.js';
@@ -653,7 +654,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     );
     for (const blocked of validation.blockedStatefulTargets) {
       lines.push(
-        `  - ${blocked.logicalId} (${blocked.resourceType}) — ` +
+        `  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)}) — ` +
           `${renderStatefulReason(blocked.statefulReason)}`
       );
     }
@@ -677,8 +678,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         : undefined;
       const shown =
         templateType && templateType !== blocked.resourceType
-          ? `${blocked.resourceType} in state, ${templateType} in the template`
-          : blocked.resourceType;
+          ? `${recordedTypeShown(blocked.resourceType)} in state, ${templateType} in the template`
+          : recordedTypeShown(blocked.resourceType);
       lines.push(`  - ${blocked.logicalId} (${shown})`);
     }
     lines.push(
@@ -841,6 +842,15 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
  * of its own region assert. `canonicalizeRegion` only lower-cases, so a state
  * record carrying stray whitespace would still fail a `!==` compare.
  */
+/**
+ * A refusal row's type is the STATE record's, chosen by a state-bucket writer
+ * (go-to-k/cdkd#4165): a plain type prints as before, any other is described,
+ * so no pasted span of the refusal runs and no newline forges a row.
+ */
+function recordedTypeShown(resourceType: string): string {
+  return plainIdentOr(resourceType, 'a resource type that is not a plain identifier');
+}
+
 function foldRegion(region: string | undefined): string | undefined {
   return canonicalizeRegion(region?.trim());
 }

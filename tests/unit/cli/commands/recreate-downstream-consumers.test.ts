@@ -384,8 +384,8 @@ describe('findDownstreamConsumers (#650)', () => {
       // Stated as a positive fact rather than fenced as a protection, because
       // it is not one. An earlier version asserted the rendered line contains
       // no plaintext, over a fixture whose input held none: unfalsifiable by
-      // construction, AND a claim the renderer does not enforce -- it prints
-      // `exportName` verbatim. A record written before the persist redaction
+      // construction, AND a claim the renderer does not enforce -- it prints a
+      // plain `exportName` verbatim (a non-plain one is described, #4165). A record written before the persist redaction
       // still carries a plaintext `outputName`, and that reaches this prompt.
       //
       // Redaction happens at PERSIST. Moving a mask here would only cover rows

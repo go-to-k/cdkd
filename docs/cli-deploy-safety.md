@@ -437,7 +437,9 @@ targets in both directions produces one plan carrying both direction tags.
 The recreated resource gets a fresh physical id, so downstream stacks that read
 its outputs via `Fn::GetStackOutput` / `Fn::ImportValue` must be re-deployed
 before they see the new id. cdkd walks the state bucket at plan time and names
-the downstream consumer stacks it finds in the warn block. If that walk fails
+the downstream consumer stacks it finds in the warn block (a recorded name,
+region or export name that is not a plain identifier is described rather than
+printed). If that walk fails
 to read — a permissions problem, say — cdkd falls back to the generic caveat
 without failing the deploy, so an empty consumer list is not proof there are
 none. Plan multi-stack recreates from leaf to root.

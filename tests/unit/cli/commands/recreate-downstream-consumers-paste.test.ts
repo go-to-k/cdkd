@@ -80,6 +80,22 @@ describe('renderDownstreamConsumers — no non-plain record value printed raw (g
     );
   });
 
+  it('keeps a nested-stack consumer name byte-identical', () => {
+    expect(rendered({ ...CONSUMER, consumerStack: 'Parent~Child' })).toContain(
+      '    - Parent~Child (us-east-1) reads Producer:ExportsOutputRefBucket83908E7781C90AC0 via Fn::ImportValue'
+    );
+  });
+
+  it('describes a masked `***` name on a CANNOT NAME row', () => {
+    for (const exportName of ['***', 'Endpoint-***']) {
+      const message = rendered({ ...ARMS[1]!.base, exportName });
+      expect(message, exportName).toContain(
+        ' reads an output whose name is not a plain identifier via Fn::GetStackOutput'
+      );
+      expect(message, exportName).not.toContain('***');
+    }
+  });
+
   for (const { label: arm, base } of ARMS) {
     for (const { label, consumer, described } of positions(base)) {
       it(`${arm}: describes a payload ${label}, never shows it, and no pasted span runs`, () => {
