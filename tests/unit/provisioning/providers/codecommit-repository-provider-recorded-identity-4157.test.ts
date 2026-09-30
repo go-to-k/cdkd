@@ -472,6 +472,26 @@ describe('CodeCommitRepositoryProvider — delete: region, transient reads, guar
     expect(reason).toContain('AccessDeniedException');
   });
 
+  const nonTransient: Array<[string, () => unknown]> = [
+    [
+      'an unavailable KMS key',
+      () => awsSdkError('The encryption key is not available', 'EncryptionKeyUnavailableException'),
+    ],
+    ['an unexpected error', () => new Error('something unexpected')],
+  ];
+  for (const [label, make] of nonTransient) {
+    it(`${label} on the identity read proceeds with the guard and one DeleteRepository`, async () => {
+      primeAccount({ holderId: RECORDED_ID, getFails: make() });
+      const provider = new CodeCommitRepositoryProvider();
+      const result = await provider.delete('Repo', NAME, TYPE, RECORDED, context);
+      expect(sentNames()).toEqual(['GetRepositoryCommand', 'DeleteRepositoryCommand']);
+      expect(result?.indeterminateGuards).toHaveLength(1);
+      expect(result?.indeterminateGuards?.[0]?.guard).toBe(RECORDED_IDENTITY_DELETE_GUARD);
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('Proceeding with the delete');
+    });
+  }
+
   it('the no-id guard reason says so', async () => {
     primeAccount({ holderId: RECORDED_ID, holderWithoutId: true });
     const provider = new CodeCommitRepositoryProvider();

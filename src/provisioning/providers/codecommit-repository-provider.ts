@@ -1045,8 +1045,11 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * holding the name is read first and a holder with another id is REFUSED,
    * with nothing deleted: returning normally would drop the record while the
    * foreign repository stays, and deleting it destroys a repository the stack
-   * never created. A read that cannot answer (a denied `GetRepository`)
-   * proceeds and reports an `IndeterminateGuard`; a throttled one is retried.
+   * never created. A read that cannot confirm the holder's identity and is
+   * not a retryable transient failure (a denied `GetRepository`, an
+   * unavailable KMS key, any other error) proceeds with a warn and reports an
+   * `IndeterminateGuard`, so cdkd's own repository is never wedged; a
+   * throttled, 5xx or connection-level read is retried.
    * A record with no `RepositoryId` keeps the historical by-name delete.
    */
   async delete(
@@ -1138,8 +1141,11 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    *   (`RepositoryDoesNotExistException`, rethrown to the idempotent arm):
    *   `undefined`, and the delete goes ahead;
    * - another id: THROWS a non-retryable refusal, and nothing is deleted;
-   * - no answer (the read was denied, or returned no id): the delete goes
-   *   ahead and the guard is reported. A throttled, 5xx or connection-level
+   * - no answer (ANY read failure below, or a read with no id): the delete
+   *   goes ahead with a warn and the guard reported — a denied read, an
+   *   `EncryptionKey*` failure, an unexpected error alike, since a destroy of
+   *   cdkd's own repository must not wedge on them and the delete was by name
+   *   before this check existed. A throttled, 5xx or connection-level
    *   failure is rethrown instead, so the caller's retry asks again. A
    *   connection never made (`ECONNREFUSED`, `ENOTFOUND`) is not ambiguous and
    *   takes the proceed arm; the delete that follows fails the same way.
