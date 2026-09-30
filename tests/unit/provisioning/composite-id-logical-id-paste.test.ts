@@ -126,7 +126,19 @@ describe('the composite-id message heads never print a raw logical id (go-to-k/c
     }
     // Plain to `displayIdent`, but a command path, a tilde expansion, an
     // assignment or an option at the start of a pasted line.
-    for (const type of ['./x', '~u/x', 'A=b', '-x', '/bin/x', 'AWS::', '::Glue', 'AWS::Glue::Table ']) {
+    // The last one fits the type shape but runs past `displayIdent`'s cap, which
+    // only the `plainIdentOr` round-trip catches.
+    for (const type of [
+      './x',
+      '~u/x',
+      'A=b',
+      '-x',
+      '/bin/x',
+      'AWS::',
+      '::Glue',
+      'AWS::Glue::Table ',
+      `AWS::${'A'.repeat(251)}`,
+    ]) {
       expect(compositeIdSeparatorRefusal(type, 'MyTable', REFUSED), JSON.stringify(type)).toMatch(
         new RegExp(`^${TYPE_DESCRIBED} MyTable: `)
       );
