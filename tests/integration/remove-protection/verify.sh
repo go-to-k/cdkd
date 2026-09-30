@@ -105,16 +105,16 @@ DESTROY_4B_LOG=""
 wait_endpoint_service_gone() { # usage: wait_endpoint_service_gone <service id>
   local state=""
   for _ in $(seq 1 24); do
-    if gone_probe aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
-        --service-ids "$1"; then
-      return 0
+    # ONE read, classified here: a probe followed by a second read would fail
+    # the wait when the service went away between the two.
+    if ! state="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
+        --service-ids "$1" --query 'ServiceConfigurations[0].ServiceState' --output text 2>&1)"; then
+      if printf '%s' "${state}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+        return 0
+      fi
+      echo "[verify] endpoint service ${1}: probe undetermined: ${state}" >&2
+      return 1
     fi
-    state="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
-      --service-ids "$1" --query 'ServiceConfigurations[0].ServiceState' --output text)" || {
-      # Deleted between the probe above and this read: the next probe says so.
-      sleep 5
-      continue
-    }
     if [ "${state}" = "Deleted" ] || [ "${state}" = "None" ]; then
       return 0
     fi
@@ -165,10 +165,14 @@ cleanup() {
     # refuses and the destroy below leaks the NLB (and the VPC behind it).
     # A create that landed while the CLI still failed leaves the id unset:
     # find it by the tag step 4b gives it.
+    # A failed lookup is reported and skipped: the destroy below still runs.
     if [ -z "${OOB_ENDPOINT_SERVICE_ID}" ] && [ -n "${NLB_ARN}" ]; then
-      OOB_ENDPOINT_SERVICE_ID="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
-        --filters "Name=tag:Name,Values=${STACK}-4b" \
-        --query 'ServiceConfigurations[0].ServiceId' --output text 2>/dev/null)" || OOB_ENDPOINT_SERVICE_ID=""
+      if ! OOB_ENDPOINT_SERVICE_ID="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
+          --filters "Name=tag:Name,Values=${STACK}-4b" \
+          --query 'ServiceConfigurations[0].ServiceId' --output text 2>&1)"; then
+        echo "[verify] could not look up the step-4b endpoint service by tag: ${OOB_ENDPOINT_SERVICE_ID}"
+        OOB_ENDPOINT_SERVICE_ID=""
+      fi
       [ "${OOB_ENDPOINT_SERVICE_ID}" = "None" ] && OOB_ENDPOINT_SERVICE_ID=""
     fi
     if [ -n "${OOB_ENDPOINT_SERVICE_ID}" ]; then
