@@ -105,8 +105,8 @@ function notEmptyRefusalMessage(bucketName: string): string {
   const remedy = command
     ? `Delete all objects first (e.g. ${command}) and destroy again.`
     : 'Delete all objects first, via the console, and destroy again: the bucket name cdkd ' +
-      'recorded cannot be reproduced safely on a command line, so any command shown here would ' +
-      'act on a different bucket.';
+      'recorded cannot be reproduced safely on a command line, so any command shown here could ' +
+      'act on a different bucket or run part of the name as shell.';
   return (
     `bucket ${displayIdent(bucketName)} is not empty. Matching CloudFormation, cdkd does not ` +
     `delete a non-empty directory bucket without an explicit opt-in. ${remedy}`

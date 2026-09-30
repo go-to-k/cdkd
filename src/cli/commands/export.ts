@@ -4,6 +4,7 @@ import {
   pasteableCommand,
   type CommandArg,
   type PasteableCommand,
+  SHELL_ACTIVE_WHY,
   type WithholdReason,
 } from '../../utils/pasteable-command.js';
 import * as nodePath from 'node:path';
@@ -4383,6 +4384,8 @@ export function orphanWithholdWhy(reason: WithholdReason, positional: boolean): 
     // does: a throw here would escape the state-deletion warn's `catch`.
     case 'pattern-shaped':
       return `cannot be printed as an argument to 'cdkd state orphan'`;
+    case 'shell-active':
+      return SHELL_ACTIVE_WHY;
     default: {
       const _exhaustive: never = reason;
       throw new Error(`orphanWithholdWhy: unhandled WithholdReason ${String(_exhaustive)}`);
@@ -6568,6 +6571,8 @@ function refreshWithheldReason(built: PasteableCommand): string {
         `'_', '.' or '-'), the only shape named in a command here, since a name outside it ` +
         `can run as shell or read as a line of this message once the terminal wraps.`
       );
+    case 'shell-active':
+      return `${what} ${SHELL_ACTIVE_WHY}.`;
     case 'pattern-shaped':
       // Unreachable — `refArgs` passes no `patternMatched`, since this
       // command resolves by exact name — and answered on purpose, because the

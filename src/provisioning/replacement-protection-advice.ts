@@ -102,6 +102,7 @@
 
 import { displaySafe } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
+import { isInertUnquoted } from '../utils/pasteable-command.js';
 import { shellQuote } from '../state/lock-contention-message.js';
 
 /**
@@ -312,26 +313,6 @@ export function renderDisableCommand<
 }
 
 /**
- * What makes an identifier change a pasted command once the surrounding quotes
- * are gone, measured under bash and zsh (go-to-k/cdkd#3950): whitespace and
- * `'"` `` ` `` `$;&|<>()\*?[]{}!` anywhere, `#` or `=` at the start of the word
- * (a comment; zsh's `=cmd` expansion), and `~` at the start or right after `=`
- * or `:` (bash expands both inside an assignment-shaped word, `a=~root`).
- * `]`, `{` and `}` change nothing alone, but complete a glob or a brace
- * expansion with a neighbour (`x{a,b}`). NARROWER than `SHELL_ACTIVE` in
- * `pasteable-aws-profile.ts` on purpose: a mid-word `#`, `=`, `,`, `%` or `^`
- * is literal, and AWS names carry them (a log group `/app#blue`, an IAM name
- * with `=` or `,`), so those keep their remedy command.
- *
- * Measured under each shell's DEFAULT options. Under zsh's `EXTENDED_GLOB` a
- * mid-word `#`, `^` or `~` is a glob operator, but that is not a way in:
- * `shellQuote` always quotes those characters, and a `cdkd's` flip leaves the
- * word glued to prose, so the worst case is a no-match abort (or the word
- * dropped under `NULL_GLOB`), not a run.
- */
-const PASTE_ARG_UNSAFE = /[\s'"`$;&|<>()\\*?[\]{}!]|^[#=]|(?:^|[=:])~/;
-
-/**
  * ONE value of a pasteable `aws ...` command, rendered the way
  * {@link renderDisableCommand} renders its identifier — or `undefined` when it
  * cannot be named, in which case the caller must print NO command.
@@ -360,8 +341,9 @@ function pasteableArg(
   // apostrophe that flips the quote parity of a line pasted whole. So a value
   // that would change the command once unquoted is not named at all, and an
   // admitted value is inert even unquoted (under default shell options; see
-  // `PASTE_ARG_UNSAFE` for `EXTENDED_GLOB`).
-  if (PASTE_ARG_UNSAFE.test(safe)) return undefined;
+  // `PASTE_ARG_UNSAFE` in `utils/pasteable-command.ts` for `EXTENDED_GLOB`;
+  // the same predicate gates `pasteableCommand`, go-to-k/cdkd#4205).
+  if (!isInertUnquoted(safe)) return undefined;
   return shellQuote(safe);
 }
 

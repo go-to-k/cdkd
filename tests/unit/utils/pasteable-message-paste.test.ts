@@ -86,13 +86,16 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         message:
           `This record's name could not be read — inspect the object at that key.` +
           `\nInspect it with: ${gated.command}`,
-        expects: `\nInspect it with: cdkd state show ${shellQuote(payload)} --stack-region us-east-1`,
+        // Every payload is shell-active, so the gate HOLES it (go-to-k/cdkd#4205):
+        // quoted, the separator payload ran once `record's` above and the
+        // command were pasted as one block.
+        expects: `\nInspect it with: cdkd state show '<stack>' --stack-region us-east-1`,
       },
       {
         // The same, with the REGION as the hostile value.
         label: 'gated region',
         message: `The stack's region doesn't render exactly.\nInspect it with: ${exact.command}`,
-        expects: `\nInspect it with: cdkd state show MyStack --stack-region ${shellQuote(payload)}`,
+        expects: `\nInspect it with: cdkd state show MyStack --stack-region '<region>'`,
       },
       {
         // A hole-only command, which is what a fully withheld site prints.
@@ -105,7 +108,8 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       },
       {
         // The real builders hold both values to `plainIdent`, so a payload is
-        // a HOLE there where the synthetic gate above names it shell-quoted.
+        // a HOLE there too, for the `not-plain` reason rather than
+        // `shell-active`.
         label: 'malformedOutputsWarning',
         message: malformedOutputsWarning(payload, 'us-east-1'),
         expects: ` with: cdkd state show '<stack>' --stack-region us-east-1 --json`,
@@ -127,19 +131,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
           expect(message, `${site} did not render the command this case expects`).toContain(
             expects
           );
-          // KNOWN VIOLATION, go-to-k/cdkd#4205: `pasteableCommand` names the
-          // separator payload shell-quoted, and `record's` on the line above
-          // flips the quote parity when both lines are pasted as one block
-          // (go-to-k/cdkd#4133), so the payload's `;` runs as bare shell under
-          // bash. Pinned to exactly that two-line span; #4205's fix withholds
-          // the value and removes this arm.
-          const known4205 = site === 'gated stack' && label === 'separator';
-          expect(spansThatRun(message, dir, { shells: ['bash'] }), `${label} ran in ${site}`).toEqual(
-            known4205 ? [message] : []
-          );
-          if (PASTE_SHELLS.includes('zsh')) {
-            expect(spansThatRun(message, dir, { shells: ['zsh'] }), `${label} ran in ${site} (zsh)`).toEqual([]);
-          }
+          expect(spansThatRun(message, dir), `${label} ran in ${site}`).toEqual([]);
         }
       });
     }, 120_000);
@@ -653,11 +645,9 @@ describe('pasteable messages — nothing runs at any granularity', () => {
     withPasteDir((dir) => {
       const hostile = 'x$(touch OWNED)';
 
-      // INSIDE a command: live through displayIdent, inert through the gate —
-      // and the difference is the QUOTE KIND, not withholding. This value
-      // renders exactly (printable ASCII, no leading `-`, no pattern
-      // character), so the gate NAMES it, shell-quoted; `shellQuote` is what
-      // makes `$( )` inert in argv.
+      // INSIDE a command: live through displayIdent, inert through the gate.
+      // Since go-to-k/cdkd#4205 the gate WITHHOLDS this value (it is not
+      // inert with its quotes stripped), so the command carries a hole.
       const viaDisplay =
         `Repair with: cdkd import ${commandHole('stack')} --resource ` +
         `${displayIdent(hostile, { maxCodePoints: 255 })}=${commandHole('physicalId')} --force`;
@@ -672,7 +662,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
           ]).command
         }=${commandHole('physicalId')} --force`;
       expect(filesTouchedBy(viaGate, dir), 'the gated form must be inert').toEqual([]);
-      expect(viaGate).toContain(`--resource 'x$(touch OWNED)'`);
+      expect(viaGate).toContain(`--resource '<logicalId>'`);
       expect(viaDisplay).toContain(`--resource "x$(touch OWNED)"`);
 
       // In PROSE, both ways a sentence can run. With no apostrophe the word

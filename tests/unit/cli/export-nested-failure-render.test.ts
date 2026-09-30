@@ -298,6 +298,58 @@ describe('Phase 1A: the Cause line renders the waiter rethrow through displayAws
   });
 });
 
+describe('Phase 1A with nothing imported names no shell-active stack in its two commands (go-to-k/cdkd#4205)', () => {
+  it('holes a payload root name in both commands, and no pasted span runs', async () => {
+    // The Cause line carries AWS's text, which can hold a `'` (as here), and
+    // the refusal prose `this stack's`: either flips the quote parity of a
+    // shell-quoted name in `list-stack-resources --stack-name` or
+    // `cdkd export`, once the lines are pasted as one block. The
+    // CloudFormation name is the root's own (no override), so both carry it.
+    const messages: Array<[string, string]> = [];
+    // The payload as the cdkd name (with a valid CloudFormation override, as
+    // the name check requires) and as the override itself.
+    const shapes = PASTE_PAYLOADS.flatMap(({ label, value }) => [
+      { label: `${label} cdkd name`, value, cfn: 'RootCfn' },
+      { label: `${label} cfn override`, value: 'Root', cfn: value },
+    ]);
+    for (const { label, value, cfn } of shapes) {
+      waitChangeSetCreate.mockRejectedValue(new Error("the stack's changeset was rejected"));
+      const tree: CdkdStateStackTree = {
+        stackName: value,
+        region: 'us-east-1',
+        state: state(value, { MyBucket: bucket('b1') }),
+        nestedChildren: new Map(),
+      };
+      const message = await runPerStackImportLoop({
+        lockRecovery: {},
+        rootStackName: value,
+        rootRegion: 'us-east-1',
+        rootStackInfoNestedTemplates: {},
+        rootTemplateFormat: 'json',
+        tree,
+        rootTemplate: { Resources: { MyBucket: { Type: 'AWS::S3::Bucket', Properties: {} } } },
+        cfnStackNameOverrides: { root: cfn, childMap: new Map() },
+        rootParameters: [],
+        deps: deps(cfnClient({ describeChangeSetThrows: true })),
+        options: OPTIONS,
+      }).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      const stackName = cfn === 'RootCfn' ? 'RootCfn' : "'<stack-name>'";
+      const root = value === 'Root' ? 'Root' : "'<stack>'";
+      expect(message, label).toContain(
+        `\n  aws cloudformation list-stack-resources --stack-name ${stackName}\n` +
+          `then delete it, and re-run with: cdkd export ${root}`
+      );
+      messages.push([label, message]);
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+    });
+  }, 120_000);
+});
+
 describe('Phase 1A failing after a stack was imported gives the whole-tree recovery (go-to-k/cdkd#3910)', () => {
   let tmp: string;
   beforeEach(() => {

@@ -13,6 +13,7 @@ import {
   pasteableCommand,
   type CommandArg,
   type WithheldValue,
+  SHELL_ACTIVE_WHY,
   type WithholdReason,
 } from '../utils/pasteable-command.js';
 import { sanitizeRecoveryValue, shellQuote } from './lock-contention-message.js';
@@ -677,6 +678,8 @@ function accountReason(reason: WithholdReason): string {
     // Unreachable: `accountArgs` passes no `patternMatched`.
     case 'pattern-shaped':
       return 'would be read as a pattern';
+    case 'shell-active':
+      return SHELL_ACTIVE_WHY;
     case 'not-plain':
       return (
         `is not a plain identifier (a letter or digit, then letters, digits, '~', '_', '.' or ` +
@@ -2354,9 +2357,12 @@ function dropRecordCommand(
  * measures the cap itself and says `too-long`. The stack name keeps
  * `STACK_REF_MAX_CODE_POINTS`; the region now takes `SHORT_NAME_MAX_CODE_POINTS`,
  * the cap its prose renders at (see `orphanRegionArg`), where the copy used
- * 1152 for both. No `plainIdent`: that would withhold the
- * go-to-k/cdkd#3359 path from `It's Legacy`, which go-to-k/cdkd#3523 records as
- * the reason this message is not gated like the template sites.
+ * 1152 for both. No `plainIdent`, but the gate's DEFAULT now withholds any
+ * value that would not be inert with its quotes stripped (go-to-k/cdkd#4205),
+ * so `It's Legacy` is a hole here too: the go-to-k/cdkd#3359 path that named
+ * such a name exactly (kept by go-to-k/cdkd#3523) is retired on purpose, since
+ * a quoted name runs as shell once anything pasted before it flips the quote
+ * parity, and cdkd cannot control what that is.
  */
 function orphanIdentityVerdict(
   stackName: string,
@@ -2430,12 +2436,10 @@ function orphanRegionArg(region: string): CommandArg {
  * It is NOT the module's gate for a DESTRUCTIVE remedy and must not be unified
  * with one: the three messages that offer a hole TEMPLATE are all stricter,
  * adding {@link isPasteableIdent} (go-to-k/cdkd#3516). The orphan refusal's
- * commands are weaker on purpose — {@link orphanIdentityVerdict} passes no
- * `plainIdent` — and the gap is tracked rather than closed (go-to-k/cdkd#3523):
- * {@link dropRecordCommand} SUBSTITUTES, so tightening it withholds the
- * drop command from a legacy record whose name merely needs quoting — the very
- * path go-to-k/cdkd#3359 built, where `cdkd state show` refuses outright and
- * this command is the way out. Measured: `It's Legacy` loses it.
+ * commands pass no `plainIdent`, so a name such as `Parent~Child.v2` that is
+ * inert unquoted still substitutes; a name that needs quoting does not
+ * (go-to-k/cdkd#4205 retired go-to-k/cdkd#3523's `It's Legacy` exception): its
+ * drop command prints the hole, filled from `cdkd state list --json`.
  *
  * **The ONE spelling of the exactness test in this module** (go-to-k/cdkd#3388).
  * The two DESTROY gates measure through it too, each at the cap its own clause
@@ -2560,6 +2564,8 @@ function inspectWithheldPart(
         `'_', '.' or '-'), the only shape the command at the end of this line names, since it sits beside a ` +
         `labelled line`
       );
+    case 'shell-active':
+      return `${what} ${SHELL_ACTIVE_WHY}`;
     // Unreachable: `inspectGate` passes no `patternMatched`.
     case 'pattern-shaped':
       throw new Error(

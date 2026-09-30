@@ -42,14 +42,17 @@
  * 3. **A value whose quote context the PROSE already flipped.** An English
  *    apostrophe earlier in the sentence (`this stack's name`) opens a shell
  *    quote that closes at the value's own opening quote, leaving the value
- *    bare. This module cannot reach that one — a value in prose is not a
- *    command — which is why the rule it belongs to is "a shell-quoted value
- *    goes on a line of its own, never inside a sentence", and why
- *    deleting apostrophes is NOT the remedy (the next sentence re-opens it).
+ *    bare. A line of its own does not stop it either: the parity is set by
+ *    whatever the operator pastes in the same shell input, lines above
+ *    included (go-to-k/cdkd#4133, go-to-k/cdkd#4205), and deleting
+ *    apostrophes is NOT the remedy (AWS text, a displayed value or terminal
+ *    output above cdkd's reopens it). So this module names a value only when
+ *    it stays inert with its quotes stripped (`'shell-active'`), and
+ *    `shellQuote` is what then keeps it one argument.
  *
  * What this module owns is the ARGUMENT side of shape 1 and shape 2: every
- * user-controlled value is sanitized, gated on rendering EXACTLY, and either
- * shell-quoted or replaced by a quoted hole. A value sanitizing would ALTER is
+ * user-controlled value is sanitized, gated on rendering EXACTLY and on being
+ * inert unquoted, and either shell-quoted or replaced by a quoted hole. A value sanitizing would ALTER is
  * never printed in its altered spelling — that addresses a DIFFERENT record
  * than the message means — and never silently dropped, which would resolve the
  * ambient default instead.
@@ -103,9 +106,36 @@ import { pasteableRunFlags, pasteableVerbFlags } from './pasteable-run-context.j
  * holding one is printed as a hole: quoting alone is not enough, because a
  * command can be pasted together with a sentence whose apostrophe flips the
  * quote parity, or from inside markdown backticks (go-to-k/cdkd#3959). A
- * value with none of these is inert even unquoted.
+ * value with none of these is inert even unquoted. It is WIDER than
+ * {@link PASTE_ARG_UNSAFE}, the measured test every value a command NAMES is
+ * held to.
  */
 export const SHELL_ACTIVE = /[\s'"`$;&|<>()*?[\]{}!#~\\^=%,]/;
+
+/**
+ * What makes a value change a pasted command once the surrounding quotes are
+ * gone, measured under bash and zsh (go-to-k/cdkd#3950, PR go-to-k/cdkd#4198):
+ * whitespace and `'"` `` ` `` `$;&|<>()\*?[]{}!` anywhere, `#` or `=` at the
+ * start of the word (a comment; zsh's `=cmd` expansion), and `~` at the start
+ * or right after `=` or `:` (bash expands both inside an assignment-shaped
+ * word, `a=~root`). `]`, `{` and `}` change nothing alone, but complete a glob
+ * or a brace expansion with a neighbour (`x{a,b}`). NARROWER than
+ * {@link SHELL_ACTIVE} on purpose: a mid-word `#`, `=`, `,`, `%`, `^` or `~`
+ * is literal, and real names carry them (a log group `/app#blue`, an IAM name
+ * with `=` or `,`, every nested-stack child `Parent~Child`).
+ *
+ * Measured under each shell's DEFAULT options. Under zsh's `EXTENDED_GLOB` a
+ * mid-word `#`, `^` or `~` is a glob operator, but that is not a way in:
+ * `shellQuote` always quotes those characters, and a flipped parity leaves the
+ * word glued to prose, so the worst case is a no-match abort (or the word
+ * dropped under `NULL_GLOB`), not a run.
+ *
+ * The ONE spelling of the test (go-to-k/cdkd#4205), through
+ * {@link isInertUnquoted}: `pasteableCommand`'s `'shell-active'` arm,
+ * `pasteableArg` in `provisioning/replacement-protection-advice.ts` and
+ * `recoveryCommandFlags` in `state/lock-contention-message.ts` all read it.
+ */
+export const PASTE_ARG_UNSAFE = /[\s'"`$;&|<>()\\*?[\]{}!]|^[#=]|(?:^|[=:])~/;
 
 /**
  * Quote a value for a pasteable shell command.
@@ -285,13 +315,44 @@ export type WithholdReason =
   /** `*` or `/` where the command matches PATTERNS rather than names. */
   | 'pattern-shaped'
   /**
+   * Matches {@link PASTE_ARG_UNSAFE}: a value that would NOT be inert with its
+   * quotes stripped (go-to-k/cdkd#4205). The DEFAULT arm, taken wherever `plainIdent` is not
+   * set. `shellQuote` is safe only while the quote parity before the value is
+   * even, and that parity is set by whatever the operator pastes in the same
+   * shell input: an apostrophe in cdkd's own prose on an earlier line, a `'`
+   * in an AWS error message, a displayed value, or terminal output above
+   * cdkd's that the selection starts in. With the parity odd, the value's
+   * opening quote CLOSES a quote and the value runs as bare shell, so the only
+   * property that holds whatever precedes the command is the value's own
+   * inertness. Whitespace counts: a space runs nothing itself, but bare it
+   * splits the value into words, and a later word such as `--all` or
+   * `--force` becomes an OPTION of the pasted command. A medial `~`
+   * (`Parent~Child`, every nested-stack child name) is admitted: it expands
+   * only at the start of a word or after `=` / `:`.
+   */
+  | 'shell-active'
+  /**
    * Refused by `isPasteableIdent` under `plainIdent`, where the command sits
    * beside a labelled line. LAST in the order on purpose: the predicate is
    * strictly stronger than every other arm, so placed earlier it would take
    * their sentences and say "not a plain identifier" of `--all`, which has a
-   * more specific true reason.
+   * more specific true reason. It REPLACES `'shell-active'` under
+   * `plainIdent` rather than following it: every value that arm refuses this
+   * one refuses too, so a `plainIdent` caller keeps the one sentence it
+   * already renders for `$(...)`.
    */
   | 'not-plain';
+
+/**
+ * The clause every sentence about a `'shell-active'` value ends in, shared so
+ * the modules rendering their own reason text say the same thing. It states
+ * the rule, not a hazard of this value, and spells no shell character, since
+ * it is pasted with the rest of the message.
+ */
+export const SHELL_ACTIVE_WHY =
+  'holds whitespace or a character a shell treats specially, and only a value that stays ' +
+  'inert without its quotes is named in a command here, since text pasted before the ' +
+  'command can undo the quotes and leave it to run as shell';
 
 /** One value the command could not name, and why. */
 export interface WithheldValue {
@@ -393,16 +454,31 @@ export function quotedOrDescribed(value: string, what: string): string {
  */
 export function rendersExactly(value: string): boolean {
   const reason = withholdReason(value, undefined);
-  return reason === undefined || reason === 'option-shaped';
+  // `shell-active`, like `option-shaped`, is a COMMAND-level judgement made
+  // after rendering: `Old;Stack` survives sanitizing untouched.
+  return reason === undefined || reason === 'option-shaped' || reason === 'shell-active';
+}
+
+/**
+ * True when `value` stays inert with its quotes stripped: it does not match
+ * {@link PASTE_ARG_UNSAFE}. The test {@link withholdReason}'s `'shell-active'`
+ * arm applies, exported for the two builders outside this function that print
+ * a value into a command the operator pastes: `pasteableArg`
+ * (`provisioning/replacement-protection-advice.ts`) and `recoveryCommandFlags`
+ * (`state/lock-contention-message.ts`), go-to-k/cdkd#4205.
+ */
+export function isInertUnquoted(value: string): boolean {
+  return !PASTE_ARG_UNSAFE.test(value);
 }
 
 /**
  * WHY a value must become a hole, or `undefined` when it may be NAMED.
  *
  * FIRST MATCH WINS, in the order written: `empty`, `altered`, `too-long`,
- * `option-shaped`, `pattern-shaped`, `not-plain` (m21 of the go-to-k/cdkd#3499
- * review; the sixth is M17 of go-to-k/cdkd#3613's, and sits last because it
- * subsumes the other five — see its member note). A
+ * `option-shaped`, `pattern-shaped`, then `not-plain` under `plainIdent` or
+ * `shell-active` without it (m21 of the go-to-k/cdkd#3499 review; `not-plain`
+ * is M17 of go-to-k/cdkd#3613's, and sits last because it subsumes the other
+ * five — see its member note; `shell-active` is go-to-k/cdkd#4205's). A
  * value can satisfy several — `-\u001b[x` is both option-shaped and altered —
  * and the caller renders ONE sentence, so the order decides which. It runs
  * cheapest-and-most-fundamental first: a value that does not survive rendering
@@ -439,7 +515,11 @@ function withholdReason(
   if (opts?.patternMatched === true && (value.includes('*') || value.includes('/'))) {
     return 'pattern-shaped';
   }
-  if (opts?.plainIdent === true && !isPasteableIdent(value)) return 'not-plain';
+  if (opts?.plainIdent === true) return isPasteableIdent(value) ? undefined : 'not-plain';
+  // The default (go-to-k/cdkd#4205): name a value only when pasting it BARE
+  // could run nothing — see the `'shell-active'` member for why quoting it is
+  // not enough and why whitespace counts.
+  if (!isInertUnquoted(value)) return 'shell-active';
   return undefined;
 }
 
@@ -583,11 +663,13 @@ function runFlagWords(
  * WHICH reasons are reachable is the CALLER's question, not this function's,
  * and every arm is answered here because the gate can return any of them. For
  * a name that comes from an S3 key segment — `state refresh-observed`'s legacy
- * refusal and `drift`'s — four of the six are reachable and two are bounded
+ * refusal and `drift`'s — five of the seven are reachable and two are bounded
  * out by the key itself:
  *
  * - `altered`, `option-shaped` and `pattern-shaped` are all reachable: a
  *   planted key can spell a name any of those ways in a handful of bytes.
+ * - `shell-active` is reachable from a caller NOT passing `plainIdent`
+ *   (go-to-k/cdkd#4205), and is replaced by `not-plain` for one that does.
  * - `not-plain` is reachable only from a caller passing `plainIdent` —
  *   `drift`'s site (M17 of the go-to-k/cdkd#3613 review) and every `state.ts`
  *   caller (go-to-k/cdkd#3696) — and there it is the reason for
@@ -671,6 +753,11 @@ export function withheldTargetClause(
       break;
     case 'pattern-shaped':
       why = `would be read as a PATTERN by '${verb}', which can match other stacks`;
+      break;
+    case 'shell-active':
+      // Names the RULE, as `not-plain` does, and spells no shell character:
+      // this sentence is pasted with the rest of the message.
+      why = SHELL_ACTIVE_WHY;
       break;
     case 'not-plain':
       // The clause names the SHAPE the operator can check by eye, because the

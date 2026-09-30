@@ -465,6 +465,28 @@ export function expectOnlyDisplayResidual(
 }
 
 /**
+ * The criterion for a message whose COMMAND withholds a payload value that its
+ * PROSE still displays through `displayIdent`'s JSON boundary
+ * (go-to-k/cdkd#4205's sites). A family that holds no `$( )` or backtick is
+ * inert inside double quotes, so nothing may run at all; the two that do run
+ * there are held to {@link expectOnlyDisplayResidual}, which refuses any span
+ * where the value runs OUTSIDE a JSON boundary, the shape a shell-quoted value
+ * in a command takes once the parity before it flips.
+ */
+export function expectNothingRunsButTheDisplay(
+  message: string,
+  dir: string,
+  value: string,
+  label = value
+): void {
+  if (/\$\(|`/.test(value)) {
+    expectOnlyDisplayResidual(message, dir, value);
+  } else {
+    expect(spansThatRun(message, dir), label).toEqual([]);
+  }
+}
+
+/**
  * The RUNTIME half of {@link expectOnlyDisplayResidual} on its own, without the
  * block rule: for the harness's self-test, which drives it through spans that
  * also carry a command (go-to-k/cdkd#4127 round-5 optional). A site test uses

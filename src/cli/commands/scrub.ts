@@ -3771,8 +3771,11 @@ function dedupePreservingOrder(values: readonly string[], keep: 'first' | 'last'
  * consumers, the #1934 BREAK class this file already refuses one class over.
  * So: refuse, and name the fix that actually works — scrub the producer first,
  * which turns its stored plaintext into the expression this read then resolves.
+ *
+ * Exported for unit testing: its paste case (go-to-k/cdkd#4205) renders the
+ * message with a planted stack name directly, without a scrub run.
  */
-function plaintextProducerCrossStackReadError(
+export function plaintextProducerCrossStackReadError(
   origin: string,
   stackName: string,
   intrinsic: string,

@@ -34,6 +34,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const l = {
@@ -131,7 +133,7 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
    * deletes normally. Both delete records are in the pre-deploy state, so the
    * DELETE executor dispatches both.
    */
-  function buildEngine() {
+  function buildEngine(stackName: string = STACK, region: string = 'us-east-1') {
     const provider = {
       create: vi.fn().mockImplementation((logicalId: string) =>
         Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} })
@@ -145,8 +147,8 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
 
     const currentState: StackState = {
       version: 8,
-      stackName: STACK,
-      region: 'us-east-1',
+      stackName,
+      region,
       resources: {
         [SKIPPED]: stateRecord(SKIPPED),
         [KEPT]: stateRecord(KEPT),
@@ -208,7 +210,7 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
       mockDiffCalculator as never,
       mockProviderRegistry as never,
       { concurrency: 4, noRollback: false, roleArn: 'arn:aws:iam::1:role/r' },
-      'us-east-1'
+      region
     );
   }
 
@@ -277,6 +279,36 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
     expect(result.deleted).toBe(1);
     expect(result.created).toBe(1);
   });
+
+  it('names no shell-active stack or region in its two commands, and no pasted span runs (go-to-k/cdkd#4205)', async () => {
+    // The skip warning carries `resource's` and `'cdkd deploy'` above its
+    // `Inspect it with:` / `Drop the record with:` lines, so a shell-quoted
+    // payload ran once the lines were pasted as one block.
+    const warn = vi.mocked(getLogger().warn);
+    const messages: Array<[string, string]> = [];
+    for (const { label, value } of PASTE_PAYLOADS) {
+      // A withheld REGION holes only the region: the gate judges each value.
+      for (const [stack, region, name, where] of [
+        [value, 'us-east-1', "'<stack>'", 'us-east-1'],
+        [STACK, value, STACK, "'<region>'"],
+      ] as const) {
+        warn.mockClear();
+        await buildEngine(stack, region).deploy(stack, template);
+        const message = warn.mock.calls
+          .map((c) => String(c[0]))
+          .find((m) => m.includes('Drop the record with:'));
+        expect(message, label).toBeDefined();
+        expect(message!.split('\n').slice(-2), label).toEqual([
+          `Inspect it with: cdkd state show ${name} --stack-region ${where}`,
+          `Drop the record with: cdkd state orphan ${name} --stack-region ${where}`,
+        ]);
+        messages.push([`${label} ${stack === STACK ? 'region' : 'stack'}`, message!]);
+      }
+    }
+    withPasteDir((dir) => {
+      for (const [label, message] of messages) expect(spansThatRun(message, dir), label).toEqual([]);
+    });
+  }, 120_000);
 
   it('keeps the skipped resource in the persisted state and drops the deleted one', async () => {
     const engine = buildEngine();
