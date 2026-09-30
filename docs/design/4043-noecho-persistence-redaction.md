@@ -52,7 +52,7 @@ They write through `S3StateBackend.saveState`
 | `resources[*].observedProperties` | same save; readback installed by `drainObservedCaptures` | `scrubResourceRecord`, map only | yes, when AWS echoes it |
 | `resources[*].attributes` | same save; provider `result.attributes` | `scrubResourceRecord`, map only | yes, when a provider echoes it |
 | `resources[*].physicalId` | same save | none, by design | yes, when the value names the resource |
-| `outputs` values | `outputs[outputKey] = resolved`, `deploy-engine.ts:10451` | `redactOutputs`, `deploy-engine.ts:1985` | yes |
+| `outputs` values | `outputs[outputKey] = resolved`, `deploy-engine.ts:10451` | `redactOutputs`, `deploy-engine-masking.ts` | yes |
 | `outputs` alias KEY and `exportNames` | `deploy-engine.ts:10640`, `:10645` | refusal `exportNameSecretExposure` reads the map only (`outputs-export-alias.ts:666`) | yes |
 | `orphans[*].state` | `redactStateForPersist`, `deploy-engine.ts:2852` | `scrubResourceRecord`, map only | yes |
 | `imports[].exportName`, `outputReads[]` names | resolver records; redacted at `deploy-engine.ts:2935` | `redactSecretsForState`, map only | yes, when a name embeds it |
@@ -214,7 +214,7 @@ CONSUMER's bag only for an attribute listed in `noEchoAttributeResources`
 (`:5684-5697`), which today only custom resources and nested stacks fill. Left
 alone, a consumer of `Fn::GetAtt NoEchoConsumer.Value` would persist the
 plaintext on its first deploy, then read the producer's persisted `***` and be
-refused by `refuseRedactedAttributeReads` (`deploy-engine.ts:2462`) on every
+refused by `refuseRedactedAttributeReads` (`deploy-engine-masking.ts`) on every
 later one.
 
 So at the producer's create or update site, an attribute is added
@@ -304,12 +304,12 @@ masked resource diffs as UPDATE forever. `cdkd diff` has the same gap
    walk the persist side runs. Both arms apply, with the parameter values
    registered as fresh mask-only needles. A positioned leaf then diffs `***`
    against `***`. The nested-child precedent is `redactParametersForDiff`
-   (`deploy-engine.ts:1840`, wired at `:4159`). It redacts the parameter bag
+   (`deploy-engine-masking.ts`, wired from `deploy-engine.ts`). It redacts the parameter bag
    instead of the resolved property, which cannot flatten an embedding leaf.
    The resolved-property form is the one that matches the persist side.
 2. `calculateDiff`'s `freshParameters` (`diff-calculator.ts:261-268`) is today
    passed only by a nested child (`deploy-engine.ts:4222`, from
-   `freshNoEchoParameters`, `:1807`). It becomes EVERY `NoEcho: true`
+   `freshNoEchoParameters` in `deploy-engine-masking.ts`). It becomes EVERY `NoEcho: true`
    parameter, at every level. Arm 5 (`diff-calculator.ts:1136-1148`) then
    promotes each reader to a speculative UPDATE, so the engine re-resolves it
    and decides.
@@ -346,8 +346,8 @@ today. Its printing masker (#4126) is unchanged.
 ### 4.2 Update vs replace
 
 **Readback, generalized.** `readReaderForFreshNoEchoCeiling`
-(`deploy-engine.ts:3063`) today reads a resource only for a create-only path
-under a replacement ceiling (`:7276-7353`). It hands the provider the RECORD's
+(`deploy-engine-masking.ts`) today reads a resource only for a create-only path
+under a replacement ceiling (`deploy-engine.ts:7276-7353`). It hands the provider the RECORD's
 masked `properties`, is capped by a timeout, and persists nothing. Its safety
 properties are kept verbatim. The change is that it runs once per resource
 whose resolved bag carries a fresh parameter leaf, whatever the path's
@@ -477,7 +477,7 @@ redeployed. `--dry-run --fail` reports an unmasked `NoEcho` leaf as a finding.
 An output served by a `NoEcho` parameter persists `***`, and the exports index
 inherits it through `redactOutputs`.
 
-- **In process.** `rememberRecoverableMaskedOutputs` (`deploy-engine.ts:1915`)
+- **In process.** `rememberRecoverableMaskedOutputs` (`deploy-engine-masking.ts`)
   already remembers the plaintext for every `***` output of this run.
   `reresolveCrossStackValue` (`intrinsic-function-resolver.ts:9163`, mask arm
   at `:9225`) recovers it for a consumer in the same `cdkd deploy`, and
