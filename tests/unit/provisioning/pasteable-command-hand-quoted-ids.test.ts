@@ -87,7 +87,6 @@ import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
   spansThatRun,
-  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -414,6 +413,21 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       expect(longMessage).toContain(`from an ARN (${long})`);
       expect(longMessage).not.toContain('withheld');
     }, 120_000);
+
+    it('withholds the read command for an ARN that is inert unquoted but not plain (go-to-k/cdkd#3950)', async () => {
+      // A mid-word `#`, `%` or `^` is admitted by the shared go-to-k/cdkd#4205
+      // gate, so `renderDisableCommand` alone would print the command. Only
+      // the `explicitPlain` gate refuses it: the sentence displays the ARN,
+      // and a block displaying an untrusted value carries no pasteable command.
+      // (A `,` is plain in `displayIdent`'s sense, so it keeps its command.)
+      for (const name of ['a#b', 'a%b', 'a^b']) {
+        const explicit = `arn:aws:ssm:us-east-1:111122223333:parameter/${name}`;
+        const message = await refusalMessage(explicit);
+        expect(message, explicit).toContain('from an ARN (not shown: it is not a plain identifier)');
+        expect(message, explicit).not.toContain(BEFORE);
+        expect(message, explicit).toContain('via the console');
+      }
+    });
   });
 
   describe('S3BucketProvider partial-create cleanup, both arms', () => {

@@ -15,7 +15,6 @@ import {
   expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
   spansThatRun,
-  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 

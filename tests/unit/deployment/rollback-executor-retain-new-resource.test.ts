@@ -29,7 +29,6 @@ import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
   spansThatRun,
-  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 

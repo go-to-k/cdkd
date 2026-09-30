@@ -125,6 +125,22 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
     expect(buildForceUnlockCommand('~Child', 'us-east-1')).toBe('');
   });
 
+  it('withholds a name or region that is inert unquoted but not a plain identifier (go-to-k/cdkd#3950)', () => {
+    // `a:b` holds no whitespace or shell-active character, so the
+    // go-to-k/cdkd#4205 gate admits it; only the `plainIdent` gate refuses
+    // it, because the head displays the name and a block displaying an
+    // untrusted value carries no pasteable command. One case per gated
+    // entry: the stack name on a regional key, the region, and the stack
+    // name on a legacy key (no region).
+    expect(buildForceUnlockCommand('a:b', 'us-east-1')).toBe('');
+    expect(buildForceUnlockCommand('S', 'a:b')).toBe('');
+    expect(buildForceUnlockCommand('a:b', undefined)).toBe('');
+    // The plain twins still get their command, so the cases above are not
+    // passing on a gate that withholds everything.
+    expect(buildForceUnlockCommand('S', 'us-east-1')).toContain('cdkd force-unlock S --stack-region us-east-1');
+    expect(buildForceUnlockCommand('S', undefined)).toBe('cdkd force-unlock S');
+  });
+
   it('emits NO command when sanitization ALTERED the value', () => {
     // `myΩstack` sanitizes to `my stack` — a DIFFERENT stack. Naming it in a
     // force-unlock command is the wrong-lock-object harm this module exists to
