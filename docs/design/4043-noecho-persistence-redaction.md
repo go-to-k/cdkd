@@ -55,10 +55,10 @@ They write through `S3StateBackend.saveState`
 | `outputs` alias KEY and `exportNames` | `deploy-engine.ts:10640`, `:10645` | refusal `exportNameSecretExposure` reads the map only (`outputs-export-alias.ts:666`) | yes |
 | `orphans[*].state` | `redactStateForPersist`, `deploy-engine.ts:2852` | `scrubResourceRecord`, map only | yes |
 | `imports[].exportName`, `outputReads[]` names | resolver records; redacted at `deploy-engine.ts:2935` | `redactSecretsForState`, map only | yes, when a name embeds it |
-| Exports index | `ExportIndexStore.writeIndex`, `src/state/export-index-store.ts:599` | values from `redactOutputs`; keys never redacted | yes, value and key |
+| Exports index | `ExportIndexStore.writeIndex`, `src/state/export-index-store.ts:592` | values from `redactOutputs`; keys never redacted | yes, value and key |
 | Rollback journal | `appendRollbackJournalSegment`, `s3-state-backend.ts:1124`, from `deploy-engine.ts:6000` | `redactOperationsForJournal`, `deploy-engine.ts:2550` | yes |
 | Nested journal `previousOutputs` | copied from the previous state | none (a copy) | when that state held it |
-| `deployments/*.jsonl` events | deploy `deploy-engine.ts:6452`; rollback `src/cli/commands/rollback.ts:907`; destroy `src/cli/commands/destroy-runner.ts:2091` | deploy: `maskSecretsInEvent` (`:6470`) masks `error.message` and `reason`; rollback masks with the re-resolved journal bag (`rollback-executor.ts:222`); destroy: none | `physicalId`; a rollback or destroy message quoting the value |
+| `deployments/*.jsonl` events | deploy `deploy-engine.ts:6452`; rollback `src/cli/commands/rollback.ts:907`; destroy `src/cli/commands/destroy-runner.ts:2091` | deploy: `maskSecretsInEvent` (`:6470`) masks `error.message` and `reason`; rollback masks `error.message` with the op masker (`rollback-executor.ts:249-261`) and persists `reason` raw; destroy: none | `physicalId`; a rollback or destroy message quoting the value |
 | `cdkd state refresh-observed` | `src/cli/commands/state.ts:3986` | position walk with an empty map (`state.ts:3952`) | yes |
 | `cdkd drift --accept` / `--revert` | `src/cli/commands/drift.ts:3930`, `:6391` | `redactSecretsForState`, map only | yes |
 | `cdkd import` | `import.ts:2413` (properties), `:2523` (attributes), `:3450` (observed) | map only | yes (the bound `Default`) |
@@ -133,6 +133,18 @@ references `P`.
 - A list-valued leaf (`CommaDelimitedList`, `List<Number>`) becomes a list of
   `***`, one per element, so array shape survives for `equalModuloMask`.
 - The arm writes each masked coordinate into `noEchoParameterLeaves`.
+- **The arm also marks each coordinate FRESH, by position.** Freshness today
+  is value-keyed and string-only: `freshNoEchoValuesOf` is a
+  `Set<string>` per bag (`secret-redaction.ts:830`), `FreshNoEchoLeaf.plaintext`
+  is a `string` (`:1274-1277`), and `liveHoldsFreshLeaves` fails any non-string
+  node (`deploy-engine.ts:1011`). A leaf only this arm masks (a `Number`, a
+  `List<Number>`, a value under 4 characters) would otherwise compare `***`
+  with `***` and take the first no-change skip, so a changed value would never
+  reach AWS. So the pass bag gains a coordinate set beside
+  `freshNoEchoValuesOf`, which `carriesFreshNoEchoValue` and
+  `freshNoEchoLeafPositions` consult too. `FreshNoEchoLeaf.plaintext` becomes
+  the resolved leaf of any type, and `liveHoldsFreshLeaves` compares it with
+  `keyOrderFreeJson`.
 
 The arm needs no value, so it also serves `cdkd scrub` and a template-only
 migration. The value arm stays the backstop for flows the template cannot
@@ -168,6 +180,7 @@ interface ResourceState {
 | `properties` | `***` at every positioned leaf, plus value-arm leaves | both arms |
 | `observedProperties` | `***` at every coordinate `noEchoParameterLeaves` names, plus value-arm leaves | every observed writer (deploy capture, import, refresh-observed, drift) |
 | `attributes` | value arm only | the deploy's `scrubResourceRecord` |
+| a same-stack `Fn::GetAtt` consumer's `properties` | `***` via the value arm, once the producer declares the attribute (below) | both arms |
 | `outputs` values | `***` via the outputs position source (`outputsTemplateSource`), plus the value arm | `redactOutputs` |
 | exports index values | inherits `redactOutputs` (`deploy-engine.ts:4543`, `:4750`) | unchanged callers |
 | `outputs` alias keys, `exportNames` | none: the alias is refused (section 5) | `resolveOutputs` |
@@ -177,6 +190,23 @@ interface ResourceState {
 | `orphans[*].state` | carries the record | unchanged |
 | `deployments/*.jsonl` | unchanged: the map entry now masks `error.message` / `reason` without the log-only set | `maskSecretsInEvent` |
 | `physicalId` | none (see below) | provider |
+
+**An echoed attribute must reach its consumers as fresh.** A provider can echo
+the value into an attribute: `AWS::SSM::Parameter` returns `attributes.Value`
+(`src/provisioning/providers/ssm-parameter-provider.ts:430-432`), and the
+fixture's `NoEchoConsumer` is that producer. The in-memory record keeps the
+real attribute for same-run reads. `noteAttributeSecrecy`
+(`intrinsic-function-resolver.ts:5681`) registers a fresh needle in a
+CONSUMER's bag only for an attribute listed in `noEchoAttributeResources`
+(`:5684-5697`), which today only custom resources and nested stacks fill. Left
+alone, a consumer of `Fn::GetAtt NoEchoConsumer.Value` would persist the
+plaintext on its first deploy, then read the producer's persisted `***` and be
+refused by `refuseRedactedAttributeReads` (`deploy-engine.ts:2462`) on every
+later one. So at the producer's create or update site, an attribute whose leaf
+equals or embeds a fresh `NoEcho` needle of the producer's bag is added to
+`noEchoAttributeResources` for that logical id, the existing #2274 mechanism.
+An out-of-process consumer of such an attribute is refused as before, and is
+listed with the new refusals in section 6.
 
 **`physicalId` stays in the clear.** It is the handle every later call
 addresses the resource by, and AWS publishes it (ARN, name). A value used to
@@ -225,14 +255,30 @@ masked resource diffs as UPDATE forever. `cdkd diff` has the same gap
    skip (`deploy-engine.ts:7370-7393`) applies when AWS holds every fresh leaf
    and nothing else moved. Its gate becomes "every fresh leaf is confirmed
    held", not "a ceiling was lowered".
-4. **Migration witness.** A leaf that `noEchoParameterLeaves` does not name,
-   and that still holds a non-mask value, is a pre-v11 plaintext. It is the
-   exact value last sent, so it is compared directly and needs no readback.
-   This makes the migration deploy skip an unchanged resource.
+4. **Migration witness.** A leaf at a position the positional arm names,
+   in a record that carries no `noEchoParameterLeaves`, and that still holds a
+   non-mask value, is a pre-v11 plaintext. It is the exact value last sent, so
+   it is compared directly and needs no readback. The witness must sit BEFORE
+   anything classifies the leaf as moved, or the migration deploy replaces a
+   create-only reader:
+   - In the diff, `compareProperties` (`diff-calculator.ts:1389-1415`) would
+     see `***` against the recorded plaintext and set `requiresReplacement`.
+     For a witness leaf, the diff compares the RESOLVED value against the
+     recorded plaintext instead. It redacts only the stored copy.
+   - In the engine, the ceiling block's `moved` test
+     (`deploy-engine.ts:7291-7293`) keeps a replacement on `***` vs plaintext
+     (`:7308-7310`). A witness leaf is resolved there first: equal means
+     `held`, different means `differs`, and the verdict table in section 4.2
+     applies.
 
-`cdkd diff` takes steps 1 and 2 with the same helpers. It has no readback, so a
-promoted reader renders as `~ (NoEcho parameter, compared on deploy)` and does
-not count toward `--fail`. Its printing masker (#4126) is unchanged.
+   This makes the migration deploy skip an unchanged resource, and never
+   replace one because of the migration.
+
+`cdkd diff` takes steps 1, 2 and 4 with the same helpers. It has no readback,
+so a promoted reader that is not a witness renders as
+`~ (NoEcho parameter, compared on deploy)` and does not count toward `--fail`.
+A witness leaf is compared exactly, so an unmigrated stack diffs as it does
+today. Its printing masker (#4126) is unchanged.
 
 ### 4.2 Update vs replace
 
@@ -251,8 +297,13 @@ Verdicts for a leaf a parameter served:
 | --- | --- | --- |
 | `held` | nothing to send; skip if nothing else moved | lowered to in place, as #3729 |
 | `differs` | UPDATE | REPLACEMENT |
-| `not-readable` (write-only, or no `readCurrentState`) | UPDATE: the value is re-sent on every deploy | see question 1 |
+| `not-readable` (write-only, or no `readCurrentState`) | UPDATE: the value is re-sent on every deploy (question 5) | see question 1 |
 | `read-failed` | UPDATE | the resource fails with a retry message; no replacement on a transient error |
+
+A nested stack's `AWS::CloudFormation::Stack` row is one `not-readable`
+reader: it carries the value at `properties.Parameters.<P>`, and
+`NestedStackProvider` has no `readCurrentState`. So its child engine re-runs
+on every deploy, and the child decides per resource with its own readbacks.
 
 A custom-resource leaf (the #3729 population) keeps its current verdict table.
 The two classes are told apart by the source: the positional arm, or a
@@ -272,7 +323,10 @@ change, every migrated stack would drift forever.
 
 - **Report.** A change at a coordinate `noEchoParameterLeaves` names, where the
   two sides are equal modulo the mask (`equalModuloMask`), is split into a new
-  `noEchoParameter` bucket. It prints the path only. Like `unresolvedToken`
+  `noEchoParameter` bucket. It prints the path only. `equalModuloMask`
+  accepts a mask only against a STRING live value
+  (`src/analyzer/drift-calculator.ts:338`), so at a marked coordinate the
+  bucket also takes a number, boolean or list live value. Like `unresolvedToken`
   (`docs/cli-drift.md`, the reason table), it does not affect the exit code,
   because no re-run can clear it. The AWS side is never printed:
   `redactDriftValue` (`drift.ts:2195`) already masks a secret-bearing path.
@@ -280,6 +334,9 @@ change, every migrated stack would drift forever.
   masked path. Other paths of the same resource are still accepted. The
   baseline writer masks every marked coordinate of what it writes, so a live
   plaintext never enters `observedProperties`.
+- **The `--revert` baseline writer** (`drift.ts:6391`) masks every marked
+  coordinate the same way. Its bag holds a live value only when that value is
+  a string of 4 or more characters (`drift.ts:5318`).
 - **`--revert`.** A bucketed position is not drift, so it is not reverted.
   `preserveLiveValuesAtMaskedLeaves` (`drift.ts:5297`) keeps AWS's value at
   every `***` leaf of the send bag and registers it as a mask-only needle
@@ -295,10 +352,21 @@ Today `refuseMaskedReplayBaseline` (`rollback-executor.ts:2294`) throws
 - **Marked leaf of an existing resource** (revert and revert-failed). This
   applies in process and in `cdkd rollback` alike. The replay reads the
   resource back with the #3729 helper shape: routed by the record, and handed
-  the masked record. It substitutes the live value at each marked coordinate,
-  and records it as a mask-only needle in the op's bag. So the provider masker,
-  the events and the re-redacted record all mask it: this closes the #4043
-  rollback-events item. The leaf is left exactly as AWS holds it.
+  the masked record. It substitutes the live value at each marked coordinate.
+  A live value that is absent, or that itself carries the mask (a provider
+  echoing the masked record it was handed, the reason
+  `deploy-engine.ts:3049-3054` hands it that record), is `not-readable` and
+  keeps `ROLLBACK_REDACTED_BASELINE`. So `***` is never substituted. Each
+  substituted value is recorded as a mask-only needle in the op's bag, AND as a
+  log-only needle (`recordLogOnlyParameterValue`, no length floor, every
+  printed spelling), so a short or numeric value is masked in lines and events
+  too. The provider masker,
+  the re-redacted record and an event's `error.message`
+  (`maskedRollbackEventError`, `rollback-executor.ts:249-261`) then mask it.
+  An event's `reason` / `survivorReason` is persisted RAW (the note above
+  `rollback-executor.ts:295`). Phase C routes both through the same op masker
+  before `ctx.recordEvent`, which closes the #4043 rollback-events item. The
+  leaf is left exactly as AWS holds it.
   - A parameter change made by the reverted op is therefore not reverted.
     The next deploy with the old value restores it.
   - An unreadable leaf keeps the refusal, with a parameter-specific remedy.
@@ -342,9 +410,24 @@ inherits it through `redactOutputs`.
   refused as a `cross-stack` redacted read. This is today's behavior for a
   custom-resource `NoEcho` output. It is a new refusal for parameter-served
   outputs (question 2).
-- **Nested children.** A child's `NoEcho`-served output reaches the parent row
-  through `noEchoAttributeNames` (`nested-stack-provider.ts:275`), as a
-  custom-resource value does now.
+- **Nested children, output direction.** A child's `NoEcho`-served output
+  reaches the parent row through `noEchoAttributeNames`
+  (`nested-stack-provider.ts:275`), as a custom-resource value does now.
+- **Nested children, log-only carry.** The child's
+  `recordInheritedParameterSecrets` already carries the parent's log-only
+  needles (`carryLogOnlyValuesCarriedBy`, `intrinsic-function-resolver.ts:4579`),
+  and the parent passes its bag on `hasMaskableValues`
+  (`nested-stack-provider.ts:769`).
+- **Nested children, parameter direction.** The parent's row passes the value
+  in its `Parameters` property, which the parent's record masks by position.
+  The child receives the parent's bag as `inheritedSecrets`. Once the value is
+  a fresh mask-only map entry there, `recordInheritedParameterSecrets`
+  (`intrinsic-function-resolver.ts:4567`) records it into each consuming child
+  resource's bag, and `carryFreshNoEchoMark` (`secret-redaction.ts:941`) keeps
+  it fresh. The child's own parameter declaration never says `NoEcho` (CDK
+  does not emit it), so the child has no positional arm. An inherited value
+  shorter than 4 characters therefore stays in the clear in the child's
+  record: the floor residual of section 3.3.
 
 ### 4.8 Other readers of `***`
 
@@ -358,7 +441,9 @@ inherits it through `redactOutputs`.
 - **Delete addresses.** `isRedactedRecordedValue`
   (`src/provisioning/redacted-delete-address.ts:22`) makes a provider skip a
   delete whose address property is redacted (`redactedDeleteAddressSkip`,
-  `:62`). The resource is left in place and the record is kept. A parameter
+  `:62`). The resource is left in place and the record is kept. The runner
+  then exits 2, on a deploy that removes the resource too, unless
+  `--allow-unaddressed` (`.claude/rules/provider-delete-path.md`). A parameter
   that feeds a delete address newly reaches that skip (question 3).
 - **`masked-baseline-recapture.ts:68-75`** skips a record whose `properties`
   carry `***`. That is correct for a marked leaf, because the value is not
@@ -373,14 +458,26 @@ collide. Publishing it would put the value in `state.json`, `exportNames` and
 the bucket-wide exports index, which any stack's reader can list.
 
 - `exportNameSecretExposure` (`src/deployment/outputs-export-alias.ts:666`) is
-  called with the name's own recording bag (`deploy-engine.ts:10613`). That
-  bag's map entries are the name's own. Its log-only set is SHARED with the
+  called with two bags (`deploy-engine.ts:10613`): the name's own recording
+  bag `nameSecrets`, counted wholesale, and the pass map as
+  `recordedThisPass`, scanned by bounded containment (`secretsPresentIn`,
+  `outputs-export-alias.ts:518`). `nameSecrets`'s map entries are the name's
+  own. Its log-only set is SHARED with the
   whole outputs pass (`shareLogOnlyValues`, `deploy-engine.ts:10517`), so it
   cannot be counted wholesale: one output reading a `NoEcho` value would
   refuse every export name.
-  - **Phase A** adds the log-only needles to the bounded containment scan
-    (`secretsPresentIn`) only. A name equal to a value is refused at any
-    length. A name embedding one is refused at 4 or more characters.
+  - **Phase A** adds the log-only needles to the containment test only. The
+    set is module-private (`secret-redaction.ts:1006`) and no accessor lists
+    it, so Phase A asks the printing masker instead: the name is exposed when
+    `maskSecretsInText(name, nameSecrets)` (which reads the shared set)
+    differs from `maskRecordedSecretsInText(name, nameSecrets)` (the map
+    alone, `secret-redaction.ts:7979`). That test's floor is the one wanted: a
+    name equal to a value is refused at any length, and a name embedding one at
+    4 or more characters. It deliberately reverses the #4049 rule that a
+    publication verdict never reads log-only needles
+    (`.claude/rules/layout-deployment-secrets.md`, and the side-set doc at
+    `secret-redaction.ts:991-995`). Phase A updates the rule file. The doc
+    comment is in a file #4130 holds, so Phase B updates it.
   - **Phase B** makes the value a map entry of the name's own bag. Its
     wholesale arm then refuses it, still from 4 characters, because the
     mask-only floor applies.
@@ -392,6 +489,15 @@ the bucket-wide exports index, which any stack's reader can list.
   deploy succeeds, the alias is not published, and the next exports-index
   update drops a previously published entry.
 - The residual note at `outputs-export-alias.ts:119-128` is replaced.
+- **Phase B widens the containment scan too.** `secretsPresentIn` over
+  `recordedThisPass` then sees every `NoEcho` value ANY output of the pass
+  read. A name that merely contains one at 4 or more characters is refused. For
+  a low-entropy value (`prod`), that refuses ordinary names. This is the same
+  bound #1919 accepted for secrets, and the warning names the output.
+- **A stack that is never redeployed** keeps a published alias in `outputs`,
+  `exportNames` and the exports index. `cdkd scrub` cannot rewrite a key
+  (`.claude/rules/layout-scrub.md`). It reports the key, and the remedy is a
+  redeploy.
 
 This is a behavior change: a consumer of such an export stops resolving.
 CloudFormation publishes the name, so this is a deliberate parity divergence,
@@ -430,8 +536,9 @@ So readers never infer redaction from `version`. They read
    - Each is compared against its own recorded plaintext: the witness, so no
      readback is needed.
    - The final save masks by both arms and writes `noEchoParameterLeaves`.
-   - An unchanged resource that the diff did not promote has no needles in
-     `perResourceSecrets`. For that case, `redactStateForPersist`
+   - A record this deploy did not resolve has no needles in
+     `perResourceSecrets`. That covers a resource a failed deploy never
+     reached, and a partial save. For that case, `redactStateForPersist`
      (`deploy-engine.ts:2782`) gains the positional arm over EVERY record,
      driven by the deploy's template. So a record the deploy did not touch is
      migrated too.
@@ -445,9 +552,23 @@ So readers never infer redaction from `version`. They read
 
 **No loss of the ability to deploy.** Every step above either keeps the
 resource as it is (a witness, or `held`) or updates it with the value in hand.
-The only new refusals are these: an out-of-process consumer of a
-parameter-served output (question 2), a create-only leaf AWS cannot confirm
-(question 1), and a rollback re-create with no live resource.
+The only new refusals are these:
+
+- an out-of-process consumer of a parameter-served output (question 2);
+- a create-only leaf whose readback FAILED (`read-failed` in section 4.2),
+  which fails the resource with a retry message rather than replacing it;
+- an out-of-process `Fn::GetAtt` consumer of an attribute that echoes the
+  value (section 3.3); the remedy is to deploy producer and consumer in one
+  run;
+- a hand-authored nested child that declares a parameter `Number`, or a
+  comma-bearing `CommaDelimitedList`, and receives a parent's `NoEcho` value:
+  once that value is a map entry, `refuseCoercedInheritedSecret`
+  (`intrinsic-function-resolver.ts:4682`) refuses it;
+- a rollback re-create with no live resource.
+
+The costs that are not refusals are named by questions 1 and 5: a create-only
+write-only leaf whose change is not detected, and an updatable write-only leaf
+re-sent on every deploy.
 
 **Noncurrent S3 versions** of `state.json` keep the old plaintext. Migration
 does not purge them (question 4). A value ever stored in the clear must be
@@ -463,19 +584,35 @@ rotated, as `docs/cli-scrub.md` already says for secrets.
 
 ## 7. Phasing
 
-Two open PRs hold files this work must edit:
+Open PRs hold files this work must edit:
 
 - #4130 holds `src/deployment/secret-redaction.ts` and
-  `src/deployment/intrinsic-function-resolver.ts`.
-- #4140 holds `src/deployment/deploy-engine.ts`.
-
-Phases B and C wait for both to merge. Phase A waits for neither.
+  `src/deployment/intrinsic-function-resolver.ts`. Phase B waits for it.
+- #4173 holds `src/deployment/outputs-export-alias.ts` and
+  `docs/cli-scrub.md`. Phase A waits for it, and so does Phase C's
+  `docs/cli-scrub.md` edit.
+- #4140, named on the issue as holding `src/deployment/deploy-engine.ts`, has
+  merged. Phase B builds on it, and on #4169. The `deploy-engine.ts` and
+  `diff-recursive.ts` line numbers in this page are at `428ce7347`, before
+  those merges.
 
 | Phase | Scope | Files |
 | --- | --- | --- |
 | A | Refuse an `Export.Name` equal to or embedding a `NoEcho` value, from the log-only set | `src/deployment/outputs-export-alias.ts`, `.claude/rules/layout-deployment-secrets.md` (the publication-verdict rule), the `noecho-parameter-masking` fixture, unit tests, a changelog entry |
 | B | Both arms, `noEchoParameterLeaves`, the v11 bump and migration, the diff and `cdkd diff` promotion, the generalized readback | `secret-redaction.ts`, `intrinsic-function-resolver.ts`, `deploy-engine.ts`, `diff-calculator.ts`, `diff-recursive.ts`, `src/types/state.ts`, `.claude/rules/state-schema.md`, `.claude/rules/layout-deployment-secrets.md`, `docs/state-management.md`, new `schema-v10-to-v11-migration` fixture |
 | C | Readers without a template: rollback replay readback, drift bucket and writers, import and refresh-observed coordinate masking, scrub migration rule, `cdkd export` allowance | `rollback-executor.ts`, `src/cli/commands/rollback.ts`, `drift.ts`, `state.ts` (CLI), `import.ts`, `scrub.ts`, `export.ts`, `docs/cli-drift.md`, `docs/cli-rollback.md`, `docs/cli-scrub.md` |
+
+**Phase B also flips every map reader the log-only doc kept blind**
+(`secret-redaction.ts:986-1000`). Each is re-audited in B:
+
+- The resolver's `maskRecordedSecretsInText` detector
+  (`intrinsic-function-resolver.ts:11759-11789`). `Fn::Base64` over text
+  embedding the value now records a derived needle, which is wanted. The
+  unsupported-service arm can newly refuse a leaf embedding both the value and
+  an unsupported `{{resolve:` token.
+- `stateKeySecretExposure` in `cdkd scrub --dry-run --fail` now flags a key
+  holding the value.
+- The export-name containment scan (section 5).
 
 B cannot be split. Once one leaf persists `***`, the diff, the skip, the
 readback and the bump must all hold, or a deploy updates or replaces the
@@ -513,13 +650,21 @@ lanes once B merges.
   - create-only `differs`: REPLACEMENT;
   - `read-failed` on create-only: no replacement;
   - pre-v11 witness equal: skipped with NO readback call;
-  - pre-v11 witness different: UPDATE.
+  - pre-v11 witness different: UPDATE;
+  - pre-v11 witness equal on a CREATE-ONLY path: no replacement, and no
+    provider call;
+  - a `Number` value rotated: UPDATE issued (the position-keyed fresh mark);
+  - a 3-character value rotated: UPDATE issued;
+  - a same-stack `Fn::GetAtt` consumer of an echoed attribute persists `***`
+    and is not refused on the next deploy.
 - **B, migration.** A v10 fixture record gets `version: 11`, `***` at every
   positioned leaf, and the marker. An untouched resource's record is migrated
   by the save-time positional pass. A v10 binary's refusal message is pinned
   through `STATE_SCHEMA_VERSIONS_READABLE`.
 - **C.** Cover each case:
-  - rollback revert substitutes the live value and masks it in the event;
+  - rollback revert substitutes the live value and masks it in the event,
+    `reason` included, for a 3-character and a numeric value too;
+  - a readback that returns `***` is `not-readable`, never substituted;
   - an unreadable leaf refuses with the parameter remedy;
   - drift buckets a marked leaf, exit code unchanged;
   - `--accept` never writes the live plaintext;
@@ -532,7 +677,13 @@ lanes once B merges.
 into an SSM parameter and a create-only SNS `TopicName`. The discriminating
 assertions:
 
-- **Flipped.** Phase 1 asserts today that `state.json` holds the value in the
+- **Flipped in Phase A.** The `NoEchoAliasProbe` output's `Export.Name` IS a
+  `NoEcho` value, and Phase 1 asserts the export-alias COLLISION warning for it
+  today. Once the exposure arm fires first (`deploy-engine.ts:10613-10631`),
+  the collision warning is never reached. Phase A flips the assertion to the
+  secret-bearing-name warning and to the alias being absent from `outputs`,
+  `exportNames` and the exports index.
+- **Flipped in Phase B.** Phase 1 asserts today that `state.json` holds the value in the
   clear. It becomes: no state blob, no object version written after the
   migration, and no exports-index version holds the token. Every positioned
   leaf is `***`, and `noEchoParameterLeaves` names it.
@@ -540,6 +691,8 @@ assertions:
   AWS's `LastModifiedDate` is unchanged across the redeploy. This fails if the
   readback is skipped, because the resource would update every deploy. The
   `TopicName` is not replaced: the topic ARN is unchanged.
+- **A same-stack `Fn::GetAtt NoEchoConsumer.Value` consumer (new).** Its
+  record holds `***`, and the redeploy is not refused.
 - **Redeploy, new value.** The SSM parameter holds the new value on AWS, and
   state still holds `***`.
 - **`cdkd diff --fail`** exits 0 on an unchanged value.
@@ -566,6 +719,9 @@ consumer. The assertions:
 - The v11 binary reads it (`state show`) without rewriting.
 - The next `cdkd deploy` writes `version: 11`, `***` and the marker, and makes
   NO provider update for the unchanged resource. This is the witness path.
+- The fixture includes a create-only property fed by the parameter. Its
+  physical id is unchanged across the migration deploy, so the migration never
+  replaces a resource.
 - The v10 binary then fails with "Upgrade cdkd".
 - Destroy is clean.
 - The run sweeps every object version, because the pre-migration versions hold
@@ -592,7 +748,10 @@ default.
 3. **A `NoEcho` parameter feeding a property a provider deletes by** (for
    example a Route 53 record value). **Recommended: keep the existing fail-safe
    skip** (`redactedDeleteAddressSkip`: the resource is left in place, the
-   record is kept, and `destroy` exits non-zero). The alternative
+   record is kept, and every destroy, and every deploy that removes the
+   resource, exits 2 until it is cleaned up by hand, unless
+   `--allow-unaddressed`). A deploy-time delete does hold the template, so a
+   re-resolved address confirmed by a readback is a possible later refinement. The alternative
    re-resolves the address from today's template, but a changed parameter
    would then address the wrong record, and a "not found" reads as already
    deleted.
@@ -602,6 +761,18 @@ default.
    clear must be rotated. The alternative purges them per migrated key, with
    the noncurrent-version purge `src/state/s3-noncurrent-version-purge.ts`
    already implements.
+5. **An UPDATABLE property AWS never returns, fed by a `NoEcho` parameter.**
+   This is the commonest use of `NoEcho`: `AWS::RDS::DBInstance.MasterUserPassword`,
+   `AWS::IAM::User.LoginProfile.Password`,
+   `AWS::SecretsManager::Secret.SecretString`. The readback answers
+   `not-readable`, so nothing can confirm the value unchanged, and the engine
+   sends an UPDATE on every deploy, a no-op deploy included. CloudFormation
+   compares its stored parameter values and sends nothing.
+   **Recommended: accept the re-send, and log one info line per resource
+   saying why it updated.** The value always reaches AWS, so a changed password
+   is never missed. The alternative skips the re-send and warns that a change
+   is not detected, as question 1 recommends for the create-only twin. That
+   trades a mutating API call per deploy for a silently kept old password.
 
 ## Rejected alternatives
 
