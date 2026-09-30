@@ -156,6 +156,21 @@ describe('withDerivedNameMasks runs the base masker before its needles (issue #4
     );
   });
 
+  it('checks an occurrence that OVERLAPS the previous one', () => {
+    // `ababab` holds `abab` at 2 and at 4; stepping past the first match would
+    // skip the second, which the recorded `bZ9Q` crosses.
+    expect(needled(['Abab-Secret', 'bZ9Q'], [['Abab-Secret', 'abab']]).mask('x abababZ9Q y')).toBe(
+      '***'
+    );
+    // A previous-value reference names `prod-db-prod-db`; its third, overlapped
+    // occurrence is crossed by the recorded `db-tailsecret`.
+    expect(
+      needled(['db-tailsecret'], [['{{resolve:secretsmanager:x}}', 'prod-db-prod-db']]).mask(
+        'name prod-db-prod-db-prod-db-tailsecret end'
+      )
+    ).toBe('***');
+  });
+
   it('masks the main path whole, and withholds a line where a longer secret contains the name', () => {
     const pairs = [['dbadmin01', 'MyStack-dbadmin01']] as const;
     expect(needled(['dbadmin01'], pairs).mask('Created IAM role MyStack-dbadmin01')).toBe(

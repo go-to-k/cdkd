@@ -206,13 +206,15 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  * these sinks are built), and that rendering is the needle applied to the
  * base's output.
  *
- * THE INVARIANT: every occurrence of a derived name left in the line reads as
- * exactly `base(name)` in the base's output, or the WHOLE line is `***`. An
+ * THE INVARIANT: every occurrence of a derived name left in the line —
+ * overlapping ones included — reads as exactly `base(name)` in the base's
+ * output, or the WHOLE line is `***`. An
  * occurrence a recorded secret crosses or contains renders otherwise, and its
  * part outside that secret would print (a fragment of secret plaintext, since
  * a derived name may be a folded copy of the secret). The needles then only
- * replace with the mask, so the helper never reveals what the base hides: what
- * it prints is a subset of what the base alone prints.
+ * replace with the mask, so for occurrences that do not overlap one another
+ * the helper never reveals what the base hides: what it prints is a subset of
+ * what the base alone prints.
  *
  * Exempt from the check, as residuals:
  *
@@ -222,6 +224,16 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  *    at most two of its characters;
  *  - a name whose rendering is exactly `***` is a recorded secret itself, and
  *    renders as the base alone renders it.
+ *
+ * Two more residuals:
+ *
+ *  - the needles are replaced by split / join, so occurrences that overlap
+ *    one another, or another name's occurrence, can leave the part outside
+ *    the first replacement (`ababab` against the name `abab` prints
+ *    `***ab`); unchanged from before issue #4193;
+ *  - the check costs O(occurrences x line length) per name: a few KB of AWS
+ *    echo or log line is cheap, and a very large leaf string walked through
+ *    {@link maskDeep} is where it shows.
  *
  * False positives over-mask, the direction this module prefers: a recorded
  * secret crossing or containing an occurrence, or a prefix / suffix of the
@@ -263,7 +275,8 @@ export function withDerivedNameMasks(
         if (masked !== base(text.slice(0, i)) + rendered + base(text.slice(j))) {
           return MASK_WALK_DEPTH_CAP_MARKER;
         }
-        i = text.indexOf(derived, j);
+        // `i + 1`, not `j`: an occurrence OVERLAPPING this one is checked too.
+        i = text.indexOf(derived, i + 1);
       }
       needles.push(rendered);
     }
