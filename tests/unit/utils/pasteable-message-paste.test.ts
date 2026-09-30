@@ -421,6 +421,12 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       expect(() => expectRuntimeResidual(joinedVerb, dir, hostile)).toThrow(
         /runs more than pasting each alone/
       );
+      // And a join that ONLY runs a verb, with no display running anywhere:
+      // the gate on a multi-line span is "touched or ran a verb".
+      const verbOnlyJoin = "The owner's record\nholds it's; cdkd destroy --force";
+      expect(() => expectRuntimeResidual(verbOnlyJoin, dir, hostile)).toThrow(
+        /runs more than pasting each alone/
+      );
       // A verb only ZSH runs (go-to-k/cdkd#4127 review M4): the trailing
       // `x(N)` is a bash syntax error, so bash runs nothing, while zsh reads a
       // glob qualifier and runs both the substitution and the verb. The
