@@ -4088,10 +4088,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           warn(
             `Could not register auto-scaling target on ${tableName} (${dimension}): ` +
               `${describeAwsFailure(err).detail}. ` +
-              `Run: aws application-autoscaling register-scalable-target ` +
-              `--service-namespace dynamodb --resource-id ${resourceId} ` +
-              `--scalable-dimension ${dimension} --min-capacity ${minCapacity} ` +
-              `--max-capacity ${maxCapacity}`
+              `Run: ${pasteableAwsCommand(maskSecrets)`aws application-autoscaling register-scalable-target --service-namespace dynamodb --resource-id ${resourceId} --scalable-dimension ${dimension} --min-capacity ${String(minCapacity)} --max-capacity ${String(maxCapacity)}`.render()}`
           );
           return;
         }
@@ -4176,10 +4173,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           warn(
             `Could not put auto-scaling policy on ${tableName} (${dimension}): ` +
               `${describeAwsFailure(err).detail}. ` +
-              `Run: aws application-autoscaling put-scaling-policy ` +
-              `--policy-name ${policyName} --service-namespace dynamodb ` +
-              `--resource-id ${resourceId} --scalable-dimension ${dimension} ` +
-              `--policy-type TargetTrackingScaling`
+              `Run: ${pasteableAwsCommand(maskSecrets)`aws application-autoscaling put-scaling-policy --policy-name ${policyName} --service-namespace dynamodb --resource-id ${resourceId} --scalable-dimension ${dimension} --policy-type TargetTrackingScaling`.render()}`
           );
         }
         return;
@@ -4247,9 +4241,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           warn(
             `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
               `${describeAwsFailure(err).detail}. ` +
-              `Run: aws application-autoscaling delete-scaling-policy ` +
-              `--policy-name ${policyName} --service-namespace dynamodb ` +
-              `--resource-id ${resourceId} --scalable-dimension ${dimension}`
+              `Run: ${pasteableAwsCommand(maskSecrets)`aws application-autoscaling delete-scaling-policy --policy-name ${policyName} --service-namespace dynamodb --resource-id ${resourceId} --scalable-dimension ${dimension}`.render()}`
           );
         }
         // Continue to the Deregister attempt regardless — AWS may have
@@ -4289,9 +4281,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           warn(
             `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
               `${describeAwsFailure(err).detail}. ` +
-              `Run: aws application-autoscaling deregister-scalable-target ` +
-              `--service-namespace dynamodb --resource-id ${resourceId} ` +
-              `--scalable-dimension ${dimension}`
+              `Run: ${pasteableAwsCommand(maskSecrets)`aws application-autoscaling deregister-scalable-target --service-namespace dynamodb --resource-id ${resourceId} --scalable-dimension ${dimension}`.render()}`
           );
         }
       }

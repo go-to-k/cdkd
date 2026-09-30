@@ -7,6 +7,7 @@ import {
   withPasteableAwsProfile,
 } from '../../../src/utils/pasteable-aws-profile.js';
 import {
+  WITHHELD_AWS_COMMAND,
   pasteableAwsCommand,
   protectedReplacementAdvice,
   renderDisableCommand,
@@ -22,6 +23,7 @@ import {
   setAssumedRoleCredentials,
 } from '../../../src/utils/aws-client-defaults.js';
 import { buildProgram } from '../../../src/cli/program.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from './paste-harness.js';
 
 /**
  * go-to-k/cdkd#3959: every pasteable `aws ...` command carries the run's
@@ -62,11 +64,11 @@ describe('pasteableAwsProfileFlag', () => {
     expect(pasteableAwsProfileFlag()).toBe('');
   });
 
-  it('names a plain profile bare and shell-quotes one that needs it', () => {
+  it('names a plain profile bare', () => {
     setPasteableAwsProfile('prod');
     expect(pasteableAwsProfileFlag()).toBe('--profile prod');
-    setPasteableAwsProfile("team a's");
-    expect(pasteableAwsProfileFlag()).toBe(`--profile 'team a'\\''s'`);
+    setPasteableAwsProfile('team.a_b@c:d/e+f');
+    expect(pasteableAwsProfileFlag()).toBe('--profile team.a_b@c:d/e+f');
   });
 
   it('keeps a non-ASCII profile name, which is legitimate', () => {
@@ -79,6 +81,14 @@ describe('pasteableAwsProfileFlag', () => {
     ['surrounding whitespace displaySafe trims', ' prod'],
     ['a leading dash', '--region'],
     ['a clause break a selection can start inside', 'a: b'],
+    ['a backtick, which ends a markdown-backtick wrapper when pasted', 'x`touch OWNED`y'],
+    ['whitespace', 'team a'],
+    ['an apostrophe', "team'a"],
+    ['a command separator', 'x;y'],
+    ['a dollar sign (also a JS replacement pattern)', 'x$$y'],
+    ['a replacement back-reference', 'a$1b'],
+    ['a tilde', '~root'],
+    ['a backslash', 'p\\q'],
   ])('prints the quoted hole, never the value, for %s', (_what, profile) => {
     setPasteableAwsProfile(profile);
     expect(pasteableAwsProfileFlag()).toBe(`--profile '<profile>'`);
@@ -121,6 +131,12 @@ describe('withPasteableAwsProfile', () => {
     );
   });
 
+  it('inserts after `(` and after a newline too', () => {
+    setPasteableAwsProfile('prod');
+    expect(withPasteableAwsProfile('(aws ec2 x)')).toBe('(aws --profile prod ec2 x)');
+    expect(withPasteableAwsProfile('a\naws ec2 x')).toBe('a\naws --profile prod ec2 x');
+  });
+
   it('handles a span that ends right after `aws ` (a spliced service fragment)', () => {
     setPasteableAwsProfile('prod');
     expect(withPasteableAwsProfile('aws ')).toBe('aws --profile prod ');
@@ -143,22 +159,22 @@ describe('the shared renderers carry the profile (go-to-k/cdkd#3959)', () => {
   });
 
   it('pasteableAwsCommand: after every aws word, values still one argument each', () => {
-    setPasteableAwsProfile("my prof'x");
+    setPasteableAwsProfile('prod-\u00e9');
     const aws = pasteableAwsCommand();
     const cmd = aws`aws ec2 describe-instances --instance-ids ${'i-1'} && aws ec2 associate-address --instance-id ${'i-1'}`.render();
     expect(cmd).toBe(
-      `aws --profile 'my prof'\\''x' ec2 describe-instances --instance-ids i-1 && ` +
-        `aws --profile 'my prof'\\''x' ec2 associate-address --instance-id i-1`
+      `aws --profile 'prod-\u00e9' ec2 describe-instances --instance-ids i-1 && ` +
+        `aws --profile 'prod-\u00e9' ec2 associate-address --instance-id i-1`
     );
     expect(argvUnderBash(cmd)).toEqual([
       '--profile',
-      "my prof'x",
+      'prod-\u00e9',
       'ec2',
       'describe-instances',
       '--instance-ids',
       'i-1',
       '--profile',
-      "my prof'x",
+      'prod-\u00e9',
       'ec2',
       'associate-address',
       '--instance-id',
@@ -170,7 +186,7 @@ describe('the shared renderers carry the profile (go-to-k/cdkd#3959)', () => {
     setPasteableAwsProfile('prod');
     const aws = pasteableAwsCommand();
     const rendered = aws`aws iam delete-role --role-name ${'bad\u001bname'}`.render();
-    expect(rendered).not.toContain('--profile');
+    expect(rendered).toBe(WITHHELD_AWS_COMMAND);
   });
 
   it('renderDisableCommand / protectedReplacementAdvice: byte-identical without a profile', () => {
@@ -207,6 +223,28 @@ describe('the shared renderers carry the profile (go-to-k/cdkd#3959)', () => {
       '`aws --profile prod rds modify-db-cluster --db-cluster-identifier c1 --no-deletion-protection`'
     );
   });
+});
+
+describe('a hostile profile inside the backtick-wrapped advice runs nothing when pasted', () => {
+  it.each(PASTE_PAYLOADS.map((p) => [p.label, p.value] as const))(
+    '%s',
+    (_label, profile) => {
+      setPasteableAwsProfile(profile);
+      const advice = protectedReplacementAdvice({
+        evidence: "cdkd's recorded properties carry DeletionProtection: true",
+        replaceFlags: 'cdkd deploy --replace',
+        disable: {
+          before: 'aws rds modify-db-cluster --db-cluster-identifier',
+          identifier: 'c1',
+          after: '--no-deletion-protection',
+        },
+      });
+      withPasteDir((dir) => {
+        expect(spansThatRun(advice, dir)).toEqual([]);
+      });
+    },
+    30_000
+  );
 });
 
 describe('the --remove-protection compensation commands (the issue examples)', () => {

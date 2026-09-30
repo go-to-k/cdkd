@@ -71,6 +71,7 @@ import {
   type ParameterTaint,
 } from '../../analyzer/parameter-dependence.js';
 import { displayIdent, displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
+import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
   displayAssemblyPath,
@@ -508,9 +509,11 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
       if (!identity.Account) {
         throw new Error(
+          // cdkd-profile-display: `withPasteableAwsProfile` prints the profile
+          // only when it holds no shell-active character, else a quoted hole.
           'STS GetCallerIdentity returned no Account — cdkd needs the account ID to ' +
             'synthesize cdkd-local ARNs for nested-stack rows. Verify the active AWS ' +
-            'credentials are valid (e.g. `aws sts get-caller-identity`).'
+            `credentials are valid (e.g. \`${withPasteableAwsProfile('aws sts get-caller-identity')}\`).`
         );
       }
       accountIdForNestedSynth = identity.Account;

@@ -25,9 +25,16 @@
  */
 import { getAssumedRoleCredentials } from './aws-client-defaults.js';
 import { displaySafe } from './display-safe.js';
-import { commandHole, hasClauseBreak, shellQuote } from './pasteable-command.js';
+import { commandHole, shellQuote } from './pasteable-command.js';
 
 let explicitProfile: string | undefined;
+
+/**
+ * Whitespace, and every character a POSIX shell (bash or zsh) treats
+ * specially anywhere in a word, `~` and `^` included. A profile holding one
+ * is printed as a hole (see {@link pasteableAwsProfileFlag}).
+ */
+const SHELL_ACTIVE = /[\s'"`$;&|<>()*?[\]{}!#~\\^=%,]/;
 
 /**
  * Record the run's explicit `--profile` (`undefined` clears it). Called once
@@ -44,12 +51,19 @@ export function setPasteableAwsProfile(profile: string | undefined): void {
  *
  * - No explicit profile (or an empty one): `''`, so the command is byte-for-byte
  *   what it was before go-to-k/cdkd#3959.
- * - A profile that renders exactly: `--profile <shellQuote(profile)>`.
- * - A profile `displaySafe` would ALTER, that starts with `-`, or that holds a
- *   clause break a selection could start inside: the quoted
- *   `'<profile>'` hole. Never the altered spelling (a different profile) and
- *   never nothing (the ambient default, the very mis-target this closes); an
- *   unfilled hole makes the AWS CLI refuse the profile before any call.
+ * - A profile that renders exactly and holds no shell-active character:
+ *   `--profile <shellQuote(profile)>` (bare for a plain ASCII name, quoted for
+ *   a non-ASCII one, which is legitimate: go-to-k/cdkd#3377).
+ * - Anything else -- a profile `displaySafe` would ALTER, one starting with
+ *   `-`, or one holding whitespace or a shell-active character -- is the
+ *   quoted `'<profile>'` hole. Quoting alone is NOT enough: the command is
+ *   printed inside sentences carrying an English apostrophe (`cdkd's`) and
+ *   inside markdown backticks, and a line pasted whole flips the quote parity
+ *   or ends the backtick substitution, so a value like `x; touch OWNED` would
+ *   RUN. A profile with no shell-active character is inert even unquoted.
+ *   Never the altered spelling (a different profile) and never nothing (the
+ *   ambient default, the very mis-target this closes); an unfilled hole makes
+ *   the AWS CLI refuse the profile before any call.
  * - A run that ALSO assumed a role (`--role-arn` / `CDKD_ROLE_ARN`): every
  *   cdkd call ran as that role, possibly in another account, while
  *   `--profile X` pasted runs as the BASE profile's principal. The
@@ -63,16 +77,15 @@ export function pasteableAwsProfileFlag(): string {
     return `--profile ${commandHole('role-profile')}`;
   }
   const safe = displaySafe(profile);
-  if (safe !== profile || profile.startsWith('-') || hasClauseBreak(profile)) {
+  if (safe !== profile || profile.startsWith('-') || SHELL_ACTIVE.test(profile)) {
     // cdkd-profile-display: a literal hole; the profile's value is not printed.
     return `--profile ${commandHole('profile')}`;
   }
-  // cdkd-profile-display: gated above, the way `recoveryCommandFlags` gates the
-  // force-unlock hint's profile rather than by `isPasteableIdent`, which would
-  // refuse a legitimate non-ASCII profile name (go-to-k/cdkd#3377). Printed only
-  // when `displaySafe` leaves it byte-identical, never with a leading `-` (an
-  // option) or a clause break (a selection starting inside the quotes), and
-  // `shellQuote` quotes a `~` or any other shell-active character.
+  // cdkd-profile-display: gated above rather than by `isPasteableIdent`, which
+  // would refuse a legitimate non-ASCII profile name (go-to-k/cdkd#3377).
+  // Printed only when `displaySafe` leaves it byte-identical, it does not start
+  // with `-` (an option), and it holds no whitespace or shell-active character,
+  // so it is inert whether or not the surrounding paste keeps the quotes.
   return `--profile ${shellQuote(profile)}`;
 }
 
@@ -92,5 +105,8 @@ export function pasteableAwsProfileFlag(): string {
 export function withPasteableAwsProfile(literal: string): string {
   const flag = pasteableAwsProfileFlag();
   if (flag === '') return literal;
-  return literal.replace(/(^|[\s;&|(])aws (?=[a-z]|$)/g, `$1aws ${flag} `);
+  // A replacer FUNCTION, never a replacement string: `$$`, `$&` or `$1` in the
+  // flag would otherwise be expanded and print a DIFFERENT name. `SHELL_ACTIVE`
+  // holes every `$` today, so this is defence in depth, not a reachable path.
+  return literal.replace(/(^|[\s;&|(])aws (?=[a-z]|$)/g, (_m, pre: string) => `${pre}aws ${flag} `);
 }
