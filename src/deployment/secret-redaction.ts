@@ -8117,11 +8117,13 @@ function maskDescriptorValue(
 
 /**
  * The own fields of an error link that `retryable-errors.ts`'s classifiers
- * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`), plus the SDK's
- * other code fields. {@link maskSecretsInError} copies such a field verbatim
+ * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`, and the
+ * `logicalId` anchor `auxiliary-failure.ts` also reads — a template key, not
+ * echoed text), plus the SDK's other code fields. {@link maskSecretsInError} copies such a field verbatim
  * when its value is a STRING; any other value is masked like every field.
  */
 const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
+  'logicalId',
   'name',
   'code',
   'Code',
@@ -8148,7 +8150,9 @@ function isPlainContainer(value: object): boolean {
  *   not entered, and an accessor is not invoked (a getter can throw or have
  *   effects); nor is a plain object's KEY masked;
  * - nothing deeper than {@link ERROR_CAUSE_MASK_MAX_DEPTH} levels is entered;
- * - a walk that throws (only a hostile Proxy's trap can) returns `value`.
+ * - a node whose read throws (only a Proxy's trap can: a revoked one, a
+ *   hostile one) is kept by reference and not entered, its siblings masked;
+ *   each node is read ONCE, so the copy invokes no trap a second time.
  *
  * Breadth-first with a visited set, so a node is entered at its SHALLOWEST
  * depth, a cycle terminates in linear work, and a node shared by two parents
@@ -8156,23 +8160,55 @@ function isPlainContainer(value: object): boolean {
  * made non-extensible too, and each property keeps its own attributes (an
  * array's `length` included).
  */
+/** One entered node, read ONCE so the copy pass invokes no trap a second time. */
+interface FieldNode {
+  proto: object | null;
+  isArray: boolean;
+  length: PropertyDescriptor | undefined;
+  extensible: boolean;
+  entries: Array<[PropertyKey, PropertyDescriptor]>;
+}
+
+/** `node`'s shape when it is a plain container; `undefined` when not, or when reading it throws. */
+function readFieldNode(node: object): FieldNode | undefined {
+  try {
+    if (!isPlainContainer(node)) return undefined;
+    const entries: Array<[PropertyKey, PropertyDescriptor]> = [];
+    for (const key of Reflect.ownKeys(node)) {
+      const descriptor = Object.getOwnPropertyDescriptor(node, key);
+      if (descriptor) entries.push([key, descriptor]);
+    }
+    const isArray = Array.isArray(node);
+    return {
+      proto: Object.getPrototypeOf(node) as object | null,
+      isArray,
+      length: isArray ? Object.getOwnPropertyDescriptor(node, 'length') : undefined,
+      extensible: Object.isExtensible(node),
+      entries,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function maskErrorFieldValue(value: unknown, maskText: (text: string) => string): unknown {
   if (typeof value === 'string') return maskText(value);
   if (typeof value !== 'object' || value === null) return value;
   try {
-    const nodes: object[] = [];
+    const nodes = new Map<object, FieldNode>();
     const seen = new Set<object>();
     let changed = false;
     let frontier: object[] = [value];
     for (let depth = 0; frontier.length > 0 && depth < ERROR_CAUSE_MASK_MAX_DEPTH; depth++) {
       const next: object[] = [];
       for (const node of frontier) {
-        if (seen.has(node) || !isPlainContainer(node)) continue;
+        if (seen.has(node)) continue;
         seen.add(node);
-        nodes.push(node);
-        for (const key of Reflect.ownKeys(node)) {
-          const descriptor = Object.getOwnPropertyDescriptor(node, key);
-          if (!descriptor || !('value' in descriptor)) continue;
+        const read = readFieldNode(node);
+        if (!read) continue;
+        nodes.set(node, read);
+        for (const [, descriptor] of read.entries) {
+          if (!('value' in descriptor)) continue;
           const child: unknown = descriptor.value;
           if (typeof child === 'string') {
             if (!changed && maskText(child) !== child) changed = true;
@@ -8185,20 +8221,19 @@ function maskErrorFieldValue(value: unknown, maskText: (text: string) => string)
     }
     if (!changed) return value;
     const copies = new Map<object, object>();
-    for (const node of nodes) {
+    for (const [node, read] of nodes) {
       copies.set(
         node,
-        Array.isArray(node)
-          ? new Array<unknown>(node.length)
-          : (Object.create(Object.getPrototypeOf(node) as object | null) as object)
+        read.isArray
+          ? new Array<unknown>((read.length?.value as number | undefined) ?? 0)
+          : (Object.create(read.proto) as object)
       );
     }
-    for (const node of nodes) {
+    for (const [node, read] of nodes) {
       const copy = copies.get(node)!;
-      for (const key of Reflect.ownKeys(node)) {
-        if (key === 'length' && Array.isArray(node)) continue;
-        const descriptor = Object.getOwnPropertyDescriptor(node, key);
-        if (!descriptor) continue;
+      for (const [key, original] of read.entries) {
+        if (key === 'length' && read.isArray) continue;
+        const descriptor = { ...original };
         if ('value' in descriptor) {
           const child: unknown = descriptor.value;
           if (typeof child === 'string') descriptor.value = maskText(child);
@@ -8208,11 +8243,10 @@ function maskErrorFieldValue(value: unknown, maskText: (text: string) => string)
         }
         Object.defineProperty(copy, key, descriptor);
       }
-      if (Array.isArray(node)) {
-        const length = Object.getOwnPropertyDescriptor(node, 'length');
-        if (length?.writable === false) Object.defineProperty(copy, 'length', { writable: false });
+      if (read.length?.writable === false) {
+        Object.defineProperty(copy, 'length', { writable: false });
       }
-      if (!Object.isExtensible(node)) Object.preventExtensions(copy);
+      if (!read.extensible) Object.preventExtensions(copy);
     }
     return copies.get(value) ?? value;
   } catch {
@@ -8222,9 +8256,10 @@ function maskErrorFieldValue(value: unknown, maskText: (text: string) => string)
 
 /**
  * Return `error` with {@link maskSecretsInText} applied to the `message` AND the
- * `stack` of every link in its `cause` chain, with everything else about each
- * link preserved (issue [#2038](https://github.com/go-to-k/cdkd/issues/2038)
- * review).
+ * `stack` of every link in its `cause` chain, and to a COPY of each other own
+ * data field ({@link maskErrorFieldValue}, go-to-k/cdkd#4190), with the
+ * prototype and every descriptor's attributes preserved (issue
+ * [#2038](https://github.com/go-to-k/cdkd/issues/2038) review).
  *
  * Two bounds on that "every link", both stated here because the PUBLIC contract
  * is what a caller reads and neither is visible from the call site:

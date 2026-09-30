@@ -8,9 +8,14 @@ import {
 } from '../../../src/deployment/secret-redaction.js';
 import {
   isMarkedNonRetryable,
+  isNameCollisionErrorFrom,
   isThrottlingError,
   markNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+} from '../../../src/provisioning/auxiliary-failure.js';
 
 // go-to-k/cdkd#4190: `maskSecretsInError` masked each link's `message` and
 // `stack` and copied every other own field verbatim, so an AWS SDK exception's
@@ -279,6 +284,57 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
     }
     // Any OTHER field is masked: the exemption is by key.
     expect(masked.Message).toBe('*** on a request');
+  });
+
+  it('keeps the `logicalId` anchor verbatim, so collision and auxiliary verdicts survive a needle in the id', () => {
+    const needle = new Map([['Bucket', EXPRESSION]]);
+    // The Cloud Control arm: an exact `ccErrorCode` behind the `logicalId` anchor.
+    const collision = Object.assign(new Error('Bucket my-bucket-x failed'), {
+      logicalId: 'MyBucket',
+      ccErrorCode: 'AlreadyExists',
+    });
+    const maskedCollision = maskSecretsInError(collision, needle);
+    expect(maskedCollision).not.toBe(collision);
+    expect(maskedCollision.logicalId).toBe('MyBucket');
+    expect(isNameCollisionErrorFrom(collision, 'MyBucket')).toBe(true);
+    expect(isNameCollisionErrorFrom(maskedCollision, 'MyBucket')).toBe(true);
+
+    const auxiliary = markAuxiliaryFailure(new Error('Bucket policy failed'), 'MyBucket');
+    const maskedAuxiliary = maskSecretsInError(auxiliary, needle);
+    expect(maskedAuxiliary).not.toBe(auxiliary);
+    expect(isAuxiliaryFailure(auxiliary)).toBe(true);
+    expect(isAuxiliaryFailure(maskedAuxiliary)).toBe(true);
+  });
+
+  it('keeps a node whose read throws (a revoked Proxy) by reference and still masks its siblings', () => {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    const original = Object.assign(new Error('x'), { Error: { p: proxy, m: SECRET } });
+    const masked = maskSecretsInError(original, bag());
+    expect(masked.Error.m).toBe(SECRET_MASK);
+    expect(masked.Error.p).toBe(proxy);
+    expect(original.Error.m).toBe(SECRET);
+  });
+
+  it('masks a SYMBOL key inside a nested plain object, holding a string or an object', () => {
+    const sym = Symbol('detail');
+    const original = Object.assign(new Error('x'), {
+      Error: { [sym]: SECRET, nested: { [sym]: { Message: SECRET } } },
+    });
+    const masked = maskSecretsInError(original, bag()) as unknown as {
+      Error: Record<symbol, unknown> & { nested: Record<symbol, { Message: string }> };
+    };
+    expect(masked.Error[sym]).toBe(SECRET_MASK);
+    expect(masked.Error.nested[sym]!.Message).toBe(SECRET_MASK);
+  });
+
+  it('keeps a TRAILING sparse hole: the copy keeps the original length', () => {
+    const list: unknown[] = [SECRET];
+    list.length = 3;
+    const masked = maskSecretsInError(Object.assign(new Error('x'), { list }), bag());
+    expect(masked.list).toHaveLength(3);
+    expect(masked.list[0]).toBe(SECRET_MASK);
+    expect(2 in masked.list).toBe(false);
   });
 
   it('masks a NON-string value under an identifier key', () => {
