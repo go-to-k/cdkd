@@ -24,6 +24,10 @@
 #      record holds the region-less expression, the PARENT's `outputReads`
 #      names us-west-2, and the CHILD's own reads do NOT (the premise: the
 #      child's evidence alone cannot explain the reference).
+#   2d. DRIFT ARM (go-to-k/cdkd#4213): tamper the child's echo (Value and
+#      Description), then `cdkd drift --revert` on the CHILD must refuse on the
+#      parent's regions (exit 2) and write nothing. Pre-fix it wrote the
+#      consumer region's secret. Phase 3's v2 deploy restores the resource.
 #   3. ARM A (`cdkd rollback` of the parent): deploy v2 + INJECT_FAIL under
 #      --no-rollback; assert the child journal carries the echo UPDATE whose
 #      previous Value is the expression.
@@ -355,6 +359,83 @@ fi
 echo "[verify]   ok: the child records the region-less expression; only the PARENT's reads name ${PRODUCER_REGION}"
 
 # ---------------------------------------------------------------------------
+# PHASE 2d (DRIFT ARM, go-to-k/cdkd#4213): `cdkd drift --revert` on the CHILD
+# must classify the parent-supplied expression with the PARENT's regions.
+# Pre-fix, drift read only the child's own (empty) reads, resolved the
+# expression in us-east-1, and --revert WROTE the consumer region's secret.
+# ---------------------------------------------------------------------------
+# Both Value (secret-bearing) and Description (ordinary) are tampered: with
+# Value alone the resource is `notCompared`, nothing is drifted, and --revert
+# returns early without reaching the refusal (the sibling fixture's phase 2b2).
+echo "[verify] phase 2d: 'cdkd drift --revert' on ${CHILD_STACK} (expect a refusal naming ${PRODUCER_REGION})"
+TAMPER_SENTINEL="cdkd-4213-tampered-do-not-resolve"
+aws ssm put-parameter --name "${ECHO_PARAM}" --value "${TAMPER_SENTINEL}" --type String \
+  --description "cdkd-4213-tampered-description" --overwrite --region "${CONSUMER_REGION}" >/dev/null
+# Premise guard (the sibling fixture's phase 2b2): the tamper must make the
+# echo genuinely DRIFTED on Description, or --revert returns early and a red
+# below would not say whether the tamper or the refusal was missing.
+DRIFT_JSON_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CHILD_STACK}" --json \
+  --state-bucket "${STATE_BUCKET}" > "${LOGDIR}/drift-child.json" 2> "${LOGDIR}/drift-child.err" || DRIFT_JSON_RC=$?
+assert_no_plaintext "${LOGDIR}/drift-child.json" "the child drift --json payload"
+assert_no_plaintext "${LOGDIR}/drift-child.err" "the child drift stderr"
+CHILD_DRIFTED_PATHS="$(jq -r '[.. | objects | select(has("drifted")) | .drifted[]? | select(.logicalId == "SecretEcho") | .changes[]?.path] | join(",")' \
+  "${LOGDIR}/drift-child.json")"
+if [ "${DRIFT_JSON_RC}" -ne 1 ]; then
+  echo "FAIL: drift --json on the tampered child exited ${DRIFT_JSON_RC}, expected 1 (a Description drift detected)" >&2
+  exit 1
+fi
+case ",${CHILD_DRIFTED_PATHS}," in
+  *,Description,*) ;;
+  *)
+    echo "FAIL: the tampered child echo is not drifted on Description (got '${CHILD_DRIFTED_PATHS}', rc=${DRIFT_JSON_RC}); the --revert below would exercise no revert code" >&2
+    exit 1
+    ;;
+esac
+case ",${CHILD_DRIFTED_PATHS}," in
+  *,Value,*)
+    echo "FAIL: the child echo reports a Value drift: its secret leaf was compared instead of refused" >&2
+    exit 1
+    ;;
+esac
+DRIFT_REVERT_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CHILD_STACK}" --revert -y \
+  --state-bucket "${STATE_BUCKET}" > "${LOGDIR}/drift-revert.log" 2>&1 || DRIFT_REVERT_RC=$?
+sed 's/^/  /' "${LOGDIR}/drift-revert.log" || true
+assert_no_plaintext "${LOGDIR}/drift-revert.log" "the drift --revert output"
+# `refused to re-resolve` is printed only by the revert path's refusal branch,
+# on ONE line with the refusal's own text, so the needles are matched on the
+# SAME line: detection's warning also names the producer region, and a revert
+# refusing for another reason would otherwise still pass.
+if ! grep -F -- 'refused to re-resolve' "${LOGDIR}/drift-revert.log" \
+  | grep -F -- "'${SHARED_SECURE_PARAM}'" \
+  | grep -qF -- "producer region(s) on record: ${PRODUCER_REGION}"; then
+  echo "FAIL: drift --revert on the child did not refuse on the parent's region (no single line carries the revert refusal, the reference and ${PRODUCER_REGION})" >&2
+  exit 1
+fi
+if grep -qF -- "parent stacks' cross-region reads could not be established" "${LOGDIR}/drift-revert.log"; then
+  echo "FAIL: drift --revert refused on INCOMPLETE evidence: the parent record was not read" >&2
+  exit 1
+fi
+if [ "${DRIFT_REVERT_RC}" -ne 2 ]; then
+  echo "FAIL: drift --revert exited ${DRIFT_REVERT_RC}, expected 2 (one resource refused, nothing written)" >&2
+  exit 1
+fi
+# Nothing was written, so the live value is still the tamper sentinel. Pre-fix
+# the premise guard's Value-drift branch reds first (detection compared the
+# secret leaf in the wrong region); this pins the write itself.
+DRIFT_LIVE="$(live_echo_value)"
+if [ "${DRIFT_LIVE}" = "${CONSUMER_SECRET}" ]; then
+  echo "FAIL: drift --revert wrote the CONSUMER region's secret to the child's live resource — issue #4213" >&2
+  exit 1
+fi
+if [ "${DRIFT_LIVE}" != "${TAMPER_SENTINEL}" ]; then
+  echo "FAIL: drift --revert changed the live value although it refused" >&2
+  exit 1
+fi
+echo "[verify]   ok: drift --revert on the child refused on the parent's regions and wrote nothing"
+
+# ---------------------------------------------------------------------------
 # PHASE 3 (ARM A): failing v2 under --no-rollback -> journals to replay
 # ---------------------------------------------------------------------------
 echo "[verify] phase 3: deploy ${CONSUMER_STACK} v2 + INJECT_FAIL --no-rollback (expect FAILURE)"
@@ -520,4 +601,4 @@ assert_gone "the child's injected failing queue exists — it should never have 
   aws sqs get-queue-url --queue-name "${CHILD_FAILING_QUEUE_NAME}" --region "${CONSUMER_REGION}"
 
 echo ""
-echo "[verify] PASS: rollback-nested-cross-region-secret — the parent rollback, the parent's automatic rollback and the child's own automatic rollback all refused to re-resolve a parent-supplied cross-region secret, and the live value kept the producer region's secret"
+echo "[verify] PASS: rollback-nested-cross-region-secret — drift --revert on the child, the parent rollback, the parent's automatic rollback and the child's own automatic rollback all refused to re-resolve a parent-supplied cross-region secret, and the live value kept the producer region's secret"

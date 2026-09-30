@@ -42,6 +42,11 @@ so a wrong-region resolution is observable.
   record holds the region-less expression, the PARENT's `outputReads` name
   `us-west-2`, and the CHILD's own reads name no region — the shape where the
   child's evidence alone cannot explain the reference.
+- **Drift arm** (phase 2d, go-to-k/cdkd#4213): with the child's echo tampered
+  (Value and Description), `cdkd drift --revert` on the CHILD refuses on the
+  parent's regions (`producer region(s) on record: us-west-2`, exit 2) and
+  writes nothing. Before #4213 drift read only the child's own reads and
+  wrote the consumer region's secret, so this arm discriminates.
 - **Arm A** (phases 3-4): a `--no-rollback` failure, then `cdkd rollback` of
   the parent; the nested row's revert refuses (exit 2), and the live echo
   still holds the producer's value with the v2 `Description`.

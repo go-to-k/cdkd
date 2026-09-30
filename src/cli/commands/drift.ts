@@ -96,6 +96,11 @@ import {
   classifyReplaySecretRegion,
   producerRegionsFromState,
 } from '../../deployment/rollback-executor.js';
+import { regionLessSecretName } from '../../deployment/secret-region-classification.js';
+import {
+  inheritProducerRegions,
+  type ProducerRegionEvidence,
+} from '../../deployment/producer-regions-scope.js';
 import { withRetry } from '../../deployment/retry.js';
 import { maskingRetryLogger } from '../../deployment/masking-retry-logger.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
@@ -475,6 +480,12 @@ interface StackDriftReport {
    * that cannot promise that must not push here.
    */
   warnings: string[];
+  /**
+   * The producer-region evidence detection classified this stack's secret
+   * references with, reused by `--revert` (go-to-k/cdkd#4213). Region names
+   * and a flag only; never printed.
+   */
+  producerRegions: ProducerRegionEvidence;
 }
 
 /**
@@ -1838,6 +1849,151 @@ function regionAmbiguousDriftSecretError(
 }
 
 /**
+ * go-to-k/cdkd#4213: a nested child records its parent's region-less spelling
+ * of a value the parent read across a region, and its own reads never name that
+ * region. When the ancestors' regions could not be established, a region-less
+ * reference that classifies `local` may still be the parent's, so the leaf is
+ * refused before any reference is fetched. Kept out of
+ * {@link resolveDriftLeafByRegion}, which mirrors the rollback replay's leaf
+ * walk (`drift-leaf-region-walk-mirrors-replay.test.ts`). Exported for its unit
+ * test only.
+ */
+export function refuseUnprovenDriftSecret(
+  leaf: string,
+  propertyPath: string,
+  logicalId: string,
+  consumerRegion: string,
+  evidence: ProducerRegionEvidence
+): void {
+  if (evidence.complete) return;
+  for (const token of dynamicReferenceTokens(leaf)) {
+    const verdict = classifyReplaySecretRegion(token, consumerRegion, evidence.regions);
+    const name = verdict.kind === 'local' ? regionLessSecretName(token) : undefined;
+    if (name === undefined) continue;
+    const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
+    throw new DriftSecretRefusalError(
+      `${logicalId}${where}: the secret reference '${name}' carries no region of its own, and ` +
+        `this is a nested stack whose parent stacks' cross-region reads could not be established, ` +
+        `so a parent may have resolved it in another region than '${consumerRegion}'. A secret of ` +
+        `the same name in two regions is two independent values, so cdkd would compare against — ` +
+        `and with --revert WRITE — the WRONG secret. Refusing instead. Make the parent stacks' ` +
+        `state readable (or repair a record whose parent link disagrees with its key), or spell ` +
+        `the reference as a full ARN, then re-run 'cdkd drift'.`,
+      'DRIFT_SECRET_REGION_UNKNOWN'
+    );
+  }
+}
+
+/**
+ * Why an ancestor's producer regions could not be established, at debug: the
+ * refusal it causes names no cause, and an AWS error's text goes through
+ * `safeMsg` like every other interpolated value this command logs.
+ */
+function noteUnreadableAncestor(stackName: string, region: string, why: string): void {
+  getLogger().debug(
+    safeMsg`Producer regions above a nested stack are incomplete: ${displayIdent(stackName)} (${region}): ${why}`
+  );
+}
+
+/** The bound on {@link driftProducerRegionEvidence}'s walk up a nested chain. */
+const MAX_ANCESTOR_DEPTH = 32;
+
+/**
+ * The producer-region evidence `cdkd drift` classifies a stack's recorded
+ * `{{resolve:...}}` references with (go-to-k/cdkd#4213). A top-level stack's is
+ * its own record's reads, complete. A NESTED child (a `<parent>~<id>` key, or a
+ * record naming a `parentStack`) receives a parent's cross-region value only as
+ * a Parameter and records the parent's region-less spelling, so its own reads
+ * are unioned with every ANCESTOR's, read from their state records. Any
+ * ancestor that cannot be read (missing, unreadable, a record whose region
+ * disagrees with its key, malformed reads, a chain deeper than the bound) makes
+ * the evidence INCOMPLETE, which refuses every region-less secret reference.
+ */
+export async function driftProducerRegionEvidence(
+  state: StackState,
+  stackName: string,
+  region: string,
+  stateBackend: Pick<S3StateBackend, 'getState'>,
+  depth = 0
+): Promise<ProducerRegionEvidence> {
+  // A stack's OWN malformed reads throw, as they did before #4213: the stack's
+  // run fails loudly naming its own record. Only an ANCESTOR's (below) makes
+  // the evidence incomplete, since that record is not the one being checked.
+  let own: string[];
+  if (depth === 0) {
+    own = producerRegionsFromState(state);
+  } else {
+    try {
+      own = producerRegionsFromState(state);
+    } catch {
+      noteUnreadableAncestor(stackName, region, 'its cross-stack read records are malformed');
+      return { regions: [], complete: false };
+    }
+  }
+  // Nested iff the key carries `~` (CDK bars it in a stack name) or the record
+  // names a parent -- the predicate `cdkd rollback` uses (#4174). The key and
+  // the record must agree on WHICH parent: a record naming another stack than
+  // its key is not evidence of the chain above it.
+  const cut = stackName.lastIndexOf('~');
+  const keyParent = cut >= 0 ? stackName.slice(0, cut) : undefined;
+  const recordParent = state.parentStack;
+  if (keyParent === undefined && recordParent === undefined) {
+    return { regions: own, complete: true };
+  }
+  if (
+    keyParent === '' ||
+    (recordParent !== undefined && typeof recordParent !== 'string') ||
+    (state.parentRegion !== undefined && typeof state.parentRegion !== 'string') ||
+    (keyParent !== undefined && typeof recordParent === 'string' && recordParent !== keyParent)
+  ) {
+    noteUnreadableAncestor(
+      stackName,
+      region,
+      'its key and its parent link disagree, or the link is malformed'
+    );
+    return inheritProducerRegions(own, undefined);
+  }
+  const parentName = (keyParent ?? recordParent) as string;
+  if (depth >= MAX_ANCESTOR_DEPTH) {
+    noteUnreadableAncestor(
+      stackName,
+      region,
+      `the nesting is deeper than ${MAX_ANCESTOR_DEPTH} levels`
+    );
+    return inheritProducerRegions(own, undefined);
+  }
+  const parentRegion = typeof state.parentRegion === 'string' ? state.parentRegion : region;
+  let parent: Awaited<ReturnType<S3StateBackend['getState']>>;
+  try {
+    parent = await stateBackend.getState(parentName, parentRegion);
+  } catch (error) {
+    noteUnreadableAncestor(
+      parentName,
+      parentRegion,
+      `it could not be read (${error instanceof Error ? error.message : String(error)})`
+    );
+    return inheritProducerRegions(own, undefined);
+  }
+  if (
+    !parent ||
+    parent.divergentBodyRegion !== undefined ||
+    typeof parent.state !== 'object' ||
+    parent.state === null
+  ) {
+    noteUnreadableAncestor(parentName, parentRegion, 'it has no usable state record');
+    return inheritProducerRegions(own, undefined);
+  }
+  const inherited = await driftProducerRegionEvidence(
+    parent.state,
+    parentName,
+    parentRegion,
+    stateBackend,
+    depth + 1
+  );
+  return inheritProducerRegions(own, inherited);
+}
+
+/**
  * Re-resolve one LEAF string, sending each `{{resolve:...}}` reference in it to
  * the region {@link classifyReplaySecretRegion} says must answer (issue #2108).
  *
@@ -2000,7 +2156,12 @@ async function resolveStateSecretExpressions(
      */
     logicalId: string;
     consumerRegion: string;
-    producerRegions: readonly string[];
+    /**
+     * A nested child's evidence includes its ANCESTORS' regions, and is
+     * incomplete when they cannot be read (go-to-k/cdkd#4213) — see
+     * {@link driftProducerRegionEvidence}.
+     */
+    producerRegions: ProducerRegionEvidence;
   }
 ): Promise<Record<string, unknown>> {
   if (!containsDynamicReference(props)) return props;
@@ -2015,12 +2176,13 @@ async function resolveStateSecretExpressions(
       if (!v.includes('{{resolve:')) return v;
       // Issue #2108: decide the REGION of every reference in this leaf before
       // any of them is fetched. See {@link classifyReplaySecretRegion}.
+      refuseUnprovenDriftSecret(v, path, logicalId, consumerRegion, producerRegions);
       const resolved = await resolveDriftLeafByRegion(
         v,
         path,
         logicalId,
         consumerRegion,
-        producerRegions,
+        producerRegions.regions,
         resolvers,
         ctx
       );
@@ -2653,12 +2815,17 @@ async function runDriftForStack(
     // region. `DriftSecretResolvers` routes each reference to the region
     // `classifyReplaySecretRegion` says must answer for it.
     const secretResolvers = new DriftSecretResolvers(region);
-    // The FOREIGN-region evidence, read straight off the state record this
-    // command already loaded — `state.imports[].sourceRegion` /
-    // `state.outputReads[].sourceRegion`. The rollback lane (#2057) had to
-    // plumb this through `RollbackExecutorContext` because the replay site
-    // holds no state; here it is one call with nothing to thread.
-    const producerRegions = producerRegionsFromState(state);
+    // The FOREIGN-region evidence: `state.imports[].sourceRegion` /
+    // `state.outputReads[].sourceRegion` of this record and, for a nested
+    // child, of every ancestor, which `driftProducerRegionEvidence` reads from
+    // state (go-to-k/cdkd#4213); an ancestor it cannot read leaves the evidence
+    // incomplete.
+    const producerRegions = await driftProducerRegionEvidence(
+      state,
+      stackName,
+      region,
+      stateBackend
+    );
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
 
     for (const [logicalId, resource] of entries) {
@@ -3413,6 +3580,7 @@ async function runDriftForStack(
       etag: result.etag,
       migrationPending: result.migrationPending ?? false,
       warnings,
+      producerRegions,
     };
   });
 }
@@ -5731,8 +5899,9 @@ async function runRevert(
     // whose origin cannot be established is REFUSED before any update.
     try {
       const revertSecretResolvers = new DriftSecretResolvers(report.region);
-      // The foreign-region evidence for this stack — see the detection site.
-      const revertProducerRegions = producerRegionsFromState(report.state);
+      // The foreign-region evidence for this stack, as the detection site read
+      // it — a nested child's ancestors included (go-to-k/cdkd#4213).
+      const revertProducerRegions = report.producerRegions;
       const tasks = driftedOutcomes.map((outcome) => async () => {
         const stateResource = report.state.resources[outcome.logicalId];
         if (!stateResource) {

@@ -38,6 +38,7 @@ function report(
     state: { resources: resources ?? {} } as unknown as Report['state'],
     etag: '',
     migrationPending: false,
+    producerRegions: { regions: [], complete: true },
     warnings: [],
     ...rest,
   };

@@ -26,6 +26,7 @@ function report(partial: Partial<Report> & Pick<Report, 'outcomes'>): Report {
     state: {} as Report['state'],
     etag: '',
     migrationPending: false,
+    producerRegions: { regions: [], complete: true },
     warnings: [],
     ...partial,
   };
