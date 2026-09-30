@@ -17,7 +17,9 @@
 #   2.  strip `attributes.Arn` from the state record out of band — a record a
 #       pre-#1824 binary wrote — and prove the strip landed
 #   3.  `cdkd diff` of v2: a READ-ONLY command must not write state (the state
-#       object's VersionId + ETag are unchanged, the record still lacks Arn)
+#       object's VersionId + ETag are unchanged, the record still lacks Arn),
+#       yet it previews the ParamArn output as the ARN AWS reports — it re-reads
+#       the record the way the deploy does, without saving it (issue #3456)
 #   4.  deploy v2 (adds ONLY the output): exit 0; the output equals the ARN AWS
 #       reports; the record carries `attributes.Arn` again, beside the
 #       attributes it already had; the parameter itself was NOT updated
@@ -76,6 +78,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   [ -n "${SYNTH_DIR:-}" ] && rm -rf "${SYNTH_DIR}"
+  [ -n "${DIFF_ERR_FILE:-}" ] && rm -f "${DIFF_ERR_FILE}"
   # By PHYSICAL NAME first, then state: a state destroy that cannot read a
   # damaged record must not be the only thing standing between a failed run
   # and a leaked parameter.
@@ -162,13 +165,19 @@ fi
 T1="${SYNTH_DIR}/v1/${STACK}.template.json"
 T2="${SYNTH_DIR}/v2/${STACK}.template.json"
 PARAM_ID=$(jq -r '[.Resources | to_entries[] | select(.value.Type == "AWS::SSM::Parameter") | .key] | if length == 1 then .[0] else error("expected exactly one AWS::SSM::Parameter") end' "${T2}")
-if [ "$(jq -S -c '.Resources | with_entries(select(.value.Type == "AWS::SSM::Parameter"))' "${T1}")" != \
-     "$(jq -S -c '.Resources | with_entries(select(.value.Type == "AWS::SSM::Parameter"))' "${T2}")" ]; then
-  echo "FAIL: the parameter differs between v1 and v2 — phase 4 would be an UPDATE, not the no-change deploy under test" >&2
+# Every resource but `AWS::CDK::Metadata`, which cdkd never provisions and
+# whose `Analytics` blob changes when a construct (the CfnOutput) is added.
+if [ "$(jq -S -c '.Resources | with_entries(select(.value.Type != "AWS::CDK::Metadata"))' "${T1}")" != \
+     "$(jq -S -c '.Resources | with_entries(select(.value.Type != "AWS::CDK::Metadata"))' "${T2}")" ]; then
+  echo "FAIL: the resources differ between v1 and v2 — phase 4 would not be the no-change deploy under test" >&2
   exit 1
 fi
-if [ "$(jq -r '(.Outputs // {}) | has("ParamArn")' "${T1}")" != "false" ]; then
-  echo "FAIL: v1 already declares the ParamArn output" >&2
+if [ "$(jq -c '(.Outputs // {}) | keys' "${T1}")" != '[]' ]; then
+  echo "FAIL: v1 declares outputs: $(jq -c '(.Outputs // {}) | keys' "${T1}")" >&2
+  exit 1
+fi
+if [ "$(jq -c '(.Outputs // {}) | keys' "${T2}")" != '["ParamArn"]' ]; then
+  echo "FAIL: v2 must declare exactly the ParamArn output: $(jq -c '(.Outputs // {}) | keys' "${T2}")" >&2
   exit 1
 fi
 if [ "$(jq -c '.Outputs.ParamArn.Value' "${T2}")" != "{\"Fn::GetAtt\":[\"${PARAM_ID}\",\"Arn\"]}" ]; then
@@ -222,14 +231,19 @@ echo "    OK: the record no longer holds Arn"
 # --- Phase 3: cdkd diff is read-only ----------------------------------------
 echo "==> Phase 3: cdkd diff of v2 writes no state"
 IDENTITY_BEFORE_DIFF=$(state_object_identity)
+# The report (logger `info`) is stdout; a `warn` line is stderr. Kept apart so
+# an interleaved warning cannot land between a row and the value read under it.
+DIFF_ERR_FILE=$(mktemp)
 set +e
 DIFF_OUT=$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>"${DIFF_ERR_FILE}")
 DIFF_RC=$?
 set -e
+DIFF_ERR=$(cat "${DIFF_ERR_FILE}")
 if [ "${DIFF_RC}" -ne 0 ]; then
   echo "FAIL: cdkd diff exited ${DIFF_RC}" >&2
   echo "${DIFF_OUT}" >&2
+  echo "${DIFF_ERR}" >&2
   exit 1
 fi
 IDENTITY_AFTER_DIFF=$(state_object_identity)
@@ -242,6 +256,26 @@ if [ "$(read_state | jq -r --arg id "${PARAM_ID}" '.resources[$id].attributes | 
   exit 1
 fi
 echo "    OK: state object identity unchanged (${IDENTITY_AFTER_DIFF})"
+# Issue #3456: the preview re-reads the stale record too, so the output's ADD
+# row carries the real ARN. Pre-fix the diff could not compute it (the record
+# lacks Arn and the diff issued no read), and the ARN appears nowhere else in
+# its output: the parameter's physical id is its NAME.
+if ! grep -qF -- "[+] ParamArn" <<<"${DIFF_OUT}"; then
+  echo "FAIL: cdkd diff did not preview the ParamArn output as an addition" >&2
+  echo "${DIFF_OUT}" >&2
+  echo "${DIFF_ERR}" >&2
+  exit 1
+fi
+# The value is read off the line UNDER the `[+] ParamArn` row, so another
+# row carrying the ARN cannot satisfy it.
+PARAM_ARN_ROW_VALUE=$(awk '/\[\+\] ParamArn$/ { getline; sub(/^ +/, ""); print; exit }' <<<"${DIFF_OUT}")
+if [ "${PARAM_ARN_ROW_VALUE}" != "new: \"${REAL_ARN}\"" ]; then
+  echo "FAIL: cdkd diff previewed ParamArn as '${PARAM_ARN_ROW_VALUE}', not the ARN AWS reports (${REAL_ARN}) — it did not re-read the stale record" >&2
+  echo "${DIFF_OUT}" >&2
+  echo "${DIFF_ERR}" >&2
+  exit 1
+fi
+echo "    OK: the diff previews ParamArn = ${REAL_ARN} without writing it"
 
 # --- Phase 4: the deploy the issue reports ----------------------------------
 echo "==> Phase 4: deploy v2 (adds ONLY the output) over the stale record"

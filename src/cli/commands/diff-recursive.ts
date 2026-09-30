@@ -69,6 +69,7 @@ import {
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
+import type { StaleAttributeHealer } from '../../deployment/stale-attribute-heal.js';
 import {
   rewriteTemplateAssetReferences,
   type AssetRedirectMap,
@@ -1107,6 +1108,15 @@ export async function computeStackDiff(
      * child (go-to-k/cdkd#4049). Printing only: never handed to the resolver.
      */
     inheritedSecrets?: RecordedSecretValues;
+    /**
+     * The READ-ONLY stale-attribute healer (issue go-to-k/cdkd#3456), on every
+     * resolver context below — condition evaluation, the resource diff and the
+     * outputs pass — as `DeployEngine` puts its healer on every context it
+     * builds. Without it a `Fn::GetAtt` over a stale attribute map previews as
+     * the raw intrinsic or the physical id while the deploy re-reads the
+     * record and resolves it. Omitted, no provider read is issued.
+     */
+    attributeHealer?: StaleAttributeHealer;
   } = {}
 ): Promise<StackDiffResult> {
   const {
@@ -1115,6 +1125,7 @@ export async function computeStackDiff(
     cfnFallback,
     inheritSecretBearingTemplate,
     inheritedSecrets,
+    attributeHealer,
   } = options;
   // The parent's printing corpus (go-to-k/cdkd#4049), as the `inheritedSecrets`
   // of every resolver pass this node runs: parameter binding, condition
@@ -1286,6 +1297,7 @@ export async function computeStackDiff(
         // Its `Evaluated condition` / `Resolved` debug lines print a condition
         // over a parent-fed value (go-to-k/cdkd#4049).
         ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
+        ...(attributeHealer && { attributeHealer }),
       });
       effectiveTemplate = new TemplateParser().filterResourcesByCondition(template, conditions);
     } catch (error) {
@@ -1365,6 +1377,7 @@ export async function computeStackDiff(
       // still costs one `GetParameter` here — issued with
       // `WithDecryption: false`, so a `SecureString` never yields plaintext.
       skipDynamicReferences: true,
+      ...(attributeHealer && { attributeHealer }),
     });
   // Rollback-orphan adoption, in the deploy's position: after condition
   // pruning, before the diff. `DiffCalculator` decides CREATE by ABSENCE from
@@ -1915,7 +1928,11 @@ async function resolveChildStackParameters(
    * value (`Fn::Sub`), or a physical id embedding one. Log-only needles over
    * an empty map, so it decides nothing.
    */
-  printingSecrets?: RecordedSecretValues
+  printingSecrets?: RecordedSecretValues,
+  // The parent node's read-only healer (issue go-to-k/cdkd#3456): the deploy
+  // resolves this row's `Parameters` on a parent-engine context, which carries
+  // the parent's healer.
+  attributeHealer?: StaleAttributeHealer
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -1950,6 +1967,7 @@ async function resolveChildStackParameters(
         // perpetual change on every run — which is why the issue's two halves
         // could not be split.
         skipDynamicReferences: true,
+        ...(attributeHealer && { attributeHealer }),
       });
     } catch {
       // Unresolvable (e.g. references a not-yet-deployed resource): omit it so
@@ -2027,6 +2045,13 @@ export async function buildDiffTree(args: {
     stackName: string,
     region: string
   ) => Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }>;
+  /**
+   * Builds the READ-ONLY stale-attribute healer for one node (issue
+   * go-to-k/cdkd#3456), at EVERY node including nested children, since each
+   * child deploys through its own engine and that engine heals too. See
+   * `computeStackDiff`'s `attributeHealer`.
+   */
+  attributeHealerFor?: (stackName: string, region: string) => StaleAttributeHealer;
   template: CloudFormationTemplate;
   nestedTemplates: Record<string, string>;
   recursive: boolean;
@@ -2138,10 +2163,12 @@ export async function buildDiffTree(args: {
     assetRedirect,
     cfnFallback,
     previewOrphanAdoption,
+    attributeHealerFor,
     ancestorTemplatePaths,
     isNestedChild,
     inheritedSecrets,
   } = args;
+  const attributeHealer = attributeHealerFor?.(stackName, region);
 
   const { state, unreadable, unreadableContainers, deployRefusals } = await loadStateOrEmpty(
     stackName,
@@ -2195,6 +2222,7 @@ export async function buildDiffTree(args: {
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
+        ...(attributeHealer && { attributeHealer }),
         // A live template of its own, so this node decides for itself; the
         // inherited flag only matters for the DELETED children below.
         inheritSecretBearingTemplate: false,
@@ -2342,7 +2370,8 @@ export async function buildDiffTree(args: {
       stateBackend,
       parameters,
       cfnFallback,
-      printingSecrets
+      printingSecrets,
+      attributeHealer
     );
     node.children.push(
       await buildDiffTree({
@@ -2359,6 +2388,7 @@ export async function buildDiffTree(args: {
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
+        ...(attributeHealerFor && { attributeHealerFor }),
         ancestorTemplatePaths: childAncestorTemplatePaths,
         isNestedChild: true,
         parentHasSecretReference: secretBearingAbove,

@@ -39,8 +39,10 @@ deploy that updates nothing never does.
 The heal runs only when a resolution is about to take the resolver's physical-id
 fallback (`guardedPhysicalIdFallback`: a refusal for an `*Arn` / `*Url` name or
 under `--strict-getatt`, a warn-and-return otherwise) or is about to refuse a
-placeholder ARN. Nothing else costs an AWS call: a cached attribute, and every
-per-type arm that constructs or live-reads its answer, returns exactly as before.
+placeholder ARN — and, since issue #3627, when it reaches one of the resolver's
+heal-first arms (`healBeforeConstructing`). Nothing else costs an AWS call: a
+cached attribute, and every other per-type arm that constructs or live-reads its
+answer, returns exactly as before.
 
 ### The read primitive
 
@@ -86,10 +88,15 @@ that `cdkd import` of a `DBInstance` records those attributes too.
 - **Engine** (`deploy-engine.ts`). `buildResolverContext` sets `attributeHealer`
   on EVERY context — the deploy-internal diff pass, both provisioning arms and
   the outputs pass read the same stale record, and whichever asks first pays.
-- **No other command supplies a healer.** `cdkd diff`, `cdkd drift`, `cdkd
-  export`, `cdkd import`, `cdkd scrub` and the rollback replay keep the
-  pre-#1852 resolution, issue no read, and write nothing. Their refusal now
-  points at `cdkd deploy` as the command that heals.
+- **`cdkd diff` supplies a READ-ONLY healer** (issue #3456,
+  `read-only-attribute-healer.ts`): the same `import()` read, memoized per run
+  and bound to the stack's region, served to the preview and never merged into
+  a record or saved. Its eligibility is the type exclusion alone, because a
+  preview rewrites no record.
+- **No other command supplies a healer.** `cdkd drift`, `cdkd export`,
+  `cdkd import`, `cdkd scrub` and the rollback replay keep the pre-#1852
+  resolution, issue no read, and write nothing. Their refusal points at
+  `cdkd deploy` as the command that heals.
 
 ### Eligibility
 
@@ -179,7 +186,8 @@ Every site that answers a resolution from `resource.attributes` cache-only:
 | `refuseUnservedAttribute` arms (EC2 instance, CloudFront, security group) | not applicable — already live-read |
 | nested stack `Outputs.*` refusal | not applicable — child outputs, excluded by type |
 | cross-stack producers (`Fn::ImportValue`, `Fn::GetStackOutput`, exports index) | not applicable — they read `state.outputs`, which the healed deploy writes |
-| `cdkd diff` / `drift` / `export` / `import` / `scrub` / `local` resolver contexts | left — no healer; read-only commands, and `diff-recursive.ts` / `drift.ts` / `export.ts` are held by an open PR |
+| `cdkd diff` resolver contexts | read-only healer since issue #3456 — nothing persisted |
+| `cdkd drift` / `export` / `import` / `scrub` / `local` resolver contexts | left — no healer; read-only commands |
 
 ## Verification
 

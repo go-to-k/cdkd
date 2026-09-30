@@ -317,7 +317,7 @@ sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean
 ssm-secure-dynamic-ref	2026-09-27T14:06:33Z	PASS	135	verify.sh	go-to-k/cdkd#3870 head e6df2f358: rc ok, 0 surviving object versions, orph clean
 stack-lock-renewal	2026-09-25T22:24:46Z	PASS	511	verify.sh	rc ok, orph clean; force-unlock path (#3027 PR #3796)
 stage-assets	2026-09-28T14:07:49Z	PASS	100	verify.sh	go-to-k/cdkd#3986 head fe59a51b4: rc ok, orph clean; new log-group sweep removed 2
-stale-attribute-heal	2026-09-19T20:26:58Z	PASS	62	verify.sh	first run; rc ok, orph clean; red at phase 4 on the pre-#1852 engine
+stale-attribute-heal	2026-09-30T01:53:12Z	PASS	75	verify.sh	go-to-k/cdkd#4140 head bc9a46a8f: rc ok, orph clean; phase 3 diff previews the healed ParamArn
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-09-15T20:40:17Z	PASS	210	verify.sh	rc 0, depth>=1 arm, destroy 1 del 0 err, 3 planted keys 0 versions
 stepfunctions	2026-09-24T22:46:12Z	PASS	48	verify.sh	rc ok, 0 orphans (#3663)

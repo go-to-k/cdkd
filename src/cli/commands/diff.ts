@@ -26,7 +26,7 @@ import {
   createAssetRedirectResolver,
   rewriteTemplateAssetReferences,
 } from '../../assets/asset-redirect.js';
-import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
@@ -40,6 +40,7 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
 import { planOrphanAdoption, makeSiblingClaimReader } from '../../deployment/orphan-adoption.js';
 import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
+import { createReadOnlyAttributeHealerFactory } from '../../deployment/read-only-attribute-healer.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import {
@@ -185,6 +186,9 @@ async function diffCommand(
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
+  // Per-region clients for the preview's provider reads, built on first use
+  // and destroyed with the command's own (see `stackRegionScope` below).
+  const stackRegionScopes = new Map<string, { clients: AwsClients; registry: ProviderRegistry }>();
 
   try {
     // 1. Synthesize CDK app
@@ -258,20 +262,49 @@ async function diffCommand(
     });
     const diffCalculator = new DiffCalculator();
     // Providers are registered here so the diff can consult the SAME per-type
-    // property normalization the deploy engine applies (issue #1591) — and,
-    // since go-to-k/cdkd#2943, so the rollback-orphan pre-pass can ask a
-    // provider whether a recorded resource still exists.
-    //
-    // That second use is the first PROVIDER call on this path. `cdkd diff`
-    // already reaches AWS (parameter binding and condition evaluation issue
-    // `GetParameter`), so it is not the first AWS call — but it is the first
-    // time the diff asks about a live resource, and it happens only for a
-    // stack whose state holds orphan records. A stack that has never had a
-    // rollback orphan something pays nothing: `previewOrphanAdoption` is not
-    // consulted when `state.orphans` is empty.
+    // property normalization the deploy engine applies (issue #1591). The
+    // provider READS this preview makes — the rollback-orphan pre-pass
+    // (go-to-k/cdkd#2943) and the stale-attribute heal (go-to-k/cdkd#3456) — go
+    // through `stackRegionScope`'s per-region registries instead. Each runs
+    // only when needed: the pre-pass for a stack whose state holds orphan
+    // records, the heal for a reference that reaches a missing attribute.
     const diffProviderRegistry = new ProviderRegistry();
     registerAllProviders(diffProviderRegistry);
     const canonicalizeProperties = makeCanonicalizePropertiesFn(diffProviderRegistry);
+
+    // Per-STACK-region clients and providers, for every provider read this
+    // preview makes: the rollback-orphan adoption check below and the
+    // stale-attribute heal (go-to-k/cdkd#3456). `cdkd deploy` binds each
+    // stack's providers to clients for its own region, and a provider takes
+    // its clients at construction (some build their SDK client lazily from the
+    // ambient scope, so the calls run inside it too). A read through
+    // `diffProviderRegistry` would ask the command's region about a physical id
+    // that names a resource in another one — and a same-named resource there
+    // would answer for it.
+    //
+    // Deliberately WITHOUT the deploy registry's per-run settings
+    // (`setCustomResourceResponseBucket`, `allowUnsupportedTypes`, the SDK-route
+    // preferences): custom resources are never read here, a read routes by the
+    // record's own `provisionedBy`, and `cdkd diff` takes none of those flags.
+    const stackRegionScope = (
+      scopeRegion: string
+    ): { clients: AwsClients; registry: ProviderRegistry } => {
+      let scope = stackRegionScopes.get(scopeRegion);
+      if (scope === undefined) {
+        const clients = new AwsClients({
+          region: scopeRegion,
+          ...(options.profile && { profile: options.profile }),
+        });
+        const registry = runWithStackAwsClients(clients, () => {
+          const scoped = new ProviderRegistry();
+          registerAllProviders(scoped);
+          return scoped;
+        });
+        scope = { clients, registry };
+        stackRegionScopes.set(scopeRegion, scope);
+      }
+      return scope;
+    };
 
     // The SAME pre-pass `DeployEngine.executeDeployment` runs, wired from the
     // diff's own registry and state backend (issue go-to-k/cdkd#2943). It is
@@ -288,26 +321,31 @@ async function diffCommand(
       orphanStackName: string,
       orphanRegion: string
     ): Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }> => {
-      const outcome = await planOrphanAdoption({
-        records: state.orphans ?? [],
-        managedLogicalIds: new Set(Object.keys(state.resources ?? {})),
-        template: effectiveTemplate,
-        stackName: orphanStackName,
-        region: orphanRegion,
-        getProvider: (resourceType, provisionedBy) =>
-          diffProviderRegistry.getProviderFor({ resourceType, provisionedBy }).provider,
-        nameProperties: (resourceType) => {
-          const property = explicitNamePropertyFor(resourceType);
-          return property ? [property] : [];
-        },
-        readSiblingClaims: makeSiblingClaimReader({
-          stateBackend,
-          selfStackName: orphanStackName,
-          selfRegion: orphanRegion,
+      // In the STACK's region (see `stackRegionScope`), as the deploy's own
+      // pre-pass runs inside that stack's AWS scope.
+      const { clients, registry } = stackRegionScope(orphanRegion);
+      const outcome = await runWithStackAwsClients(clients, () =>
+        planOrphanAdoption({
+          records: state.orphans ?? [],
+          managedLogicalIds: new Set(Object.keys(state.resources ?? {})),
+          template: effectiveTemplate,
+          stackName: orphanStackName,
+          region: orphanRegion,
+          getProvider: (resourceType, provisionedBy) =>
+            registry.getProviderFor({ resourceType, provisionedBy }).provider,
+          nameProperties: (resourceType) => {
+            const property = explicitNamePropertyFor(resourceType);
+            return property ? [property] : [];
+          },
+          readSiblingClaims: makeSiblingClaimReader({
+            stateBackend,
+            selfStackName: orphanStackName,
+            selfRegion: orphanRegion,
+            logger,
+          }),
           logger,
-        }),
-        logger,
-      });
+        })
+      );
       // NOTICES are deliberately dropped here. On the deploy path they explain
       // why a record was kept rather than acted on, at the moment the user is
       // changing AWS; in a preview the same lines would print on EVERY diff of
@@ -315,6 +353,26 @@ async function diffCommand(
       // attached to a command people run repeatedly.
       return { adopted: outcome.adopted, refusals: outcome.refusals };
     };
+    // The READ-ONLY stale-attribute heal (issue go-to-k/cdkd#3456): the SAME
+    // provider `import()` read `cdkd deploy` takes when a `Fn::GetAtt` over a
+    // stale attribute map is about to fall back to the physical id, so the
+    // preview resolves the reference to the value the deploy will. Served for
+    // this run only; nothing is written to state. In the stack's region, like
+    // the adoption check.
+    const attributeHealerFor = createReadOnlyAttributeHealerFactory({
+      getProvider: (resource, healRegion) =>
+        stackRegionScope(healRegion).registry.getProviderFor({
+          resourceType: resource.resourceType,
+          properties: resource.properties,
+          provisionedBy: resource.provisionedBy,
+          // As `DeployEngine.readStaleAttributes` routes it (issue #3713): the
+          // record is its own baseline, so the read stays on the layer that
+          // wrote the record.
+          previousProperties: resource.properties,
+        }).provider,
+      inRegion: (healRegion, fn) =>
+        runWithStackAwsClients(stackRegionScope(healRegion).clients, fn),
+    });
     const recursive = options.recursive ?? false;
 
     // Issue #1002 PR 2 — when a stack's region is in cdkd-assets mode, the
@@ -368,6 +426,7 @@ async function diffCommand(
           // resolve cross-stack references identically.
           ...(options.cfnFallback === false && { cfnFallback: false }),
           previewOrphanAdoption,
+          attributeHealerFor,
           // This IS the stack the user named, so it is the one node that
           // carries the repaired-container refusals (go-to-k/cdkd#3335).
           isNestedChild: false,
@@ -411,6 +470,7 @@ async function diffCommand(
       throw new DiffDetectedError();
     }
   } finally {
+    for (const { clients } of stackRegionScopes.values()) clients.destroy();
     awsClients.destroy();
   }
 }
