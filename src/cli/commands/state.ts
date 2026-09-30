@@ -2650,10 +2650,14 @@ async function stateDestroyCommand(
         targets = refs.filter((r) => r.region === options.stackRegion || !r.region);
         if (targets.length === 0) {
           logger.warn(
-            // The name is followed by ` (`, which stops a pasted line before
-            // the name's `$( )` residual can run beside the `--flag`
-            // (go-to-k/cdkd#3950).
-            safeMsg`Skipping ${displayStackName(stackName)} (no state record matches ` +
+            // The stack name is NAMED only when plain, described otherwise: the
+            // line carries the `--stack-region` flag, and a block that displays
+            // an untrusted value carries no pasteable command (go-to-k/cdkd#3950's
+            // S1 rule). The ` (` after it stops a pasted line under bash only;
+            // zsh runs a `$( )` name past it. The region beside the flag is the
+            // operator's own `--stack-region` argument, not an untrusted value,
+            // so it stays shown.
+            safeMsg`Skipping ${plainOrDescribed(stackName, 'stack name')} (no state record matches ` +
               safeMsg`--stack-region ${displayIdent(options.stackRegion)})`
           );
           continue;

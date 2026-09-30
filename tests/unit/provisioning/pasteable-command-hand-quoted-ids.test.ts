@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { displayIdent, SECRET_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 
 /**
  * The four HAND-QUOTED pasteable commands of issue
@@ -85,8 +86,6 @@ import type { MaskerFn } from '../../../src/provisioning/masked-retry-logger.js'
 import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
-  expectZshRunsTheDisplay,
-  itUnderZsh,
   spansThatRun,
   spansThatRunBesideTheDisplay,
   withPasteDir,
@@ -134,6 +133,9 @@ const CASES: ReadonlyArray<{
   { label: 'a newline', suffix: 'a\nb', rendered: 'suppressed' },
   { label: 'a non-ASCII character', suffix: 'aΩb', rendered: 'suppressed' },
 ];
+
+/** The test-title verb for each rendering. */
+const RENDERED_VERB = { bare: 'renders bare', quoted: 'quotes', suppressed: 'suppresses' } as const;
 
 /**
  * Assert `message` renders `before <value>` the way `expected` says, and — for
@@ -197,7 +199,7 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
     };
 
     for (const c of CASES) {
-      it(`${c.rendered}s the command for ${c.label}`, async () => {
+      it(`${RENDERED_VERB[c.rendered]} the command for ${c.label}`, async () => {
         const name = `/cdkd/${c.suffix}`;
         await runFailedCleanup(name);
         expectRendering(warnings(), BEFORE, name, c.rendered);
@@ -278,7 +280,7 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
     };
 
     for (const c of CASES) {
-      it(`${c.rendered}s the command for ${c.label}`, async () => {
+      it(`${RENDERED_VERB[c.rendered]} the command for ${c.label}`, async () => {
         const arn = `arn:aws:ssm:us-east-1:111122223333:parameter/${c.suffix}`;
         const message = await refusalMessage(arn);
         expectRendering(message, BEFORE, arn, c.rendered);
@@ -317,9 +319,8 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
         expect(message, hostile).toContain(
           "pass the parameter NAME instead: --resource '<logicalId>'='<parameterName>'"
         );
-        // Nothing of the id survives in the pasteable fragment. The PROSE still
-        // displays it (`Cannot adopt SSM parameter ...`), which is a display
-        // question and not this one.
+        // Nothing of the id survives in the pasteable fragment, and the prose
+        // describes it too (go-to-k/cdkd#3950; the paste case below).
         const fragment = message.split('pass the parameter NAME instead: ')[1] ?? '';
         expect(fragment, hostile).not.toContain(hostile);
         expect(fragment, hostile).not.toContain('--resource ' + hostile);
@@ -332,25 +333,27 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       // was named in `--resource` under a sentence that cut it at 255 (code
       // review of go-to-k/cdkd#3764). Plain letters, one over 255.
       // Pinned at the BOUNDARY, both sides: at 1152 the prose and the fragment
-      // carry the id whole; one over, the prose cuts it and the fragment holes
-      // it (a case at 256 alone let a 256 cap pass -- Codex on this round).
+      // carry the id whole; one over, the prose describes it and the fragment
+      // holes it, the one predicate deciding both (a case at 256 alone let a
+      // 256 cap pass -- Codex on this round).
       const at = 'p'.repeat(1152);
       const atCap = await refusalMessage(ARN, at);
       expect(atCap).toContain(`Cannot adopt SSM parameter ${at} from an ARN`);
       expect(atCap).toContain(`--resource ${at}='<parameterName>'`);
       const over = await refusalMessage(ARN, 'p'.repeat(1153));
-      expect(over).not.toContain('p'.repeat(1153));
-      expect(over).toContain('p'.repeat(1152));
+      expect(over).not.toContain('p'.repeat(1152));
+      expect(over).toContain('Cannot adopt an SSM parameter whose logical id is not a plain identifier from an ARN');
       expect(over).toContain("--resource '<logicalId>'='<parameterName>'");
     });
 
     it('pastes nothing runnable at any granularity, through the provider itself', async () => {
       // The refusal as `import()` renders it, with the plain id (named) and
-      // each payload family as the logical id (holed, and still displayed in
-      // prose). The NAMED one is pasted to bash and zsh at line, sentence and
-      // clause granularity with decoys planted for every hole
-      // (`tests/unit/utils/paste-harness.ts`); a payload's is pasted to bash
-      // here, and its zsh paste is the S1 case below (go-to-k/cdkd#3950).
+      // each payload family as the logical id (holed in the `--resource`
+      // fragment and described in the prose), pasted to bash and zsh at line,
+      // sentence and clause granularity with decoys planted for every hole
+      // (`tests/unit/utils/paste-harness.ts`). The block carries the remedy,
+      // so a payload id is never displayed beside it (go-to-k/cdkd#3950's S1
+      // rule): displayed, zsh ran a `$( )` id past the `(` after it.
       const named = await refusalMessage(ARN, 'MyParam');
       const withheld: Array<{ value: string; message: string }> = [];
       for (const { value } of PASTE_PAYLOADS) {
@@ -358,65 +361,24 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       }
       withPasteDir((dir) => {
         expect(spansThatRun(named, dir)).toEqual([]);
-        // A withheld id is still DISPLAYED in the opening sentence; the first
-        // cut rendered it through bare `displaySafe` and the separator payload
-        // ran three spans of it.
         for (const { value, message } of withheld) {
-          // The prose boundary, pinned DIRECTLY: every clause holding the id
-          // also holds `('arn...')`, a bash syntax error (zsh runs past it; see
-          // the S1 case below), so the paste alone cannot see the quote kind (a
-          // shell-quoted prose survives it). `displayIdent` JSON-quotes a non-plain id.
-          expect(message, value).toContain(`Cannot adopt SSM parameter ${JSON.stringify(value)} from an ARN`);
-          // The block also carries the remedy, so it is an S1 row
-          // (go-to-k/cdkd#3950): under BASH that `(` stops every span and
-          // nothing runs, pinned here; under zsh it does not, which the S1
-          // case below pins.
-          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
-          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
-          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
-          expect(spansThatRunBesideTheDisplay(message, dir, value, { shells: ['bash'] }), value).toEqual([]);
+          expect(message, value).toContain(
+            'Cannot adopt an SSM parameter whose logical id is not a plain identifier from an ARN'
+          );
+          expect(message, value).toContain("--resource '<logicalId>'='<parameterName>'");
+          expect(message, value).not.toContain(value);
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), value).toEqual([]);
         }
       });
     }, 120_000);
 
-    // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until its source row
-    // lands, which flips both cases: the block displays the logical id (JSON)
-    // AND carries the `--resource` remedy, and under zsh the `(` no longer
-    // stops a pasted line, so the display's `$( )` runs beside it.
-    const payloadIdRefusals = async (): Promise<Array<{ value: string; message: string }>> => {
-      const out: Array<{ value: string; message: string }> = [];
-      for (const { value } of PASTE_PAYLOADS) {
-        const message = await refusalMessage(ARN, value);
-        // The row itself, found before the rule is asked.
-        expect(message, value).toContain("--resource '<logicalId>'='<parameterName>'");
-        out.push({ value, message });
-      }
-      return out;
-    };
-
-    it('S1 SSM ARN-adopt refusal: a payload logical id block still carries a command (block rule)', async () => {
-      for (const { value, message } of await payloadIdRefusals()) {
-        expect(() => expectNoCommandBesideDisplay(message, value), value).toThrow(
-          /also carries a pasteable command/
-        );
-      }
-    });
-
-    itUnderZsh(
-      'S1 SSM ARN-adopt refusal: under zsh a payload logical id block runs its display (paste)',
-      async () => {
-        const refusals = await payloadIdRefusals();
-        withPasteDir((dir) => {
-          for (const { value, message } of refusals) expectZshRunsTheDisplay(message, dir, value);
-        });
-      },
-      120_000
-    );
-
-    it('bounds the EXPLICIT value in prose by JSON, never by cdkd quotes (go-to-k/cdkd#3950)', async () => {
+    it('describes a non-plain EXPLICIT value and withholds its read command (go-to-k/cdkd#3950)', async () => {
       // The `('<explicit>')` clause used to wrap the value in a hand-written
-      // `'...'`, which a `'` in the value closes. Each payload family rides in
-      // the ARN's name segment, so the `:` still trips the refusal.
+      // `'...'`, which a `'` in the value closes, and then JSON-quoted it
+      // beside the `aws ssm get-parameter` command, which zsh ran past. Each
+      // payload family rides in the ARN's name segment, so the `:` still trips
+      // the refusal. The command falls back to the console wording.
       const rendered: Array<{ explicit: string; message: string }> = [];
       for (const { value } of PASTE_PAYLOADS) {
         const explicit = `arn:aws:ssm:us-east-1:111122223333:parameter/${value}`;
@@ -424,65 +386,34 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       }
       withPasteDir((dir) => {
         for (const { explicit, message } of rendered) {
-          expect(message, explicit).toContain(`from an ARN (${JSON.stringify(explicit)})`);
-          // The PROSE, not the `aws ssm get-parameter` command after it.
-          const prose = message.split(' Read the name AWS holds')[0]!;
-          expect(prose, explicit).not.toContain(`'${explicit}'`);
-          // S1 (go-to-k/cdkd#3950): inert under BASH, pinned here; its zsh
-          // paste is the S1 case below.
-          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
-          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
-          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
-          expect(spansThatRunBesideTheDisplay(message, dir, explicit, { shells: ['bash'] }), explicit).toEqual([]);
+          expect(message, explicit).toContain('from an ARN (not shown: it is not a plain identifier)');
+          expect(message, explicit).not.toContain(explicit);
+          expect(message, explicit).not.toContain(BEFORE);
+          expect(message, explicit).toContain('via the console');
+          expectNoCommandBesideDisplay(message, explicit);
+          expect(spansThatRun(message, dir), explicit).toEqual([]);
         }
       });
-      // A plain ARN prints bare, byte-identical to the value -- a long one too,
-      // at the ARN ceiling rather than the 255 default.
-      expect(await refusalMessage(ARN)).toContain(`from an ARN (${ARN})`);
+      // A plain ARN prints bare, byte-identical to the value, with its read
+      // command -- a long one too, at the ARN ceiling rather than the 255
+      // default.
+      const plain = await refusalMessage(ARN);
+      expect(plain).toContain(`from an ARN (${ARN})`);
+      expect(plain).toContain(`${BEFORE} ${ARN}`);
+      // An ARN forged to end in `displayIdent`'s own cut marker (the ARN cap in
+      // plain characters, plus the marker for 35 withheld): the round-trip
+      // alone admits it, and the whitespace test is what describes it.
+      const prefix = 'arn:aws:ssm:us-east-1:111122223333:parameter/';
+      const forged = `${prefix}${'a'.repeat(2048 - prefix.length)} [cut: 35 more characters withheld]`;
+      expect(displayIdent(forged, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })).toBe(forged);
+      const forgedMessage = await refusalMessage(forged);
+      expect(forgedMessage).toContain('from an ARN (not shown: it is not a plain identifier)');
+      expect(forgedMessage).not.toContain(BEFORE);
       const long = `arn:aws:ssm:us-east-1:111122223333:parameter/${'n'.repeat(1900)}`;
       const longMessage = await refusalMessage(long);
       expect(longMessage).toContain(`from an ARN (${long})`);
       expect(longMessage).not.toContain('withheld');
     }, 120_000);
-
-    // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until its source row
-    // lands, which flips both cases. `pasteableArg` now withholds the
-    // `aws ssm get-parameter` command for a payload ARN (`PASTE_ARG_UNSAFE`),
-    // but the line that displays the ARN (JSON) still carries the `--resource`
-    // remedy, and under zsh the `(` no longer stops a pasted line, so the
-    // display's `$( )` runs beside it.
-    const payloadArnRefusals = async (): Promise<Array<{ explicit: string; message: string }>> => {
-      const out: Array<{ explicit: string; message: string }> = [];
-      for (const { value } of PASTE_PAYLOADS) {
-        const explicit = `arn:aws:ssm:us-east-1:111122223333:parameter/${value}`;
-        const message = await refusalMessage(explicit);
-        // The row itself, found before the rule is asked: the read command is
-        // withheld, and the `--resource` remedy is what keeps the row S1.
-        expect(message, explicit).not.toContain('aws ssm get-parameter');
-        expect(message, explicit).toContain("--resource MyParam='<parameterName>'");
-        out.push({ explicit, message });
-      }
-      return out;
-    };
-
-    it('S1 SSM ARN-adopt refusal: a payload ARN block still carries the --resource remedy (block rule)', async () => {
-      for (const { explicit, message } of await payloadArnRefusals()) {
-        expect(() => expectNoCommandBesideDisplay(message, explicit), explicit).toThrow(
-          /also carries a pasteable command/
-        );
-      }
-    });
-
-    itUnderZsh(
-      'S1 SSM ARN-adopt refusal: under zsh a payload ARN block runs its display (paste)',
-      async () => {
-        const refusals = await payloadArnRefusals();
-        withPasteDir((dir) => {
-          for (const { explicit, message } of refusals) expectZshRunsTheDisplay(message, dir, explicit);
-        });
-      },
-      120_000
-    );
   });
 
   describe('S3BucketProvider partial-create cleanup, both arms', () => {
@@ -534,14 +465,14 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
     // command is printed BEFORE AWS ever sees the name, and the cleanup arm is
     // reached precisely when things have already gone wrong.
     for (const c of CASES) {
-      it(`cleanup-failed arm ${c.rendered}s the command for ${c.label}`, async () => {
+      it(`cleanup-failed arm ${RENDERED_VERB[c.rendered]} the command for ${c.label}`, async () => {
         const bucket = `cdkd-${c.suffix}`;
         await runFailedCleanup(bucket);
         expectRendering(warnings(), BEFORE, bucket, c.rendered);
         expect(warnings()).toContain('Failed to clean up partially-created S3 bucket');
       });
 
-      it(`indeterminate-probe arm ${c.rendered}s the command for ${c.label}`, async () => {
+      it(`indeterminate-probe arm ${RENDERED_VERB[c.rendered]} the command for ${c.label}`, async () => {
         const bucket = `cdkd-${c.suffix}`;
         await runIndeterminate(bucket);
         expectRendering(warnings(), BEFORE, bucket, c.rendered);

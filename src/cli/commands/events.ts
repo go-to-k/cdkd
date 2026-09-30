@@ -123,7 +123,10 @@ const safeCount = (value: unknown): string => (typeof value === 'number' ? Strin
  * wording one.
  */
 const NONCURRENT_VERSIONS_SURVIVE_NOTE =
-  ' Where the state bucket is versioned — which cdkd bootstrap enables — earlier versions of ' +
+  // "bootstrapping with cdkd", never `cdkd bootstrap`: both prune lines this
+  // note follows display the stack name, and a block that displays an
+  // untrusted value carries no pasteable command (go-to-k/cdkd#3950's S1 rule).
+  ' Where the state bucket is versioned — which bootstrapping with cdkd enables — earlier versions of ' +
   'the deleted keys survive and stay readable with GetObject and a VersionId; prune does not ' +
   'purge them.';
 
@@ -271,8 +274,13 @@ async function resolveEventsRegion(
   const regions = await reader.listRegions(stackName);
   if (regions.length === 0) {
     throw new CdkdError(
+      // The deploy and destroy commands are named in prose, never spelled as
+      // `cdkd <verb>`: this block displays the stack name, and a block that
+      // displays an untrusted value carries no pasteable command
+      // (go-to-k/cdkd#3950's S1 rule; under zsh a `$( )` name runs when the
+      // sentence is pasted, and would run beside the command).
       `No deployment-event history found for stack ${displayStackName(stackName)}. ` +
-        `Events are recorded by 'cdkd deploy' / 'cdkd destroy' (issue #808); ` +
+        `Events are recorded by cdkd's deploy and destroy commands (issue #808); ` +
         `a stack deployed by an older cdkd version has none.`,
       'EVENTS_NOT_FOUND'
     );

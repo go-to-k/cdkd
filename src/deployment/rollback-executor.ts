@@ -409,6 +409,22 @@ function collisionText(msg: string): string {
 const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
 
 /**
+ * How the three reverse-replacement refusals NAME the op in their prose: the
+ * logical id when {@link PASTEABLE_LOGICAL_ID} admits it, a description
+ * otherwise. Their block also carries {@link orphanRemedy}'s command (and
+ * prose naming `cdkd deploy` / `cdkd rollback`), and a block that displays an
+ * untrusted value carries no pasteable command (go-to-k/cdkd#3950's S1 rule):
+ * a `displayIdent`-bounded `$( )` id still runs when the sentence is pasted
+ * into zsh, which the ` (<type>)` after it does not stop. The same predicate
+ * as the command's, so an id is either on both or on neither.
+ */
+function refusalLogicalId(logicalId: unknown): string {
+  return typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId)
+    ? logicalId
+    : 'a resource whose logical id is not a plain CloudFormation logical id';
+}
+
+/**
  * The `cdkd rollback --orphan` remedy the three reverse-replacement refusals
  * end on: a labelled LAST line of its own (`line`), and the sentence the prose
  * carries when the id on it is a hole (`clause`, empty otherwise).
@@ -444,21 +460,27 @@ function orphanRemedy(
   ctx: Pick<RollbackExecutorContext, 'nestedChildRevert' | 'nestedChildStack' | 'region'>
 ): { readonly offered: boolean; readonly clause: string; readonly line: string } {
   if (ctx.nestedChildRevert === true) {
+    // A described id still needs a way to find it, even with no command here.
+    const idPointer =
+      typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId)
+        ? ''
+        : ` The id is left out of the prose above: it is not a plain CloudFormation logical ` +
+          `id — read it from cdkd events.`;
     return {
       offered: false,
       clause:
         ` This op is reverted inside a nested stack's revert for its parent's rollback, where ` +
         `cdkd rollback --orphan cannot reach it: resolve the cause and re-run the top-level ` +
-        `stack's rollback, or re-deploy the top-level stack.`,
+        `stack's rollback, or re-deploy the top-level stack.${idPointer}`,
       line: '',
     };
   }
   const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);
   const idClause = pasteable
     ? ''
-    : ` The id is withheld from that command: it is not a plain CloudFormation logical id, ` +
-      `so a pasted command could be reshaped by the shell or name a different resource — read ` +
-      `it from cdkd events and fill the quoted hole.`;
+    : ` The id is left out of the prose above and of that command: it is not a plain ` +
+      `CloudFormation logical id, so a pasted command could be reshaped by the shell or name a ` +
+      `different resource — read it from cdkd events and fill the quoted hole.`;
   // A nested child's own rollback: only a rollback of the CHILD honours
   // `--orphan` for its ops, so the command names it (go-to-k/cdkd#3859). A
   // stack-less one resolves to the parent, which refuses (a failed UPDATE row,
@@ -1676,7 +1698,7 @@ function unroutableReplacementError(
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(
-        `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} (${safe(op.resourceType)}): ` +
           `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
           `was changed. The journal is kept: fix forward with cdkd deploy` +
           (remedy.offered
@@ -3849,7 +3871,7 @@ async function replaySingle(
                   // Masked at construction, like the Retain refusal below:
                   // the diagnosis quotes names from the PLAINTEXT replay bag.
                   mask(
-                    `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+                    `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} (${safe(op.resourceType)}): ` +
                       `the re-create of the old resource (${safe(mask(prev.physicalId))}) collided: ` +
                       `${holder.diagnosis} — so ` +
                       // Undecided: the diagnosis already says what cdkd cannot
@@ -3873,7 +3895,7 @@ async function replaySingle(
                           ? ` To leave THIS resource alone and let the rest of the rollback ` +
                             `proceed, re-run with the command below.`
                           : '') +
-                        `${remedy.clause} Underlying collision: ${collisionText(mask(msg))}`
+                        `${remedy.clause}\nUnderlying collision: ${collisionText(mask(msg))}`
                     ) +
                     // OUTSIDE the mask (review of #4099): it carries only the
                     // vetted logical id, and a short secret-derived id needle
@@ -3931,7 +3953,7 @@ async function replaySingle(
                   // surface. Defense-in-depth, not a tested behavior -- do not
                   // record it in a PR body as one.
                   mask(
-                    `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+                    `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} (${safe(op.resourceType)}): ` +
                       // Both physical ids take the identifier rendering, not the
                       // denylist the outer catch applies: this is the one message
                       // that carries the pasted `--orphan` remedy, so a planted
@@ -3958,10 +3980,13 @@ async function replaySingle(
                           : '') +
                         // The remedy is the message's labelled LAST line, built by
                         // `orphanRemedy`, which owns the gate on the id and the
-                        // sentence for a withheld one; the AWS text stays in the
-                        // prose ABOVE it, so the line an operator selects is the
-                        // command alone.
-                        `${remedy.clause} Underlying collision: ${collisionText(mask(msg))}`
+                        // sentence for a withheld one; the AWS text is on its own
+                        // line ABOVE it, so the line an operator selects is the
+                        // command alone. Its own line, not the prose line: the
+                        // provider's text can echo the logical id, and the prose
+                        // line names `cdkd rollback` (go-to-k/cdkd#3950's S1 rule,
+                        // judged per line).
+                        `${remedy.clause}\nUnderlying collision: ${collisionText(mask(msg))}`
                     ) +
                     // OUTSIDE the mask (review of #4099): it carries only the
                     // vetted logical id, and a short secret-derived id needle

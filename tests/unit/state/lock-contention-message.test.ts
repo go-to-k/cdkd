@@ -10,6 +10,7 @@ import {
 import type { LockManager } from '../../../src/state/lock-manager.js';
 import {
   PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
   spansThatRun,
   withPasteDir,
@@ -371,9 +372,9 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
     // unrenderable.
     for (const text of [message, UNREPRODUCIBLE_LOCK_CLAUSE]) {
       expect(text).toContain(
-        "(changed by sanitizing, unrenderable, empty, too long, beginning with '-', " +
-          'which cdkd refuses rather than risk it parsing as an option, or holding whitespace ' +
-          'or a character a shell treats specially)'
+        '(changed by sanitizing, unrenderable, empty, too long, not a plain identifier, ' +
+          "beginning with '-', which cdkd refuses rather than risk it parsing as an option, " +
+          'or holding whitespace or a character a shell treats specially)'
       );
     }
   });
@@ -381,7 +382,7 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
   it('pins each head boundary, a plain message inert and a withheld one to its display residual, through the message builder itself', async () => {
     // The paste fence for THIS site (`tests/unit/utils/paste-harness.ts`): the
     // plain-name message is inert in every span; a payload one is held to the
-    // per-block criterion whether the gate named or withheld it.
+    // per-block criterion.
     const plain = await buildLockContentionMessage({
       lockManager: lockManagerReturning(null),
       stackName: 'MyStack',
@@ -395,9 +396,11 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
         stackName,
         region: 'us-east-1',
       });
-    // Every payload family is shell-active, so the gate WITHHOLDS each
-    // (go-to-k/cdkd#4205), beside its two twins that are withheld for another
-    // reason: option-shaped (a leading `-`) and over-cap.
+    // Every payload family is WITHHELD: none is a plain identifier, so the
+    // block that displays it carries no command (go-to-k/cdkd#3950's S1 rule;
+    // named, a `$( )` name in the head ran when pasted into zsh, beside
+    // `run: cdkd force-unlock …`). The option-shaped and over-cap twins take
+    // the same path for their own reasons.
     const withheld: Array<{ value: string; message: string }> = [];
     for (const { value } of PASTE_PAYLOADS) {
       for (const twin of [value, `-${value}`, `${'q'.repeat(1152)}${value}`]) {
@@ -406,29 +409,25 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
     }
     withPasteDir((dir) => {
       expect(spansThatRun(plain, dir)).toEqual([]);
-      for (const { value } of PASTE_PAYLOADS) {
-        const message = withheld.find((w) => w.value === value)!.message;
-        // The head's boundary is pinned DIRECTLY, not only through the paste:
-        // `displayStackName` JSON-quotes a non-plain value, never cdkd's own
-        // single quotes.
-        expect(message, value).toContain(`for stack ${JSON.stringify(value)} (us-east-1)`);
-        expect(message, value).not.toContain(`for stack '${value}'`);
-      }
-      // A WITHHELD payload's block carries no command, so under zsh its
-      // head's display may run and the residual criterion is what holds. That
-      // is the go-to-k/cdkd#3950 S1 lock-head row's block rule, which every
-      // payload family now satisfies: the row printed a command beside the
-      // display only for a value the gate NAMED, and it names none of these.
       for (const { value, message } of withheld) {
         expect(message, value).not.toContain('cdkd force-unlock');
         expect(message, value).toContain('No recovery command can be shown');
+        expectNoCommandBesideDisplay(message, value);
         // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
         // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
         expectOnlyDisplayResidual(message, dir, value);
       }
+      // The head's boundary is pinned DIRECTLY, not only through the paste:
+      // a shell-quoted head (`'x; touch OWNED; #'`) is inert under every
+      // family here too, so the harness alone would let it back (proxy
+      // pass). `displayStackName` JSON-quotes a non-plain value.
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = withheld.find((w) => w.value === value)!.message;
+        expect(message, value).toContain(`for stack ${JSON.stringify(value)} (us-east-1)`);
+        expect(message, value).not.toContain(`for stack '${value}'`);
+      }
     });
   }, 120_000);
-
 });
 
 describe('buildLockContentionMessage (issue #2170)', () => {
@@ -665,9 +664,10 @@ describe('buildLockContentionMessage (issue #2170)', () => {
   it('SUPPRESSES a hostile region that carries no control character, and quotes a region that needs it', async () => {
     // The sanitize half and the quote half must BOTH be fenced: the newline
     // case above passes under sanitization alone. A `;`-bearing value has
-    // nothing to sanitize and is not inert bare, so it suppresses
-    // (go-to-k/cdkd#4205); a medial `~` is inert bare and still needs the
-    // quoting, so dropping `shellQuote` around the region reds here.
+    // nothing to sanitize and is neither inert bare (go-to-k/cdkd#4205) nor a
+    // plain identifier (go-to-k/cdkd#3950), so it suppresses; a medial `~` is
+    // both and still needs the quoting, so dropping `shellQuote` around the
+    // region reds here.
     expect(buildForceUnlockCommand('MyStack', 'us-east-1; rm -rf /')).toBe('');
     expect(buildForceUnlockCommand('MyStack', 'us-east~1')).toContain(`--stack-region 'us-east~1'`);
   });
@@ -811,6 +811,9 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     // A space in either is not inert unquoted, so it suppresses (go-to-k/cdkd#4205).
     expect(buildForceUnlockCommand('my stack', 'us-east-1')).toBe('');
     expect(buildForceUnlockCommand('MyStack', 'us-east-1', { stateBucket: 'my bucket' })).toBe('');
+    // A name with a space is refused on a legacy lock key (no region) too.
+    expect(buildForceUnlockCommand('my stack', undefined)).toBe('');
+    expect(buildForceUnlockCommand('MyStack', undefined)).toBe('cdkd force-unlock MyStack');
   });
 });
 

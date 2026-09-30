@@ -1976,7 +1976,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     logger.info(
       `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
         `The CURRENT state.json no longer holds the plaintext. Where the state bucket is ` +
-        `VERSIONED — which cdkd bootstrap enables — the pre-scrub body survives as a ` +
+        `VERSIONED — which bootstrapping with cdkd enables — the pre-scrub body survives as a ` +
         `noncurrent version, stays readable with GetObject and a VersionId, and scrub does ` +
         `not purge it. So a value that was ever persisted must be treated as compromised — ` +
         `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +

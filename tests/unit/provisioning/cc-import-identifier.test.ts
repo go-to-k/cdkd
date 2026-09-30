@@ -9,6 +9,7 @@
  * kept sending `knownPhysicalId` would still fail here.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { displayIdent, SECRET_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
@@ -328,12 +329,13 @@ describe('toCloudControlIdentifier', () => {
   });
 
   /**
-   * Every value these messages name sits behind `displayIdent`'s boundary,
-   * never inside a hand-written `'...'` (go-to-k/cdkd#3950), and the
-   * `--resource` remedy names the logical id only when `isPasteableIdent`
-   * admits it. Each `PASTE_PAYLOADS` family is rendered as the supplied id and
-   * as the logical id, and every message -- the two refusals and the two DEBUG
-   * notes -- is fed WHOLE to the paste harness.
+   * No value these messages name sits inside a hand-written `'...'`
+   * (go-to-k/cdkd#3950). The DEBUG notes name it behind `displayIdent`'s
+   * boundary; the three refusals, which end in the `--resource` remedy, describe
+   * a value that is not plain; and the remedy names the logical id only when
+   * `isPasteableIdent` admits it. Each `PASTE_PAYLOADS` family is rendered as
+   * the supplied id, the logical id and the resource type, and every message is
+   * fed WHOLE to the paste harness.
    */
   describe('a value in these messages is never inside cdkd quotes (go-to-k/cdkd#3950)', () => {
     const debugLines = (): string[] => mockDebug.mock.calls.map((c) => String(c[0]));
@@ -360,22 +362,22 @@ describe('toCloudControlIdentifier', () => {
       out.push({
         site: 'unplaceable id',
         message: refusal({ ...base, physicalId: v, properties: { A: 'a' } }),
-        shown: `so ${JSON.stringify(v)} cannot be placed`,
+        shown: 'so the supplied id (not shown: it is not a plain identifier) cannot be placed',
       });
       out.push({
         site: 'wrong arity',
         message: refusal({ ...base, physicalId: `${v}|b`, properties: {} }),
-        shown: `Res: ${JSON.stringify(`${v}|b`)} has 2 `,
+        shown: 'Res: the supplied id (not shown: it is not a plain identifier) has 2 ',
       });
       out.push({
         site: 'id equal to a template value',
         message: refusal({ ...base, physicalId: v, properties: { A: v, C: 'c' } }),
-        shown: `Res: ${JSON.stringify(v)} equals`,
+        shown: 'Res: the supplied id (not shown: it is not a plain identifier) equals',
       });
       out.push({
         site: 'hostile logical id',
         message: refusal({ ...base, logicalId: v, physicalId: 'x', properties: { A: 'a' } }),
-        shown: `AWS::X::Y ${JSON.stringify(v)}: `,
+        shown: 'AWS::X::Y (logical id not shown: it is not a plain identifier): ',
       });
       mockDebug.mockClear();
       toCloudControlIdentifier({ ...base, physicalId: v, properties: { A: 'a', B: 'b', C: 'c' } });
@@ -397,7 +399,7 @@ describe('toCloudControlIdentifier', () => {
       out.push({
         site: 'hostile resource type',
         message: refusal({ ...base, resourceType: v, physicalId: 'x', properties: { A: 'a' } }),
-        shown: `${JSON.stringify(v)} Res: `,
+        shown: '(resource type not shown: it is not a plain identifier) Res: ',
       });
       mockDebug.mockClear();
       toCloudControlIdentifier({ ...base, physicalId: v, properties: { A: 'a', C: 'c' } });
@@ -421,6 +423,18 @@ describe('toCloudControlIdentifier', () => {
       expect(arity).not.toContain("'a|b'");
     });
 
+    it('describes a type that displayIdent admits but the CloudFormation type shape refuses', () => {
+      // `./x` and `A=b` print unquoted under `displayIdent`, and at the head of a
+      // pasted line one runs a path and the other assigns a variable. Only
+      // `resourceTypeShown`'s type shape refuses them, so this case reds if the
+      // head falls back to `displayIdent` alone.
+      for (const resourceType of ['./x', 'A=b']) {
+        const message = refusal({ ...base, resourceType, physicalId: 'x', properties: { A: 'a' } });
+        expect(message, resourceType).toMatch(/^\(resource type not shown: it is not a plain identifier\) Res: /);
+        expect(message, resourceType).not.toContain(resourceType);
+      }
+    });
+
     it('names a long ARN whole, at the ARN ceiling rather than the 255 default', () => {
       const arn = `arn:aws:x:us-east-1:111122223333:thing/${'n'.repeat(1900)}`;
       const message = refusal({ ...base, physicalId: arn, properties: { A: 'a' } });
@@ -428,12 +442,13 @@ describe('toCloudControlIdentifier', () => {
       expect(message).not.toContain('withheld');
     });
 
-    it('holes a logical id the remedy could not carry, and still displays it in prose', () => {
+    it('holes a logical id the remedy could not carry, and describes it in the prose too', () => {
       for (const { value } of PASTE_PAYLOADS) {
         const message = refusal({ ...base, logicalId: value, physicalId: 'x', properties: { A: 'a' } });
         const fragment = message.split('instead: ')[1] ?? '';
         expect(fragment, value).toBe("--resource '<logicalId>=<A>|<B>|<C>'.");
-        expect(message, value).toContain(`AWS::X::Y ${JSON.stringify(value)}: `);
+        expect(message, value).toContain('AWS::X::Y (logical id not shown: it is not a plain identifier): ');
+        expect(message, value).not.toContain(value);
       }
     });
 
@@ -449,81 +464,92 @@ describe('toCloudControlIdentifier', () => {
           expect(message, label).toContain(shown);
           expect(message, label).not.toContain(`'${value}'`);
           expect(message, label).not.toContain(`'${JSON.stringify(value)}'`);
-          // The five S1 refusals skip the default block rule until their fix
-          // lands; their own case below asserts it.
           // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
           // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
-          expectOnlyDisplayResidual(
-            message,
-            dir,
-            value,
-            {
-              // The site's exact display, which can hold the value inside a
-              // composite (`"<value>|b"`).
-              displays: compositeDisplays(value),
-              ...(S1_SITES.has(site) ? { unfixedS1Row: `go-to-k/cdkd#3950 composite-id ${site}` } : {}),
-            }
-          );
+          expectOnlyDisplayResidual(message, dir, value, {
+            // The site's exact display, which can hold the value inside a
+            // composite (`"<value>|b"`).
+            displays: compositeDisplays(value),
+          });
         }
       });
     }, 120_000);
 
-    // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule, classified in the
-    // go-to-k/cdkd#4127 review M9) until the row's source fix lands, which
-    // flips the block-rule case: each refusal displays the payload (JSON) in a
-    // block that ends in the `--resource` remedy. The two debug notes carry no
-    // command and stay under the residual criterion above.
-    const S1_SITES: ReadonlySet<string> = new Set([
+    // A former S1 row (go-to-k/cdkd#3950, classified in the go-to-k/cdkd#4127
+    // review M9): each refusal ends in the `--resource` remedy, so a payload
+    // value there is described rather than displayed. Displayed, the
+    // logical-id and resource-type payloads ran at the head of a clause under
+    // both shells. The debug notes carry no command and stay under the
+    // residual criterion above.
+    const REFUSAL_SITES: ReadonlySet<string> = new Set([
       'unplaceable id',
       'wrong arity',
       'id equal to a template value',
       'hostile logical id',
       'hostile resource type',
     ]);
-    const s1Refusals = (): Array<{ value: string; site: string; message: string }> => {
-      const out: Array<{ value: string; site: string; message: string }> = [];
+
+    it('the composite-id refusals describe every payload beside the --resource remedy, and no pasted span runs', () => {
+      const refusals: Array<{ value: string; site: string; message: string }> = [];
       for (const { value } of PASTE_PAYLOADS) {
         for (const { site, message } of messagesFor(value)) {
-          if (!S1_SITES.has(site)) continue;
-          // The row itself, found before any rule is asked.
+          if (!REFUSAL_SITES.has(site)) continue;
+          // The remedy itself, found before the rule is asked.
           expect(message, `${site}: ${value}`).toContain('Pass the Cloud Control identifier instead: --resource ');
-          out.push({ value, site, message });
+          refusals.push({ value, site, message });
         }
       }
-      expect(out).toHaveLength(PASTE_PAYLOADS.length * S1_SITES.size);
-      return out;
-    };
-
-    it('S1 composite-id refusals: a payload physical id runs nothing when pasted, under either shell', () => {
-      // Measured per site: the three physical-id refusals run nothing under
-      // bash or zsh, so they are pinned inert under both. The logical-id and
-      // resource-type refusals display the payload at the head of a clause,
-      // where it runs under BOTH shells with no verb: the residual the case
-      // above asserts, as on `main`. Neither has a zsh-only difference, so
-      // this row has no zsh paste case; its violation is the block rule's.
-      const refusals = s1Refusals().filter(({ site }) =>
-        ['unplaceable id', 'wrong arity', 'id equal to a template value'].includes(site)
-      );
-      expect(refusals).toHaveLength(PASTE_PAYLOADS.length * 3);
+      expect(refusals).toHaveLength(PASTE_PAYLOADS.length * REFUSAL_SITES.size);
       withPasteDir((dir) => {
         for (const { value, site, message } of refusals) {
-          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
-          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
-          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
-          expect(
-            spansThatRunBesideTheDisplay(message, dir, value, {}, compositeDisplays(value)),
-            `${site}: ${value}`
-          ).toEqual([]);
+          expect(message, `${site}: ${value}`).not.toContain(value);
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), `${site}: ${value}`).toEqual([]);
         }
       });
     }, 120_000);
 
-    it('S1 composite-id refusals: a payload block still carries the --resource remedy (block rule)', () => {
-      for (const { value, site, message } of s1Refusals()) {
-        expect(() => expectNoCommandBesideDisplay(message, value), `${site}: ${value}`).toThrow(
-          /also carries a pasteable command/
-        );
+    it('describes a physical id forged to end in displayIdent’s own cut marker', () => {
+      // 2048 plain characters (the ARN cap) plus the 35-character marker for 35
+      // withheld characters: `displayIdent` cuts it to exactly itself, so the
+      // round-trip alone admits it and the whitespace test refuses it.
+      const forged = `${'a'.repeat(2048)} [cut: 35 more characters withheld]`;
+      expect(displayIdent(forged, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })).toBe(forged);
+      const message = refusal({ ...base, physicalId: forged, properties: { A: 'a' } });
+      expect(message).toContain('so the supplied id (not shown: it is not a plain identifier) cannot be placed');
+    });
+
+    it('describes a hostile logical id and resource type in all three refusal shapes', () => {
+      // `refusalHead` is shared by the missing-field, wrong-arity and
+      // equals-template refusals, so each shape is driven on its own
+      // (go-to-k/cdkd#4209 review M2).
+      const shapes = [
+        { name: 'missing fields', over: { physicalId: 'x', properties: { A: 'a' } } },
+        { name: 'wrong arity', over: { physicalId: 'a|b', properties: {} } },
+        { name: 'equals a template value', over: { physicalId: 'x', properties: { A: 'x', C: 'c' } } },
+      ];
+      for (const { value } of PASTE_PAYLOADS) {
+        for (const { name, over } of shapes) {
+          const byId = refusal({ ...base, ...over, logicalId: value });
+          expect(byId, `${name}: ${value}`).toContain('AWS::X::Y (logical id not shown: it is not a plain identifier): ');
+          const byType = refusal({ ...base, ...over, resourceType: value });
+          expect(byType, `${name}: ${value}`).toContain('(resource type not shown: it is not a plain identifier) Res: ');
+          for (const message of [byId, byType]) {
+            expect(message, `${name}: ${value}`).not.toContain(value);
+            expectNoCommandBesideDisplay(message, value);
+          }
+        }
       }
+    });
+
+    it('still shows a plain composite and a long ARN in the refusals', () => {
+      // `|` is not in the plain set, so the segments are tested one by one: a
+      // legitimate composite stays shown, JSON-quoted, where it is inert.
+      expect(refusal({ ...base, physicalId: 'a|b', properties: {} })).toContain('Res: "a|b" has 2 ');
+      // An empty segment is plain too, so `a|` stays shown.
+      expect(refusal({ ...base, physicalId: 'a|', properties: {} })).toContain('Res: "a|" has 2 ');
+      const arn = `arn:aws:x:us-east-1:111122223333:thing/${'n'.repeat(1900)}`;
+      expect(refusal({ ...base, physicalId: arn, properties: { A: 'a' } })).toContain(`so ${arn} cannot be placed`);
     });
   });
 });

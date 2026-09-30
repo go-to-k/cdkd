@@ -783,8 +783,14 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       expect(l).toContain("--orphan '<id>'");
       expect(l).not.toMatch(/--orphan [~=]/);
     }
-    // ...while each id still renders, unquoted, in the message's own text.
-    for (const id of ids) expect(remedies.some((l) => l.includes(`replacement of ${id} (`))).toBe(true);
+    // ...and the message's own text describes each id rather than showing it:
+    // the block carries the command, and a block that displays an untrusted
+    // value carries no pasteable command (go-to-k/cdkd#3950's S1 rule). The
+    // same predicate gates both, so an id is on both or on neither.
+    const described =
+      'replacement of a resource whose logical id is not a plain CloudFormation logical id (';
+    expect(remedies.filter((l) => l.includes(described))).toHaveLength(ids.length);
+    for (const id of ids) expect(remedies.some((l) => l.includes(`replacement of ${id} (`))).toBe(false);
   });
 
   it('the pasted `--orphan` remedy is WITHHELD for a NON-STRING id (the gate must not coerce)', async () => {
@@ -815,6 +821,12 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(remedies).toHaveLength(1);
     expect(remedies[0]).toContain("--orphan '<id>'");
     expect(remedies[0]).not.toContain('--orphan 123');
+    // ...and the prose describes it rather than coercing it (go-to-k/cdkd#3950):
+    // `refusalLogicalId` tests the type before its pattern.
+    expect(remedies[0]).toContain(
+      'Cannot reverse the replacement of a resource whose logical id is not a plain CloudFormation logical id ('
+    );
+    expect(remedies[0]).not.toContain('replacement of 123');
   });
 
   it('the retry label handed to withRetry is sanitized where retry.ts renders it', async () => {
@@ -1110,10 +1122,13 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       const named = lines.filter((l) => mustMention.test(l));
       expect(named.length).toBeGreaterThan(0);
       for (const l of named) {
-        // The forged newline is folded; the only line break a failure line may
-        // carry is cdkd's OWN labelled remedy line (the unroutable refusal
-        // ends on one, rendered per line by `rollbackFailureText`).
-        expect(l.split('\n').filter((r) => !/^To orphan it: cdkd rollback --orphan /.test(r))).toHaveLength(1);
+        // The forged newline is folded; the only line breaks a failure line may
+        // carry are cdkd's OWN: the labelled remedy line, and the collision
+        // refusals' `Underlying collision:` line (go-to-k/cdkd#3950), both
+        // rendered per line by `rollbackFailureText`.
+        expect(
+          l.split('\n').filter((r) => !/^(?:To orphan it: cdkd rollback --orphan |Underlying collision: )/.test(r))
+        ).toHaveLength(1);
         expect(l).not.toMatch(INVISIBLE);
       }
     };

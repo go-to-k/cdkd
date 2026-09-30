@@ -4,6 +4,7 @@ import {
   purgeEventsAfterDestroy,
 } from '../../../src/cli/commands/destroy.js';
 import type { DeploymentEventsPruneResult } from '../../../src/state/deployment-events-store.js';
+import { expectNoCommandBesideDisplay } from '../utils/paste-harness.js';
 
 /**
  * Unit coverage for the `cdkd destroy --purge-events` gating helper (issue
@@ -52,6 +53,24 @@ describe('purgeEventsAfterDestroy', () => {
     expect(line).toContain('Purged deployment-event history for MyStack (us-east-1).');
     expect(line).toContain('earlier versions of those keys survive');
     expect(line).toContain('VersionId');
+  });
+
+  it('names no cdkd invocation on the purge line that displays the stack name (go-to-k/cdkd#3950)', async () => {
+    // The versioning note said `which cdkd bootstrap enables`, a `cdkd`
+    // invocation in prose, on the line that displays the stack name; a block
+    // that displays an untrusted value carries no pasteable command.
+    const { logger, info } = fakeLogger();
+    const stack = 'x$(touch OWNED)';
+    await purgeEventsAfterDestroy(
+      fakeReader(PRUNED).reader,
+      stack,
+      'us-east-1',
+      { purgeEvents: true, runResult: 'SUCCEEDED', interrupted: false },
+      logger
+    );
+    const line = String(info.mock.calls[0]![0]);
+    expect(line).toContain('which bootstrapping with cdkd enables');
+    expectNoCommandBesideDisplay(line, stack);
   });
 
   it('is a no-op when --purge-events was not passed', async () => {

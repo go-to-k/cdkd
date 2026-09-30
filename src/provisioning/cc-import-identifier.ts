@@ -57,7 +57,11 @@ import {
   isPasteableIdent,
   SECRET_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
-import { COMPOSITE_ID_SEPARATOR, compositeIdSeparatorRefusal } from './composite-id.js';
+import {
+  COMPOSITE_ID_SEPARATOR,
+  compositeIdSeparatorRefusal,
+  resourceTypeShown,
+} from './composite-id.js';
 
 /**
  * Per-type cache of SUCCESSFUL lookups only (same discipline as
@@ -149,11 +153,13 @@ export function toCloudControlIdentifier(input: CcImportIdentifierInput): string
   if (physicalId.split(COMPOSITE_ID_SEPARATOR).length === fields.length) return physicalId;
   if (physicalId.trimStart().startsWith('{')) return physicalId;
 
-  // Every value below is named in PROSE through `displayIdent`'s boundary, with
-  // no hand-written quotes around it (go-to-k/cdkd#3950): a plain value prints
-  // bare, any other JSON-quoted, where cdkd's own `'...'` was closed by a `'`
-  // in the value and left the rest of a pasted sentence as bare shell. A
-  // physical id or identifier is bounded at AWS's ARN ceiling rather than the
+  // The debug notes below name every value in PROSE through `displayIdent`'s
+  // boundary, with no hand-written quotes around it (go-to-k/cdkd#3950): a
+  // plain value prints bare, any other JSON-quoted, where cdkd's own `'...'`
+  // was closed by a `'` in the value and left the rest of a pasted sentence as
+  // bare shell. The three refusals carry the `--resource` remedy, so they
+  // describe a value that is not plain instead (`refusalHead` / `refusalId`).
+  // A physical id or identifier is bounded at AWS's ARN ceiling rather than the
   // 255 default, so a legitimate long ARN is not cut in the sentence naming it.
   const safeType = displayIdent(resourceType);
   const safeLogicalId = displayIdent(logicalId);
@@ -167,10 +173,33 @@ export function toCloudControlIdentifier(input: CcImportIdentifierInput): string
   // placeholder otherwise, which the fragment's own quotes keep literal.
   const remedyId = isPasteableIdent(logicalId) ? logicalId : '<logicalId>';
   const remedy = `Pass the Cloud Control identifier instead: --resource '${remedyId}=${shape}'.`;
+  // The three refusals below end in that remedy, and a block that displays
+  // an untrusted value carries no pasteable command (go-to-k/cdkd#3950's S1
+  // rule; a JSON-bounded `$( )` at the head of a clause runs when pasted). So
+  // each value there is shown only when plain and described otherwise: the
+  // logical id by the remedy's own predicate, so it is named in both or in
+  // neither; the resource type by `composite-id.ts`'s `resourceTypeShown` rule
+  // (the CloudFormation type shape, which also refuses `./x` or `A=b` at the
+  // head of a line); the physical id when every `|`-separated segment is plain in
+  // that set (at the ARN ceiling), so a legitimate composite such as `a|b`
+  // is still shown JSON-quoted, where it is inert. The debug notes further
+  // down carry no command and keep the plain renders above.
+  const plainAtArnCap = (segment: string): boolean =>
+    segment === '' ||
+    (!/\s/.test(segment) &&
+      displayIdent(segment, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS }) === segment);
+  const refusalHead =
+    `${resourceTypeShown(resourceType) === resourceType ? resourceType : '(resource type not shown: it is not a plain identifier)'} ` +
+    (isPasteableIdent(logicalId)
+      ? logicalId
+      : '(logical id not shown: it is not a plain identifier)');
+  const refusalId = physicalId.split(COMPOSITE_ID_SEPARATOR).every(plainAtArnCap)
+    ? safeId
+    : 'the supplied id (not shown: it is not a plain identifier)';
 
   if (physicalId.includes(COMPOSITE_ID_SEPARATOR)) {
     throw new Error(
-      `${safeType} ${safeLogicalId}: ${safeId} has ${physicalId.split(COMPOSITE_ID_SEPARATOR).length} ` +
+      `${refusalHead}: ${refusalId} has ${physicalId.split(COMPOSITE_ID_SEPARATOR).length} ` +
         `'${COMPOSITE_ID_SEPARATOR}'-separated segments, but Cloud Control identifies this type by ` +
         `${fields.length} (${shape}). ${remedy}`
     );
@@ -185,14 +214,14 @@ export function toCloudControlIdentifier(input: CcImportIdentifierInput): string
 
   if (missing.length > 1) {
     throw new Error(
-      `${safeType} ${safeLogicalId}: Cloud Control identifies this type by ${shape}, and the ` +
-        `template supplies no literal value for ${missing.join(' or ')}, so ${safeId} cannot be ` +
+      `${refusalHead}: Cloud Control identifies this type by ${shape}, and the ` +
+        `template supplies no literal value for ${missing.join(' or ')}, so ${refusalId} cannot be ` +
         `placed. ${remedy}`
     );
   }
   if (missing.length === 1 && values.includes(physicalId)) {
     throw new Error(
-      `${safeType} ${safeLogicalId}: ${safeId} equals a value the template already gives another ` +
+      `${refusalHead}: ${refusalId} equals a value the template already gives another ` +
         `field of the identifier ${shape}, so it cannot be told which field it is. ${remedy}`
     );
   }

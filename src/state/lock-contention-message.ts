@@ -184,7 +184,12 @@ function formatDuration(ms: number): string {
  * `cdkd force-unlock '--state-bucket=attacker' ...` — the shell strips the
  * quotes and Commander parses that argv entry as the FLAG — and a name past
  * the stack-ref cap was named in full. The gate refuses both (`option-shaped`,
- * `too-long`) beside `empty` and `altered`, which suppressed before too.
+ * `too-long`) beside `empty` and `altered`, which suppressed before too. It
+ * also refuses a name or region `isPasteableIdent` does not admit
+ * (`plainIdent`, `not-plain`, go-to-k/cdkd#3950's S1 rule): the head beside
+ * the command DISPLAYS the name, a JSON-bounded `$( )` in it runs when the
+ * line is pasted into zsh, and a block that displays an untrusted value
+ * carries no pasteable command, so such a name gets none.
  *
  * Every other rule transfers verbatim: a value is sanitize-compared against
  * the RAW (`myΩstack` sanitizes to `my stack`, a DIFFERENT stack), shell-quoted
@@ -215,10 +220,10 @@ export function buildForceUnlockCommand(
   const built = pasteableCommand(
     'cdkd force-unlock',
     region === undefined
-      ? [{ value: stackName, hole: 'stack' }]
+      ? [{ value: stackName, hole: 'stack', opts: { plainIdent: true } }]
       : [
-          { value: stackName, hole: 'stack' },
-          { flag: '--stack-region', value: region, hole: 'region' },
+          { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+          { flag: '--stack-region', value: region, hole: 'region', opts: { plainIdent: true } },
         ],
     recoveryFlags.flags
   );
@@ -369,7 +374,8 @@ export const UNREPRODUCIBLE_LOCK_VALUES = 'the name, region, profile, state buck
 export const UNREPRODUCIBLE_LOCK_CLAUSE =
   `Inspect the lock object directly: ${UNREPRODUCIBLE_LOCK_VALUES} recorded for ` +
   `this stack cannot be reproduced safely on a command line (changed by sanitizing, ` +
-  `unrenderable, empty, too long, beginning with '-', which cdkd refuses rather ` +
+  `unrenderable, empty, too long, not a plain identifier, beginning with '-', which ` +
+  `cdkd refuses rather ` +
   `than risk it parsing ` +
   `as an option, or holding whitespace or a character a shell treats specially), so no ` +
   `command is shown: one built from it could address a different lock or run part of ` +
@@ -467,9 +473,11 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   // here). `displayStackName`, not `displayIdent`: the stack-ref cap (1152), the
   // same the command is gated at, so a long nested name is not cut in the head
   // while named whole in the command. A plain name renders bare; the region
-  // stays inside parentheses. The paste resistance of a `$(...)` or backtick
-  // name inside `displayStackName`'s double quotes currently rests on that
-  // following ` (region)` parenthesis, which aborts the span before expansion.
+  // stays inside parentheses. A `$(...)` or backtick name inside
+  // `displayStackName`'s double quotes still runs when the head is pasted into
+  // zsh, which the ` (region)` after it does not stop (it stops bash). Such a
+  // name is never plain, so `buildForceUnlockCommand` withholds the command
+  // and the block carries none (go-to-k/cdkd#3950's S1 rule).
   const safeRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
   const head =
     `Could not acquire lock for ${subject} ${displayStackName(stackName)} (${safeRegion}) — ${held}.` +
@@ -485,7 +493,8 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
       `${head} ${advice}. ` +
       `No recovery command can be shown: ${UNREPRODUCIBLE_LOCK_VALUES} recorded ` +
       `for this lock cannot be reproduced safely on a command line (changed by ` +
-      `sanitizing, unrenderable, empty, too long, beginning with '-', which cdkd ` +
+      `sanitizing, unrenderable, empty, too long, not a plain identifier, beginning with ` +
+      `'-', which cdkd ` +
       `refuses rather than risk it ` +
       `parsing as an option, or holding whitespace or a character a shell treats ` +
       `specially), so no command is shown: one built from it could ` +

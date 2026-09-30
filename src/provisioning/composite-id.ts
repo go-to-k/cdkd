@@ -249,7 +249,7 @@ function quotedOr(value: string, quote: "'" | '"', description: string): string 
  * which nothing validates, so a state-bucket writer chooses it: printed raw,
  * `X$(touch OWNED)` ran when the head was pasted.
  */
-function logicalIdShown(logicalId: string): string {
+export function logicalIdShown(logicalId: string): string {
   return plainOrDescribed(logicalId, 'logical id');
 }
 
@@ -261,7 +261,7 @@ function logicalIdShown(logicalId: string): string {
 const RESOURCE_TYPE_SHAPE = /^[A-Za-z0-9]+(?:::[A-Za-z0-9_@-]+)+$/;
 
 /** The resource type as the refusal head prints it, or a description. */
-function resourceTypeShown(resourceType: string): string {
+export function resourceTypeShown(resourceType: string): string {
   return RESOURCE_TYPE_SHAPE.test(resourceType) && plainIdentOr(resourceType, '') === resourceType
     ? resourceType
     : 'a resource type that is not a plain identifier';
