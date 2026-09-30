@@ -439,22 +439,26 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
     }, 120_000);
 
     // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until its source row
-    // lands, which flips both cases: the block displays the explicit ARN (JSON)
-    // AND carries the `aws ssm get-parameter` remedy, and under zsh the `(` no
-    // longer stops a pasted line.
+    // lands, which flips both cases. `pasteableArg` now withholds the
+    // `aws ssm get-parameter` command for a payload ARN (`PASTE_ARG_UNSAFE`),
+    // but the line that displays the ARN (JSON) still carries the `--resource`
+    // remedy, and under zsh the `(` no longer stops a pasted line, so the
+    // display's `$( )` runs beside it.
     const payloadArnRefusals = async (): Promise<Array<{ explicit: string; message: string }>> => {
       const out: Array<{ explicit: string; message: string }> = [];
       for (const { value } of PASTE_PAYLOADS) {
         const explicit = `arn:aws:ssm:us-east-1:111122223333:parameter/${value}`;
         const message = await refusalMessage(explicit);
-        // The row itself, found before the rule is asked.
-        expect(message, explicit).toContain('aws ssm get-parameter');
+        // The row itself, found before the rule is asked: the read command is
+        // withheld, and the `--resource` remedy is what keeps the row S1.
+        expect(message, explicit).not.toContain('aws ssm get-parameter');
+        expect(message, explicit).toContain("--resource MyParam='<parameterName>'");
         out.push({ explicit, message });
       }
       return out;
     };
 
-    it('S1 SSM ARN-adopt refusal: a payload ARN block still carries a command (block rule)', async () => {
+    it('S1 SSM ARN-adopt refusal: a payload ARN block still carries the --resource remedy (block rule)', async () => {
       for (const { explicit, message } of await payloadArnRefusals()) {
         expect(() => expectNoCommandBesideDisplay(message, explicit), explicit).toThrow(
           /also carries a pasteable command/
