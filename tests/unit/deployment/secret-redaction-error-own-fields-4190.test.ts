@@ -327,6 +327,20 @@ describe('maskSecretsInError - own fields (go-to-k/cdkd#4190)', () => {
     expect(inspect(maskedSsm, { depth: 10 })).not.toContain(SECRET);
   });
 
+  // One case per conjunct of the mark test: each fixture fails exactly ONE of
+  // key / enumerable / writable / suffix, the rest shaped like the real mark.
+  it.each([
+    ['another key', 'physicalId', `${SECRET}/auxiliary`, false, false],
+    ['an enumerable field', 'logicalId', `${SECRET}/auxiliary`, true, false],
+    ['a writable field', 'logicalId', `${SECRET}/auxiliary`, false, true],
+    ['a mid-string suffix', 'logicalId', `${SECRET}/auxiliary/x`, false, false],
+  ] as const)('masks a mark-like value on %s', (_label, key, value, enumerable, writable) => {
+    const original = new Error('x');
+    Object.defineProperty(original, key, { value, enumerable, writable, configurable: true });
+    const masked = maskSecretsInError(original, bag()) as unknown as Record<string, string>;
+    expect(masked[key]).toBe(value.replace(SECRET, SECRET_MASK));
+  });
+
   it('keeps an auxiliary-failure `logicalId` mark verbatim, so isAuxiliaryFailure survives a needle in it', () => {
     const auxiliary = markAuxiliaryFailure(new Error('Bucket policy failed'), 'MyBucket');
     // `auxiliary` reaches the suffix `isAuxiliaryFailure` reads, so a masked
