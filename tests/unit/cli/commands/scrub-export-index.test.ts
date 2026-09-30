@@ -1435,7 +1435,7 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     expect(logLines()).not.toContain('hunter2');
   });
 
-  it('still NAMES an alias-shaped absent entry of a stack whose template records no secret', async () => {
+  it('WITHHOLDS an alias-shaped absent entry even when the template records no secret (#4167 review)', async () => {
     synthStacks.push({
       stackName: 'MyStack',
       template: {
@@ -1450,12 +1450,20 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     });
     indexFake.regions.set(
       'us-east-1',
-      slot({ entries: new Map([['old-bucket-export', entry('bucket-1', 'MyStack', 'us-east-1')]]) })
+      slot({
+        entries: new Map([
+          ['old-bucket-export', entry('bucket-1', 'MyStack', 'us-east-1')],
+          // NEGATIVE CONTROL: a name with no alias-only character still prints.
+          ['OldBucketExport', entry('bucket-2', 'MyStack', 'us-east-1')],
+        ]),
+      })
     );
 
     await scrubCommand([], commandOptions({ dryRun: true, fail: true }));
 
-    expect(logLines()).toContain('Exports index entry old-bucket-export (us-east-1)');
+    expect(logLines()).not.toContain('old-bucket-export');
+    expect(logLines()).toContain('(name withheld: an export name, which may carry a secret)');
+    expect(logLines()).toContain('Exports index entry OldBucketExport (us-east-1)');
   });
 
   it('summarises an absent entry holding a recorded secret in the singular', async () => {

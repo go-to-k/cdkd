@@ -1062,9 +1062,10 @@ do not affect the exit code, with one exception noted under the second.
   [dropped the key](#a-key-the-template-can-no-longer-name-is-dropped) — it is
   a FINDING instead: the stack is not reported clean and `--fail` exits `1`.
   An alias-shaped name this run dropped or kept is withheld on these lines,
-  as it was on the drop line; and in a stack whose template records a secret,
-  an absent entry's name that carries a character an output's logical id
-  cannot is withheld on every run, as `cdkd diff` withholds it.
+  as it was on the drop line; and an absent entry's name that carries a
+  character an output's logical id cannot is withheld on every run, even once
+  the template no longer references a secret (the entry is still the one an
+  earlier drop left). The stack and region still print.
 - **An entry published by a producer this run did not scrub.** `--all` targets
   every stack in the SYNTHESIZED APP, not every stack with a state record, and
   one bucket and region are legitimately shared by several CDK apps. Those

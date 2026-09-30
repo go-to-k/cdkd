@@ -1415,13 +1415,16 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // disclose on a schedule.
       // An ABSENT entry's name is an export name by definition, and the key
       // that could have vouched for it is gone — typically dropped by an
-      // earlier run, whose own line withheld it (go-to-k/cdkd#4120). So in a
-      // stack that records a secret, a name carrying a character an Output
-      // logical id cannot is WITHHELD on every run, the rule `cdkd diff`'s
-      // `withholdsAliasName` applies, rather than masked only by this run's
-      // corpus.
+      // earlier run, whose own line withheld it (go-to-k/cdkd#4120). So a name
+      // carrying a character an Output logical id cannot is WITHHELD on every
+      // run, the rule `cdkd diff`'s `withholdsAliasName` applies, rather than
+      // masked only by this run's corpus. Not gated on this run recording a
+      // secret: a stack whose template has since dropped its last secret
+      // reference records none, yet its absent entry is still the one an
+      // earlier run's drop created (#4167 review). The stack and region
+      // still print.
       const absentNamed = (exportName: string, entryValue: unknown): string =>
-        scrubbed.secretsFound > 0 && /[^A-Za-z0-9]/.test(exportName)
+        /[^A-Za-z0-9]/.test(exportName)
           ? '(name withheld: an export name, which may carry a secret)'
           : named(exportName, entryValue);
       const named = (exportName: string, alsoMask?: unknown): string =>
