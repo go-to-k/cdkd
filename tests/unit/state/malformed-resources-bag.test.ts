@@ -2706,6 +2706,9 @@ describe('the entry-level text', () => {
       ).toBe("cdkd state show S --stack-region '<region>' --json");
       // Far below the 5000-character planted region; the headroom is prose.
       expect(longRegion.length).toBeLessThan(1300);
+      expect(longRegion, `${label}: the region DISPLAY is capped at 128`).not.toContain(
+        'r'.repeat(129)
+      );
     }
     // The REGION-LESS arm of `inspectCommand` gates the stack the same way:
     // a builder handed an empty region names no `--stack-region`, and its
@@ -7950,7 +7953,7 @@ describe('the inspect command explains a withheld value before its label (go-to-
   const FILL =
     "Take the values from 'cdkd state list --json', which prints each name as a JSON string, " +
     'escaped but never trimmed or sanitized, and act on the one whose stackName and region ' +
-    'match (a legacy record lists its region as null), replacing ' +
+    'match (a legacy record that names no region lists it as null), replacing ' +
     'each quoted hole in the command at the end of this line, quotes included, with the value ' +
     'decoded from its JSON string, then shell-quoted. ';
   /** The no-fill rule where the stack's reason is `altered` / `too-long`, so it restates the parse. */

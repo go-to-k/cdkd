@@ -531,7 +531,7 @@ export const JSON_LISTING_HOLE_VALUE = 'the value decoded from its JSON string, 
  */
 const LISTING_SOURCE_TAIL =
   `which prints each name as a JSON string, escaped but never trimmed or sanitized, and act ` +
-  `on the one whose stackName and region match (a legacy record lists its region as null)`;
+  `on the one whose stackName and region match (a legacy record that names no region lists it as null)`;
 const LISTING_SOURCE = `'cdkd state list --json', ${LISTING_SOURCE_TAIL}`;
 
 /**
