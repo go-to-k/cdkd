@@ -18,7 +18,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
  */
 const DEPLOYMENT_DIR = fileURLToPath(new URL('../../../src/deployment/', import.meta.url));
 
-const AUGMENTATION = /declare module '\.\/deploy-engine\.js' \{\s*interface DeployEngine \{([\s\S]*?)\n {2}\}/;
+const AUGMENTATION = /declare module '(?:\.\.?\/)+deploy-engine\.js' \{\s*interface DeployEngine \{([\s\S]*?)\n {2}\}/;
 
 function mixinModules(): Array<{ file: string; names: string[] }> {
   return readdirSync(DEPLOYMENT_DIR, { recursive: true, encoding: 'utf8' })
