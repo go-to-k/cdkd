@@ -35,7 +35,7 @@ budgets	2026-09-30T11:59:39Z	PASS	70	verify.sh	rc ok, orph clean (#4228)
 cache-streaming	2026-09-29T15:04:16Z	PASS	652	verify.sh	rc ok, orph clean (#4029 PR #4080: ElastiCache delete wait)
 cc-api-fallback	2026-09-29T03:32:02Z	PASS	60	verify.sh	rc ok, orph clean (#3993 PR #4031)
 cc-api-fallback-transitions	2026-09-29T03:32:02Z	PASS	126	verify.sh	rc ok, orph clean (#3993 PR #4031)
-cc-final-snapshot-handlers	2026-09-29T17:01:10Z	PASS	1263	verify.sh	rc ok, orph clean, 0 state versions (#4029 PR #4080, final head after #4128)
+cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
 cc-getatt-readback	2026-09-19T20:26:58Z	PASS	110	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, CC protection flip over 5 types, 5 deleted 0 errors; orphan scan clean (state/RDS+DocDB global/NeptuneGraph/VerifiedPermissions)
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
@@ -81,7 +81,7 @@ destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded
 destroy-interrupt	2026-09-29T03:31:30Z	PASS	397	verify.sh	rc ok, orph clean (pre-existing HandlerFn log group swept); No state found for stack(s) remedy on own line (PR #4004)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-30T12:03:08Z	PASS	110	verify.sh	rc ok, orph clean (#4228)
-docdb-neptune	2026-09-29T15:04:16Z	PASS	5194	verify.sh	rc ok, orph clean (#4029 PR #4080)
+docdb-neptune	2026-09-30T17:44:01Z	PASS	5476	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-09-30T12:21:37Z	PASS	246	verify.sh	rc ok, orph clean (#4228)
 drift-revert-arrays	2026-09-29T23:22:50Z	PASS	185	verify.sh	PR #4053 (#4042 + #4051 codecommit rename adopted by recorded RepositoryId; UpdateContext.recordedAttributes from every update() caller) @a46f094/a7ca35d; rc ok, destroy 0 errors, no state/lock/CFn leftovers
@@ -251,8 +251,8 @@ outputs-only-export	2026-09-28T07:22:06Z	PASS	115	verify.sh	#3885 log-group swee
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-09-29T22:48:22Z	PASS	4806	verify.sh	rc ok, orph clean; #4122 final head (region lookup gated), all #4087/#3945 arms
-rds-dbinstance-backfill	2026-09-29T06:54:20Z	PASS	801	verify.sh	rc ok, orph clean (#4030 PR #4040: policy-less L1 instance took its final snapshot, deleted; fix-reverted run RED at the assertion)
+rds-aurora	2026-09-30T17:44:01Z	PASS	4949	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, new INFO line seen live, final snapshot cleaned, no leftovers
+rds-dbinstance-backfill	2026-09-30T17:44:01Z	PASS	777	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, new INFO line seen live, final snapshot cleaned
 rds-full-stack	2026-09-29T16:14:14Z	PASS	1047	verify.sh	rc ok, orph clean (#4029 PR #4080, final rebased head)
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc ok, orph clean; PR #3668 head
