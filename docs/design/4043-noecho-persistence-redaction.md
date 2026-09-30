@@ -137,7 +137,7 @@ references `P`.
   is value-keyed and string-only: `freshNoEchoValuesOf` is a
   `Set<string>` per bag (`secret-redaction.ts:830`), `FreshNoEchoLeaf.plaintext`
   is a `string` (`:1274-1277`), and `liveHoldsFreshLeaves` fails any non-string
-  node (`deploy-engine.ts:1011`). A leaf only this arm masks (a `Number`, a
+  node (`deploy-engine.ts:1012`). A leaf only this arm masks (a `Number`, a
   `List<Number>`, a value under 4 characters) would otherwise compare `***`
   with `***` and take the first no-change skip, so a changed value would never
   reach AWS. So the pass bag gains a coordinate set beside
@@ -205,8 +205,20 @@ refused by `refuseRedactedAttributeReads` (`deploy-engine.ts:2462`) on every
 later one. So at the producer's create or update site, an attribute whose leaf
 equals or embeds a fresh `NoEcho` needle of the producer's bag is added to
 `noEchoAttributeResources` for that logical id, the existing #2274 mechanism.
-An out-of-process consumer of such an attribute is refused as before, and is
-listed with the new refusals in section 6.
+That covers the run in which the producer is created or updated. On a LATER
+deploy the producer is `held` and skipped, so its record holds
+`attributes.Value = '***'`, and the consumer's `Fn::GetAtt` would be refused
+again. The #1852 heal cannot help: `readStaleAttributes` drops masked keys
+(`deploy-engine.ts:2721-2726`). So on a `held` verdict, the engine installs the
+readback's live values for the declared attributes into the IN-MEMORY record's
+`attributes` only, and registers them as fresh needles for that logical id.
+This is a deliberate, narrow extension of the readback's "persists nothing"
+property (`deploy-engine.ts:3049-3062`): the values are never persisted, never
+installed as `observedProperties`, and dropped with the run. A producer with no
+readback (`not-readable`) cannot serve them, so its same-stack consumers are
+refused, as a custom-resource `NO_CHANGE` consumer is today
+(`nested-stack-provider.ts:810-816`). That refusal and an out-of-process
+consumer's are listed with the new refusals in section 6.
 
 **`physicalId` stays in the clear.** It is the handle every later call
 addresses the resource by, and AWS publishes it (ARN, name). A value used to
@@ -424,8 +436,9 @@ inherits it through `redactOutputs`.
   a fresh mask-only map entry there, `recordInheritedParameterSecrets`
   (`intrinsic-function-resolver.ts:4567`) records it into each consuming child
   resource's bag, and `carryFreshNoEchoMark` (`secret-redaction.ts:941`) keeps
-  it fresh. The child's own parameter declaration never says `NoEcho` (CDK
-  does not emit it), so the child has no positional arm. An inherited value
+  it fresh. A CDK-synthesized child's parameter declaration never says
+  `NoEcho`, so that child has no positional arm. A hand-authored child that
+  declares `NoEcho: true` gets one. An inherited value
   shorter than 4 characters therefore stays in the clear in the child's
   record: the floor residual of section 3.3.
 
@@ -467,13 +480,16 @@ the bucket-wide exports index, which any stack's reader can list.
   cannot be counted wholesale: one output reading a `NoEcho` value would
   refuse every export name.
   - **Phase A** adds the log-only needles to the containment test only. The
-    set is module-private (`secret-redaction.ts:1006`) and no accessor lists
-    it, so Phase A asks the printing masker instead: the name is exposed when
-    `maskSecretsInText(name, nameSecrets)` (which reads the shared set)
-    differs from `maskRecordedSecretsInText(name, nameSecrets)` (the map
-    alone, `secret-redaction.ts:7979`). That test's floor is the one wanted: a
-    name equal to a value is refused at any length, and a name embedding one at
-    4 or more characters. It deliberately reverses the #4049 rule that a
+    set is module-private (`secret-redaction.ts:1006`), but
+    `printingCorpusOf` (`:1126`) returns the map plus each log-only needle as
+    an entry. Phase A hands that corpus to `secretsPresentIn`
+    (`outputs-export-alias.ts:518`) as a second containment corpus. So the
+    log-only needles get the same canonical and detection haystacks
+    (`secretScanHaystacks`, `:523-551`) a secret gets today, and the fold
+    #4173 adds. A raw `maskSecretsInText` comparison would miss a value
+    spelled with compatibility or invisible characters, the #2874 / #4001
+    class. That scan's floor is the one wanted: a name equal to a value is
+    refused at any length, and a name embedding one at 4 or more characters. It deliberately reverses the #4049 rule that a
     publication verdict never reads log-only needles
     (`.claude/rules/layout-deployment-secrets.md`, and the side-set doc at
     `secret-redaction.ts:991-995`). Phase A updates the rule file. The doc
@@ -557,13 +573,14 @@ The only new refusals are these:
 - an out-of-process consumer of a parameter-served output (question 2);
 - a create-only leaf whose readback FAILED (`read-failed` in section 4.2),
   which fails the resource with a retry message rather than replacing it;
-- an out-of-process `Fn::GetAtt` consumer of an attribute that echoes the
-  value (section 3.3); the remedy is to deploy producer and consumer in one
-  run;
+- a `Fn::GetAtt` consumer of an attribute that echoes the value, when the
+  producer was deployed in another run, or has no readback and is unchanged
+  in this one (section 3.3); the remedy is to update the producer in the same
+  run as the consumer;
 - a hand-authored nested child that declares a parameter `Number`, or a
   comma-bearing `CommaDelimitedList`, and receives a parent's `NoEcho` value:
   once that value is a map entry, `refuseCoercedInheritedSecret`
-  (`intrinsic-function-resolver.ts:4682`) refuses it;
+  (`intrinsic-function-resolver.ts:4681`) refuses it;
 - a rollback re-create with no live resource.
 
 The costs that are not refusals are named by questions 1 and 5: a create-only
@@ -605,8 +622,9 @@ Open PRs hold files this work must edit:
 **Phase B also flips every map reader the log-only doc kept blind**
 (`secret-redaction.ts:986-1000`). Each is re-audited in B:
 
-- The resolver's `maskRecordedSecretsInText` detector
-  (`intrinsic-function-resolver.ts:11759-11789`). `Fn::Base64` over text
+- The resolver's `maskNeedlesForLog` detector
+  (the wrapper at `intrinsic-function-resolver.ts:11759`; its detector body
+  at `:11776-11789` calls `maskRecordedSecretsInText`). `Fn::Base64` over text
   embedding the value now records a derived needle, which is wanted. The
   unsupported-service arm can newly refuse a leaf embedding both the value and
   an unsupported `{{resolve:` token.
@@ -655,8 +673,11 @@ lanes once B merges.
     provider call;
   - a `Number` value rotated: UPDATE issued (the position-keyed fresh mark);
   - a 3-character value rotated: UPDATE issued;
-  - a same-stack `Fn::GetAtt` consumer of an echoed attribute persists `***`
-    and is not refused on the next deploy.
+  - a same-stack `Fn::GetAtt` consumer of an echoed attribute persists `***`,
+    and is not refused on the next deploy when the producer's readback is
+    `held`; the live attribute never reaches the persisted record;
+  - the same consumer of a `not-readable` producer is refused on the next
+    deploy with the remedy.
 - **B, migration.** A v10 fixture record gets `version: 11`, `***` at every
   positioned leaf, and the marker. An untouched resource's record is migrated
   by the save-time positional pass. A v10 binary's refusal message is pinned
