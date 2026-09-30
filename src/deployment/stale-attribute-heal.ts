@@ -60,10 +60,18 @@ export type StaleAttributeHealOutcome =
  * and memoized per run (a deploy, or a `cdkd diff`) by the supplier; MUST NOT
  * throw.
  */
-export type StaleAttributeHealer = (
-  logicalId: string,
-  resource: ResourceState
-) => Promise<StaleAttributeHealOutcome>;
+export type StaleAttributeHealer = {
+  (logicalId: string, resource: ResourceState): Promise<StaleAttributeHealOutcome>;
+  /**
+   * `true` on a healer that writes nothing: what it reads serves the current
+   * run only (`cdkd diff`'s, from `read-only-attribute-healer.ts`). The
+   * resolver words a stale-record remedy from it, so a failed read in a
+   * preview does not tell the user cdkd tried to heal the record. The flag
+   * rides the healer rather than the context, so every context handed that
+   * factory's healer carries it; nothing makes another supplier set it.
+   */
+  readonly readOnly?: true;
+};
 
 /**
  * Per-resolution marker the resolver threads through a DERIVED context (never a

@@ -1660,11 +1660,12 @@ export interface ResolverContext {
    * no-change deploy, so without this the fallback's refusal is permanent.
    *
    * OPT-IN by presence, like the bags above. Only a caller that can ROUTE a
-   * record to its provider AND owns a state save supplies it: `DeployEngine`
-   * does, on every context it builds. A context without one keeps the pre-#1852
-   * behaviour exactly — no AWS call is ever issued on its behalf. The supplier
-   * owns single-flight, memoization and persistence; the resolver only asks,
-   * and only on a MISS.
+   * record to its provider supplies it: `DeployEngine` does, on every context
+   * it builds, and persists what the read returns; `cdkd diff` supplies a
+   * `readOnly` one (`read-only-attribute-healer.ts`) that persists nothing. A
+   * context without one keeps the pre-#1852 behaviour exactly — no AWS call is
+   * ever issued on its behalf. The supplier owns single-flight, memoization and
+   * any persistence; the resolver only asks, and only on a MISS.
    */
   attributeHealer?: StaleAttributeHealer;
 
@@ -5786,8 +5787,8 @@ export class IntrinsicFunctionResolver {
     // `value` is a PERSISTED attribute, so both need a bag.
     context?: ResolverContext,
     // What the #1852 heal observed before this refusal, so the remedy is true
-    // on the path taken. `undefined` = no healer on this context (`cdkd diff`,
-    // `cdkd drift`, ...), i.e. nothing was re-read.
+    // on the path taken. `undefined` = no healer on this context, i.e. nothing
+    // was re-read.
     healOutcome?: StaleAttributeHealOutcome
   ): void {
     if (!isStalePlaceholderArnAttribute(resource.resourceType, attributeName, value)) return;
@@ -5815,7 +5816,8 @@ export class IntrinsicFunctionResolver {
   /**
    * The remedy half of a STALE-RECORD refusal (issue
    * [#1852](https://github.com/go-to-k/cdkd/issues/1852)), worded from what the
-   * heal observed so it is true on the path taken.
+   * heal observed, and from whether the healer writes (a `readOnly` one does
+   * not), so it is true on the path taken.
    *
    * The sentence it replaces — "deploy the stack again so the resource's next
    * update heals the record" — was false for the commonest case: a deploy that
@@ -5839,31 +5841,46 @@ export class IntrinsicFunctionResolver {
         `record. Otherwise ${touch}.`
       );
     }
+    // A read-only healer (`cdkd diff`'s) writes nothing, so its read heals no
+    // record: word the outcome as the preview's own read, not a heal attempt.
+    const preview = context?.attributeHealer?.readOnly === true;
+    const attempted = preview
+      ? `This preview re-read the attributes from AWS`
+      : `cdkd tried to re-read the attributes from AWS to heal the record`;
     switch (outcome.kind) {
       case 'failed':
         return (
-          `cdkd tried to re-read the attributes from AWS to heal the record, but ` +
+          `${attempted}, but ` +
           `${this.describeFailureObserved('the provider read', outcome.error, context)}. ` +
-          `Fix that (a missing read permission is the usual cause) and deploy again — cdkd ` +
-          `retries the read on every deploy until the record is healed — or ${touch}.`
+          (preview
+            ? `A preview writes nothing to state; 'cdkd deploy' issues the same read and records ` +
+              `the attribute once the read returns it. Fix the read (a missing read permission is the ` +
+              `usual cause), or ${touch}.`
+            : `Fix that (a missing read permission is the usual cause) and deploy again — cdkd ` +
+              `retries the read on every deploy until the record is healed — or ${touch}.`)
         );
       case 'not-found':
         return (
-          `cdkd tried to re-read the attributes from AWS to heal the record, but AWS reports no ` +
+          `${attempted}, but AWS reports no ` +
           `resource behind the recorded physical id — it was probably deleted outside cdkd. ` +
           `Check it with 'cdkd drift', then re-create it (change the resource so it is replaced) ` +
           `or remove it from state.`
         );
       case 'read':
-        if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy();
-        return (
-          `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
-          `attribute either, so there is nothing to heal the record with; ${touch}.`
-        );
+        if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy(context);
+        return preview
+          ? `This preview re-read the resource from AWS and the read reports no usable value ` +
+              `for this attribute either; ${touch}.`
+          : `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
+              `attribute either, so there is nothing to heal the record with; ${touch}.`;
       case 'not-attempted':
         return (
-          `cdkd did not re-read it from AWS (the record was written by this deploy, or this ` +
-          `resource type has no read-only lookup); ${touch}.`
+          // No reason in the preview: "written by this deploy" is false there,
+          // and naming another would claim to know why the healer declined.
+          (preview
+            ? `cdkd did not re-read it from AWS for this preview; `
+            : `cdkd did not re-read it from AWS (the record was written by this deploy, or this ` +
+              `resource type has no read-only lookup); `) + `${touch}.`
         );
     }
   }
@@ -5872,8 +5889,8 @@ export class IntrinsicFunctionResolver {
    * The remedy half of the "not enriched" refusal. The pre-#1852 sentence,
    * plus what the heal established: a completed re-read that reports no such
    * attribute CONFIRMS the type does not supply it; a context with no healer
-   * (`cdkd diff`, `cdkd drift`, ...) re-read nothing, so the record may merely
-   * predate the enrichment and `cdkd deploy` is what heals it.
+   * re-read nothing, so the record may merely predate the enrichment and
+   * `cdkd deploy` is what heals it.
    */
   private unenrichedRemedy(
     resourceType: string,
@@ -5896,7 +5913,7 @@ export class IntrinsicFunctionResolver {
       );
     }
     if (outcome.kind === 'read') {
-      if (this.healWithheld(outcome, attributeName)) return this.withheldRemedy();
+      if (this.healWithheld(outcome, attributeName)) return this.withheldRemedy(context);
       return (
         `cdkd re-read the resource's attributes from AWS and the read reports none by that ` +
         `name. ${fileIssue}`
@@ -5919,12 +5936,26 @@ export class IntrinsicFunctionResolver {
    * Control's read-back is masked wherever cdkd cannot certify a key as a
    * read-only attribute, which is every key when `DescribeType` is unavailable.
    * "The read reports none ... file an issue" would be false here.
+   *
+   * A `readOnly` healer's read (`cdkd diff`'s) ran under the preview's own
+   * credentials, not the deploy role's, so that remedy names those instead.
    */
-  private withheldRemedy(): string {
+  private withheldRemedy(context?: ResolverContext): string {
+    const confirm =
+      `it could not confirm that this is a read-only attribute of the type, and an ` +
+      `unconfirmed value is never used.`;
+    if (context?.attributeHealer?.readOnly === true) {
+      return (
+        `This preview re-read the resource through Cloud Control, but withheld the value: ` +
+        `${confirm} Grant the credentials the preview runs with cloudformation:DescribeType ` +
+        `and run the diff again (a deploy's own read needs the same permission); if they ` +
+        `already have it, the name is a writable property rather ` +
+        `than an attribute — reference the value the template sets instead.`
+      );
+    }
     return (
-      `cdkd re-read the resource through Cloud Control, but withheld the value: it could not ` +
-      `confirm that this is a read-only attribute of the type, and an unconfirmed value is ` +
-      `never used. Grant the deploy role cloudformation:DescribeType and deploy again; if the ` +
+      `cdkd re-read the resource through Cloud Control, but withheld the value: ${confirm} ` +
+      `Grant the deploy role cloudformation:DescribeType and deploy again; if the ` +
       `role already has it, the name is a writable property rather than an attribute — ` +
       `reference the value the template sets instead.`
     );
@@ -7862,7 +7893,7 @@ export class IntrinsicFunctionResolver {
     // "unknown attribute" the user can do nothing about: name the permission.
     const withheld =
       healOutcome?.kind === 'read' && this.healWithheld(healOutcome, attributeName)
-        ? `. ${this.withheldRemedy()}`
+        ? `. ${this.withheldRemedy(context)}`
         : '';
     this.logger.warn(
       `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${loggedType}, returning physical ID${withheld}`

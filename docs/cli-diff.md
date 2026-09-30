@@ -160,13 +160,13 @@ not assigned the value yet (the endpoint of an RDS instance deployed with
 wildcard region and account fields. `cdkd deploy` re-reads such a resource
 from AWS when a reference needs the missing or placeholder attribute, and
 resolves the reference to the value AWS reports. `cdkd diff` issues the same read, so a property or output reading the
-attribute previews the value the deploy will use — not the unresolved
+attribute previews the value that read returns — not the unresolved
 reference, and not the resource's physical id — and a resource whose property
 will change because of it previews as an UPDATE.
 
 The read is made only when a reference needs that attribute, at most
 once per resource per run, in the stack's own region. The diff never writes
-what it reads to state; the next deploy records it. If the read fails — a
+what it reads to state; only a deploy's own read records it. If the read fails — a
 missing read permission, say — the row previews as it would without the read,
 and the diff does not fail. Custom resources and nested stacks are never
 re-read: their attributes come from the handler's response or the child's
