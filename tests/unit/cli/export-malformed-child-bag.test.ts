@@ -362,6 +362,68 @@ describe('cdkd export over a nested child whose resources bag is unreadable (iss
     });
   }
 
+  it('REFUSES a malformed GRANDCHILD under a healthy child: every tree node, not only direct children', async () => {
+    // Depth 2: the child is healthy and carries a nested row of its own, whose
+    // record is the damaged one. A pass over the root's direct children alone
+    // would miss it and let `buildImportPlan` read the grandchild's bag.
+    const GRANDCHILD = `${CHILD}~Grandchild`;
+    const grandchildTemplate = {
+      AWSTemplateFormatVersion: '2010-09-09',
+      Resources: { GrandchildBucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+    };
+    writeFileSync(
+      join(tmp, 'grandchild.nested.template.json'),
+      JSON.stringify(grandchildTemplate),
+      'utf-8'
+    );
+    const childWithAsset = {
+      ...CHILD_TEMPLATE,
+      Resources: {
+        ...CHILD_TEMPLATE.Resources,
+        Grandchild: {
+          ...CHILD_TEMPLATE.Resources.Grandchild,
+          Metadata: { 'aws:asset:path': 'grandchild.nested.template.json' },
+        },
+      },
+    };
+    writeFileSync(
+      join(tmp, 'child.nested.template.json'),
+      JSON.stringify(childWithAsset),
+      'utf-8'
+    );
+    mockGetState.mockImplementation(async (name: string) => {
+      if (name === STACK) return rootRecord();
+      if (name === CHILD) {
+        return childRecord({
+          ...HEALTHY_CHILD_BAG,
+          Grandchild: row(
+            `arn:aws:cloudformation:${REGION}:123456789012:stack/${STACK}-Child-Grandchild/x`,
+            'AWS::CloudFormation::Stack'
+          ),
+        });
+      }
+      if (name === GRANDCHILD) {
+        const record = childRecord(null);
+        record.state['stackName'] = GRANDCHILD;
+        record.state['parentStack'] = CHILD;
+        record.state['parentLogicalId'] = 'Grandchild';
+        return record;
+      }
+      return null;
+    });
+
+    const message = await runExport([]);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(message).toContain(
+      `CdkdError: State for '${GRANDCHILD}' (${REGION}) has no readable 'resources' map`
+    );
+    expect(message).not.toContain('TypeError');
+    expect(message).not.toContain('block migration');
+    expect(mockGetState.mock.calls.map((c) => c[0])).toEqual([STACK, CHILD, GRANDCHILD]);
+    expectNothingWritten();
+  });
+
   it('REFUSES a --dry-run too, which would otherwise print a plan over the truncated tree', async () => {
     serveTree('not-a-map');
 
