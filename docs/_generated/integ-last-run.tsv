@@ -97,8 +97,8 @@ dynamodb-stream-filter	2026-09-27T21:07:59Z	PASS	71	verify.sh	PR #3901 merge-gat
 dynamodb-streams	2026-09-29T18:12:56Z	PASS	280	verify.sh	PR #4136 (#4112 stream member post-write capture) @20bf50a; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 dynamodb-tableclass-switch	2026-09-27T21:05:43Z	PASS	70	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-ttl-attr-change	2026-09-27T21:06:48Z	PASS	65	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-ec2-instance	2026-09-25T19:22:55Z	PASS	110	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
-ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
+ec2-instance	2026-09-30T18:16:33Z	PASS	121	verify.sh	rc ok, orph clean (#4242)
+ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
 ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
@@ -116,12 +116,12 @@ emr-cluster	2026-09-30T06:28:26Z	PASS	831	verify.sh	PR #4189 (#4186 orphan GetAt
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-eventbridge	2026-09-30T15:59:08Z	PASS	91	verify.sh	rc ok, orph clean (#4240)
+eventbridge	2026-09-30T18:16:33Z	PASS	125	verify.sh	rc ok, orph clean (#4242)
 eventbridge-api-destination	2026-08-10T04:16:05Z	PASS	66	verify.sh	0810 staleness sweep b1; Connection/ApiDestination GetAtt, 5 del 0 err, 0 orph
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 staleness sweep b1; post-#1396 ECS target sub-shape, 0 err, 0 orph
 eventbridge-pipes	2026-09-29T02:38:06Z	PASS	180	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, named-pipe --replace delete-first, 6 deleted 0 errors, orph clean
-eventbridge-scheduler	2026-09-30T15:45:50Z	PASS	60	verify.sh	rc ok, orph clean (#4240)
+eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
 export	2026-09-30T16:20:25Z	PASS	236	verify.sh	PR #4224 deploy-engine outputs mixin, rebased onto #4216; rc ok, orph clean
@@ -290,7 +290,7 @@ s3-subconfig-removal	2026-09-28T08:48:59Z	PASS	85	verify.sh	rc ok, orph clean (#
 s3-tables	2026-09-29T11:14:58Z	PASS	50	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 s3-vectors	2026-09-29T11:15:53Z	PASS	50	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-scheduler-custom-group	2026-09-30T15:44:39Z	PASS	115	verify.sh	rc ok, orph clean (#4240)
+scheduler-custom-group	2026-09-30T18:16:33Z	PASS	216	verify.sh	rc ok, orph clean (#4242)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
