@@ -369,21 +369,20 @@ function substitutedSpellingOf(
   const frame = singleSpanFrame(resolvedValue, resolution.input);
   if (frame === undefined) return undefined;
   if (frame.token !== substitution.token || frame.middle !== substitution.value) return undefined;
-  // The AFFIX. A non-literal part of the object with no record of its own (a
-  // `Ref`, an `Fn::Select`, an intrinsic Sub variable of either kind)
-  // contributes its RESOLVED text to `input`, and a replacement made while
-  // resolving that part is not listed in this record; a nested part that
-  // lends its record (issue #3306) lends an `input` its own such parts
-  // resolved into. So an affix can hold another secret this pass recorded,
-  // which the spelling would carry verbatim as though it were an expression. Refused at any length, over-refusing toward the value
-  // scan's answer: a plaintext the bag holds anywhere outside the token.
+  // A RECORDED SECRET ANYWHERE IN THE SPELLING. A non-literal part of the
+  // object contributes its RESOLVED text to `input`: a part with no record of
+  // its own (a `Ref`, an `Fn::Select`, an intrinsic Sub variable with none) in
+  // full, and a `${X}` / `Ref` inside a part that lends its record (issue
+  // #3306) or inside the object's own `Fn::Sub` template, into that text,
+  // which can be the frame's TOKEN (`{{resolve:ssm:/app/${Name}}}` with `Name`
+  // a secret). A replacement made while resolving such a part is not listed
+  // in this record, so the prefix, the token and the suffix can each hold
+  // another secret this pass recorded, which the spelling would carry
+  // verbatim as though it were an expression (the #4130 review's M0). Refused
+  // at any length, over-refusing toward the value scan's answer: a plaintext
+  // the bag holds anywhere in `input`.
   for (const plaintext of secrets.keys()) {
-    if (
-      plaintext !== '' &&
-      (frame.prefix.includes(plaintext) || frame.suffix.includes(plaintext))
-    ) {
-      return undefined;
-    }
+    if (plaintext !== '' && resolution.input.includes(plaintext)) return undefined;
   }
   return resolution.input;
 }
@@ -2628,12 +2627,18 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * selected different branches included), one whose replacement took a public
  * verdict, one that replaced more than one token, one whose token sits in a
  * part with no record of its own (an `Fn::Select` element, an `Fn::If` branch
- * of that kind), one whose affix holds a plaintext the bag holds (another
- * secret a part with no record resolved) -- each keeps the plaintext in the
- * child, and for the outside-the-token frame in the parent's record; so does
- * an outside-the-token frame sharing its value with a leaf of another token,
- * which (iv) refuses. A rollback replay records nothing here
- * (`resolveReplayProps` resolves strings, not intrinsic objects): a journal a
+ * of that kind), one whose spelling holds a plaintext the bag holds
+ * anywhere, prefix, token or suffix (another secret a non-literal part
+ * resolved into it, e.g. `{{resolve:ssm:/app/${Name}}}` with `Name` a secret;
+ * {@link substitutedSpellingOf}) -- each keeps the plaintext in the child, and
+ * for the outside-the-token frame in the parent's record; so does an
+ * outside-the-token frame sharing its value with a leaf of another token,
+ * which (iv) refuses. The last refusal covers the carry only: the PARENT's own
+ * row, like any resource, still persists a token assembled from another
+ * secret through the position pass's arms, which write the expression the
+ * resolver recorded for it (go-to-k/cdkd#4166). A rollback replay records
+ * nothing here (`resolveReplayProps` resolves strings, not intrinsic objects):
+ * a journal a
  * deploy wrote holds a carried frame's persisted spelling as a STRING, which
  * the literal arm reads, while a record `cdkd import` left holding the raw
  * intrinsic stays refused on this arm. Any other resolved text a non-literal

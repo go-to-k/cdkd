@@ -76,6 +76,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
           return { Parameter: { Value: 'q7', Type: 'SecureString' } };
         }
         if (name === '/other') return { Parameter: { Value: 'q7', Type: 'SecureString' } };
+        // A parameter NAMED by an inherited secret (the #4130 review's M0): its
+        // name reaches the token only after that secret is substituted in.
+        if (name === '/app/pinname-long') return { Parameter: { Value: 'q7', Type: 'SecureString' } };
         // A SecureString whose value is itself reference text (issue #3306's
         // two-stage shape): the object's final pass resolves it again.
         if (name === '/app/ref') {
@@ -504,16 +507,32 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
     it(`lends nothing from ${label} whose record is poisoned`, async () => {
       const inner = { 'Fn::Sub': label === 'an Fn::If branch' ? 'port:{{resolve:ssm:/app/pin}}' : '{{resolve:ssm:/app/pin}}' };
       const bag: RecordedSecretValues = new Map();
-      recordIntrinsicLeafResolution(bag, inner, { input: 'a', output: 'a', substitutions: [], complete: true });
-      recordIntrinsicLeafResolution(bag, inner, { input: 'b', output: 'b', substitutions: [], complete: true });
-      const source = { TemplateURL: TEMPLATE_URL, Parameters: { Pin: wrap(inner) } };
+      // Two records that would EACH certify the frame on their own (the #4130
+      // review's m5): the one the resolver itself writes for `inner`, and one
+      // through `/app/a`, which the `Other` parameter below pairs to the same
+      // pin. A poisoned record read as either one lends a certifying record.
+      for (const token of ['{{resolve:ssm:/app/pin}}', '{{resolve:ssm:/app/a}}']) {
+        const input = label === 'an Fn::If branch' ? `port:${token}` : token;
+        recordIntrinsicLeafResolution(bag, inner, {
+          input,
+          output: label === 'an Fn::If branch' ? `port:${PIN}` : PIN,
+          substitutions: [{ token, value: PIN, secret: true }],
+          complete: true,
+        });
+      }
+      const source = {
+        TemplateURL: TEMPLATE_URL,
+        Parameters: { Pin: wrap(inner), Other: '{{resolve:ssm:/app/a}}' },
+      };
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const resolved = (await resolver.resolve(source, contextFor({}, bag) as never)) as {
         Parameters: Record<string, unknown>;
       };
       recordNestedStackParameterExpressions(bag, NESTED, resolved, source);
-      // Premise: the same source with a fresh bag is carried (the table above).
+      // Premises: the same source with a fresh bag is carried (the table
+      // above), and both seeded tokens hold a pair for the pin.
       expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
+      expect(resolved.Parameters['Other']).toBe(PIN);
       expect(bag.has(`port:${PIN}`)).toBe(false);
     });
   }
@@ -592,6 +611,40 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
       expect(bag.get(PIN)).toMatch(/^\{\{resolve:ssm-secure:\/app\/[ab]\}\}$/);
       expect(bag.has(`${PIN}/${PIN}`)).toBe(false);
       expect(record.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
+    });
+  }
+});
+
+describe('issue #3306 review M0: a recorded secret INSIDE the carried token is refused', () => {
+  // `Name` is a secret the row's bag holds (inherited, above the needle
+  // floor). Substituted into the token's parameter name, it would be carried
+  // verbatim in the spelling: the row, the child and a grandchild's entry
+  // would hold it where the value scan leaves only the sub-floor `q7`.
+  const NAME = 'pinname-long';
+  const INHERITED: RecordedSecretValues = new Map([
+    [NAME, '{{resolve:secretsmanager:cdkd-name-probe:SecretString:name}}'],
+  ]);
+  const INNER = (): unknown => ({ 'Fn::Sub': '{{resolve:ssm:/app/${Name}}}' });
+  // `rowToo`: whether the PARENT's own row is this carry's to protect. For
+  // the top-level Sub it is not: the position pass's frame arm writes that
+  // row from the token the resolver recorded, carry or no carry -- a
+  // different class, stated on the carry's residual (e) and asserted
+  // neither way here.
+  for (const [label, pin, rowToo] of [
+    ['a top-level Fn::Sub', { 'Fn::Sub': 'port:{{resolve:ssm:/app/${Name}}}' }, false],
+    ['a nested Fn::Sub part', { 'Fn::Join': ['', ['port:', INNER()]] }, true],
+    ['an Fn::If around that Join', { 'Fn::If': ['On', { 'Fn::Join': ['', ['port:', INNER()]] }, 'x'] }, true],
+    ['an intrinsic Fn::Sub variable', { 'Fn::Sub': ['port:${V}', { V: INNER() }] }, true],
+  ] as const) {
+    it(`does not carry ${label} whose token spells an inherited secret`, async () => {
+      const { bag, resolved, record } = await deployRow({ Pin: pin }, { Name: NAME }, INHERITED);
+      // Premises: the value frames the sub-floor pin, and the bag holds the
+      // name as a secret.
+      expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
+      expect(bag.has(NAME)).toBe(true);
+      expect(bag.has(`port:${PIN}`)).toBe(false);
+      expect(String(await childPersist(bag, 'Pin', `port:${PIN}`))).not.toContain(NAME);
+      if (rowToo) expect(String(record.Parameters['Pin'])).not.toContain(NAME);
     });
   }
 });

@@ -12172,9 +12172,10 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
-   * Record the `Fn::Join` / `Fn::Sub` object `source`'s own resolution under
-   * the pass bag the nested-stack carry reads (issue
-   * [#3156](https://github.com/go-to-k/cdkd/issues/3156)). The key is the
+   * Record the `Fn::Join` / `Fn::Sub` / `Fn::If` object `source`'s own
+   * resolution under the pass bag the nested-stack carry reads (issues
+   * [#3156](https://github.com/go-to-k/cdkd/issues/3156),
+   * [#3306](https://github.com/go-to-k/cdkd/issues/3306)). The key is the
    * object `resolveValue` dispatched on, and a context with no bag has no pass
    * to scope it to.
    */
@@ -12190,8 +12191,8 @@ export class IntrinsicFunctionResolver {
   /**
    * What a NESTED intrinsic part contributes to its outer object's record
    * (issue [#3306](https://github.com/go-to-k/cdkd/issues/3306)): the part's
-   * own record when this pass kept one for that object and it produced
-   * `resolved`, so a token the part spelled reaches the outer `input` raw with
+   * own record when this pass kept one for that object, so a token the part
+   * spelled reaches the outer `input` raw with
    * the replacement that resolved it. Any other part contributes its resolved
    * text and no replacement, as before. A record the pass kept describes THIS
    * resolution: the part was just resolved into the same bag, and a
