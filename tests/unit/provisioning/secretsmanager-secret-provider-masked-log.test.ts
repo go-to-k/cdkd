@@ -156,10 +156,28 @@ describe('SecretsManagerSecretProvider create() masking (#2177)', () => {
     // The run's character class stops at `,`: wider, the ordinary ARN's run
     // would swallow the secret one after it and print it.
     ['after an ordinary ARN', `${arnOf('plain-name')},${arnOf(TINY)}`, `${arnOf('plain-name')},***`],
-    ['followed by a path that is legal in a name', `${arnOf(TINY)}/version-AbCdEf`, '***/version-AbCdEf'],
-    ['followed by a second suffix', `${arnOf(TINY)}-ZZZZZZ.`, '***-ZZZZZZ.'],
+    // The rest of a name-legal run goes with the ARN: it may hold a longer
+    // secret, and over-masking is the safe direction.
+    ['followed by a path that is legal in a name', `${arnOf(TINY)}/version-AbCdEf`, '***'],
+    ['followed by a second suffix', `${arnOf(TINY)}-ZZZZZZ.`, '***.'],
   ])('masks a quoted secret ARN %s, and only that ARN', async (_shape, aws, masked) => {
     expect(await createFailureFor(aws)).toBe(masked);
+  });
+
+  it('masks the quoted ARN even when another bag secret equals part of its fixed text', async () => {
+    // A secret equal to `secret`, run first, would rewrite the ARN's own
+    // wording and defeat the arm; the arm runs on the raw text instead.
+    mockSend.mockRejectedValue(new Error(`on ${arnOf(TINY)} end`));
+    const err = await thrown(() =>
+      provider.create(
+        'Secret',
+        TYPE,
+        { Name: TINY, SecretString: 'v' },
+        { maskSecrets: createSecretMasker(bagOf(TINY, 'secret')) }
+      )
+    );
+    expect(err.message).not.toContain(`${TINY}-`);
+    expect(err.message).toMatch(/: on \*\*\* end$/);
   });
 
   it('keeps a token that only LOOKS like the secret ARN (a 7-character suffix)', async () => {
@@ -380,11 +398,11 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
     expect(err.message).toBe('Failed to update secret Secret: ***');
   });
 
-  it('masks a longer bag secret whole before the ARN arm can split it', async () => {
+  it('masks a longer bag secret whole rather than split it at the ARN arm', async () => {
     // `qx-AbCdEf-more` is a secret of this deploy's bag, not a name this
     // operation interpolates. The ARN arm, keyed on the desired Name `qx`,
-    // would match its first `qx-AbCdEf` and print `-more`: it must run AFTER
-    // the base masker, which masks the longer secret whole.
+    // matches its first `qx-AbCdEf`: masking only that would print `-more`,
+    // so the arm masks the WHOLE name-legal run.
     const longer = `${TINY}-AbCdEf-more`;
     mockSend.mockRejectedValue(new Error(`Denied: ${arnOf(longer)}.`));
     const err = await thrown(() =>
@@ -398,9 +416,7 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
       )
     );
     expect(err.message).not.toContain('more');
-    expect(err.message).toBe(
-      'Failed to update secret Secret: Denied: arn:aws:secretsmanager:us-east-1:123456789012:secret:***-AbCdEf.'
-    );
+    expect(err.message).toBe('Failed to update secret Secret: Denied: ***.');
   });
 
   it('routes every update line through the sink: tag warning and generate-skip warning included', async () => {

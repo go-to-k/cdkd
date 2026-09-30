@@ -727,21 +727,22 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     // the longest run of characters a secret name may hold (letters, digits,
     // `/_+=.@-`). A name can itself contain `-XXXXXX`, and the run can go on
     // past the suffix (`/version-...`), so each secret name is tried as a
-    // PREFIX of the run followed by a 6-character suffix, rather than parsing
-    // one name out of it; the rest of the run is kept. It runs AFTER the base
-    // masker and the needles, so a longer secret the deploy's bag knows is
-    // masked whole before this arm could split it; every name here of 3 or
-    // more characters is then already a needle, so only a shorter one, which
-    // cannot overlap another, reaches it.
-    const ARN_SEGMENT =
-      /(arn:[^:\s]+:secretsmanager:[^:\s]*:[^:\s]*:secret:)([A-Za-z0-9/_+=.@-]+)/g;
-    const maskArnSegment = (whole: string, _prefix: string, run: string): string => {
+    // PREFIX of the run followed by a 6-character suffix. On a match the WHOLE
+    // run is masked, not only the name and suffix: the run may hold a longer
+    // secret this operation does not name (`qx` against `qx-AbCdEf-more`), and
+    // over-masking the rest of the run is the safe direction. The arm runs on
+    // the RAW text, before the needles and the base masker, so neither can
+    // rewrite part of the ARN (a secret equal to `secret`) and defeat it.
+    const ARN_SEGMENT = /arn:[^:\s]+:secretsmanager:[^:\s]*:[^:\s]*:secret:([A-Za-z0-9/_+=.@-]+)/g;
+    const maskArnSegment = (whole: string, run: string): string => {
       for (const name of secretNames) {
         if (
           run.startsWith(name) &&
           /^-[A-Za-z0-9]{6}(?![A-Za-z0-9])/.test(run.slice(name.length))
         ) {
-          return MASK_WALK_DEPTH_CAP_MARKER + run.slice(name.length + 7);
+          // A trailing `.` is sentence punctuation far more often than a name
+          // character, and restoring it reveals nothing.
+          return MASK_WALK_DEPTH_CAP_MARKER + (/\.+$/.exec(run)?.[0] ?? '');
         }
       }
       return whole;
@@ -749,7 +750,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     const mask: MaskerFn = (text: string) =>
       secretNames.has(text) || secretNames.has(arnName(text) ?? '')
         ? MASK_WALK_DEPTH_CAP_MARKER
-        : needled.mask(text).replace(ARN_SEGMENT, maskArnSegment);
+        : needled.mask(text.replace(ARN_SEGMENT, maskArnSegment));
     return {
       mask,
       value: (value: unknown) => mask(String(value)),
