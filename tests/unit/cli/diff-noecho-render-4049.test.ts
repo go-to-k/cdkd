@@ -895,8 +895,8 @@ describe('cdkd diff --recursive masks a parent NoEcho value in the child (#4049)
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
-      // Bound as a caller-supplied value: the child-parameter resolution reads
-      // the node's INPUT parameters, not the template defaults.
+      // A caller-supplied value; the Default-bound twin of this case is in
+      // diff-recursive-child-params-4094.test.ts (go-to-k/cdkd#4094).
       parameters: { Pw: NOECHO },
       isNestedChild: false,
     });
