@@ -65,10 +65,12 @@ verify, clean up.
    deploy on top of orphans. Under the S3 prefix every key outside `deployments/`
    counts (`state.json`, `lock.json`, `rollback-journal.json`, a legacy
    region-less `state.json`); `deployments/**` is event-log history a clean
-   destroy RETAINS unless `--purge-events` (counting it aborted three clean
-   fixtures in the 2026-09-28 work-issues run). **Except a `lock.json` whose
+   destroy RETAINS unless `--purge-events`. **Except a `lock.json` whose
    `expiresAt` is in the future: a LIVE peer on the same fixture** — wait, then
-   re-scan. Expired: a killed run's orphan.
+   re-scan. Expired: a killed run's orphan. A peer BETWEEN commands, or not yet
+   deployed, holds no lock, so the LAST call before step 5 also checks this
+   host: a `pgrep -f verify.sh` PID whose cwd (`lsof -a -p <pid> -d cwd`) ends
+   in `tests/integration/<test-name>` is a live peer — wait for it to exit.
 
 5. **Run the test(s)**
 
@@ -104,8 +106,7 @@ verify, clean up.
    ```bash
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
                    # `> ""` is a loud failure that costs you the whole run
-   # Budget: 2x the ledger's last duration, floor 1500s — a fixed 1500s killed
-   # dynamodb-gsi-update (normal ~1300s) mid index-busy wait.
+   # Budget: 2x the ledger's last duration, floor 1500s.
    LAST=$(awk -F'\t' -v t="<test-name>" '$1==t{print $4; exit}' ../../../docs/_generated/integ-last-run.tsv)
    case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
    POLLS=$(( 10#$LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
@@ -209,7 +210,9 @@ verify, clean up.
    the other direction: `mise` writes to stderr and the rc can still read as
    success, so only `markgate status` says whether a marker exists. Run from the
    PR's own worktree on the PR branch, and if any success condition failed, do
-   NOT set the marker.
+   NOT set the marker. The auto-mode classifier can refuse `markgate set` for
+   the parent agent too: never retry it — hand the user the block as ONE line,
+   `! cd <tree> && mise trust && mise exec -- markgate set integ-destroy`.
 
    **Also set `integ-schema-migration`, and ONLY for a test named
    `schema-v<N>-to-v<N+1>-migration`**, under the same conditions. That test is
