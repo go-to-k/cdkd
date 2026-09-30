@@ -101,6 +101,8 @@ interface Site {
   readonly checkCommand: string;
   /** The service's not-found answer, as its SDK spells it. */
   readonly sdkNotFound: () => Error;
+  /** What the pre-flip readback answers for a missing resource. */
+  readonly missingObserve: () => Script['observe'];
   /** The phrase the not-found arm uses for what the service answered. */
   readonly notFoundPhrase: string;
 }
@@ -150,6 +152,10 @@ const SITES: readonly Site[] = [
         name: 'LoadBalancerNotFoundException',
       }),
     notFoundPhrase: 'ELBv2 answered LoadBalancerNotFound',
+    missingObserve: () =>
+      Object.assign(new Error('One or more load balancers not found'), {
+        name: 'LoadBalancerNotFoundException',
+      }),
   },
   {
     name: 'AutoScalingGroup',
@@ -191,6 +197,8 @@ const SITES: readonly Site[] = [
         name: 'ValidationError',
       }),
     notFoundPhrase: 'Auto Scaling answered that the group was not found',
+    // `DescribeAutoScalingGroups` answers a missing group with an empty list.
+    missingObserve: () => 'absent',
   },
 ];
 
@@ -211,8 +219,8 @@ function throttle(): Error {
 }
 
 interface Script {
-  /** The pre-flip readback: the guard value, or an error to throw. */
-  observe?: boolean | Error;
+  /** The pre-flip readback: the guard value, an error to throw, or `absent` (no such resource). */
+  observe?: boolean | Error | 'absent';
   /** The flip-off: resolves unless given an error. */
   disable?: Error;
   /** The delete: resolves unless given an error. */
@@ -231,6 +239,7 @@ function script(site: Site, s: Script): void {
     const name = cmd.constructor.name;
     if (name === site.describe) {
       if (s.observe instanceof Error) throw s.observe;
+      if (s.observe === 'absent') return site.describeReply(false, true);
       return site.describeReply(flippedOff ? false : (s.observe ?? false), gone);
     }
     if (name === site.modify) {
@@ -449,7 +458,7 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     // The readback, the flip and the delete all answer not-found: the delete's
     // own not-found arm (with its region check) ends it as already gone.
     script(site, {
-      observe: site.sdkNotFound(),
+      observe: site.missingObserve(),
       disable: site.sdkNotFound(),
       del: site.sdkNotFound(),
     });
@@ -613,6 +622,11 @@ describe('loadBalancerProtectionSite / autoScalingGroupProtectionSite', () => {
   it('the group not-found predicate reads a ValidationError saying so, and nothing else', () => {
     const site = autoScalingGroupProtectionSite(ASG, undefined, () => undefined);
     expect(site.isNotFound(SITES[1]!.sdkNotFound())).toBe(true);
+    expect(
+      site.isNotFound(
+        Object.assign(new Error('Group my-asg does not exist'), { name: 'ValidationError' })
+      )
+    ).toBe(true);
     expect(
       site.isNotFound(Object.assign(new Error('Invalid parameter'), { name: 'ValidationError' }))
     ).toBe(false);

@@ -658,13 +658,22 @@ describe('ASGProvider delete', () => {
   });
 
   it('removeProtection enumeration failure is non-fatal — the ASG delete still proceeds', async () => {
-    let describeCalls = 0;
+    // Keyed on the flip and the delete, not on a call count: the pre-flip
+    // DeletionProtection readback (#2204) is an earlier describe, and failing
+    // IT instead would leave the enumeration read untested.
+    let flipped = false;
+    let deleted = false;
     mockSend.mockImplementation((command: unknown) => {
-      if (command instanceof DeleteAutoScalingGroupCommand) return Promise.resolve({});
-      if (command instanceof UpdateAutoScalingGroupCommand) return Promise.resolve({});
+      if (command instanceof DeleteAutoScalingGroupCommand) {
+        deleted = true;
+        return Promise.resolve({});
+      }
+      if (command instanceof UpdateAutoScalingGroupCommand) {
+        flipped = true;
+        return Promise.resolve({});
+      }
       if (command instanceof DescribeAutoScalingGroupsCommand) {
-        describeCalls += 1;
-        if (describeCalls === 1) {
+        if (flipped && !deleted) {
           // Enumeration read fails (e.g. transient throttle) — must be swallowed.
           return Promise.reject(new Error('Throttling: Rate exceeded'));
         }

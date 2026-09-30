@@ -110,7 +110,11 @@ wait_endpoint_service_gone() { # usage: wait_endpoint_service_gone <service id>
       return 0
     fi
     state="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
-      --service-ids "$1" --query 'ServiceConfigurations[0].ServiceState' --output text)" || return 1
+      --service-ids "$1" --query 'ServiceConfigurations[0].ServiceState' --output text)" || {
+      # Deleted between the probe above and this read: the next probe says so.
+      sleep 5
+      continue
+    }
     if [ "${state}" = "Deleted" ] || [ "${state}" = "None" ]; then
       return 0
     fi
@@ -159,6 +163,14 @@ cleanup() {
     fi
     # Likewise the endpoint service: while it stands, DeleteLoadBalancer
     # refuses and the destroy below leaks the NLB (and the VPC behind it).
+    # A create that landed while the CLI still failed leaves the id unset:
+    # find it by the tag step 4b gives it.
+    if [ -z "${OOB_ENDPOINT_SERVICE_ID}" ] && [ -n "${NLB_ARN}" ]; then
+      OOB_ENDPOINT_SERVICE_ID="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
+        --filters "Name=tag:Name,Values=${STACK}-4b" \
+        --query 'ServiceConfigurations[0].ServiceId' --output text 2>/dev/null)" || OOB_ENDPOINT_SERVICE_ID=""
+      [ "${OOB_ENDPOINT_SERVICE_ID}" = "None" ] && OOB_ENDPOINT_SERVICE_ID=""
+    fi
     if [ -n "${OOB_ENDPOINT_SERVICE_ID}" ]; then
       aws ec2 delete-vpc-endpoint-service-configurations --region "${REGION}" \
         --service-ids "${OOB_ENDPOINT_SERVICE_ID}" >/dev/null 2>&1 || true
