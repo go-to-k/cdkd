@@ -197,7 +197,6 @@ import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { findUnrewrittenAssetReferences } from '../assets/asset-redirect.js';
 import {
-  producerRegionsFromState,
   type CompletedOperation,
   type FailedOperation,
 } from './rollback-executor.js';
