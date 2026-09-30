@@ -503,7 +503,9 @@ describe('stale attribute heal — resolver (#1852)', () => {
       const PREVIEW_WITHHELD =
         'This preview re-read the resource through Cloud Control, but withheld the value';
       const PREVIEW_GRANT =
-        'Grant the credentials the preview runs with cloudformation:DescribeType and run it again';
+        'Grant the credentials the preview runs with cloudformation:DescribeType and run it again; ' +
+        'if they already have it, the name is a writable property rather than an attribute — ' +
+        'reference the value the template sets instead.';
       const DEPLOY_GRANT = 'Grant the deploy role cloudformation:DescribeType and deploy again';
 
       it('the *Arn refusal (unenrichedRemedy)', async () => {
@@ -593,9 +595,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
     });
 
     it("cdkd diff's own healer declining a provider with no import() takes the preview's not-attempted wording", async () => {
-      // The factory's decline for a provider with no `import()`, end to end;
-      // its `isHealExcludedType` decline is pinned in
-      // `read-only-attribute-healer.test.ts`.
+      // The factory's decline for a provider with no `import()`, end to end.
       const healer = createReadOnlyAttributeHealerFactory({
         getProvider: () => ({}) as unknown as ResourceProvider,
         inRegion: (_region, fn) => fn(),
