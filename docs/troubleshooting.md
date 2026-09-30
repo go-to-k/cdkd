@@ -1612,8 +1612,7 @@ tried to re-read the attributes from AWS to heal the record, but ...`, because
 the preview heals nothing. For a failed read it adds that `cdkd deploy` issues
 the same read and records the attribute once the read returns it. For a
 withheld value it names the credentials the preview runs with, not the deploy
-role. When the diff makes no read at all, the message names the resource type
-as the reason.
+role.
 The other read-only commands (`cdkd drift`, `cdkd export`) never re-read and
 never write state. Until a deploy has healed the record they report an `*Arn` /
 `*Url` reference as unresolved, and resolve any other attribute to the physical
