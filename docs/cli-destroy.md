@@ -564,7 +564,8 @@ The causes:
 
 - **A state record whose principal list is not a list of IAM names** — a
   string or object where a list belongs, or an entry that is not an IAM name.
-  cdkd refuses to guess which principals it names, so no AWS call is issued:
+  cdkd refuses to guess which principals it names, so no AWS call is issued
+  (a secret-derived list is the exception, below):
 
   | Record | What survives |
   | --- | --- |
@@ -572,11 +573,61 @@ The causes:
   | `AWS::IAM::UserToGroupAddition` whose `Users` is not a list of IAM user names | The users keep every permission the group grants. |
 
   A plain malformed list is repaired in `state.json`, after which a re-run
-  deletes it. A list holding a dynamic reference or its mask is
-  secret-derived: cdkd keeps the reference in state by design, so there is
-  nothing to repair and every destroy skips it again. Remove the attachment or
-  the memberships by hand; the rest of the stack is still destroyed, so once
-  this is the stack's last record, `cdkd state orphan '<stack>'` clears it.
+  deletes it.
+
+  A list holding a `{{resolve:...}}` reference is secret-derived: cdkd keeps
+  the reference in state by design, so there is nothing to repair.
+  `cdkd destroy` and `cdkd state destroy`, and the nested stacks they cascade
+  into, resolve it to the principals the secret's CURRENT value names and
+  remove the inline policy or the memberships from them (a membership is read
+  first with `iam:ListGroupsForUser`, which the destroy's credentials then
+  need; without it the delete fails rather than skips). Every printed name is
+  masked, except that a name shorter than 4 characters can still show inside
+  an AWS error message. A `cdkd deploy` that drops the resource from the
+  template still skips it: that delete runs after the new resources are
+  created, so on a logical-id move it would strip the grant the new resource
+  just made. A destroy still skips, keeping the record and exiting 2, when:
+
+  - the list holds the `***` mask, which names nothing;
+  - a plain entry in the list, or another principal list of the record, is
+    not an IAM name;
+  - the state record has no region;
+  - a reference names another region, or is region-less while the stack reads
+    a value from another region (it is then ambiguous);
+  - the reference cannot be resolved (no access to the secret, or it is gone);
+    a throttle or server error is retried instead;
+  - the resolved value is not an IAM name.
+
+  The warning says when resolution was attempted and failed; fix that and
+  re-run. Otherwise remove the attachment or the memberships by hand; the rest
+  of the stack is still destroyed, so once this is the stack's last record,
+  `cdkd state orphan '<stack>'` clears it. While a record whose list can still
+  be resolved remains (not one holding the mask), the stack keeps its
+  cross-stack read records, so a producer stack's destroy still refuses to go
+  first.
+
+  **If the secret's value changed since the attachment, or a principal it
+  names lacks the grant**, the destroy acts on the CURRENT value:
+
+  - A principal the current value names that does not hold the policy or
+    membership makes the delete skip and keep the record: a principal only the
+    OLD value named may still hold it. The same skip follows when an earlier
+    cdkd run already removed it there, or when that principal was deleted
+    before the policy or membership (a retry within one destroy does not
+    count). Remove it from any old principal by hand, then drop the record
+    with `cdkd orphan '<stack>/<path>'`, or, without the CDK app,
+    `cdkd state orphan '<stack>'` once it is the stack's last record.
+  - A principal only the current value names loses a same-named inline policy
+    or membership it holds from elsewhere. cdkd cannot tell that apart.
+
+  A nested child destroyed on its own (`cdkd state destroy '<parent>~<child>'`)
+  does not see the regions its parent reads from, so it resolves nothing and
+  skips such a record: destroy it through the parent. One case the evidence
+  cannot cover: a stack whose cross-stack read records an earlier cdkd version
+  already dropped in a partial destroy. There, a region-less reference is
+  resolved against a same-named secret in the stack's own region, and a
+  principal its value names that holds the policy or membership loses it (one
+  that does not makes the delete skip, as above).
 
 - **A state record whose address property cdkd redacted** — a property the
   delete names the resource by (an API id, a cluster, a group, a Route 53 record

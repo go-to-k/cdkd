@@ -931,7 +931,13 @@ secret-reference-`ServiceToken` arms), the empty-policy-name arm in
 malformed-target-list arm in `iam-policy-provider.ts`: a recorded `Roles` /
 `Groups` / `Users` that is not a list of IAM names. Issue
 [#3888](https://github.com/go-to-k/cdkd/issues/3888) added the same arm for an
-`AWS::IAM::UserToGroupAddition` record's `Users`. Each exports its `reason` as
+`AWS::IAM::UserToGroupAddition` record's `Users`. Issue
+[#4150](https://github.com/go-to-k/cdkd/issues/4150) added one arm to each of
+those two providers: a destroy that resolved a secret-derived list and found a
+principal the secret named without the grant keeps the record, since the secret
+may have rotated. For an inline policy that is `NoSuchEntity` on the delete
+call. For a membership it is a `ListGroupsForUser` read BEFORE the call, because
+`RemoveUserFromGroup` succeeds for an existing user outside the group. Each exports its `reason` as
 a named constant beside the provider, so the wording is pinned by a test instead
 of retyped.
 

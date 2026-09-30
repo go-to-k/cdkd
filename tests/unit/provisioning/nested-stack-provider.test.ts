@@ -674,6 +674,38 @@ describe('NestedStackProvider', () => {
       expect(captured?.nestedTemplates).toBeUndefined();
     });
 
+    // go-to-k/cdkd#4150: the secret-principal opt-in reaches the child runner
+    // ONLY from this delete's own context. A deploy's nested-stack removal
+    // passes a context without it, so the child resolves nothing.
+    it.each([
+      ['a deploy-reached removal (no opt-in on the delete context)', {}, false],
+      [
+        'a destroy (opted in)',
+        { resolveSecretDerivedPrincipals: { importedProducerRegions: ['us-west-2'] } },
+        true,
+      ],
+    ])('%s: forwards the opt-in only when its own context carries it', async (_what, deleteCtx, forwarded) => {
+      const provider = new NestedStackProvider();
+      await withNestedStackContext(makeContext(), () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack',
+          undefined,
+          { expectedRegion: 'us-east-1', ...deleteCtx }
+        )
+      );
+      expect(destroyCalls.length).toBe(1);
+      if (forwarded) {
+        // The parent's producer regions go down with it.
+        expect(destroyCalls[0]!.destroyCtx['resolveSecretDerivedPrincipals']).toEqual({
+          inheritedProducerRegions: ['us-west-2'],
+        });
+      } else {
+        expect(destroyCalls[0]!.destroyCtx).not.toHaveProperty('resolveSecretDerivedPrincipals');
+      }
+    });
+
     // Issue #1752: the child runner reports a resource it could not address as
     // `skippedCount`. Swallowing it here re-creates the mis-report one level
     // up — the PARENT would print `✓ Child (AWS::CloudFormation::Stack)

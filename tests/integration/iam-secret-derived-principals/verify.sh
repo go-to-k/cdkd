@@ -33,9 +33,11 @@
 #      addition group, the secret-named principals keep theirs, and the inline
 #      document change landed.
 #   4. Destroy is clean, and no surviving object version under the stack's
-#      state prefix carries any of the names. The two #4064 records are
-#      orphaned and their attachments removed by hand first: their DELETE still
-#      skips a secret-derived record (go-to-k/cdkd#4150).
+#      state prefix carries any of the names. go-to-k/cdkd#4150: the destroy
+#      deletes the two #4064 records ITSELF, resolving their secret reference
+#      (it used to skip them): the inline policy is gone from the seeded,
+#      secret-named role (which the stack does not delete), both resolution
+#      warnings are in the destroy log, and that role's name is not.
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -176,16 +178,18 @@ cleanup() {
   if [ "${DEPLOYED}" = "1" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
-    # Both skip the SecretInlinePolicy / SecretGroupAddition records while
-    # they hold a secret reference (go-to-k/cdkd#4150), leaving the stack's
-    # state behind for the next run's pre-flight to refuse. Orphan ONLY those
-    # two, one call each (a path already gone fails alone), so a record left
-    # for any OTHER reason still blocks the next pre-flight rather than
-    # hiding a live resource. Then retry the state teardown. Their AWS side is
-    # covered below and by the destroy: the seeded role and user lose the
-    # inline policy and the membership in delete_seeded_role /
-    # delete_seeded_user, and the stack's own AddedRole, SecretMember and
-    # AdditionGroup deletes remove theirs.
+    # Should a destroy still skip the SecretInlinePolicy / SecretGroupAddition
+    # records (their secret reference unresolvable: a regression of
+    # go-to-k/cdkd#4150, or no access; or a principal the secret names
+    # lacking the grant, which keeps the record), the stack's state would stay behind
+    # for the next run's pre-flight to refuse. Orphan ONLY those two, one call
+    # each (a path already gone fails alone), so a record left for any OTHER
+    # reason still blocks the next pre-flight rather than hiding a live
+    # resource. Then retry the state teardown. Their AWS side is covered below
+    # and by the destroy: the seeded role and user lose the inline policy and
+    # the membership in delete_seeded_role / delete_seeded_user, and the
+    # stack's own AddedRole, SecretMember and AdditionGroup deletes remove
+    # theirs.
     for path in SecretInlinePolicy SecretGroupAddition; do
       AWS_REGION="${REGION}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/${path}" \
         --state-bucket "${STATE_BUCKET:-}" --stack-region "${REGION}" --yes >/dev/null 2>&1
@@ -544,28 +548,10 @@ expect_eq "the inline policy still on the secret-named role" "1" inline_on_role 
 WANT_ADDITION=$(printf '%s\n%s\n' "${EXT_USER}" "${MEMBER}" | sort | tr '\n' ' ')
 expect_eq "the addition group's members (stack user joined, secret-named user kept)" "${WANT_ADDITION}" group_users "${ADDITION_GROUP}"
 
-echo "==> Step 5c: orphan the two #4064 records and remove their attachments by hand"
-# Their DELETE still skips a secret-derived record (go-to-k/cdkd#4150),
-# which would fail the destroy below. Orphan first, THEN remove by hand, so a
-# failure between the two leaves an attachment cleanup still removes rather
-# than a record a destroy would skip.
-for path in SecretInlinePolicy SecretGroupAddition; do
-  AWS_REGION="${REGION}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/${path}" \
-    --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes > "${DEPLOY_LOG}" 2>&1 || {
-    echo "FAIL: cdkd orphan ${STACK}/${path} failed" >&2
-    log_tail
-    exit 1
-  }
-done
-for role in "${EXT_ROLE}" "${ADDED_ROLE}"; do
-  aws iam delete-role-policy --role-name "${role}" --policy-name "${INLINE_POLICY}"
-done
-for user in "${EXT_USER}" "${MEMBER}"; do
-  aws iam remove-user-from-group --group-name "${ADDITION_GROUP}" --user-name "${user}"
-done
-echo "    OK: orphaned, and the inline policy and memberships removed"
-
 echo "==> Step 6: destroy"
+# No rotation here: every principal the secret names still holds its grant
+# (asserted just above), so neither #4150 delete meets NoSuchEntity, which
+# would keep the record and exit 2.
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose > "${DEPLOY_LOG}" 2>&1
@@ -577,6 +563,25 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: destroy exited 0"
+# go-to-k/cdkd#4150's positive markers: both records took the resolving
+# delete (kinds only, never names), rather than the skip that exits 2.
+for marker in "the recorded Roles holds a secret reference, resolved to the principals the secret names NOW" \
+  "the recorded Users holds a secret reference, resolved to the users the secret names NOW"; do
+  if ! grep -qF "${marker}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the destroy log has no '${marker}' warning; the secret-derived record was not resolved on delete (or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+done
+# The resolved names are masked in the destroy's own lines. Only the
+# secret-named ROLE is checked: nothing else in this stack's destroy names it
+# (the User delete logs the groups it leaves, which include the secret-named
+# group, and the group deletes log members, so those two are out of scope).
+if grep -qF "${EXT_ROLE}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the destroy log carries the secret-named role in plaintext" >&2
+  exit 1
+fi
+echo "    OK: both records were resolved and deleted by cdkd, the role name masked"
 
 echo "==> Step 7: assert 0 orphans from the stack"
 assert_gone "state file still exists after destroy" \
@@ -592,6 +597,9 @@ assert_gone "IAM user ${MEMBER} still exists after destroy" \
 assert_gone "IAM group ${ADDITION_GROUP} still exists after destroy" \
   aws iam get-group --group-name "${ADDITION_GROUP}"
 echo "    OK: 0 orphans (state, policy, added role and group, user, addition group all gone)"
+# LOAD-BEARING for go-to-k/cdkd#4150: the seeded role survives the destroy, so
+# only the SecretInlinePolicy delete can have removed its inline policy.
+expect_eq "the inline policy removed from the secret-named role by cdkd's delete" "0" inline_on_role "${EXT_ROLE}"
 
 echo "==> Step 8 (LOAD-BEARING): no surviving state version carries either name"
 assert_no_plaintext_in_versions "${EXT_ROLE}" "the secret-named role"

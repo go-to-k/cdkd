@@ -57,7 +57,12 @@ import {
   recordedPrincipalsRepair,
   SECRET_DERIVED_READ_LIVE,
 } from '../iam-policy-targets.js';
+import {
+  isResolvableSecretPrincipalList,
+  resolveSecretDerivedPrincipals,
+} from '../secret-principal-resolution.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { injectiveKey } from '../../state/record-keys.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -103,6 +108,16 @@ export const MEMBERSHIP_MISSING_FIELDS_SKIP_REASON =
  */
 export const MEMBERSHIP_MALFORMED_USERS_SKIP_REASON =
   'malformed Users in state — membership not removed';
+
+/**
+ * Sibling of {@link MEMBERSHIP_MALFORMED_USERS_SKIP_REASON} for a destroy that
+ * resolved a secret-derived `Users` and found a user the CURRENT value names
+ * outside the group (go-to-k/cdkd#4150). The value may have rotated, so a user
+ * only the OLD value named may still be a member: the record is kept rather
+ * than read as deleted, which would drop the last trace of that membership.
+ */
+export const MEMBERSHIP_SECRET_USER_NOT_MEMBER_SKIP_REASON =
+  "the secret's current value names a user outside the group; the value may have rotated";
 
 /**
  * What an `AWS::IAM::UserToGroupAddition` update or delete says about a
@@ -1751,13 +1766,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
-    _context?: DeleteContext
+    context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
     // UserToGroupAddition is metadata-only (RemoveUserFromGroup); the
     // "skipping" returns below trigger when input properties are missing,
     // not when AWS reports the user/group missing, so the region check
-    // does not apply here. The context is accepted for interface
-    // consistency.
+    // does not apply here. The context is read only for the destroy's
+    // secret-principal opt-in (go-to-k/cdkd#4150).
     //
     // Issue #1770 re-judged both arms and CONVERTED them to `'skipped'`. They
     // logged at DEBUG, which reads as "routine, nothing to do" — but it is not:
@@ -1796,9 +1811,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
 
     const groupName = properties['GroupName'] as string;
-    const users = properties['Users'] as string[];
+    const recordedUsers = properties['Users'] as string[];
 
-    if (!groupName || !users) {
+    if (!groupName || !recordedUsers) {
       this.logger.warn(
         `Missing GroupName or Users for ${logicalId}, skipping deletion — both are required to ` +
           `call RemoveUserFromGroup, so no AWS call is issued and the group memberships are ` +
@@ -1824,14 +1839,58 @@ export class IAMUserGroupProvider implements ResourceProvider {
     // A present `Users` that is not a list of IAM user names (go-to-k/cdkd#3888):
     // refused before any call rather than guessing which users it names.
     const read = readPrincipalLists({ Users: properties['Users'] });
-    if ('malformed' in read) {
+    // go-to-k/cdkd#4150: a Users list that is malformed ONLY because it holds
+    // secret references is resolved, on a caller that opts in (a destroy), to
+    // the users the CURRENT secret value names; see
+    // `DeleteContext.resolveSecretDerivedPrincipals` for why a deploy must not.
+    let users: string[] | undefined = 'malformed' in read ? undefined : read.lists.Users;
+    let mask: (text: string) => string = (text) => text;
+    let maskError: <T>(error: T) => T = (error) => error;
+    let resolvedNames: ReadonlySet<string> = new Set();
+    const memo = context?.resolveSecretDerivedPrincipals?.retryMemo;
+    const optIn = context?.resolveSecretDerivedPrincipals;
+    // A mask never resolves, so a list holding one is not attempted (and its
+    // skip does not say "fix that and re-run").
+    const resolutionAttempted =
+      'malformed' in read &&
+      optIn !== undefined &&
+      isResolvableSecretPrincipalList(properties['Users']);
+    if (resolutionAttempted) {
+      // A retry of this delete reuses the first attempt's resolution (and does
+      // not repeat its warning).
+      const reused = memo?.resolved;
+      const resolved =
+        reused ??
+        (await resolveSecretDerivedPrincipals(
+          { Users: properties['Users'] },
+          context?.expectedRegion,
+          optIn.importedProducerRegions
+        ));
+      if (resolved && memo) memo.resolved = resolved;
+      if (resolved?.lists['Users'] !== undefined) {
+        users = resolved.lists['Users'];
+        mask = resolved.mask;
+        maskError = resolved.maskError;
+        resolvedNames = resolved.resolvedNames['Users'] ?? new Set();
+        if (reused === undefined) {
+          this.logger.warn(
+            safeMsg`UserToGroupAddition ${logicalId}: the recorded Users holds a secret reference, resolved to the users the secret names NOW. If its value changed since they were added, a user only the OLD value named stays in the group (remove it by hand), and a user only the CURRENT value names is removed even if it joined from elsewhere.`
+          );
+        }
+      }
+    }
+    if ('malformed' in read && users === undefined) {
       // The same parent clause the missing-fields arm carries: a group or users
       // deleted by this destroy remove exactly these memberships.
       const repair =
         read.secretDerived.length > 0
           ? 'The recorded Users is secret-derived (cdkd keeps the dynamic reference or its mask ' +
-            'in state), so do not write the name into state.json: cdkd will keep skipping this ' +
-            'record. Remove the users from the group by hand; on cdkd destroy every other ' +
+            'in state), so do not write the name into state.json' +
+            (resolutionAttempted
+              ? '; cdkd could not resolve the reference (its region, access to it, or its value), ' +
+                'so fix that and re-run, or'
+              : ':') +
+            ' cdkd will keep skipping this record. Remove the users from the group by hand; on cdkd destroy every other ' +
             "resource is still deleted, so once this is the stack's last record " +
             "'cdkd state orphan <stack> --stack-region <region>' clears it."
           : 'Repair the recorded Users in state.json to a list of user names and re-run, or ' +
@@ -1842,8 +1901,38 @@ export class IAMUserGroupProvider implements ResourceProvider {
       return { outcome: 'skipped', reason: MEMBERSHIP_MALFORMED_USERS_SKIP_REASON };
     }
 
+    // go-to-k/cdkd#4150: a user the secret's CURRENT value names outside the
+    // group means the value may have rotated since the membership was added,
+    // so a user only the OLD value named may still be a member. Reporting
+    // DELETED would drop the record, the last trace of that membership.
+    // `RemoveUserFromGroup` does NOT say so: for an existing user outside the
+    // group it SUCCEEDS (measured), so membership is read first, from
+    // `ListGroupsForUser` (paginated; a user holds at most 10 groups), for
+    // each user a secret supplied that this delete has not removed already.
+    let secretUserNotMember = false;
     try {
-      for (const userName of read.lists.Users ?? []) {
+      for (const userName of users ?? []) {
+        if (
+          resolvedNames.has(userName) &&
+          memo?.detached.has(injectiveKey('Users', userName)) !== true
+        ) {
+          let isMember: boolean;
+          try {
+            // IAM names are case-insensitive: a recorded GroupName in another
+            // case names the same group.
+            const wanted = groupName.toLowerCase();
+            isMember = (await this.readLiveGroups(userName)).some(
+              (g) => g.toLowerCase() === wanted
+            );
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) throw error;
+            isMember = false;
+          }
+          if (!isMember) {
+            secretUserNotMember = true;
+            continue;
+          }
+        }
         try {
           await this.iamClient.send(
             new RemoveUserFromGroupCommand({
@@ -1851,23 +1940,44 @@ export class IAMUserGroupProvider implements ResourceProvider {
               UserName: userName,
             })
           );
-          this.logger.debug(`Removed user ${userName} from group ${groupName}`);
+          if (resolvedNames.has(userName)) memo?.detached.add(injectiveKey('Users', userName));
+          this.logger.debug(`Removed user ${mask(userName)} from group ${groupName}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
           }
+          // An earlier attempt of THIS delete (the runner's retry) removing it
+          // is not a rotation; a user gone since the membership read above is.
+          if (
+            resolvedNames.has(userName) &&
+            memo?.detached.has(injectiveKey('Users', userName)) !== true
+          ) {
+            secretUserNotMember = true;
+          }
         }
       }
 
+      if (secretUserNotMember) {
+        this.logger.warn(
+          safeMsg`UserToGroupAddition ${logicalId}: a user the secret's CURRENT value names is not in the group. The value may have rotated since the membership was added, so a user only the OLD value named may still be a member; or an earlier cdkd run already removed it, or that user was deleted first. The record is KEPT rather than read as deleted: remove any old user from the group by hand (the users the current value names are done), then drop this record with 'cdkd orphan <constructPath>', or, with no CDK app, 'cdkd state orphan <stack> --stack-region <region>' once it is the stack's last record.`
+        );
+        return { outcome: 'skipped', reason: MEMBERSHIP_SECRET_USER_NOT_MEMBER_SKIP_REASON };
+      }
       this.logger.debug(`Successfully deleted IAM UserToGroupAddition ${logicalId}`);
     } catch (error) {
+      // go-to-k/cdkd#4150: the whole chain is masked, cause included — an SDK
+      // error body can quote a principal name resolved from a secret. The
+      // clone keeps each link's prototype, `$metadata` and markers, so the
+      // retry classifiers read it as before.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete IAM UserToGroupAddition ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw maskError(
+        new ProvisioningError(
+          `Failed to delete IAM UserToGroupAddition ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        )
       );
     }
   }
