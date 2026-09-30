@@ -28,8 +28,9 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 `docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
 that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
 repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch;
-when the harness denies `git reset` or the `--force-with-lease` push, take
-`references/gates-and-pr.md` §7's merge arm instead, lossless under the squash.
+when the harness denies `git reset` or the `--force-with-lease` push, push the
+branch plainly, then take `references/gates-and-pr.md` §7's merge arm from that
+pushed tip instead, lossless under the squash.
 Otherwise:
 
 ```bash

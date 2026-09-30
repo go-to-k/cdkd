@@ -211,8 +211,10 @@ verify, clean up.
    success, so only `markgate status` says whether a marker exists. Run from the
    PR's own worktree on the PR branch, and if any success condition failed, do
    NOT set the marker. The auto-mode classifier can refuse `markgate set` for
-   the parent agent too: never retry it — hand the user the block as ONE line,
-   `! cd <tree> && mise trust && mise exec -- markgate set integ-destroy`.
+   the parent agent too: never retry it — hand the user ONE line, `! cd <tree>
+   && mise trust && mise exec -- markgate set integ-destroy && mise exec --
+   markgate status | grep integ-destroy` (the same hand-off for
+   `integ-schema-migration` below).
 
    **Also set `integ-schema-migration`, and ONLY for a test named
    `schema-v<N>-to-v<N+1>-migration`**, under the same conditions. That test is
