@@ -131,9 +131,10 @@ export const SHELL_ACTIVE = /[\s'"`$;&|<>()*?[\]{}!#~\\^=%,]/;
  * dropped under `NULL_GLOB`), not a run.
  *
  * The ONE spelling of the test (go-to-k/cdkd#4205), through
- * {@link isInertUnquoted}: `pasteableCommand`'s `'shell-active'` arm,
- * `pasteableArg` in `provisioning/replacement-protection-advice.ts` and
- * `recoveryCommandFlags` in `state/lock-contention-message.ts` all read it.
+ * {@link isInertUnquoted}; `grep -rn isInertUnquoted src` answers who reads it
+ * (e.g. `pasteableCommand`'s `'shell-active'` arm, `pasteableArg`,
+ * `recoveryCommandFlags`, the scheduler's manual delete hint, and
+ * `malformed-resources-bag.ts`'s prose and legacy object key).
  */
 export const PASTE_ARG_UNSAFE = /[\s'"`$;&|<>()\\*?[\]{}!]|^[#=]|(?:^|[=:])~/;
 
@@ -447,10 +448,11 @@ export function quotedOrDescribed(value: string, what: string): string {
 /**
  * True when `value` stays inert with its quotes stripped: it does not match
  * {@link PASTE_ARG_UNSAFE}. The test {@link withholdReason}'s `'shell-active'`
- * arm applies, exported for the two builders outside this function that print
- * a value into a command the operator pastes: `pasteableArg`
- * (`provisioning/replacement-protection-advice.ts`) and `recoveryCommandFlags`
- * (`state/lock-contention-message.ts`), go-to-k/cdkd#4205.
+ * arm applies, exported for every site outside this function that prints a
+ * value where an operator pastes it, e.g. `pasteableArg`,
+ * `recoveryCommandFlags`, the scheduler's manual delete hint and the malformed
+ * refusals' prose (go-to-k/cdkd#4205); `grep -rn isInertUnquoted src` is the
+ * census.
  */
 export function isInertUnquoted(value: string): boolean {
   return !PASTE_ARG_UNSAFE.test(value);

@@ -31,6 +31,7 @@ import {
   expectZshRunsTheDisplay,
   itUnderZsh,
   spansThatRun,
+  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -448,7 +449,13 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
           // (go-to-k/cdkd#3950): under BASH the `(` after the displayed id
           // stops every span, pinned here for every id; under zsh it does
           // not, which the S1 case below pins.
-          expect(spansThatRun(message!, dir, id === 'B' ? {} : { shells: ['bash'] }), id).toEqual([]);
+          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
+          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
+          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
+          expect(
+            spansThatRunBesideTheDisplay(message!, dir, id, id === 'B' ? {} : { shells: ['bash'] }),
+            id
+          ).toEqual([]);
         }
       });
       // Named arm: a CloudFormation logical id is printed bare, on the line.
@@ -726,7 +733,13 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
           // (go-to-k/cdkd#3950): under BASH the `(` after the displayed id
           // stops every span, pinned here for every id; under zsh it does
           // not, which the S1 case below pins.
-          expect(spansThatRun(message!, dir, id === 'B' ? {} : { shells: ['bash'] }), id).toEqual([]);
+          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
+          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
+          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
+          expect(
+            spansThatRunBesideTheDisplay(message!, dir, id, id === 'B' ? {} : { shells: ['bash'] }),
+            id
+          ).toEqual([]);
         }
       });
     }, 120_000);

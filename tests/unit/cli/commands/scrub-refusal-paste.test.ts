@@ -57,6 +57,8 @@ describe('the scrub producer-plaintext refusal names no shell-active stack (go-t
       messages.push([`${label} consumer`, value, asConsumer], [`${label} producer`, value, asProducer]);
     }
     withPasteDir((dir) => {
+      // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+      // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
       for (const [label, value, message] of messages) expectNothingRunsButTheDisplay(message, dir, value, label);
     });
   }, 120_000);

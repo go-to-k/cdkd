@@ -393,8 +393,9 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // payload carrying letters changes it and the guard refuses first.
     //
     // The outcome is a HOLE, not a quoted value: quoting held only while the
-    // quote parity before the command was even, and the sentence above it
-    // carries apostrophes (go-to-k/cdkd#4205).
+    // quote parity before the command was even, and text the operator pastes
+    // ABOVE the advice sets that parity (go-to-k/cdkd#4205). The advice's own
+    // prose carries no unpaired apostrophe.
     const hostile = `${STACK}-${LOGICAL}$()`;
     createError = collisionError(hostile);
     const advice = adviceIn(await attempt());
@@ -404,12 +405,38 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
       `Adopt with: cdkd import ${STACK} --resource '<logicalId=physicalId>'`
     );
     expect(advice).not.toContain(`'${LOGICAL}=${hostile}'`);
+    // The prose DESCRIBES the id (JSON quotes would still run its `$( )`), and
+    // the sentence says what the hole is.
+    expect(advice).toContain('the name AWS reports as taken (a name that cannot be shown safely here)');
+    expect(advice).toContain('delete it in AWS');
+    expect(advice).not.toContain('$()');
+    expect(advice).toContain('prints a quoted hole in place of a value cdkd will not name');
+  });
+
+  it('describes a non-inert LOGICAL id in the prose, and holes the pair (go-to-k/cdkd#4205)', async () => {
+    const id = `${LOGICAL}$()`;
+    const advice = adviceIn(await attempt('CREATE', STACK, `${STACK}-${LOGICAL}`, id));
+    expect(advice).toBeDefined();
+    expect(advice).toMatch(/^A resource whose logical id cannot be shown safely here: the name AWS/);
+    expect(advice).not.toContain('$()');
+    expect(advice!.split('\n').at(-1)).toBe(
+      `Adopt with: cdkd import ${STACK} --resource '<logicalId=physicalId>'`
+    );
+  });
+
+  it('names clean values in the prose and prints no hole note', async () => {
+    const advice = adviceIn(await attempt());
+    expect(advice).toMatch(new RegExp(`^${LOGICAL}: the name AWS reports as taken \\(${STACK}-${LOGICAL}\\)`));
+    expect(advice).toContain(`delete ${STACK}-${LOGICAL} in AWS`);
+    expect(advice).not.toContain('quoted hole');
   });
 
   it('holes a payload STACK name, and no pasted span runs (go-to-k/cdkd#4205)', async () => {
     // The stack name comes from the assembly, unvalidated. The id is derived
     // from its alphanumeric skeleton, so the guard admits it and the prose
-    // (which never prints the stack name) stays plain.
+    // (which never prints the stack name) stays plain. The prose has no
+    // unpaired apostrophe, so it is the harness's OPERATOR_FLIP (text pasted
+    // above the advice) that makes a shell-quoted stack name run here.
     const messages: Array<[string, string]> = [];
     for (const { label, value } of PASTE_PAYLOADS) {
       loggerFns.error.mockClear();
@@ -419,6 +446,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
       expect(advice!.split('\n').at(-1), label).toBe(
         `Adopt with: cdkd import '<stack>' --resource '${LOGICAL}=${skeleton}-${LOGICAL}'`
       );
+      expect(advice, label).toContain('prints a quoted hole in place of a value cdkd will not name');
       messages.push([label, advice!]);
     }
     withPasteDir((dir) => {

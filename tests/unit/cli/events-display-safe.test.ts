@@ -1330,6 +1330,8 @@ describe('a record value in events prose is never inside cdkd quotes (go-to-k/cd
         expect(message, label).not.toContain(`'${value}'`);
         // The three S1 rows skip the default block rule until their fix lands;
         // their own cases below assert it.
+        // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+        // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
         expectOnlyDisplayResidual(
           message,
           dir,

@@ -8810,10 +8810,17 @@ export async function runPerStackImportLoop(args: {
             // stacks before it are CFn stacks too, standalone or already
             // adopted by their own parents. cdkd state is preserved across
             // the tree so the user can recover.
+            // Each name through `quotedOrNotShown`, not the raw `safeSegment`
+            // spelling (go-to-k/cdkd#4205 review): a planted cdkd name such as
+            // `Root~A; touch OWNED; #` ran here once text pasted above the
+            // message flipped the quote parity.
             const importedSummary =
               importedStacks.length > 0
                 ? importedStacks
-                    .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
+                    .map(
+                      (s) =>
+                        `${quotedOrNotShown(s.cdkdStackName)} → ${quotedOrNotShown(s.cfnStackName)}`
+                    )
                     .join(', ')
                 : '(none)';
             throw new Error(
@@ -8890,7 +8897,10 @@ export async function runPerStackImportLoop(args: {
               // policy name or ApiId back, and nothing above this renders it.
               const msg = err instanceof Error ? err.message : String(err);
               const importedSummary = importedStacks
-                .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
+                .map(
+                  (s) =>
+                    `${quotedOrNotShown(s.cdkdStackName)} → ${quotedOrNotShown(s.cfnStackName)}`
+                )
                 .join(', ');
               throw new Error(
                 `Phase 1 (IMPORT) succeeded for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn ` +

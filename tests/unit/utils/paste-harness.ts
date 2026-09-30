@@ -188,6 +188,10 @@ let stubBin: string | undefined;
  * syntax error on their own (`SkippedDelete (phys-…)`, `State for 'S' (r)`)
  * would otherwise stop every run starting at the line start before it reached
  * the quote that line's later sentence opens.
+ *
+ * And every prefix of the message that ends at a line end is pasted once more
+ * behind {@link OPERATOR_FLIP}: text ABOVE the message that holds an unpaired
+ * `'` (go-to-k/cdkd#4205).
  */
 export function segmentsOf(message: string): Set<string> {
   const out = new Set<string>();
@@ -199,6 +203,12 @@ export function segmentsOf(message: string): Set<string> {
       for (const clause of sentence.split(/: | — | -- /)) out.add(clause);
     }
   }
+  // The FLIP (go-to-k/cdkd#4205): a selection starting in terminal output
+  // ABOVE the message, which holds an unpaired `'`. See {@link OPERATOR_FLIP}
+  // for why exactly these spans.
+  for (let last = 0; last < lines.length; last++) {
+    out.add(`${OPERATOR_FLIP}\n${lines.slice(0, last + 1).join('\n')}`);
+  }
   for (let first = 0; first < lines.length; first++) {
     const starts = [0, ...lineStarts(lines[first]!)];
     for (let last = first + 1; last < lines.length; last++) {
@@ -208,6 +218,24 @@ export function segmentsOf(message: string): Set<string> {
   }
   return out;
 }
+
+/**
+ * A line of terminal output ABOVE a message, holding one unpaired `'`
+ * (go-to-k/cdkd#4205): the threat that issue is about is text the operator
+ * pastes with the message, which cdkd cannot see, flipping the quote parity
+ * before the message's first character. {@link segmentsOf} prepends it to
+ * every prefix of the message that ends at a line end — `line 1`,
+ * `lines 1-2`, ... the whole message — and to nothing else, because that is
+ * the whole set of selections that START above the message: such a selection
+ * is contiguous, so it always holds the message from its first character, and
+ * it ends where the operator stops (a command sits at a line end). A selection
+ * starting INSIDE the message cannot hold text from above, so the in-message
+ * spans stay unflipped. One unpaired `'` is the general case for "odd parity
+ * at the message's start": any odd count above is equivalent. A `"` above is
+ * a different state (double-quoted, where `$( )` runs) and is not modelled
+ * here. Pasting it is cheap: one span per line of the message.
+ */
+export const OPERATOR_FLIP = "the operator's text above";
 
 /**
  * Where a selection can start inside `line`, past its first character: after a
@@ -249,8 +277,12 @@ export function filesTouchedBy(span: string, dir: string, options: PasteRunOptio
   return spanRun(span, dir, options).touched;
 }
 
-/** What one span did across the shells: the files it touched, and whether a stubbed verb ran. */
-function spanRun(
+/**
+ * What one span did across the shells: the files it touched, and whether a
+ * stubbed verb ran. Exported for a site pinning a CLASSIFIED residual exactly
+ * (which span, which files, no verb), never to exempt one.
+ */
+export function spanRun(
   span: string,
   dir: string,
   options: PasteRunOptions
@@ -350,7 +382,7 @@ export function expectZshRunsTheDisplay(message: string, dir: string, value: str
       // Judged against its lines, and not counted as the display running:
       // the display's own line is a span of its own (go-to-k/cdkd#4133).
       if (run.touched.length > 0 || run.verbRan) {
-        expectNoMoreThanItsLines(span, dir, { shells: ['zsh'] }, lineDoes);
+        expectNoMoreThanItsLines(flipJudged(span, value), dir, { shells: ['zsh'] }, lineDoes);
       }
       continue;
     }
@@ -412,6 +444,49 @@ function expectNoMoreThanItsLines(
     { touched: run.touched, verbRan: run.verbRan },
     `pasting these lines together runs more than pasting each alone: ${span}`
   ).toEqual({ touched: [], verbRan: false });
+}
+
+/**
+ * A span as the display-residual helpers judge it: unchanged, unless it is an
+ * {@link OPERATOR_FLIP} span, where every paired JSON span holding `value`
+ * (the value's DISPLAY) is replaced by an inert `"DISPLAY"` first. Under the
+ * flip, a JSON-bounded display holding a `'` closes the operator's quote and
+ * its `$( )` runs bare: that is the display residual go-to-k/cdkd#3950 tracks
+ * (`displayIdent` keeps a `'` raw inside its boundary; its fix is tracked by
+ * go-to-k/cdkd#4229), CLASSIFIED here rather than dropped. It is the display, and only the display, that is set aside:
+ * a COMMAND that names the value (the class go-to-k/cdkd#4205 closes) still
+ * runs with the display gone, and the lines judgement then refuses it.
+ */
+function flipJudged(span: string, value: string): string {
+  if (!span.startsWith(`${OPERATOR_FLIP}\n`)) return span;
+  return span.replace(/"(?:[^"\\]|\\.)*"/g, (s) => {
+    try {
+      return String(JSON.parse(s)).includes(value) ? '"DISPLAY"' : s;
+    } catch {
+      return s;
+    }
+  });
+}
+
+/**
+ * {@link spansThatRun} for a site that DISPLAYS `value` in a JSON boundary and
+ * asserts nothing else runs: each {@link OPERATOR_FLIP} span is pasted with
+ * that display set aside ({@link flipJudged}), every other span as it is. The
+ * set-aside is the classified go-to-k/cdkd#3950 residual (fix tracked by
+ * go-to-k/cdkd#4229), named at each caller;
+ * a command naming the value still reds.
+ */
+export function spansThatRunBesideTheDisplay(
+  message: string,
+  dir: string,
+  value: string,
+  options: PasteRunOptions = {}
+): string[] {
+  const out: string[] = [];
+  for (const span of segmentsOf(message)) {
+    if (filesTouchedBy(flipJudged(span, value), dir, options).length > 0) out.push(span);
+  }
+  return out;
 }
 
 /** Every span of `message` ({@link segmentsOf}) that touched a file. */
@@ -541,7 +616,7 @@ export function expectRuntimeResidual(message: string, dir: string, value: strin
           cache = new Map<string, boolean>();
           lineDoesByShell.set(shell, cache);
         }
-        expectNoMoreThanItsLines(span, dir, one, cache);
+        expectNoMoreThanItsLines(flipJudged(span, value), dir, one, cache);
       }
       if (run.touched.length > 0) ran.push(span);
       continue;

@@ -2335,11 +2335,16 @@ describe('a marker naming an invalid bucket or repository is malformed (go-to-k/
 
 describe('the bootstrap hints name no shell-active region (go-to-k/cdkd#4205)', () => {
   // Each message below printed a planted region shell-quoted in its
-  // `Bootstrap with:` / `Tear it down with:` command, under prose carrying
-  // `bucket's` / `region's` (or an AWS error that may carry a `'`), and three
-  // of them wrapped the raw region in cdkd's own `'...'` in the prose itself,
-  // so `x'$(touch OWNED)` ran from that one line. A region reaches these from a
-  // stack's `env.region`, which a prebuilt cloud assembly can plant.
+  // `Bootstrap with:` / `Tear it down with:` command. What flips the quote
+  // parity differs by message: `bucket's` in `assertAssetBucketRegion`'s
+  // remedy; `region's` in the name-conflict refusal; an AWS error that may
+  // carry a `'` in the auto-create warning; and in the legacy notice (whose
+  // only quotes are the paired `'cdk gc'`) nothing of cdkd's own, so there it
+  // is the text the operator pastes ABOVE the message, the harness's
+  // OPERATOR_FLIP. Three of them also wrapped the raw region in cdkd's own
+  // `'...'` in the prose itself, so `x'$(touch OWNED)` ran from that one line.
+  // A region reaches these from a stack's `env.region`, which a prebuilt cloud
+  // assembly can plant.
   const run = (label: string, message: string, dir: string): void => {
     expect(spansThatRun(message, dir), label).toEqual([]);
   };

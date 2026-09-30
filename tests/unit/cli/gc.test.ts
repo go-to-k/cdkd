@@ -737,6 +737,8 @@ describe('cdkd gc', () => {
         expect(spansThatRun(named, dir)).toEqual([]);
         for (const { value, message } of withheld) {
           expect(message).not.toMatch(/^Inspect it with: /m);
+          // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+          // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
           expectOnlyDisplayResidual(message, dir, value);
         }
       });

@@ -44,10 +44,12 @@ import {
   expectRuntimeResidual,
   expectOnlyDisplayResidual,
   expectZshRunsTheDisplay,
+  OPERATOR_FLIP,
   filesTouchedBy,
   lineStarts,
   segmentsOf,
   spansThatRun,
+  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from './paste-harness.js';
 
@@ -233,6 +235,41 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       const four = `Found 2 resource record(s)\n${block}`;
       expect(filesTouchedBy(four, dir, BASH_ONLY), 'the four-line message must be inert').toEqual([]);
       expect(spansThatRun(four, dir, BASH_ONLY)).toEqual([block]);
+    });
+  }, 120_000);
+
+  it('pastes the message after text ABOVE it that holds an unpaired quote (OPERATOR_FLIP, go-to-k/cdkd#4205)', () => {
+    withPasteDir((dir) => {
+      // A shell-quoted value with no apostrophe anywhere in the message: every
+      // span INSIDE the message is inert, and only the flip, text the operator
+      // selects above the message, turns the quote inside out.
+      const message = `Nothing matched.\nInspect it with: cdkd state show ${shellQuote('x; touch OWNED; #')}`;
+      const flipped = `${OPERATOR_FLIP}\n${message}`;
+      for (const span of segmentsOf(message)) {
+        if (span.startsWith(OPERATOR_FLIP)) continue;
+        expect(filesTouchedBy(span, dir), span).toEqual([]);
+      }
+      expect(segmentsOf(message).has(flipped)).toBe(true);
+      expect(spansThatRun(message, dir)).toEqual([flipped]);
+      // Every prefix ending at a line end is flipped, and nothing else.
+      const three = 'a\nb\nc';
+      expect([...segmentsOf(three)].filter((s) => s.startsWith(OPERATOR_FLIP))).toEqual([
+        `${OPERATOR_FLIP}\na`,
+        `${OPERATOR_FLIP}\na\nb`,
+        `${OPERATOR_FLIP}\na\nb\nc`,
+      ]);
+      // The classified display residual: a JSON-bounded display of a value
+      // holding `'` runs under the flip (go-to-k/cdkd#3950), which the
+      // beside-the-display variant sets aside...
+      // `;` is literal inside the JSON quotes, so the display is inert on
+      // every in-message span and runs only under the flip.
+      const v = "x'; touch OWNED; #";
+      const display = `No stack ${JSON.stringify(v)} was found.`;
+      expect(spansThatRun(display, dir)).toEqual([`${OPERATOR_FLIP}\n${display}`]);
+      expect(spansThatRunBesideTheDisplay(display, dir, v)).toEqual([]);
+      // ...while a command naming the value still reds beside it.
+      const commanded = `${display}\nRun: cdkd deploy ${shellQuote('y; touch OWNED; #')}`;
+      expect(spansThatRunBesideTheDisplay(commanded, dir, v).length).toBeGreaterThan(0);
     });
   }, 120_000);
 

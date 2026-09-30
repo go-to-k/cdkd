@@ -639,6 +639,8 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       }
     }
     withPasteDir((dir) => {
+      // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+      // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
       for (const [label, value, note] of notes) expectNothingRunsButTheDisplay(note, dir, value, label);
     });
   }, 120_000);

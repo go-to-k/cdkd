@@ -88,6 +88,7 @@ import {
   expectZshRunsTheDisplay,
   itUnderZsh,
   spansThatRun,
+  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -370,7 +371,10 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
           // (go-to-k/cdkd#3950): under BASH that `(` stops every span and
           // nothing runs, pinned here; under zsh it does not, which the S1
           // case below pins.
-          expect(spansThatRun(message, dir, { shells: ['bash'] }), value).toEqual([]);
+          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
+          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
+          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
+          expect(spansThatRunBesideTheDisplay(message, dir, value, { shells: ['bash'] }), value).toEqual([]);
         }
       });
     }, 120_000);
@@ -426,7 +430,10 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
           expect(prose, explicit).not.toContain(`'${explicit}'`);
           // S1 (go-to-k/cdkd#3950): inert under BASH, pinned here; its zsh
           // paste is the S1 case below.
-          expect(spansThatRun(message, dir, { shells: ['bash'] }), explicit).toEqual([]);
+          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
+          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
+          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
+          expect(spansThatRunBesideTheDisplay(message, dir, explicit, { shells: ['bash'] }), explicit).toEqual([]);
         }
       });
       // A plain ARN prints bare, byte-identical to the value -- a long one too,

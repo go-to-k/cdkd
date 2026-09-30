@@ -5709,46 +5709,48 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       }, 120_000);
     });
 
-    it('every orphanRefusal builder holes a payload name or region and runs nothing, pasted WHOLE (go-to-k/cdkd#4205)', () => {
-      // The drop command (`dropRecordCommand`) and the properties refusal's
-      // inspect line (`orphanInspectCommand`) named a payload shell-quoted.
-      // The lead's quoted literals (`'cdkd orphan'`, `'Drop the record'`) are
-      // PAIRED, so the flip comes from the orphans-records refusals' unpaired
-      // `others'`, or from whatever the operator selects above the message,
-      // once the lines are pasted as one block (go-to-k/cdkd#4133). Every span,
-      // every run of lines, mid-line starts included.
-      const builders = [
-        ['properties', malformedOrphanResourcePropertiesRefusalMessage],
-        ['entries', malformedOrphanResourceEntriesRefusalMessage],
-        ['attributes', malformedOrphanResourceAttributesRefusalMessage],
-        ['orphan records', malformedOrphanRecordsRefusalMessage],
-        ['orphan records (destroy)', malformedOrphanRecordsForDestroyRefusalMessage],
-        ['orphans list', malformedOrphansForOrphanRefusalMessage],
-      ] as const;
-      const cases: Array<{ label: string; text: string }> = [];
-      for (const [name, build] of builders) {
+    // The drop command (`dropRecordCommand`) and the properties refusal's
+    // inspect line (`orphanInspectCommand`) named a payload shell-quoted.
+    // The lead's quoted literals (`'cdkd orphan'`, `'Drop the record'`) are
+    // PAIRED, so the flip comes from the orphans-records refusals' unpaired
+    // `others'`, or from whatever the operator selects above the message,
+    // once the lines are pasted as one block (go-to-k/cdkd#4133). Every span,
+    // every run of lines, mid-line starts and the OPERATOR_FLIP included. One
+    // case per builder, so each stays inside the harness's 120 s bound.
+    for (const [name, build] of [
+      ['properties', malformedOrphanResourcePropertiesRefusalMessage],
+      ['entries', malformedOrphanResourceEntriesRefusalMessage],
+      ['attributes', malformedOrphanResourceAttributesRefusalMessage],
+      ['orphan records', malformedOrphanRecordsRefusalMessage],
+      ['orphan records (destroy)', malformedOrphanRecordsForDestroyRefusalMessage],
+      ['orphans list', malformedOrphansForOrphanRefusalMessage],
+    ] as const) {
+      it(`${name}: holes a payload name or region and runs nothing, pasted WHOLE (go-to-k/cdkd#4205)`, () => {
+        const cases: Array<{ label: string; text: string }> = [];
         for (const { label, value } of PASTE_PAYLOADS) {
           // The region-LESS (legacy) arm, whose `Object key:` line shell-quoted
           // the name inside the key: the segment is the `<stack>` hole now.
           const legacy = build(value, undefined, ['A']);
-          expect(dropOf(legacy), `${name} ${label} legacy`).toBe("cdkd state orphan '<stack>'");
-          cases.push({ label: `${name} ${label} legacy`, text: legacy });
+          expect(dropOf(legacy), `${label} legacy`).toBe("cdkd state orphan '<stack>'");
           const asName = build(value, 'us-east-1', ['A']);
-          expect(dropOf(asName), `${name} ${label} name`).toBe(
+          expect(dropOf(asName), `${label} name`).toBe(
             "cdkd state orphan '<stack>' --stack-region us-east-1"
           );
           const asRegion = build('S', value, ['A']);
-          expect(dropOf(asRegion), `${name} ${label} region`).toBe(
+          expect(dropOf(asRegion), `${label} region`).toBe(
             "cdkd state orphan '<stack>' --stack-region '<region>'"
           );
-          cases.push({ label: `${name} ${label} name`, text: asName });
-          cases.push({ label: `${name} ${label} region`, text: asRegion });
+          cases.push(
+            { label: `${label} legacy`, text: legacy },
+            { label: `${label} name`, text: asName },
+            { label: `${label} region`, text: asRegion }
+          );
         }
-      }
-      withPasteDir((dir) => {
-        for (const { label, text } of cases) expect(spansThatRun(text, dir), label).toEqual([]);
-      });
-    }, 600_000);
+        withPasteDir((dir) => {
+          for (const { label, text } of cases) expect(spansThatRun(text, dir), label).toEqual([]);
+        });
+      }, 120_000);
+    }
 
     describe('every orphanRefusal builder says the drop is not available for a -name (go-to-k/cdkd#3973 R3)', () => {
       // The sentence is spliced right after the one offering the drop as the

@@ -13,7 +13,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import {
+  OPERATOR_FLIP,
+  PASTE_PAYLOADS,
+  filesTouchedBy,
+  segmentsOf,
+  spanRun,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
+
+/**
+ * The files go-to-k/cdkd#4230's hole inversion creates or truncates (see its
+ * case): each a `>` target spelled from cdkd's OWN text around a quoted hole,
+ * its apostrophes consumed by the shell's quoting. Sorted, as the case sorts.
+ */
+const KNOWN_4230: string[] = [
+  '\n  For the record targeting CloudFormation stack ChildBCfn: The next lines',
+  '\n  cdkd state orphan Root~B --stack-region us-east-1\nOnce this stacks',
+  '\nOnce this stacks',
+  ' --stack-region ',
+];
 import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 
@@ -625,7 +645,7 @@ describe('the nested pre-delete renders its failure like the single-stack path',
     );
     // The recovery a partly migrated tree needs: what moved, what did not,
     // that re-running does not resume it, and the record clean-up.
-    expect(err.message).toContain('Stacks IMPORTed so far (each CFn-managed): Root → Root.');
+    expect(err.message).toContain("Stacks IMPORTed so far (each CFn-managed): 'Root' → 'Root'.");
     expect(err.message).toContain(
       'Re-running cdkd export is refused for the whole tree'
     );
@@ -974,7 +994,7 @@ describe('a nested pre-delete failure in the ROOT, after its child was imported'
       (e: unknown) => e as Error
     );
     expect(err.message).toContain('pre-delete of RootPolicy');
-    expect(err.message).toContain('Root~Child → Root-Child');
+    expect(err.message).toContain("'Root~Child' → 'Root-Child'");
     expect(err.message).toContain('Stacks not yet imported (still cdkd-managed): (none).');
     // The child finished phase 2 and still holds cdkd state: its clean-up is
     // given too, or a later `cdkd destroy Root` deletes CFn-managed resources.
@@ -1977,13 +1997,46 @@ describe('the nested resume tail notes each withheld orphan command above it (go
       }
     }
     withPasteDir((dir) => {
+      const flipOutcomes: Array<{ touched: string[]; verbRan: boolean }> = [];
       for (const message of messages) {
         const at = message.indexOf('Re-running cdkd export');
         expect(at, message).toBeGreaterThan(-1);
         const tail = message.slice(at);
         expect(tail).toContain('cdkd state orphan');
-        expect(spansThatRun(tail, dir), message).toEqual([]);
+        // Every span INSIDE the message stays strict.
+        for (const span of segmentsOf(tail)) {
+          if (span.startsWith(OPERATOR_FLIP)) {
+            // The files are the RAW span's. The verb is judged with each line
+            // that runs a command ON ITS OWN set aside (the remedy lines the
+            // operator is meant to paste, as the harness's lines judgement
+            // does), so `verbRan` answers whether the FLIP made a verb run
+            // that pasting the lines one by one would not.
+            const { touched } = spanRun(span, dir, {});
+            const judged = span
+              .split('\n')
+              .map((line) => {
+                const alone = spanRun(line, dir, {});
+                return alone.verbRan || alone.touched.length > 0 ? ':' : line;
+              })
+              .join('\n');
+            const { verbRan } = spanRun(judged, dir, {});
+            if (touched.length > 0 || verbRan) flipOutcomes.push({ touched, verbRan });
+            continue;
+          }
+          expect(filesTouchedBy(span, dir), span).toEqual([]);
+        }
       }
+      // CLASSIFIED residual, go-to-k/cdkd#4230: behind the OPERATOR_FLIP (text
+      // above the message with an unpaired `'`), the note line's apostrophes
+      // (`line's`, `record's`) leave the parity odd at `cdkd state orphan
+      // '<stack>' --stack-region '<region>'`, so the quoted holes invert:
+      // `<stack` reads the `stack` file and `>` truncates a file named by
+      // cdkd's own next word. No planted value is involved, and no stubbed verb
+      // runs beyond the command lines cdkd prints to be run. Pinned EXACTLY,
+      // so #4230's hole spelling flips it red.
+      expect(flipOutcomes.length).toBeGreaterThan(0);
+      expect([...new Set(flipOutcomes.flatMap((o) => o.touched))].sort()).toEqual(KNOWN_4230);
+      expect(flipOutcomes.some((o) => o.verbRan)).toBe(false);
     });
   }, 120_000);
 

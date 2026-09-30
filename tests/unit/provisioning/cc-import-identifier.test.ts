@@ -14,6 +14,7 @@ import {
   expectNoCommandBesideDisplay,
   expectOnlyDisplayResidual,
   spansThatRun,
+  spansThatRunBesideTheDisplay,
   withPasteDir,
 } from '../utils/paste-harness.js';
 
@@ -442,6 +443,8 @@ describe('toCloudControlIdentifier', () => {
           expect(message, label).not.toContain(`'${JSON.stringify(value)}'`);
           // The five S1 refusals skip the default block rule until their fix
           // lands; their own case below asserts it.
+          // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+          // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
           expectOnlyDisplayResidual(
             message,
             dir,
@@ -491,7 +494,10 @@ describe('toCloudControlIdentifier', () => {
       expect(refusals).toHaveLength(PASTE_PAYLOADS.length * 3);
       withPasteDir((dir) => {
         for (const { value, site, message } of refusals) {
-          expect(spansThatRun(message, dir), `${site}: ${value}`).toEqual([]);
+          // Beside the display (go-to-k/cdkd#4205 review): under the harness's
+          // OPERATOR_FLIP the JSON-bounded display of a `'`-carrying value runs,
+          // the classified go-to-k/cdkd#3950 residual (fix: go-to-k/cdkd#4229); all else strict.
+          expect(spansThatRunBesideTheDisplay(message, dir, value), `${site}: ${value}`).toEqual([]);
         }
       });
     }, 120_000);

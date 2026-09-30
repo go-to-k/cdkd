@@ -245,6 +245,20 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
       ).toBe(true);
     });
 
+    it('holes a pair past the stack-ref cap, and names one at it (the gate default)', async () => {
+      // The pair is ONE gated value, so its cap is the gate's default,
+      // `STACK_REF_MAX_CODE_POINTS` (1152), over the whole `id=name` text.
+      const name = 'r'.repeat(1152 - 'Repo='.length);
+      expect(
+        (await refusalFor('Repo', name)).endsWith(`\ncdkd import '<stack>' --resource 'Repo=${name}' --force`)
+      ).toBe(true);
+      expect(
+        (await refusalFor('Repo', `${name}r`)).endsWith(
+          `\ncdkd import '<stack>' --resource '<logicalId=repositoryName>' --force`
+        )
+      ).toBe(true);
+    });
+
     it('holes a payload name or logical id, and the pasted command runs nothing', async () => {
       const messages: Array<[string, string]> = [];
       for (const { label, value } of PASTE_PAYLOADS) {

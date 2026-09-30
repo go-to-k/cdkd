@@ -1,5 +1,10 @@
 import { getLogger } from '../utils/logger.js';
-import { commandHole, pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
+import {
+  commandHole,
+  isInertUnquoted,
+  pasteableCommand,
+  quotedOrDescribed,
+} from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
   equalIdNamesDifferentResources,
@@ -29,7 +34,6 @@ import {
   displayAwsMessage,
   displayIdent,
   displayStackName,
-  STACK_REF_MAX_CODE_POINTS,
   displaySafe,
   isPasteableIdent,
   safeMsg,
@@ -9074,13 +9078,16 @@ export class DeployEngine {
     const safeId = displaySafe(physicalId, { asciiOnly: true });
     const safeStack = displaySafe(stackName, { asciiOnly: true });
     const safeLogicalId = displaySafe(logicalId, { asciiOnly: true });
-    // The PROSE shows each through `displayIdent`'s boundary (go-to-k/cdkd#4205):
-    // a plain value reads as itself, and a value carrying `;` or `'` stays
-    // literal inside the JSON quotes instead of running when the sentence is
-    // pasted. What double quotes cannot stop (`$( )`, a backtick) is the
-    // display residual go-to-k/cdkd#3950 tracks.
-    const shownId = displayIdent(physicalId, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
-    const shownLogicalId = displayIdent(logicalId);
+    // The PROSE names each only while its sanitized spelling is inert with its
+    // quotes stripped, and DESCRIBES it otherwise (go-to-k/cdkd#4205): printed
+    // bare, a `;` runs, and inside `displayIdent`'s JSON quotes a `$( )` or a
+    // backtick still runs when the clause is pasted, so a description, which
+    // runs nothing, is the spelling for anything else.
+    const idShown = isInertUnquoted(safeId);
+    const shownId = idShown ? safeId : 'a name that cannot be shown safely here';
+    const shownLogicalId = isInertUnquoted(safeLogicalId)
+      ? safeLogicalId
+      : 'A resource whose logical id cannot be shown safely here';
 
     // The CloudFormation comparison is stated as a DIFFERENCE, not a
     // similarity, and that is the correction this wording carries. Both engines
@@ -9105,7 +9112,7 @@ export class DeployEngine {
       `and redeploy clean, whereas cdkd asks again for the name the orphan still holds — so ` +
       `re-running does not clear this.`;
     const deleteArm =
-      `If it is not a resource you want to keep, delete ${shownId} in AWS — after ` +
+      `If it is not a resource you want to keep, delete ${idShown ? safeId : 'it'} in AWS — after ` +
       `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`;
 
     // Only advise `cdkd import` for a type that can actually be imported.

@@ -2327,7 +2327,9 @@ function proseIdentity(value: string, safe: (v: string) => string, description: 
  * and the caller says where to take the name from instead
  * ({@link orphanIdentityVerdict} is the test, shared with the inspect line and
  * the withheld-identity clause; the object path keeps {@link rendersExactly},
- * since a key segment beginning with `-` is still that record's key).
+ * since a key segment beginning with `-` is still that record's key, and also
+ * holds the stack segment to `isInertUnquoted`, printing `<stack>` otherwise,
+ * go-to-k/cdkd#4205).
  *
  * `recovery` qualifies EVERY arm, the no-identity template included, the way
  * {@link buildForceUnlockCommand} is qualified, through {@link accountArgs}: `cdkd state orphan`

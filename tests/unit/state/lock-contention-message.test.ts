@@ -422,6 +422,8 @@ describe('buildForceUnlockCommand through the shared gate (go-to-k/cdkd#3436)', 
       for (const { value, message } of withheld) {
         expect(message, value).not.toContain('cdkd force-unlock');
         expect(message, value).toContain('No recovery command can be shown');
+        // Under the harness's OPERATOR_FLIP a displayed value holding `'` runs:
+        // the go-to-k/cdkd#3950 residual, tracked for its fix by go-to-k/cdkd#4229.
         expectOnlyDisplayResidual(message, dir, value);
       }
     });
