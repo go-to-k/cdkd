@@ -26,6 +26,10 @@ import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
  *  - AWS::ElasticLoadBalancingV2::LoadBalancer (ALB)
  *                              — LoadBalancerAttributes
  *                                deletion_protection.enabled=true
+ *  - AWS::ElasticLoadBalancingV2::LoadBalancer (NLB)
+ *                              — the same attribute; the target of the
+ *                                --remove-protection compensation arm
+ *                                (verify.sh step 4b, issue #2204)
  *  - AWS::AutoScaling::AutoScalingGroup
  *                              — DeletionProtection: 'prevent-all-deletion'
  *                                (DesiredCapacity: 1, launch template sets
@@ -136,6 +140,20 @@ export class RemoveProtectionStack extends cdk.Stack {
     });
     alb.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // ── AWS::ELBv2::LoadBalancer (NLB) with deletion_protection.enabled=true
+    // The --remove-protection compensation target (issue #2204): verify.sh
+    // step 4b attaches an out-of-band VPC endpoint service to it, which makes
+    // DeleteLoadBalancer refuse terminally AFTER cdkd turned the guard off.
+    // An NLB rather than the ALB above because only an NLB (or GWLB) can back
+    // an endpoint service. No listener: the endpoint service does not need one.
+    const nlb = new elbv2.NetworkLoadBalancer(this, 'ProtectedNlb', {
+      vpc,
+      internetFacing: false,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      deletionProtection: true,
+    });
+    nlb.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     // ── AWS::AutoScaling::AutoScalingGroup with DeletionProtection ───
     // Set via L1 addPropertyOverride. The L2 AutoScalingGroup did not expose
     // `deletionProtection` when this fixture was written; it does now
@@ -182,6 +200,8 @@ export class RemoveProtectionStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new cdk.CfnOutput(this, 'InstanceId', { value: instance.instanceId });
     new cdk.CfnOutput(this, 'AlbArn', { value: alb.loadBalancerArn });
+    // Read by verify.sh step 4b (issue #2204), unlike the debugging-only rest.
+    new cdk.CfnOutput(this, 'NlbArn', { value: nlb.loadBalancerArn });
     new cdk.CfnOutput(this, 'AsgName', { value: asg.autoScalingGroupName });
   }
 }

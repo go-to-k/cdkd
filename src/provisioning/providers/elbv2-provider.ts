@@ -82,6 +82,14 @@ import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
+import {
+  ProtectionFlipRegistry,
+  deleteWithProtectionCompensation,
+  observeThenDisableProtection,
+  protectionFlipKey,
+  type ProtectionFlipRecord,
+  type ProtectionGuardSite,
+} from './deletion-protection-compensation.js';
 
 /**
  * Test seam for the capacity-reservation stabilize poll (mirrors
@@ -366,6 +374,46 @@ function attributeEntryKey(entry: unknown): string | undefined {
 }
 
 /**
+ * The {@link ProtectionGuardSite} for an `AWS::ElasticLoadBalancingV2::LoadBalancer`
+ * whose `--remove-protection` delete failed terminally (issue #2204).
+ *
+ * `--region` is rendered whenever the state records one, for the reason
+ * `rdsFamilyProtectionSite` gives: on the region-mismatch race that reaches the
+ * not-found arm, a check run against the operator's default region answers the
+ * same not-found and reads as "gone".
+ */
+export function loadBalancerProtectionSite(
+  loadBalancerArn: string,
+  region: string | undefined
+): ProtectionGuardSite {
+  return {
+    subject: 'ELBv2 LoadBalancer',
+    guardName: 'deletion_protection.enabled',
+    noun: 'load balancer',
+    // Keyed on the SDK error's name, as the shared sites are: every re-enable
+    // is a bare `send`, so the error arrives unwrapped.
+    isNotFound: (error) =>
+      typeof error === 'object' &&
+      error !== null &&
+      (error as { name?: unknown }).name === 'LoadBalancerNotFoundException',
+    notFoundMeaning:
+      'ELBv2 answered LoadBalancerNotFound. That most commonly means the load balancer is ' +
+      'gone, and it can also mean it is not in this region or account.',
+    commands: () => {
+      const aws = pasteableAwsCommand();
+      const regionArg = region ? aws` --region ${region}` : aws``;
+      const restore = aws`aws elbv2 modify-load-balancer-attributes --load-balancer-arn ${loadBalancerArn}${regionArg} --attributes Key=deletion_protection.enabled,Value=true`;
+      return {
+        check:
+          aws`aws elbv2 describe-load-balancer-attributes --load-balancer-arn ${loadBalancerArn}${regionArg}`.render(),
+        restoreAfterNotFound: restore.render(),
+        restoreLive: restore.render(),
+      };
+    },
+  };
+}
+
+/**
  * AWS ELBv2 Provider
  *
  * Implements resource provisioning for ELBv2 resources:
@@ -388,6 +436,8 @@ export class ELBv2Provider implements ResourceProvider {
   private elbv2Client?: ElasticLoadBalancingV2Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ELBv2Provider');
+  /** `--remove-protection` flips per load balancer, kept across `delete()` re-entry (#2204). */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1272,26 +1322,81 @@ export class ELBv2Provider implements ResourceProvider {
     );
   }
 
+  /**
+   * Delete a load balancer.
+   *
+   * The compensation boundary (issue #2204): a `--remove-protection` flip of
+   * `deletion_protection.enabled` whose delete then fails terminally is undone
+   * here, so a destroy that did not happen does not leave a live load balancer
+   * with its guard stripped.
+   */
   private async deleteLoadBalancer(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
+    await deleteWithProtectionCompensation({
+      registry: this.protectionFlips,
+      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
+      run: (flip) =>
+        this.deleteLoadBalancerOnce(logicalId, physicalId, resourceType, context, flip),
+      compensation: {
+        logicalId,
+        physicalId,
+        logger: this.logger,
+        site: loadBalancerProtectionSite(physicalId, context?.expectedRegion),
+        reEnable: async () => {
+          await this.getClient().send(
+            new ModifyLoadBalancerAttributesCommand({
+              LoadBalancerArn: physicalId,
+              Attributes: [{ Key: 'deletion_protection.enabled', Value: 'true' }],
+            })
+          );
+        },
+      },
+    });
+  }
+
+  private async deleteLoadBalancerOnce(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    flip: ProtectionFlipRecord
+  ): Promise<void> {
     this.logger.debug(`Deleting LoadBalancer ${logicalId}: ${physicalId}`);
 
     // `--remove-protection`: clear the `deletion_protection.enabled`
     // attribute before delete. Idempotent — ELBv2 accepts the call when
     // protection is already disabled. Non-fatal: log at debug if the
-    // flip-off errors so the actual DeleteLoadBalancer proceeds.
+    // flip-off errors so the actual DeleteLoadBalancer proceeds. The pre-flip
+    // readback is what lets a terminal failure restore ONLY a guard this run
+    // turned off.
     if (context?.removeProtection === true) {
       try {
-        await this.getClient().send(
-          new ModifyLoadBalancerAttributesCommand({
-            LoadBalancerArn: physicalId,
-            Attributes: [{ Key: 'deletion_protection.enabled', Value: 'false' }],
-          })
-        );
+        await observeThenDisableProtection({
+          flip,
+          logger: this.logger,
+          physicalId,
+          guardName: 'deletion_protection.enabled',
+          observe: async () => {
+            const resp = await this.getClient().send(
+              new DescribeLoadBalancerAttributesCommand({ LoadBalancerArn: physicalId })
+            );
+            return (resp.Attributes ?? []).some(
+              (a) => a.Key === 'deletion_protection.enabled' && a.Value === 'true'
+            );
+          },
+          disable: async () => {
+            await this.getClient().send(
+              new ModifyLoadBalancerAttributesCommand({
+                LoadBalancerArn: physicalId,
+                Attributes: [{ Key: 'deletion_protection.enabled', Value: 'false' }],
+              })
+            );
+          },
+        });
         this.logger.debug(
           `Disabled deletion_protection.enabled on LoadBalancer ${logicalId} before delete`
         );
@@ -1306,6 +1411,10 @@ export class ELBv2Provider implements ResourceProvider {
 
     try {
       await this.getClient().send(new DeleteLoadBalancerCommand({ LoadBalancerArn: physicalId }));
+      // AWS took the delete. `DeleteLoadBalancer` has no wait after it today,
+      // but the latch is what keeps a future one from re-enabling the guard on
+      // a load balancer that is already going.
+      flip.deleteAccepted = true;
       this.logger.debug(`Successfully deleted LoadBalancer ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {

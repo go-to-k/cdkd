@@ -15,8 +15,11 @@
 #      assert the pool's DeletionProtection is back to ACTIVE: cdkd turned
 #      it off, the delete failed, so cdkd must put it back. Also assert
 #      AllowAdminCreateUserOnly is still true: the flip and re-enable echo
-#      the pool back instead of resetting what they omit (issue #4066). The
-#      rest of the stack is deleted here. Then delete the domain.
+#      the pool back instead of resetting what they omit (issue #4066). In
+#      the SAME destroy, an out-of-band VPC endpoint service on the NLB makes
+#      DeleteLoadBalancer refuse terminally; assert the NLB's
+#      deletion_protection.enabled is back to true. Then delete the domain
+#      and the endpoint service.
 #   5. POSITIVE: cdkd destroy --remove-protection --force
 #      -> expect exit 0
 #   6. cdkd state list -> stack must be GONE
@@ -87,9 +90,41 @@ fi
 # the create; the pool id is read from state right after the step-2 deploy.
 USER_POOL_ID=""
 OOB_POOL_DOMAIN=""
+# Step 4b's out-of-band VPC endpoint service on the NLB (issue #2204): not in
+# cdkd state either, and while it stands DeleteLoadBalancer refuses, so cleanup
+# deletes it FIRST too. The NLB ARN is read from state after the deploy.
+NLB_ARN=""
+OOB_ENDPOINT_SERVICE_ID=""
 # Step 4b's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the step's own `rm`.
 DESTROY_4B_LOG=""
+
+# Poll until the endpoint service is gone (not found, or Deleted): the NLB
+# stays associated until it is. Returns non-zero when it is still there after
+# 2 min.
+wait_endpoint_service_gone() { # usage: wait_endpoint_service_gone <service id>
+  local state=""
+  for _ in $(seq 1 24); do
+    if gone_probe aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
+        --service-ids "$1"; then
+      return 0
+    fi
+    state="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
+      --service-ids "$1" --query 'ServiceConfigurations[0].ServiceState' --output text)" || return 1
+    if [ "${state}" = "Deleted" ] || [ "${state}" = "None" ]; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "[verify] endpoint service ${1} is still '${state}' 2 min after its delete" >&2
+  return 1
+}
+
+# The NLB's deletion_protection.enabled attribute, as ELBv2 reports it.
+nlb_deletion_protection() { # usage: nlb_deletion_protection <load balancer arn>
+  aws elbv2 describe-load-balancer-attributes --region "${REGION}" --load-balancer-arn "$1" \
+    --query "Attributes[?Key=='deletion_protection.enabled'].Value | [0]" --output text
+}
 
 # Poll until the pool no longer reports a domain: DeleteUserPool keeps
 # refusing until it does. Returns non-zero when it is still there after 2 min.
@@ -122,6 +157,15 @@ cleanup() {
         --domain "${OOB_POOL_DOMAIN}" --user-pool-id "${USER_POOL_ID}" >/dev/null 2>&1 || true
       wait_pool_domain_gone "${USER_POOL_ID}" || true
     fi
+    # Likewise the endpoint service: while it stands, DeleteLoadBalancer
+    # refuses and the destroy below leaks the NLB (and the VPC behind it).
+    if [ -n "${OOB_ENDPOINT_SERVICE_ID}" ]; then
+      aws ec2 delete-vpc-endpoint-service-configurations --region "${REGION}" \
+        --service-ids "${OOB_ENDPOINT_SERVICE_ID}" >/dev/null 2>&1 || true
+      # A subshell: gone_probe exits on an undetermined probe, which must not
+      # end the cleanup before its destroy.
+      (wait_endpoint_service_gone "${OOB_ENDPOINT_SERVICE_ID}") || true
+    fi
     echo "[verify] FAIL (exit ${rc}) — attempting destroy --remove-protection to clean up"
     ${CLI} destroy "${STACK}" --remove-protection \
       --state-bucket "${STATE_BUCKET}" --force || true
@@ -143,6 +187,16 @@ case "${USER_POOL_ID}" in
   "${REGION}"_?*) ;;
   *)
     echo "[verify] FAIL: UserPoolId output '${USER_POOL_ID}' is not a ${REGION} pool id"
+    exit 1
+    ;;
+esac
+# The NLB's ARN, read now for the same reason.
+NLB_ARN="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s).state?.outputs??{};if(!o.NlbArn)throw new Error("no NlbArn output");process.stdout.write(String(o.NlbArn))})')"
+case "${NLB_ARN}" in
+  arn:*:elasticloadbalancing:"${REGION}":*:loadbalancer/net/?*) ;;
+  *)
+    echo "[verify] FAIL: NlbArn output '${NLB_ARN}' is not a ${REGION} NLB ARN"
     exit 1
     ;;
 esac
@@ -229,14 +283,22 @@ echo "[verify] step 4 ok: state preserved"
 # ON before reporting the failure: a destroy that did not happen must not leave
 # a live pool with its guard stripped. An out-of-band hosted-UI domain makes
 # DeleteUserPool refuse ("has a domain configured that should be deleted
-# first"), which matches no retryable pattern. The rest of the stack is
-# deleted by this destroy; step 5 then deletes the pool.
+# first"), which matches no retryable pattern. The NLB is the same arm for
+# ELBv2's deletion_protection.enabled: an out-of-band VPC endpoint service
+# backed by it makes DeleteLoadBalancer refuse ("currently associated with
+# another service"), terminal too. The rest of the stack is deleted by this
+# destroy, except the VPC pieces the surviving NLB holds; step 5 then deletes
+# what is left.
 #
 # The log group has no counterpart arm: no DeleteLogGroup refusal that is both
 # TERMINAL and constructible from outside exists (an IAM deny reads "not
 # authorized to perform", which is retryable, and exhausting the retry cap is
 # a documented non-compensated case), so its compensation is unit-tested only.
-echo "[verify] step 4b: --remove-protection compensation on a terminally failing user pool delete (#2204)"
+# The Auto Scaling group has none for the same reason: `ForceDelete` deletes
+# the instances and outstanding lifecycle actions that make
+# DeleteAutoScalingGroup refuse otherwise, and no other terminal refusal is
+# known to be constructible from outside.
+echo "[verify] step 4b: --remove-protection compensation on terminally failing user pool + NLB deletes (#2204)"
 # Precondition: the guard is ON going in, or the assertion below is vacuous
 # (step 3's bare destroy must not have touched it).
 PRE_DP="$(aws cognito-idp describe-user-pool --region "${REGION}" --user-pool-id "${USER_POOL_ID}" \
@@ -261,9 +323,43 @@ fi
 OOB_POOL_DOMAIN="cdkd-rp-$(date +%s)-$(openssl rand -hex 4)"
 aws cognito-idp create-user-pool-domain --region "${REGION}" \
   --domain "${OOB_POOL_DOMAIN}" --user-pool-id "${USER_POOL_ID}" >/dev/null
+# The NLB's precondition, for the same reason as the pool's.
+PRE_NLB_DP="$(nlb_deletion_protection "${NLB_ARN}")"
+if [ "${PRE_NLB_DP}" != "true" ]; then
+  echo "[verify] FAIL: precondition — ${NLB_ARN} deletion_protection.enabled is '${PRE_NLB_DP}', not true"
+  exit 1
+fi
+# Assigned straight from the create's output: the cleanup deletes it by this id
+# from here on.
+OOB_ENDPOINT_SERVICE_ID="$(aws ec2 create-vpc-endpoint-service-configuration --region "${REGION}" \
+  --network-load-balancer-arns "${NLB_ARN}" --no-acceptance-required \
+  --tag-specifications "ResourceType=vpc-endpoint-service,Tags=[{Key=Name,Value=${STACK}-4b}]" \
+  --query 'ServiceConfiguration.ServiceId' --output text)"
+case "${OOB_ENDPOINT_SERVICE_ID}" in
+  vpce-svc-?*) ;;
+  *)
+    echo "[verify] FAIL: create-vpc-endpoint-service-configuration returned '${OOB_ENDPOINT_SERVICE_ID}'"
+    exit 1
+    ;;
+esac
+# Wait for it to be Available, so the association the refusal needs is in place
+# before the destroy reaches the NLB.
+EPS_STATE=""
+for _ in $(seq 1 24); do
+  EPS_STATE="$(aws ec2 describe-vpc-endpoint-service-configurations --region "${REGION}" \
+    --service-ids "${OOB_ENDPOINT_SERVICE_ID}" \
+    --query 'ServiceConfigurations[0].ServiceState' --output text)"
+  [ "${EPS_STATE}" = "Available" ] && break
+  sleep 5
+done
+if [ "${EPS_STATE}" != "Available" ]; then
+  echo "[verify] FAIL: endpoint service ${OOB_ENDPOINT_SERVICE_ID} is '${EPS_STATE}', not Available, after 2 min"
+  exit 1
+fi
 DESTROY_4B_LOG="$(mktemp)"
 # `--resource-timeout 6m`: as in step 3, caps the waits of the resources this
-# destroy cannot finish (the IGW public-IP lag) so the step does not sit out
+# destroy cannot finish (the IGW public-IP lag, and the subnets and VPC the
+# surviving NLB holds) so the step does not sit out
 # the 30 min default before its expected failure.
 set +e
 ${CLI} destroy "${STACK}" --remove-protection --state-bucket "${STATE_BUCKET}" --force \
@@ -272,7 +368,22 @@ rc=$?
 set -e
 cat "${DESTROY_4B_LOG}"
 if [ "${rc}" -eq 0 ]; then
-  echo "[verify] FAIL: destroy succeeded although the user pool carries an out-of-band domain"
+  echo "[verify] FAIL: destroy succeeded although the user pool carries an out-of-band domain and the NLB an endpoint service"
+  exit 1
+fi
+# The NLB must still be there (its delete really failed) ...
+if ! POST_NLB_DP="$(nlb_deletion_protection "${NLB_ARN}" 2>&1)"; then
+  echo "[verify] FAIL: could not read ${NLB_ARN} after the failed destroy: ${POST_NLB_DP}"
+  exit 1
+fi
+# ... with its guard back ON: before the fix this read false.
+if [ "${POST_NLB_DP}" != "true" ]; then
+  echo "[verify] FAIL: ${NLB_ARN} was left with deletion_protection.enabled '${POST_NLB_DP}' after the failed destroy (#2204)"
+  exit 1
+fi
+# ... and it was cdkd that turned it off and back on in this run.
+if ! grep -qF "re-enabled on ${NLB_ARN}" "${DESTROY_4B_LOG}"; then
+  echo "[verify] FAIL: deletion_protection.enabled is true but the destroy output carries no re-enable line for ${NLB_ARN}"
   exit 1
 fi
 # The pool must still be there (the delete really failed) ...
@@ -310,7 +421,14 @@ if ! wait_pool_domain_gone "${USER_POOL_ID}"; then
   exit 1
 fi
 OOB_POOL_DOMAIN=""
-echo "[verify] step 4b ok: the failed delete put DeletionProtection back to ACTIVE on ${USER_POOL_ID}"
+aws ec2 delete-vpc-endpoint-service-configurations --region "${REGION}" \
+  --service-ids "${OOB_ENDPOINT_SERVICE_ID}" >/dev/null
+if ! wait_endpoint_service_gone "${OOB_ENDPOINT_SERVICE_ID}"; then
+  echo "[verify] FAIL: the out-of-band endpoint service ${OOB_ENDPOINT_SERVICE_ID} did not go away"
+  exit 1
+fi
+OOB_ENDPOINT_SERVICE_ID=""
+echo "[verify] step 4b ok: the failed deletes put DeletionProtection back to ACTIVE on ${USER_POOL_ID} and deletion_protection.enabled back to true on ${NLB_ARN}"
 
 # ── POSITIVE TEST ─────────────────────────────────────────────────
 # `cdkd destroy --remove-protection` should succeed end-to-end on a
