@@ -329,6 +329,17 @@ export function spansThatRun(message: string, dir: string, options: PasteRunOpti
   return out;
 }
 
+/** Options for {@link expectOnlyDisplayResidual}. */
+export interface ResidualOptions {
+  /**
+   * Set ONLY for a classified S1 row of go-to-k/cdkd#3950 whose source fix has
+   * not landed: the row's block rule is then asserted by its own case, and
+   * this helper skips it. The text must name the row and carry the
+   * `go-to-k/cdkd#3950` reference; remove it as the row's fix lands.
+   */
+  readonly unfixedS1Row?: string;
+}
+
 /**
  * The per-block criterion, for a message rendered with a HOSTILE `value` the
  * gate WITHHELD.
@@ -351,10 +362,26 @@ export function spansThatRun(message: string, dir: string, options: PasteRunOpti
  * residual so a caller can see what ran. Where a site's spans are ALL inert
  * today, its test asserts `spansThatRun(...)` empty instead — the stronger
  * contract — and this helper is for the site whose display genuinely runs.
- * The TEXT half, a command quoted beside the display, is
- * {@link expectNoCommandBesideDisplay}.
+ * The TEXT half, a command quoted beside the display on the same line, is
+ * {@link expectNoCommandBesideDisplay}, which this helper runs first unless the
+ * caller names an unfixed S1 row ({@link ResidualOptions.unfixedS1Row}).
  */
-export function expectOnlyDisplayResidual(message: string, dir: string, value: string): string[] {
+export function expectOnlyDisplayResidual(
+  message: string,
+  dir: string,
+  value: string,
+  options: ResidualOptions = {}
+): string[] {
+  // The TEXT half first, by default (the maintainer's go-to-k/cdkd#4127 M11):
+  // a row nobody classified reds here instead of passing on its runtime half
+  // alone. A classified S1 row names itself to skip it until its fix lands.
+  if (options.unfixedS1Row === undefined) {
+    expectNoCommandBesideDisplay(message, value);
+  } else {
+    expect(options.unfixedS1Row, 'an unfixedS1Row names its go-to-k/cdkd#3950 row').toMatch(
+      /go-to-k\/cdkd#3950/
+    );
+  }
   const ran: string[] = [];
   for (const span of segmentsOf(message)) {
     const run = spanRun(span, dir, {});
@@ -437,23 +464,31 @@ const PASTEABLE_COMMAND = new RegExp(
 
 /**
  * The BLOCK rule, stated over the message text (go-to-k/cdkd#3486 round 3; the
- * S1 rows of go-to-k/cdkd#3950): a message that DISPLAYS the untrusted `value`
+ * S1 rows of go-to-k/cdkd#3950): a block that DISPLAYS the untrusted `value`
  * carries no pasteable command ({@link PASTEABLE_COMMAND}), whether it is a
  * directive or quoted in prose. "Displays" means the value appears raw or
- * JSON-escaped anywhere in the message, a JSON-quoted path around it included.
- * Pass a HOSTILE value: a plain one may be named beside its own command.
+ * JSON-escaped, a JSON-quoted path around it included. Pass a HOSTILE value: a
+ * plain one may be named beside its own command.
  *
- * {@link expectOnlyDisplayResidual} cannot see this: it measures what a pasted
- * span RUNS, and a command quoted in prose beside a JSON-bounded display runs
- * nothing extra. Each S1 row's case asserts it, and is an expected failure
- * until the row describes the value instead of showing it.
+ * A block is a LINE (the maintainer's go-to-k/cdkd#4127 round-3 ruling): a
+ * line that displays the value must carry no command, and a command on a line
+ * of its own is not beside it. Pasting such a message whole runs what pasting
+ * the value's line alone runs, so the command line adds no execution. The
+ * caveat is a span that crosses lines through a straddling quote, which is
+ * go-to-k/cdkd#4133's.
+ *
+ * {@link expectOnlyDisplayResidual} runs this by default; on its own it is
+ * what an S1 row's block-rule case asserts, until the row describes the value
+ * instead of showing it.
  */
 export function expectNoCommandBesideDisplay(message: string, value: string): void {
   const escaped = JSON.stringify(value).slice(1, -1);
-  if (!message.includes(value) && !message.includes(escaped)) return;
-  expect(message, 'a block that displays the value also carries a pasteable command').not.toMatch(
-    PASTEABLE_COMMAND
-  );
+  for (const line of message.split('\n')) {
+    if (!line.includes(value) && !line.includes(escaped)) continue;
+    expect(line, 'a line that displays the value also carries a pasteable command').not.toMatch(
+      PASTEABLE_COMMAND
+    );
+  }
 }
 
 /**

@@ -470,9 +470,11 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
     }, 120_000);
 
     // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until its source row
-    // lands, which flips both cases: a payload id's block displays the id
-    // (JSON) AND carries `To orphan it: cdkd rollback --orphan …`, and under
-    // zsh the ` (AWS::SQS::Queue)` no longer stops a pasted line.
+    // lands, which flips both cases. Per LINE (the go-to-k/cdkd#4127 round-3
+    // ruling) the `To orphan it:` line carries only the hole, but the line
+    // displaying the id (JSON) also carries `fix forward with cdkd deploy`, a
+    // `cdkd` invocation in prose; and under zsh the ` (AWS::SQS::Queue)` no
+    // longer stops a pasted line.
     const unroutablePayloadRefusals = async (): Promise<Array<{ id: string; message: string }>> => {
       const errors: Array<{ logicalId?: string; message: string }> = [];
       const { ctx } = makeCtx({ create: vi.fn(), delete: vi.fn() });
@@ -730,9 +732,11 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
     }, 120_000);
 
     // S1 (go-to-k/cdkd#3950, the maintainer's 11:51Z rule) until its source row
-    // lands, which flips both cases: a payload id's block displays the id
-    // (JSON) AND carries `To orphan it: cdkd rollback --orphan …`, and under
-    // zsh the ` (AWS::SQS::Queue)` no longer stops a pasted line.
+    // lands, which flips both cases. Per LINE (the go-to-k/cdkd#4127 round-3
+    // ruling) the `To orphan it:` line carries only the hole, but the line
+    // displaying the id (JSON) also carries `re-run cdkd rollback`, a `cdkd`
+    // invocation in prose; and under zsh the ` (AWS::SQS::Queue)` no longer
+    // stops a pasted line.
     const collisionPayloadRefusals = async (): Promise<Array<{ id: string; message: string }>> => {
       const errors: Array<{ logicalId?: string; message: string }> = [];
       const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));

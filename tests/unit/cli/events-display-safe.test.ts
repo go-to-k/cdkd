@@ -1312,6 +1312,9 @@ describe('a record value in events prose is never inside cdkd quotes (go-to-k/cd
     );
   });
 
+  /** The classified S1 rows among this file's sites (go-to-k/cdkd#3950). */
+  const S1_SITES: ReadonlySet<string> = new Set(['EVENTS_NOT_FOUND', 'prune pruned runs', 'prune removed empty index']);
+
   it('every payload is JSON-bounded, and no pasted span runs a command', async () => {
     const rendered: Array<{ value: string; site: string; message: string; shown: string }> = [];
     for (const { value } of PASTE_PAYLOADS) {
@@ -1325,7 +1328,14 @@ describe('a record value in events prose is never inside cdkd quotes (go-to-k/cd
         expect(message, label).toContain(shown);
         expect(message, label).not.toContain(`'${displayIdent(value)}'`);
         expect(message, label).not.toContain(`'${value}'`);
-        expectOnlyDisplayResidual(message, dir, value);
+        // The three S1 rows skip the default block rule until their fix lands;
+        // their own cases below assert it.
+        expectOnlyDisplayResidual(
+          message,
+          dir,
+          value,
+          S1_SITES.has(site) ? { unfixedS1Row: `go-to-k/cdkd#3950 events ${site}` } : {}
+        );
       }
     });
   }, 120_000);

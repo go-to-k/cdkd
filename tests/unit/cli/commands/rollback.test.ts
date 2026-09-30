@@ -3449,7 +3449,16 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
         expect(message, label).toContain(`${displayStackName(value)} (us-east-1)`);
         expect(message, label).not.toContain(`'${displayStackName(value)}'`);
         expect(message, label).not.toContain(`'${value}'`);
-        expectOnlyDisplayResidual(message, dir, value);
+        // The two S1 rows skip the default block rule until their fix lands;
+        // their own cases below assert it.
+        expectOnlyDisplayResidual(
+          message,
+          dir,
+          value,
+          site === 'divergent record region' || site === 'nothing to roll back'
+            ? { unfixedS1Row: `go-to-k/cdkd#3950 rollback ${site}` }
+            : {}
+        );
       }
     });
   }, 120_000);

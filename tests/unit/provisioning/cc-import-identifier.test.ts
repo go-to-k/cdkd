@@ -440,7 +440,14 @@ describe('toCloudControlIdentifier', () => {
           expect(message, label).toContain(shown);
           expect(message, label).not.toContain(`'${value}'`);
           expect(message, label).not.toContain(`'${JSON.stringify(value)}'`);
-          expectOnlyDisplayResidual(message, dir, value);
+          // The five S1 refusals skip the default block rule until their fix
+          // lands; their own case below asserts it.
+          expectOnlyDisplayResidual(
+            message,
+            dir,
+            value,
+            S1_SITES.has(site) ? { unfixedS1Row: `go-to-k/cdkd#3950 composite-id ${site}` } : {}
+          );
         }
       });
     }, 120_000);

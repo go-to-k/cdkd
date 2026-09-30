@@ -47,6 +47,16 @@ import {
 
 describe('pasteable messages — nothing runs at any granularity', () => {
   /**
+   * `expectOnlyDisplayResidual` runs the per-line block rule first by default
+   * (go-to-k/cdkd#4127 M11). The cases below drive its RUNTIME half on its
+   * own, through spans that also carry a command, so they opt out; the
+   * default itself is pinned by the block-rule self-test.
+   */
+  const RUNTIME_ONLY = {
+    unfixedS1Row: 'go-to-k/cdkd#3950 harness self-test: the runtime half on its own',
+  } as const;
+
+  /**
    * The messages, each with the command line its renderer is EXPECTED to
    * print for a hostile payload. The first three are the SHAPES every
    * folded-in site now uses, built from the shared gate; the last two are REAL
@@ -264,6 +274,13 @@ describe('pasteable messages — nothing runs at any granularity', () => {
     refuses(`${shown} x aws\ts3  ls`);
     // A `--flag` may carry a hyphen after its first letter (`--stack-region`).
     refuses(`${shown} x --stack-region z`);
+    // A block is a LINE (go-to-k/cdkd#4127 M10): the value on one line and a
+    // command on the next pass, and the same two joined on one line refuse.
+    expectNoCommandBesideDisplay(
+      `No stack ${shown} was found.\nRun 'cdkd state list' to see available stacks.`,
+      v
+    );
+    refuses(`No stack ${shown} was found. Run 'cdkd state list' to see available stacks.`);
     // Every top-level command starts an invocation (one per command, so a
     // dropped alternative is seen), and the list IS `buildProgram()`'s.
     for (const command of CDKD_TOP_LEVEL_COMMANDS) refuses(`${JSON.stringify(v)} -- cdkd ${command} x`);
@@ -294,7 +311,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         `command cdkd state show "${hostile}"`,
         `aws s3 ls "${hostile}"`,
       ]) {
-        expect(() => expectOnlyDisplayResidual(ran, dir, hostile), ran).toThrow(
+        expect(() => expectOnlyDisplayResidual(ran, dir, hostile, RUNTIME_ONLY), ran).toThrow(
           /also ran a stubbed cdkd \/ aws/
         );
       }
@@ -324,6 +341,12 @@ describe('pasteable messages — nothing runs at any granularity', () => {
             hostile
           )
         ).toThrow(/without the displayed value/);
+        // Each arm of the "span holds the value" check on its own, with a value
+        // JSON escaping changes (go-to-k/cdkd#4127 round-3 optional): shown
+        // only JSON-escaped, and shown only raw.
+        const quoted = 'x"$(touch OWNED)';
+        expectZshRunsTheDisplay(`Nothing for ${JSON.stringify(quoted)} (us-east-1).`, dir, quoted);
+        expectZshRunsTheDisplay(`Nothing for ${quoted}" here (us-east-1).`, dir, quoted);
         // A run that also invokes a stubbed verb (the M4 shape: `x(N)` lets zsh
         // go on to run the verb after the substitution).
         expect(() =>
@@ -331,14 +354,14 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         ).toThrow(/also ran a stubbed cdkd/);
         const zshOnlyVerb = `cdkd deploy "${hostile}" x(N)`;
         expect(filesTouchedBy(zshOnlyVerb, dir, { shells: ['bash'] })).toEqual([]);
-        expect(() => expectOnlyDisplayResidual(zshOnlyVerb, dir, hostile)).toThrow(
+        expect(() => expectOnlyDisplayResidual(zshOnlyVerb, dir, hostile, RUNTIME_ONLY)).toThrow(
           /also ran a stubbed cdkd \/ aws/
         );
       }
       // A verb that is only an ARGUMENT does not count, which was the token
       // rule's false positive: `Could` runs, with `cdkd` as its argument.
       const argument = `Could not lock "${hostile}" -- see cdkd force-unlock`;
-      expect(expectOnlyDisplayResidual(argument, dir, hostile).length).toBeGreaterThan(0);
+      expect(expectOnlyDisplayResidual(argument, dir, hostile, RUNTIME_ONLY).length).toBeGreaterThan(0);
       // The pre-fold shape — a command inside prose quotes after an
       // apostrophe — is still refused, by the boundary check: the value runs
       // inside cdkd's single quotes, not a JSON pair. A `--flag` remedy beside
@@ -347,20 +370,20 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // carries no pasteable command), not this helper's.
       const commandRan =
         `This file's key is unreadable — run 'cdkd state show ${hostile}' if it's yours.`;
-      expect(() => expectOnlyDisplayResidual(commandRan, dir, hostile)).toThrow(/JSON boundary/);
+      expect(() => expectOnlyDisplayResidual(commandRan, dir, hostile, RUNTIME_ONLY)).toThrow(/JSON boundary/);
       // A bare display: the value is not inside a JSON boundary...
       const separator = 'x; touch OWNED; #';
       const bareRan = `Cannot adopt SSM parameter ${separator} from an ARN.`;
-      expect(() => expectOnlyDisplayResidual(bareRan, dir, separator)).toThrow(/JSON boundary/);
+      expect(() => expectOnlyDisplayResidual(bareRan, dir, separator, RUNTIME_ONLY)).toThrow(/JSON boundary/);
       // ...and a boundary around something ELSE in the span does not count:
       // the check binds the quotes to the value.
       const elsewhere = `Cannot adopt SSM parameter ${separator} from "an ARN".`;
-      expect(() => expectOnlyDisplayResidual(elsewhere, dir, separator)).toThrow(/JSON boundary/);
+      expect(() => expectOnlyDisplayResidual(elsewhere, dir, separator, RUNTIME_ONLY)).toThrow(/JSON boundary/);
       // ...nor two unrelated quoted words on EITHER side of a bare value,
       // which a flanking-pair regex accepts: the span runs, and the value is
       // outside every paired `"..."`.
       const flanked = `Key "a" holds ${hostile} at "b"`;
-      expect(() => expectOnlyDisplayResidual(flanked, dir, hostile)).toThrow(/JSON boundary/);
+      expect(() => expectOnlyDisplayResidual(flanked, dir, hostile, RUNTIME_ONLY)).toThrow(/JSON boundary/);
       // And the decoy sweep: a span that DELETES a decoy counts as having run
       // and the decoy is re-seeded, so the next span still has it (a first cut
       // walked surviving entries only and lost the decoy silently).
@@ -389,17 +412,17 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // A value the clause split cut in half: the running clause holds no
       // boundary and no whole value, so the absence check alone passed it.
       const split = 'x$(touch OWNED): y';
-      expect(() => expectOnlyDisplayResidual(`Found record(s): Key ${split}`, dir, split)).toThrow(
+      expect(() => expectOnlyDisplayResidual(`Found record(s): Key ${split}`, dir, split, RUNTIME_ONLY)).toThrow(
         /JSON boundary/
       );
       // And a value inside a paired span AND bare beside it: the positive
       // check alone accepts it, the absence check is what refuses it.
       const twice = `Key "${hostile}" also ${hostile}`;
-      expect(() => expectOnlyDisplayResidual(twice, dir, hostile)).toThrow(/outside a JSON boundary/);
+      expect(() => expectOnlyDisplayResidual(twice, dir, hostile, RUNTIME_ONLY)).toThrow(/outside a JSON boundary/);
       // ...and a second copy inside a quoted run that is NOT valid JSON is
       // bare too: only a decodable span is a boundary.
       const invalidBeside = `Key "${hostile}" also "\\q ${hostile}"`;
-      expect(() => expectOnlyDisplayResidual(invalidBeside, dir, hostile)).toThrow(
+      expect(() => expectOnlyDisplayResidual(invalidBeside, dir, hostile, RUNTIME_ONLY)).toThrow(
         /outside a JSON boundary/
       );
       // A value carrying a quote or a backslash renders JSON-ESCAPED inside
@@ -408,7 +431,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // do not stop `$( )`).
       for (const escaped of ['x"$(touch OWNED)', 'x\\$(touch OWNED)']) {
         const bounded = `State file ${JSON.stringify(`cdkd/${escaped}/state.json`)} is not valid JSON.`;
-        expect(expectOnlyDisplayResidual(bounded, dir, escaped), escaped).toEqual([bounded]);
+        expect(expectOnlyDisplayResidual(bounded, dir, escaped, RUNTIME_ONLY), escaped).toEqual([bounded]);
       }
       // The child's HOME is the scratch directory, so a `~`-expanding span
       // lands where the sweep sees it rather than in the real home.
@@ -432,7 +455,7 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // `displayIdent`'s boundary, no command in the span. Double quotes do
       // not stop `$( )`, which is the whole reason the criterion is per block.
       const accepted = `State file "cdkd/${hostile}/state.json" is not valid JSON.`;
-      expect(expectOnlyDisplayResidual(accepted, dir, hostile)).toEqual([accepted]);
+      expect(expectOnlyDisplayResidual(accepted, dir, hostile, RUNTIME_ONLY)).toEqual([accepted]);
     });
   }, 120_000);
 
@@ -446,6 +469,24 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // result (that field is the timeout's), so the signal is asserted on
       // its own: a span that died that way ran something.
       expect(() => filesTouchedBy('kill -KILL $$', dir)).toThrow(/killed/);
+    });
+  }, 120_000);
+
+  it('expectOnlyDisplayResidual runs the per-line block rule by default, and an opt-out must name its row', () => {
+    // go-to-k/cdkd#4127 M11: an unclassified row reds here instead of passing
+    // on the runtime half alone, and only a named S1 row skips it.
+    const v = 'x$(touch OWNED)';
+    const joined = `No stack ${JSON.stringify(v)} was found. Run 'cdkd state list'.`;
+    const split = `No stack ${JSON.stringify(v)} was found.\nRun 'cdkd state list'.`;
+    withPasteDir((dir) => {
+      expect(() => expectOnlyDisplayResidual(joined, dir, v)).toThrow(/also carries a pasteable command/);
+      expect(expectOnlyDisplayResidual(split, dir, v).length).toBeGreaterThan(0);
+      expect(
+        expectOnlyDisplayResidual(joined, dir, v, { unfixedS1Row: 'go-to-k/cdkd#3950 self-test row' }).length
+      ).toBeGreaterThan(0);
+      expect(() => expectOnlyDisplayResidual(joined, dir, v, { unfixedS1Row: 'some row' })).toThrow(
+        /names its go-to-k\/cdkd#3950 row/
+      );
     });
   }, 120_000);
 
