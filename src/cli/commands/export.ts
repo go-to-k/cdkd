@@ -9010,7 +9010,7 @@ export async function runPerStackImportLoop(args: {
           const orphan = orphanCommandFor(node.stackName, node.region);
           logger.warn(
             `Failed to delete cdkd state for ${quotedOrNotShown(node.stackName)} ` +
-              `(${safeSegment(node.region)}): ` +
+              `(${quotedOrNotShown(node.region)}): ` +
               // `safeDetail`, not `safeSegment`: an SDK message is FREE-FORM
               // text, which `display-safe.ts` says takes `displaySafe` directly
               // (the identifier helper's contract is a record field or a key

@@ -556,9 +556,16 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
     for (const text of [summary, warned]) {
       const forged = text
         .split('\n')
-        .filter((line) => /^\s*- cdkd\/(ProdStack|OtherStack)\//.test(line));
+        // `'?`: a row names its key through `quotedOrNotShown` since
+        // go-to-k/cdkd#4205, so a real one reads `- 'cdkd/...'`.
+        .filter((line) => /^\s*- '?cdkd\/(ProdStack|OtherStack)\//.test(line));
       expect(forged, `forged rows in: ${text}`).toEqual([]);
     }
+    // The legitimate row, pinned in its own spelling, so a change of row
+    // format is seen here and not only as a vacuous "no forged row".
+    expect(summary.split('\n').filter((l) => l.startsWith('  - '))).toEqual([
+      "  - 'cdkd/Root/us-east-1/state.json': denied   - cdkd/OtherStack/us-east-1/state.json: AccessDenied",
+    ]);
     // Not vacuous: the block really ran and really named the failure.
     expect(summary).toContain('state.json');
     expect(warned).toContain('Failed to delete cdkd state');
@@ -638,10 +645,11 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
       expect(row, `${label}: ${summary}`).toBe(
         '  - (not shown: it is not a plain identifier): denied'
       );
-      rows.push([label, `${row}\nRecover with: cdkd state orphan '<stack>' --stack-region '<region>'`]);
+      rows.push([label, summary]);
     }
+    // The REAL summary, pasted whole: its rows and the `Recover with:` line.
     withPasteDir((dir) => {
-      for (const [label, block] of rows) expect(spansThatRun(block, dir), label).toEqual([]);
+      for (const [label, summary] of rows) expect(spansThatRun(summary, dir), label).toEqual([]);
     });
   }, 120_000);
 

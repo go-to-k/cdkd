@@ -77,11 +77,7 @@ import {
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import {
-  IDENT_MAX_CODE_POINTS,
-  STACK_REF_MAX_CODE_POINTS,
-  displayIdent,
-} from '../../../src/utils/display-safe.js';
+import { shellQuote } from '../../../src/utils/pasteable-command.js';
 
 /**
  * The four payload families. `;` alone is not the class: `$( )` and backticks
@@ -473,26 +469,47 @@ function expectNoMoreThanItsLines(
  */
 function flipJudged(span: string, value: string, extra: readonly string[] = []): string {
   if (!span.startsWith(`${OPERATOR_FLIP}\n`)) return span;
-  const displays = new Set([...exactDisplaysOf(value), ...extra]);
+  const displays = new Set([...exactDisplaysOf(value), ...checkedDisplays(value, extra)]);
   return span.replace(/"(?:[^"\\]|\\.)*"/g, (s) => (displays.has(s) ? '"DISPLAY"' : s));
 }
 
 /**
- * The EXACT spellings a display of `value` takes: its JSON string, and the
- * JSON boundary `displayIdent` / `displayStackName` render (a cut value's
- * boundary holds the cut text; the `[cut: ...]` marker sits outside it). Only a
- * paired span EQUAL to one of these is set aside: matching on "the decoded
+ * The EXACT spelling a display of `value` takes by default: its JSON string,
+ * which is what `displayIdent` / `displayStackName` render for every payload
+ * the harness drives (none is cut). Only a paired span EQUAL to it (or to a
+ * site's own {@link checkedDisplays}) is set aside: matching on "the decoded
  * span contains the value" let a stray `"` earlier on the line re-pair the
  * quotes around a COMMAND naming the value and set that aside too (the
  * go-to-k/cdkd#4205 review's S-m5, measured running under both shells).
  */
 function exactDisplaysOf(value: string): Set<string> {
-  const out = new Set([JSON.stringify(value)]);
-  for (const cap of [IDENT_MAX_CODE_POINTS, STACK_REF_MAX_CODE_POINTS]) {
-    const shown = displayIdent(value, { maxCodePoints: cap }).replace(/ \[cut: [^\]]*\]$/, '');
-    if (shown.startsWith('"')) out.add(shown);
+  return new Set([JSON.stringify(value)]);
+}
+
+/**
+ * A site's own `displays` entries, each checked before it is trusted, so a
+ * broad entry cannot set a command aside: it must be a JSON string that decodes
+ * to text holding `value` (a display OF the value), and it must not hold
+ * `shellQuote(value)` (the spelling a command names it by). Throws on a bad
+ * entry rather than skipping it: a set-aside that silently widens is the
+ * fail-open this guards.
+ */
+export function checkedDisplays(value: string, displays: readonly string[]): string[] {
+  for (const entry of displays) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(entry);
+    } catch {
+      decoded = undefined;
+    }
+    if (typeof decoded !== 'string' || !decoded.includes(value)) {
+      throw new Error(`displays entry is not a JSON display of the value ${value}: ${entry}`);
+    }
+    if (entry.includes(shellQuote(value))) {
+      throw new Error(`displays entry holds a command spelling of the value ${value}: ${entry}`);
+    }
   }
-  return out;
+  return [...displays];
 }
 
 /**

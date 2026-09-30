@@ -45,6 +45,7 @@ import {
   expectOnlyDisplayResidual,
   expectZshRunsTheDisplay,
   OPERATOR_FLIP,
+  checkedDisplays,
   filesTouchedBy,
   lineStarts,
   segmentsOf,
@@ -287,6 +288,19 @@ describe('pasteable messages — nothing runs at any granularity', () => {
       // is bare; the next line's apostrophe closes the rest, so the block parses.
       expect(filesTouchedBy(`${OPERATOR_FLIP}\n${stray}`, dir)).toContain('OWNED');
       expect(spansThatRunBesideTheDisplay(stray, dir, sub)).toContain(`${OPERATOR_FLIP}\n${stray}`);
+      // ...and a site cannot widen the set-aside by hand: a `displays` entry
+      // must be a JSON display OF the value and must not hold the spelling a
+      // command names it by (go-to-k/cdkd#4205 review).
+      const strayPair = /"(?:[^"\\]|\\.)*"/.exec(stray)![0];
+      expect(strayPair).toContain(shellQuote(sub));
+      expect(() => spansThatRunBesideTheDisplay(stray, dir, sub, {}, [strayPair])).toThrow(
+        /holds a command spelling of the value/
+      );
+      expect(() => spansThatRunBesideTheDisplay(stray, dir, sub, {}, ['"zzz"'])).toThrow(
+        /is not a JSON display of the value/
+      );
+      expect(() => checkedDisplays(sub, ['not json'])).toThrow(/is not a JSON display/);
+      expect(checkedDisplays(sub, [JSON.stringify(`cdkd/${sub}/state.json`)])).toHaveLength(1);
     });
   }, 120_000);
 
