@@ -240,7 +240,6 @@ import {
   type FreshNoEchoCeilingVerdict,
   type FreshNoEchoReadback,
 } from './deploy-value-equality.js';
-
 import * as nameCollisionMixin from './deploy-engine-name-collision.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
