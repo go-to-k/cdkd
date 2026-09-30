@@ -306,7 +306,7 @@ function scrubStacksFailedError(failures: ReadonlyArray<{ stackName: string }>):
  */
 export type ExportIndexFinding =
   | { kind: 'converge'; exportName: string; stateValue: unknown }
-  | { kind: 'absent'; exportName: string };
+  | { kind: 'absent'; exportName: string; entryValue: unknown };
 
 /** What one stack's pass over one region's exports index examined and found. */
 export interface ExportIndexRepairPlan {
@@ -363,7 +363,7 @@ export function planExportIndexRepair(
     if (entry.producerStack !== stackName || entry.producerRegion !== producerRegion) continue;
     examined.push(exportName);
     if (outputs === undefined || !Object.hasOwn(outputs, exportName)) {
-      findings.push({ kind: 'absent', exportName });
+      findings.push({ kind: 'absent', exportName, entryValue: entry.value });
       continue;
     }
     const stateValue = outputs[exportName];
@@ -1127,6 +1127,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // finding no scrub re-run clears, so neither the summary nor `--fail` may
   // read as clean over it.
   let totalStacksWithUnrepairedReadNames = 0;
+  // Output keys the template no longer declares (go-to-k/cdkd#4120): those
+  // dropped, the stacks where another stack still reads one (kept, a finding),
+  // and the stacks where the other records could not be read (nothing dropped,
+  // exit 2).
+  let totalOutputKeysDropped = 0;
+  let totalStacksWithReadOutputKeys = 0;
+  const droppedReadersUnverifiedStacks: string[] = [];
   /**
    * Stacks this `--dry-run` proceeded over with an UNREADABLE resources map
    * (issue go-to-k/cdkd#3018). Tracked exactly like `indexUnreadable`: an
@@ -1181,6 +1188,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       throw err;
     });
     return stateRefs;
+  };
+
+  // Every record's cross-stack reads, loaded at most once per run and only when
+  // some stack has an output key to drop (go-to-k/cdkd#4120). A failed load is
+  // not memoized.
+  let consumerRecords: Promise<ConsumerRecord[]> | undefined;
+  const loadConsumerRecords = (): Promise<ConsumerRecord[]> => {
+    consumerRecords ??= readConsumerRecords(stateBackend, region).catch((err: unknown) => {
+      consumerRecords = undefined;
+      throw err;
+    });
+    return consumerRecords;
   };
 
   // EXPORTS INDEX (issue #2667). One store and one `exports.json` per REGION:
@@ -1262,7 +1281,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         // an import may be one the user did not name (issue #2133 review).
         appStacks: allStacks,
         ...(nestedChild && { nestedChild }),
-        listStateRefs,
+        readConsumerRecords: loadConsumerRecords,
       });
     } catch (err) {
       // EVERY error, not only a `CdkdError` refusal. A stack whose state could
@@ -1391,8 +1410,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // rewrite (issue #1919). `--dry-run --fail` prints these lines on every
       // run of the documented CI gate, into CI logs, so a raw name here would
       // disclose on a schedule.
-      const named = (exportName: string): string =>
-        renderStateKeyForLine(scrubbed.exportNameDisplay(exportName));
+      const named = (exportName: string, alsoMask?: unknown): string =>
+        renderStateKeyForLine(scrubbed.exportNameDisplay(exportName, alsoMask));
       const unwrittenNames = new Set(repair.unwritten);
       for (const exportName of repair.unwritten) {
         indexUnwritten.push({ region: stackRegion, shown: named(exportName) });
@@ -1446,7 +1465,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         } else {
           totalIndexEntriesAbsent++;
           logger.warn(
-            `Exports index entry ${named(finding.exportName)} (${displayIdent(stackRegion)}) is ` +
+            `Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) is ` +
               `published by ${shownStack}, whose state.outputs has no key of that name — ` +
               `nothing was written for it and it keeps the value it holds. Redeploy ` +
               `${shownStack} to rewrite the index from its own outputs.`
@@ -1547,6 +1566,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       scrubbed.unverifiableReads === 0 &&
       scrubbed.unverifiableLeaves === 0 &&
       scrubbed.unrepairedReadNames === 0 &&
+      (scrubbed.keptReadOutputKeys ?? 0) === 0 &&
+      !scrubbed.droppedOutputReadersUnverified &&
       indexConverged === 0
     ) {
       // A CONVERGE finding gates this line for the same reason the two below
@@ -1631,6 +1652,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           `reported clean.`
       );
     }
+    totalOutputKeysDropped += scrubbed.droppedOutputKeys ?? 0;
+    if ((scrubbed.keptReadOutputKeys ?? 0) > 0) totalStacksWithReadOutputKeys++;
+    if (scrubbed.droppedOutputReadersUnverified) droppedReadersUnverifiedStacks.push(stackName);
     if (scrubbed.secretBearingKeys > 0) {
       // A leak this command cannot remedy still counts as a FINDING — the CI
       // gate below must not call a state clean while `state.json` holds
@@ -1696,6 +1720,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksWithUnverifiableReads === 0 &&
     totalStacksWithUnverifiableLeaves === 0 &&
     totalStacksWithUnrepairedReadNames === 0 &&
+    totalStacksWithReadOutputKeys === 0 &&
+    droppedReadersUnverifiedStacks.length === 0 &&
     totalParentAttributesUnmatched === 0 &&
     totalIndexEntriesConverged === 0 &&
     indexUnwritten.length === 0 &&
@@ -1768,6 +1794,16 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `be verified, so their imported values were not checked — see the warnings above for ` +
         `which read, why, and what to do about it.`
       : '';
+  const outputKeyNote =
+    (totalOutputKeysDropped > 0
+      ? ` ${totalOutputKeysDropped} output key(s) the template no longer declares ` +
+        `${options.dryRun ? 'would be' : 'were'} dropped: their values could not be identified, ` +
+        `and they are not necessarily secrets (see the lines above).`
+      : '') +
+    (totalStacksWithReadOutputKeys > 0
+      ? ` ${totalStacksWithReadOutputKeys} stack(s) keep an undeclared output key another ` +
+        `stack still reads — see the warnings above.`
+      : '');
   const readNameNote =
     totalStacksWithUnrepairedReadNames > 0
       ? ` ${totalStacksWithUnrepairedReadNames} stack(s) hold a cross-stack read name in ` +
@@ -1821,11 +1857,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -1867,6 +1903,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (damagedProducerStacks.length > 0) {
       throw damagedProducerRecordsError(damagedProducerStacks);
     }
+    if (droppedReadersUnverifiedStacks.length > 0) {
+      throw droppedOutputReadersUnverifiedError(droppedReadersUnverifiedStacks);
+    }
     if (options.fail) throw new ScrubNeededError();
     return;
   }
@@ -1894,11 +1933,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `not purge it. So a value that was ever persisted must be treated as compromised — ` +
         `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
         `rotating); rotation is what makes any surviving version ` +
-        `harmless.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote}`
+        `harmless.${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${readNameNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -1935,6 +1974,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   if (damagedProducerStacks.length > 0) {
     throw damagedProducerRecordsError(damagedProducerStacks);
   }
+  if (droppedReadersUnverifiedStacks.length > 0) {
+    throw droppedOutputReadersUnverifiedError(droppedReadersUnverifiedStacks);
+  }
   // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
   // reason stated on that counter: a real run cannot fix either one, so exiting
   // 0 over them is exactly backwards (issue #2133 review).
@@ -1943,6 +1985,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     (totalStacksWithUnscrubbableKeys > 0 ||
       totalStacksWithUnverifiableReads > 0 ||
       totalStacksWithUnrepairedReadNames > 0 ||
+      totalStacksWithReadOutputKeys > 0 ||
       totalParentAttributesUnmatched > 0 ||
       totalStacksWithUnverifiableLeaves > 0)
   ) {
@@ -2237,11 +2280,12 @@ function redactUnaccountedOutputs(
  * issue #1948 exoneration reads as "this bag is redacted", so the unnamed value
  * printed on its REMOVE row. So scrub removes it; the deploy that next writes
  * the record would not re-create it either, since the template no longer
- * declares it. Two such keys are kept: one the widened pass DID rewrite (its
- * value is now the expression, and the exports-index step converges an entry
- * against it), and one no string of which can be a plaintext (only whole
- * secret-reference tokens, or no string at all), which a drop would rewrite a
- * clean record over.
+ * declares it. Kept instead: a key the widened pass DID rewrite (its value is
+ * now the expression, and the exports-index step converges an entry against
+ * it); one no string of which can be a plaintext (only whole secret-reference
+ * tokens, or no string at all), which a drop would rewrite a clean record
+ * over; and one in `reportedKeys`. The caller also keeps a key another stack
+ * still reads (`findDroppedOutputReaders`).
  *
  * What may NOT be dropped is a LIVE export alias whose name this run could not
  * reproduce — a parameterized `Export.Name` resolved from template defaults, or
@@ -2263,6 +2307,12 @@ export function planUnnamedOutputDrop(input: {
   stored: Record<string, unknown>;
   rewritten: Record<string, unknown>;
   accountedKeys: ReadonlySet<string>;
+  /**
+   * Keys whose NAME holds a recorded secret (issue #1919): reported as leaks
+   * scrub cannot rewrite, and never dropped — the exports index still
+   * publishes that name, and the report is what keeps `--fail` red over it.
+   */
+  reportedKeys?: ReadonlySet<string>;
   /** The record's `exportNames`, as stored — any shape. */
   exportNames: unknown;
   /** Every declared `Export.Name` resolved to a key the record holds. */
@@ -2274,7 +2324,7 @@ export function planUnnamedOutputDrop(input: {
     ? new Set(input.exportNames.filter((n): n is string => typeof n === 'string'))
     : undefined;
   for (const [key, value] of Object.entries(input.stored)) {
-    if (input.accountedKeys.has(key)) continue;
+    if (input.accountedKeys.has(key) || input.reportedKeys?.has(key)) continue;
     const now = Object.hasOwn(input.rewritten, key) ? input.rewritten[key] : undefined;
     // Rewritten by a redaction pass: its value is now the expression.
     if (JSON.stringify(now) !== JSON.stringify(value)) continue;
@@ -2321,84 +2371,109 @@ interface DroppedOutputReader {
   intrinsic: 'Fn::ImportValue' | 'Fn::GetStackOutput';
 }
 
+/** One state record's cross-stack reads, as `findDroppedOutputReaders` reads them. */
+export interface ConsumerRecord {
+  stackName: string;
+  region: string;
+  imports: unknown;
+  outputReads: unknown;
+}
+
 /**
- * Every OTHER stack's recorded read of a key in `keys` on this producer
- * (issue go-to-k/cdkd#4120): `state.imports[]` for an `Fn::ImportValue`,
- * `state.outputReads[]` for an `Fn::GetStackOutput`.
- *
- * FAIL-CLOSED, unlike `findDownstreamConsumers`, whose caller only warns: a
- * listing or a record that cannot be read THROWS, because an absent answer
- * would let a drop break a live read unseen. An entry whose producer or key
- * name is stored REDACTED (`producerNameIsUnresolved`) cannot be compared, so
- * one in this region counts as a reader rather than being ruled out.
+ * Every state record in the bucket, reduced to its cross-stack reads
+ * (go-to-k/cdkd#4120). THROWS when the listing or any record cannot be read:
+ * the caller keeps every key it meant to drop rather than trust an absent
+ * answer. `scrubCommand` memoizes one load per run; a legacy ref with no region
+ * is read in `fallbackRegion`, as the destroy-time scan does.
  */
-async function findDroppedOutputReaders(
+export async function readConsumerRecords(
+  stateBackend: Pick<S3StateBackend, 'getState' | 'listStacks'>,
+  fallbackRegion: string
+): Promise<ConsumerRecord[]> {
+  const refs = await stateBackend.listStacks();
+  const records = await Promise.all(
+    refs.map(async (ref): Promise<ConsumerRecord | undefined> => {
+      const region = ref.region ?? fallbackRegion;
+      const got = await stateBackend.getState(ref.stackName, region);
+      if (!got) return undefined;
+      return {
+        stackName: ref.stackName,
+        region,
+        imports: got.state.imports,
+        outputReads: got.state.outputReads,
+      };
+    })
+  );
+  return records.filter((r): r is ConsumerRecord => r !== undefined);
+}
+
+/**
+ * Every OTHER record's recorded read of a key in `keys` on this producer
+ * (go-to-k/cdkd#4120): `imports[]` for an `Fn::ImportValue`, `outputReads[]`
+ * for an `Fn::GetStackOutput`.
+ *
+ * FAIL-CLOSED, unlike `findDownstreamConsumers`, whose caller only warns. What
+ * cannot be ruled out counts as a read: an entry whose key or producer name is
+ * stored REDACTED (`producerNameIsUnresolved`), or whose `sourceRegion` is not
+ * a string. A list field that is present but not a list, or an entry that is
+ * not an object, THROWS — the caller then treats the whole scan as unverified.
+ */
+export function findDroppedOutputReaders(
   producerStack: string,
   producerRegion: string,
   keys: ReadonlySet<string>,
-  stateBackend: Pick<S3StateBackend, 'getState' | 'listStacks'>,
-  listStateRefs: () => Promise<Array<{ stackName: string; region?: string }>>
-): Promise<DroppedOutputReader[]> {
+  records: readonly ConsumerRecord[]
+): DroppedOutputReader[] {
   const region = canonicalizeRegion(producerRegion);
-  const refs = await listStateRefs();
-  const perStack = await Promise.all(
-    refs.map(async (ref) => {
-      const refRegion = ref.region ?? producerRegion;
-      if (ref.stackName === producerStack && canonicalizeRegion(refRegion) === region) return [];
-      const got = await stateBackend.getState(ref.stackName, refRegion);
-      if (!got) return [];
-      const readers: DroppedOutputReader[] = [];
-      const imports: unknown = got.state.imports;
-      for (const entry of Array.isArray(imports) ? (imports as StateImportEntry[]) : []) {
-        if (entry === null || typeof entry !== 'object') continue;
-        if (entry.sourceStack !== producerStack) continue;
-        if (canonicalizeRegion(String(entry.sourceRegion)) !== region) continue;
-        const name = String(entry.exportName);
-        if (keys.has(name)) {
-          readers.push({
-            consumerStack: ref.stackName,
-            consumerRegion: refRegion,
-            key: name,
-            intrinsic: 'Fn::ImportValue',
-          });
-        } else if (producerNameIsUnresolved(name)) {
-          readers.push({
-            consumerStack: ref.stackName,
-            consumerRegion: refRegion,
-            key: undefined,
-            intrinsic: 'Fn::ImportValue',
-          });
-        }
+  const regionMayMatch = (value: unknown): boolean =>
+    typeof value !== 'string' || canonicalizeRegion(value) === region;
+  const entriesOf = (value: unknown, field: string, stackName: string): object[] => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.some((e) => e === null || typeof e !== 'object')) {
+      throw new Error(
+        `the ${field} list of ${displayStackName(stackName)}'s state record is not readable`
+      );
+    }
+    return value as object[];
+  };
+  const readers: DroppedOutputReader[] = [];
+  for (const record of records) {
+    if (record.stackName === producerStack && canonicalizeRegion(record.region) === region) {
+      continue;
+    }
+    const reader = (key: string | undefined, intrinsic: DroppedOutputReader['intrinsic']): void => {
+      readers.push({
+        consumerStack: record.stackName,
+        consumerRegion: record.region,
+        key,
+        intrinsic,
+      });
+    };
+    const matchKey = (name: unknown, intrinsic: DroppedOutputReader['intrinsic']): void => {
+      if (typeof name === 'string' && keys.has(name)) reader(name, intrinsic);
+      else if (typeof name !== 'string' || producerNameIsUnresolved(name)) {
+        reader(undefined, intrinsic);
       }
-      const outputReads: unknown = got.state.outputReads;
-      for (const entry of Array.isArray(outputReads)
-        ? (outputReads as StateOutputReadEntry[])
-        : []) {
-        if (entry === null || typeof entry !== 'object') continue;
-        if (canonicalizeRegion(String(entry.sourceRegion)) !== region) continue;
-        const source = String(entry.sourceStack);
-        if (source !== producerStack && !producerNameIsUnresolved(source)) continue;
-        const name = String(entry.outputName);
-        if (keys.has(name)) {
-          readers.push({
-            consumerStack: ref.stackName,
-            consumerRegion: refRegion,
-            key: name,
-            intrinsic: 'Fn::GetStackOutput',
-          });
-        } else if (producerNameIsUnresolved(name)) {
-          readers.push({
-            consumerStack: ref.stackName,
-            consumerRegion: refRegion,
-            key: undefined,
-            intrinsic: 'Fn::GetStackOutput',
-          });
-        }
+    };
+    for (const entry of entriesOf(record.imports, 'imports', record.stackName)) {
+      const e = entry as Partial<StateImportEntry>;
+      if (e.sourceStack !== producerStack || !regionMayMatch(e.sourceRegion)) continue;
+      matchKey(e.exportName, 'Fn::ImportValue');
+    }
+    for (const entry of entriesOf(record.outputReads, 'outputReads', record.stackName)) {
+      const e = entry as Partial<StateOutputReadEntry>;
+      if (!regionMayMatch(e.sourceRegion)) continue;
+      const source = e.sourceStack;
+      if (
+        source !== producerStack &&
+        !(typeof source === 'string' && producerNameIsUnresolved(source))
+      ) {
+        continue;
       }
-      return readers;
-    })
-  );
-  return perStack.flat();
+      matchKey(e.outputName, 'Fn::GetStackOutput');
+    }
+  }
+  return readers;
 }
 
 /**
@@ -3100,6 +3175,22 @@ export function orderScrubTargets<
  * {@link malformedRecordsAuditedError} gives: a stack name reaching a
  * comma-joined list needs a boundary it cannot close from inside.
  */
+/**
+ * Stacks whose undeclared output keys were NOT dropped because the other
+ * state records could not be read to rule out a reader (go-to-k/cdkd#4120).
+ * Exit 2 whatever `--fail` says: scrub could not look.
+ */
+function droppedOutputReadersUnverifiedError(stackNames: readonly string[]): ScrubRefusalError {
+  const names = stackNames.map((n) => displayIdent(n)).join(', ');
+  return new ScrubRefusalError(
+    `${stackNames.length} stack(s) hold output keys their template no longer declares, and ` +
+      `the other stacks' state could not be read to confirm none of them reads one, so none ` +
+      `was dropped: ${names}. Those stacks were scrubbed for everything else. Fix the read ` +
+      `(see the warnings above) and re-run.`,
+    'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED'
+  );
+}
+
 function damagedProducerRecordsError(stackNames: readonly string[]): ScrubRefusalError {
   const names = stackNames.map((n) => displayIdent(n)).join(', ');
   return new ScrubRefusalError(
@@ -5730,6 +5821,18 @@ export interface ScrubStackResult {
    * so the stack is not reported clean and `--fail` exits 1.
    */
   unrepairedReadNames: number;
+  /** Output keys this run dropped (would drop, under `--dry-run`) (go-to-k/cdkd#4120). */
+  droppedOutputKeys?: number;
+  /**
+   * Keys it would have dropped that another stack's record still reads
+   * (go-to-k/cdkd#4120). KEPT, and a FINDING: `--fail` exits 1 over them.
+   */
+  keptReadOutputKeys?: number;
+  /**
+   * The other records could not be read, so no key was dropped
+   * (go-to-k/cdkd#4120). Exit 2 whatever `--fail` says: scrub could not look.
+   */
+  droppedOutputReadersUnverified?: true;
   /**
    * `state.outputs` as this run leaves it — the bag written on a real run, and
    * the bag a real run WOULD write under `--dry-run` (issue #2667).
@@ -5761,7 +5864,7 @@ export interface ScrubStackResult {
    * name. Returning a closure keeps the plaintexts captured here rather than
    * handing the bag out as data.
    */
-  exportNameDisplay: (exportName: string) => SecretSafeKeyDisplay;
+  exportNameDisplay: (exportName: string, alsoMask?: unknown) => SecretSafeKeyDisplay;
   /**
    * The nested children this stack deploys, for `scrubCommand` to visit next
    * (go-to-k/cdkd#2252). Every `AWS::CloudFormation::Stack` row in the
@@ -5796,10 +5899,22 @@ export interface ScrubStackResult {
  * the bag. Printing only: the secret-bearing KEY scan reads the map alone.
  */
 function exportNameDisplayOver(
-  outputSecrets: RecordedSecretValues
-): (exportName: string) => SecretSafeKeyDisplay {
-  const corpus = printingCorpusOf(outputSecrets);
-  return (exportName) => secretSafeKeyDisplay(exportName, corpus);
+  outputSecrets: RecordedSecretValues,
+  /**
+   * More text to mask (go-to-k/cdkd#4120): every plaintext this run recorded
+   * and the stored values of the output keys it dropped, so an index entry left
+   * under a dropped key's name is masked as the drop line masked it.
+   */
+  extra?: RecordedSecretValues
+): (exportName: string, alsoMask?: unknown) => SecretSafeKeyDisplay {
+  const corpus = new Map([...printingCorpusOf(outputSecrets), ...(extra ?? [])]);
+  return (exportName, alsoMask) => {
+    if (alsoMask === undefined) return secretSafeKeyDisplay(exportName, corpus);
+    // An index entry's own VALUE: a name built around it would print it.
+    const withValue = new Map(corpus);
+    addStoredStringLeaves(alsoMask, withValue);
+    return secretSafeKeyDisplay(exportName, withValue);
+  };
 }
 
 /**
@@ -5848,12 +5963,12 @@ export async function scrubStack(
      */
     nestedChild?: NestedChildScrubTarget | undefined;
     /**
-     * The state bucket's stack listing, memoized by `scrubCommand` for the
-     * whole run. Read only when this record has output keys to DROP
+     * Every state record's cross-stack reads, memoized by `scrubCommand` for
+     * the whole run. Read only when this record has output keys to DROP
      * (go-to-k/cdkd#4120), to find another stack still reading one. Defaults
-     * to a fresh `stateBackend.listStacks()`.
+     * to a fresh {@link readConsumerRecords}.
      */
-    listStateRefs?: (() => Promise<Array<{ stackName: string; region?: string }>>) | undefined;
+    readConsumerRecords?: (() => Promise<ConsumerRecord[]>) | undefined;
   }
 ): Promise<ScrubStackResult> {
   const { logger } = opts;
@@ -7047,7 +7162,10 @@ export async function scrubStack(
             typeof exportName === 'string' &&
             !exportNameUnresolved &&
             isReadableBag(state.outputs) &&
-            Object.hasOwn(state.outputs, exportName)
+            Object.hasOwn(state.outputs, exportName) &&
+            // A key the record's own export set does not list is a plain
+            // Output of the same name, not this alias.
+            (!Array.isArray(state.exportNames) || state.exportNames.includes(exportName))
           )
         ) {
           everyExportAliasReproduced = false;
@@ -7197,23 +7315,7 @@ export async function scrubStack(
     // remedy is an `Export.Name` change plus a redeploy, per #1919). Repairing
     // a value and re-classifying a build are different changes and the second
     // one is not this issue's.
-    //
-    // The WARNING is deferred to `reportSecretBearingKeys`, after the drop
-    // (go-to-k/cdkd#4120): a key this run DROPS is one scrub did remove, so it
-    // is neither warned as unscrubbable nor counted.
-    const secretBearingKeys: Array<{
-      key: string;
-      display: Exclude<SecretSafeKeyDisplay, { kind: 'safe' }>;
-    }> = [];
-    const reportSecretBearingKeys = (dropped: ReadonlySet<string>): number => {
-      let reported = 0;
-      for (const { key, display } of secretBearingKeys) {
-        if (dropped.has(key)) continue;
-        logger.warn(secretBearingStateKeyWarning(stack.stackName, display));
-        reported++;
-      }
-      return reported;
-    };
+    const secretBearingKeys: string[] = [];
     for (const key of Object.keys(state.outputs ?? {})) {
       // ONE call decides both the guard and the message (issue #2874). The
       // previous shape took the verdict from the RAW key here and printed a
@@ -7224,7 +7326,8 @@ export async function scrubStack(
       // printed text.
       const display = secretSafeKeyDisplay(key, outputSecrets);
       if (!secretBearing(display)) continue;
-      secretBearingKeys.push({ key, display });
+      secretBearingKeys.push(key);
+      logger.warn(secretBearingStateKeyWarning(stack.stackName, display));
     }
 
     // The nested children this stack deploys (go-to-k/cdkd#2252): every
@@ -7373,7 +7476,7 @@ export async function scrubStack(
       // design has exactly this shape — zero needles — and reporting it clean
       // is the outcome issue #2133 exists to prevent.
       //
-      // The secret-bearing key count is provably 0 on this branch and is carried
+      // `secretBearingKeys.length` is provably 0 on this branch and is carried
       // for SHAPE only (issue #2133 review): `totalSecrets === 0` implies
       // `outputSecrets.size === 0`, and `stateKeySecretExposure` needs a needle
       // from that very map, so the loop above pushed nothing. TWO fields can be
@@ -7386,7 +7489,7 @@ export async function scrubStack(
       return {
         recordsChanged: 0,
         secretsFound: 0,
-        secretBearingKeys: reportSecretBearingKeys(new Set()),
+        secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
         unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
         unverifiableLeaves,
@@ -7693,18 +7796,25 @@ export async function scrubStack(
     // THE DROP (go-to-k/cdkd#4120): a stored key today's template cannot name
     // and neither pass rewrote is REMOVED from the bag this run writes, never
     // left beside the expressions it writes — see `planUnnamedOutputDrop` for
-    // which keys, and which it must keep. Refused, with nothing written, when
-    // another stack still reads one: that read would break, and the remedy is
-    // the consumer's.
+    // which keys, and which it must keep. A key another stack still READS is
+    // kept instead, and so is every candidate when the other records cannot be
+    // read: the rest of the record is still written, because refusing it would
+    // strand every plaintext this run CAN repair over a leftover it cannot
+    // identify. Both are findings, never a clean result.
     let newOutputs = redactedOutputs;
     let newExportNames: unknown = state.exportNames;
-    let droppedKeys: ReadonlySet<string> = new Set<string>();
+    let droppedOutputKeys = 0;
+    let keptReadOutputKeys = 0;
+    let droppedOutputReadersUnverified = false;
+    // The key-display corpus below, kept for the exports-index lines too.
+    const droppedDisplayCorpus: RecordedSecretValues = new Map();
     if (isReadableBag(state.outputs) && isReadableBag(redactedOutputs)) {
       const stored = state.outputs as Record<string, unknown>;
       const plan = planUnnamedOutputDrop({
         stored,
         rewritten: redactedOutputs as Record<string, unknown>,
         accountedKeys: accountedOutputKeys,
+        reportedKeys: new Set(secretBearingKeys),
         exportNames: state.exportNames,
         everyExportAliasReproduced,
       });
@@ -7718,8 +7828,9 @@ export async function scrubStack(
           printingCorpusOf(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets))
         );
         for (const key of [...plan.drop, ...plan.keep]) addStoredStringLeaves(stored[key], corpus);
-        const shownKeys = (keys: readonly string[]): string =>
-          keys
+        for (const [value, expression] of corpus) droppedDisplayCorpus.set(value, expression);
+        const shownKeys = (keys: Iterable<string>): string =>
+          [...keys]
             .map((key) =>
               renderStateKeyForLine(
                 secretSafeKeyDisplay(key, corpus),
@@ -7727,48 +7838,57 @@ export async function scrubStack(
               )
             )
             .join(', ');
-        if (plan.drop.length > 0) {
-          const dropping = new Set(plan.drop);
-          let readers: DroppedOutputReader[];
+        let dropping = new Set(plan.drop);
+        if (dropping.size > 0) {
+          let readers: DroppedOutputReader[] | undefined;
           try {
-            readers = await findDroppedOutputReaders(
+            readers = findDroppedOutputReaders(
               stack.stackName,
               region,
               dropping,
-              stateBackend,
-              opts.listStateRefs ?? (() => stateBackend.listStacks())
+              await (
+                opts.readConsumerRecords ?? (() => readConsumerRecords(stateBackend, region))
+              )()
             );
           } catch (err) {
-            throw new ScrubRefusalError(
-              `Scrub of ${shownStack}: its template no longer declares output key(s) ` +
-                `${shownKeys(plan.drop)}, which scrub drops from the record, but the other ` +
-                `stacks' state could not be read to confirm none of them still reads one ` +
-                `(${displaySafe(err instanceof Error ? err.message : String(err))}). Nothing ` +
-                `was written for ${shownStack}; fix the read and re-run cdkd scrub.`,
-              'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED'
+            droppedOutputReadersUnverified = true;
+            logger.warn(
+              safeMsg`${shownStack}'s template no longer declares output key(s) ${shownKeys(dropping)}, ` +
+                `but the other stacks' state could not be read to confirm none of them still ` +
+                safeMsg`reads one (${maskSecretsInText(err instanceof Error ? err.message : String(err), corpus)}), ` +
+                `so NONE was dropped and this stack is not reported clean. Fix the read and ` +
+                `re-run cdkd scrub.`
             );
+            dropping = new Set();
           }
-          if (readers.length > 0) {
+          if (readers !== undefined && readers.length > 0) {
+            // A read whose name is stored redacted cannot be matched to one
+            // key, so it keeps them all.
+            const read = readers.some((r) => r.key === undefined)
+              ? new Set(dropping)
+              : new Set(readers.map((r) => r.key!));
+            keptReadOutputKeys = read.size;
             const lines = readers.map(
               (r) =>
-                `${displayStackName(r.consumerStack)} (${displayIdent(r.consumerRegion)}) reads ` +
+                safeMsg`${displayStackName(r.consumerStack)} (${displayIdent(r.consumerRegion)}) reads ` +
                 (r.key === undefined
                   ? `a name stored redacted, which cannot be compared,`
                   : shownKeys([r.key])) +
                 ` via ${r.intrinsic}`
             );
-            throw new ScrubRefusalError(
-              `Scrub of ${shownStack}: its template no longer declares output key(s) ` +
-                `${shownKeys(plan.drop)}, and scrub drops such a key rather than leave a value ` +
-                `it cannot identify beside the references it writes (cdkd diff would print ` +
-                `it) — but another stack still reads one: ${lines.join('; ')}. Dropping it ` +
-                `would break that read, so nothing was written for ${shownStack}. Stop the ` +
-                `consumer reading it (or declare the output again) and deploy, then re-run ` +
-                `cdkd scrub.`,
-              'SCRUB_DROPPED_OUTPUT_STILL_READ'
+            logger.warn(
+              safeMsg`${shownStack}'s template no longer declares output key(s) ${shownKeys(read)}, ` +
+                safeMsg`but another stack still reads them: ${lines.join('; ')}. They were NOT ` +
+                `dropped, since that read would break, and this stack is not reported clean: ` +
+                `a value left beside the references scrub writes can be printed by cdkd diff. ` +
+                `Stop the consumer reading it (or declare the output again) and deploy, then ` +
+                `re-run cdkd scrub.`
             );
+            dropping = new Set([...dropping].filter((key) => !read.has(key)));
           }
-          droppedKeys = dropping;
+        }
+        if (dropping.size > 0) {
+          droppedOutputKeys = dropping.size;
           newOutputs = Object.fromEntries(
             Object.entries(redactedOutputs as Record<string, unknown>).filter(
               ([key]) => !dropping.has(key)
@@ -7780,8 +7900,8 @@ export async function scrubStack(
             );
           }
           logger.info(
-            safeMsg`${opts.dryRun ? 'Would drop' : 'Dropped'} ${plan.drop.length} output key(s) from ` +
-              safeMsg`${shownStack} that its template no longer declares: ${shownKeys(plan.drop)}. ` +
+            safeMsg`${opts.dryRun ? 'Would drop' : 'Dropped'} ${dropping.size} output key(s) from ` +
+              safeMsg`${shownStack} that its template no longer declares: ${shownKeys(dropping)}. ` +
               `Their values are not printed: scrub could not identify them as a secret's ` +
               `plaintext, and left beside the references it writes, cdkd diff would print ` +
               `them. A deploy of today's template does not write them either.`
@@ -7799,7 +7919,6 @@ export async function scrubStack(
         }
       }
     }
-    const unscrubbableKeys = reportSecretBearingKeys(droppedKeys);
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
     // Whole-value rewrites of this record's outputs, as expression -> plaintext
     // pairs for `resolveRecordedExpressions` (see `outputRewrites`).
@@ -7874,7 +7993,10 @@ export async function scrubStack(
     return {
       recordsChanged,
       secretsFound: totalSecrets,
-      secretBearingKeys: unscrubbableKeys,
+      secretBearingKeys: secretBearingKeys.length,
+      droppedOutputKeys,
+      keptReadOutputKeys,
+      ...(droppedOutputReadersUnverified && { droppedOutputReadersUnverified: true as const }),
       unverifiableReads: prePassFindings.unverifiable.length,
       unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
       unverifiableLeaves,
@@ -7885,7 +8007,7 @@ export async function scrubStack(
       ...(malformedOrphanRows ? { malformedOrphanRows } : {}),
       ...(malformedResourceRows ? { malformedResourceRows } : {}),
       outputs: newOutputs,
-      exportNameDisplay: exportNameDisplayOver(outputSecrets),
+      exportNameDisplay: exportNameDisplayOver(outputSecrets, droppedDisplayCorpus),
       resolveRecordedExpressions,
       holdsRecordedPlaintext,
       nestedChildren,

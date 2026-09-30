@@ -359,7 +359,7 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | Code | Meaning |
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
-| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite. |
+| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, or an undeclared key another stack still reads. |
 | `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, or the exports index was left incomplete. |
 
 The full cross-command table is in the
@@ -422,7 +422,7 @@ without materializing `{}`.
 
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
-cannot rewrite. Four shapes qualify, and all four are also reported in words:
+cannot rewrite. Five shapes qualify, and all five are also reported in words:
 
 - a **state KEY** holding a secret, which needs an `Export.Name` change plus a
   redeploy: `N output KEY(s) in <stack> hold plaintext and CANNOT be scrubbed`;
@@ -482,6 +482,10 @@ cannot rewrite. Four shapes qualify, and all four are also reported in words:
   rotation**: `N cross-stack read name(s) in <stack> hold a plaintext scrub
   could NOT repair`. See [What this does not repair](#what-this-does-not-repair).
 
+- an **undeclared output key another stack still reads**, which scrub keeps
+  rather than drop: see
+  [A key the template can no longer name is dropped](#a-key-the-template-can-no-longer-name-is-dropped).
+
 ### A scan `--fail` warns about but does not count
 
 Not every abandoned scan raises the exit code. One failure aborts the whole
@@ -521,8 +525,7 @@ These error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_PRODUCER_RECORD_UNREADABLE` | A stack imports from a PRODUCER whose own `outputs` map cannot be read, so this run could not tell whether that producer still holds the plaintext. Raised with or without `--fail`, `--dry-run` included. | `cdkd scrub '<producer>'` cannot run until that record is repaired — inspect it with `cdkd state show '<producer>' --stack-region '<region>' --json`, repair it, scrub the producer, then re-run. The importing stack was still scrubbed for everything else (audited, under `--dry-run`). |
 | `SCRUB_NESTED_CHILD_UNRESOLVABLE` | A [nested stack](#nested-stacks) has a state record, but `scrub` could not derive what its parent deployed it with. | Follow the remedy the message names for its cause. Every other stack was still scrubbed; when the cause is the parent's own failure, that failure is reported too. |
 | `SCRUB_NESTED_TEMPLATE_TREE_MALFORMED` | The nested template tree under a stack is cyclic, too deep or too large, or names an absolute or escaping `aws:asset:path` — a hand-modified or non-CDK assembly. | Re-synthesize the app with CDK. Nothing in that stack or under it was written; any nested record under it is refused too. |
-| `SCRUB_DROPPED_OUTPUT_STILL_READ` | An output key scrub [would drop](#a-key-the-template-can-no-longer-name-is-dropped) — the template no longer declares it — is still read by another stack's recorded `Fn::ImportValue` / `Fn::GetStackOutput`, or by one whose name is stored redacted. Raised under `--dry-run` too. | Stop the named consumer reading the key (or declare the output again) and deploy it, then re-run. Nothing was written for the refused stack. |
-| `SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` | scrub has a key to drop, and the state bucket's listing or another stack's record could not be read to confirm nothing reads it. | Fix the read (usually an S3 permission, or a damaged record the message names) and re-run. Nothing was written for the refused stack. |
+| `SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` | scrub had an undeclared output key to [drop](#a-key-the-template-can-no-longer-name-is-dropped), and the state bucket's listing or another stack's record could not be read to confirm nothing reads it. Raised after the summary, with or without `--fail`. | Fix the read (usually an S3 permission, or a damaged record the warning names) and re-run. The stack was still scrubbed for everything else; no key was dropped. |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a
@@ -862,33 +865,45 @@ Dropped 1 output key(s) from MyStack that its template no longer declares: OldDb
 
 `--dry-run` says `Would drop`, and counts the stack as one it would scrub, so
 `--dry-run --fail` exits `1` until a real run (or a deploy) removes the key. A
-name that holds a secret is masked or withheld. A dropped export alias leaves
-the record's export set too; its entry in the [exports index](#the-exports-index)
-is reported as a name `state.outputs` no longer holds, and a redeploy rewrites
-the index.
+name that holds a secret, or the key's own stored value, is masked or withheld.
+A dropped export alias leaves the record's export set too; its entry in the
+[exports index](#the-exports-index) is reported as a name `state.outputs` no
+longer holds, and a redeploy rewrites the index.
 
-Three kinds of key are **kept**:
+The drop runs only when this run recorded at least one secret for the stack —
+the pass that rewrites the outputs at all. A stack whose template resolves no
+secret is not rewritten, and its undeclared keys stay as they are.
+
+These keys are **kept**:
 
 - one a pass rewrote — it now holds the reference;
 - one no string of which can be a plaintext — only whole `{{resolve:...}}`
   references, or no string at all;
+- one whose name holds a secret this run recorded — the
+  [state KEY leak](#exit-codes) scrub reports and cannot rewrite, because the
+  exports index still publishes that name;
 - one that may be a **live export alias** whose name this run could not
   reproduce. A key the record lists as an export (or any key, for a record
   written before cdkd recorded which keys are exports) is dropped only when
-  every `Export.Name` in today's template resolved to a key the record holds;
-  otherwise — a parameterized name deployed with `--parameters`, one that does
-  not resolve here, or an export the last deploy did not write — scrub cannot
-  tell that alias from a deleted one, keeps the key, and warns: `... were LEFT
-  as they are`. Such a key's value can still be printed by `cdkd diff`; a
-  deploy rewrites the outputs.
+  every `Export.Name` in today's template resolved to a key the record holds
+  and lists as an export; otherwise — a parameterized name deployed with
+  `--parameters`, one that does not resolve here, or an export the last deploy
+  did not write — scrub cannot tell that alias from a deleted one, keeps the
+  key, and warns: `... were LEFT as they are`. Such a key's value can still be
+  printed by `cdkd diff`, and the warning does not fail `--fail`; a deploy
+  rewrites the outputs;
+- one **another stack still reads**. Before dropping, scrub reads every state
+  record in the bucket once per run. A key another stack records reading, with
+  `Fn::ImportValue` or `Fn::GetStackOutput`, is kept and named with that
+  stack; so is every key the stack would drop when such a read's name is
+  stored redacted and cannot be compared. Dropping it would break the read.
+  The rest of the record is still scrubbed, the stack is not reported clean,
+  and `--fail` exits `1`. Stop the consumer reading it (or declare the output
+  again) and deploy, then re-run.
 
-**A key another stack still reads is not dropped.** Before dropping, scrub
-reads every other stack's state record in the bucket. When one records an
-`Fn::ImportValue` or `Fn::GetStackOutput` of a key it would drop — or a read of
-this stack whose name is stored redacted, which cannot be compared — the stack
-is refused with `SCRUB_DROPPED_OUTPUT_STILL_READ` and nothing is written for
-it. When the listing or a record cannot be read, it is refused with
-`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED`. See [Refusals](#refusals).
+When the listing or any record cannot be read, **no** key is dropped from that
+stack, the rest of it is still scrubbed, and the run ends with
+`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` (exit `2`, with or without `--fail`).
 
 ## Cross-stack read names
 
@@ -952,8 +967,7 @@ into a CONSUMER stack's AWS call. Hence three rules:
   invented. A key the template still names is left exactly as it is; one it
   cannot name is dropped, as
   [above](#a-key-the-template-can-no-longer-name-is-dropped), which ships no
-  token to a consumer — a key another stack reads is refused rather than
-  dropped. ROTATE the secret and redeploy; that rewrites the record. A
+  token to a consumer — a key another stack reads is kept. ROTATE the secret and redeploy; that rewrites the record. A
   degenerately short plaintext, under 4 characters, is excluded from the
   WIDENED match specifically: it is never used as a cross-resource needle,
   since it would match unrelated values. A key the template still names is

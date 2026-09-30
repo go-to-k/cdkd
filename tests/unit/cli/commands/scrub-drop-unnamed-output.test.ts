@@ -12,7 +12,8 @@
  *
  * The rest pins which keys may NOT be dropped (a declared key, a key a pass
  * rewrote, a value that cannot hold a plaintext, an export alias this run could
- * not reproduce) and the refusal when another stack still reads a key.
+ * not reproduce, a key whose name holds a recorded secret) and the key KEPT,
+ * as a finding, when another stack still reads it.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -64,7 +65,12 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
   })),
 }));
 
-import { scrubStack, planUnnamedOutputDrop } from '../../../../src/cli/commands/scrub.js';
+import {
+  scrubStack,
+  planUnnamedOutputDrop,
+  findDroppedOutputReaders,
+  type ConsumerRecord,
+} from '../../../../src/cli/commands/scrub.js';
 
 const infoLines: string[] = [];
 const warnLines: string[] = [];
@@ -162,16 +168,18 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
   async function scrub(
     producer: StackState,
     outputs: Record<string, TemplateOutput> = DECLARED,
-    opts: { dryRun?: boolean; listStateRefs?: () => Promise<Array<{ stackName: string; region?: string }>> } = {}
+    opts: { dryRun?: boolean; readConsumerRecords?: () => Promise<ConsumerRecord[]> } = {}
   ): Promise<{
     saved: StackState | undefined;
     changed: number;
     error: unknown;
     secretBearingKeys?: number;
+    result?: Awaited<ReturnType<typeof scrubStack>>;
   }> {
     seed(producer);
     let changed = 0;
     let secretBearingKeys: number | undefined;
+    let result: Awaited<ReturnType<typeof scrubStack>> | undefined;
     let error: unknown;
     try {
       const res = await scrubStack(
@@ -182,11 +190,12 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
         {
           dryRun: opts.dryRun ?? false,
           logger: logger as never,
-          ...(opts.listStateRefs && { listStateRefs: opts.listStateRefs }),
+          ...(opts.readConsumerRecords && { readConsumerRecords: opts.readConsumerRecords }),
         }
       );
       changed = res.recordsChanged;
       secretBearingKeys = res.secretBearingKeys;
+      result = res;
     } catch (err) {
       error = err;
     }
@@ -196,6 +205,7 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
       changed,
       error,
       ...(secretBearingKeys !== undefined && { secretBearingKeys }),
+      ...(result && { result }),
     };
   }
 
@@ -329,97 +339,128 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
 
       expect(saved!.outputs['x-Gone']).toBe(GONE_PLAINTEXT);
     });
+
+    it('KEEPS it even when the record holds the unresolved name literally', async () => {
+      // A deploy writes a warn-and-kept `${Foo}-Out` as a real key, so the
+      // stored-key test alone would call that name reproduced.
+      const { saved } = await scrub(
+        record({ Out: SSM_PLAINTEXT, Sm: SM_EXPR, '${Foo}-Out': 'v', 'x-Gone': GONE_PLAINTEXT }),
+        { ...DECLARED, Out: { Value: SSM_EXPR, Export: { Name: { 'Fn::Sub': '${Foo}-Out' } as never } } }
+      );
+
+      expect(saved!.outputs['x-Gone']).toBe(GONE_PLAINTEXT);
+    });
+
+    it('does not count a PLAIN output of the same name as the reproduced alias', async () => {
+      // `Lit`'s Export.Name resolves to `Lit`, a plain Output key the record
+      // holds; the record's export set lists only `prod-Lit`, the real alias.
+      const { saved } = await scrub(
+        record(
+          { Out: SSM_PLAINTEXT, Sm: SM_EXPR, Lit: 'bucket-1', 'prod-Lit': 'bucket-1' },
+          { exportNames: ['prod-Lit'] }
+        ),
+        { ...DECLARED, Lit: { Value: 'bucket-1', Export: { Name: 'Lit' } } }
+      );
+
+      expect(saved!.outputs['prod-Lit']).toBe('bucket-1');
+      expect(saved!.exportNames).toEqual(['prod-Lit']);
+    });
   });
 
   describe('another stack still reading a key to drop', () => {
-    it('REFUSES, writing nothing, when a consumer imports it', async () => {
-      seed(
-        record({}, {
-          imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Gone' }],
-        } as never, 'Consumer')
+    function consumer(extra: Partial<StackState>, name = 'Consumer', region = 'us-east-1'): void {
+      seed(record({}, extra, name, region));
+    }
+
+    it('KEEPS a key a consumer imports, and still writes every other repair', async () => {
+      consumer({
+        imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Gone' }],
+      } as never);
+
+      const { saved, error, result } = await scrub(
+        legacyRecord({ outputs: { Out: SSM_PLAINTEXT, Sm: SM_PLAINTEXT, Gone: GONE_PLAINTEXT, Old: 'x-1' } })
       );
 
-      const { saved, error } = await scrub(legacyRecord());
-
-      expect((error as { code?: string }).code).toBe('SCRUB_DROPPED_OUTPUT_STILL_READ');
-      expect((error as { exitCode?: number }).exitCode).toBe(2);
-      expect((error as Error).message).toContain('Consumer (us-east-1) reads Gone via Fn::ImportValue');
-      expect((error as Error).message).not.toContain(GONE_PLAINTEXT);
-      expect(saved).toBeUndefined();
-      expect(lockManager.releaseLock).toHaveBeenCalled();
+      expect(error).toBeUndefined();
+      // The declared plaintexts are still repaired, and the unread key dropped.
+      expect(saved!.outputs).toEqual({ Out: SSM_EXPR, Sm: SM_EXPR, Gone: GONE_PLAINTEXT });
+      expect(result!.keptReadOutputKeys).toBe(1);
+      expect(result!.droppedOutputKeys).toBe(1);
+      const warn = warnLines.join('\n');
+      expect(warn).toContain('Consumer (us-east-1) reads Gone via Fn::ImportValue');
+      expect(warn).toContain('were NOT dropped');
+      expect(warn).not.toContain(GONE_PLAINTEXT);
     });
 
-    it('REFUSES when a consumer reads it with Fn::GetStackOutput', async () => {
-      seed(
-        record({}, {
-          outputReads: [{ sourceStack: 'Producer', sourceRegion: 'US-EAST-1', outputName: 'Gone' }],
-        } as never, 'Consumer')
-      );
+    it('KEEPS a key a consumer reads with Fn::GetStackOutput (region compared canonically)', async () => {
+      consumer({
+        outputReads: [{ sourceStack: 'Producer', sourceRegion: 'US-EAST-1', outputName: 'Gone' }],
+      } as never);
 
-      const { error } = await scrub(legacyRecord());
+      const { saved, result } = await scrub(legacyRecord());
 
-      expect((error as { code?: string }).code).toBe('SCRUB_DROPPED_OUTPUT_STILL_READ');
-      expect((error as Error).message).toContain('via Fn::GetStackOutput');
+      expect(saved!.outputs['Gone']).toBe(GONE_PLAINTEXT);
+      expect(result!.keptReadOutputKeys).toBe(1);
+      expect(warnLines.join('\n')).toContain('via Fn::GetStackOutput');
     });
 
-    it('REFUSES when a same-region read of this producer stores its name redacted', async () => {
-      seed(
-        record({}, {
-          imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: `x-${SM_EXPR}` }],
-        } as never, 'Consumer')
-      );
+    it('never prints a read key through its raw name', async () => {
+      const key = `k-${GONE_PLAINTEXT}`;
+      consumer({
+        imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: key }],
+      } as never);
 
-      const { error } = await scrub(legacyRecord());
+      await scrub(record({ Out: SSM_EXPR, Sm: SM_EXPR, [key]: GONE_PLAINTEXT }));
 
-      expect((error as { code?: string }).code).toBe('SCRUB_DROPPED_OUTPUT_STILL_READ');
-      expect((error as Error).message).toContain('a name stored redacted');
+      expect(logs()).not.toContain(GONE_PLAINTEXT);
+      expect(logs()).toContain('(masked: "k-***")');
     });
 
-    it('REFUSES under --dry-run too, and takes no lock', async () => {
-      seed(
-        record({}, {
-          imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Gone' }],
-        } as never, 'Consumer')
-      );
+    it('under --dry-run too, and takes no lock', async () => {
+      consumer({
+        imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Gone' }],
+      } as never);
 
-      const { error } = await scrub(legacyRecord(), DECLARED, { dryRun: true });
+      const { result } = await scrub(legacyRecord(), DECLARED, { dryRun: true });
 
-      expect((error as { code?: string }).code).toBe('SCRUB_DROPPED_OUTPUT_STILL_READ');
+      expect(result!.keptReadOutputKeys).toBe(1);
       expect(lockManager.acquireLockWithRetry).not.toHaveBeenCalled();
     });
 
     it('drops when the reads name another key, another producer, or another region (negative controls)', async () => {
-      seed(
-        record({}, {
-          imports: [
-            { sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Sm' },
-            { sourceStack: 'Other', sourceRegion: 'us-east-1', exportName: 'Gone' },
-            { sourceStack: 'Producer', sourceRegion: 'eu-west-1', exportName: 'Gone' },
-          ],
-          outputReads: [{ sourceStack: 'Other', sourceRegion: 'us-east-1', outputName: 'Gone' }],
-        } as never, 'Consumer')
-      );
+      consumer({
+        imports: [
+          { sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Sm' },
+          { sourceStack: 'Other', sourceRegion: 'us-east-1', exportName: 'Gone' },
+          { sourceStack: 'Producer', sourceRegion: 'eu-west-1', exportName: 'Gone' },
+        ],
+        outputReads: [
+          { sourceStack: 'Other', sourceRegion: 'us-east-1', outputName: 'Gone' },
+          { sourceStack: 'Producer', sourceRegion: 'eu-west-1', outputName: 'Gone' },
+        ],
+      } as never);
       // The producer's OWN record in another region is another stack.
       seed(record({ Gone: 'x' }, {}, 'Producer', 'eu-west-1'));
 
-      const { saved, error } = await scrub(legacyRecord());
+      const { saved, result } = await scrub(legacyRecord());
 
-      expect(error).toBeUndefined();
       expect(saved!.outputs).toEqual({ Out: SSM_EXPR, Sm: SM_EXPR });
+      expect(result!.keptReadOutputKeys).toBe(0);
     });
 
-    it('REFUSES when the state listing cannot be read', async () => {
+    it('keeps every key, writes the rest, and flags the stack when the listing cannot be read', async () => {
       stateBackend.listStacks.mockRejectedValue(new Error('AccessDenied: ListBucket'));
 
-      const { saved, error } = await scrub(legacyRecord());
+      const { saved, error, result } = await scrub(legacyRecord());
 
-      expect((error as { code?: string }).code).toBe('SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED');
-      expect((error as Error).message).toContain('AccessDenied: ListBucket');
-      expect(saved).toBeUndefined();
+      expect(error).toBeUndefined();
+      expect(saved!.outputs).toEqual({ Out: SSM_EXPR, Sm: SM_EXPR, Gone: GONE_PLAINTEXT });
+      expect(result!.droppedOutputReadersUnverified).toBe(true);
+      expect(warnLines.join('\n')).toContain('AccessDenied: ListBucket');
     });
 
-    it("REFUSES when another stack's record cannot be read", async () => {
-      seed(record({}, {}, 'Consumer'));
+    it("flags the stack when another stack's record cannot be read", async () => {
+      consumer({});
       const real = stateBackend.getState.getMockImplementation() as (
         stack: string,
         region: string
@@ -428,22 +469,23 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
         stack === 'Consumer' ? Promise.reject(new Error('throttled')) : real(stack, region)
       );
 
-      const { error } = await scrub(legacyRecord());
+      const { saved, result } = await scrub(legacyRecord());
 
-      expect((error as { code?: string }).code).toBe('SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED');
+      expect(result!.droppedOutputReadersUnverified).toBe(true);
+      expect(saved!.outputs['Gone']).toBe(GONE_PLAINTEXT);
     });
 
-    it("uses the caller's memoized listing when one is passed", async () => {
-      const listStateRefs = vi.fn().mockResolvedValue([]);
+    it("uses the caller's memoized records when passed", async () => {
+      const readConsumerRecords = vi.fn().mockResolvedValue([]);
 
-      const { error } = await scrub(legacyRecord(), DECLARED, { listStateRefs });
+      const { error } = await scrub(legacyRecord(), DECLARED, { readConsumerRecords });
 
       expect(error).toBeUndefined();
-      expect(listStateRefs).toHaveBeenCalledTimes(1);
+      expect(readConsumerRecords).toHaveBeenCalledTimes(1);
       expect(stateBackend.listStacks).not.toHaveBeenCalled();
     });
 
-    it('does not list the bucket at all when there is nothing to drop', async () => {
+    it('does not read the bucket at all when there is nothing to drop', async () => {
       await scrub(record({ Out: SSM_PLAINTEXT, Sm: SM_EXPR }));
 
       expect(stateBackend.listStacks).not.toHaveBeenCalled();
@@ -459,38 +501,124 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
     expect(infoLines.join('\n')).toContain('Would drop 1 output key(s) from Producer');
   });
 
-  it('masks a dropped key that carries its own stored value or a recorded secret', async () => {
-    const { saved, secretBearingKeys } = await scrub(
-      record({
-        Out: SSM_EXPR,
-        Sm: SM_EXPR,
-        [`k-${GONE_PLAINTEXT}`]: GONE_PLAINTEXT,
-        [`r-${SM_PLAINTEXT}`]: 'unrelated-value',
-      })
+  it('masks a dropped key that carries its own stored value', async () => {
+    const { saved, result } = await scrub(
+      record({ Out: SSM_EXPR, Sm: SM_EXPR, [`k-${GONE_PLAINTEXT}`]: GONE_PLAINTEXT })
     );
 
     expect(Object.keys(saved!.outputs).sort()).toEqual(['Out', 'Sm']);
     expect(logs()).not.toContain(GONE_PLAINTEXT);
-    expect(logs()).not.toContain(SM_PLAINTEXT);
     expect(logs()).toContain('(masked: "k-***")');
-    // A key holding a recorded secret that scrub DROPPED is not reported as one
-    // it "CANNOT" scrub — it removed it.
-    expect(secretBearingKeys).toBe(0);
-    expect(warnLines.join('\n')).not.toContain('cdkd scrub cannot rewrite a key');
+    // The same corpus reaches the exports-index lines, and so does an entry's
+    // own value.
+    expect(result!.exportNameDisplay(`k-${GONE_PLAINTEXT}`)).toEqual({
+      kind: 'masked',
+      text: 'k-***',
+    });
+    expect(result!.exportNameDisplay('i-idx-value', 'idx-value')).toEqual({
+      kind: 'masked',
+      text: 'i-***',
+    });
+    expect(result!.exportNameDisplay('plain-export')).toEqual({ kind: 'safe', text: 'plain-export' });
   });
 
-  it('still reports a secret-bearing key it does NOT drop (negative control)', async () => {
-    // `r-<secret>` is an export alias scrub cannot rule live, so it is kept.
-    const { secretBearingKeys } = await scrub(
+  it('masks a KEPT key that carries its own stored value', async () => {
+    await scrub(
       record(
-        { Out: SSM_EXPR, Sm: SM_EXPR, [`r-${SM_PLAINTEXT}`]: 'v' },
-        { exportNames: [`r-${SM_PLAINTEXT}`] }
+        { Out: SSM_EXPR, Sm: SM_EXPR, [`k-${GONE_PLAINTEXT}`]: GONE_PLAINTEXT },
+        { exportNames: [`k-${GONE_PLAINTEXT}`] }
       ),
       { ...DECLARED, Out: { Value: SSM_EXPR, Export: { Name: 'not-stored' } } }
     );
 
+    expect(warnLines.join('\n')).toContain('were LEFT as they are: (masked: "k-***")');
+    expect(logs()).not.toContain(GONE_PLAINTEXT);
+  });
+
+  it('never drops a key whose NAME holds a recorded secret: it stays a reported #1919 leak', async () => {
+    // The exports index still publishes that name, so dropping the key would
+    // turn the gate green over it.
+    const { saved, secretBearingKeys } = await scrub(
+      record({ Out: SSM_EXPR, Sm: SM_EXPR, [`r-${SM_PLAINTEXT}`]: 'v', Gone: GONE_PLAINTEXT })
+    );
+
     expect(secretBearingKeys).toBe(1);
+    expect(Object.keys(saved!.outputs).sort()).toEqual(['Out', 'Sm', `r-${SM_PLAINTEXT}`]);
     expect(warnLines.join('\n')).toContain('cdkd scrub cannot rewrite a key');
+  });
+
+  it('drops a key whose value is a list mixing a reference and plaintext', async () => {
+    const { saved } = await scrub(record({ Out: SSM_EXPR, Sm: SM_EXPR, Gone: [SM_EXPR, GONE_PLAINTEXT] }));
+
+    expect(saved!.outputs).toEqual({ Out: SSM_EXPR, Sm: SM_EXPR });
+  });
+
+  it('never drops on the zero-needle path (nothing recorded, nothing rewritten)', async () => {
+    const { saved, changed } = await scrub(record({ Pub: 'x', Gone: GONE_PLAINTEXT }), {
+      Pub: { Value: 'x' },
+    });
+
+    expect(changed).toBe(0);
+    expect(saved).toBeUndefined();
+  });
+});
+
+describe('findDroppedOutputReaders', () => {
+  const keys = new Set(['Gone']);
+  const rec = (extra: Partial<ConsumerRecord>): ConsumerRecord => ({
+    stackName: 'Consumer',
+    region: 'us-east-1',
+    imports: undefined,
+    outputReads: undefined,
+    ...extra,
+  });
+
+  it('counts a read whose name or producer is stored redacted, in either list', () => {
+    const redacted = `x-${SM_EXPR}`;
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [
+        rec({ imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: redacted }] }),
+      ])
+    ).toEqual([{ consumerStack: 'Consumer', consumerRegion: 'us-east-1', key: undefined, intrinsic: 'Fn::ImportValue' }]);
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [
+        rec({ outputReads: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', outputName: redacted }] }),
+      ])
+    ).toHaveLength(1);
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [
+        rec({ outputReads: [{ sourceStack: redacted, sourceRegion: 'us-east-1', outputName: 'Gone' }] }),
+      ])
+    ).toEqual([{ consumerStack: 'Consumer', consumerRegion: 'us-east-1', key: 'Gone', intrinsic: 'Fn::GetStackOutput' }]);
+  });
+
+  it('counts an entry whose sourceRegion is unreadable as a possible read', () => {
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [
+        rec({ imports: [{ sourceStack: 'Producer', exportName: 'Gone' }] }),
+      ])
+    ).toHaveLength(1);
+  });
+
+  it('throws on a list that is present but not a list, or holds a non-object', () => {
+    expect(() =>
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [rec({ imports: 'bad' })])
+    ).toThrow('imports list');
+    expect(() =>
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [rec({ outputReads: [null] })])
+    ).toThrow('outputReads list');
+  });
+
+  it("skips the producer's own record in its own region only", () => {
+    const own = { imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Gone' }] };
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [rec({ stackName: 'Producer', ...own })])
+    ).toEqual([]);
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [
+        rec({ stackName: 'Producer', region: 'eu-west-1', ...own }),
+      ])
+    ).toHaveLength(1);
   });
 });
 

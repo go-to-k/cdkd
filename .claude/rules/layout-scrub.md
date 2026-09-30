@@ -60,8 +60,9 @@ rewrites it.
 `ssm` token, `cdkd diff`'s #1948 exoneration printed it. `planUnnamedOutputDrop`
 keeps a possible LIVE alias unless every declared `Export.Name` resolved to a
 key the record HOLDS (accounted is not enough: defaults can compute a name the
-deploy never wrote). A drop REFUSES on another record's read of the key,
-failing closed on an unreadable one.
+deploy never wrote), and a #1919 secret-bearing key. A key another record
+READS is kept as a finding, never refused: refusing strands the plaintext the
+rest of the record repairs. An unreadable record keeps every key (exit 2).
 
 ## Cross-stack reads
 
