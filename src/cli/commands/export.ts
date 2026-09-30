@@ -12,6 +12,7 @@ import { Command } from 'commander';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import {
   STACK_REF_MAX_CODE_POINTS,
+  cutMarker,
   displayAwsMessage,
   displayIdent,
   displaySafe,
@@ -3711,12 +3712,16 @@ function safeSegment(value: unknown): string {
   const safe = displaySafe(value, { asciiOnly: true });
   if (!safe) return UNRENDERABLE;
   const { text, truncated } = truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS);
-  // `displayIdent`'s marker shape, not a bare `[cut]`: it states the COUNT and
-  // is separated by a space, so it reads as an annotation rather than as
-  // content. `[` and `]` survive the ASCII allowlist, so a planted name ENDING
-  // in `[cut]` would otherwise render identically to a truncated one. `safe` is
-  // ASCII here, so `.length` counts characters.
-  return truncated ? `${text} [cut: ${safe.length - text.length} more characters withheld]` : text;
+  // `displayIdent`'s marker, not a bare `[cut]`: it states the COUNT and is
+  // separated by a space, so it reads as an annotation rather than as content.
+  // `[` and `]` survive the ASCII allowlist, so a planted name ENDING in `[cut]`
+  // would otherwise render identically to a truncated one. The tail digest is
+  // there because this cuts an IDENTIFIER at the same 1152 cap: two planted
+  // names sharing the kept prefix and length would otherwise print alike
+  // (go-to-k/cdkd#4002). `safe` is ASCII here, so `.length` counts characters.
+  return truncated
+    ? `${text} ${cutMarker(safe.length - text.length, safe.slice(text.length))}`
+    : text;
 }
 
 /**
@@ -3772,7 +3777,9 @@ function safeDetail(value: unknown): string {
   const safe = displaySafe(value instanceof Error ? value.message : value, { asciiOnly: true });
   if (!safe) return UNRENDERABLE;
   const { text, truncated } = truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS);
-  return truncated ? `${text} [cut: ${safe.length - text.length} more characters withheld]` : text;
+  // No tail digest: a message is not an identity, and its tail can hold an
+  // echoed payload a bounded masker missed (`cutMarker`).
+  return truncated ? `${text} ${cutMarker(safe.length - text.length)}` : text;
 }
 
 /**
@@ -3854,7 +3861,12 @@ function showRecordValue(value: unknown): string {
     kept += 1;
   }
   const withheld = codePoints.length - kept;
-  return withheld === 0 ? `"${body}"` : `"${body}" [cut: ${withheld} more characters withheld]`;
+  // The digest is over the RAW withheld code points, which this renderer keeps
+  // recoverable rather than blanking, so two distinct ids stay distinct past
+  // the cap too (go-to-k/cdkd#4002).
+  return withheld === 0
+    ? `"${body}"`
+    : `"${body}" ${cutMarker(withheld, codePoints.slice(kept).join(''))}`;
 }
 
 /**

@@ -1,7 +1,8 @@
 /**
  * Make an untrusted value safe to render in a terminal or persist into a log.
  *
- * A LEAF module with no imports, and deliberately in `src/utils/` rather than
+ * A LEAF module importing nothing from cdkd (only `node:crypto`, for
+ * {@link cutMarker}'s digest), and deliberately in `src/utils/` rather than
  * beside its first caller: issue [#2170](https://github.com/go-to-k/cdkd/issues/2170)'s
  * review found the same rule being widened BY HAND one module at a time and
  * missing an instance every round — the change sanitized 1 of 5 readers of
@@ -40,6 +41,8 @@
  * -- widening this helper would alter every caller that merely wants a
  * terminal-safe string.
  */
+
+import { createHash } from 'node:crypto';
 
 /**
  * Stand-in for a value with nothing renderable left after sanitization. Named
@@ -460,15 +463,56 @@ export const AWS_MESSAGE_MAX_CODE_POINTS = 4096;
  * complete — which on a diagnostic is worse than the flood it prevents, since
  * the reader acts on a sentence whose second half is missing.
  *
- * The marker is spelled exactly as `displayIdent`'s, so the two cannot teach a
- * reader two different things about the same event.
+ * The marker is {@link cutMarker}'s, so the two cannot teach a reader two
+ * different things about the same event — WITHOUT the tail digest, which is
+ * for an identity (see there).
  */
 export function displayAwsMessage(value: unknown): string {
   const sanitized = displaySafe(value);
   const { text, truncated } = truncateCodePoints(sanitized, AWS_MESSAGE_MAX_CODE_POINTS);
   if (!truncated) return text;
   const withheld = Array.from(sanitized).length - Array.from(text).length;
-  return `${text} [cut: ${withheld} more characters withheld]`;
+  return `${text} ${cutMarker(withheld)}`;
+}
+
+/**
+ * How many hex characters of the tail's SHA-256 {@link cutMarker} prints: 128
+ * bits. The two values it separates are BOTH planted — no legitimate value
+ * reaches an identifier cap — so the property needed is collision resistance
+ * against a party choosing both inputs, and a birthday search on a short
+ * prefix is cheap (8 hex characters falls to about 2^16 tries).
+ */
+const CUT_DIGEST_HEX_CHARS = 32;
+
+/**
+ * The ONE spelling of the marker a display cap appends where it cut a value:
+ * `[cut: N more characters withheld]`, with no leading space (the caller
+ * separates it from the kept text).
+ *
+ * `digestOf` is the WITHHELD TAIL, and passing it appends
+ * `, tail sha256:<hex>` (go-to-k/cdkd#4002). Without it, two values sharing
+ * the kept prefix and their length rendered byte-identically — the collapse
+ * go-to-k/cdkd#3164 closed below the cap, reopened above it. The digest names
+ * the tail without showing any of it.
+ *
+ * Pass it ONLY where the rendering serves as an IDENTITY (`displayIdent`,
+ * `export.ts`'s `safeSegment` and record-value renderer), over text that has
+ * ALREADY been through whatever masking its site applies. A cut is not a
+ * secrecy control — every mask runs upstream of the render, and a value short
+ * enough to fit is printed whole — so a digest over post-mask text confirms
+ * nothing the same value would not print in the clear under the cap. It is
+ * still a CONFIRM ORACLE over that text (the concern go-to-k/cdkd#3729 records
+ * for a salted hash beside a mask), so free-form text — AWS's error messages,
+ * which can echo a submitted payload that a BOUNDED masker missed — takes the
+ * bare marker: two messages rendering alike spoofs no identity, so the digest
+ * would buy nothing there.
+ */
+export function cutMarker(withheld: number, digestOf?: string): string {
+  const digest =
+    digestOf === undefined
+      ? ''
+      : `, tail sha256:${createHash('sha256').update(digestOf).digest('hex').slice(0, CUT_DIGEST_HEX_CHARS)}`;
+  return `[cut: ${withheld} more characters withheld${digest}]`;
 }
 
 /**
@@ -505,8 +549,10 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  *    with nothing renderable left -- the same allowlist + fallback every
  *    caller used to spell for itself.
  * 2. A value longer than `opts.maxCodePoints` (default `IDENT_MAX_CODE_POINTS`)
- *    is CUT there and the count of withheld characters appended, bounding the
- *    PAYLOAD a planted id can put on the line. It does not bound what a
+ *    is CUT there and {@link cutMarker} appended with the count of withheld
+ *    characters and a digest of them, bounding the PAYLOAD a planted id can
+ *    put on the line while two cut values sharing the kept prefix and length
+ *    still render apart. It does not bound what a
  *    terminal then WRAPS: a long quoted value can still wrap so that a visual
  *    line reads like a genuine row with the quotes off-screen, at either cap.
  *    A caller whose identifier has a LONGER legitimate grammar passes its own
@@ -599,9 +645,10 @@ export function displayIdent(
   const altered = clean !== raw;
   const plain = PLAIN_IDENT.test(text) && !(opts?.listMember === true && text.includes(','));
   const shown = !altered && plain ? text : JSON.stringify(text);
-  // `clean` is ASCII here, so `.length` counts characters.
+  // `clean` is ASCII here, so `.length` counts characters, and `text` is its
+  // prefix, so the slice is exactly the withheld tail.
   return truncated
-    ? `${shown} [cut: ${clean.length - text.length} more characters withheld]`
+    ? `${shown} ${cutMarker(clean.length - text.length, clean.slice(text.length))}`
     : shown;
 }
 
