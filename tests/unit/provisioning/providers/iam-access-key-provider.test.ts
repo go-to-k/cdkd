@@ -312,17 +312,28 @@ describe('IAMAccessKeyProvider', () => {
 
   describe('getAttribute', () => {
     it('returns the physical id for Id', async () => {
-      await expect(provider.getAttribute(KEY_ID, TYPE, 'Id')).resolves.toBe(KEY_ID);
+      await expect(provider.getAttribute(KEY_ID, TYPE, 'Id', 'CiKey')).resolves.toBe(KEY_ID);
     });
 
     it('fails loudly for SecretAccessKey (create-time-only, never readable)', async () => {
-      await expect(provider.getAttribute(KEY_ID, TYPE, 'SecretAccessKey')).rejects.toThrow(
+      await expect(provider.getAttribute(KEY_ID, TYPE, 'SecretAccessKey', 'CiKey')).rejects.toThrow(
         /cannot be read back/
       );
+      // The LOGICAL id in the logical-id slot, the key id as the physical id
+      // (go-to-k/cdkd#4222).
+      await expect(
+        provider.getAttribute(KEY_ID, TYPE, 'SecretAccessKey', 'CiKey')
+      ).rejects.toMatchObject({ logicalId: 'CiKey', physicalId: KEY_ID });
     });
 
     it('rejects unknown attributes', async () => {
-      await expect(provider.getAttribute(KEY_ID, TYPE, 'Nope')).rejects.toThrow(ProvisioningError);
+      await expect(provider.getAttribute(KEY_ID, TYPE, 'Nope', 'CiKey')).rejects.toThrow(
+        ProvisioningError
+      );
+      await expect(provider.getAttribute(KEY_ID, TYPE, 'Nope', 'CiKey')).rejects.toMatchObject({
+        logicalId: 'CiKey',
+        physicalId: KEY_ID,
+      });
     });
   });
 

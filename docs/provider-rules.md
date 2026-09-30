@@ -1746,7 +1746,7 @@ same value.
 ## `getAttribute()` for live `Fn::GetAtt` resolution
 
 Beyond the initial create/update return value, providers should implement
-`getAttribute(physicalId, resourceType, attributeName)` so that **live**
+`getAttribute(physicalId, resourceType, attributeName, logicalId)` so that **live**
 attribute reads succeed when the value is not in cdkd state — specifically
 the `cdkd orphan` per-resource flow, which splices each referenced attribute
 into sibling references. It always reads live first. When that read answers,
@@ -1769,6 +1769,11 @@ attribute AWS changes later (an instance's `PublicIp`) can be stale.
 Conventions:
 
 - Return `undefined` for unknown attribute names. Do not throw.
+- Where a provider does throw (several existing ones still refuse an unknown
+  attribute), its `ProvisioningError` takes `logicalId` in its
+  logical-id slot and `physicalId` after it: the
+  retry classifiers anchor on that slot, and a physical id can be built from a
+  secret (go-to-k/cdkd#4222).
 - Treat `*NotFound` exceptions as `undefined` rather than re-throwing —
   the live fetch is best-effort, and under `--force` `cdkd orphan` falls
   back to the cached `state.attributes` when the live resolution comes back

@@ -125,6 +125,7 @@ import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-functio
 import {
   replayRollback,
   replayFailedOperations,
+  refuseUnprovenReplaySecret,
   classifyReplaySecretRegion,
   producerRegionsFromState,
   type CompletedOperation,
@@ -132,6 +133,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { getCurrentProducerRegions } from '../../../src/deployment/producer-regions-scope.js';
 
 const CONSUMER_REGION = 'ap-northeast-1';
 const PRODUCER_REGION = 'eu-west-1';
@@ -1074,5 +1076,173 @@ describe('the cdkd rollback command wires importedProducerRegions (issue #2057)'
     );
     expect(source).toContain('importedProducerRegions: producerRegionsFromState(baseState)');
     expect(source).toContain('producerRegionsFromState,');
+  });
+});
+
+describe('INCOMPLETE producer-region evidence: a nested child whose parent is unknown (go-to-k/cdkd#4174)', () => {
+  function incompleteCtx(update: unknown): RollbackExecutorContext {
+    return { ...makeCtx({ update }, []), producerRegionsIncomplete: true };
+  }
+
+  it('refuses a region-LESS reference though no foreign region is on record, asking nobody', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ops, state } = revertScenario(NAME_EXPR);
+
+    const result = await replayRollback(ops, state, 'Top~Child', incompleteCtx(update));
+
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
+    expect(result.failures).toBe(1);
+    const refusal = logLines.find((l) => l.includes('Rollback failed for Idp'));
+    expect(refusal).toContain("property 'ProviderDetails.client_secret'");
+    expect(refusal).toContain(SECRET_NAME);
+    expect(refusal).toContain("parent's cross-region reads are not known");
+    expect(logLines.join('\n')).not.toContain(TOKYO_PASSWORD);
+    expect(logLines.join('\n')).not.toContain(IRELAND_PASSWORD);
+  });
+
+  it('CONTROL: the same reference with COMPLETE empty evidence resolves in the stack region, as before', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ops, state } = revertScenario(NAME_EXPR);
+
+    const result = await replayRollback(ops, state, 'Top~Child', makeCtx({ update }, []));
+
+    expect(result.failures).toBe(0);
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([CONSUMER_REGION]);
+  });
+
+  it('a same-region ARN settles its own region: still resolved locally', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ops, state } = revertScenario(CONSUMER_ARN_EXPR);
+
+    const result = await replayRollback(ops, state, 'Top~Child', incompleteCtx(update));
+
+    expect(result.failures).toBe(0);
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([CONSUMER_REGION]);
+  });
+
+  it('a foreign-region ARN still binds its own region', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ops, state } = revertScenario(PRODUCER_ARN_EXPR);
+
+    const result = await replayRollback(ops, state, 'Top~Child', incompleteCtx(update));
+
+    expect(result.failures).toBe(0);
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+  });
+
+  it('refuses a leaf splicing a same-region ARN with a region-less reference, before either is fetched', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ops, state } = revertScenario(`${CONSUMER_ARN_EXPR}:${NAME_EXPR}`);
+
+    const result = await replayRollback(ops, state, 'Top~Child', incompleteCtx(update));
+
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
+    expect(result.failures).toBe(1);
+  });
+
+  it('with a foreign region ALSO on record, the refusal is the ambiguous one naming it, not "not known"', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ops, state } = revertScenario(NAME_EXPR);
+    const ctx = { ...makeCtx({ update }, [PRODUCER_REGION]), producerRegionsIncomplete: true };
+
+    const result = await replayRollback(ops, state, 'Top~Child', ctx);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    const refusal = logLines.find((l) => l.includes('Rollback failed for Idp'));
+    expect(refusal).toContain(`producer region(s) on record: ${PRODUCER_REGION}`);
+    expect(refusal).not.toContain("parent's cross-region reads are not known");
+  });
+
+  it('the incomplete refusal carries ROLLBACK_SECRET_REGION_AMBIGUOUS, and none is thrown when complete', () => {
+    const ctx = { ...makeCtx({}, []), producerRegionsIncomplete: true };
+    let thrown: unknown;
+    try {
+      refuseUnprovenReplaySecret(`a-${NAME_EXPR}`, 'P', 'Idp', ctx);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { code?: string }).code).toBe('ROLLBACK_SECRET_REGION_AMBIGUOUS');
+    expect(String((thrown as Error).message)).toContain(SECRET_NAME);
+    expect(() => refuseUnprovenReplaySecret(NAME_EXPR, 'P', 'Idp', makeCtx({}, []))).not.toThrow();
+  });
+
+  it('--revert-failed refuses it too', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: res({ properties: { ProviderDetails: { client_secret: NAME_EXPR } } }),
+        attemptedProperties: { ProviderDetails: { client_secret: 'literal-attempted' } },
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({ properties: { ProviderDetails: { client_secret: 'literal-current' } } }),
+    };
+
+    const result = await replayFailedOperations(failedOps, state, 'Top~Child', incompleteCtx(update));
+
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
+    expect(result.failures).toBe(1);
+  });
+});
+
+describe("both replay entries bind their evidence for a nested row's provider call (go-to-k/cdkd#4174)", () => {
+  function capturingUpdate(seen: unknown[]) {
+    return vi.fn(async () => {
+      seen.push(getCurrentProducerRegions()?.());
+      return { physicalId: 'phys-B' };
+    });
+  }
+
+  it('replayRollback', async () => {
+    const seen: unknown[] = [];
+    const { ops, state } = revertScenario('literal');
+    state['Idp'] = res({ properties: { ProviderDetails: { client_id: 'changed' } } });
+
+    await replayRollback(ops, state, 'Top', makeCtx({ update: capturingUpdate(seen) }, [PRODUCER_REGION]));
+
+    expect(seen).toEqual([{ regions: [PRODUCER_REGION], complete: true }]);
+  });
+
+  it('a context that set NO regions hands down INCOMPLETE evidence, never an empty complete list', async () => {
+    const seen: unknown[] = [];
+    const { ops, state } = revertScenario('literal');
+    state['Idp'] = res({ properties: { ProviderDetails: { client_id: 'changed' } } });
+
+    await replayRollback(ops, state, 'Top', makeCtx({ update: capturingUpdate(seen) }));
+
+    expect(seen).toEqual([{ regions: [], complete: false }]);
+  });
+
+  it('replayFailedOperations, carrying an INCOMPLETE mark', async () => {
+    const seen: unknown[] = [];
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: res({ properties: { ProviderDetails: { client_secret: 'literal-prev' } } }),
+        attemptedProperties: { ProviderDetails: { client_secret: 'literal-attempted' } },
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({ properties: { ProviderDetails: { client_secret: 'literal-current' } } }),
+    };
+    const ctx = {
+      ...makeCtx({ update: capturingUpdate(seen) }, [PRODUCER_REGION]),
+      producerRegionsIncomplete: true,
+    };
+
+    await replayFailedOperations(failedOps, state, 'Top~Child', ctx);
+
+    expect(seen).toEqual([{ regions: [PRODUCER_REGION], complete: false }]);
   });
 });

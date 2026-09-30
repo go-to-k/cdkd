@@ -180,7 +180,9 @@ describe('rewriteResourceReferences', () => {
 
     const result = await rewriteResourceReferences(state, ['Bucket'], fakeRegistry(getAttribute));
 
-    expect(getAttribute).toHaveBeenCalledWith('b-phys', 'AWS::S3::Bucket', 'Arn');
+    // The orphan's LOGICAL id is threaded as the fourth argument, for a
+    // provider's `ProvisioningError` logical-id slot (go-to-k/cdkd#4222).
+    expect(getAttribute).toHaveBeenCalledWith('b-phys', 'AWS::S3::Bucket', 'Arn', 'Bucket');
     expect(result.state.resources['Other']?.properties).toEqual({
       Env: { Bucket: 'arn:aws:s3:::b-phys' },
     });
@@ -1296,7 +1298,12 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
     });
     // Memoized: one live read serves all three sites.
     expect(getAttribute).toHaveBeenCalledTimes(1);
-    expect(getAttribute).toHaveBeenCalledWith('my-repo', 'AWS::CodeCommit::Repository', 'KmsKeyId');
+    expect(getAttribute).toHaveBeenCalledWith(
+      'my-repo',
+      'AWS::CodeCommit::Repository',
+      'KmsKeyId',
+      'Repo'
+    );
   });
 
   it('CONTROL: a record with no attributes map is still read live', async () => {

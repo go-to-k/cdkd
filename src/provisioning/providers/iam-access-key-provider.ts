@@ -643,7 +643,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
   async getAttribute(
     physicalId: string,
     resourceType: string,
-    attributeName: string
+    attributeName: string,
+    logicalId: string
   ): Promise<unknown> {
     if (attributeName === 'Id') return physicalId;
     if (attributeName === 'SecretAccessKey') {
@@ -651,12 +652,14 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         `SecretAccessKey for ${physicalId} cannot be read back from AWS — IAM returns it only from CreateAccessKey. ` +
           `cdkd resolves it from the attributes cached in state at create time; this record has no cached value.`,
         resourceType,
+        logicalId,
         physicalId
       );
     }
     throw new ProvisioningError(
       `Unknown attribute ${attributeName} for ${resourceType} (only 'Id' and 'SecretAccessKey' are defined)`,
       resourceType,
+      logicalId,
       physicalId
     );
   }

@@ -1904,6 +1904,8 @@ export async function runDestroyForStack(
                       ...(secretPrincipalOptIn !== undefined && {
                         resolveSecretDerivedPrincipals: secretPrincipalOptIn,
                       }),
+                      // Issue #4157: the identity evidence of the record deleted.
+                      recordedAttributes: resource.attributes,
                     }
                   );
                   // Assign INSIDE the loop, not after it: the loop can

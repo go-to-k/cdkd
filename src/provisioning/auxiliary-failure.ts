@@ -44,17 +44,40 @@ const MAX_DEPTH = 5;
 
 /**
  * The logical id an auxiliary failure is anchored to. Never equal to a
- * template logical id, and it names the owner so a debugger reading the chain
- * sees whose create raised it.
+ * template logical id. A provider's mark names the owner's template logical
+ * id, so a debugger reading the chain sees whose create raised it; a mark
+ * `withRetry` adds carries the fixed owner `withRetry` instead, since its
+ * label can hold a physical name (go-to-k/cdkd#4222).
  */
 export function auxiliaryLogicalId(ownerLogicalId: string): string {
   return `${ownerLogicalId}${AUXILIARY_LOGICAL_ID_SUFFIX}`;
 }
 
 /**
+ * Whether an own `logicalId` descriptor is the mark {@link markAuxiliaryFailure}
+ * defines. The suffix alone does not identify it: a physical id can end in a
+ * `/auxiliary` path segment (an SSM parameter name, a log group, an IAM path),
+ * and a `ProvisioningError` built with one in its logical-id slot would read as
+ * marked (go-to-k/cdkd#4222). So the mark's descriptor shape is required too —
+ * non-enumerable and read-only, where a `ProvisioningError`'s field is an
+ * ordinary assignment. `maskSecretsInError`'s `isAuxiliaryAnchor` keys its
+ * verbatim copy on the same shape.
+ */
+function isAuxiliaryMark(descriptor: PropertyDescriptor | undefined): boolean {
+  return (
+    descriptor !== undefined &&
+    descriptor.enumerable === false &&
+    descriptor.writable === false &&
+    typeof descriptor.value === 'string' &&
+    descriptor.value.endsWith(AUXILIARY_LOGICAL_ID_SUFFIX)
+  );
+}
+
+/**
  * True when `error`'s chain carries an auxiliary mark: a link, within the
  * bounded walk {@link markAuxiliaryFailure} makes, whose own `logicalId` is an
- * {@link auxiliaryLogicalId}. Reads own properties only, as the marker writes
+ * {@link auxiliaryLogicalId} in the mark's descriptor shape
+ * ({@link isAuxiliaryMark}). Reads own properties only, as the marker writes
  * them. A chain whose walk throws (a `cause` getter, a Proxy trap) reads as
  * unmarked: the caller is a retry loop's `catch`, where an out-throw would
  * replace the error it is handling.
@@ -72,8 +95,7 @@ export function isAuxiliaryFailure(error: unknown): boolean {
       depth < MAX_DEPTH && typeof current === 'object' && current !== null;
       depth++
     ) {
-      const own = Object.getOwnPropertyDescriptor(current, 'logicalId');
-      if (typeof own?.value === 'string' && own.value.endsWith(AUXILIARY_LOGICAL_ID_SUFFIX)) {
+      if (isAuxiliaryMark(Object.getOwnPropertyDescriptor(current, 'logicalId'))) {
         return true;
       }
       current = (current as { cause?: unknown }).cause;
@@ -108,7 +130,7 @@ export function markAuxiliaryFailure<E>(error: E, ownerLogicalId: string): E {
     ) {
       const own = Object.getOwnPropertyDescriptor(current, 'logicalId');
       if (typeof own?.value === 'string') {
-        if (own.value.endsWith(AUXILIARY_LOGICAL_ID_SUFFIX)) return error;
+        if (isAuxiliaryMark(own)) return error;
       } else {
         if (Object.isExtensible(current) && own?.configurable !== false) {
           Object.defineProperty(current, 'logicalId', {

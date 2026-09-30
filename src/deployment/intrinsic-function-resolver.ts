@@ -1459,6 +1459,17 @@ export interface ResolverContext {
    */
   inheritedSecrets?: RecordedSecretValues;
   /**
+   * A PRINT-ONLY corpus of LOG-ONLY needles (go-to-k/cdkd#4043): read by the
+   * render mask of this resolver's own lines ({@link maskSecretsRaw}) and by
+   * nothing that detects, records into {@link recordedSecretValues} or
+   * decides. `cdkd diff`'s Outputs pass resolves into bags of its own, whose
+   * log-only needles decide which export aliases are refused, so the
+   * `NoEcho` values it holds up front reach its lines through here instead.
+   * An `Fn::Base64` whose input this corpus masks records its encoding into
+   * THIS bag, as a log-only needle, so the encoding prints masked too.
+   */
+  printingSecrets?: RecordedSecretValues;
+  /**
    * Logical ids whose provider declared THIS RUN's `attributes` sensitive —
    * a Lambda-backed custom resource whose handler answered `NoEcho: true`
    * (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
@@ -10961,7 +10972,8 @@ export class IntrinsicFunctionResolver {
    * that is the point: `formatError` renders `Caused by: <cause>`, so masking
    * only a fresh top-level message leaves the original message one link down
    * and prints it anyway. The clone keeps the class, every own descriptor
-   * (`markNonRetryable`'s non-enumerable symbol, `$metadata`, `Code`, `name`)
+   * (`markNonRetryable`'s non-enumerable symbol, `$metadata`, and `Code` /
+   * `name` verbatim), other data values masked,
    * and the chain shape, so every reader that classifies this error still
    * does — see `maskSecretsInError`'s own doc.
    *
@@ -11004,7 +11016,12 @@ export class IntrinsicFunctionResolver {
     // bag, the first bag's shorter needle cut a longer needle the second bag
     // held, and the rest of it printed. `hasMaskableValues`, not `size`
     // (go-to-k/cdkd#1998): a bag holding only log-only needles still masks.
-    const union = unionOfSecretBags([context?.inheritedSecrets, context?.recordedSecretValues]);
+    // The print-only corpus joins it (go-to-k/cdkd#4043): an error is RENDERED.
+    const union = unionOfSecretBags([
+      context?.inheritedSecrets,
+      context?.recordedSecretValues,
+      context?.printingSecrets,
+    ]);
     if (hasMaskableValues(union)) {
       masked = maskSecretsInError(masked, union, positional);
       positional = undefined;
@@ -11440,6 +11457,18 @@ export class IntrinsicFunctionResolver {
     ) {
       recordLogOnlyValue(context.recordedSecretValues, result);
     }
+    // The PRINT-ONLY twin (go-to-k/cdkd#4043): an encoding of text that only
+    // the print-only corpus masks is recorded THERE, never into the pass's
+    // bag, whose log-only needles decide an export alias.
+    const printing = context.printingSecrets;
+    if (
+      printing !== undefined &&
+      hasMaskableValues(printing) &&
+      this.maskRenderedNeedlesForLog(resolvedValue, context) !==
+        this.maskPrintedNeedlesForLog(resolvedValue, context)
+    ) {
+      recordLogOnlyValue(printing, result);
+    }
 
     this.logger.debug(
       `Resolved Fn::Base64: ${this.displayMasked(inputLogText, context)} -> ${this.displayMasked(inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
@@ -11780,8 +11809,8 @@ export class IntrinsicFunctionResolver {
     // printing mask is the answer; with a twin, its spans cannot be merged
     // with the log-only ones, so the whole text is masked — the rule the two
     // lines below already apply to the recorded needles.
-    if (this.hasLogOnlyNeedles(context)) {
-      const printed = this.maskPrintedNeedlesForLog(text, context);
+    if (this.hasLogOnlyNeedles(context) || hasMaskableValues(context?.printingSecrets)) {
+      const printed = this.maskRenderedNeedlesForLog(text, context);
       if (printed !== needled) return registered === undefined ? printed : SECRET_MASK;
     }
     if (registered === undefined) return needled;
@@ -11889,8 +11918,28 @@ export class IntrinsicFunctionResolver {
    * overlaps. Never a detector: see {@link maskNeedlesForLog}.
    */
   private maskPrintedNeedlesForLog(text: string, context?: ResolverContext): string {
+    return this.maskNeedlesOfBags(text, context);
+  }
+
+  /**
+   * {@link maskPrintedNeedlesForLog} plus {@link ResolverContext.printingSecrets}:
+   * the RENDER mask only (go-to-k/cdkd#4043), never a detector.
+   */
+  private maskRenderedNeedlesForLog(text: string, context?: ResolverContext): string {
+    return this.maskNeedlesOfBags(text, context, context?.printingSecrets);
+  }
+
+  private maskNeedlesOfBags(
+    text: string,
+    context?: ResolverContext,
+    printing?: RecordedSecretValues
+  ): string {
     // ONE pass over both bags (go-to-k/cdkd#4049), as {@link maskNeedlesForLog}.
-    const union = unionOfSecretBags([context?.inheritedSecrets, context?.recordedSecretValues]);
+    const union = unionOfSecretBags([
+      context?.inheritedSecrets,
+      context?.recordedSecretValues,
+      printing,
+    ]);
     return hasMaskableValues(union) ? maskSecretsInText(text, union) : text;
   }
 

@@ -258,3 +258,134 @@ describe('rollback executor — a provider-reported delete skip (#1762)', () => 
     expect(state['B']).toBeDefined();
   });
 });
+
+// Issue #4157: every rollback delete arm hands the provider the attributes of
+// the record whose physical id it deletes, so a name-addressed provider can
+// refuse a same-named resource that is not the recorded one.
+describe('rollback executor — recordedAttributes on every delete arm (#4157)', () => {
+  const NEW_ATTRS = { RepositoryId: 'id-new-4157' };
+  const OLD_ATTRS = { RepositoryId: 'id-old-4157' };
+
+  function contextOf(del: ReturnType<typeof vi.fn>): Record<string, unknown> {
+    expect(del).toHaveBeenCalledOnce();
+    return del.mock.calls[0]?.[4] as Record<string, unknown>;
+  }
+
+  it('rollback-of-a-CREATE: the record naming the op id', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-B' },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+  });
+
+  it('reverse-replacement re-adopt: the NEW record deleted', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    const prev = res({ physicalId: 'old-b', attributes: OLD_ATTRS, updateReplacePolicy: 'Retain' });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'new-b',
+        previousState: prev,
+        oldResourceRetained: true,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(contextOf(del)[`recordedAttributes`]).toEqual(NEW_ATTRS);
+    expect(del.mock.calls[0]?.[1]).toBe('new-b');
+  });
+
+  it('reverse-replacement delete-new-first: the NEW record deleted', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(awsSdkError("Resource of type 'AWS::S3::Bucket' already exists."))
+      .mockResolvedValue({ physicalId: 'old-b', attributes: OLD_ATTRS });
+    const { ctx } = makeCtx({ delete: del, create });
+    const prev = res({
+      physicalId: 'old-b',
+      properties: { BucketName: 'b', a: 1 },
+      attributes: OLD_ATTRS,
+    });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'new-b',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'new-b', properties: { BucketName: 'b' }, attributes: NEW_ATTRS }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    // Reached through the collision: the re-create ran twice.
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+    expect(del.mock.calls[0]?.[1]).toBe('new-b');
+  });
+
+  it('reverse-replacement delete-new AFTER the re-create: the NEW record, not the re-created one', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const create = vi.fn().mockResolvedValue({ physicalId: 'old-b', attributes: OLD_ATTRS });
+    const { ctx } = makeCtx({ delete: del, create });
+    const prev = res({ physicalId: 'old-b', properties: { a: 1 }, attributes: OLD_ATTRS });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'new-b',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(create).toHaveBeenCalledOnce();
+    expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+    expect(del.mock.calls[0]?.[1]).toBe('new-b');
+  });
+
+  it('--revert-failed partially-created delete: the record naming the op id', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    const failed: FailedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+        attemptedProperties: {},
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS }),
+    };
+
+    await replayFailedOperations(failed, state, 'S', ctx, {});
+
+    expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+  });
+});

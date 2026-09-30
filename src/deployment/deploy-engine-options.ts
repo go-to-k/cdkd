@@ -3,6 +3,7 @@ import type { PreDeleteSnapshotClients } from '../provisioning/final-snapshot.js
 import type { DeploymentEventRecorder } from '../types/deployment-events.js';
 import type { StackState } from '../types/state.js';
 import type { RecordedSecretValues } from './secret-redaction.js';
+import type { ProducerRegionEvidence } from './producer-regions-scope.js';
 
 /**
  * Default per-resource warn threshold: warn the user when a single
@@ -186,6 +187,18 @@ export interface DeployEngineOptions {
    * that builds the grandchild engine.
    */
   inheritedSecrets?: RecordedSecretValues;
+
+  /**
+   * The PARENT engine's producer-region evidence, set by `NestedStackProvider`
+   * on the child engine it builds (go-to-k/cdkd#4174). A child receives a
+   * parent's cross-region value only as a Parameter and records the parent's
+   * region-less `{{resolve:...}}` spelling, which its own reads do not
+   * explain; this child's in-process rollback unions these regions with its
+   * own. Read only when {@link parentStackInfo} is set, where absent (or
+   * incomplete) evidence makes that rollback refuse every region-less secret
+   * reference.
+   */
+  inheritedProducerRegions?: (() => ProducerRegionEvidence) | undefined;
 
   /**
    * Pre-provisioning gate invoked with the stack's CURRENT state, exactly

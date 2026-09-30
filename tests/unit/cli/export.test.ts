@@ -2451,7 +2451,7 @@ describe('reportDriftBaselineGaps', () => {
       // `displayIdent`, so it would hand back the spelling the gate refused
       // (go-to-k/cdkd#3420).
       const FILL =
-        "fill it from 'cdkd state list --json', replacing the hole, quotes included, with the shell-quoted value.";
+        "fill it from 'cdkd state list --json', replacing the hole, quotes included, with the value decoded from its JSON string, then shell-quoted.";
       const NO_FILL =
         "This stack name begins with '-', which the CLI could read as an option however it is " +
         'quoted, so do not fill the stack hole with it: repair or remove the record by hand.';
@@ -4055,7 +4055,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         // arm refused (go-to-k/cdkd#3420).
         expect(m).toContain('cdkd state list --json');
         expect(m).not.toContain('--long');
-        expect(m).toContain('replacing each quoted hole, quotes included, with the shell-quoted value');
+        expect(m).toContain('replacing each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted');
         // `state list --json` prints {stackName, region}, not a key.
         expect(m).toContain('act on the one whose stackName and region match');
         expect(m).not.toMatch(/cdkd state orphan 'Root~A'/);

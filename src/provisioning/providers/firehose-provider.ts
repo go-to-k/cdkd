@@ -689,7 +689,7 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applyExtendedS3DestinationUpdate(physicalId, nextDest);
+        await this.applyExtendedS3DestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -697,7 +697,7 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applyRedshiftDestinationUpdate(physicalId, nextDest);
+        await this.applyRedshiftDestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -705,7 +705,7 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applySplunkDestinationUpdate(physicalId, nextDest);
+        await this.applySplunkDestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -713,7 +713,7 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applyAmazonopensearchserviceDestinationUpdate(physicalId, nextDest);
+        await this.applyAmazonopensearchserviceDestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -721,7 +721,11 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applyAmazonOpenSearchServerlessDestinationUpdate(physicalId, nextDest);
+        await this.applyAmazonOpenSearchServerlessDestinationUpdate(
+          logicalId,
+          physicalId,
+          nextDest
+        );
       }
     }
 
@@ -729,7 +733,7 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applyHttpEndpointDestinationUpdate(physicalId, nextDest);
+        await this.applyHttpEndpointDestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -737,7 +741,7 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applyElasticsearchDestinationUpdate(physicalId, nextDest);
+        await this.applyElasticsearchDestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -745,7 +749,7 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applyIcebergDestinationUpdate(physicalId, nextDest);
+        await this.applyIcebergDestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -753,7 +757,7 @@ export class FirehoseProvider implements ResourceProvider {
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applySnowflakeDestinationUpdate(physicalId, nextDest);
+        await this.applySnowflakeDestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -781,6 +785,7 @@ export class FirehoseProvider implements ResourceProvider {
    * source is undefined so an empty diff doesn't clear AWS-side fields).
    */
   private async applyExtendedS3DestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -795,6 +800,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }
@@ -1191,6 +1197,7 @@ export class FirehoseProvider implements ResourceProvider {
    * state. Mirrors {@link applyExtendedS3DestinationUpdate} (#549).
    */
   private async applyRedshiftDestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -1205,6 +1212,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }
@@ -1287,6 +1295,7 @@ export class FirehoseProvider implements ResourceProvider {
    * state. Mirrors {@link applyRedshiftDestinationUpdate} (#549).
    */
   private async applySplunkDestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -1301,6 +1310,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }
@@ -1380,6 +1390,7 @@ export class FirehoseProvider implements ResourceProvider {
    * Mirrors {@link applyRedshiftDestinationUpdate}.
    */
   private async applyAmazonopensearchserviceDestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -1393,6 +1404,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }
@@ -1473,6 +1485,7 @@ export class FirehoseProvider implements ResourceProvider {
    * Mirrors {@link applyRedshiftDestinationUpdate}.
    */
   private async applyAmazonOpenSearchServerlessDestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -1486,6 +1499,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }
@@ -1550,6 +1564,7 @@ export class FirehoseProvider implements ResourceProvider {
    * Mirrors {@link applyRedshiftDestinationUpdate}.
    */
   private async applyHttpEndpointDestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -1563,6 +1578,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }
@@ -1641,6 +1657,7 @@ export class FirehoseProvider implements ResourceProvider {
    * Amazonopensearchservice rename.
    */
   private async applyElasticsearchDestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -1654,6 +1671,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }
@@ -1730,6 +1748,7 @@ export class FirehoseProvider implements ResourceProvider {
    * Mirrors {@link applyRedshiftDestinationUpdate}.
    */
   private async applyIcebergDestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -1743,6 +1762,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }
@@ -1833,6 +1853,7 @@ export class FirehoseProvider implements ResourceProvider {
    * Mirrors {@link applyRedshiftDestinationUpdate}.
    */
   private async applySnowflakeDestinationUpdate(
+    logicalId: string,
     physicalId: string,
     nextConfig: Record<string, unknown>
   ): Promise<void> {
@@ -1846,6 +1867,7 @@ export class FirehoseProvider implements ResourceProvider {
       throw new ProvisioningError(
         `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
         'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
         physicalId
       );
     }

@@ -922,6 +922,14 @@ export async function rollbackCommand(
         // resource. Derived from the state this command already loaded — see
         // `producerRegionsFromState`.
         importedProducerRegions: producerRegionsFromState(baseState),
+        // go-to-k/cdkd#4174: a nested child rolled back on its own has no
+        // parent to hand down the regions its parent reads from, and a
+        // parent-supplied value is recorded region-less, so its evidence is
+        // incomplete. The key is `<parent>~<id>` (CDK bars `~` in a stack
+        // name), whatever the record's own `parentStack` says.
+        ...((stackName.includes('~') || baseState.parentStack !== undefined) && {
+          producerRegionsIncomplete: true,
+        }),
       };
 
       // 7. Serialized incremental state save after every mutating op.

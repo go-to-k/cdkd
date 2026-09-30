@@ -484,7 +484,12 @@ class AttributeFetcher {
     }
 
     try {
-      const value = await provider.getAttribute(orphan.physicalId, orphan.resourceType, attribute);
+      const value = await provider.getAttribute(
+        orphan.physicalId,
+        orphan.resourceType,
+        attribute,
+        orphanLogicalId
+      );
       if (value === undefined) {
         return this.cacheFallback(
           orphanLogicalId,

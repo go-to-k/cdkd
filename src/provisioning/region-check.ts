@@ -170,6 +170,27 @@ export interface DeleteContext {
    * its own snapshot (issues #3993, #4029).
    */
   skipFinalSnapshot?: boolean | undefined;
+
+  /**
+   * The `attributes` cdkd RECORDED for the resource `physicalId` names
+   * (`ResourceState.attributes`), issue #4157: the delete twin of
+   * `UpdateContext.recordedAttributes`. A name-addressed resource can be
+   * replaced out of band by a DIFFERENT resource under the same name, and a
+   * delete by name then destroys something the stack never created
+   * (`AWS::CodeCommit::Repository` compares the recorded `RepositoryId`
+   * before `DeleteRepository`).
+   *
+   * Threaded by every `delete()` caller from the record whose `physicalId` it
+   * passes: `destroy-runner.ts`, the deploy engine's template-removal and
+   * replacement deletes, and `rollback-executor.ts`'s delete arms (a CREATE
+   * rollback's only when the state record names the op's physical id).
+   *
+   * Read-only evidence. ABSENT, or a key missing from it, means "no recorded
+   * identity" — a record from before the attribute existed — and the provider
+   * keeps its historical by-name delete. Values are as recorded: compare only
+   * non-secret identities (ids AWS generates).
+   */
+  recordedAttributes?: Readonly<Record<string, unknown>> | undefined;
 }
 
 /**

@@ -175,14 +175,16 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
     expect(inner.message).toContain(ROLE);
   });
 
-  it('a name ONLY in an own field (no message holds it): the original error is returned untouched', async () => {
+  it('a name ONLY in an own field (no message holds it) is masked on a clone, the original untouched', async () => {
     const r = await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], make);
     const sdkError = Object.assign(new Error('AccessDenied'), {
       Error: { Code: 'AccessDenied', Message: `role/${ROLE}` },
     });
     const out = r!.maskError(sdkError);
-    // The #4190 floor: nothing was cloned, so nothing was rewritten.
-    expect(out).toBe(sdkError);
+    // go-to-k/cdkd#4190: `maskSecretsInError` masks own fields, so a clone is
+    // made even though no message or stack held the name.
+    expect(out).not.toBe(sdkError);
+    expect(out.Error).toEqual({ Code: 'AccessDenied', Message: 'role/***' });
     expect(sdkError.Error.Message).toBe(`role/${ROLE}`);
   });
 

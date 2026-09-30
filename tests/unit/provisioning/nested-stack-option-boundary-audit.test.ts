@@ -63,6 +63,7 @@ const AUDITED_MEMBERS = [
   'captureObservedState',
   'assetRedirect',
   'inheritedSecrets',
+  'inheritedProducerRegions', // overwritten by the spread site with THIS parent's evidence (#4174)
   'replace',
   'forceStatefulRecreation',
   'strictGetAtt',

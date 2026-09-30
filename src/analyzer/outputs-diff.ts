@@ -3,6 +3,8 @@ import { getLogger } from '../utils/logger.js';
 import { INTRINSIC_KEYS, type IntrinsicResolveFn } from './diff-calculator.js';
 import {
   collectPublishedOutputNames,
+  displayTextOrWithheld,
+  exportNameSecretExposure,
   isExportAliasCollision,
   secretSafeKeyDisplay,
   type SecretSafeKeyDisplay,
@@ -11,9 +13,13 @@ import {
   DYNAMIC_REFERENCE_TOKEN_SCAN,
   dynamicReferenceTokens,
   WHOLE_DYNAMIC_REFERENCE_PATTERN,
+  hasMaskableValues,
+  printingCorpusOf,
+  shareLogOnlyValues,
   type RecordedSecretValues,
 } from '../deployment/secret-redaction.js';
 import { stripControlChars } from '../utils/regexp.js';
+import { safeMsg } from '../utils/display-safe.js';
 import { isReadableBag } from '../state/malformed-resources-bag.js';
 import { isSecretBearingReferenceString as isSecretDynamicReference } from '../deployment/no-change-outputs-merge.js';
 
@@ -644,14 +650,46 @@ function valuesEqual(a: unknown, b: unknown): boolean {
  * normally, so a genuine change beside the broken output still renders and
  * `--fail` still exits 1 for it. The key appearing in state (a later deploy
  * resolved it) ends the suppression.
+ *
+ * `outputsPass` (go-to-k/cdkd#4043) is the twin of the deploy's outputs-pass
+ * bag: `resolveInto(bag)` is a resolver recording into `bag`. Every value
+ * resolves into `secrets`, and each `Export.Name` into a bag of its own, so the
+ * `NoEcho` values the deploy's pass reads as LOG-ONLY needles are known per
+ * source, and an alias whose name holds one is refused as the deploy refuses
+ * it. Without it no alias is refused for that reason.
  */
 export async function resolveTemplateOutputs(
   template: CloudFormationTemplate,
   resolveFn: IntrinsicResolveFn,
   conditions?: Record<string, boolean>,
   storedOutputs?: Record<string, unknown>,
-  skippedOutputKeys?: ReadonlySet<string>
+  skippedOutputKeys?: ReadonlySet<string>,
+  outputsPass?: {
+    resolveInto: (bag: RecordedSecretValues) => IntrinsicResolveFn;
+    secrets: RecordedSecretValues;
+  }
 ): Promise<ResolvedTemplateOutputs> {
+  const resolveValue = outputsPass?.resolveInto(outputsPass.secrets) ?? resolveFn;
+  // The outputs whose `Export.Name` pass 2 decides, in declaration order.
+  const exporting: Array<{
+    outputKey: string;
+    output: TemplateOutput & { Export: { Name: unknown } };
+    value: unknown;
+  }> = [];
+  // The deploy's verdict (go-to-k/cdkd#4043) over this name's bag, whose
+  // log-only set is the pass's. Skipped while the pass holds no needle.
+  const refusesNoEchoName = (exportName: string, nameBag: RecordedSecretValues): boolean =>
+    outputsPass !== undefined &&
+    (hasMaskableValues(outputsPass.secrets) || nameBag.size > 0) &&
+    exportNameSecretExposure(exportName, nameBag, outputsPass.secrets) !== undefined;
+  // The owner key as a debug line may show it: masked against the pass's
+  // printing corpus, as the deploy's refusal warning masks it.
+  const ownerDisplay = (outputKey: string): string =>
+    outputsPass === undefined
+      ? outputKey
+      : displayTextOrWithheld(
+          secretSafeKeyDisplay(outputKey, printingCorpusOf(outputsPass.secrets))
+        );
   const logger = getLogger().child('OutputsDiff');
   // `Object.create(null)`, not `{}` (issue #1943's class). Two writes below
   // key this bag by a template-controlled RESOLVED `Export.Name`, so a stack
@@ -836,7 +874,13 @@ export async function resolveTemplateOutputs(
     // would suppress the whole section and hide a sibling's genuine change.
     // Only while the key is ABSENT from state: present means a later deploy did
     // resolve it, and the record is stale rather than binding. Checked BEFORE
-    // resolving, so the lookup this resolver would skip is not even attempted.
+    // resolving the preview's value. The deploy's value pass still resolves
+    // it, recording its `NoEcho` needles for the alias verdict
+    // (go-to-k/cdkd#4043), so with an `outputsPass` it is resolved into that
+    // bag too, and the result discarded. Bound, stated: this issues the
+    // lookups its resolution makes (an attribute heal, a CFn fallback), and
+    // it can OVER-refuse, since the deploy's value pass may fail before
+    // reaching a `NoEcho` `Ref` this preview's resolution records.
     if (
       skippedOutputKeys?.has(outputKey) &&
       !(
@@ -847,6 +891,13 @@ export async function resolveTemplateOutputs(
       logger.debug(
         `Diff previewing output ${stripControlChars(outputKey)} as absent — the last deploy could not resolve it and its template inputs are unchanged`
       );
+      if (outputsPass !== undefined) {
+        try {
+          await resolveValue(structuredClone(output.Value));
+        } catch {
+          // Its needles only; a failure records nothing more.
+        }
+      }
       await recordSkippedSecretExportName(output);
       continue;
     }
@@ -863,7 +914,7 @@ export async function resolveTemplateOutputs(
       // wrote back until go-to-k/cdkd#2764 retired it, and this comment named
       // that write-back in three places. Kept as history so the clone is not
       // deleted as dead weight, which is exactly what the invariant forbids.)
-      value = await resolveFn(structuredClone(output.Value));
+      value = await resolveValue(structuredClone(output.Value));
     } catch (error) {
       logger.debug(
         `Diff could not resolve output ${stripControlChars(outputKey)}: ${stripControlChars(String(error))}`
@@ -897,6 +948,25 @@ export async function resolveTemplateOutputs(
     if (spellsToken(output.Value) && keepsTokenInLeaves(value)) passResolvesSecret = true;
 
     if (output.Export?.Name) {
+      exporting.push({
+        outputKey,
+        output: output as TemplateOutput & { Export: { Name: unknown } },
+        value,
+      });
+    }
+  }
+
+  // Pass 2, the deploy's alias pass: every `Export.Name`, AFTER every value,
+  // in declaration order. Each name resolves into a bag of its OWN sharing the
+  // pass's log-only set, with its entries forwarded into the pass bag once it
+  // resolves -- the deploy's `nameSecrets` (a `ForwardingSecrets` sharing the
+  // pass map's set) -- so each name is decided against the values' needles
+  // plus those of the names resolved before it, and an `Fn::Base64` in a name
+  // records its encoding exactly as the deploy's does.
+  for (const { outputKey, output, value } of exporting) {
+    const nameBag: RecordedSecretValues = new Map();
+    if (outputsPass !== undefined) shareLogOnlyValues(nameBag, outputsPass.secrets);
+    try {
       let exportName: unknown = output.Export.Name;
       // The `Fn::Sub` scoping is derived from `Export.Name`'s OWN source, not
       // from `output.Value`: an export name can be an `Fn::Sub` while the value
@@ -908,7 +978,9 @@ export async function resolveTemplateOutputs(
       const declaredExportIsIntrinsic = typeof output.Export.Name !== 'string';
       if (typeof exportName !== 'string') {
         try {
-          exportName = await resolveFn(structuredClone(exportName));
+          exportName = await (outputsPass?.resolveInto(nameBag) ?? resolveFn)(
+            structuredClone(exportName)
+          );
         } catch (error) {
           logger.debug(
             `Diff could not resolve Export.Name of ${stripControlChars(outputKey)}: ${stripControlChars(String(error))}`
@@ -934,7 +1006,14 @@ export async function resolveTemplateOutputs(
         // collision — so a name matching both is attributed the same way on
         // both sides. See `outputs-export-alias.ts`'s parity table for the full
         // row-by-row correspondence this block is written against.
-        if (declaredExportIsIntrinsic && keepsSecretReferenceToken(exportName)) {
+        if (refusesNoEchoName(exportName, nameBag)) {
+          // A `NoEcho` value in the name (go-to-k/cdkd#4043), decided HERE, as
+          // the deploy decides it: after every value, against the values'
+          // needles plus those of the names resolved so far.
+          logger.debug(
+            safeMsg`Diff skipping export alias of ${ownerDisplay(outputKey)} — the name carries a value this pass recorded as secret`
+          );
+        } else if (declaredExportIsIntrinsic && keepsSecretReferenceToken(exportName)) {
           // An INTRINSIC name that still carries a `{{resolve:...}}` token
           // after this resolver's `skipDynamicReferences` pass is one the deploy
           // WILL substitute plaintext into, and then refuse (the name would be a
@@ -974,6 +1053,11 @@ export async function resolveTemplateOutputs(
         // an unresolvable value rather than a diff missing a key.
         resolutionFailed = true;
         failuresMirrorDeploy = false;
+      }
+    } finally {
+      if (outputsPass !== undefined) {
+        for (const [plaintext, expression] of nameBag)
+          outputsPass.secrets.set(plaintext, expression);
       }
     }
   }

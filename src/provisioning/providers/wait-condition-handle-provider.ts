@@ -82,11 +82,13 @@ export class WaitConditionHandleProvider implements ResourceProvider {
   async getAttribute(
     physicalId: string,
     resourceType: string,
-    attributeName: string
+    attributeName: string,
+    logicalId: string
   ): Promise<unknown> {
     throw new ProvisioningError(
       `AWS::CloudFormation::WaitConditionHandle has no Fn::GetAtt attributes (requested: ${attributeName})`,
       resourceType,
+      logicalId,
       physicalId
     );
   }

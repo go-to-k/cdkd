@@ -55,7 +55,10 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
+import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
@@ -112,6 +115,16 @@ function sameRootDirectory(
     want.OwnerGid === have.OwnerGid &&
     mode(want.Permissions) === mode(have.Permissions)
   );
+}
+
+/**
+ * A caught error's text, masked BEFORE it joins a `create()` / `update()`
+ * failure message (issue #2177). AWS quotes a rejected request value back
+ * (a subnet, a KMS key, a policy), and those values come off the RESOLVED
+ * `properties` bag. Same text as the `instanceof Error ?` ternary it replaced.
+ */
+function awsErrorText(error: unknown, log: MaskedLogSinks): string {
+  return log.mask(error instanceof Error ? error.message : String(error));
 }
 
 /**
@@ -188,18 +201,28 @@ export class EFSProvider implements ResourceProvider {
 
   // ─── Dispatch ─────────────────────────────────────────────────────
 
+  /**
+   * Each `create()` / `update()` builds ONE masked sink set from its own
+   * context (issue #2177, `.claude/rules/provider-masking.md`) and routes every
+   * log line and wrapped AWS error text through it. EFS has no user-chosen
+   * physical name, so there is no derived-name needle: the bag values reaching
+   * a message are the `BackupPolicy` / `FileSystemProtection` enums, masked
+   * RAW, and AWS error text that can quote a request value back.
+   */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     switch (resourceType) {
       case 'AWS::EFS::FileSystem':
-        return this.createFileSystem(logicalId, resourceType, properties);
+        return this.createFileSystem(logicalId, resourceType, properties, log);
       case 'AWS::EFS::MountTarget':
-        return this.createMountTarget(logicalId, resourceType, properties);
+        return this.createMountTarget(logicalId, resourceType, properties, log);
       case 'AWS::EFS::AccessPoint':
-        return this.createAccessPoint(logicalId, resourceType, properties);
+        return this.createAccessPoint(logicalId, resourceType, properties, log);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -228,8 +251,10 @@ export class EFSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     switch (resourceType) {
       case 'AWS::EFS::FileSystem':
         return this.updateFileSystem(
@@ -237,10 +262,11 @@ export class EFSProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          log
         );
       case 'AWS::EFS::MountTarget':
-        return this.updateMountTarget(logicalId, physicalId, resourceType, properties);
+        return this.updateMountTarget(logicalId, physicalId, resourceType, properties, log);
       case 'AWS::EFS::AccessPoint':
         return Promise.reject(
           new ResourceUpdateNotSupportedError(
@@ -264,7 +290,8 @@ export class EFSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
     // Defensive guard: any non-mutable diff means the replacement-detection
     // layer should have routed this through DELETE+CREATE — if we reach
@@ -345,11 +372,11 @@ export class EFSProvider implements ResourceProvider {
       // No mutable diff — nothing to do (silent success, matching the
       // wider provider convention). Drift comparator wouldn't have
       // surfaced this resource if there was no diff to start with.
-      this.logger.debug(`No mutable diff for EFS FileSystem ${logicalId}, skipping update`);
+      log.debug(`No mutable diff for EFS FileSystem ${logicalId}, skipping update`);
       return { physicalId, wasReplaced: false };
     }
 
-    this.logger.debug(`Updating EFS FileSystem ${logicalId}: ${physicalId}`);
+    log.debug(`Updating EFS FileSystem ${logicalId}: ${physicalId}`);
 
     try {
       if (throughputModeChanged || provisionedChanged) {
@@ -364,7 +391,7 @@ export class EFSProvider implements ResourceProvider {
         // EFS UpdateFileSystem is async; wait until the FileSystem state
         // returns to `available` so the comparator's next read sees the
         // final values rather than `updating`.
-        await this.waitForFileSystemAvailable(physicalId, logicalId, resourceType);
+        await this.waitForFileSystemAvailable(physicalId, logicalId, resourceType, log);
       }
 
       // Post-create control-plane diffs — separate Put*/Update* APIs. Each is
@@ -375,31 +402,33 @@ export class EFSProvider implements ResourceProvider {
         await this.applyLifecyclePolicies(
           physicalId,
           properties['LifecyclePolicies'],
+          log,
           previousProperties['LifecyclePolicies']
         );
       }
       if (backupChanged) {
-        await this.applyBackupPolicy(physicalId, properties['BackupPolicy']);
+        await this.applyBackupPolicy(physicalId, properties['BackupPolicy'], log);
       }
       if (policyChanged) {
         await this.applyFileSystemPolicy(
           physicalId,
           properties['FileSystemPolicy'],
-          properties['BypassPolicyLockoutSafetyCheck']
+          properties['BypassPolicyLockoutSafetyCheck'],
+          log
         );
       }
       if (protectionChanged) {
-        await this.applyFileSystemProtection(physicalId, properties['FileSystemProtection']);
+        await this.applyFileSystemProtection(physicalId, properties['FileSystemProtection'], log);
       }
 
-      this.logger.debug(`Successfully updated EFS FileSystem ${logicalId}`);
+      log.debug(`Successfully updated EFS FileSystem ${logicalId}`);
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EFS FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EFS FileSystem ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -412,9 +441,10 @@ export class EFSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating EFS MountTarget ${logicalId}: ${physicalId}`);
+    log.debug(`Updating EFS MountTarget ${logicalId}: ${physicalId}`);
 
     const securityGroups = properties['SecurityGroups'] as string[] | undefined;
     if (securityGroups === undefined) {
@@ -422,7 +452,7 @@ export class EFSProvider implements ResourceProvider {
       // immutable on MountTarget). Silent success keeps `cdkd drift
       // --revert` consistent with the wider provider convention when
       // only immutable fields differ.
-      this.logger.debug(`No mutable diff for EFS MountTarget ${logicalId}, skipping update`);
+      log.debug(`No mutable diff for EFS MountTarget ${logicalId}, skipping update`);
       return { physicalId, wasReplaced: false };
     }
 
@@ -434,13 +464,13 @@ export class EFSProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully updated EFS MountTarget ${logicalId}`);
+      log.debug(`Successfully updated EFS MountTarget ${logicalId}`);
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EFS MountTarget ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EFS MountTarget ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -478,9 +508,10 @@ export class EFSProvider implements ResourceProvider {
   private async createFileSystem(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating EFS FileSystem ${logicalId}`);
+    log.debug(`Creating EFS FileSystem ${logicalId}`);
 
     // The CreationToken is EFS's idempotency key: a retried CreateFileSystem
     // with the SAME token returns the existing file system instead of creating
@@ -544,7 +575,7 @@ export class EFSProvider implements ResourceProvider {
       const arn = response.FileSystemArn!;
 
       // Wait for FileSystem to become available
-      await this.waitForFileSystemAvailable(fileSystemId, logicalId, resourceType);
+      await this.waitForFileSystemAvailable(fileSystemId, logicalId, resourceType, log);
 
       // LifecyclePolicies / BackupPolicy / FileSystemPolicy /
       // FileSystemProtection do NOT ride on CreateFileSystem — each is a
@@ -552,16 +583,17 @@ export class EFSProvider implements ResourceProvider {
       // still-creating file system, which is why they run after the wait
       // above. Each is wrapped in transient-control-plane retry because
       // back-to-back EFS control-plane ops can collide.
-      await this.applyLifecyclePolicies(fileSystemId, properties['LifecyclePolicies']);
-      await this.applyBackupPolicy(fileSystemId, properties['BackupPolicy']);
+      await this.applyLifecyclePolicies(fileSystemId, properties['LifecyclePolicies'], log);
+      await this.applyBackupPolicy(fileSystemId, properties['BackupPolicy'], log);
       await this.applyFileSystemPolicy(
         fileSystemId,
         properties['FileSystemPolicy'],
-        properties['BypassPolicyLockoutSafetyCheck']
+        properties['BypassPolicyLockoutSafetyCheck'],
+        log
       );
-      await this.applyFileSystemProtection(fileSystemId, properties['FileSystemProtection']);
+      await this.applyFileSystemProtection(fileSystemId, properties['FileSystemProtection'], log);
 
-      this.logger.debug(`Successfully created EFS FileSystem ${logicalId}: ${fileSystemId}`);
+      log.debug(`Successfully created EFS FileSystem ${logicalId}: ${fileSystemId}`);
 
       return {
         physicalId: fileSystemId,
@@ -582,9 +614,9 @@ export class EFSProvider implements ResourceProvider {
         markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
-          this.logger.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);
+          log.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
-          this.logger.warn(
+          log.warn(
             `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: ${
               describeAwsFailure(cleanupError).detail
             }`
@@ -594,7 +626,7 @@ export class EFSProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create EFS FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create EFS FileSystem ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -622,6 +654,7 @@ export class EFSProvider implements ResourceProvider {
   private async applyLifecyclePolicies(
     fileSystemId: string,
     spec: unknown,
+    log: MaskedLogSinks,
     previousSpec?: unknown
   ): Promise<void> {
     if (spec === undefined) {
@@ -637,9 +670,10 @@ export class EFSProvider implements ResourceProvider {
             LifecyclePolicies: policies,
           })
         ),
-      `set LifecyclePolicies on ${fileSystemId}`
+      `set LifecyclePolicies on ${fileSystemId}`,
+      log
     );
-    this.logger.debug(
+    log.debug(
       `Set ${policies.length} LifecyclePolicy entry(ies) on EFS FileSystem ${fileSystemId}`
     );
   }
@@ -648,7 +682,11 @@ export class EFSProvider implements ResourceProvider {
    * Apply `BackupPolicy` via `PutBackupPolicy`. CFn shape is
    * `{ Status: 'ENABLED' | 'DISABLED' }`.
    */
-  private async applyBackupPolicy(fileSystemId: string, spec: unknown): Promise<void> {
+  private async applyBackupPolicy(
+    fileSystemId: string,
+    spec: unknown,
+    log: MaskedLogSinks
+  ): Promise<void> {
     if (spec === undefined || spec === null) return;
     const status = (spec as { Status?: string }).Status;
     if (status === undefined) return;
@@ -660,9 +698,10 @@ export class EFSProvider implements ResourceProvider {
             BackupPolicy: { Status: status as Status },
           })
         ),
-      `set BackupPolicy on ${fileSystemId}`
+      `set BackupPolicy on ${fileSystemId}`,
+      log
     );
-    this.logger.debug(`Set BackupPolicy Status=${status} on EFS FileSystem ${fileSystemId}`);
+    log.debug(`Set BackupPolicy Status=${log.value(status)} on EFS FileSystem ${fileSystemId}`);
   }
 
   /**
@@ -675,7 +714,8 @@ export class EFSProvider implements ResourceProvider {
   private async applyFileSystemPolicy(
     fileSystemId: string,
     policy: unknown,
-    bypass: unknown
+    bypass: unknown,
+    log: MaskedLogSinks
   ): Promise<void> {
     if (policy === undefined || policy === null) return;
     const policyString = typeof policy === 'string' ? policy : JSON.stringify(policy);
@@ -688,16 +728,21 @@ export class EFSProvider implements ResourceProvider {
             BypassPolicyLockoutSafetyCheck: bypass === undefined ? undefined : Boolean(bypass),
           })
         ),
-      `set FileSystemPolicy on ${fileSystemId}`
+      `set FileSystemPolicy on ${fileSystemId}`,
+      log
     );
-    this.logger.debug(`Set FileSystemPolicy on EFS FileSystem ${fileSystemId}`);
+    log.debug(`Set FileSystemPolicy on EFS FileSystem ${fileSystemId}`);
   }
 
   /**
    * Apply `FileSystemProtection` via `UpdateFileSystemProtection`. CFn shape is
    * `{ ReplicationOverwriteProtection: 'ENABLED' | 'DISABLED' | 'REPLICATING' }`.
    */
-  private async applyFileSystemProtection(fileSystemId: string, spec: unknown): Promise<void> {
+  private async applyFileSystemProtection(
+    fileSystemId: string,
+    spec: unknown,
+    log: MaskedLogSinks
+  ): Promise<void> {
     if (spec === undefined || spec === null) return;
     const protection = (spec as { ReplicationOverwriteProtection?: string })
       .ReplicationOverwriteProtection;
@@ -710,10 +755,11 @@ export class EFSProvider implements ResourceProvider {
             ReplicationOverwriteProtection: protection as ReplicationOverwriteProtection,
           })
         ),
-      `set FileSystemProtection on ${fileSystemId}`
+      `set FileSystemProtection on ${fileSystemId}`,
+      log
     );
-    this.logger.debug(
-      `Set ReplicationOverwriteProtection=${protection} on EFS FileSystem ${fileSystemId}`
+    log.debug(
+      `Set ReplicationOverwriteProtection=${log.value(protection)} on EFS FileSystem ${fileSystemId}`
     );
   }
 
@@ -724,10 +770,15 @@ export class EFSProvider implements ResourceProvider {
    * `IncorrectFileSystemLifeCycleState` / `ThrottlingException` /
    * `ConflictException` and the message-pattern set below are the same class.
    * Backoff: ~2s,4s,8s,16s,30s,30s... bounded to ~2min total.
+   *
+   * `log` is the calling operation's masked sink: the per-attempt line carries
+   * AWS's own text, which can quote the request (a `FileSystemPolicy` document
+   * included) back.
    */
   private async retryOnTransientControlPlane<T>(
     op: () => Promise<T>,
     label: string,
+    log: MaskedLogSinks,
     maxAttempts = 8
   ): Promise<T> {
     let delayMs = 2000;
@@ -748,7 +799,7 @@ export class EFSProvider implements ResourceProvider {
           name === 'ConflictException' ||
           name === 'ThrottlingException';
         if (!transient || attempt >= maxAttempts) throw error;
-        this.logger.debug(
+        log.debug(
           `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`
         );
         await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -799,7 +850,8 @@ export class EFSProvider implements ResourceProvider {
   private async waitForFileSystemAvailable(
     fileSystemId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    log: MaskedLogSinks
   ): Promise<void> {
     const pollIntervalMs = 2000;
     const maxWaitMs = 60000;
@@ -813,9 +865,7 @@ export class EFSProvider implements ResourceProvider {
       if (fs?.LifeCycleState === 'available') {
         return;
       }
-      this.logger.debug(
-        `FileSystem ${fileSystemId} state: ${fs?.LifeCycleState ?? 'unknown'}, waiting...`
-      );
+      log.debug(`FileSystem ${fileSystemId} state: ${fs?.LifeCycleState ?? 'unknown'}, waiting...`);
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
 
@@ -832,9 +882,10 @@ export class EFSProvider implements ResourceProvider {
   private async createMountTarget(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating EFS MountTarget ${logicalId}`);
+    log.debug(`Creating EFS MountTarget ${logicalId}`);
 
     const fileSystemId = properties['FileSystemId'] as string | undefined;
     if (!fileSystemId) {
@@ -866,14 +917,14 @@ export class EFSProvider implements ResourceProvider {
       );
 
       const mountTargetId = response.MountTargetId!;
-      this.logger.debug(
+      log.debug(
         `Created EFS MountTarget ${logicalId}: ${mountTargetId}, waiting for available state`
       );
 
       // Poll until mount target is available
-      await this.waitForMountTargetAvailable(mountTargetId, logicalId, resourceType);
+      await this.waitForMountTargetAvailable(mountTargetId, logicalId, resourceType, log);
 
-      this.logger.debug(`Successfully created EFS MountTarget ${logicalId}: ${mountTargetId}`);
+      log.debug(`Successfully created EFS MountTarget ${logicalId}: ${mountTargetId}`);
 
       return {
         physicalId: mountTargetId,
@@ -885,7 +936,7 @@ export class EFSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create EFS MountTarget ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create EFS MountTarget ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -897,7 +948,8 @@ export class EFSProvider implements ResourceProvider {
   private async waitForMountTargetAvailable(
     mountTargetId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    log: MaskedLogSinks
   ): Promise<void> {
     const pollIntervalMs = 5000;
     const maxWaitMs = 120000;
@@ -915,7 +967,7 @@ export class EFSProvider implements ResourceProvider {
         return;
       }
 
-      this.logger.debug(
+      log.debug(
         `MountTarget ${mountTargetId} state: ${mountTarget?.LifeCycleState ?? 'unknown'}, waiting...`
       );
 
@@ -1014,9 +1066,10 @@ export class EFSProvider implements ResourceProvider {
   private async createAccessPoint(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating EFS AccessPoint ${logicalId}`);
+    log.debug(`Creating EFS AccessPoint ${logicalId}`);
 
     const fileSystemId = properties['FileSystemId'] as string | undefined;
     if (!fileSystemId) {
@@ -1103,7 +1156,7 @@ export class EFSProvider implements ResourceProvider {
     });
 
     try {
-      const response = await this.createOrAdoptAccessPoint(logicalId, resourceType, {
+      const response = await this.createOrAdoptAccessPoint(logicalId, resourceType, log, {
         ClientToken: clientToken.value,
         FileSystemId: fileSystemId,
         PosixUser: posixUser
@@ -1131,7 +1184,7 @@ export class EFSProvider implements ResourceProvider {
       const accessPointId = response.AccessPointId!;
       const arn = response.AccessPointArn!;
 
-      this.logger.debug(`Successfully created EFS AccessPoint ${logicalId}: ${accessPointId}`);
+      log.debug(`Successfully created EFS AccessPoint ${logicalId}: ${accessPointId}`);
 
       // Success path ONLY, per `acquireIdempotencyToken`'s contract: releasing
       // on the failure path would hand the next attempt a different token and
@@ -1153,7 +1206,7 @@ export class EFSProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create EFS AccessPoint ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create EFS AccessPoint ${logicalId}: ${awsErrorText(error, log)}`,
         resourceType,
         logicalId,
         undefined,
@@ -1214,6 +1267,7 @@ export class EFSProvider implements ResourceProvider {
   private async createOrAdoptAccessPoint(
     logicalId: string,
     resourceType: string,
+    log: MaskedLogSinks,
     input: CreateAccessPointCommandInput & { ClientToken: string }
   ): Promise<Pick<AccessPointDescription, 'AccessPointId' | 'AccessPointArn'>> {
     try {
@@ -1235,8 +1289,9 @@ export class EFSProvider implements ResourceProvider {
       // Everything below DECLINES rather than throws bare -- see the wrapping
       // note on this method. No message here interpolates a value out of
       // `properties`: `FileSystemId` can be an intrinsic that resolved to a
-      // secret, and a provider's own `logger` line reaches no masking sink
-      // (`.claude/rules/provider-masking.md`). The logical id and the access
+      // secret, and a provider's own `logger` line reaches no engine masking
+      // sink (`.claude/rules/provider-masking.md`); `log` masks every line
+      // here anyway, but only as a fallback. The logical id and the access
       // point id identify the resource without it.
       //
       // AWS-AUTHORED text is withheld for the same reason and one more. This
@@ -1260,7 +1315,7 @@ export class EFSProvider implements ResourceProvider {
       // is now TERMINAL, which is right for a grant that is absent rather than
       // propagating.
       const decline = (reason: string): never => {
-        this.logger.warn(
+        log.warn(
           `CreateAccessPoint for ${logicalId} was refused because the idempotency token cdkd sent is already bound to an access point, and cdkd declined to adopt it: ${reason}.`
         );
         // `markNonRetryable` rather than trusting the wording: the message
@@ -1322,7 +1377,9 @@ export class EFSProvider implements ResourceProvider {
             {
               maxRetries: 3,
               isRetryable: (_text, err) => isThrottlingError(err) || isTransientServerError(err),
-              logger: this.logger,
+              // The masked sink, not `this.logger`: `withRetry` puts AWS's
+              // own text in its per-attempt and give-up lines (issue #2050).
+              logger: log,
               isInterrupted: watch.isInterrupted,
               onInterrupted: watch.onInterrupted,
             }
@@ -1345,7 +1402,7 @@ export class EFSProvider implements ResourceProvider {
         // The lookup error must never REPLACE the diagnosis, so the token
         // collision stays the headline and AWS's own words go to `debug`.
         const failure = describeAwsFailure(lookupError);
-        this.logger.debug(`Read-back of access point ${existingId} failed with: ${failure.detail}`);
+        log.debug(`Read-back of access point ${existingId} failed with: ${failure.detail}`);
         return decline(`reading access point ${existingId} back failed: ${failure.summary}`);
       }
 
@@ -1390,7 +1447,7 @@ export class EFSProvider implements ResourceProvider {
         );
       }
 
-      this.logger.warn(
+      log.warn(
         `CreateAccessPoint was replayed after a lost response; adopting the access point ${existing.AccessPointId} the previous attempt already created instead of creating a second one`
       );
       return existing;

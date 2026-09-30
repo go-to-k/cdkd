@@ -8,7 +8,8 @@ import { Construct } from 'constructs';
  *
  * cdkd records such a value as a LOG-ONLY needle when a `Ref` or `Fn::Sub`
  * variable serves it: the provider's masker, the engine's error text and the
- * `deployments/*.jsonl` event mask it, while what cdkd PERSISTS is unchanged.
+ * `deployments/*.jsonl` event mask it, while what cdkd PERSISTS is unchanged
+ * except an export alias, which is refused (issue #4043).
  * `verify.sh` generates the value per run and passes it in through
  * `CDKD_TEST_NOECHO_TOKEN`, which becomes the parameter's `Default` (cdkd
  * deploy takes no `--parameters`).
@@ -28,11 +29,10 @@ import { Construct } from 'constructs';
  *   `TopicName` is a literal, and under `CDKD_TEST_NOECHO_RENAME=true` embeds
  *   the token, so that redeploy prints the diff's `--verbose`
  *   `requires replacement (<old> -> <new>)` line over it.
- * - the alias-token output / `NoEchoAliasProbe` (go-to-k/cdkd#4049): the probe's
- *   `Export.Name` is a second `NoEcho` parameter, whose value
- *   (`CDKD_TEST_NOECHO_ALIAS_TOKEN`, letters and digits only) is also the
- *   owner output's logical id, so every deploy prints the export-alias
- *   collision warning naming it.
+ * - `NoEchoAliasProbe` (go-to-k/cdkd#4043): the output's `Export.Name` IS a
+ *   second `NoEcho` parameter (`CDKD_TEST_NOECHO_ALIAS_TOKEN`), so every
+ *   deploy refuses the alias: it reaches neither state nor the exports index,
+ *   and the warning names it masked.
  *
  * covers: AWS::SSM::Parameter, AWS::SNS::Topic
  */
@@ -66,7 +66,6 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
       noEcho: true,
       default: process.env['CDKD_TEST_NOECHO_ALIAS_TOKEN'] ?? 'CdkdNoEchoAliasUnset',
     });
-    new cdk.CfnOutput(this, aliasToken.default as string, { value: 'alias-owner-value' });
     new cdk.CfnOutput(this, 'NoEchoAliasProbe', {
       value: 'alias-probe-value',
       exportName: aliasToken.valueAsString,

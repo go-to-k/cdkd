@@ -893,6 +893,7 @@ describe('replayRollback', () => {
     expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, {
       expectedRegion: 'us-east-1',
       deletionPolicy: 'Delete',
+      recordedAttributes: {},
     });
     expect(state.B).toMatchObject({ physicalId: 'phys-old-2', properties: { a: 1 }, attributes: { Arn: 'arn:old' } });
     expect(result.failures).toBe(0);
@@ -1613,6 +1614,7 @@ describe('replayRollback', () => {
     expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::S3::Bucket', { a: 2 }, {
       expectedRegion: 'us-east-1',
       deletionPolicy: 'Delete',
+      recordedAttributes: {},
     });
     expect(state.B).toBe(prev);
     expect(result.failures).toBe(0);
@@ -1848,6 +1850,7 @@ describe('replayFailedOperations (#1198)', () => {
     expect(del).toHaveBeenCalledWith('C', 'pC', 'T', undefined, {
       expectedRegion: 'us-east-1',
       deletionPolicy: 'Delete',
+      recordedAttributes: {},
     });
     expect(state.C).toBeUndefined();
     expect(result.failures).toBe(0);
@@ -2676,6 +2679,7 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
     expect(del).toHaveBeenCalledWith('Res', 'phys-res', 'AWS::EC2::Volume', { Size: 1 }, {
       expectedRegion: 'us-east-1',
       deletionPolicy: 'Delete',
+      recordedAttributes: {},
     });
     expect(state['Res']).toBeUndefined();
   });

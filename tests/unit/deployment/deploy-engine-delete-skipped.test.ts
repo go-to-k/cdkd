@@ -143,11 +143,14 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
   let events: DeploymentEvent[];
   /** Queued `create()` rejections, mirroring the collision harness's shape. */
   let createFailures: Error[];
+  /** The record's `attributes` (issue #4157 sets distinctive ones). */
+  let recordAttributes: Record<string, unknown>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     events = [];
     createFailures = [];
+    recordAttributes = {};
     provider = {
       create: vi.fn().mockImplementation(async () => {
         const failure = createFailures.shift();
@@ -229,7 +232,7 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
         physicalId: 'api1|Query|field',
         resourceType: TYPE,
         properties: { Name: 'a|b' },
-        attributes: {},
+        attributes: recordAttributes,
         dependencies: [],
         provisionedBy: 'sdk',
       },
@@ -514,6 +517,68 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
 
       expect(provider.create).toHaveBeenCalledTimes(1);
       expect(stateResources['MyResource']?.physicalId).toBe('new-pid');
+    });
+  });
+  // Issue #4157: every engine delete site hands the provider the attributes of
+  // the record whose physical id it deletes, so a name-addressed provider can
+  // refuse a same-named resource that is not the recorded one.
+  describe('recordedAttributes on every delete site (#4157)', () => {
+    const RECORDED = { RepositoryId: 'id-recorded-4157', Arn: 'arn:recorded-4157' };
+
+    function deleteContext(): Record<string, unknown> {
+      const del = provider.delete as ReturnType<typeof vi.fn>;
+      expect(del).toHaveBeenCalledTimes(1);
+      expect(del.mock.calls[0]?.[1]).toBe('api1|Query|field');
+      return del.mock.calls[0]?.[4] as Record<string, unknown>;
+    }
+
+    beforeEach(() => {
+      recordAttributes = { ...RECORDED };
+      // The replacement's own attributes differ, so a site handing the NEW
+      // record's attributes to the OLD resource's delete is caught.
+      (provider.create as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        const failure = createFailures.shift();
+        if (failure) throw failure;
+        return { physicalId: 'new-pid', attributes: { RepositoryId: 'id-new' } };
+      });
+    });
+
+    it('template-DELETE branch', async () => {
+      await invokeTemplateDelete(makeEngine(), freshCounts());
+      expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+    });
+
+    it('UPDATE-not-supported replacement', async () => {
+      (provider.update as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new ResourceUpdateNotSupportedError(TYPE, 'MyResource', 'no update API')
+      );
+      await invokeReplacingUpdate(makeEngine({ replace: true }), { requiresReplacement: false });
+      expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+    });
+
+    it('create-first cleanup', async () => {
+      await invokeReplacingUpdate(makeEngine(), { requiresReplacement: true });
+      expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+    });
+
+    it('--recreate-via-cc-api', async () => {
+      await invokeReplacingUpdate(makeEngine({ recreateViaCcApi: true }), {
+        requiresReplacement: false,
+      });
+      expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+    });
+
+    it('--replace delete-first fallback', async () => {
+      createFailures = [
+        ccAlreadyExistsError(
+          `CREATE failed for MyResource: Resource of type '${TYPE}' with identifier ` +
+            `'api1|Query|field' already exists.`
+        ),
+      ];
+      await invokeReplacingUpdate(makeEngine({ replace: true }), { requiresReplacement: true });
+      expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+      // Reached through the collision: the create-first ran, then the re-create.
+      expect(provider.create).toHaveBeenCalledTimes(2);
     });
   });
 });

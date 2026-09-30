@@ -245,7 +245,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'DocDBSubnetGroupProvider',
   'ECRProvider',
   'ECSProvider',
-  'EFSProvider',
   'EMRClusterProvider',
   'EMRInstanceFleetConfigProvider',
   'EMRInstanceGroupConfigProvider',

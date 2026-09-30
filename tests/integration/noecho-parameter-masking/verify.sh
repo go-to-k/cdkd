@@ -5,18 +5,21 @@
 # records the value as a LOG-ONLY needle: the deploy's provider, error, event
 # and resolver surfaces mask it (the resolver's --verbose lines, the provider's
 # masker, the engine's error text, the deployments/*.jsonl events), and what
-# cdkd PERSISTS is unchanged. So do the diff's `requires replacement` line, the
-# export-alias collision warning, and `cdkd diff`'s own rendering, human and
-# --json (go-to-k/cdkd#4049). Still open on #4049: the deploy summary's Outputs
+# cdkd PERSISTS is unchanged except for an export alias. So do the diff's
+# `requires replacement` line and `cdkd diff`'s own rendering, human and --json
+# (go-to-k/cdkd#4049). Still open on #4049: the deploy summary's Outputs
 # display, the CommaDelimitedList / Fn::Split coverage edges, and the forwarded
-# synth output.
+# synth output. An `Export.Name` holding a NoEcho value is REFUSED
+# (go-to-k/cdkd#4043): nothing is published to state or the exports index.
 #
 # Phases:
 #   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: token=...` line
 #      prints the value masked, AWS holds the REAL value, and state.json holds
 #      it in the clear -- the persistence half of the #1998 decision, asserted
-#      so a change to it is a visible decision, not a silent one. The
-#      export-alias collision warning names a second NoEcho value, masked.
+#      so a change to it is a visible decision, not a silent one.
+#      NoEchoAliasProbe's Export.Name IS a second NoEcho value: the alias is
+#      refused with a masked warning, and neither state.json, its exportNames
+#      nor the exports index holds it (#4043).
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
@@ -25,7 +28,8 @@
 #      NoEchoRenamed's TopicName row prints its new side masked and its old
 #      side withheld, human and --json, and so does the diff's own
 #      `requires replacement` line; the exit codes are unchanged (0, and 1
-#      under --fail). Nothing in either output carries the value.
+#      under --fail). Nothing in either output carries the value, and the
+#      refused alias is not previewed as an added export (#4043).
 #   3. Redeploy with CDKD_TEST_NOECHO_RENAME=true: NoEchoRenamed's create-only
 #      TopicName now embeds the value, and the `requires replacement` line
 #      prints it masked while AWS holds the real name (#4049). After Phase 2,
@@ -85,6 +89,9 @@ STACK="CdkdNoechoParameterMaskingExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+# The shared exports index is a SIBLING key no stack prefix reaches. Other
+# stacks share it, so it is only READ here and purged `noncurrent` by KEY.
+INDEX_KEY="cdkd/_index/${REGION}/exports.json"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 CONSUMER_NAME="cdkd-test-noecho-consumer-${ACCOUNT_ID}"
 REJECT_NAME="cdkd-test-noecho-reject-${ACCOUNT_ID}"
@@ -99,9 +106,8 @@ if [ "${#TOKEN}" -lt 20 ]; then
   exit 1
 fi
 export CDKD_TEST_NOECHO_TOKEN="${TOKEN}"
-# The export-alias collision's value (#4049): it is also the owner OUTPUT's
-# logical id, so letters and digits only. It is template text as that id, so
-# only the collision warning is asserted not to carry it.
+# NoEchoAliasProbe's Export.Name (#4043). Appears in no template text but the
+# parameter's Default, so no log, state blob or index version may carry it.
 ALIAS_TOKEN="CdkdNoEchoAlias$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 if [ "${#ALIAS_TOKEN}" -lt 20 ]; then
   echo "FAIL: premise: could not generate the NoEcho alias value (got ${#ALIAS_TOKEN} characters)" >&2
@@ -141,8 +147,7 @@ cleanup() {
   fi
   # By exact name, in case state destroy missed them. NoEchoReject exists only
   # if AWS stopped rejecting the value.
-  aws ssm delete-parameter --name "${CONSUMER_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
-  aws ssm delete-parameter --name "${REJECT_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws ssm delete-parameters --names "${CONSUMER_NAME}" "${REJECT_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -154,6 +159,9 @@ cleanup() {
     # state.json may still be the only record of standing resources. The
     # success path does the full sweep and asserts it.
     s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
+    # A binary that PUBLISHED the refused alias wrote the NoEcho value into the
+    # shared index: its noncurrent versions go, never the current one.
+    s3_purge_key_versions "${STATE_BUCKET}" "${INDEX_KEY:-}" noncurrent || true
   fi
   set -eu
 }
@@ -242,30 +250,66 @@ if [ "${P1_PERSISTED}" != "token=${TOKEN}" ]; then
   exit 1
 fi
 echo "    OK: state.json holds the value as before (persistence unchanged)"
-# EXPORT-ALIAS COLLISION (#4049): NoEchoAliasProbe's Export.Name is the second
-# NoEcho value, which is also the owner output's key, so the alias is skipped
-# and the warning names it -- masked. The SENTINEL is the warning's fixed
-# wording: present with no masked name means the name printed.
-ALIAS_WARNING_TEXT='which is also the name of another output in this stack'
-P1_ALIAS_LINE=$(grep -m1 -F -- "${ALIAS_WARNING_TEXT}" <<< "${DEPLOY_OUT_P1}" || true)
-if [ -z "${P1_ALIAS_LINE}" ]; then
-  echo "FAIL: premise: the Phase 1 deploy printed no export-alias collision warning -- this arm did not run (issue #4049)" >&2
+# NOECHO EXPORT NAME REFUSED (#4043). PREMISE: the template declares the second
+# parameter NoEcho with this run's value as its Default, and NoEchoAliasProbe
+# exports under a bare Ref to it -- so the alias name IS the value.
+ALIAS_SHAPE=$(jq -r --arg tok "${ALIAS_TOKEN}" '
+  (.Parameters.NoEchoAliasToken.NoEcho == true and .Parameters.NoEchoAliasToken.Default == $tok)
+  and (.Outputs.NoEchoAliasProbe.Export.Name == {"Ref": "NoEchoAliasToken"})
+' "${SYNTH_TEMPLATE}")
+if [ "${ALIAS_SHAPE}" != "true" ]; then
+  echo "FAIL: premise: the synthesized template does not export NoEchoAliasProbe under a Ref to the NoEcho NoEchoAliasToken with this run's Default" >&2
   exit 1
 fi
-if [[ "${P1_ALIAS_LINE}" == *"${ALIAS_TOKEN}"* ]]; then
-  echo "FAIL: the export-alias collision warning carries the NoEcho alias value in plaintext (issue #4049)" >&2
+# The refusal warning, found by its fixed wording and the output it names --
+# neither carries the value -- and printed with the name masked.
+REFUSAL_TEXT='has an Export.Name that resolves to a value containing a secret'
+P1_REFUSAL_LINE=$(grep -m1 -F -- "Output NoEchoAliasProbe ${REFUSAL_TEXT}" <<< "${DEPLOY_OUT_P1}" || true)
+if [ -z "${P1_REFUSAL_LINE}" ]; then
+  echo "FAIL: the Phase 1 deploy printed no export-name refusal for NoEchoAliasProbe -- the NoEcho alias was not refused (issue #4043)" >&2
+  # The alias value masked by hand: a regression here may print it.
+  diag_output "$(grep -F 'NoEchoAliasProbe' <<< "${DEPLOY_OUT_P1}" | sed "s/${ALIAS_TOKEN}/***/g" || true)"
   exit 1
 fi
-if [[ "${P1_ALIAS_LINE}" != *'Output NoEchoAliasProbe exports as "***"'* ]]; then
-  echo "FAIL: the export-alias collision warning does not name the export masked (issue #4049): ${P1_ALIAS_LINE}" >&2
+if [[ "${P1_REFUSAL_LINE}" != *'(masked: "***")'* ]]; then
+  echo "FAIL: the export-name refusal does not name the export masked (issue #4043): ${P1_REFUSAL_LINE//${ALIAS_TOKEN}/***}" >&2
   exit 1
 fi
-P1_OWNER_VALUE=$(jq -r --arg key "${ALIAS_TOKEN}" '.outputs[$key] // "<absent>"' "${P1_STATE}")
-if [ "${P1_OWNER_VALUE}" != "alias-owner-value" ]; then
-  echo "FAIL: state.json does not hold the owner output under its own key -- the collision's skip changed (issue #4049)" >&2
+if [[ "${DEPLOY_OUT_P1}" == *"${ALIAS_TOKEN}"* ]]; then
+  echo "FAIL: the Phase 1 deploy output carries the NoEcho alias value in plaintext (issue #4043)" >&2
   exit 1
 fi
-echo "    OK: the export-alias collision warning masks the NoEcho alias value"
+# Nothing published: the output keeps its own key and value, and neither the
+# state blob (outputs keys, exportNames) nor the exports index holds the value.
+P1_PROBE_VALUE=$(jq -r '.outputs.NoEchoAliasProbe // "<absent>"' "${P1_STATE}")
+if [ "${P1_PROBE_VALUE}" != "alias-probe-value" ]; then
+  echo "FAIL: premise: state.json does not hold NoEchoAliasProbe's own value -- the outputs pass did not run as expected" >&2
+  exit 1
+fi
+if grep -qF -- "${ALIAS_TOKEN}" "${P1_STATE}"; then
+  echo "FAIL: state.json carries the NoEcho alias value -- the refused alias was published (issue #4043)" >&2
+  exit 1
+fi
+P1_ALIAS_KEYS=$(jq -r '[(.outputs // {} | to_entries[] | select(.value == "alias-probe-value") | .key)] | join(",")' "${P1_STATE}")
+if [ "${P1_ALIAS_KEYS}" != "NoEchoAliasProbe" ]; then
+  echo "FAIL: state.json holds NoEchoAliasProbe's value under another key -- an alias was published (issue #4043)" >&2
+  exit 1
+fi
+# ONE read: present, it lands in the scratch file; absent, nothing was published.
+P1_INDEX=$(mktemp)
+SCRATCH_FILES+=("${P1_INDEX}")
+if ! gone_probe aws s3api get-object --bucket "${STATE_BUCKET}" --key "${INDEX_KEY}" "${P1_INDEX}"; then
+  if grep -qF -- "${ALIAS_TOKEN}" "${P1_INDEX}"; then
+    echo "FAIL: the exports index carries the NoEcho alias value -- the refused alias was published (issue #4043)" >&2
+    exit 1
+  fi
+  P1_INDEX_ENTRIES=$(jq -r --arg stack "${STACK}" '[.exports // {} | to_entries[] | select(.value.producerStack == $stack)] | length' "${P1_INDEX}")
+  if [ "${P1_INDEX_ENTRIES}" != "0" ]; then
+    echo "FAIL: the exports index holds ${P1_INDEX_ENTRIES} entr(ies) for ${STACK}, which exports nothing once its only alias is refused (issue #4043)" >&2
+    exit 1
+  fi
+fi
+echo "    OK: the NoEcho export alias is refused, masked in its warning, and in neither state nor the exports index"
 
 # --- Phase 2: the provider rejection quotes the value ------------------------
 echo "==> Phase 2: probe deploy whose SSM Tier is the NoEcho value, which SSM rejects quoting it"
@@ -425,6 +469,17 @@ if [ "${JSON_ROW}" != "1" ]; then
   diag_output "${DIFF_JSON_P3A}"
   exit 1
 fi
+# The refused alias (#4043) is not previewed: state holds no key for it, and a
+# preview publishing it would be a phantom export row on every run.
+ALIAS_ROWS=$(jq -c '[.[] | .outputChanges[]? | select(.export == true or .changeType == "ADD")] | length' <<< "${DIFF_JSON_P3A}" 2>/dev/null || echo "unparsable")
+if [ "${ALIAS_ROWS}" != "0" ]; then
+  echo "FAIL: the --json payload previews ${ALIAS_ROWS} added or export output row(s) -- the refused NoEcho alias is previewed as published (issue #4043)" >&2
+  exit 1
+fi
+if [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}${DIFF_OUT_P3A}" == *"${ALIAS_TOKEN}"* ]]; then
+  echo "FAIL: the Phase 3a diff output carries the NoEcho alias value (issue #4043)" >&2
+  exit 1
+fi
 echo "    OK: cdkd diff masks the NoEcho value on its rows, its --json payload and its replacement line"
 
 # --- Phase 3: a create-only property now embeds the value --------------------
@@ -539,4 +594,4 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "noecho-parameter-masking state teardown"
 
-echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event, resolver, replacement-line and export-alias surfaces, and persistence is unchanged"
+echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event, resolver and replacement-line surfaces, an Export.Name holding one is refused, and the rest of persistence is unchanged"

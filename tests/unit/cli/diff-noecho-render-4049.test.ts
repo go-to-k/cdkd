@@ -254,29 +254,26 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
     expect(out).not.toContain(OLD_NOECHO);
   });
 
-  it('masks an export row NAME built from the value', async () => {
-    const state = st({ A: res({ Value: 'x' }) }, {});
-    const { result } = await diffOf(
-      state,
-      noEchoTemplate(
-        { Value: 'x' },
-        {
-          Out: {
-            Value: 'v',
-            // An intrinsic name, which the template type spells as a string.
-            Export: { Name: { 'Fn::Join': ['-', ['app', { Ref: 'DbUser' }]] } as unknown as string },
-          },
-        }
-      )
-    );
+  // An intrinsic name, which the template type spells as a string.
+  const appExport = {
+    Out: {
+      Value: 'v',
+      Export: { Name: { 'Fn::Join': ['-', ['app', { Ref: 'DbUser' }]] } as unknown as string },
+    },
+  };
+
+  it('masks an export row NAME built from the value (a stored alias the deploy now drops)', async () => {
+    // Published by a binary before go-to-k/cdkd#4043; the next deploy refuses
+    // the alias, so the preview shows its REMOVE.
+    const state = st({ A: res({ Value: 'x' }) }, { Out: 'v', [`app-${NOECHO}`]: 'v' });
+    const { result } = await diffOf(state, noEchoTemplate({ Value: 'x' }, appExport));
 
     const out = printed(nodeOf(result));
     expect(out).not.toContain(NOECHO);
-    expect(out).toContain('[export]');
-    expect(result.outputChanges.find((c) => c.isExport)?.nameDisplay).toEqual({
-      kind: 'masked',
-      text: 'app-***',
-    });
+    // Only the alias moves: the output's own row is unchanged.
+    expect(result.outputChanges).toHaveLength(1);
+    expect(result.outputChanges[0]!.changeType).toBe('REMOVE');
+    expect(result.outputChanges[0]!.nameDisplay).toEqual({ kind: 'masked', text: 'app-***' });
   });
 
   it('leaves a NoEcho parameter fed a dynamic reference printed as its expression', async () => {
@@ -898,8 +895,8 @@ describe('cdkd diff --recursive masks a parent NoEcho value in the child (#4049)
       recursive: true,
       stateBackend: backend,
       diffCalculator: new DiffCalculator(),
-      // Bound as a caller-supplied value: the child-parameter resolution reads
-      // the node's INPUT parameters, not the template defaults.
+      // A caller-supplied value; the Default-bound twin of this case is in
+      // diff-recursive-child-params-4094.test.ts (go-to-k/cdkd#4094).
       parameters: { Pw: NOECHO },
       isNestedChild: false,
     });

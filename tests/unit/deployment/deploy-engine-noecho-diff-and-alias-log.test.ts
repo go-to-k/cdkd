@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 // go-to-k/cdkd#4049, the ENGINE half, with the REAL resolver and the REAL diff
 // calculator: a `Ref` to a `NoEcho: true` parameter serving a create-only
 // property is masked on the diff's `requires replacement` debug line, an
-// `Export.Name` built from one is masked on the collision warning, and the
+// `Export.Name` built from one is masked on the refusal warning, and the
 // state the deploy PERSISTS is byte-identical to the same deploy without
 // `NoEcho`.
 const logLines = vi.hoisted(() => [] as string[]);
@@ -144,7 +144,7 @@ beforeEach(() => {
 });
 
 describe('DeployEngine - the diff and alias print surfaces mask a NoEcho value (go-to-k/cdkd#4049)', () => {
-  it('masks the replacement debug line and the export-alias collision warning', async () => {
+  it('masks the replacement debug line and the export-alias refusal warning', async () => {
     const h = harness();
     await h.engine.deploy('s', templateOf(true));
     const lines = logLines.join('\n');
@@ -152,7 +152,12 @@ describe('DeployEngine - the diff and alias print surfaces mask a NoEcho value (
     expect(lines).toContain(
       `Property Name of AWS::SSM::Parameter requires replacement (${SECRET_MASK} -> "${SECRET_MASK}")`
     );
-    expect(lines).toContain(`Output Echo exports as "${SECRET_MASK}"`);
+    // The name IS the NoEcho value, so the secret-bearing-name refusal fires
+    // before the collision arm could (go-to-k/cdkd#4043).
+    expect(lines).toContain(
+      `Output Echo has an Export.Name that resolves to a value containing a secret (masked: "${SECRET_MASK}")`
+    );
+    expect(lines).not.toContain('which is also the name of another output');
     // The value AWS receives is the real one.
     expect((h.provider.create.mock.calls[0]![2] as Record<string, unknown>)['Name']).toBe(NOECHO);
     expect(lines).not.toContain(NOECHO);

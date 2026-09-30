@@ -8095,23 +8095,206 @@ export function errorCauseChain(root: Error): Error[] {
   return chain;
 }
 
+/** `error.stack` when it reads as a string; a throwing accessor reads as none. */
+function readStack(error: Error): string | undefined {
+  try {
+    const stack: unknown = (error as { stack?: unknown }).stack;
+    return typeof stack === 'string' ? stack : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `descriptor` with its DATA value masked, or `descriptor` itself when nothing changed. */
+function maskDescriptorValue(
+  descriptor: PropertyDescriptor,
+  maskText: (text: string) => string
+): PropertyDescriptor {
+  if (!('value' in descriptor)) return descriptor;
+  const value = maskErrorFieldValue(descriptor.value, maskText);
+  return value === descriptor.value ? descriptor : { ...descriptor, value };
+}
+
+/**
+ * The own fields of an error link that `retryable-errors.ts`'s classifiers
+ * compare EXACTLY (`name`, `code`, `ccErrorCode`, `ccOperation`), plus the
+ * SDK's other code fields. {@link maskSecretsInError} copies such a field
+ * verbatim when its value is a STRING; any other value is masked like every
+ * field. `logicalId` is compared exactly too (the other-resource anchor) but
+ * is NOT listed: providers pass a PHYSICAL id, which a secret can name, in
+ * `ProvisioningError`'s logical-id slot (go-to-k/cdkd#4222), and a masked id
+ * fails that anchor closed. {@link isAuxiliaryAnchor} is the one `logicalId`
+ * kept.
+ */
+const CLASSIFIER_IDENTIFIER_FIELDS: ReadonlySet<string> = new Set([
+  'name',
+  'code',
+  'Code',
+  '__type',
+  'ccErrorCode',
+  'ccOperation',
+]);
+
+/**
+ * `markAuxiliaryFailure`'s mark (`<owner>/auxiliary`, read by
+ * `isAuxiliaryFailure`, which requires the same shape as this): the one
+ * `logicalId` copied verbatim. Its owner is never a physical id: a provider
+ * passes its template logical id, and `withRetry` the fixed owner `withRetry`
+ * (go-to-k/cdkd#4222). The suffix alone
+ * does not identify it — a physical id can end in a `/auxiliary` path segment —
+ * so the mark's own descriptor shape is required too: `markAuxiliaryFailure`
+ * defines it non-enumerable and read-only, while a `ProvisioningError`'s field
+ * is an ordinary assignment. Any other `logicalId` is masked like every field.
+ */
+function isAuxiliaryAnchor(key: PropertyKey, descriptor: PropertyDescriptor): boolean {
+  return (
+    key === 'logicalId' &&
+    descriptor.enumerable === false &&
+    descriptor.writable === false &&
+    typeof descriptor.value === 'string' &&
+    descriptor.value.endsWith('/auxiliary')
+  );
+}
+
+function isPlainContainer(value: object): boolean {
+  const proto: unknown = Object.getPrototypeOf(value);
+  return Array.isArray(value)
+    ? proto === Array.prototype
+    : proto === Object.prototype || proto === null;
+}
+
+/** One entered node, read ONCE so the copy pass invokes no trap a second time. */
+interface FieldNode {
+  proto: object | null;
+  isArray: boolean;
+  length: PropertyDescriptor | undefined;
+  extensible: boolean;
+  entries: Array<[PropertyKey, PropertyDescriptor]>;
+}
+
+/** `node`'s shape when it is a plain container; `undefined` when not, or when reading it throws. */
+function readFieldNode(node: object): FieldNode | undefined {
+  try {
+    if (!isPlainContainer(node)) return undefined;
+    const entries: Array<[PropertyKey, PropertyDescriptor]> = [];
+    for (const key of Reflect.ownKeys(node)) {
+      const descriptor = Object.getOwnPropertyDescriptor(node, key);
+      if (descriptor) entries.push([key, descriptor]);
+    }
+    const isArray = Array.isArray(node);
+    return {
+      proto: Object.getPrototypeOf(node) as object | null,
+      isArray,
+      length: isArray ? Object.getOwnPropertyDescriptor(node, 'length') : undefined,
+      extensible: Object.isExtensible(node),
+      entries,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * An error's own field value with `maskText` applied to a string, and to every
+ * string reachable through PLAIN objects and arrays (go-to-k/cdkd#4190) — the
+ * returned value is a COPY when anything changed and `value` itself otherwise;
+ * the original is never written.
+ *
+ * Bounds, each keeping the value AS IT IS (the masking floor):
+ * - a class instance (`Date`, `Map`, an `Error`, the SDK's `$response`) is
+ *   not entered, and an accessor is not invoked (a getter can throw or have
+ *   effects); nor is a plain object's KEY masked;
+ * - nothing deeper than {@link ERROR_CAUSE_MASK_MAX_DEPTH} levels is entered;
+ * - a node whose read throws (only a Proxy's trap can: a revoked one, a
+ *   hostile one) is kept by reference and not entered, its siblings masked;
+ *   each node is read ONCE, so the copy invokes no trap a second time.
+ *
+ * Breadth-first with a visited set, so a node is entered at its SHALLOWEST
+ * depth, a cycle terminates in linear work, and a node shared by two parents
+ * WITHIN this value stays shared in the copy. A non-extensible node's copy is
+ * made non-extensible too, and each property keeps its own attributes (an
+ * array's `length` included).
+ */
+function maskErrorFieldValue(value: unknown, maskText: (text: string) => string): unknown {
+  if (typeof value === 'string') return maskText(value);
+  if (typeof value !== 'object' || value === null) return value;
+  try {
+    const nodes = new Map<object, FieldNode>();
+    const seen = new Set<object>();
+    let changed = false;
+    let frontier: object[] = [value];
+    for (let depth = 0; frontier.length > 0 && depth < ERROR_CAUSE_MASK_MAX_DEPTH; depth++) {
+      const next: object[] = [];
+      for (const node of frontier) {
+        if (seen.has(node)) continue;
+        seen.add(node);
+        const read = readFieldNode(node);
+        if (!read) continue;
+        nodes.set(node, read);
+        for (const [, descriptor] of read.entries) {
+          if (!('value' in descriptor)) continue;
+          const child: unknown = descriptor.value;
+          if (typeof child === 'string') {
+            if (!changed && maskText(child) !== child) changed = true;
+          } else if (typeof child === 'object' && child !== null) {
+            next.push(child);
+          }
+        }
+      }
+      frontier = next;
+    }
+    if (!changed) return value;
+    const copies = new Map<object, object>();
+    for (const [node, read] of nodes) {
+      copies.set(
+        node,
+        read.isArray
+          ? new Array<unknown>((read.length?.value as number | undefined) ?? 0)
+          : (Object.create(read.proto) as object)
+      );
+    }
+    for (const [node, read] of nodes) {
+      const copy = copies.get(node)!;
+      for (const [key, original] of read.entries) {
+        if (key === 'length' && read.isArray) continue;
+        const descriptor = { ...original };
+        if ('value' in descriptor) {
+          const child: unknown = descriptor.value;
+          if (typeof child === 'string') descriptor.value = maskText(child);
+          else if (typeof child === 'object' && child !== null && copies.has(child)) {
+            descriptor.value = copies.get(child);
+          }
+        }
+        Object.defineProperty(copy, key, descriptor);
+      }
+      if (read.length?.writable === false) {
+        Object.defineProperty(copy, 'length', { writable: false });
+      }
+      if (!read.extensible) Object.preventExtensions(copy);
+    }
+    return copies.get(value) ?? value;
+  } catch {
+    return value;
+  }
+}
+
 /**
  * Return `error` with {@link maskSecretsInText} applied to the `message` AND the
- * `stack` of every link in its `cause` chain, with everything else about each
- * link preserved (issue [#2038](https://github.com/go-to-k/cdkd/issues/2038)
- * review).
+ * `stack` of every link in its `cause` chain, and to a COPY of each other own
+ * data field ({@link maskErrorFieldValue}, go-to-k/cdkd#4190), with the
+ * prototype and every descriptor's attributes preserved (issue
+ * [#2038](https://github.com/go-to-k/cdkd/issues/2038) review).
  *
  * Two bounds on that "every link", both stated here because the PUBLIC contract
  * is what a caller reads and neither is visible from the call site:
  * - The walk stops at {@link ERROR_CAUSE_MASK_MAX_DEPTH}. A chain longer than
  *   that keeps its remaining links' ORIGINAL, UNMASKED messages, and the last
  *   cloned link points straight at them.
- * - A `cause` that is not an `Error` (a string, a plain object) is carried
- *   through VERBATIM and is never masked — the walk has nothing to clone. No
- *   cdkd or AWS SDK site constructs one today, so this is a documented residual
- *   rather than a reachable leak, but a caller attaching arbitrary data as a
- *   `cause` must mask it itself. `src/cli/index.ts`'s `console.error` renders
- *   such a cause via `util.inspect`, so it WOULD reach the terminal.
+ * - Own FIELDS are masked by {@link maskErrorFieldValue}'s bound: a string, or
+ *   the strings reachable through PLAIN objects and arrays, never a class
+ *   instance (the SDK's `$response` is one) nor an accessor. A `cause` that is
+ *   not an `Error` (a string, a plain object) is such a field and is masked
+ *   the same way (go-to-k/cdkd#4190).
  *
  * **Why an error and not just its text.** `formatError` (`src/utils/error-handler.ts`)
  * renders a `CdkdError`'s CAUSE as `Caused by: <cause.message>`, and `handleError`
@@ -8160,8 +8343,22 @@ export function errorCauseChain(root: Error): Error[] {
  * original would make that re-definition throw. `cause` is rewired to the CLONE
  * of whatever it pointed at, in a second pass over the already-built clone map —
  * which is what makes a cyclic chain terminate rather than recurse. A `cause`
- * that is not an `Error` (a string, a plain object) keeps its original
- * descriptor verbatim.
+ * that is not an `Error` keeps its original descriptor, its value masked.
+ *
+ * **Why the other own fields are masked too** (go-to-k/cdkd#4190). An AWS SDK
+ * exception copies its error body onto own fields: awsQuery (IAM, STS, SNS)
+ * adds `Error: { Type, Code, Message }`, and many JSON / XML exceptions a
+ * modeled `Message` string, each the same text as `message`. A reader walking
+ * the object (`util.inspect`, `JSON.stringify`, a debug dump) prints them, so
+ * every DATA field's value goes through {@link maskErrorFieldValue} — which
+ * copies, never mutates — and a name ONLY in such a field (message and stack
+ * clean) still makes a clone. The link's own {@link CLASSIFIER_IDENTIFIER_FIELDS}
+ * are the exception, copied verbatim: a retry / collision classifier matches
+ * them EXACTLY, so a recorded value occurring inside one (`Throttling` in
+ * `ThrottlingException`) would flip its verdict, and each holds an AWS- or
+ * cdkd-authored code rather than echoed text. So is an auxiliary-failure
+ * `logicalId` mark ({@link isAuxiliaryAnchor}); every other `logicalId` is
+ * masked, since a provider can put a physical id there.
  *
  * **Why `stack` is re-defined as DATA rather than copied.** V8 installs `stack`
  * as an own ACCESSOR whose getter reads a slot the engine attaches to an error
@@ -8211,37 +8408,58 @@ export function maskSecretsInError<T>(
   const maskText = (text: string): string =>
     maskSecretsInText(extraMask ? extraMask(text) : text, secrets);
   const chain = errorCauseChain(error);
-  const maskedMessages = chain.map((link) => maskText(link.message));
-  if (maskedMessages.every((masked, i) => masked === chain[i]!.message)) return error;
+  let changed = false;
+  const links = chain.map((link) => {
+    const message = maskText(link.message);
+    const stack = readStack(link);
+    const maskedStack = typeof stack === 'string' ? maskText(stack) : undefined;
+    // `Reflect.ownKeys` rather than `Object.getOwnPropertyDescriptors` + delete:
+    // the latter's return type has a REQUIRED index signature, so removing the
+    // keys re-defined below would need a cast. Symbols are included, which is
+    // what carries `markNonRetryable`'s marker.
+    const descriptors: Record<PropertyKey, PropertyDescriptor> = {};
+    for (const key of Reflect.ownKeys(link)) {
+      if (key === 'message' || key === 'cause' || key === 'stack') continue;
+      const descriptor = Object.getOwnPropertyDescriptor(link, key);
+      if (!descriptor) continue;
+      descriptors[key] =
+        (typeof key === 'string' &&
+          CLASSIFIER_IDENTIFIER_FIELDS.has(key) &&
+          typeof descriptor.value === 'string') ||
+        isAuxiliaryAnchor(key, descriptor)
+          ? descriptor
+          : maskDescriptorValue(descriptor, maskText);
+      if (descriptors[key] !== descriptor) changed = true;
+    }
+    // A non-`Error` cause is masked as a field. An `Error` cause is rewired
+    // below: to its clone, or (past the depth cap) kept as it is.
+    let cause = Object.getOwnPropertyDescriptor(link, 'cause');
+    if (cause && !('value' in cause && cause.value instanceof Error)) {
+      const masked = maskDescriptorValue(cause, maskText);
+      if (masked !== cause) changed = true;
+      cause = masked;
+    }
+    if (message !== link.message || maskedStack !== stack) changed = true;
+    return { message, stack: maskedStack, descriptors, cause };
+  });
+  if (!changed) return error;
 
   const clones = new Map<Error, Error>();
   for (const [i, original] of chain.entries()) {
-    // `Reflect.ownKeys` rather than `Object.getOwnPropertyDescriptors` + delete:
-    // the latter's return type has a REQUIRED index signature, so removing the
-    // two keys re-defined below would need a cast. Symbols are included, which
-    // is what carries `markNonRetryable`'s marker.
-    const descriptors: Record<PropertyKey, PropertyDescriptor> = {};
-    for (const key of Reflect.ownKeys(original)) {
-      if (key === 'message' || key === 'cause' || key === 'stack') continue;
-      const descriptor = Object.getOwnPropertyDescriptor(original, key);
-      if (descriptor) descriptors[key] = descriptor;
-    }
+    const { message, stack, descriptors } = links[i]!;
     const clone = Object.create(Object.getPrototypeOf(original) as object, descriptors) as Error;
     Object.defineProperty(clone, 'message', {
-      value: maskedMessages[i]!,
+      value: message,
       writable: true,
       enumerable: false,
       configurable: true,
     });
-    // Read through the accessor rather than copying its descriptor — see the
-    // `stack` paragraph above. `typeof` rather than a truthiness test: an empty
-    // stack string is a legitimate (if useless) trace and copying it changes
-    // nothing, while a non-string means this object is not an engine-created
-    // error and has no trace to carry.
-    const originalStack: unknown = (original as { stack?: unknown }).stack;
-    if (typeof originalStack === 'string') {
+    // A masked COPY of the text read through the accessor rather than its
+    // descriptor — see the `stack` paragraph above. Absent (not a string) means
+    // this object is not an engine-created error and has no trace to carry.
+    if (stack !== undefined) {
       Object.defineProperty(clone, 'stack', {
-        value: maskText(originalStack),
+        value: stack,
         writable: true,
         enumerable: false,
         configurable: true,
@@ -8249,8 +8467,8 @@ export function maskSecretsInError<T>(
     }
     clones.set(original, clone);
   }
-  for (const original of chain) {
-    const causeDescriptor = Object.getOwnPropertyDescriptor(original, 'cause');
+  for (const [i, original] of chain.entries()) {
+    const causeDescriptor = links[i]!.cause;
     if (!causeDescriptor) continue;
     const clone = clones.get(original)!;
     const causeValue = (original as { cause?: unknown }).cause;

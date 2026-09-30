@@ -568,22 +568,34 @@ describe('BudgetsBudgetProvider', () => {
 
   describe('getAttribute', () => {
     it('serves Arn after verifying the budget exists', async () => {
-      const arn = await provider.getAttribute('team-budget', TYPE, 'Arn');
+      const arn = await provider.getAttribute('team-budget', TYPE, 'Arn', 'MyBudget');
       expect(arn).toBe(`arn:aws:budgets::${ACCOUNT}:budget/team-budget`);
       expect(callsOf(DescribeBudgetCommand)).toHaveLength(1);
     });
 
     it('rejects unknown attributes', async () => {
-      await expect(provider.getAttribute('team-budget', TYPE, 'Nope')).rejects.toThrow(
+      await expect(provider.getAttribute('team-budget', TYPE, 'Nope', 'MyBudget')).rejects.toThrow(
         /Unknown attribute/
       );
+      // The LOGICAL id in the logical-id slot, the budget name as the physical
+      // id (go-to-k/cdkd#4222).
+      await expect(
+        provider.getAttribute('team-budget', TYPE, 'Nope', 'MyBudget')
+      ).rejects.toMatchObject({ logicalId: 'MyBudget', physicalId: 'team-budget' });
     });
 
     it('wraps DescribeBudget failures in ProvisioningError', async () => {
       mockSend.mockRejectedValueOnce(new Error('boom'));
-      await expect(provider.getAttribute('team-budget', TYPE, 'Arn')).rejects.toThrow(
+      await expect(provider.getAttribute('team-budget', TYPE, 'Arn', 'MyBudget')).rejects.toThrow(
         /Failed to resolve Arn for budget team-budget: boom/
       );
+    });
+
+    it('names the LOGICAL id in the DescribeBudget failure (#4222)', async () => {
+      mockSend.mockRejectedValueOnce(new Error('boom'));
+      await expect(
+        provider.getAttribute('team-budget', TYPE, 'Arn', 'MyBudget')
+      ).rejects.toMatchObject({ logicalId: 'MyBudget', physicalId: 'team-budget' });
     });
   });
 

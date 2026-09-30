@@ -210,6 +210,41 @@ describe('FirehoseProvider', () => {
     });
   });
 
+  describe('update: a DescribeDeliveryStream answer with no VersionId (#4222)', () => {
+    // Every destination-update helper raises this error. Its logical-id slot
+    // takes the template LOGICAL id and the stream name goes in the physical-id
+    // slot: a physical id there never matches the resource the
+    // retry classifiers anchor on, and a stream name can be secret-derived.
+    it.each([
+      'AmazonOpenSearchServerlessDestinationConfiguration',
+      'AmazonopensearchserviceDestinationConfiguration',
+      'ElasticsearchDestinationConfiguration',
+      'ExtendedS3DestinationConfiguration',
+      'HttpEndpointDestinationConfiguration',
+      'IcebergDestinationConfiguration',
+      'RedshiftDestinationConfiguration',
+      'SnowflakeDestinationConfiguration',
+      'SplunkDestinationConfiguration',
+    ])('%s names the logical id, not the stream name', async (destKey) => {
+      mockSend.mockResolvedValue({ DeliveryStreamDescription: {} });
+      const error = await provider
+        .update(
+          'MyDeliveryStream',
+          'my-stream',
+          'AWS::KinesisFirehose::DeliveryStream',
+          { [destKey]: { RoleARN: 'arn:aws:iam::123456789012:role/next' } },
+          { [destKey]: { RoleARN: 'arn:aws:iam::123456789012:role/prev' } }
+        )
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).toMatchObject({
+        message: expect.stringContaining('did not return VersionId or DestinationId'),
+        logicalId: 'MyDeliveryStream',
+        physicalId: 'my-stream',
+      });
+    });
+  });
+
   describe('delete', () => {
     const notFound = () =>
       new ResourceNotFoundException({ $metadata: {}, message: 'Delivery stream not found' });

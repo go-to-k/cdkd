@@ -1432,6 +1432,15 @@ export interface RollbackExecutorContext {
    */
   importedProducerRegions?: readonly string[] | undefined;
   /**
+   * `true` when {@link importedProducerRegions} may be MISSING regions: this
+   * replay is a nested child's, and its parent's producer regions could not be
+   * established (go-to-k/cdkd#4174). A child receives a parent's cross-region
+   * value only as a Parameter and records the parent's region-less spelling,
+   * which its own reads do not explain, so every region-less secret reference
+   * is refused rather than resolved in {@link region}.
+   */
+  producerRegionsIncomplete?: boolean | undefined;
+  /**
    * True when this replay reverts a nested CHILD for its parent's rollback
    * (`revertNestedChildFromJournal`). `cdkd rollback --orphan` reaches only the
    * replay of the stack it is run on, and a direct rollback of the child is
@@ -2019,7 +2028,7 @@ function partitionOps(operations: CompletedOperation[]): {
  * - `isInterrupted` is polled between ops; when it flips true, replay stops
  *   (the pending op is left for a re-run).
  */
-export async function replayRollback(
+async function replayRollbackUnbound(
   operations: CompletedOperation[],
   stateResources: Record<string, ResourceState>,
   stackName: string,
@@ -2236,6 +2245,7 @@ async function resolveReplayProps(
       if (!v.includes('{{resolve:')) return v;
       // Issue #2057: decide the REGION of every reference in this leaf before
       // any of them is fetched. See {@link classifyReplaySecretRegion}.
+      refuseUnprovenReplaySecret(v, path, logicalId, execCtx);
       return await resolveLeafByRegion(v, path, logicalId, execCtx, resolvers, resolverContext);
     }
     if (Array.isArray(v)) {
@@ -2357,12 +2367,31 @@ function refuseMaskedReplayBaseline(
 export {
   classifyReplaySecretRegion,
   producerRegionsFromState,
+  regionLessSecretName,
   type ReplaySecretRegionVerdict,
 } from './secret-region-classification.js';
 
 // Imported as well as re-exported: `ReplayResolvers` below calls the
 // classifier, and a re-export does not bind the name in this module's scope.
-import { classifyReplaySecretRegion } from './secret-region-classification.js';
+import {
+  classifyReplaySecretRegion,
+  regionLessSecretName,
+} from './secret-region-classification.js';
+import { withProducerRegions, type ProducerRegionEvidence } from './producer-regions-scope.js';
+
+/**
+ * What a replay hands a nested-stack row it reverts (go-to-k/cdkd#4174): its
+ * own producer-region evidence, which the child journal replay unions with its
+ * own reads.
+ */
+function replayProducerRegionEvidence(ctx: RollbackExecutorContext): ProducerRegionEvidence {
+  return {
+    regions: ctx.importedProducerRegions ?? [],
+    // A context that set no regions at all says nothing about its reads, so a
+    // child inheriting from it must not treat them as known to be none.
+    complete: ctx.importedProducerRegions !== undefined && ctx.producerRegionsIncomplete !== true,
+  };
+}
 
 /**
  * The replay's resolvers: the stack's own, plus one pinned sibling per FOREIGN
@@ -2456,6 +2485,63 @@ function regionAmbiguousReplaySecretError(
       `Refusing instead. Resolve the reference in its own region and set the property ` +
       `directly (or spell it as a full ARN, which names its region and is resolved there), ` +
       `then re-run ${rerunRollbackPhrase(execCtx, "'cdkd rollback'")}.`,
+    'ROLLBACK_SECRET_REGION_AMBIGUOUS'
+  );
+}
+
+/**
+ * go-to-k/cdkd#4174: with a nested child's parent regions unknown
+ * (`producerRegionsIncomplete`), a region-less reference that classifies
+ * `local` may still be the parent's, so the leaf is refused before any of its
+ * references is fetched. Kept out of {@link resolveLeafByRegion}, whose body
+ * `cdkd drift` mirrors (`drift-leaf-region-walk-mirrors-replay.test.ts`).
+ * Exported for its unit test only.
+ */
+export function refuseUnprovenReplaySecret(
+  leaf: string,
+  propertyPath: string,
+  logicalId: string,
+  execCtx: RollbackExecutorContext
+): void {
+  if (execCtx.producerRegionsIncomplete !== true) return;
+  for (const token of dynamicReferenceTokens(leaf)) {
+    const verdict = classifyReplaySecretRegion(
+      token,
+      execCtx.region,
+      execCtx.importedProducerRegions
+    );
+    const name = verdict.kind === 'local' ? regionLessSecretName(token) : undefined;
+    if (name !== undefined) {
+      throw regionUnknownReplaySecretError(logicalId, propertyPath, name, execCtx.region, execCtx);
+    }
+  }
+}
+
+/**
+ * The refusal for a region-less secret reference in a nested child's replay
+ * whose parent's producer regions are unknown (go-to-k/cdkd#4174). Same code
+ * as {@link regionAmbiguousReplaySecretError}: the same decision, taken on
+ * missing evidence rather than on a foreign region on record.
+ */
+function regionUnknownReplaySecretError(
+  logicalId: string,
+  propertyPath: string,
+  secretName: string,
+  consumerRegion: string,
+  execCtx: Pick<RollbackExecutorContext, 'nestedChildStack'>
+): CdkdError {
+  const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
+  return new CdkdError(
+    `Rollback of ${logicalId}${where} cannot re-resolve the secret reference ` +
+      `'${secretName}': the reference carries no region of its own, and this is a nested ` +
+      `stack whose parent's cross-region reads are not known to this replay, so the parent may ` +
+      `have resolved it in another region than '${consumerRegion}'. A secret of the same name in ` +
+      `two regions is two independent values, so replaying this could write the WRONG secret to ` +
+      `a live resource. Refusing instead. Where the top-level stack's journal still holds this ` +
+      `run, roll back the top-level stack instead, which supplies its regions. Otherwise resolve ` +
+      `the reference in its own region and set the property directly (or spell it as a full ` +
+      `ARN, which names its region and is resolved there), then re-run ` +
+      `${rerunRollbackPhrase(execCtx, "'cdkd rollback'")}.`,
     'ROLLBACK_SECRET_REGION_AMBIGUOUS'
   );
 }
@@ -3195,6 +3281,9 @@ async function replaySingle(
             // Issue #4029: the classified policy, so a Cloud Control-routed
             // RDS delete under `Delete` avoids the registry handler's snapshot.
             deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
+            // Issue #4157. `classifyRollbackOp` reaches this arm only with a
+            // record naming `op.physicalId`.
+            recordedAttributes: stateResources[op.logicalId]?.attributes,
           }
         );
         throwIfDeleteSkipped(
@@ -3310,6 +3399,7 @@ async function replaySingle(
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
               deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+              recordedAttributes: current.attributes,
             }
           );
           // Issue #1762: BEFORE the state re-point, so a skip cannot leave
@@ -3914,6 +4004,7 @@ async function replaySingle(
                 expectedRegion: ctx.region,
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                 deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+                recordedAttributes: current.attributes,
               }
             );
             // Issue #1762: this delete exists to release the name the
@@ -4155,6 +4246,7 @@ async function replaySingle(
                 expectedRegion: ctx.region,
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                 deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+                recordedAttributes: current.attributes,
               }
             );
             // Issue #1762: the old resource is already re-created and state
@@ -4558,7 +4650,7 @@ async function replaySingle(
  * Best-effort like {@link replayRollback}: per-op failures are caught,
  * warned, and counted.
  */
-export async function replayFailedOperations(
+async function replayFailedOperationsUnbound(
   failedOps: FailedOperation[],
   stateResources: Record<string, ResourceState>,
   stackName: string,
@@ -4790,6 +4882,9 @@ export async function replayFailedOperations(
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
+              // Issue #4157; as on the completed-CREATE arm, the record names
+              // `op.physicalId` here.
+              recordedAttributes: stateResources[op.logicalId]?.attributes,
             }
           );
           // Issue #1762: the partially-created resource is still there, so
@@ -5102,4 +5197,30 @@ export function sortRollbackCreates(
 
   logger?.debug(`Rollback CREATE deletion order: ${sorted.map((op) => op.logicalId).join(' → ')}`);
   return sorted;
+}
+
+/**
+ * {@link replayRollbackUnbound}, with this replay's producer-region evidence bound
+ * for a nested-stack row it reverts (go-to-k/cdkd#4174).
+ */
+export async function replayRollback(
+  ...args: Parameters<typeof replayRollbackUnbound>
+): ReturnType<typeof replayRollbackUnbound> {
+  return await withProducerRegions(
+    () => replayProducerRegionEvidence(args[3]),
+    () => replayRollbackUnbound(...args)
+  );
+}
+
+/**
+ * {@link replayFailedOperationsUnbound}, with this replay's producer-region evidence bound
+ * for a nested-stack row it reverts (go-to-k/cdkd#4174).
+ */
+export async function replayFailedOperations(
+  ...args: Parameters<typeof replayFailedOperationsUnbound>
+): ReturnType<typeof replayFailedOperationsUnbound> {
+  return await withProducerRegions(
+    () => replayProducerRegionEvidence(args[3]),
+    () => replayFailedOperationsUnbound(...args)
+  );
 }

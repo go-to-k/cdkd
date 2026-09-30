@@ -511,12 +511,29 @@ function mayNameTargetWithDestructiveRemedy(stackName: string, region: string): 
 }
 
 /**
- * Where a withheld identity is taken from, and why there: `cdkd state list
- * --json` writes each name raw rather than sanitized. ONE spelling, shared by
- * {@link WITHHELD_LISTING_POINTER} and {@link inspectClause}, so the two
- * cannot drift (M3 of the go-to-k/cdkd#4011 review).
+ * What fills a hole from a `cdkd state list --json` value, completing "with "
+ * (go-to-k/cdkd#3908). That listing is JSON, not raw text: `JSON.stringify`
+ * escapes `"` and `\`, and `stringifyJsonPayload` escapes the control, format
+ * and separator class as `\uXXXX` (go-to-k/cdkd#3163) — the very names the
+ * withhold arms exist for. Shell-quoting the value as printed quotes the
+ * ESCAPE, which names a different, nonexistent record, so the value is decoded
+ * first. What the pointer relies on is that the listing DECODES back to the
+ * stored name — padding and all — which is the machine contract #3163 chose
+ * over replacing characters, and which `tests/unit/cli/state-list.test.ts`
+ * pins. Exported so `cdkd export`'s own holes say the same thing.
  */
-const LISTING_SOURCE_TAIL = `which writes each name raw rather than sanitized, and act on the one whose key matches`;
+export const JSON_LISTING_HOLE_VALUE = 'the value decoded from its JSON string, then shell-quoted';
+
+/**
+ * Where a withheld identity is taken from, and why there: `cdkd state list
+ * --json` prints each name JSON-encoded but never trimmed or sanitized. ONE
+ * spelling, shared by {@link WITHHELD_LISTING_POINTER} and
+ * {@link inspectClause}, so the two cannot drift (M3 of the go-to-k/cdkd#4011
+ * review).
+ */
+const LISTING_SOURCE_TAIL =
+  `which prints each name as a JSON string, escaped but never trimmed or sanitized, and act ` +
+  `on the one whose stackName and region match (a legacy record that names no region lists it as null)`;
 const LISTING_SOURCE = `'cdkd state list --json', ${LISTING_SOURCE_TAIL}`;
 
 /**
@@ -538,15 +555,16 @@ function listingSource(flagged: boolean): string {
  * Where the three DESTROY withhold arms send the reader for the exact name
  * (go-to-k/cdkd#3420): {@link malformedDestroyResourcesRefusalMessage},
  * {@link malformedDestroyOrphansRefusalMessage} and
- * {@link divergentRecordRegionRefusalMessage}. Completes "List the records as
- * stored with ".
+ * {@link divergentRecordRegionRefusalMessage}. Completes "List the records
+ * with ".
  *
  * `--json`, never `--long`: each arm is reached exactly when the identity did
  * NOT render exactly, and `--long` renders through `displayIdent`, which TRIMS
  * — `'prod-api '` lists as `"prod-api"`, a healthy sibling's name, so the
- * pointer would hand back the very spelling the gate refused. `--json` writes
- * the raw name through `JSON.stringify`, the reason
- * {@link withheldIdentityClause} gives for the same pointer. The hole remedy is
+ * pointer would hand back the very spelling the gate refused. `--json` keeps
+ * the padding, the reason {@link withheldIdentityClause} gives for the same
+ * pointer — but it is JSON, so the value is decoded before it is shell-quoted
+ * ({@link JSON_LISTING_HOLE_VALUE}). The hole remedy is
  * that clause's too, deliberately NOT "shell-quote it": the command below each
  * arm already prints the hole quoted (`'<stack>'`), and shell-quoting INSIDE
  * those quotes splits a padded name into two words aimed at a different record
@@ -561,7 +579,7 @@ function listingSource(flagged: boolean): string {
  */
 const WITHHELD_LISTING_POINTER =
   `${LISTING_SOURCE}, filling the Inspect command's holes from it — replacing each quoted ` +
-  `hole, quotes included, with the shell-quoted value`;
+  `hole, quotes included, with ${JSON_LISTING_HOLE_VALUE}`;
 
 /**
  * {@link WITHHELD_LISTING_POINTER}, or — when `recovery` carries an account flag —
@@ -577,8 +595,8 @@ function withheldListingPointer(recovery: LockRecoveryContext | undefined): {
   return {
     pointer:
       `the 'Find the exact name' command below, ${LISTING_SOURCE_TAIL}, filling the Inspect ` +
-      `command's holes from it — replacing each quoted hole, quotes included, with the ` +
-      `shell-quoted value`,
+      `command's holes from it — replacing each quoted hole, quotes included, with ` +
+      JSON_LISTING_HOLE_VALUE,
     line: `Find the exact name: ${pasteableCommand('cdkd state list', [{ literal: '--json' }, ...args]).command}`,
   };
 }
@@ -866,7 +884,7 @@ export function malformedDestroyResourcesRefusalMessage(
       `flag must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly — what is printed above is a ` +
       `sanitized form, and another record may render identically — so this message names no ` +
-      `target and offers no command against one. List the records as stored with ` +
+      `target and offers no command against one. List the records with ` +
       `${listing.pointer}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses ` +
@@ -1099,7 +1117,7 @@ export function divergentRecordRegionRefusalMessage(
       dropRecordTemplate(recovery)
     : `This record's stack name or region does NOT render exactly — what any surrounding output ` +
       `shows is a sanitized form, and another record may render identically — so this message ` +
-      `names no target and offers no command against one. List the records as stored with ` +
+      `names no target and offers no command against one. List the records with ` +
       (listing.line === undefined
         ? `${WITHHELD_LISTING_POINTER}. Inspect it with: ${inspectCommand(undefined, undefined)}`
         : `${listing.pointer}.` +
@@ -1937,7 +1955,7 @@ export function malformedDestroyOrphansRefusalMessage(
       `${confirmKeyListing(recovery)} — a legacy record shows none, and for one of those the ` +
       `flag must be OMITTED or it selects nothing.`
     : `This record's stack name or region does NOT render exactly, so this message names no ` +
-      `target and offers no command against one. List the records as stored with ` +
+      `target and offers no command against one. List the records with ` +
       `${listing.pointer}.`;
   const prose =
     `${detail} This command DELETES state, so it refuses rather than continuing: an unreadable ` +
@@ -2555,8 +2573,8 @@ function inspectClause(
     (stackName.startsWith('-')
       ? noFill.charAt(0).toUpperCase() + noFill.slice(1)
       : `Take the values from ${listingSource(accountArgs(recovery).length > 0)}, replacing ` +
-        `each quoted hole in the command at the end of this line, quotes included, with the ` +
-        `shell-quoted value. `) +
+        `each quoted hole in the command at the end of this line, quotes included, with ` +
+        `${JSON_LISTING_HOLE_VALUE}. `) +
     accounts
   );
 }
@@ -3173,9 +3191,10 @@ function orphanRefusal(
  * from that spelling would be aiming at the healthy sibling the gate exists to
  * protect (`'prod-api '` renders as `prod-api`; a padded region is the same
  * misdirection one flag over), so the message says where to take them from
- * instead: `cdkd state list --json`, which writes the raw name
- * through `JSON.stringify` — `--long` renders through `displayIdent`, which
- * trims, so it would hand back the same spelling. Empty when the command was
+ * instead: `cdkd state list --json`, which keeps the padding — `--long`
+ * renders through `displayIdent`, which trims, so it would hand back the same
+ * spelling. That listing is JSON-encoded, so each value is decoded before it is
+ * shell-quoted ({@link JSON_LISTING_HOLE_VALUE}, go-to-k/cdkd#3908). Empty when the command was
  * substituted, and when no name was known at all — that arm's template already
  * reads as a hole to fill.
  */
@@ -3201,7 +3220,8 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
       `and do NOT fill the 'Drop the record' command's stack hole with that name` +
       (verdict.region === undefined
         ? ''
-        : `; its region is a hole too, to be taken from the 'Find the exact name' command below`)
+        : `; its region is a hole too, to be taken from the 'Find the exact name' command ` +
+          `below, replacing its quoted hole, quotes included, with ${JSON_LISTING_HOLE_VALUE}`)
     );
   }
   // A region beginning with `-` is `--stack-region`'s VALUE, which Commander
@@ -3215,15 +3235,15 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
     return (
       ` — the stack name or region above is too long to name in a command, so take them from ` +
       `the 'Find the exact name' command below — replace each quoted hole, quotes included, ` +
-      `with the shell-quoted value — rather than from this message`
+      `with ${JSON_LISTING_HOLE_VALUE} — rather than from this message`
     );
   }
   if (verdict.stack === undefined && verdict.region === 'option-shaped') {
     return (
       ` — the region above begins with a '-', which cdkd refuses to print as an argument, so ` +
       `take the stack name and region from the 'Find the exact name' command below — replace ` +
-      `each quoted hole, quotes included, with the shell-quoted value — rather than from this ` +
-      `message`
+      `each quoted hole, quotes included, with ${JSON_LISTING_HOLE_VALUE} — rather than from ` +
+      `this message`
     );
   }
   // Rendered exactly but not inert unquoted (go-to-k/cdkd#4205): "did not
@@ -3237,8 +3257,8 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
   }
   return (
     ` — the stack name or region above did not render exactly, so take them from the ` +
-    `'Find the exact name' command below — replace each quoted hole, quotes included, with the ` +
-    `shell-quoted value — rather than from this message`
+    `'Find the exact name' command below — replace each quoted hole, quotes included, with ` +
+    `${JSON_LISTING_HOLE_VALUE} — rather than from this message`
   );
 }
 

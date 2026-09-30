@@ -92,8 +92,8 @@ preprocessing best-effort, falling back to the raw template on failure.
   `computeStackDiff`, so both renderers and `--json` read masked copies while
   every consumer above still reads resolved ones
   ([#4049](https://github.com/go-to-k/cdkd/issues/4049)). The corpus
-  (`printingSecrets`) is the resolver's bag, holding every `NoEcho` value, plus
-  the parent's corpus. A child inherits it, deleted subtrees included, and so
+  (`printingSecrets`) is the resolver's two bags, the resource pass's (every
+  `NoEcho` value) and the Outputs pass's own (#4043), plus the parent's corpus. A child inherits it, deleted subtrees included, and so
   does every resolver pass of the child (binding, conditions, the diff) and
   the parent's child-parameter resolver. That INHERITED corpus is LOG-ONLY
   needles over an EMPTY map (`diffPrintingSecrets`), since every resolver
