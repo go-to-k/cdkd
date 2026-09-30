@@ -841,22 +841,34 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     try {
       holder = await this.getRepositoryMetadata(physicalId);
     } catch (error) {
-      // The class, never AWS's text (it quotes the caller's role and session).
-      // A redacted message is stamped so the retry classifier still reads the
-      // cause's text (an IAM grant still propagating, go-to-k/cdkd#2302).
-      const failure = describeAwsFailure(error);
-      const wrapped = new ProvisioningError(
-        `Failed to update CodeCommit Repository ${logicalId}: ${failure.summary}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
-      );
-      throw failure.redacted ? markRedactedCause(wrapped) : wrapped;
+      throw this.holderReadFailure(logicalId, resourceType, physicalId, error);
     }
     if (holder?.repositoryId !== undefined && holder.repositoryId !== recordedId) {
       throw this.wrapNotThisRepositoryError(logicalId, resourceType, physicalId, 'recorded-name');
     }
+  }
+
+  /**
+   * The update's failed identity read, wrapped. The class, never AWS's text
+   * (it quotes the caller's role and session); a redacted message is stamped
+   * so the retry classifier still reads the cause's text (an IAM grant still
+   * propagating, go-to-k/cdkd#2302).
+   */
+  private holderReadFailure(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    error: unknown
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    const wrapped = new ProvisioningError(
+      `Failed to update CodeCommit Repository ${logicalId}: ${failure.summary}`,
+      resourceType,
+      logicalId,
+      physicalId,
+      error instanceof Error ? error : undefined
+    );
+    return failure.redacted ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
