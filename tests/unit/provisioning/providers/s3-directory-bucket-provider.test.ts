@@ -341,12 +341,13 @@ describe('S3DirectoryBucketProvider', () => {
     /**
      * Issue [#3270](https://github.com/go-to-k/cdkd/issues/3270): the refusal
      * used to paste the STATE-borne name BARE into
-     * `aws s3 rm s3://<name> --recursive`. Both outcomes of the shared renderer
-     * are pinned, plus the clean control — a fence satisfied by "quote
-     * everything" or "always suppress" would prove only half the rule:
+     * `aws s3 rm s3://<name> --recursive`. Both suppressing gates of the shared
+     * renderer are pinned, plus the clean control — a fence satisfied by
+     * "always suppress" would prove only half the rule:
      *
-     *  - printable-ASCII shell metacharacters survive sanitizing, so the command
-     *    is still shown, with the assembled `s3://<name>` argument SHELL-QUOTED;
+     *  - printable-ASCII shell metacharacters survive sanitizing, but a
+     *    shell-active character in the assembled `s3://<name>` argument
+     *    SUPPRESSES the whole command (go-to-k/cdkd#3950, `PASTE_ARG_UNSAFE`);
      *  - a control byte, a newline and a non-ASCII character CHANGE under
      *    sanitizing, so the whole command is SUPPRESSED (naming the sanitized
      *    value would empty a different bucket), and so is a name carrying `/`,
@@ -384,19 +385,19 @@ describe('S3DirectoryBucketProvider', () => {
       });
 
       it.each([
-        ['a semicolon', 'x;rm -rf ~', `'s3://x;rm -rf ~'`],
-        ['a backtick', 'x`id`', `'s3://x\`id\`'`],
-        ['a command substitution', 'x$(id)', `'s3://x$(id)'`],
-        ['a space', 'x --include y', `'s3://x --include y'`],
-        ['a single quote', `x';id;'`, `'s3://x'\\'';id;'\\'''`],
+        ['a semicolon', 'x;rm -rf ~'],
+        ['a backtick', 'x`id`'],
+        ['a command substitution', 'x$(id)'],
+        ['a space', 'x --include y'],
+        ['a single quote', `x';id;'`],
       ])(
-        'shell-quotes the whole s3:// argument for a name carrying %s',
-        async (_label, name, arg) => {
+        'withholds the whole command for a name carrying %s (a shell-active character)',
+        async (_label, name) => {
           const message = await refusalFor(name);
-          expect(message).toContain(`(e.g. aws s3 rm ${arg} --recursive)`);
-          // The ONLY occurrence of the command: no bare copy beside the quoted one.
-          expect(message.split('aws s3 rm')).toHaveLength(2);
-          expect(message).not.toContain(`s3://${name} `);
+          expect(message).not.toContain('aws s3 rm');
+          expect(message).not.toContain('s3://');
+          expect(message).toContain('Delete all objects first, via the console');
+          expect(message).toContain('cannot be reproduced safely on a command line');
         }
       );
 
@@ -435,7 +436,7 @@ describe('S3DirectoryBucketProvider', () => {
         expect(message).toMatch(/^[ -~]*$/);
       });
 
-      it('shows a quoted-arm name with a visible boundary in the prose', async () => {
+      it('shows a shell-active name with a visible boundary in the prose', async () => {
         expect(await refusalFor('x;rm -rf ~')).toContain('bucket "x;rm -rf ~" is not empty.');
       });
     });

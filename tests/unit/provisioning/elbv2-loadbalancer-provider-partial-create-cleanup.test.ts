@@ -46,7 +46,6 @@ import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provide
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -189,10 +188,11 @@ describe('ELBv2Provider partial-create manual-delete commands (issue #3136)', ()
       'aws elbv2 delete-target-group --target-group-arn ',
       'arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/MyTg/abc',
     ],
-  ] as const)('%s: a clean ARN is bare; a forged one is quoted or withholds the command', async (_t, warnFor, flag, arn) => {
+  ] as const)('%s: a clean ARN is bare; a forged one withholds the command', async (_t, warnFor, flag, arn) => {
     expect(await warnFor(arn)).toContain(`${flag}${arn}`);
     warnSpy.mockReset();
-    expectQuotedAfter(await warnFor(`${arn}${FORGED_QUOTE}`), flag, `${arn}${FORGED_QUOTE}`);
+    // A shell-active character withholds it (go-to-k/cdkd#3950).
+    expectWithheld(await warnFor(`${arn}${FORGED_QUOTE}`), flag.trim());
     warnSpy.mockReset();
     expectWithheld(await warnFor(`${arn}${FORGED_CTRL}`), flag.trim());
   });

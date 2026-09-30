@@ -7,8 +7,8 @@ import {
   pasteableAwsCommand,
   renderDisableCommand,
 } from '../../../src/provisioning/replacement-protection-advice.js';
-import { shellQuote } from '../../../src/utils/pasteable-command.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 /**
  * `pasteableAwsCommand`, the tagged-template form of `renderDisableCommand`'s
@@ -18,8 +18,9 @@ import { isRetryableTransientError } from '../../../src/deployment/retryable-err
  * The provider sites are pinned in each provider's own suite, through the
  * shared probes in `pasteable-aws-command-assert.ts`; this file pins the rule
  * they share, including the one property a string assertion
- * cannot show: that the printed command, run by a real shell, hands the forged
- * value to `aws` as ONE argument and runs nothing else.
+ * cannot show: that a printed command, run by a real shell, hands the value
+ * to `aws` as ONE argument and runs nothing else. A value holding a
+ * shell-active character is not printed at all (go-to-k/cdkd#3950).
  */
 
 const FORGED_QUOTE = "x'; touch /tmp/cdkd-3136-pwned; echo '";
@@ -46,14 +47,18 @@ describe('pasteableAwsCommand (issue #3136)', () => {
     ['a quote', FORGED_QUOTE],
     ['command substitution', FORGED_SUBST],
     ['a space and a semicolon', 'a b; c'],
-  ])('shell-quotes a value carrying %s, so bash passes it as ONE argument', (_label, forged) => {
+  ])('WITHHOLDS the whole command for a value carrying %s (go-to-k/cdkd#3950)', (_label, forged) => {
     const cmd = aws`aws iam delete-role --role-name ${forged} --no-cli-pager`;
-    expect(cmd.text).toBe(`aws iam delete-role --role-name ${shellQuote(forged)} --no-cli-pager`);
-    expect(argvUnderBash(cmd.text!)).toEqual([
+    expect(cmd.text).toBeUndefined();
+    expect(cmd.render()).toBe(WITHHELD_AWS_COMMAND);
+    // A plain value is still named bare, and bash passes it as ONE argument.
+    const plain = aws`aws iam delete-role --role-name ${'team.a_b@c:d/e+f'} --no-cli-pager`;
+    expect(plain.text).toBe('aws iam delete-role --role-name team.a_b@c:d/e+f --no-cli-pager');
+    expect(argvUnderBash(plain.text!)).toEqual([
       'iam',
       'delete-role',
       '--role-name',
-      forged,
+      'team.a_b@c:d/e+f',
       '--no-cli-pager',
     ]);
   });
@@ -84,21 +89,24 @@ describe('pasteableAwsCommand (issue #3136)', () => {
   it('splices a nested fragment verbatim, and withholds the outer command when it is withheld', () => {
     const bus = (name: string): PasteableAwsCommand =>
       aws` --event-bus-name ${name}`;
-    expect(aws`aws events delete-rule --name ${'r'}${bus("b'x")}`.text).toBe(
-      `aws events delete-rule --name r --event-bus-name ${shellQuote("b'x")}`
+    expect(aws`aws events delete-rule --name ${'r'}${bus('b.x')}`.text).toBe(
+      'aws events delete-rule --name r --event-bus-name b.x'
     );
     expect(aws`aws events delete-rule --name ${'r'}${aws``}`.text).toBe(
       'aws events delete-rule --name r'
     );
     expect(aws`aws events delete-rule --name ${'r'}${bus('b\nx')}`.text).toBeUndefined();
+    // A shell-active character in the fragment withholds the outer command too
+    // (go-to-k/cdkd#3950).
+    expect(aws`aws events delete-rule --name ${'r'}${bus("b'x")}`.text).toBeUndefined();
   });
 
   it('withholds a command that splices a fragment built by ANOTHER tag', () => {
     // The fragment's value passed ITS tag's masker (none here), not the outer
     // one's, so splicing it would let a secret the outer masker catches through.
     const masked = pasteableAwsCommand((t) => t.replaceAll('s3cr3t', '***'));
-    const unmaskedFragment = pasteableAwsCommand()` --n ${"s3cr3t'q"}`;
-    expect(unmaskedFragment.text).toBe(` --n ${shellQuote("s3cr3t'q")}`);
+    const unmaskedFragment = pasteableAwsCommand()` --n ${'s3cr3t'}`;
+    expect(unmaskedFragment.text).toBe(' --n s3cr3t');
     expect(masked`aws x y${unmaskedFragment}`.text).toBeUndefined();
     // The same fragment built by the outer tag is judged by ITS masker.
     expect(masked`aws x y${masked` --n ${'plain'}`}`.text).toBe('aws x y --n plain');
@@ -106,7 +114,10 @@ describe('pasteableAwsCommand (issue #3136)', () => {
 
   it('withholds a value the masker would change, and leaves one it would not', () => {
     const masked = pasteableAwsCommand((t) => t.replaceAll('s3cr3t', '***'));
-    expect(masked`aws x y --n ${"s3cr3t'q"}`.text).toBeUndefined();
+    // No quote in it: a `'` is withheld by the shell-active gate whatever the
+    // masker says (go-to-k/cdkd#3950), so only a quote-free secret proves the
+    // masker gate withholds on its own.
+    expect(masked`aws x y --n ${'s3cr3tq'}`.text).toBeUndefined();
     expect(masked`aws x y --n ${'plain'}`.text).toBe('aws x y --n plain');
   });
 
@@ -121,6 +132,44 @@ describe('pasteableAwsCommand (issue #3136)', () => {
       ).toBe(tagged);
     }
   });
+
+  it('renderDisableCommand withholds an identifier that would change the command once unquoted (go-to-k/cdkd#3950)', () => {
+    const render = (identifier: string): string => renderDisableCommand({ before: 'aws x y --id', identifier });
+    // Refused: each character that changes a word anywhere, measured under bash
+    // and zsh (a tab is left out: `displaySafe` changes it before this gate),
+    // plus the ones that complete a glob or a brace expansion.
+    const anywhere = [...' \'"`$;&|<>()\\*?[]{}!'];
+    expect(anywhere).toHaveLength(20);
+    for (const c of anywhere) expect(render(`a${c}b`), JSON.stringify(c)).toBe('');
+    // Refused only where the shell acts on them: `#` or `=` starting the word,
+    // and `~` starting it or right after `=` or `:` (bash expands both inside an
+    // assignment-shaped word).
+    for (const id of ['#ab', '=ab', '~ab', 'a=~root', 'x=y:~']) expect(render(id), id).toBe('');
+  });
+
+  it('renderDisableCommand keeps the command for a mid-word #, =, , % or ^ (go-to-k/cdkd#3950)', () => {
+    // Literal under both shells, and AWS names carry them: a log group
+    // `/app#blue`, an IAM name with `=` or `,`. The gate must not reach them.
+    const render = (identifier: string): string => renderDisableCommand({ before: 'aws x y --id', identifier });
+    for (const id of ['/app#blue', 'role=a', 'a,b', 'a%b', 'a^b', 'a~b']) {
+      expect(render(id), id).toMatch(/^aws x y --id /);
+    }
+    expect(render('team.a_b@c:d/e+f')).toBe('aws x y --id team.a_b@c:d/e+f');
+  });
+
+  it('a pasteableAwsCommand hint after a cdkd\'s apostrophe pastes nothing runnable (go-to-k/cdkd#3950)', () => {
+    // The apostrophe opens a single quote a pasted line then closes early, so
+    // a shell-quoted identifier would sit bare. Each payload family, plus a
+    // space-free backtick payload, as the identifier.
+    const ids = [...PASTE_PAYLOADS.map((p) => p.value), 'x`touch${IFS}OWNED`y'];
+    withPasteDir((dir) => {
+      for (const id of ids) {
+        const hint = `cdkd's cleanup could not delete it. Run: ${pasteableAwsCommand()`aws x y --id ${id}`.render()}`;
+        expect(spansThatRun(hint, dir), id).toEqual([]);
+        expect(hint, id).toContain(WITHHELD_AWS_COMMAND);
+      }
+    });
+  }, 120_000);
 
   it('the withheld note names no value and matches no retryable pattern', () => {
     // It is spliced into THROWN messages (the ACM create failure), which

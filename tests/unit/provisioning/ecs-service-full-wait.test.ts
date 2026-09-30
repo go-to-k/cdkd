@@ -56,7 +56,6 @@ import {
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -446,7 +445,8 @@ describe('ECS Service wait semantics (issue #1275)', () => {
 
 // Issue #3136: the cluster and the service name are TEMPLATE values (the name
 // echoed back on the create response), so every pasteable command the create
-// path prints renders through `pasteableAwsCommand` — quoted, or withheld.
+// path prints renders through `pasteableAwsCommand` — bare, or withheld (a
+// shell-active character withholds it, go-to-k/cdkd#3950).
 describe('ECS Service pasteable commands (issue #3136)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -458,17 +458,18 @@ describe('ECS Service pasteable commands (issue #3136)', () => {
     delete process.env['CDKD_FULL_WAIT'];
   });
 
-  it('the manual-wait hint quotes a forged cluster and service name, or withholds', async () => {
-    mockSend.mockResolvedValueOnce({
-      service: { serviceArn: SERVICE_ARN, serviceName: `svc${FORGED_QUOTE}` },
-    });
-    await new ECSProvider().create('MySvc', 'AWS::ECS::Service', {
-      ...CREATE_PROPS,
-      Cluster: `c${FORGED_QUOTE}`,
-    });
-    const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('To wait manually'))!;
-    expectQuotedAfter(hint, 'aws ecs wait services-stable --cluster ', `c${FORGED_QUOTE}`);
-    expectQuotedAfter(hint, ' --services ', `svc${FORGED_QUOTE}`);
+  it('the manual-wait hint withholds the command for a forged cluster or service name', async () => {
+    const hintFor = async (cluster: string, serviceName: string): Promise<string> => {
+      infoSpy.mockReset();
+      mockSend.mockResolvedValueOnce({ service: { serviceArn: SERVICE_ARN, serviceName } });
+      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', { ...CREATE_PROPS, Cluster: cluster });
+      return infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('To wait manually'))!;
+    };
+    // Each argument forged on its own, the other clean, so bypassing the gate
+    // for either one reds (go-to-k/cdkd#3950); both clean, the command prints.
+    expectWithheld(await hintFor(`c${FORGED_QUOTE}`, 'svc'), 'aws ecs wait');
+    expectWithheld(await hintFor('c', `svc${FORGED_QUOTE}`), 'aws ecs wait');
+    expect(await hintFor('c', 'svc')).toContain('aws ecs wait services-stable --cluster c --services svc');
 
     infoSpy.mockReset();
     mockSend.mockResolvedValueOnce({
@@ -496,18 +497,21 @@ describe('ECS Service pasteable commands (issue #3136)', () => {
     return { thrown, warn: warnSpy.mock.calls.map((c) => String(c[0])).join('\n') };
   }
 
-  it('the --full-wait failure commands quote a forged cluster everywhere they name it', async () => {
+  it('the --full-wait failure commands are withheld wherever they would name a forged cluster', async () => {
+    const clean = await fullWaitFailure('my-cluster', true);
+    // The task-arn hole is quoted: bare, `<task-arn>` is two redirections.
+    expect(clean.thrown).toContain(`aws ecs describe-tasks --cluster my-cluster --tasks '<task-arn>'`);
+
+    warnSpy.mockReset();
     const cluster = `c${FORGED_QUOTE}`;
     const ok = await fullWaitFailure(cluster, true);
-    expectQuotedAfter(ok.warn, 'aws ecs list-tasks --cluster ', cluster);
-    expectQuotedAfter(ok.thrown, 'aws ecs list-tasks --cluster ', cluster);
-    expectQuotedAfter(ok.thrown, 'aws ecs describe-tasks --cluster ', cluster);
-    // The task-arn hole is quoted: bare, `<task-arn>` is two redirections.
-    expect(ok.thrown).toContain(`--tasks '<task-arn>'`);
+    expectWithheld(ok.warn, 'aws ecs list-tasks');
+    expectWithheld(ok.thrown, 'aws ecs list-tasks');
+    expectWithheld(ok.thrown, 'aws ecs describe-tasks');
 
     warnSpy.mockReset();
     const failed = await fullWaitFailure(cluster, false);
-    expectQuotedAfter(failed.warn, 'aws ecs delete-service --cluster ', cluster);
+    expectWithheld(failed.warn, 'aws ecs delete-service');
   });
 
   it('a NON-string Cluster withholds the manual-wait hint instead of dropping --cluster', async () => {

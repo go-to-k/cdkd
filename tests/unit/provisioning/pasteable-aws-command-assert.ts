@@ -10,7 +10,10 @@ import { shellQuote } from '../../../src/utils/pasteable-command.js';
  * that its value REACHES that rule, in both outcomes.
  */
 
-/** Printable ASCII, so the command is still shown — shell-quoted. */
+/**
+ * Printable ASCII holding shell-active characters, so the whole command is
+ * withheld too (go-to-k/cdkd#3950, `PASTE_ARG_UNSAFE`).
+ */
 export const FORGED_QUOTE = "x'; touch /tmp/cdkd-3136; echo '";
 /** A control byte, so the whole command is withheld. */
 export const FORGED_CTRL = 'x\u001b[2Jy';

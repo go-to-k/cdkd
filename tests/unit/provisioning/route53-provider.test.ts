@@ -37,7 +37,6 @@ import {
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
-  expectQuotedAfter,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
 
@@ -548,11 +547,13 @@ describe('Route53Provider', () => {
       // Issue #3136: the hosted zone id is the `state.json`-borne physical id,
       // so the manual-disable command in the timeout refusal (a THROWN
       // message, persisted to the events store) routes through
-      // `pasteableAwsCommand` — quoted, or withheld.
+      // `pasteableAwsCommand` — bare, or withheld (a shell-active character
+      // withholds it, go-to-k/cdkd#3950).
       it.each([
-        ['quoted', `Z1${FORGED_QUOTE}`],
-        ['withheld', `Z1${FORGED_CTRL}`],
-      ])('the accelerated-recovery timeout command is %s for a forged zone id', async (outcome, zoneId) => {
+        ['bare', 'a clean', 'Z1CLEAN'],
+        ['withheld', 'a shell-active', `Z1${FORGED_QUOTE}`],
+        ['withheld', 'a control-byte', `Z1${FORGED_CTRL}`],
+      ])('the accelerated-recovery timeout command is %s for %s zone id', async (outcome, _label, zoneId) => {
         process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] = '1';
         process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] = '30';
         let probes = 0;
@@ -581,8 +582,8 @@ describe('Route53Provider', () => {
             );
           expect(message).toContain('Timed out after 30ms');
           expect(message).not.toContain('`aws route53');
-          if (outcome === 'quoted') {
-            expectQuotedAfter(message, 'aws route53 update-hosted-zone-features --hosted-zone-id ', zoneId);
+          if (outcome === 'bare') {
+            expect(message).toContain(`aws route53 update-hosted-zone-features --hosted-zone-id ${zoneId}`);
           } else {
             expectWithheld(message, 'aws route53 update-hosted-zone-features');
           }

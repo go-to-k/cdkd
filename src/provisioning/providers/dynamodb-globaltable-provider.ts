@@ -1274,9 +1274,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             await this.waitForReplicaGone(tableName, region, logicalId);
           } catch (replicaCleanupErr) {
             const msg = describeAwsFailure(replicaCleanupErr).detail;
+            // `Delete={RegionName=` and `}` are cdkd's own text, so they sit in
+            // the template's literal part: passed as a value, their `{` and `}`
+            // would withhold the command for every table (`PASTE_ARG_UNSAFE`,
+            // go-to-k/cdkd#3950). Unquoted, `{RegionName=...}` holds no
+            // comma, so no shell brace-expands it.
             warn(
               `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
-                `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates ${`Delete={RegionName=${region}}`} --region ${currentRegion}`.render()}`
+                `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates Delete={RegionName=${region}} --region ${currentRegion}`.render()}`
             );
           }
         }

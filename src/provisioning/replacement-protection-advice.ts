@@ -116,8 +116,9 @@ export const DELETION_PROTECTION_DOC_POINTER =
 /** What the message says when the resource id cannot be named on a command line. */
 export const UNNAMEABLE_ID_CLAUSE =
   'Then disable protection out of band, via the console: the physical id cdkd recorded for this ' +
-  'resource cannot be reproduced safely on a command line, so any command shown here would act on ' +
-  'a different resource.';
+  'resource cannot be reproduced safely on a command line (sanitizing would change it, so a ' +
+  'command would act on a different resource, or it holds a character a pasted shell line would ' +
+  'act on).';
 
 /**
  * A string the COMPILER can prove is a literal.
@@ -174,8 +175,9 @@ export type CdkdAuthoredLiteral<T extends string> = HasInterpolation<T> extends 
  * `before` / `after` / `caveat` are rendered VERBATIM (inside the backticks for
  * the first two, beside them for the third), so they must be cdkd-authored
  * literals — the compiler now enforces that. `identifier` is the opposite: it
- * is a `state.json` value, and {@link protectedReplacementAdvice} sanitizes,
- * shell-quotes and suppresses it.
+ * is a `state.json` value, and {@link protectedReplacementAdvice} names it
+ * only when it is exact and inert unquoted, and suppresses the command
+ * otherwise.
  */
 export interface ProtectedReplacementDisableCommand<
   Before extends string = string,
@@ -188,9 +190,9 @@ export interface ProtectedReplacementDisableCommand<
    */
   before: CdkdAuthoredLiteral<Before>;
   /**
-   * The resource's physical id. SANITIZED and SHELL-QUOTED here, and the whole
-   * command is SUPPRESSED when sanitizing changes it — see
-   * {@link protectedReplacementAdvice}.
+   * The resource's physical id. SANITIZED here, and the whole command is
+   * SUPPRESSED when sanitizing changes it or it would change the command
+   * once unquoted — see {@link renderDisableCommand}.
    */
   identifier: string;
   /**
@@ -217,7 +219,9 @@ export interface ProtectedReplacementDisableCommand<
    * containing a quote no longer OCCURS in the finished line and comes through
    * a masking sink in PLAINTEXT. The hand-quoted `'${value}'` this module
    * replaced did not have that problem, because it left the value
-   * byte-identical.
+   * byte-identical. Since go-to-k/cdkd#3950 a value holding `'` is withheld
+   * anyway (`PASTE_ARG_UNSAFE`); the masker still withholds a quote-free
+   * secret.
    *
    * Supplying it makes {@link renderDisableCommand} SUPPRESS the command for
    * any id the masker would change — the same answer sanitization already
@@ -274,8 +278,12 @@ export interface ProtectedReplacementAdviceArgs<
  *  - sanitize FIRST (`asciiOnly`, a positive allowlist — a control character
  *    has no legitimate place in an AWS physical id, and left in it forges lines
  *    on the operator's terminal and inside `deployments/*.jsonl`);
- *  - then `shellQuote`, the SAME predicate the force-unlock hint uses, so a
- *    value carrying a quote or a space cannot truncate when pasted;
+ *  - WITHHOLD a value that would change the command once unquoted
+ *    (`PASTE_ARG_UNSAFE`, go-to-k/cdkd#3950): the command
+ *    sits inside backticks and after `cdkd's`, where a pasted line can end the
+ *    substitution or flip the quote parity, so quoting is not enough;
+ *  - then `shellQuote`, which leaves a plain value bare and quotes one holding
+ *    an admitted mid-word `#`, `=` or `,` (inert either way);
  *  - and SUPPRESS the whole command when sanitizing CHANGED the value, because
  *    a command naming the sanitized id would act on a DIFFERENT resource — the
  *    wrong-target harm that module exists to prevent, and the reason emitting
@@ -304,6 +312,20 @@ export function renderDisableCommand<
 }
 
 /**
+ * What makes an identifier change a pasted command once the surrounding quotes
+ * are gone, measured under bash and zsh (go-to-k/cdkd#3950): whitespace and
+ * `'"` `` ` `` `$;&|<>()\*?[]{}!` anywhere, `#` or `=` at the start of the word
+ * (a comment; zsh's `=cmd` expansion), and `~` at the start or right after `=`
+ * or `:` (bash expands both inside an assignment-shaped word, `a=~root`).
+ * `]`, `{` and `}` change nothing alone, but complete a glob or a brace
+ * expansion with a neighbour (`x{a,b}`). NARROWER than `SHELL_ACTIVE` in
+ * `pasteable-aws-profile.ts` on purpose: a mid-word `#`, `=`, `,`, `%` or `^`
+ * is literal, and AWS names carry them (a log group `/app#blue`, an IAM name
+ * with `=` or `,`), so those keep their remedy command.
+ */
+const PASTE_ARG_UNSAFE = /[\s'"`$;&|<>()\\*?[\]{}!]|^[#=]|(?:^|[=:])~/;
+
+/**
  * ONE value of a pasteable `aws ...` command, rendered the way
  * {@link renderDisableCommand} renders its identifier — or `undefined` when it
  * cannot be named, in which case the caller must print NO command.
@@ -311,8 +333,10 @@ export function renderDisableCommand<
  * `displaySafe(asciiOnly)` first; a value sanitizing CHANGES (or an empty one)
  * is refused, because a command naming the sanitized spelling acts on a
  * DIFFERENT resource. A value the caller's masker would change is refused too
- * (see {@link ProtectedReplacementDisableCommand.maskSecrets}). Everything else
- * is `shellQuote`d, which leaves a clean id BARE.
+ * (see {@link ProtectedReplacementDisableCommand.maskSecrets}), and so is a
+ * value that would change the command once unquoted (`PASTE_ARG_UNSAFE`,
+ * go-to-k/cdkd#3950). Everything else is `shellQuote`d: bare when plain, quoted
+ * when it holds an admitted `#`, `=` or `,`, and inert either way.
  */
 function pasteableArg(
   value: string,
@@ -324,12 +348,20 @@ function pasteableArg(
   const safe = displaySafe(value, { asciiOnly: true });
   if (!safe || safe !== value) return undefined;
   if (maskSecrets && maskSecrets(safe) !== safe) return undefined;
+  // Quoting alone is not enough (go-to-k/cdkd#3950): the command is printed
+  // inside markdown backticks, where a backtick in the value ends the
+  // substitution when the clause is pasted with them, and after `cdkd's`, an
+  // apostrophe that flips the quote parity of a line pasted whole. So a value
+  // that would change the command once unquoted is not named at all, and an
+  // admitted value is inert even unquoted.
+  if (PASTE_ARG_UNSAFE.test(safe)) return undefined;
   return shellQuote(safe);
 }
 
 /**
  * A command, or part of one, built by {@link pasteableAwsCommand}. `text` is
- * `undefined` when any value it would name cannot be printed exactly.
+ * `undefined` when any value it would name cannot be printed exactly, or would
+ * change the command once unquoted (`PASTE_ARG_UNSAFE`, go-to-k/cdkd#3950).
  *
  * NOT exported as a class (only its type is): a caller able to `new` one could
  * hand raw text to a tag as a "fragment" and skip the gate. Each instance also
@@ -364,8 +396,9 @@ export type { PasteableAwsCommand };
  * through it.
  */
 export const WITHHELD_AWS_COMMAND =
-  '[command withheld: a name or id it would carry cannot be printed exactly on a command ' +
-  'line, so a pasted copy could act on a different resource; use the console]';
+  '[command withheld: a name or id it would carry cannot be printed safely on a command ' +
+  'line (inexact, so a pasted copy could act on a different resource, or holding a character ' +
+  'a pasted shell line would act on); use the console]';
 
 /**
  * Build a pasteable `aws ...` command as a TAGGED TEMPLATE (issue
@@ -390,8 +423,9 @@ export const WITHHELD_AWS_COMMAND =
  * withholds the command.
  *
  * The masker applies per value, not to the finished line: `shellQuote`
- * rewrites an inner `'`, after which a literal-occurrence mask no longer
- * matches (the reason `renderDisableCommand` takes one).
+ * rewrote an inner `'`, after which a literal-occurrence mask no longer
+ * matched (the reason `renderDisableCommand` takes one; since
+ * go-to-k/cdkd#3950 such a value is withheld anyway, `PASTE_ARG_UNSAFE`).
  */
 export function pasteableAwsCommand(
   maskSecrets?: (text: string) => string
