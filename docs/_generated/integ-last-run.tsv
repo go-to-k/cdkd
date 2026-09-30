@@ -103,10 +103,10 @@ ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#37
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-29T11:14:03Z	PASS	60	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24, destroy 24/0, orphans clean
-ecs-fargate	2026-09-25T19:22:55Z	PASS	386	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
-ecs-schedule-targets	2026-09-30T15:56:55Z	PASS	651	verify.sh	rc ok, destroy 0 errors, orph clean (#4240); the tagging API still listed one STOPPED Fargate task on the INACTIVE cluster, an ECS record that expires, not a resource
-ecs-service-update-props	2026-09-29T14:07:55Z	PASS	116	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers; fixture now declares EnableForceNewDeployment: false (the #3567 pre-flight refused the nonce-only block)
+ecs-bluegreen	2026-09-30T21:08:17Z	PASS	205	verify.sh	rc ok, orph clean
+ecs-fargate	2026-09-30T21:08:17Z	PASS	391	verify.sh	rc ok, orph clean
+ecs-schedule-targets	2026-09-30T21:08:17Z	PASS	70	verify.sh	rc ok, orph clean
+ecs-service-update-props	2026-09-30T21:08:17Z	PASS	120	verify.sh	rc ok, orph clean
 efs-immutable-replacement	2026-09-30T08:37:29Z	PASS	75	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-09-30T08:37:29Z	PASS	161	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
@@ -265,7 +265,7 @@ rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok,
 replace-squatter-refusal	2026-09-30T17:28:22Z	PASS	80	verify.sh	rc ok, orph clean
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, orph clean
-replacement-rename-onto-holder	2026-09-30T17:28:22Z	PASS	451	verify.sh	rc ok, orph clean
+replacement-rename-onto-holder	2026-09-30T21:08:17Z	PASS	176	verify.sh	rc ok, orph clean
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-09-30T10:32:09Z	PASS	150	verify.sh	PR #4208 (#4157) re-run on the head rebased over #4217 (DeployEngine mixin move); rc ok, destroy 0 errors, no state/lock/CFn leftovers
