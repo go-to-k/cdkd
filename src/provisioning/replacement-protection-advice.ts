@@ -322,6 +322,11 @@ export function renderDisableCommand<
  * `pasteable-aws-profile.ts` on purpose: a mid-word `#`, `=`, `,`, `%` or `^`
  * is literal, and AWS names carry them (a log group `/app#blue`, an IAM name
  * with `=` or `,`), so those keep their remedy command.
+ *
+ * Measured under each shell's DEFAULT options. Under zsh's `EXTENDED_GLOB` a
+ * mid-word `#`, `^` or `~` is a glob operator, but that is not a way in:
+ * `shellQuote` always quotes those characters, and a `cdkd's` flip leaves the
+ * word glued to prose, so the worst case is a no-match abort, not a run.
  */
 const PASTE_ARG_UNSAFE = /[\s'"`$;&|<>()\\*?[\]{}!]|^[#=]|(?:^|[=:])~/;
 
@@ -353,7 +358,8 @@ function pasteableArg(
   // substitution when the clause is pasted with them, and after `cdkd's`, an
   // apostrophe that flips the quote parity of a line pasted whole. So a value
   // that would change the command once unquoted is not named at all, and an
-  // admitted value is inert even unquoted.
+  // admitted value is inert even unquoted (under default shell options; see
+  // `PASTE_ARG_UNSAFE` for `EXTENDED_GLOB`).
   if (PASTE_ARG_UNSAFE.test(safe)) return undefined;
   return shellQuote(safe);
 }

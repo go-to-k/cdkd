@@ -876,7 +876,8 @@ export class SSMParameterProvider implements ResourceProvider {
       : // The same "via the console" wording the three sibling sites use, so a
         // user who has seen one suppression recognises the next.
         ' Read the name AWS holds via the console: the value cdkd was given cannot be reproduced ' +
-        'safely on a command line, so any command shown here would read a different parameter.';
+        'safely on a command line (sanitizing would change it, so a command would read a ' +
+        'different parameter, or it holds a character a pasted shell line would act on).';
     throw new ProvisioningError(
       // The `explicit` clause is PROSE, not a pasteable span, so it is
       // displayed rather than suppressed (issue #3269). The

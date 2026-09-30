@@ -393,7 +393,9 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
     it('pastes nothing runnable for any payload as the log group name (go-to-k/cdkd#3950)', async () => {
       // The second site that prints the command inside markdown backticks.
       // Each payload family, plus a space-free backtick payload, as the id.
-      const ids = [...PASTE_PAYLOADS.map((p) => p.value), 'x`touch${IFS}OWNED`y'];
+      // `x;>OWNED` holds no whitespace, `$` or backtick, so a gate that narrow
+      // would admit it and the paste alone reds (go-to-k/cdkd#4198 O1).
+      const ids = [...PASTE_PAYLOADS.map((p) => p.value), 'x`touch${IFS}OWNED`y', 'x;>OWNED'];
       const messages: Array<{ id: string; message: string }> = [];
       for (const id of ids) messages.push({ id, message: await refuseWithId(id) });
       withPasteDir((dir) => {

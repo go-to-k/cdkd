@@ -1277,11 +1277,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // `Delete={RegionName=` and `}` are cdkd's own text, so they sit in
             // the template's literal part: passed as a value, their `{` and `}`
             // would withhold the command for every table (`PASTE_ARG_UNSAFE`,
-            // go-to-k/cdkd#3950). Unquoted, `{RegionName=...}` holds no
-            // comma, so no shell brace-expands it.
+            // go-to-k/cdkd#3950). The literal is single-quoted around the
+            // value, so the shell sees one word, `Delete={RegionName=<region>}`,
+            // with the braces never exposed: unquoted, zsh's `BRACE_CCL` would
+            // expand them. `region` comes from `DescribeTable`, an AWS region
+            // name, which holds no quote.
             warn(
               `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
-                `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates Delete={RegionName=${region}} --region ${currentRegion}`.render()}`
+                `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates 'Delete={RegionName='${region}'}' --region ${currentRegion}`.render()}`
             );
           }
         }
