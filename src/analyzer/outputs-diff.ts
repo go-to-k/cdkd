@@ -1151,10 +1151,12 @@ export async function resolveTemplateOutputs(
  *   That reasoning holds for a DEPLOY write and is weaker for a `cdkd scrub`
  *   one, which rewrites `state.outputs` IN PLACE: scrub redacts what it has a
  *   needle or a template position for. A key today's template cannot name
- *   whose value it cannot identify is DROPPED (go-to-k/cdkd#4120), except one
- *   that may be a live export alias this run could not reproduce — so a
- *   scrubbed bag holding one redacted key can still exonerate such a kept
- *   key's surviving plaintext. Recorded rather than closed: removing the
+ *   whose value it cannot identify is DROPPED (go-to-k/cdkd#4120), except
+ *   one that may be a live export alias this run could not reproduce, one
+ *   another stack still reads, every one when the other records could not be
+ *   read, and one whose NAME holds a secret (#1919) — so a scrubbed bag
+ *   holding one redacted key can still exonerate such a kept key's surviving
+ *   plaintext. Scrub reports each of those as a finding, never clean. Recorded rather than closed: removing the
  *   exoneration would withhold values on every clean post-GHSA record in a
  *   secret-handling stack, which is the larger harm.
  *   The deploy's own save belongs to the same class when the no-change path
@@ -1277,8 +1279,7 @@ export function computeOutputsDiff(
   // reference resolved): by a deploy, whose no-change merge refuses to put a
   // first one beside a carried value (`bagHoldsSecretExpression` counts it),
   // or by `cdkd scrub`, which drops an undeclared key it cannot identify but
-  // keeps one that may be a live export alias (the scrub residual the note
-  // above names). So it
+  // keeps the kinds the note above names (the scrub residual). So it
   // is the strongest evidence the bag is redacted, not a proof. A record with
   // none keeps the unaccountable-key signal:
   // fail-closed, costing a removed output's value in a `secretsmanager`-only

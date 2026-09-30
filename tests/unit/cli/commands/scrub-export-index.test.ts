@@ -1407,6 +1407,33 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     expect(logLines()).not.toContain(LEFTOVER);
   });
 
+  it('--dry-run --fail exits 1 over a pending drop, and says it WOULD drop', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    records.set('MyStack', leftover('MyStack'));
+
+    await expect(
+      scrubCommand([], commandOptions({ dryRun: true, fail: true }))
+    ).rejects.toBeInstanceOf(ScrubNeededError);
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+    expect(logLines()).toContain('1 output key(s) the template no longer declares would be dropped');
+  });
+
+  it('a key kept as a possible live alias turns a REAL --fail run red and is not reported clean', async () => {
+    // The template's export name is not the stored alias key, so nothing
+    // proves the undeclared alias dead.
+    const stack = makeStackInfo('MyStack');
+    (stack.template.Outputs as Record<string, { Export: { Name: string } }>)['Db']!.Export.Name =
+      'renamed:Db';
+    synthStacks.push(stack);
+    records.set('MyStack', leftover('MyStack'));
+
+    await expect(scrubCommand([], commandOptions({ fail: true }))).rejects.toBeInstanceOf(
+      ScrubNeededError
+    );
+    expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
+    expect(logLines()).toContain('or one that may be a live export alias');
+  });
+
   it('summarises the drop without calling the keys secrets', async () => {
     synthStacks.push(makeStackInfo('MyStack'));
     records.set('MyStack', leftover('MyStack'));
@@ -1418,7 +1445,7 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     );
   });
 
-  it('a failed load of the other records is not memoized', async () => {
+  it('a failed load of the other records is memoized: read once, every later stack keeps its keys', async () => {
     synthStacks.push(makeStackInfo('A'), makeStackInfo('B'));
     records.set('A', leftover('A'));
     records.set('B', leftover('B'));
@@ -1431,13 +1458,12 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
         : real(stack)
     );
 
-    await expect(scrubCommand([], commandOptions())).rejects.toMatchObject({
-      code: 'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED',
-    });
-    // The first stack kept its key; the second, on a fresh load, dropped it.
-    const saved = commandStateBackend.saveState.mock.calls.map((c) => c[2] as StackState);
-    expect(saved.filter((st) => Object.hasOwn(st.outputs, DROPPED))).toHaveLength(0);
-    expect(saved).toHaveLength(1);
+    const err = await scrubCommand([], commandOptions()).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED' });
+    expect((err as Error).message).toContain('2 stack(s) hold output keys');
+    expect(consumerReads).toBe(1);
+    // Neither stack dropped its key, and so neither was written.
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
   });
 
   it('reads the other records ONCE per run, however many stacks drop a key', async () => {

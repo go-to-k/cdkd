@@ -360,7 +360,7 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
 | `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, or an undeclared key another stack still reads. |
-| `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, or the exports index was left incomplete. |
+| `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, the exports index was left incomplete, or the other stacks' state could not be read before a drop (`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED`). |
 
 The full cross-command table is in the
 [CLI Reference](cli-reference.md#exit-codes).
@@ -482,8 +482,8 @@ cannot rewrite. Five shapes qualify, and all five are also reported in words:
   rotation**: `N cross-stack read name(s) in <stack> hold a plaintext scrub
   could NOT repair`. See [What this does not repair](#what-this-does-not-repair).
 
-- an **undeclared output key another stack still reads**, which scrub keeps
-  rather than drop: see
+- an **undeclared output key scrub keeps rather than drop** — one another
+  stack still reads, or one that may be a live export alias: see
   [A key the template can no longer name is dropped](#a-key-the-template-can-no-longer-name-is-dropped).
 
 ### A scan `--fail` warns about but does not count
@@ -865,7 +865,9 @@ Dropped 1 output key(s) from MyStack that its template no longer declares: OldDb
 
 `--dry-run` says `Would drop`, and counts the stack as one it would scrub, so
 `--dry-run --fail` exits `1` until a real run (or a deploy) removes the key. A
-name that holds a secret, or the key's own stored value, is masked or withheld.
+name that holds a secret, or the key's own stored value, is masked or withheld;
+a name that may be an export alias and carries a character an output's logical
+id cannot is withheld outright, as `cdkd diff` withholds it.
 A dropped export alias leaves the record's export set too; its entry in the
 [exports index](#the-exports-index) is reported as a name `state.outputs` no
 longer holds, and a redeploy rewrites the index.
@@ -876,9 +878,10 @@ secret is not rewritten, and its undeclared keys stay as they are.
 
 These keys are **kept**:
 
-- one a pass rewrote — it now holds the reference;
-- one no string of which can be a plaintext — only whole `{{resolve:...}}`
-  references, or no string at all;
+- one no string of which can be a plaintext after the rewrite — only whole
+  `{{resolve:...}}` references (a key a pass rewrote whole), or no string at
+  all. A key a pass rewrote only in part (`postgres://u:{{resolve:...}}@host`)
+  is dropped like any other: the text beside the reference is unidentified;
 - one whose name holds a secret this run recorded — the
   [state KEY leak](#exit-codes) scrub reports and cannot rewrite, because the
   exports index still publishes that name;
@@ -888,23 +891,26 @@ These keys are **kept**:
   every `Export.Name` in today's template resolved to a key the record holds
   and lists as an export (a literal name that collides with another output is
   exempt, since a deploy never publishes it; on a record with no export list,
-  an intrinsic name matching a declared output name proves nothing); otherwise — a parameterized name deployed with
+  or one listing anything but names, an intrinsic name matching a declared
+  output name proves nothing). Otherwise — a parameterized name deployed with
   `--parameters`, one that does not resolve here, or an export the last deploy
   did not write — scrub cannot tell that alias from a deleted one, keeps the
   key, and warns: `... were LEFT as they are`. Such a key's value can still be
-  printed by `cdkd diff`, and the warning does not fail `--fail`; a deploy
-  rewrites the outputs;
+  printed by `cdkd diff`, so the stack is not reported clean and `--fail` exits
+  `1`; a deploy rewrites the outputs;
 - one **another stack still reads**. Before dropping, scrub reads every state
   record in the bucket once per run. A key another stack records reading, with
   `Fn::ImportValue` or `Fn::GetStackOutput`, is kept and named with that
-  stack; so is every key the stack would drop when such a read's name is
-  stored redacted and cannot be compared. Dropping it would break the read.
+  stack. Every key the stack would drop is kept when such a read's name or
+  producer is stored redacted or damaged and cannot be compared, and when
+  another record predates the field that records such reads (`imports`
+  before schema v4, `outputReads` before v8). Dropping it would break the read.
   The rest of the record is still scrubbed, the stack is not reported clean,
   and `--fail` exits `1`. Stop the consumer reading it (or declare the output
   again) and deploy, then re-run.
 
-When the listing or any record cannot be read, **no** key is dropped from that
-stack, the rest of it is still scrubbed, and the run ends with
+When the listing or any record cannot be read — a listed record that reads as
+absent counts — **no** key is dropped from that stack, the rest of it is still scrubbed, and the run ends with
 `SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` (exit `2`, with or without `--fail`).
 
 ## Cross-stack read names

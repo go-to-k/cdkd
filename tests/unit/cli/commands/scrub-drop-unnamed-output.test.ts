@@ -69,6 +69,7 @@ import {
   scrubStack,
   planUnnamedOutputDrop,
   findDroppedOutputReaders,
+  readConsumerRecords,
   type ConsumerRecord,
 } from '../../../../src/cli/commands/scrub.js';
 
@@ -219,11 +220,21 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
 
     // End to end through the diff the user runs next. `desired` is what the
     // GHSA-fixed diff resolves: the expressions, not the plaintexts.
+    // The arguments `diff-recursive.ts` passes: both declared outputs are
+    // secret-sourced, and the record's own export set rides along.
     const diff = (current: Record<string, unknown>) =>
-      computeOutputsDiff(current, { Out: SSM_EXPR, Sm: SM_EXPR }, new Set(), new Set(), {
-        declaredKeys: new Set(['Out', 'Sm']),
-        templateHasSecretReference: true,
-      });
+      computeOutputsDiff(
+        current,
+        { Out: SSM_EXPR, Sm: SM_EXPR },
+        new Set(),
+        new Set(['Out', 'Sm']),
+        {
+          declaredKeys: new Set(['Out', 'Sm']),
+          templateHasSecretReference: true,
+          secretBearingExportNames: [],
+          storedExportNames: saved!.exportNames,
+        }
+      );
     expect(JSON.stringify(diff(saved!.outputs))).not.toContain(GONE_PLAINTEXT);
     // CONTROL: the bag the pre-fix scrub saved (the key left as it was) prints
     // it — the defect, measured on the same diff call.
@@ -305,7 +316,8 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
       expect(changed).toBe(0);
       expect(saved).toBeUndefined();
       expect(warnLines.join('\n')).toContain(
-        '1 output key(s) in Producer that its template does not declare were LEFT as they are: prod-Old.'
+        // An alias-shaped name is WITHHELD, as `cdkd diff` withholds it.
+        '1 output key(s) in Producer that its template does not declare were LEFT as they are: (name withheld: an export name, which may carry a secret).'
       );
       expect(logs()).not.toContain(GONE_PLAINTEXT);
     });
@@ -455,7 +467,7 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
       await scrub(record({ Out: SSM_EXPR, Sm: SM_EXPR, [key]: GONE_PLAINTEXT }));
 
       expect(logs()).not.toContain(GONE_PLAINTEXT);
-      expect(logs()).toContain('(masked: "k-***")');
+      expect(logs()).toContain('reads (name withheld: an export name, which may carry a secret) via Fn::ImportValue');
     });
 
     it('keeps EVERY key it would drop when a read of this producer stores its name redacted', async () => {
@@ -500,9 +512,6 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
           { sourceStack: 'Producer', sourceRegion: 'eu-west-1', outputName: 'Gone' },
         ],
       } as never);
-      // The producer's OWN record in another region is another stack.
-      seed(record({ Gone: 'x' }, {}, 'Producer', 'eu-west-1'));
-
       const { saved, result } = await scrub(legacyRecord());
 
       expect(saved!.outputs).toEqual({ Out: SSM_EXPR, Sm: SM_EXPR });
@@ -563,8 +572,13 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
   });
 
   it('masks a dropped key that carries its own stored value', async () => {
+    // `exportNames: []` says the key is a plain Output name, not an alias, so
+    // it is shown MASKED rather than withheld.
     const { saved, result } = await scrub(
-      record({ Out: SSM_EXPR, Sm: SM_EXPR, [`k-${GONE_PLAINTEXT}`]: GONE_PLAINTEXT })
+      record(
+        { Out: SSM_EXPR, Sm: SM_EXPR, [`k-${GONE_PLAINTEXT}`]: GONE_PLAINTEXT },
+        { exportNames: [] }
+      )
     );
 
     expect(Object.keys(saved!.outputs).sort()).toEqual(['Out', 'Sm']);
@@ -586,13 +600,13 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
   it('masks a KEPT key that carries its own stored value', async () => {
     await scrub(
       record(
-        { Out: SSM_EXPR, Sm: SM_EXPR, [`k-${GONE_PLAINTEXT}`]: GONE_PLAINTEXT },
-        { exportNames: [`k-${GONE_PLAINTEXT}`] }
+        { Out: SSM_EXPR, Sm: SM_EXPR, [`k${GONE_PLAINTEXT}`]: GONE_PLAINTEXT },
+        { exportNames: [`k${GONE_PLAINTEXT}`] }
       ),
       { ...DECLARED, Out: { Value: SSM_EXPR, Export: { Name: 'not-stored' } } }
     );
 
-    expect(warnLines.join('\n')).toContain('were LEFT as they are: (masked: "k-***")');
+    expect(warnLines.join('\n')).toContain('were LEFT as they are: (masked: "k***")');
     expect(logs()).not.toContain(GONE_PLAINTEXT);
   });
 
@@ -624,11 +638,217 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
   });
 });
 
+
+describe('cdkd scrub - review round 4 (go-to-k/cdkd#4120)', () => {
+  let states: Map<string, StackState>;
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
+  };
+  const lockManager = {
+    acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
+    releaseLock: vi.fn().mockResolvedValue(undefined),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    infoLines.length = 0;
+    warnLines.length = 0;
+    states = new Map();
+    stateBackend = {
+      getState: vi.fn().mockImplementation((stack: string, region: string) => {
+        const state = states.get(`${stack}|${region}`);
+        return Promise.resolve(state ? { state: structuredClone(state), etag: 'etag-1' } : null);
+      }),
+      saveState: vi.fn().mockResolvedValue('etag-2'),
+      listStacks: vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          [...states.keys()].map((k) => ({ stackName: k.split('|')[0]!, region: k.split('|')[1]! }))
+        )
+      ),
+    };
+  });
+
+  const seed = (state: StackState): void => {
+    states.set(`${state.stackName}|${state.region}`, state);
+  };
+  async function run(
+    producer: StackState,
+    outputs: Record<string, TemplateOutput> = DECLARED
+  ): Promise<{ saved: StackState | undefined; result: Awaited<ReturnType<typeof scrubStack>> }> {
+    seed(producer);
+    const result = await scrubStack(
+      stackInfo(outputs) as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: false, logger: logger as never }
+    );
+    const call = stateBackend.saveState.mock.calls.at(-1);
+    return { saved: call ? (call[2] as StackState) : undefined, result };
+  }
+  const exporting: Record<string, TemplateOutput> = {
+    ...DECLARED,
+    Out: { Value: SSM_EXPR, Export: { Name: 'Producer-Out' } },
+  };
+
+  it.each([
+    ['[0]', [0]],
+    ['[null]', [null]],
+    ["['Producer-Out', 0]", ['Producer-Out', 0]],
+  ])('reads a damaged exportNames %s as UNKNOWN: a possible alias is kept', async (_l, names) => {
+    // `prod-Url` may be the live alias the damaged set failed to list. The
+    // template's own export is not reproduced either (its key is absent), so
+    // nothing proves the undeclared key dead.
+    const { saved, result } = await run(
+      record(
+        { Out: SSM_PLAINTEXT, Sm: SM_EXPR, 'prod-Url': 'https://x' },
+        { exportNames: names as never }
+      ),
+      exporting
+    );
+
+    expect(saved!.outputs['prod-Url']).toBe('https://x');
+    expect(result.keptAliasOutputKeys).toBe(1);
+  });
+
+  it('drops a key a pass rewrote only PARTLY: the text beside the reference is unidentified', async () => {
+    const { saved } = await run(
+      record({ Out: SSM_EXPR, Sm: SM_EXPR, Gone: `${SM_PLAINTEXT}-${GONE_PLAINTEXT}` })
+    );
+
+    expect(saved!.outputs).toEqual({ Out: SSM_EXPR, Sm: SM_EXPR });
+  });
+
+  it('KEEPS, as a finding, a key a consumer reads by Fn::GetStackOutput through a non-string sourceStack', async () => {
+    seed(
+      record({}, {
+        outputReads: [{ sourceStack: 42, sourceRegion: 'us-east-1', outputName: 'Gone' }],
+      } as never, 'Consumer')
+    );
+
+    const { saved, result } = await run(legacyRecord());
+
+    expect(saved!.outputs['Gone']).toBe(GONE_PLAINTEXT);
+    expect(result.keptReadOutputKeys).toBe(1);
+    expect(warnLines.join('\n')).toContain('a damaged record');
+  });
+
+  it.each([
+    ['v3, before imports[]', 3, 'Fn::ImportValue'],
+    ['v7, before outputReads[]', 7, 'Fn::GetStackOutput'],
+  ])('KEEPS every key when another record is %s: its reads are unknown', async (_l, version, intrinsic) => {
+    seed({ ...record({}, {}, 'Old'), version } as StackState);
+
+    const { saved, result } = await run(legacyRecord());
+
+    expect(saved!.outputs['Gone']).toBe(GONE_PLAINTEXT);
+    expect(result.keptReadOutputKeys).toBe(1);
+    expect(warnLines.join('\n')).toContain(
+      `Old (us-east-1) records no ${intrinsic} reads (written before cdkd recorded them)`
+    );
+  });
+
+  it('a v8 record (outputReads known, imports known) is no reader (negative control)', async () => {
+    seed({ ...record({}, {}, 'Recent'), version: 8 } as StackState);
+
+    const { saved } = await run(legacyRecord());
+
+    expect(saved!.outputs).not.toHaveProperty('Gone');
+  });
+
+  it('counts a kept possible alias as a finding', async () => {
+    const { result } = await run(
+      record({ Out: SSM_PLAINTEXT, Sm: SM_EXPR, 'prod-Old': GONE_PLAINTEXT }),
+      exporting
+    );
+
+    expect(result.keptAliasOutputKeys).toBe(1);
+    expect(warnLines.join('\n')).toContain('so Producer is not reported clean');
+  });
+
+  it('KEEPS a possible alias when an EARLIER Export.Name is unreproduced, even if a later one is', async () => {
+    // Kills "the last output decides": `First` is not reproduced (its alias is
+    // absent), `Second` is.
+    const { saved } = await run(
+      record(
+        { Out: SSM_PLAINTEXT, Sm: SM_EXPR, 'Producer-Sm': SM_EXPR, 'x-Old': GONE_PLAINTEXT },
+        { exportNames: ['Producer-Sm', 'x-Old'] }
+      ),
+      {
+        Out: { Value: SSM_EXPR, Export: { Name: 'Producer-Out' } },
+        Sm: { Value: SM_EXPR, Export: { Name: 'Producer-Sm' } },
+      }
+    );
+
+    expect(saved!.outputs['x-Old']).toBe(GONE_PLAINTEXT);
+  });
+
+  it('on a pre-v9 record, an intrinsic Export.Name resolving to a stored non-output key IS reproduced', async () => {
+    const { saved } = await run(
+      record({ Out: SSM_PLAINTEXT, Sm: SM_EXPR, 'Producer-Out': SSM_PLAINTEXT, Gone: GONE_PLAINTEXT }),
+      {
+        ...DECLARED,
+        Out: { Value: SSM_EXPR, Export: { Name: { 'Fn::Sub': 'Producer-Out' } as never } },
+      }
+    );
+
+    expect(saved!.outputs).not.toHaveProperty('Gone');
+  });
+});
+
+describe('readConsumerRecords', () => {
+  it('reads a legacy ref with no region in the fallback region', async () => {
+    const getState = vi.fn().mockResolvedValue({ state: { version: 9 } });
+    await readConsumerRecords(
+      { listStacks: vi.fn().mockResolvedValue([{ stackName: 'Legacy' }]), getState } as never,
+      'ap-northeast-1'
+    );
+
+    expect(getState).toHaveBeenCalledWith('Legacy', 'ap-northeast-1');
+  });
+
+  it('treats a listed record that reads as absent as UNREADABLE (fail-closed)', async () => {
+    await expect(
+      readConsumerRecords(
+        {
+          listStacks: vi.fn().mockResolvedValue([{ stackName: 'Gone', region: 'us-east-1' }]),
+          getState: vi.fn().mockResolvedValue(null),
+        } as never,
+        'us-east-1'
+      )
+    ).rejects.toThrow('is listed but its state record could not be read');
+  });
+
+  it('never has more than 16 reads in flight', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const getState = vi.fn().mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      return { state: { version: 9 } };
+    });
+    const refs = Array.from({ length: 50 }, (_, i) => ({ stackName: `S${i}`, region: 'us-east-1' }));
+
+    const records = await readConsumerRecords(
+      { listStacks: vi.fn().mockResolvedValue(refs), getState } as never,
+      'us-east-1'
+    );
+
+    expect(records).toHaveLength(50);
+    expect(peak).toBe(16);
+  });
+});
+
 describe('findDroppedOutputReaders', () => {
   const keys = new Set(['Gone']);
   const rec = (extra: Partial<ConsumerRecord>): ConsumerRecord => ({
     stackName: 'Consumer',
     region: 'us-east-1',
+    version: 9,
     imports: undefined,
     outputReads: undefined,
     ...extra,
@@ -679,6 +899,33 @@ describe('findDroppedOutputReaders', () => {
         intrinsic: 'Fn::ImportValue',
         damaged: true,
       },
+    ]);
+  });
+
+  it('counts an outputReads entry with a non-string sourceStack as a damaged read', () => {
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [
+        rec({ outputReads: [{ sourceStack: 42, sourceRegion: 'us-east-1', outputName: 'Gone' }] }),
+      ])
+    ).toEqual([
+      {
+        consumerStack: 'Consumer',
+        consumerRegion: 'us-east-1',
+        key: undefined,
+        intrinsic: 'Fn::GetStackOutput',
+        damaged: true,
+      },
+    ]);
+  });
+
+  it('counts a record with no numeric version as the oldest: both kinds of read unknown', () => {
+    expect(
+      findDroppedOutputReaders('Producer', 'us-east-1', keys, [rec({ version: 'x' })]).map(
+        (r) => [r.intrinsic, r.legacy]
+      )
+    ).toEqual([
+      ['Fn::ImportValue', true],
+      ['Fn::GetStackOutput', true],
     ]);
   });
 

@@ -112,6 +112,13 @@ interface StackOpts {
   resourceSecret?: string | null;
   /** Extra secret-bearing properties on the Db resource (property name -> expression). */
   extraResourceSecrets?: Record<string, string>;
+  /**
+   * Declare an export whose name the record does not hold, so every undeclared
+   * key MAY be a live alias and is KEPT rather than dropped (go-to-k/cdkd#4120).
+   * The cases pinning what the value pass WRITES into a key it leaves partly
+   * rewritten need it: such a key is otherwise dropped.
+   */
+  keepUnnamed?: boolean;
 }
 
 /**
@@ -137,7 +144,12 @@ function makeStackInfo(
           },
         },
       },
-      Outputs: outputs,
+      Outputs: {
+        ...outputs,
+        ...(opts.keepUnnamed && {
+          Anchor: { Value: 'anchor-literal', Export: { Name: 'not-in-the-record' } },
+        }),
+      },
     } as CloudFormationTemplate,
   };
 }
@@ -230,7 +242,8 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
     // is the only thing that can reach it.
     const { saved } = await scrub(
       makeState({ DbUrl: `postgres://admin:${SECRET_PLAINTEXT}@app-db:5432/app` }),
-      {}
+      {},
+      { keepUnnamed: true }
     );
 
     expect(saved!.outputs['DbUrl']).toBe(`postgres://admin:${SECRET_EXPR}@app-db:5432/app`);
@@ -248,7 +261,8 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
         Whole: `{{resolve:${SECRET_PLAINTEXT}}}`,
         Embedded: `x-{{resolve:${SECRET_PLAINTEXT}}}-y`,
       }),
-      {}
+      {},
+      { keepUnnamed: true }
     );
 
     expect(saved!.outputs['Whole']).toBe(`{{resolve:${SECRET_EXPR}}}`);
@@ -265,7 +279,8 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
       makeState({
         DeletedConn: { url: `postgres://admin:${SECRET_PLAINTEXT}@app-db`, port: 5432 },
       }),
-      {}
+      {},
+      { keepUnnamed: true }
     );
 
     expect(saved!.outputs['DeletedConn']).toEqual({
@@ -311,7 +326,7 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
       // union and nothing else. Without this the union carries no needle that
       // occurs inside the inserted expression and the case cannot discriminate
       // a double scan from a single one (measured: it did not).
-      { extraResourceSecrets: { EnvName: ENV_EXPR } }
+      { extraResourceSecrets: { EnvName: ENV_EXPR }, keepUnnamed: true }
     );
 
     expect(saved!.outputs['DbUrl']).toBe(`postgres://admin:${SECRET_EXPR}@app-db:5432/app`);
@@ -346,7 +361,7 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
     // position-scoped bag) that the union deliberately cannot see, so an
     // identity test would put the plaintext back.
     const state = makeState({ DeletedList: [SHORT_PLAINTEXT, PUBLIC_VALUE] });
-    const { saved } = await scrub(state, { Pin: { Value: SHORT_EXPR } });
+    const { saved } = await scrub(state, { Pin: { Value: SHORT_EXPR } }, { keepUnnamed: true });
 
     expect(saved!.outputs['DeletedList']).toEqual([SHORT_EXPR, PUBLIC_VALUE]);
     expect(JSON.stringify(saved!.outputs)).not.toContain(SHORT_PLAINTEXT);
