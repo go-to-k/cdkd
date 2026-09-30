@@ -176,6 +176,9 @@ describe('recreate target rows — no non-plain recorded resource type printed r
     const t = target('AWS::S3::Bucket');
     const message = renderRecreateTargetsErrors({
       ...cleanValidation(),
+      unknownLogicalIds: ['Typo'],
+      ambiguousIntent: [{ logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', property: 'Tags' }],
+      conflictingDirections: ['Bucket'],
       blockedAlreadySdk: [t],
       blockedAlreadyCcApi: [t],
       blockedNoSdkProvider: [t],
@@ -184,7 +187,7 @@ describe('recreate target rows — no non-plain recorded resource type printed r
       ambiguousIntentSdk: [{ logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', property: 'Tags' }],
     })!;
     const fixLines = message.split('\n').filter((l) => l.includes('Fix:'));
-    expect(fixLines).toHaveLength(6);
+    expect(fixLines).toHaveLength(9);
     for (const line of fixLines) expect(line).not.toMatch(/[<>]/);
   });
 
