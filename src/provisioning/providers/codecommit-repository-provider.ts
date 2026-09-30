@@ -1031,12 +1031,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     let deletedRepositoryId: string | undefined;
     try {
       if (recordedId !== undefined) {
-        guard = await this.confirmDeleteTarget(
-          logicalId,
-          resourceType,
-          physicalId,
-          recordedId
-        );
+        guard = await this.confirmDeleteTarget(logicalId, resourceType, physicalId, recordedId);
       }
       const response = await this.getClient().send(
         new DeleteRepositoryCommand({ repositoryName: physicalId })
