@@ -196,10 +196,7 @@ import { withResourceDeadline } from './resource-deadline.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { findUnrewrittenAssetReferences } from '../assets/asset-redirect.js';
-import {
-  type CompletedOperation,
-  type FailedOperation,
-} from './rollback-executor.js';
+import { type CompletedOperation, type FailedOperation } from './rollback-executor.js';
 import { NESTED_PENDING_PARENT_REASON, type SettledNestedRows } from './nested-child-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
