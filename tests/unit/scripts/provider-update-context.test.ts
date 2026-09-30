@@ -194,6 +194,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'DynamoDBGlobalTableProvider',
       'DynamoDBTableProvider',
       'EC2Provider',
+      'ECSProvider',
       'EFSProvider',
       'ELBv2Provider',
       'GlueConnectionProvider',
