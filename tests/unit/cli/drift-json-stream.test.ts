@@ -476,7 +476,7 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
 
     expect(stderr).toContain('Plan (--accept): update cdkd state for TestStack (us-east-1):');
     expect(stderr).toContain('~ Bucket1 (AWS::S3::Bucket)');
-    expect(stderr).toContain('VersioningConfiguration.Status: Enabled -> Suspended');
+    expect(stderr).toContain('VersioningConfiguration.Status: Enabled → Suspended');
     expect(stderr).toContain('--dry-run: state will NOT be written.');
     expect(stdout).not.toContain('Plan (--accept)');
     expect(stdout).not.toContain('--dry-run: state will NOT be written.');

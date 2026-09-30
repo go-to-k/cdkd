@@ -985,9 +985,21 @@ describe('cdkd drift — an uncertified-position baseline mask (issue #3595)', (
     expect(warned).toContain('CHANGES this resource');
     // Issue #3595 item (1): a no-change deploy is no longer "nothing", so the
     // refusal states the conditions under which it does replace the mask.
-    expect(warned).toContain('A deploy that changes nothing replaces the mask only when');
+    expect(warned).toContain('a deploy that changes nothing replaces the mask only when');
     expect(warned).not.toContain('a deploy that changes nothing does not');
     expect(warned).not.toContain('Re-deploy to refresh it');
+    // Issue #2881: the remedy is scoped to the fail-closed mask, and the two
+    // writers no deploy can clear are named as such rather than offered a
+    // custom-resource update that re-masks the value on capture.
+    expect(warned).toContain('could not pair the readback with a secret reference');
+    expect(warned).toContain("nothing in the resource's recorded properties is masked");
+    expect(warned).toContain('Fn::Base64 encoding of a secret value');
+    // No backticks: a pasted clause of this reason, once its apostrophes
+    // unbalance, runs a backticked word as a command substitution (PR #4247
+    // security review).
+    expect(warned).not.toContain('`');
+    expect(warned).toContain('no deploy replaces the mask');
+    expect(warned).not.toContain('handler supplies the value again');
     assertNoPlaintext(warned);
   });
 });

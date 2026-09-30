@@ -141,7 +141,7 @@ A **clean** verdict never means anything except compared-and-matched.
 | `unresolvedToken` | State records a `{{resolve:...}}` spelling cdkd resolves for nobody. cdkd resolves all three CloudFormation services (`secretsmanager`, `ssm`, `ssm-secure`), so this is reserved for text that is not a dynamic reference at all, or a service AWS adds later. | No — a re-run cannot clear it, which is why it alone does not affect the exit code. |
 | `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported. | Yes — usually a missing permission or a throttle; grant it or re-run. |
 | `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource, which rebuilds its record from your template and captures a real baseline. |
-| `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — a `cdkd deploy` that changes nothing replaces each such mask the resource's own secret references can certify, and one that changes the resource re-captures the whole baseline. |
+| `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — a `cdkd deploy` that changes nothing replaces each such mask the resource's own secret references can certify, and one that changes the resource re-captures the whole baseline. |
 | `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or a row whose `properties` map is not a JSON object. cdkd drops the row so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. A row with an unreadable `properties` map keeps its real resource type and is not read back from AWS. | Yes — repair or re-import the record. |
 | `unreadableMap` | The record's whole `resources` map is not a JSON object, so no resource in it was read. cdkd reads the map as empty and reports one entry whose `logicalId` is `(resources map)`. Key on this cause, not on that name: a hand-edited record can hold an entry keyed `(resources map)`, which is reported as `unreadableRecord`. | Yes — repair or re-import the record. |
 
@@ -283,10 +283,16 @@ heading's stack name and region, each resource's logical id and type, each
 change's path and both of its values, and the readback tag keys and paths the
 revert plan lists as preserved or left untouched. A readback key is masked for
 secrets first and only then cut and sanitized, so the cut can never leave part
-of a secret unmasked. A plan line prints `<path>: <from> -> <to>`, so a string
-value that itself contains `->` is quoted there too: no unquoted value carries
-an arrow, so the only one outside quotes after the path is the separator. (The
-path itself is not quoted, as in the report.)
+of a secret unmasked. A plan line prints `<path>: <from> → <to>`, so a string
+value that carries ASCII `->` or an arrow character (`→`, `⟶`, `➔`, `⮕` and
+the rest of the Arrows, dingbat-arrow, Supplemental Arrows-A/B/C,
+Miscellaneous Symbols and Arrows, and halfwidth-arrow ranges) is quoted there
+too: no unquoted value carries an arrow, so the only one outside quotes after
+the path is the separator. (The path itself is not quoted, as in the report.)
+The separator is `→` rather than ASCII `->` because a pasted `->` is a shell
+redirect onto the value after it. A value's own shell characters, including
+other redirect spellings such as a bare `>`, are printed as they are, as in
+the report.
 
 `--json` is not sanitised — a consumer of that mode wants the stored value. It
 is escaped instead: every control, format, line-separator and
@@ -488,21 +494,31 @@ impossible and the comparison meaningless, whereas here the live value is
 genuinely readable and cdkd simply cannot say what belongs there. Silently
 hiding it would claim a clean bill of health it has no basis for.
 
-To clear it, force the custom resource to update — change one of its
-properties, a nonce being the usual way — and re-deploy, so its handler runs
-again and supplies the value. An ordinary re-deploy leaves the resource
-unchanged, so the handler does not run and the mask stays. If a stack in this
-state must gate CI on drift, either stop marking that response `NoEcho`, so
-the value round-trips normally, or gate on `--json` and filter the known
-position out.
+No deploy clears it: a fresh `NoEcho` value is masked again on its way into
+state. Where `--revert` refused because AWS reports nothing at the position,
+force the custom resource to update — change one of its properties, a nonce
+being the usual way — and re-deploy, so its handler runs again and supplies
+the value, which gives the next `--revert` a live value to keep. An ordinary
+re-deploy leaves the resource unchanged, so the handler does not run. If a
+stack in this state must gate CI on drift, either stop marking that response
+`NoEcho`, so the value round-trips normally, or gate on `--json` and filter
+the known position out.
+
+The same mask stands for the **`Fn::Base64` encoding of a secret value**, such
+as a `UserData` script built around a `{{resolve:...}}` reference: the
+encoding decodes straight back to the secret, so cdkd never records it. The
+three arms answer as they do for a `NoEcho` value, except the remedy: there is
+no custom resource to update, and a `cdkd deploy` that changes the resource
+sends it the encoded value again. Neither kind of mask is ever replaced in the
+baseline, so `--accept` keeps refusing such a position.
 
 A property whose real value happens to BE the string `***` is treated the same
 way, since nothing in state distinguishes the two — see
 [State Management](state-management.md#noecho-custom-resource-responses).
 
-#### The other cause of a masked baseline: a position cdkd could not certify
+#### Another cause of a masked baseline: a position cdkd could not certify
 
-A `NoEcho` response is not the only way the mask reaches a baseline. When cdkd
+The mask also reaches a baseline where cdkd could not tell a secret apart. When cdkd
 refreshes `observedProperties` — during a deploy, from
 [`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed),
 from the baseline [`cdkd import`](import.md) captures for each resource it
@@ -552,8 +568,8 @@ and a masked binary value, which only a string can match.
 A position reported as not compared is left alone by both remediation modes:
 `--accept` writes nothing over it, and `--revert` sends AWS's own value there
 back unchanged, even when a real change elsewhere in the same property is
-being reverted. Where it is still reported as drift, `--revert` is where the two mask
-populations differ — a mask written for the reasons listed above exists
+being reverted. Where it is still reported as drift, `--revert` is where this mask
+differs from a `NoEcho` or `Fn::Base64` one — a mask written for the reasons listed above exists
 *because* the record and the readback could not be matched at that position,
 which is exactly when `--revert` has no live value it may safely copy. So expect
 it to refuse the whole resource here more often than for a `NoEcho` value.
