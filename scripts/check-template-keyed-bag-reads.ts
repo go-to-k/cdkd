@@ -437,8 +437,11 @@ export function scanRepo(read: (p: string) => string = (p) => readFileSync(p, 'u
  */
 export const EXAMINED_FLOORS: Record<Shape, number> = {
   in: 0,
-  'index-read': 25,
-  'index-write': 10,
+  // Raised from 25 / 10 when the resolver began splitting across files
+  // (#4337): a split module missing from SCANNED_FILES drops ~9 reads, which
+  // the old floors absorbed silently. Tree today: 50 / 22.
+  'index-read': 40,
+  'index-write': 18,
 };
 
 const isMain = process.argv[1]?.endsWith('check-template-keyed-bag-reads.ts') === true;
