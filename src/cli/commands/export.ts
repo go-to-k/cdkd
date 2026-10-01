@@ -100,6 +100,7 @@ import {
 } from '../../deployment/intrinsic-function-resolver.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
   CFN_TEMPLATE_BODY_LIMIT,
   CFN_TEMPLATE_URL_LIMIT,
@@ -2815,22 +2816,37 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
       });
 
+      // Both refusals go through the shared `renderNoStackMatch`, so a stack
+      // dropped with a CDK Stage that failed to load is reported as such
+      // rather than as "not found" (issue go-to-k/cdkd#3507), as `cdkd import`
+      // does. The zero-stack check sits BEFORE the chain: with no argument the
+      // `else` arm would otherwise answer `Multiple stacks found: .` -- and
+      // zero stacks is exactly what an app whose only stacks live in a failed
+      // Stage synthesizes.
+      const stackPatterns = stackArg ? [stackArg] : [];
+      if (result.stacks.length === 0) {
+        throw new Error(renderNoStackMatch(stackPatterns, result.stacks, result));
+      }
       let stackInfo;
       if (stackArg) {
         stackInfo = result.stacks.find(
           (s) => s.stackName === stackArg || s.displayName === stackArg
         );
         if (!stackInfo) {
-          throw new Error(
-            `Stack ${quotedOrNotShown(stackArg)} not found in synthesized app. ` +
-              `Available: ${result.stacks.map((s) => quotedOrNotShown(s.stackName)).join(', ')}`
-          );
+          // The shared message says "matching" and attributes a failed Stage
+          // by glob, while export matches EXACTLY: say so when the argument
+          // carries a star, or a Stage wildcard argument reads as
+          // contradicting the list. Worded as import.ts words it.
+          const exactOnly = stackArg.includes('*')
+            ? ". cdkd export matches a stack name exactly, so '*' is not a wildcard here"
+            : '';
+          throw new Error(renderNoStackMatch(stackPatterns, result.stacks, result) + exactOnly);
         }
       } else if (result.stacks.length === 1) {
         stackInfo = result.stacks[0]!;
       } else {
         throw new Error(
-          `Multiple stacks found: ${result.stacks.map((s) => quotedOrNotShown(s.stackName)).join(', ')}. ` +
+          `Multiple stacks found: ${result.stacks.map(describeStack).join(', ')}. ` +
             `Specify the stack name as a positional argument.`
         );
       }
