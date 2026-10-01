@@ -1600,7 +1600,13 @@ export async function runDestroyForStack(
               'by this destroy'
             ) +
               `. Its cdkd state record was KEPT. Delete the resource by hand if it still ` +
-              `exists, then drop the record.`
+              `exists, then drop the record.` +
+              // The child's own state file is never entered, so dropping the
+              // parent's record leaves it (and its resources) behind.
+              (resource.resourceType === NESTED_STACK_TYPE
+                ? ` It is a nested stack: its child's state and resources were not touched ` +
+                  `either, so tear those down by hand too.`
+                : '')
           );
           result.skippedCount++;
           // THIS stack's record, even for a nested-stack row: the child was

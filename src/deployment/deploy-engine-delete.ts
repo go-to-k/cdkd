@@ -30,6 +30,8 @@ export const NON_PLAIN_LOGICAL_ID_SKIP_REASON =
 
 /**
  * May a DELETE of this `state.resources` key reach a provider (go-to-k/cdkd#4175)?
+ * Asked by the destroy runner and the deploy's template-removal DELETE only;
+ * `cdkd rollback`'s journal-keyed deletes are not gated (go-to-k/cdkd#4349).
  *
  * The key is state-sourced and validated nowhere (go-to-k/cdkd#2947), and
  * every provider prints it raw in its delete-path lines and errors, so a
@@ -251,6 +253,32 @@ function reportDeleteSkip(
       `skipped (${deleteSkipped})`
     )}`
   );
+  const inspectLine = `\nInspect it with: ${
+    pasteableCommand('cdkd state show', [
+      { value: stackName, hole: 'stack' },
+      { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+    ]).command
+  }`;
+  if (deleteSkipped === NON_PLAIN_LOGICAL_ID_SKIP_REASON) {
+    // Issue #4175: no re-run helps (the gate refuses the key every time), and
+    // the stack is still LIVE, so `cdkd state orphan` -- which drops every
+    // record of the stack -- is not offered as this record's remedy.
+    this.logger.warn(
+      deleteSkippedMessage(
+        logicalId,
+        physicalId,
+        deleteSkipped,
+        'while removing it from the template'
+      ) +
+        `. Its cdkd state record was KEPT, and every 'cdkd deploy' refuses it again. ` +
+        `Delete the resource by hand if it still exists, then remove that record from ` +
+        `the stack's state file by hand. 'cdkd state orphan' drops EVERY record of the ` +
+        `stack, not just this one.` +
+        inspectLine
+    );
+    if (counts) counts.deleteSkipped++;
+    return { deleteSkipped };
+  }
   this.logger.warn(
     deleteSkippedMessage(
       logicalId,
@@ -268,12 +296,7 @@ function reportDeleteSkip(
       // rule), so an operator repairing one region would silently
       // orphan the resources another region's record points at. M2 of
       // the go-to-k/cdkd#3499 review.
-      `\nInspect it with: ${
-        pasteableCommand('cdkd state show', [
-          { value: stackName, hole: 'stack' },
-          { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
-        ]).command
-      }` +
+      inspectLine +
       `\nDrop the record with: ${
         pasteableCommand('cdkd state orphan', [
           { value: stackName, hole: 'stack' },

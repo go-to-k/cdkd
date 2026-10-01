@@ -179,10 +179,13 @@ describe('runDestroyForStack refuses a non-plain logical id before any provider 
     );
 
     const warned = stripAnsi(warnSpy.mock.calls.map((c) => String(c[0])).join('\n'));
+    // A nested-stack row's skip normally names the CHILD's record (printed as a
+    // `'<stack>'` hole for this key); a refused key never reached the child, so
+    // the target is the parent's own record, named plainly.
     expect(warned).toContain('Drop the record with: cdkd state orphan TestStack --stack-region us-east-1');
-    // A nested-stack row's skip normally names the CHILD's record; a refused
-    // key never reached the child, so the target is the parent's own record.
-    expect(warned).not.toContain('TestStack~');
+    expect(warned).not.toContain("'<stack>'");
+    // ...and the warning says the child was left untouched too.
+    expect(warned).toContain("its child's state and resources were not touched");
   });
 
   it.each([...PASTE_PAYLOADS.map((p) => p.value), "x';touch OWNED;'"])(
@@ -201,7 +204,11 @@ describe('runDestroyForStack refuses a non-plain logical id before any provider 
   );
 
   it('records RESOURCE_SKIPPED with the fixed reason', async () => {
-    await runDestroyForStack('TestStack', makeState({ [HOSTILE]: res() }), makeCtx());
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ [HOSTILE]: res({ provisionedBy: 'sdk' }) }),
+      makeCtx()
+    );
 
     const skipped = recorded.filter((e) => e.eventType === 'RESOURCE_SKIPPED');
     expect(skipped).toHaveLength(1);
@@ -209,6 +216,8 @@ describe('runDestroyForStack refuses a non-plain logical id before any provider 
       logicalId: HOSTILE,
       operation: 'DELETE',
       reason: NON_PLAIN_LOGICAL_ID_SKIP_REASON,
+      physicalId: 'phys-id',
+      provisionedBy: 'sdk',
     });
     expect(recorded.some((e) => e.eventType === 'RESOURCE_SUCCEEDED')).toBe(false);
   });

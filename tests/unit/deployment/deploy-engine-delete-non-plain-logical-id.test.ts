@@ -120,9 +120,12 @@ describe('DeployEngine template-removal DELETE of a non-plain logical id (#4175)
 
   async function templateDelete(
     logicalId: string,
-    record: { deletionPolicy?: 'Retain' } = {}
+    record: { deletionPolicy?: 'Retain' } = {},
+    type: string = TYPE,
+    onEngine?: (engine: InstanceType<typeof DeployEngine>) => void
   ): Promise<{ stateResources: Record<string, unknown>; counts: Counts }> {
     const engine = makeEngine();
+    onEngine?.(engine);
     const counts: Counts = {
       created: 0,
       updated: 0,
@@ -134,7 +137,7 @@ describe('DeployEngine template-removal DELETE of a non-plain logical id (#4175)
     const stateResources: Record<string, unknown> = {
       [logicalId]: {
         physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/q',
-        resourceType: TYPE,
+        resourceType: type,
         properties: {},
         attributes: {},
         dependencies: [],
@@ -142,7 +145,7 @@ describe('DeployEngine template-removal DELETE of a non-plain logical id (#4175)
         ...record,
       },
     };
-    const change: ResourceChange = { logicalId, changeType: 'DELETE', resourceType: TYPE };
+    const change: ResourceChange = { logicalId, changeType: 'DELETE', resourceType: type };
     await (
       engine as unknown as {
         provisionResource: (
@@ -199,8 +202,39 @@ describe('DeployEngine template-removal DELETE of a non-plain logical id (#4175)
     expect(out).toContain(
       `a logical id that is not a plain identifier (${TYPE}) skipped (${NON_PLAIN_LOGICAL_ID_SKIP_REASON})`
     );
-    expect(out).toContain('Drop the record with: cdkd state orphan MyStack --stack-region us-east-1');
+    // The stack is LIVE: no re-run helps, and `state orphan` would drop every
+    // record of it, so neither is offered as this record's remedy.
+    expect(out).toContain("every 'cdkd deploy' refuses it again");
+    expect(out).toContain("'cdkd state orphan' drops EVERY record of the stack");
+    expect(out).toContain('Inspect it with: cdkd state show MyStack --stack-region us-east-1');
+    expect(out).not.toContain('re-attempts');
+    expect(out).not.toContain('Drop the record with:');
     expect(out).not.toContain('touch OWNED');
+  });
+
+  it('runs no final-snapshot step for an RDS instance, whose absent policy means Snapshot', async () => {
+    let snapshotSpy: ReturnType<typeof vi.fn> | undefined;
+    const { counts } = await templateDelete(HOSTILE, {}, 'AWS::RDS::DBInstance', (engine) => {
+      snapshotSpy = vi.fn().mockResolvedValue(undefined);
+      (engine as unknown as { prepareFinalSnapshotForDelete: unknown }).prepareFinalSnapshotForDelete =
+        snapshotSpy;
+    });
+
+    expect(counts.deleteSkipped).toBe(1);
+    expect(snapshotSpy).not.toHaveBeenCalled();
+    expect(provider.delete).not.toHaveBeenCalled();
+  });
+
+  it('keeps the plain-key provider-skip remedy (positive control for the split)', async () => {
+    (provider.delete as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      outcome: 'skipped',
+      reason: 'bad id',
+    });
+    await templateDelete('MyQueue');
+
+    const out = printed();
+    expect(out).toContain("the next 'cdkd deploy' re-attempts the delete");
+    expect(out).toContain('Drop the record with: cdkd state orphan MyStack --stack-region us-east-1');
   });
 
   it.each([...PASTE_PAYLOADS.map((p) => p.value), "x';touch OWNED;'"])(
