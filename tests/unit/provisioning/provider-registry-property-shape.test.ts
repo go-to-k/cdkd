@@ -98,15 +98,16 @@ describe('ProviderRegistry.validateResourceProperties: property shapes', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it('refuses the shape before any routing line, on a type nested-required does not cover', () => {
+  it('refuses the shape before any routing line, when every other pre-flight check passes', () => {
     const { registry, logger } = makeRegistry();
-    // The unknown key alone makes reportSilentDropDecisions log a routing line.
+    // A COMPLETE tag object passes the nested `required` check, so only the
+    // routing line (logged for the unknown key) can tell the order apart.
     expect(() =>
       registry.validateResourceProperties([
         {
           logicalId: 'Queue',
           resourceType: 'AWS::SQS::Queue',
-          properties: { Tags: {}, CdkdUnknownKey: 'x' },
+          properties: { Tags: { Key: 'k', Value: 'v' }, CdkdUnknownKey: 'x' },
         },
       ])
     ).toThrow('#/Tags: expected type: JSONArray, found: JSONObject');
