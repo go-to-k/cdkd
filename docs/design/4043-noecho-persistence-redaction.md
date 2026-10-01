@@ -244,7 +244,7 @@ So a `held` producer serves the declared attributes through a SIDE map for
 this run:
 
 - **Source.** The #1852 read primitive, `provider.import({ knownPhysicalId })`
-  (`deploy-engine.ts:2695-2703`). It is read-only, memoized per record per
+  (`readStaleAttributes` in `deploy-engine-heal.ts`). It is read-only, memoized per record per
   deploy, and it returns the ATTRIBUTE map. The `held` readback
   (`readCurrentState`, `src/types/resource.ts:1142-1148`) returns properties,
   whose keys coincide with attribute names only by accident (SSM `Value`, but

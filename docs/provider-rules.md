@@ -1654,7 +1654,8 @@ Two placement rules go with it:
     resource's.
   - **`onInterrupted` returns an `InterruptedWaitError`**, not a bare `Error`.
     `deploy-engine.ts` decides whether to ROLL BACK by asking what the failure
-    was, and its own `InterruptedError` is module-private, so a bare `Error` from
+    was, and its own `InterruptedError` is engine-internal (not re-exported, and
+    providers do not import the engine), so a bare `Error` from
     a provider read as a genuine resource failure and rolled the whole stack back
     on Ctrl-C. Use `isInterruptedWaitError` to recognise one. It walks the
     `cause` chain — every provider catch re-wraps — with a `visited` set and NO
