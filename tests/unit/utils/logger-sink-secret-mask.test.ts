@@ -172,7 +172,7 @@ describe('ConsoleLogger masks bound resource secrets at the sink (issue #2177)',
     const quotedKey = 'ke"y-secret';
     withCurrentResourceSecrets(bag(quotedKey, SECRET, '123'), () => {
       // eslint-disable-next-line no-new-wrappers
-      getLogger().info('payload', { [quotedKey]: 1, boxed: new String(SECRET), pin: 123, n: 1234 });
+      getLogger().info('payload', { [quotedKey]: 1, boxed: new String(quotedKey), pin: 123, n: 1234 });
     });
 
     const line = String(spies.info.mock.calls[0]?.[0]);

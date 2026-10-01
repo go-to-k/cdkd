@@ -137,8 +137,9 @@ export function isStdoutReservedForPayload(): boolean {
 /**
  * Render a log call's extra args. Under a masker, every string LEAF and object
  * KEY is masked before `JSON.stringify` escapes it (a secret holding `"` or
- * `\` no longer occurs in the finished JSON), a number or boxed string by its
- * text, and the joined text once more as a backstop.
+ * `\` no longer occurs in the finished JSON), and a number or boxed string by
+ * its text. The replacer sees every value `JSON.stringify` writes (after
+ * `toJSON`), so no text pass over the result is needed.
  */
 function renderArgs(args: unknown[], mask: LogLineMasker | undefined): string {
   if (mask === undefined) return args.map((a) => JSON.stringify(a)).join(' ');
@@ -156,7 +157,7 @@ function renderArgs(args: unknown[], mask: LogLineMasker | undefined): string {
     if (entries.every(([k]) => mask(k) === k)) return value;
     return Object.fromEntries(entries.map(([k, v]) => [mask(k), v]));
   };
-  return mask(args.map((a) => JSON.stringify(a, replacer)).join(' '));
+  return args.map((a) => JSON.stringify(a, replacer)).join(' ');
 }
 
 /**
