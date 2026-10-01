@@ -214,7 +214,7 @@ if [ -n "$diff_base" ]; then
   # comment for rationale).
   strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor|inline-policy-claims)\.ts$|^src/provisioning/provider-registry\.ts$'
   # Hunk-filtered files — only delete-symbol changes trigger.
-  filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine(-heal|-options|-masking|-name-collision|-observed-capture|-outputs|-replacement|-rollback)?\.ts|src/deployment/(label-routing|deploy-value-equality)\.ts)$'
+  filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine(-create|-delete|-heal|-options|-masking|-name-collision|-observed-capture|-outputs|-replacement|-rollback|-update)?\.ts|src/deployment/(label-routing|deploy-value-equality)\.ts)$'
   provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'
   # Match a delete-touching symbol on an added/removed line, but NOT inside
   # a single-line comment. This avoids the false positives PR #73 hit

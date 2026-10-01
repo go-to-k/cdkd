@@ -124,7 +124,7 @@ describe('deriveLabelRouting (#614 §9)', () => {
       throw new Error('no provider for AWS::Unknown::Thing');
     });
     // Pure cosmetic helper — must never throw; the real `getProviderFor`
-    // call inside provisionResourceBody is the load-bearing dispatch and
+    // call inside each provisionCreate / provisionUpdate / provisionDelete arm is the load-bearing dispatch and
     // surfaces the same error there.
     expect(deriveLabelRouting(change, undefined, registry)).toBeUndefined();
   });

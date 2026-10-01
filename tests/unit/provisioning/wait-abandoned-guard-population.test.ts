@@ -317,10 +317,12 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     const byFile = [...new Set(governed.map((s) => s.file))].sort();
     expect(byFile).toEqual([
       'cli/commands/destroy-runner.ts',
-      'deployment/deploy-engine.ts',
+      'deployment/deploy-engine-delete.ts',
+      'deployment/deploy-engine-update.ts',
       'provisioning/cloud-control-provider.ts',
     ]);
-    // FOUR governed sites: `deploy-engine.ts` x2, plus one each in
+    // FOUR governed sites: the engine's DELETE and UPDATE arms (one each, in
+    // their #4200 mixin modules), plus one each in
     // `destroy-runner.ts` and `cloud-control-provider.ts`. A FIFTH guard exists
     // — `cleanupFailedCreateRemnant`'s early return — and is deliberately NOT
     // in this population: its partner classifier is the REGEX helper
@@ -335,7 +337,8 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
         'NOT resolve this by editing the expected list, which drops the site from the ' +
         'population permanently.'
     ).toHaveLength(4);
-    expect(governed.filter((s) => s.file === 'deployment/deploy-engine.ts')).toHaveLength(2);
+    expect(governed.filter((s) => s.file === 'deployment/deploy-engine-delete.ts')).toHaveLength(1);
+    expect(governed.filter((s) => s.file === 'deployment/deploy-engine-update.ts')).toHaveLength(1);
     expect(governed.filter((s) => s.file === 'cli/commands/destroy-runner.ts')).toHaveLength(1);
   });
 

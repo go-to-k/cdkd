@@ -302,7 +302,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // (measured).
     //
     // The refusal DOES reach the catch the advice lives in -- the
-    // `NAMED_REPLACEMENT_COLLISION` throw happens inside `provisionResourceBody`,
+    // `NAMED_REPLACEMENT_COLLISION` throw happens inside `provisionUpdate`,
     // called inside the same `try`, and the `requires replacement` assertion
     // below only passes BECAUSE it was logged there. What refuses it is the
     // `ProvisioningError` check (the upstream throws `CdkdError`), so deleting
