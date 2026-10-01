@@ -3162,7 +3162,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // flow's single `this.executeDeployment(` below its guard. Pinned below.
       if (file === 'src/deployment/deploy-engine.ts') return false;
       if (file === 'src/deployment/deploy-engine/execute.ts') return false;
-      return /[A-Za-z]*[Ss]tate\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
+      return /[A-Za-z]*[Ss]tate\??\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
     });
     expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
     // ...and the shared population is that same set, so the ROW fence under
@@ -3182,7 +3182,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // The engine host's only container read is `redactStateForPersist`, which
     // runs only on a save, and every save follows the deploy flow's guard.
     const reads = (text: string): number =>
-      text.split(/[A-Za-z]*[Ss]tate\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/).length - 1;
+      text.split(/[A-Za-z]*[Ss]tate\??\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/).length - 1;
     const engine = code('src/deployment/deploy-engine.ts');
     const redactAt = engine.indexOf('redactStateForPersist(state: StackState)');
     expect(redactAt, 'redactStateForPersist moved or was renamed').toBeGreaterThan(-1);
