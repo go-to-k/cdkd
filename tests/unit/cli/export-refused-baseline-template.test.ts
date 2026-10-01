@@ -164,24 +164,40 @@ async function refusedWarning(
   });
   const cmd = createExportCommand();
   cmd.exitOverride();
-  await cmd
-    .parseAsync(
-      [
-        STACK,
-        ...(source === 'file' ? ['--template', templatePath] : []),
-        '--state-bucket',
-        'test-bucket',
-        '--stack-region',
-        REGION,
-        '--skip-import-support-preflight',
-        '--yes',
-      ],
-      { from: 'user' }
-    )
-    .catch((e: unknown) => {
-      // The changeset step fails against the CFn double AFTER the report ran.
-      if (!(e instanceof Error) || e.message !== 'process.exit-mock') throw e;
-    });
+  // Two literal argv lists rather than a conditional spread, so the
+  // commander-arity convention test can read both sites.
+  const run =
+    source === 'file'
+      ? cmd.parseAsync(
+          [
+            STACK,
+            '--template',
+            templatePath,
+            '--state-bucket',
+            'test-bucket',
+            '--stack-region',
+            REGION,
+            '--skip-import-support-preflight',
+            '--yes',
+          ],
+          { from: 'user' }
+        )
+      : cmd.parseAsync(
+          [
+            STACK,
+            '--state-bucket',
+            'test-bucket',
+            '--stack-region',
+            REGION,
+            '--skip-import-support-preflight',
+            '--yes',
+          ],
+          { from: 'user' }
+        );
+  await run.catch((e: unknown) => {
+    // The changeset step fails against the CFn double AFTER the report ran.
+    if (!(e instanceof Error) || e.message !== 'process.exit-mock') throw e;
+  });
   return warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('REFUSED'));
 }
 
