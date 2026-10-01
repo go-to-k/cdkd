@@ -103,10 +103,10 @@ ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#37
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-29T11:14:03Z	PASS	60	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-ecs-bluegreen	2026-10-01T06:37:26Z	PASS	250	verify.sh	rc ok, orph clean (#4284)
-ecs-fargate	2026-10-01T06:40:50Z	PASS	466	verify.sh	rc ok, orph clean; Phase 3 INACTIVE arm (#4284)
-ecs-schedule-targets	2026-10-01T07:44:20Z	PASS	75	verify.sh	rc ok, orph clean (#4284); prior run stalled on a scheduled-task ENI holding the SG, cleaned by hand
-ecs-service-update-props	2026-10-01T13:26:54Z	PASS	150	verify.sh	rc ok, orph clean; #4295 ecs provider gated lines
+ecs-bluegreen	2026-10-01T19:43:10Z	PASS	230	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
+ecs-fargate	2026-10-01T19:38:04Z	PASS	456	verify.sh	rc ok, orph clean; Phase 3 INACTIVE arm; client-ecs 3.1144.0 (#4324)
+ecs-schedule-targets	2026-10-01T19:45:46Z	PASS	80	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
+ecs-service-update-props	2026-10-01T19:29:01Z	PASS	120	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
 efs-immutable-replacement	2026-09-30T08:37:29Z	PASS	75	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-10-01T03:22:05Z	PASS	160	verify.sh	rc ok, orph clean (#4257)

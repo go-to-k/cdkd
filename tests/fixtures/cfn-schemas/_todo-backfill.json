@@ -158,6 +158,7 @@
       "Tags"
     ],
     "AWS::Kinesis::Stream": [
+      "RecordDistributionStrategy",
       "WarmThroughputMiBps"
     ],
     "AWS::KinesisFirehose::DeliveryStream": [

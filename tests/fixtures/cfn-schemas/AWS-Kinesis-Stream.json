@@ -1,11 +1,12 @@
 {
   "resourceType": "AWS::Kinesis::Stream",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Arn",
     "DesiredShardLevelMetrics",
     "MaxRecordSizeInKiB",
     "Name",
+    "RecordDistributionStrategy",
     "RetentionPeriodHours",
     "ShardCount",
     "StreamEncryption",
@@ -75,7 +76,8 @@
       "Tags": "array",
       "MaxRecordSizeInKiB": "scalar",
       "WarmThroughputMiBps": "scalar",
-      "WarmThroughputObject": "object"
+      "WarmThroughputObject": "object",
+      "RecordDistributionStrategy": "scalar"
     },
     "StreamModeDetails": {
       "StreamMode": "scalar"
