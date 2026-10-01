@@ -55,7 +55,12 @@ tests passing is necessary but NOT sufficient:
   name you report, picked there or not.
 - **Non-deletion source change** → still live-test the fixed path end to end
   (deploy → the redeploy that reproduced the bug → destroy). A lane barred from
-  real-AWS RUNS still WRITES the arm; the parent runs it.
+  real-AWS RUNS still WRITES the arm; the parent runs it. "No fixture can reach
+  it" needs `grep -rl '<type's last segment>' tests/integration/*/lib` empty
+  first (`Certificate`, not `AWS::CertificateManager::Certificate`, which an
+  L2 fixture need not spell; a type an L2 creates IMPLICITLY needs a synthed
+  template grepped instead) — an existing fixture takes the new arm
+  (go-to-k/cdkd#4369).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms
