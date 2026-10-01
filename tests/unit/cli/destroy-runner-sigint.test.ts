@@ -339,12 +339,13 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     // The outer `finally`'s interrupt re-sync used to run UNGATED (no
     // `&& statePreserved`), and everything it spans (`renderer.stop()`, the
     // `saveChain` flush, the real `deleteState` S3 round-trip, `releaseLock`)
-    // happens with `sigintHandler` still armed and AFTER the in-`try` read that decided
-    // `preserveState`. So a signal there flipped the PER-STACK flag true over a
-    // stack whose state file was already gone — and `destroy.ts` / `state.ts`
-    // OR that flag unconditionally into the terminal verdict, so the command
-    // exited 2 with "State preserved — re-run 'cdkd destroy' to finish" over a
-    // destroy that had fully completed. Both halves of that sentence false.
+    // happens with `sigintHandler` still armed and AFTER the in-`try` read
+    // that decided `preserveState`. So a signal there flipped the PER-STACK
+    // flag true over a stack whose state file was already gone — and
+    // `destroy.ts` / `state.ts` OR that flag unconditionally into the terminal
+    // verdict, so the command exited 2 with
+    // "State preserved — re-run 'cdkd destroy' to finish" over a destroy that
+    // had fully completed. Both halves of that sentence false.
     //
     // Firing from inside `deleteState` puts the signal exactly in that window:
     // past the in-`try` read, before the runner's `removeListener`.

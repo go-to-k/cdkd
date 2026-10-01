@@ -174,7 +174,8 @@ function runnerTailEmitsSignal(): void {
     process.on('SIGINT', runnerHandler);
     try {
       // The signal arrives after the runner read its own `lock.interrupted`, so
-      // it reports `false` — and before this fix nothing else carried it onward.
+      // it reports `false` — and before this fix nothing else carried it
+      // onward.
       process.emit('SIGINT', 'SIGINT');
     } finally {
       process.removeListener('SIGINT', runnerHandler);
