@@ -488,6 +488,21 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
         expect(mockStsSend).not.toHaveBeenCalled();
       });
 
+      // go-to-k/cdkd#4238: an id the AWS CLI itself would act on (a `file://`
+      // prefix, a leading `-`) is shell-safe, so the read command is withheld
+      // for the CLI reason, and the console fallback must name it.
+      it.each([
+        ['a file:// prefix', 'file://x'],
+        ['a leading dash', '-p:1'],
+      ])('withholds the read command for an id with %s, naming the AWS CLI reason', async (_label, id) => {
+        const msg = await refusalMessage(id);
+        expect(msg).not.toContain('aws ssm get-parameter --name');
+        expect(msg).toContain(
+          'or it holds a character or prefix a pasted shell line, or the AWS CLI itself, would act on'
+        );
+        expect(mockSsmSend).not.toHaveBeenCalled();
+      });
+
       it('refuses an ARN that arrived through the TEMPLATE Name, with the template-side remedy', async () => {
         // `resolveExplicitPhysicalId` reads `Properties.Name` when no
         // `--resource` override is passed, so the SAME bad id has a second entry

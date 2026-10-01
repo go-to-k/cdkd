@@ -60,6 +60,11 @@ import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
 
 /** Long enough for the message-level substring arm. */
 const LONG = 'efs-secret-subnet-value';
@@ -484,6 +489,107 @@ describe('EFSProvider masked log sinks (issue #2177)', () => {
       expect(lines).toContain('Retrying');
       expect(lines).not.toContain(LONG);
       expect(lines).toContain(`internal error reading ${SECRET_MASK}`);
+    });
+  });
+
+  describe('a masked failure still classifies as retryable (issue #4244)', () => {
+    /** A secret that spells part of the retry table's `does not exist` wording. */
+    const RETRY_WORD = 'exist';
+    const retryMasker = createSecretMasker(bagOf(RETRY_WORD));
+    const TRANSIENT = `Subnet subnet-0123456789abcdef0 does not exist`;
+    const retryable = (error: Error): boolean =>
+      isRetryableTransientError(error, retryClassificationText(error));
+
+    async function thrown(promise: Promise<unknown>): Promise<Error> {
+      try {
+        await drain(promise);
+      } catch (error) {
+        return error as Error;
+      }
+      throw new Error('expected the operation to throw');
+    }
+
+    const SITES = [
+      {
+        site: 'create() FileSystem',
+        command: 'CreateFileSystemCommand',
+        run: (masker: typeof retryMasker) =>
+          provider.create('Fs', 'AWS::EFS::FileSystem', {}, { maskSecrets: masker }),
+      },
+      {
+        site: 'update() FileSystem',
+        command: 'UpdateFileSystemCommand',
+        run: (masker: typeof retryMasker) =>
+          provider.update(
+            'Fs',
+            'fs-0123456789abcdef0',
+            'AWS::EFS::FileSystem',
+            { ThroughputMode: 'elastic' },
+            { ThroughputMode: 'bursting' },
+            { maskSecrets: masker }
+          ),
+      },
+      {
+        site: 'create() MountTarget',
+        command: 'CreateMountTargetCommand',
+        run: (masker: typeof retryMasker) =>
+          provider.create(
+            'Mt',
+            'AWS::EFS::MountTarget',
+            { FileSystemId: 'fs-0123456789abcdef0', SubnetId: 'subnet-0123456789abcdef0' },
+            { maskSecrets: masker }
+          ),
+      },
+      {
+        site: 'update() MountTarget',
+        command: 'ModifyMountTargetSecurityGroupsCommand',
+        run: (masker: typeof retryMasker) =>
+          provider.update(
+            'Mt',
+            'fsmt-0123456789abcdef0',
+            'AWS::EFS::MountTarget',
+            { SecurityGroups: ['sg-1'] },
+            {},
+            { maskSecrets: masker }
+          ),
+      },
+      {
+        site: 'create() AccessPoint',
+        command: 'CreateAccessPointCommand',
+        run: (masker: typeof retryMasker) =>
+          provider.create(
+            'Ap',
+            'AWS::EFS::AccessPoint',
+            { FileSystemId: 'fs-0123456789abcdef0' },
+            { maskSecrets: masker }
+          ),
+      },
+    ] as const;
+
+    it.each(SITES)('$site: the stamp keeps it retryable', async ({ command, run }) => {
+      fakeEfs({
+        [command]: () => {
+          throw awsAuthored('BadRequest', TRANSIENT);
+        },
+      });
+      const failure = await thrown(run(retryMasker));
+      // Premise: the mask cut the retry wording out of the message itself.
+      expect(failure.message).not.toContain('does not exist');
+      expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(retryable(failure)).toBe(true);
+    });
+
+    it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ command, run }) => {
+      fakeEfs({
+        [command]: () => {
+          throw awsAuthored('BadRequest', 'Bad request parameter');
+        },
+      });
+      const failure = await thrown(run(retryMasker));
+      expect(failure.message).toContain('Bad request parameter');
+      expect(hasRedactedCause(failure)).toBe(false);
+      expect(retryable(failure)).toBe(false);
     });
   });
 });

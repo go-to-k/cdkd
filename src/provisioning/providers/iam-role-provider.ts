@@ -35,10 +35,11 @@ import {
   createMaskedLogSinks,
   withDerivedNameMasks,
   type MaskedLogSinks,
+  type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -59,6 +60,22 @@ import type {
 export class IAMRoleProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMRoleProvider');
+
+  /**
+   * A failure wrap quoting the caught error's text through the operation's
+   * masker (issue #2177). The `cause` stays unmasked, and a message the mask
+   * changed is stamped so the retry classifiers read that chain rather than
+   * the masked message, whose IAM-propagation wording a secret needle could
+   * cut (`wrapMaskedAwsError`, issue #4244). A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
 
   /**
    * The sinks the DELETE path hands the cleanup helpers it shares with
@@ -269,15 +286,20 @@ export class IAMRoleProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        // Issue #2177: the AWS message is masked RAW before interpolation, as
-        // in `ssm-parameter-provider.ts`; the `cause` stays unmasked so the
-        // retry classifiers still see the original error object.
-        `Failed to create IAM role ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        roleName,
-        cause
+      // Issue #2177: the AWS message is masked RAW before interpolation. The
+      // cause stays unmasked: a masked message is stamped so the retry
+      // classifiers read the chain (`wrapMaskedError`, issue #4244).
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create IAM role ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            roleName,
+            cause
+          )
       );
     }
   }
@@ -559,13 +581,18 @@ export class IAMRoleProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        // Issue #2177 -- masked RAW, as in `create()`.
-        `Failed to update IAM role ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // Issue #2177 -- masked RAW and stamped, as in `create()`.
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update IAM role ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

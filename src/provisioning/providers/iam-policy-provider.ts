@@ -14,9 +14,14 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { readPrincipalLists, recordedPrincipalsRepair } from '../iam-policy-targets.js';
 import {
   isResolvableSecretPrincipalList,
@@ -252,6 +257,22 @@ function refusalRepair(
 export class IAMPolicyProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMPolicyProvider');
+
+  /**
+   * A failure wrap quoting the caught error's text through the operation's
+   * masker (issue #2177), stamped when the mask changed it so the retry
+   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
+   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
+   * it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::IAM::Policy', new Set(['PolicyName', 'PolicyDocument', 'Roles', 'Groups', 'Users'])],
   ]);
@@ -374,12 +395,17 @@ export class IAMPolicyProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create IAM policy ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        policyName,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create IAM policy ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            policyName,
+            cause
+          )
       );
     }
   }
@@ -653,12 +679,17 @@ export class IAMPolicyProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update IAM policy ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update IAM policy ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

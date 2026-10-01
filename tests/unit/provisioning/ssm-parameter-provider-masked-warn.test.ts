@@ -59,6 +59,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { SSMParameterProvider } from '../../../src/provisioning/providers/ssm-parameter-provider.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
 
 const RESOURCE_TYPE = 'AWS::SSM::Parameter';
 /** A parameter Name that came out of a resolved dynamic reference. */
@@ -196,5 +201,76 @@ describe('SSMParameterProvider masked log sinks (issue #2176)', () => {
     });
 
     expect(allLines()).toContain(SECRET_NAME);
+  });
+});
+
+describe('a masked failure still classifies as retryable (issue #4244)', () => {
+  /** A just-created KMS key PutParameter cannot see yet: `does not exist` is a retry-table entry. */
+  const TRANSIENT = 'Key arn:aws:kms:us-east-1:111122223333:key/abcd does not exist';
+  /** A recorded secret that spells part of that wording. */
+  const retryMasker = createSecretMasker(bagOf('exist'));
+  const retryable = (error: Error): boolean =>
+    isRetryableTransientError(error, retryClassificationText(error));
+  const failing = (message: string): Error =>
+    Object.assign(new Error(message), {
+      name: 'InvalidKeyId',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400 },
+    });
+
+  const SITES = [
+    {
+      site: 'create()',
+      run: (masker: (t: string) => string) =>
+        new SSMParameterProvider().create(
+          'MyParam',
+          RESOURCE_TYPE,
+          { Name: '/app/plain', Type: 'String', Value: 'v' },
+          { maskSecrets: masker }
+        ),
+    },
+    {
+      site: 'update()',
+      run: (masker: (t: string) => string) =>
+        new SSMParameterProvider().update(
+          'MyParam',
+          '/app/plain',
+          RESOURCE_TYPE,
+          { Name: '/app/plain', Type: 'String', Value: 'v2' },
+          { Name: '/app/plain', Type: 'String', Value: 'v1' },
+          { maskSecrets: masker }
+        ),
+    },
+  ] as const;
+
+  async function failureOf(run: () => Promise<unknown>): Promise<Error> {
+    return run().then(
+      () => {
+        throw new Error('expected the operation to reject');
+      },
+      (e: unknown) => e as Error
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each(SITES)('$site: the stamp keeps it retryable', async ({ run }) => {
+    mockSend.mockRejectedValue(failing(TRANSIENT));
+    const failure = await failureOf(() => run(retryMasker));
+    // Premise: the mask cut the retry wording out of the message itself.
+    expect(failure.message).not.toContain('does not exist');
+    expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect(retryable(failure)).toBe(true);
+  });
+
+  it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ run }) => {
+    mockSend.mockRejectedValue(failing('Bad request parameter'));
+    const failure = await failureOf(() => run(retryMasker));
+    expect(failure.message).toContain('Bad request parameter');
+    expect(hasRedactedCause(failure)).toBe(false);
+    expect(retryable(failure)).toBe(false);
   });
 });

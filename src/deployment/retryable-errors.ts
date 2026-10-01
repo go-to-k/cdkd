@@ -857,6 +857,35 @@ export function markRedactedCause<E extends Error>(error: E): E {
 }
 
 /**
+ * Build a failure wrap whose message quotes `error`'s text through `mask`, and
+ * {@link markRedactedCause} it exactly when the mask changed that text
+ * (issue [#4244](https://github.com/go-to-k/cdkd/issues/4244)).
+ *
+ * A provider masks AWS's text before joining it into its own message (issue
+ * #2177), and a secret or derived-name needle can overlap the retry table's
+ * wording (`currently in the following state: Pending`, `cannot be assumed`):
+ * the stamp makes the classifiers read the unmasked chain, so the retry
+ * survives the mask. `build` must pass `error` as the wrap's `cause` -- the
+ * stamp names a chain for the classifiers to read. An unchanged text is left
+ * unstamped, so it classifies on its own message as before. A thrown
+ * non-`Error` value has no chain to thread, so its stamp reads nothing and it
+ * keeps its masked-message classification.
+ *
+ * Only for relayed AWS text: a cdkd-authored refusal quoting a user value must
+ * not be stamped, or a value spelling retry wording would make it retryable.
+ */
+export function wrapMaskedAwsError<E extends Error>(
+  mask: (text: string) => string,
+  error: unknown,
+  build: (maskedText: string) => E
+): E {
+  const raw = error instanceof Error ? error.message : String(error);
+  const masked = mask(raw);
+  const wrapped = build(masked);
+  return masked === raw ? wrapped : markRedactedCause(wrapped);
+}
+
+/**
  * True when the error, or anything in its bounded `.cause` chain, was stamped
  * by {@link markRedactedCause}.
  *

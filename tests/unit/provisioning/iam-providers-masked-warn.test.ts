@@ -67,6 +67,11 @@ import { WITHHELD_AWS_COMMAND } from '../../../src/provisioning/replacement-prot
 import { NoSuchEntityException } from '@aws-sdk/client-iam';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
 
 /** A name-safe secret, long enough for the message-level substring arm. */
 const SECRET = 'app-secret-name';
@@ -1715,5 +1720,72 @@ describe('withDerivedNameMasks input guards (issue #2177 review)', () => {
     const base = createMaskedLogSinks({ debug: debugSpy, warn: warnSpy }, maskSecrets);
     const log = withDerivedNameMasks({ debug: debugSpy, warn: warnSpy }, base, [[SECRET, '']]);
     expect(log.mask('plain text')).toBe('plain text');
+  });
+});
+
+describe('a masked failure still classifies as retryable (issue #4244)', () => {
+  /** IAM's wording for a trust-policy principal that has not propagated yet. */
+  const TRANSIENT =
+    'Invalid principal in policy: "AWS":"arn:aws:iam::111122223333:role/just-created"';
+  const CUT = 'Invalid principal in policy';
+  /** A recorded secret that spells part of that wording. */
+  const retryMasker = createSecretMasker(bagOf('principal'));
+  const retryable = (error: Error): boolean =>
+    isRetryableTransientError(error, retryClassificationText(error));
+  const malformed = (message: string): Error =>
+    Object.assign(new Error(message), {
+      name: 'MalformedPolicyDocumentException',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400 },
+    });
+  const ARN = 'arn:aws:iam::111122223333:policy/mp';
+  type Masker = (text: string) => string;
+
+  /** Every masked create() / update() wrap in the IAM family, and the call that fails at it. */
+  const SITES: ReadonlyArray<{ site: string; command: string; run: (m: Masker) => Promise<unknown> }> = [
+    { site: 'Role create()', command: 'CreateRoleCommand', run: (m) => new IAMRoleProvider().create('Res', 'AWS::IAM::Role', { RoleName: 'r', AssumeRolePolicyDocument: DOC }, { maskSecrets: m }) },
+    { site: 'Role update()', command: 'UpdateRoleCommand', run: (m) => new IAMRoleProvider().update('Res', 'r', 'AWS::IAM::Role', { RoleName: 'r', AssumeRolePolicyDocument: DOC }, { RoleName: 'r', AssumeRolePolicyDocument: DOC }, { maskSecrets: m }) },
+    { site: 'User create()', command: 'CreateUserCommand', run: (m) => new IAMUserGroupProvider().create('Res', 'AWS::IAM::User', { UserName: 'u' }, { maskSecrets: m }) },
+    { site: 'User update()', command: 'GetUserCommand', run: (m) => new IAMUserGroupProvider().update('Res', 'u', 'AWS::IAM::User', { UserName: 'u' }, { UserName: 'u' }, { maskSecrets: m }) },
+    { site: 'Group create()', command: 'CreateGroupCommand', run: (m) => new IAMUserGroupProvider().create('Res', 'AWS::IAM::Group', { GroupName: 'g' }, { maskSecrets: m }) },
+    { site: 'Group update()', command: 'GetGroupCommand', run: (m) => new IAMUserGroupProvider().update('Res', 'g', 'AWS::IAM::Group', { GroupName: 'g' }, { GroupName: 'g' }, { maskSecrets: m }) },
+    { site: 'UserToGroupAddition create()', command: 'AddUserToGroupCommand', run: (m) => new IAMUserGroupProvider().create('Res', 'AWS::IAM::UserToGroupAddition', { GroupName: 'g', Users: ['u'] }, { maskSecrets: m }) },
+    { site: 'UserToGroupAddition update()', command: 'AddUserToGroupCommand', run: (m) => new IAMUserGroupProvider().update('Res', 'm', 'AWS::IAM::UserToGroupAddition', { GroupName: 'g', Users: ['u2'] }, { GroupName: 'g', Users: ['u'] }, { maskSecrets: m }) },
+    { site: 'Policy create()', command: 'PutRolePolicyCommand', run: (m) => new IAMPolicyProvider().create('Res', 'AWS::IAM::Policy', { PolicyName: 'p', PolicyDocument: DOC, Roles: ['r'] }, { maskSecrets: m }) },
+    { site: 'Policy update()', command: 'PutRolePolicyCommand', run: (m) => new IAMPolicyProvider().update('Res', 'p', 'AWS::IAM::Policy', { PolicyName: 'p', PolicyDocument: DOC, Roles: ['r'] }, { PolicyName: 'p', PolicyDocument: DOC, Roles: ['r'] }, { maskSecrets: m }) },
+    { site: 'ManagedPolicy create()', command: 'CreatePolicyCommand', run: (m) => new IAMManagedPolicyProvider().create('Res', 'AWS::IAM::ManagedPolicy', { ManagedPolicyName: 'mp', PolicyDocument: DOC }, { maskSecrets: m }) },
+    { site: 'ManagedPolicy update()', command: 'ListPolicyVersionsCommand', run: (m) => new IAMManagedPolicyProvider().update('Res', ARN, 'AWS::IAM::ManagedPolicy', { ManagedPolicyName: 'mp', PolicyDocument: DOC }, { ManagedPolicyName: 'mp', PolicyDocument: { Version: '2008-10-17', Statement: [] } }, { maskSecrets: m }) },
+    { site: 'InstanceProfile create()', command: 'CreateInstanceProfileCommand', run: (m) => new IAMInstanceProfileProvider().create('Res', 'AWS::IAM::InstanceProfile', { InstanceProfileName: 'ip' }, { maskSecrets: m }) },
+    { site: 'InstanceProfile update()', command: 'GetInstanceProfileCommand', run: (m) => new IAMInstanceProfileProvider().update('Res', 'ip', 'AWS::IAM::InstanceProfile', { InstanceProfileName: 'ip' }, { InstanceProfileName: 'ip' }, { maskSecrets: m }) },
+    { site: 'AccessKey create()', command: 'CreateAccessKeyCommand', run: (m) => new IAMAccessKeyProvider().create('Res', 'AWS::IAM::AccessKey', { UserName: 'u' }, { maskSecrets: m }) },
+    { site: 'AccessKey update()', command: 'UpdateAccessKeyCommand', run: (m) => new IAMAccessKeyProvider().update('Res', 'AKIAX', 'AWS::IAM::AccessKey', { UserName: 'u' }, { UserName: 'u' }, { maskSecrets: m }) },
+  ];
+
+  async function failureOf(run: () => Promise<unknown>): Promise<Error> {
+    return run().then(
+      () => {
+        throw new Error('expected the operation to reject');
+      },
+      (e: unknown) => e as Error
+    );
+  }
+
+  it.each(SITES)('$site: the stamp keeps it retryable', async ({ command, run }) => {
+    answerIam({ [command]: malformed(TRANSIENT) });
+    const failure = await failureOf(() => run(retryMasker));
+    expect(inputsOf(command).length).toBeGreaterThan(0); // premise: the failing call ran
+    // Premise: the mask cut the retry wording out of the message itself.
+    expect(failure.message).not.toContain(CUT);
+    expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect(retryable(failure)).toBe(true);
+  });
+
+  it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ command, run }) => {
+    answerIam({ [command]: malformed('Bad request parameter') });
+    const failure = await failureOf(() => run(retryMasker));
+    expect(failure.message).toContain('Bad request parameter');
+    expect(hasRedactedCause(failure)).toBe(false);
+    expect(retryable(failure)).toBe(false);
   });
 });
