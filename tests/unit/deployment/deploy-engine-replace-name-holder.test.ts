@@ -146,6 +146,8 @@ async function replaceOnce(opts: {
   /** The state record's type, for a Type-change replacement. */
   oldType?: string;
   observed?: Record<string, unknown>;
+  /** Return the OUTER `ProvisioningError` instead of its cause. */
+  outer?: boolean;
 }): Promise<Inner | null> {
   const change: ResourceChange = {
     logicalId: opts.logicalId,
@@ -199,7 +201,7 @@ async function replaceOnce(opts: {
   return withStackName(STACK, () =>
     run(opts.logicalId, change, stateResources, STACK, template).then(
       () => null,
-      (e) => (e as { cause?: unknown }).cause as Inner
+      (e) => (opts.outer === true ? (e as Inner) : ((e as { cause?: unknown }).cause as Inner))
     )
   );
 }
@@ -935,6 +937,20 @@ describe('the --replace refusals and the failure wrapper show no untrusted value
       const line = (await errorLines()).findLast((l) => l.startsWith('Failed to update '));
       expect(line, payload).toBe(
         `Failed to update a logical id that is not a plain identifier: ${providerText}`
+      );
+      // The thrown failure's head, which the CLI prints above the cause.
+      const outer = await replaceOnce({
+        provider: recordingProvider(new Error(providerText), 'x').provider,
+        logicalId: payload,
+        type: KINESIS,
+        physicalId: 'app-stream',
+        oldProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 24 },
+        newProps: { ShardCount: 1, RetentionPeriodHours: 48 },
+        changedPath: 'RetentionPeriodHours',
+        outer: true,
+      });
+      expect(outer!.message, payload).toBe(
+        'Failed to update resource a logical id that is not a plain identifier'
       );
       withPasteDir((dir) => {
         expectNoCommandBesideDisplay(line!, payload);
