@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SNS::TopicPolicy",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Id",
     "PolicyDocument",
@@ -26,5 +26,8 @@
       "PolicyDocument",
       "Topics"
     ]
+  },
+  "propertyShapes": {
+    "Topics": "array"
   }
 }

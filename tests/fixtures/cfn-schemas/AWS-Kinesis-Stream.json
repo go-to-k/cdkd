@@ -120,5 +120,13 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "DesiredShardLevelMetrics": "array",
+    "StreamEncryption": "object",
+    "StreamModeDetails": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "WarmThroughputObject": "object"
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::VPC",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "CidrBlock",
     "CidrBlockAssociations",
@@ -184,5 +184,21 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "CidrBlockAssociations": "array",
+    "Ipv6CidrBlocks": "array",
+    "Tags": "array",
+    "Tags[]": "object",
+    "VpcEncryptionControl": "object",
+    "VpcEncryptionControl.ResourceExclusions": "object",
+    "VpcEncryptionControl.ResourceExclusions.EgressOnlyInternetGateway": "object",
+    "VpcEncryptionControl.ResourceExclusions.ElasticFileSystem": "object",
+    "VpcEncryptionControl.ResourceExclusions.InternetGateway": "object",
+    "VpcEncryptionControl.ResourceExclusions.Lambda": "object",
+    "VpcEncryptionControl.ResourceExclusions.NatGateway": "object",
+    "VpcEncryptionControl.ResourceExclusions.VirtualPrivateGateway": "object",
+    "VpcEncryptionControl.ResourceExclusions.VpcLattice": "object",
+    "VpcEncryptionControl.ResourceExclusions.VpcPeering": "object"
   }
 }

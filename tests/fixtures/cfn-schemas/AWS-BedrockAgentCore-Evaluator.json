@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Evaluator",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "CreatedAt",
     "Description",
@@ -241,5 +241,24 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "EvaluatorConfig": "object",
+    "EvaluatorConfig.CodeBased": "object",
+    "EvaluatorConfig.CodeBased.LambdaConfig": "object",
+    "EvaluatorConfig.LlmAsAJudge": "object",
+    "EvaluatorConfig.LlmAsAJudge.ModelConfig": "object",
+    "EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig": "object",
+    "EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.AdditionalModelRequestFields": "object",
+    "EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig": "object",
+    "EvaluatorConfig.LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig": "object",
+    "EvaluatorConfig.LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig.Reasoning": "object",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale": "object",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.Categorical": "array",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.Categorical[]": "object",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.Numerical": "array",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.Numerical[]": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

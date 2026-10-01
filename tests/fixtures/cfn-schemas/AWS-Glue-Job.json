@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Job",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "AllocatedCapacity",
     "Command",
@@ -127,5 +127,15 @@
       "Command",
       "Role"
     ]
+  },
+  "propertyShapes": {
+    "Command": "object",
+    "Connections": "object",
+    "Connections.Connections": "array",
+    "DefaultArguments": "object",
+    "ExecutionProperty": "object",
+    "NonOverridableArguments": "object",
+    "NotificationProperty": "object",
+    "Tags": "object"
   }
 }

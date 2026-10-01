@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::Url",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "AuthType",
     "Cors",
@@ -73,5 +73,12 @@
       "AuthType",
       "TargetFunctionArn"
     ]
+  },
+  "propertyShapes": {
+    "Cors": "object",
+    "Cors.AllowHeaders": "array",
+    "Cors.AllowMethods": "array",
+    "Cors.AllowOrigins": "array",
+    "Cors.ExposeHeaders": "array"
   }
 }

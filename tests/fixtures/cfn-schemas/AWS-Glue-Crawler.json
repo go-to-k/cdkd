@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Crawler",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Classifiers",
     "Configuration",
@@ -224,5 +224,39 @@
       "Role",
       "Targets"
     ]
+  },
+  "propertyShapes": {
+    "Classifiers": "array",
+    "LakeFormationConfiguration": "object",
+    "RecrawlPolicy": "object",
+    "Schedule": "object",
+    "SchemaChangePolicy": "object",
+    "Tags": "object",
+    "Targets": "object",
+    "Targets.CatalogTargets": "array",
+    "Targets.CatalogTargets[]": "object",
+    "Targets.CatalogTargets[].Tables": "array",
+    "Targets.DeltaTargets": "array",
+    "Targets.DeltaTargets[]": "object",
+    "Targets.DeltaTargets[].DeltaTables": "array",
+    "Targets.DynamoDBTargets": "array",
+    "Targets.DynamoDBTargets[]": "object",
+    "Targets.HudiTargets": "array",
+    "Targets.HudiTargets[]": "object",
+    "Targets.HudiTargets[].Exclusions": "array",
+    "Targets.HudiTargets[].Paths": "array",
+    "Targets.IcebergTargets": "array",
+    "Targets.IcebergTargets[]": "object",
+    "Targets.IcebergTargets[].Exclusions": "array",
+    "Targets.IcebergTargets[].Paths": "array",
+    "Targets.JdbcTargets": "array",
+    "Targets.JdbcTargets[]": "object",
+    "Targets.JdbcTargets[].EnableAdditionalMetadata": "array",
+    "Targets.JdbcTargets[].Exclusions": "array",
+    "Targets.MongoDBTargets": "array",
+    "Targets.MongoDBTargets[]": "object",
+    "Targets.S3Targets": "array",
+    "Targets.S3Targets[]": "object",
+    "Targets.S3Targets[].Exclusions": "array"
   }
 }

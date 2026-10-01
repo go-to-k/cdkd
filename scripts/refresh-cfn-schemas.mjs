@@ -693,6 +693,206 @@ export function extractNestedRequired(schemaJson) {
 }
 
 /**
+ * @typedef {object} ShapeNode
+ * @property {Set<string> | undefined} types JSON kinds the node admits
+ *   (`array` / `object` / `scalar`); `undefined` admits anything.
+ * @property {Map<string, ShapeNode>} props
+ * @property {boolean} closed every key outside `props` is refused
+ * @property {ShapeNode | undefined} items
+ */
+
+/** @returns {ShapeNode} */
+function anyShape() {
+  return { types: undefined, props: new Map(), closed: false, items: undefined };
+}
+
+/**
+ * allOf: every constraint holds. Two contradicting kinds make the schema
+ * unsatisfiable; that is read as "anything", the direction that never refuses.
+ *
+ * @param {ShapeNode} a
+ * @param {ShapeNode} b
+ * @returns {ShapeNode}
+ */
+function joinShapes(a, b) {
+  /** @type {Set<string> | undefined} */
+  let types;
+  if (a.types === undefined) types = b.types;
+  else if (b.types === undefined) types = a.types;
+  else {
+    const both = new Set([...a.types].filter((t) => b.types?.has(t)));
+    types = both.size > 0 ? both : undefined;
+  }
+  const props = new Map(a.props);
+  for (const [key, node] of b.props) {
+    const mine = props.get(key);
+    props.set(key, mine ? joinShapes(mine, node) : node);
+  }
+  const items =
+    a.items && b.items ? joinShapes(a.items, b.items) : (a.items ?? b.items);
+  return { types, props, closed: a.closed || b.closed, items };
+}
+
+/**
+ * oneOf / anyOf: a constraint holds only when EVERY arm the value could match
+ * imposes it. An object value can match only an arm admitting objects, and an
+ * open arm that does not name a key leaves that key unconstrained.
+ *
+ * @param {readonly ShapeNode[]} arms
+ * @returns {ShapeNode}
+ */
+function meetShapes(arms) {
+  if (arms.length === 0) return anyShape();
+  /** @type {Set<string> | undefined} */
+  let types = new Set();
+  for (const arm of arms) {
+    if (arm.types === undefined) {
+      types = undefined;
+      break;
+    }
+    for (const t of arm.types) types.add(t);
+  }
+  const objectArms = arms.filter((a) => a.types === undefined || a.types.has('object'));
+  const props = new Map();
+  const keys = new Set(objectArms.flatMap((a) => [...a.props.keys()]));
+  for (const key of keys) {
+    /** @type {ShapeNode[]} */
+    const nodes = [];
+    let constrained = true;
+    for (const arm of objectArms) {
+      const node = arm.props.get(key);
+      if (node) nodes.push(node);
+      else if (!arm.closed) constrained = false;
+    }
+    if (constrained && nodes.length > 0) props.set(key, meetShapes(nodes));
+  }
+  const arrayArms = arms.filter((a) => a.types === undefined || a.types.has('array'));
+  const items =
+    arrayArms.length > 0 && arrayArms.every((a) => a.items)
+      ? meetShapes(arrayArms.map((a) => /** @type {ShapeNode} */ (a.items)))
+      : undefined;
+  return {
+    types,
+    props,
+    closed: objectArms.length > 0 && objectArms.every((a) => a.closed),
+    items,
+  };
+}
+
+/**
+ * Extract, per property PATH, the JSON kind (`array` or `object`) the schema
+ * requires there — the data behind the deploy pre-flight refusal of a list
+ * where an object is wanted, or the reverse (issue #4357,
+ * `src/provisioning/property-shape.ts`, through
+ * `scripts/gen-property-shape.ts`).
+ *
+ * Keyed by dotted path from the top-level property, with `[]` marking an
+ * array's ELEMENTS (`Tags` is `array`, `Tags[]` is `object`). Only paths whose
+ * kind is EXACTLY one of the two are emitted; a scalar, a type list
+ * (`["object", "string"]`) or an unconstrained node gets no entry, though its
+ * children still do, since `properties` / `items` constrain whatever value of
+ * that kind is given. Every rule below is chosen so an entry is emitted only
+ * where JSON Schema itself refuses the other kind, since a false entry refuses
+ * a deploy CloudFormation accepts:
+ *
+ * - the kind comes from an explicit `type` only — `properties` without `type`
+ *   does not refuse an array;
+ * - a `$ref` resolves to its definition and its siblings are ignored (draft-07
+ *   semantics); a cyclic `$ref` constrains nothing;
+ * - `allOf` arms add up, `oneOf` / `anyOf` arms keep only what every arm a
+ *   value could match agrees on ({@link meetShapes});
+ * - `additionalProperties` / `patternProperties` VALUES are not followed: they
+ *   sit under user-chosen keys.
+ *
+ * @param {string} schemaJson
+ * @returns {Record<string, string>}
+ */
+export function extractPropertyShapes(schemaJson) {
+  /** @type {{properties?: Record<string, unknown>, definitions?: Record<string, unknown>}} */
+  const schema = JSON.parse(schemaJson);
+  if (!schema.properties || typeof schema.properties !== 'object') return {};
+  const definitions =
+    schema.definitions && typeof schema.definitions === 'object' ? schema.definitions : {};
+
+  /**
+   * @param {unknown} node
+   * @param {ReadonlySet<string>} ancestorRefs
+   * @param {number} depth
+   * @returns {ShapeNode}
+   */
+  function shapeOf(node, ancestorRefs, depth) {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return anyShape();
+    if (depth >= MAX_NESTED_PATH_DEPTH) return anyShape();
+    const obj = /** @type {Record<string, unknown>} */ (node);
+    const ref = obj['$ref'];
+    if (typeof ref === 'string') {
+      if (!ref.startsWith('#/definitions/')) return anyShape();
+      const defName = ref.slice('#/definitions/'.length);
+      if (ancestorRefs.has(defName)) return anyShape();
+      return shapeOf(definitions[defName], new Set([...ancestorRefs, defName]), depth);
+    }
+    const kindOf = (/** @type {unknown} */ t) =>
+      t === 'array' || t === 'object' ? t : 'scalar';
+    const rawType = obj['type'];
+    /** @type {ShapeNode} */
+    let result = {
+      types:
+        typeof rawType === 'string'
+          ? new Set([kindOf(rawType)])
+          : Array.isArray(rawType) && rawType.length > 0
+            ? new Set(rawType.map(kindOf))
+            : undefined,
+      props: new Map(),
+      closed: obj['additionalProperties'] === false && obj['patternProperties'] === undefined,
+      items: undefined,
+    };
+    const props = obj['properties'];
+    if (props && typeof props === 'object' && !Array.isArray(props)) {
+      for (const [name, sub] of Object.entries(props)) {
+        result.props.set(name, shapeOf(sub, ancestorRefs, depth + 1));
+      }
+    }
+    const items = obj['items'];
+    if (items && typeof items === 'object' && !Array.isArray(items)) {
+      result.items = shapeOf(items, ancestorRefs, depth + 1);
+    }
+    const allOf = obj['allOf'];
+    if (Array.isArray(allOf)) {
+      for (const arm of allOf) result = joinShapes(result, shapeOf(arm, ancestorRefs, depth));
+    }
+    for (const key of ['oneOf', 'anyOf']) {
+      const arms = obj[key];
+      if (Array.isArray(arms) && arms.length > 0) {
+        result = joinShapes(result, meetShapes(arms.map((a) => shapeOf(a, ancestorRefs, depth))));
+      }
+    }
+    return result;
+  }
+
+  /** @type {Map<string, string>} */
+  const out = new Map();
+  /**
+   * @param {ShapeNode} node
+   * @param {string} path
+   */
+  function flatten(node, path) {
+    if (node.types?.size === 1) {
+      const [kind] = node.types;
+      if (kind === 'array' || kind === 'object') out.set(path, kind);
+    }
+    for (const [name, child] of node.props) flatten(child, `${path}.${name}`);
+    if (node.items) flatten(node.items, `${path}[]`);
+  }
+  for (const [topName, sub] of Object.entries(schema.properties)) {
+    flatten(shapeOf(sub, new Set(), 0), topName);
+  }
+  /** @type {Record<string, string>} */
+  const result = {};
+  for (const key of [...out.keys()].sort()) result[key] = /** @type {string} */ (out.get(key));
+  return result;
+}
+
+/**
  * Retry on CloudFormation's throttling shape ("Rate exceeded" / HTTP 429).
  * Exponential backoff with jitter, 1s -> 2s -> 4s -> 8s -> 16s -> 32s.
  *
@@ -762,6 +962,7 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
   const definitionShapes = extractDefinitionShapes(schemaJson);
   const definitionRequired = extractDefinitionRequired(schemaJson);
   const nestedRequired = extractNestedRequired(schemaJson);
+  const propertyShapes = extractPropertyShapes(schemaJson);
   return {
     resourceType,
     generatedAt,
@@ -792,6 +993,9 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
     // The per-PATH twin (issue #1802), read by the deploy pre-flight through
     // `scripts/gen-nested-required.ts`. Same omit-when-empty rule.
     ...(Object.keys(nestedRequired).length > 0 ? { nestedRequired } : {}),
+    // The per-PATH array / object kinds (issue #4357), read by the deploy
+    // pre-flight through `scripts/gen-property-shape.ts`. Same omit-when-empty rule.
+    ...(Object.keys(propertyShapes).length > 0 ? { propertyShapes } : {}),
   };
 }
 

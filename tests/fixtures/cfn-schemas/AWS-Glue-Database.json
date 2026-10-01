@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Database",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "CatalogId",
     "DatabaseInput",
@@ -93,5 +93,15 @@
       "CatalogId",
       "DatabaseInput"
     ]
+  },
+  "propertyShapes": {
+    "DatabaseInput": "object",
+    "DatabaseInput.CreateTableDefaultPermissions": "array",
+    "DatabaseInput.CreateTableDefaultPermissions[]": "object",
+    "DatabaseInput.CreateTableDefaultPermissions[].Permissions": "array",
+    "DatabaseInput.CreateTableDefaultPermissions[].Principal": "object",
+    "DatabaseInput.FederatedDatabase": "object",
+    "DatabaseInput.Parameters": "object",
+    "DatabaseInput.TargetDatabase": "object"
   }
 }

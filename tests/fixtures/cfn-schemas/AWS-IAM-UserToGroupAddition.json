@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::UserToGroupAddition",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "GroupName",
     "Id",
@@ -26,5 +26,8 @@
       "GroupName",
       "Users"
     ]
+  },
+  "propertyShapes": {
+    "Users": "array"
   }
 }

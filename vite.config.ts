@@ -428,6 +428,10 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-nested-required.ts',
         cache: false,
       },
+      'gen:property-shape': {
+        command: 'node --experimental-strip-types scripts/gen-property-shape.ts',
+        cache: false,
+      },
       'gen:enrichment-coverage': {
         command: 'node --experimental-strip-types scripts/gen-enrichment-coverage.ts',
         cache: false,
@@ -610,6 +614,7 @@ export default defineConfig({
           'vp run gen:unsupported-types',
           'vp run gen:property-coverage',
           'vp run gen:nested-required',
+          'vp run gen:property-shape',
           // The property-coverage codegen writes a raw multi-line shape while
           // the committed module is Prettier-formatted, so CI's guard runs
           // `format` before diffing. Regenerating WITHOUT it produces a

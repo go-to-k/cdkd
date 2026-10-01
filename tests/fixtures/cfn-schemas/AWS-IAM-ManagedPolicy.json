@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::ManagedPolicy",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "AttachmentCount",
     "CreateDate",
@@ -70,5 +70,10 @@
     "#top": [
       "PolicyDocument"
     ]
+  },
+  "propertyShapes": {
+    "Groups": "array",
+    "Roles": "array",
+    "Users": "array"
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::EventSourceMapping",
-  "generatedAt": "2026-09-26",
+  "generatedAt": "2026-10-01",
   "properties": [
     "AmazonManagedKafkaEventSourceConfig",
     "BatchSize",
@@ -301,5 +301,40 @@
     "Tags": [
       "Key"
     ]
+  },
+  "propertyShapes": {
+    "AmazonManagedKafkaEventSourceConfig": "object",
+    "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig": "object",
+    "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs": "array",
+    "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs[]": "object",
+    "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs": "array",
+    "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs[]": "object",
+    "DestinationConfig": "object",
+    "DestinationConfig.OnFailure": "object",
+    "DocumentDBEventSourceConfig": "object",
+    "FilterCriteria": "object",
+    "FilterCriteria.Filters": "array",
+    "FilterCriteria.Filters[]": "object",
+    "FunctionResponseTypes": "array",
+    "LoggingConfig": "object",
+    "MetricsConfig": "object",
+    "MetricsConfig.Metrics": "array",
+    "ProvisionedPollerConfig": "object",
+    "Queues": "array",
+    "ScalingConfig": "object",
+    "SelfManagedEventSource": "object",
+    "SelfManagedEventSource.Endpoints": "object",
+    "SelfManagedEventSource.Endpoints.KafkaBootstrapServers": "array",
+    "SelfManagedKafkaEventSourceConfig": "object",
+    "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig": "object",
+    "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs": "array",
+    "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs[]": "object",
+    "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs": "array",
+    "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs[]": "object",
+    "SourceAccessConfigurations": "array",
+    "SourceAccessConfigurations[]": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Topics": "array"
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CodeCommit::Repository",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Arn",
     "CloneUrlHttp",
@@ -139,5 +139,15 @@
       "Events",
       "Name"
     ]
+  },
+  "propertyShapes": {
+    "Code": "object",
+    "Code.S3": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Triggers": "array",
+    "Triggers[]": "object",
+    "Triggers[].Branches": "array",
+    "Triggers[].Events": "array"
   }
 }

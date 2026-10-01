@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudFormation::Stack",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Capabilities",
     "ChangeSetId",
@@ -122,5 +122,15 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Capabilities": "array",
+    "NotificationARNs": "array",
+    "Outputs": "array",
+    "Outputs[]": "object",
+    "Parameters": "object",
+    "StackPolicyBody": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

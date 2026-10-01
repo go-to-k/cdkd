@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Stage",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "AccessLogSettings",
     "ApiId",
@@ -88,5 +88,12 @@
       "ApiId",
       "StageName"
     ]
+  },
+  "propertyShapes": {
+    "AccessLogSettings": "object",
+    "DefaultRouteSettings": "object",
+    "RouteSettings": "object",
+    "StageVariables": "object",
+    "Tags": "object"
   }
 }

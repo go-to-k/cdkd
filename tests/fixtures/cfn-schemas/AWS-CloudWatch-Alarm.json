@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudWatch::Alarm",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "ActionsEnabled",
     "AlarmActions",
@@ -246,5 +246,26 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "AlarmActions": "array",
+    "Dimensions": "array",
+    "Dimensions[]": "object",
+    "EvaluationCriteria": "object",
+    "EvaluationCriteria.PromQLCriteria": "object",
+    "EvaluationWindow": "object",
+    "EvaluationWindow.SlidingWindow": "object",
+    "EvaluationWindow.WallClockWindow": "object",
+    "InsufficientDataActions": "array",
+    "Metrics": "array",
+    "Metrics[]": "object",
+    "Metrics[].MetricStat": "object",
+    "Metrics[].MetricStat.Metric": "object",
+    "Metrics[].MetricStat.Metric.Dimensions": "array",
+    "Metrics[].MetricStat.Metric.Dimensions[]": "object",
+    "OKActions": "array",
+    "Tags": "array",
+    "Tags[]": "object",
+    "WarmUpConfiguration": "object"
   }
 }

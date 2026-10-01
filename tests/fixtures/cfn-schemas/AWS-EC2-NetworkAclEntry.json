@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::NetworkAclEntry",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "CidrBlock",
     "Egress",
@@ -84,5 +84,9 @@
       "RuleAction",
       "RuleNumber"
     ]
+  },
+  "propertyShapes": {
+    "Icmp": "object",
+    "PortRange": "object"
   }
 }

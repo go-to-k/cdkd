@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Authorizer",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "AuthType",
     "AuthorizerCredentials",
@@ -50,5 +50,8 @@
       "RestApiId",
       "Type"
     ]
+  },
+  "propertyShapes": {
+    "ProviderARNs": "array"
   }
 }

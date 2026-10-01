@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::SecurityConfiguration",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "EncryptionConfiguration",
     "Name"
@@ -69,5 +69,12 @@
       "EncryptionConfiguration",
       "Name"
     ]
+  },
+  "propertyShapes": {
+    "EncryptionConfiguration": "object",
+    "EncryptionConfiguration.CloudWatchEncryption": "object",
+    "EncryptionConfiguration.JobBookmarksEncryption": "object",
+    "EncryptionConfiguration.S3Encryptions": "array",
+    "EncryptionConfiguration.S3Encryptions[]": "object"
   }
 }

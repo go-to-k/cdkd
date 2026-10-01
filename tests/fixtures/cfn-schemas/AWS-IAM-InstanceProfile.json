@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::InstanceProfile",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Arn",
     "InstanceProfileName",
@@ -37,5 +37,8 @@
     "#top": [
       "Roles"
     ]
+  },
+  "propertyShapes": {
+    "Roles": "array"
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EMR::InstanceGroupConfig",
-  "generatedAt": "2026-09-24",
+  "generatedAt": "2026-10-01",
   "properties": [
     "AutoScalingPolicy",
     "BidPrice",
@@ -313,5 +313,25 @@
       "SizeInGB",
       "VolumeType"
     ]
+  },
+  "propertyShapes": {
+    "AutoScalingPolicy": "object",
+    "AutoScalingPolicy.Constraints": "object",
+    "AutoScalingPolicy.Rules": "array",
+    "AutoScalingPolicy.Rules[]": "object",
+    "AutoScalingPolicy.Rules[].Action": "object",
+    "AutoScalingPolicy.Rules[].Action.SimpleScalingPolicyConfiguration": "object",
+    "AutoScalingPolicy.Rules[].Trigger": "object",
+    "AutoScalingPolicy.Rules[].Trigger.CloudWatchAlarmDefinition": "object",
+    "AutoScalingPolicy.Rules[].Trigger.CloudWatchAlarmDefinition.Dimensions": "array",
+    "AutoScalingPolicy.Rules[].Trigger.CloudWatchAlarmDefinition.Dimensions[]": "object",
+    "Configurations": "array",
+    "Configurations[]": "object",
+    "Configurations[].ConfigurationProperties": "object",
+    "Configurations[].Configurations": "array",
+    "EbsConfiguration": "object",
+    "EbsConfiguration.EbsBlockDeviceConfigs": "array",
+    "EbsConfiguration.EbsBlockDeviceConfigs[]": "object",
+    "EbsConfiguration.EbsBlockDeviceConfigs[].VolumeSpecification": "object"
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EFS::MountTarget",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "FileSystemId",
     "Id",
@@ -57,5 +57,8 @@
       "SecurityGroups",
       "SubnetId"
     ]
+  },
+  "propertyShapes": {
+    "SecurityGroups": "array"
   }
 }

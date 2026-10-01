@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Authorizer",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "ApiId",
     "AuthorizerCredentialsArn",
@@ -68,5 +68,10 @@
       "AuthorizerType",
       "Name"
     ]
+  },
+  "propertyShapes": {
+    "IdentitySource": "array",
+    "JwtConfiguration": "object",
+    "JwtConfiguration.Audience": "array"
   }
 }

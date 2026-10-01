@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBProxy",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Auth",
     "DBProxyArn",
@@ -115,5 +115,13 @@
       "RoleArn",
       "VpcSubnetIds"
     ]
+  },
+  "propertyShapes": {
+    "Auth": "array",
+    "Auth[]": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "VpcSecurityGroupIds": "array",
+    "VpcSubnetIds": "array"
   }
 }

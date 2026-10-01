@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Workflow",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-01",
   "properties": [
     "DefaultRunProperties",
     "Description",
@@ -28,5 +28,9 @@
       "Name": "scalar",
       "MaxConcurrentRuns": "scalar"
     }
+  },
+  "propertyShapes": {
+    "DefaultRunProperties": "object",
+    "Tags": "object"
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::Group",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Arn",
     "GroupName",
@@ -58,5 +58,10 @@
       "PolicyDocument",
       "PolicyName"
     ]
+  },
+  "propertyShapes": {
+    "ManagedPolicyArns": "array",
+    "Policies": "array",
+    "Policies[]": "object"
   }
 }

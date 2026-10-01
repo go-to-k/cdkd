@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Api",
-  "generatedAt": "2026-09-09",
+  "generatedAt": "2026-10-01",
   "properties": [
     "ApiEndpoint",
     "ApiId",
@@ -110,5 +110,15 @@
       "MaxAge": "scalar",
       "AllowMethods": "array"
     }
+  },
+  "propertyShapes": {
+    "Body": "object",
+    "BodyS3Location": "object",
+    "CorsConfiguration": "object",
+    "CorsConfiguration.AllowHeaders": "array",
+    "CorsConfiguration.AllowMethods": "array",
+    "CorsConfiguration.AllowOrigins": "array",
+    "CorsConfiguration.ExposeHeaders": "array",
+    "Tags": "object"
   }
 }

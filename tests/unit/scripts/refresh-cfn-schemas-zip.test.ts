@@ -510,6 +510,18 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
         properties: { ...s.properties, Obj: { ...s.properties.Obj, required: ['P1'] } },
       }),
     },
+    {
+      section: 'propertyShapes',
+      // An INLINE member's kind: no named definition, same member names, so
+      // this moves `propertyShapes` alone.
+      mutate: (s) => ({
+        ...s,
+        properties: {
+          ...s.properties,
+          Obj: { type: 'object', properties: { P1: { type: 'array', items: { type: 'string' } } } },
+        },
+      }),
+    },
   ];
 
   const committed = serializeFixture(
@@ -549,6 +561,7 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
       'definitionShapes',
       'definitionRequired',
       'nestedRequired',
+      'propertyShapes',
     ]) {
       expect(built, `buildFixture emitted no ${key}`).toHaveProperty(key);
     }
@@ -608,6 +621,7 @@ describe('serializeFixture matches the committed corpus byte-for-byte', () => {
       'definitionShapes',
       'definitionRequired',
       'nestedRequired',
+      'propertyShapes',
     ]);
   });
 });

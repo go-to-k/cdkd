@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SQS::Queue",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "Arn",
     "ContentBasedDeduplication",
@@ -89,5 +89,9 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::FSx::FileSystem",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "BackupId",
     "DNSName",
@@ -479,5 +479,38 @@
     "WindowsConfiguration.FsrmConfiguration": [
       "FsrmServiceEnabled"
     ]
+  },
+  "propertyShapes": {
+    "LustreConfiguration": "object",
+    "LustreConfiguration.DataReadCacheConfiguration": "object",
+    "LustreConfiguration.LogConfiguration": "object",
+    "LustreConfiguration.MetadataConfiguration": "object",
+    "OntapConfiguration": "object",
+    "OntapConfiguration.DiskIopsConfiguration": "object",
+    "OntapConfiguration.RouteTableIds": "array",
+    "OpenZFSConfiguration": "object",
+    "OpenZFSConfiguration.DiskIopsConfiguration": "object",
+    "OpenZFSConfiguration.Options": "array",
+    "OpenZFSConfiguration.ReadCacheConfiguration": "object",
+    "OpenZFSConfiguration.RootVolumeConfiguration": "object",
+    "OpenZFSConfiguration.RootVolumeConfiguration.NfsExports": "array",
+    "OpenZFSConfiguration.RootVolumeConfiguration.NfsExports[]": "object",
+    "OpenZFSConfiguration.RootVolumeConfiguration.NfsExports[].ClientConfigurations": "array",
+    "OpenZFSConfiguration.RootVolumeConfiguration.NfsExports[].ClientConfigurations[]": "object",
+    "OpenZFSConfiguration.RootVolumeConfiguration.NfsExports[].ClientConfigurations[].Options": "array",
+    "OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas": "array",
+    "OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas[]": "object",
+    "OpenZFSConfiguration.RouteTableIds": "array",
+    "SecurityGroupIds": "array",
+    "SubnetIds": "array",
+    "Tags": "array",
+    "Tags[]": "object",
+    "WindowsConfiguration": "object",
+    "WindowsConfiguration.Aliases": "array",
+    "WindowsConfiguration.AuditLogConfiguration": "object",
+    "WindowsConfiguration.DiskIopsConfiguration": "object",
+    "WindowsConfiguration.FsrmConfiguration": "object",
+    "WindowsConfiguration.SelfManagedActiveDirectoryConfiguration": "object",
+    "WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps": "array"
   }
 }
