@@ -342,7 +342,7 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
       { logicalId: 'TornNull', state: null },
       { logicalId: 'TornString', state: 'abcdef' },
       // A non-string `logicalId` has no name to print either, so it takes the
-      // same stand-in as the record with no id at all.
+      // same description as the record with no id at all.
       { logicalId: 4242, state: null },
       { logicalId: 'TornNumber', state: 5 },
       { logicalId: 'TornTypeless', state: { physicalId: 'p', properties: {} } },
@@ -382,8 +382,8 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
     // here however healthy it is.
     expect(node.changes.get(healthyId)?.changeType).toBe('NO_CHANGE');
     // ...and every torn record was REPORTED: eight against a five-name cap,
-    // so the first five are named — the numeric-id one among them through
-    // `displayLogicalId`'s existing stand-in rather than a new literal — and
+    // so the first five are named — the numeric-id one among them DESCRIBED,
+    // as every id that is not a plain identifier is (go-to-k/cdkd#4253) — and
     // the last three, the two other id-less records included, are the
     // overflow count.
     const entriesWarning = warnings()
@@ -398,10 +398,11 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
     for (const id of ['TornNull', 'TornString', 'TornNumber', 'TornTypeless']) {
       expect(entriesWarning[0], id).toContain(id);
     }
-    expect(entriesWarning[0]).toContain('<unrenderable>');
+    expect(entriesWarning[0]).toContain('(not shown: it is not a plain identifier)');
+    expect(entriesWarning[0]).not.toContain('<unrenderable>');
     expect(entriesWarning[0]).toContain('8 rollback-orphan record(s)');
     expect(entriesWarning[0]).toContain('and 3 more');
-    // The numeric id is not RENDERED as `4242`: it takes the stand-in, which a
+    // The numeric id is not RENDERED as `4242`: it is described, which a
     // guard keyed on absence rather than on the type would not do.
     expect(entriesWarning[0]).not.toContain('4242');
     expect(entriesWarning[0]).not.toContain(healthyId);

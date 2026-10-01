@@ -60,6 +60,8 @@ function thrown(fn: () => void): unknown {
   return undefined;
 }
 
+const NOT_SHOWN = '(not shown: it is not a plain identifier)';
+
 describe('refuseMalformedResourceEntriesForOrphan (go-to-k/cdkd#3350)', () => {
   it('refuses a SURVIVING unreadable entry with the class code', () => {
     const e = thrown(() =>
@@ -99,10 +101,13 @@ describe('the attributes container (go-to-k/cdkd#3345)', () => {
     expect(unreadableResourceAttributeBags(record(null))).toEqual([]);
   });
 
-  it('renders each id through the display boundary, and caps the list', () => {
+  it('describes an id that is not a plain identifier, and caps the list', () => {
+    // go-to-k/cdkd#4253: neither a sanitized render nor the bare
+    // `<unrenderable>` stand-in (a redirection when pasted) is the id.
     const hostile = malformedOrphanResourceAttributesRefusalMessage('S', 'r', ['A\x1b[31m', '']);
     expect(hostile).not.toContain('\x1b');
-    expect(hostile).toContain(UNRENDERABLE);
+    expect(hostile).not.toContain(UNRENDERABLE);
+    expect(hostile).toContain(`— ${NOT_SHOWN}, ${NOT_SHOWN} —`);
     const text = malformedOrphanResourceAttributesRefusalMessage('S', 'r', [
       'A', 'B', 'C', 'D', 'E', 'F', 'G',
     ]);
@@ -188,8 +193,10 @@ describe('the orphans list and its records (go-to-k/cdkd#3344)', () => {
     ).not.toThrow();
   });
 
-  it('renders a record with no string logicalId as the stand-in, and caps the list', () => {
-    expect(malformedOrphansForOrphanRefusalMessage('S', 'r', [''])).toContain(UNRENDERABLE);
+  it('describes a record with no string logicalId, and caps the list', () => {
+    const idless = malformedOrphansForOrphanRefusalMessage('S', 'r', ['']);
+    expect(idless).toContain(`— ${NOT_SHOWN} —`);
+    expect(idless).not.toContain(UNRENDERABLE);
     const text = malformedOrphansForOrphanRefusalMessage('S', 'r', ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
     expect(text).toContain('holds 7 rollback-orphan record(s)');
     expect(text).toContain('and 2 more');
