@@ -111,7 +111,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const { isMarkedNonRetryable } = await import('../../../src/deployment/retryable-errors.js');
-const { IntrinsicResolutionRefusalError } = await import('../../../src/utils/error-handler.js');
+const { IntrinsicResolutionRefusalError, DynamicReferenceRegionAmbiguousError } = await import('../../../src/utils/error-handler.js');
 const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
@@ -352,6 +352,21 @@ describe('issue #4266: a secret-by-spelling token assembled from a secret is ref
       )
     );
     expect(message).toMatch(/^Refusing to resolve \{\{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2:123456789012:secret:app-\*\*\*:SecretString:k\}\}: /);
+    expect(smCalls.count, 'no lookup of the assembled id').toBe(0);
+  });
+
+  it('leaves the region-ambiguous refusal first, which `cdkd scrub` re-raises by class', async () => {
+    // Both refuse before any lookup; the ambiguous one is the class scrub
+    // refuses the stack on, so it must not be pre-empted.
+    const context = { ...contextFor(new Map(), true), producerRegions: ['us-west-2'] };
+    const error = await new IntrinsicFunctionResolver('us-east-1')
+      .resolve({ A: { 'Fn::Sub': 'port:{{resolve:secretsmanager:app-${Name}:SecretString:k}}' } }, context as never)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(error).toBeInstanceOf(DynamicReferenceRegionAmbiguousError);
+    expect(String((error as Error).message)).not.toContain(NAME);
     expect(smCalls.count, 'no lookup of the assembled id').toBe(0);
   });
 

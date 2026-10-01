@@ -12892,16 +12892,6 @@ export class IntrinsicFunctionResolver {
           continue;
         }
 
-        // Issue #4266: a `secretsmanager` / `ssm-secure` result is a secret by
-        // SPELLING, so the issue #4166 refusal needs no lookup to know it
-        // applies. Refused before the lookup, before the region arms and the
-        // cache, so an id assembled from another secret is never sent to AWS,
-        // where CloudTrail records it. A plain `ssm` token still needs the
-        // lookup to learn its `Type`, and is refused after it.
-        if (!persistedText && (service === 'secretsmanager' || service === 'ssm-secure')) {
-          this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
-        }
-
         // WHICH REGION MUST ANSWER for this reference (issue #2134). Asked HERE,
         // token by token, because here is the first point at which the COMPLETE
         // expression exists: `resolveSub` and `resolveJoin` both re-enter this
@@ -12965,6 +12955,18 @@ export class IntrinsicFunctionResolver {
                 `to say which region owns it.`
             )
           );
+        }
+
+        // Issue #4266: a `secretsmanager` / `ssm-secure` result is a secret by
+        // SPELLING, so the issue #4166 refusal needs no lookup to know it
+        // applies. Refused before the sibling delegation and the cache, so an
+        // id assembled from another secret is never sent to AWS, where
+        // CloudTrail records it. After the `ambiguous` refusal, which makes no
+        // lookup either and which `cdkd scrub` re-raises by class. A plain
+        // `ssm` token still needs the lookup to learn its `Type`, and is
+        // refused after it.
+        if (!persistedText && (service === 'secretsmanager' || service === 'ssm-secure')) {
+          this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
         }
 
         if (regionVerdict.kind === 'named-region') {
@@ -13077,6 +13079,8 @@ export class IntrinsicFunctionResolver {
           // cache already recorded whatever it was entitled to pin, and a second
           // add could only ever be a no-op or an un-pinning it explicitly avoided
           // (issue #1916).
+          // Reachable for a plain `ssm` token only: the other two services are
+          // refused above, before the cache (issue #4266).
           if (cached.secret && cached.value && !persistedText) {
             this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
           }

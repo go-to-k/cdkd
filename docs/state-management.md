@@ -806,9 +806,10 @@ stores nothing for it, so a bag the deploy re-resolved lacks the key (a
 no-change deploy keeps a failed output's stored value, so a key that resolved
 on an earlier deploy can keep that value beside a record — the diff then
 ignores the record for it). When that
-failure happens INSIDE a secret lookup — a `{{resolve:secretsmanager:...}}`
+failure belongs to a secret reference — a `{{resolve:secretsmanager:...}}`
 naming a JSON key the secret does not hold, or a reference assembled from
-another secret's value — `cdkd diff` cannot reproduce it: the diff resolves
+another secret's value, refused before its lookup — `cdkd diff` cannot
+reproduce it: the diff resolves
 outputs with secret references left as their tokens, so the value assembles
 cleanly, and the diff used to preview an `ADD` the deploy would never perform
 on every run of the unchanged stack, keeping `cdkd diff --fail` red.

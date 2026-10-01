@@ -711,9 +711,10 @@ SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
 # --- Phase 1b: a probe deploy whose ONE extra output fails to resolve -----
 # Issue #2728: `CDKD_TEST_OUTPUT_LEAK=true` declares `OutputFailureLeak`, whose
 # `Fn::Sub` variable resolves the secret's `password` key and whose body uses
-# that VALUE as the JSON key of a second reference to the same secret -- the
-# resolver's own `key '<password>' not found in secret` error, carrying the
-# plaintext, is what the deploy engine reports. Nothing else changes, so this
+# that VALUE as the JSON key of a second reference to the same secret. That
+# reference is assembled from a secret, so the resolver refuses it BEFORE its
+# lookup (issue #4266), and the refusal, naming the reference with the key
+# masked, is what the deploy engine reports. Nothing else changes, so this
 # is a no-change deploy in which only the outputs pass does work; the engine
 # warns, skips the output (and, on that no-change path, persists the outputs
 # that did resolve, go-to-k/cdkd#2771), and exits 0. The log is CAPTURED
@@ -722,9 +723,9 @@ SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
 # `diag_output`, which withholds it when it carries a secret -- on a failing
 # deploy too (the substitution's status is node's; without the branch, `set
 # -e` would abort with the log captured and never printed). `--verbose` so
-# the resolver's own `Resolving dynamic reference:` echo of the assembled
-# reference -- masked by the same fix -- is emitted and inside the whole-log
-# negative below. The output is declared for THIS deploy only -- see the
+# the resolver's `Resolving dynamic reference:` echoes are emitted: the `Pw`
+# lookup's echo must be there, and the assembled reference's must not, since
+# it is never looked up. The output is declared for THIS deploy only -- see the
 # stack for why it must not stay (the unchanged-stack `diff --fail` guard
 # later).
 echo "==> Phase 1b: CDKD_TEST_OUTPUT_LEAK probe deploy (issue #2728)"
@@ -804,11 +805,9 @@ if [[ "${OUTPUT_FAILURE_WARN}" == *"${EXPECTED_PASSWORD}"* ]]; then
 fi
 # ...and nowhere else in the probe deploy's `--verbose` log either: a line
 # that carried the password ahead of the warn would otherwise pass the
-# single-line check above. What this covers of the resolver side of the fix
-# is its `Resolving dynamic reference:` debug echo of the assembled reference
-# (the password as the JSON key), pinned positively next -- the throttle-retry
-# label needs a throttle and the SSM unrecognized-`Type` warn an SSM shape,
-# neither of which this deploy produces; those are unit-pinned only.
+# single-line check above. The resolver-side echoes that would carry it (the
+# throttle-retry label, the SSM unrecognized-`Type` warn, the assembled
+# lookup's echo) are unit-pinned; this deploy produces none of them.
 if [[ "${DEPLOY_OUT_LEAK}" == *"${EXPECTED_PASSWORD}"* ]]; then
   echo "FAIL: the probe deploy's log carries the resolved password in plaintext somewhere (issue #2728)" >&2
   exit 1
@@ -821,12 +820,22 @@ if [[ "${DEPLOY_OUT_LEAK}" == *"${EXPECTED_SECURE}"* ]] || [[ "${DEPLOY_OUT_LEAK
   echo "FAIL: the probe deploy's --verbose log carries the SecureString value or the username in plaintext somewhere (issue #2728)" >&2
   exit 1
 fi
-# The resolver echoed the second lookup, masked: the premise that the echo is
-# in the log at all (a resolver that stopped emitting it would pass the
-# negative above for free), and that the key position reads `***`.
-if [[ "${DEPLOY_OUT_LEAK}" != *"Resolving dynamic reference: secretsmanager:${SECRET_NAME}:SecretString:***"* ]]; then
-  echo "FAIL: the probe deploy's --verbose log carries no masked 'Resolving dynamic reference: secretsmanager:${SECRET_NAME}:SecretString:***' echo of the assembled reference (issue #2728)" >&2
+# Issue #4266: the assembled reference is refused BEFORE its lookup, so its
+# id, the password inside, is never sent to AWS. The `Pw` lookup's own echo is
+# the sentinel that `--verbose` echoes reach this log at all; the assembled
+# one (the key position masked) must be absent.
+if [[ "${DEPLOY_OUT_LEAK}" != *"Resolving dynamic reference: secretsmanager:${SECRET_NAME}:SecretString:password"* ]]; then
+  echo "FAIL: sentinel: the Pw lookup's 'Resolving dynamic reference: secretsmanager:${SECRET_NAME}:SecretString:password' echo is not in the --verbose log, so the absence below proves nothing (issue #4266)" >&2
   diag_output "${DEPLOY_OUT_LEAK}"
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_LEAK}" == *"Resolving dynamic reference: secretsmanager:${SECRET_NAME}:SecretString:***"* ]]; then
+  echo "FAIL: the reference assembled from the password was looked up before its refusal (issue #4266)" >&2
+  exit 1
+fi
+if [[ "${OUTPUT_FAILURE_WARN}" != *"Failed to resolve output OutputFailureLeak: Refusing to resolve {{resolve:secretsmanager:${SECRET_NAME}:SecretString:***}}: the reference was assembled from a secret value and resolves to a secret"* ]]; then
+  echo "FAIL: the output-failure warn is not the masked pre-lookup refusal 'Refusing to resolve {{resolve:secretsmanager:${SECRET_NAME}:SecretString:***}}: ...' (issue #4266)" >&2
+  diag_output "${OUTPUT_FAILURE_WARN}"
   exit 1
 fi
 if [[ "${OUTPUT_FAILURE_WARN}" != *"***"* ]]; then
@@ -1200,8 +1209,16 @@ echo "    OK: the secret-named output was refused masked; the log carries no pas
 # warning: only the absent lookup line tells them apart. The `ssm` arm above
 # IS looked up, so its lookup line is the sentinel that `--verbose` lines
 # reach this log.
-SECURE_SHAPE=$(jq -r --arg prefix "${SECRET_NAMED_PARAM_PREFIX}" '.Outputs.SecretNamedSecureRef.Value["Fn::Sub"][0] // "absent"
-  | if . == ("{{resolve:ssm-secure:" + $prefix + "${Pw}}}") then "ssm-secure" else "other" end' "${SYNTH_TEMPLATE}")
+SECURE_SHAPE=$(jq -r --arg secret "${SECRET_NAME}" --arg prefix "${SECRET_NAMED_PARAM_PREFIX}" '.Outputs.SecretNamedSecureRef.Value
+  | if . == null then "absent"
+    elif type != "object" then "not-an-intrinsic"
+    else .["Fn::Sub"] end
+  | if . == null then "absent"
+    elif (type == "array" and length == 2
+          and .[0] == ("{{resolve:ssm-secure:" + $prefix + "${Pw}}}")
+          and .[1].Pw == ("{{resolve:secretsmanager:" + $secret + ":SecretString:password}}")) then "ssm-secure"
+    elif . == "not-an-intrinsic" or . == "absent" then .
+    else "other" end' "${SYNTH_TEMPLATE}")
 if [ "${SECURE_SHAPE}" != "ssm-secure" ]; then
   echo "FAIL: premise: SecretNamedSecureRef did not synthesize as Fn::Sub ['{{resolve:ssm-secure:<prefix>\${Pw}}}', ...] (got ${SECURE_SHAPE}) -- the #4266 arm is not what this deploy exercised" >&2
   exit 1
