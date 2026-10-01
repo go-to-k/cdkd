@@ -10,7 +10,7 @@
     "noWriteEvidence": 0,
     "freshObjectTargets": 15,
     "shapeClean": 148,
-    "shapeHandled": 41,
+    "shapeHandled": 40,
     "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
@@ -4020,14 +4020,6 @@
       "shapeEntries": [
         {
           "resourceType": "AWS::ECS::Service",
-          "nestedKey": "AdvancedConfiguration",
-          "definition": "VpcLatticeConfiguration",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `VpcLatticeConfiguration` has no `advancedConfiguration` member"
-        },
-        {
-          "resourceType": "AWS::ECS::Service",
           "nestedKey": "HookDetails",
           "definition": "DeploymentLifecycleHook",
           "pass": "wrapper",
@@ -4039,8 +4031,7 @@
         "ForceNewDeployment",
         "HookTimeoutConfig",
         "ServiceConnectTestTrafficRulesHeader",
-        "ServiceConnectTestTrafficRulesHeaderValue",
-        "VpcLatticeAdvancedConfiguration"
+        "ServiceConnectTestTrafficRulesHeaderValue"
       ],
       "usedSegmentRenames": [],
       "usedTerminalRenames": []
