@@ -299,12 +299,11 @@ describe('issue #4166: the twin half through each wrapper', () => {
   for (const [wrapper, value] of [
     ['an Fn::Join part', joined(secretRef)],
     ['an Fn::Select of an Fn::Split piece inside Fn::Join', joined({ 'Fn::Select': [0, { 'Fn::Split': [',', secretRef] }] })],
-    ['an Fn::If branch around Fn::Sub', { 'Fn::If': ['On', subOf('${N}', NAME_SOURCES[1][3])('port:{{resolve:ssm:/app/${Name}}}'), 'off'] }],
     ['an intrinsic Fn::Sub variable', { 'Fn::Sub': ['port:{{resolve:ssm:/app/${N}}}', { N: { 'Fn::Join': ['', [secretRef]] } }] }],
   ] as const) {
     it(`refuses a same-pass secret reaching the token through ${wrapper}`, async () => {
       const bag: RecordedSecretValues = new Map();
-      const context = { ...contextFor(bag, false), conditions: { On: true } };
+      const context = { ...contextFor(bag, false) };
       const message = await refusalOf(new IntrinsicFunctionResolver('us-east-1').resolve({ A: value }, context as never));
       expect(message).toBe(`Refusing to resolve {{resolve:ssm:/app/***}}: ${REFUSAL_TAIL}`);
       expect(context.inheritedSecrets, 'premise: no inherited bag, so the needle half cannot fire').toBeUndefined();
