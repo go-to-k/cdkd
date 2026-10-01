@@ -785,9 +785,17 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     );
     const provider = makeProvider();
 
-    await expect(
-      provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN })
-    ).rejects.toThrow(/did not reach a ready state for Invoke/);
+    const error = await provider
+      .create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(error?.message).toMatch(/did not reach a ready state for Invoke/);
+    // The waiter is mocked, so no rejection was recorded to classify the 403
+    // key by: the fail-closed backstop counts it and never renders it.
+    expect(error?.message).toContain('1 observed error message(s) withheld');
+    expect(error?.message).not.toContain('not authorized');
 
     expect(mockWaitActive).toHaveBeenCalledTimes(1);
     expect(counts.puts()).toBe(1);
@@ -796,7 +804,8 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
   });
 
   it('does not put the waiter payload — and so a backing function env var — into the thrown message', async () => {
-    // The non-TIMEOUT arm serializes the WHOLE `GetFunction` response, so this
+    // The FAILURE arm serializes the WHOLE `GetFunction` response (the TIMEOUT
+    // arm can too: `custom-resource-provider-waiter-payload.test.ts`), so this
     // message reached `ProvisioningError.message` and
     // `extractDeploymentEventError` persisted it to `deployments/{runId}.jsonl`
     // — a durable store contractually free of resource properties.
@@ -821,6 +830,30 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     expect(error?.message).toContain('State=Failed');
     expect(error?.message).toContain('StateReasonCode=SubnetOutOfIPAddresses');
     expect(error?.message).toContain('StateReason=The function could not create an ENI');
+  });
+
+  it('withholds the message of a waiter throw that is not waiter-shaped, keeping its name', async () => {
+    // Unreachable from the real waiters (their `checkState` catches every
+    // client exception), so this is the leak-proof FALLBACK: an unknown message
+    // is dropped rather than relayed.
+    wire({});
+    mockWaitActive.mockImplementation(() =>
+      Promise.reject(
+        Object.assign(new Error('not json: DB_PASSWORD=hunter2-fallback'), { name: 'TimeoutError' })
+      )
+    );
+    const provider = makeProvider();
+
+    const error = await provider
+      .create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+    expect(error?.message).toContain('TimeoutError (no function status reported)');
+    expect(error?.message).not.toContain('hunter2-fallback');
+    expect(error?.message).not.toContain('DB_PASSWORD');
   });
 
   // --- UNCOVERED (deliberately): a POST-delivery throw ----------------------

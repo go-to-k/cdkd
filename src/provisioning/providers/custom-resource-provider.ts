@@ -412,62 +412,311 @@ function decodeInvokeLogTail(logResult: string | undefined): string | undefined 
 }
 
 /**
- * Recover the backing function's own STATUS fields from an
- * `@smithy/util-waiter` failure message, or `undefined` when they are not
- * there (issue #2033).
- *
- * The message is `JSON.stringify(result)` and `result.reason` is, for both
- * Lambda readiness waiters, the ENTIRE `GetFunction` response. Only these
- * AWS-authored status fields are lifted out of it — never the whole payload,
- * which carries `Configuration.Environment.Variables` into a durable store.
- *
- * Best-effort by construction: a non-JSON message, a different waiter shape, or
- * a payload with no `Configuration` all yield `undefined`, and the caller falls
- * back to a fixed sentence.
+ * The backing function's own STATUS fields out of one `GetFunction` response,
+ * as `Key=value` parts (issue #2033). Literal reads of AWS-authored fields only
+ * — never the whole payload, which carries `Configuration.Environment.Variables`
+ * and the presigned `Code.Location`.
  */
-function extractWaiterFunctionStatus(message: string): string | undefined {
+function lambdaStatusParts(response: unknown): string[] {
+  const config = (response as { Configuration?: unknown } | null | undefined)?.Configuration;
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return [];
+  const fields = config as Record<string, unknown>;
+  const status: Array<[string, unknown]> = [
+    ['State', fields['State']],
+    ['StateReasonCode', fields['StateReasonCode']],
+    ['StateReason', fields['StateReason']],
+    ['LastUpdateStatus', fields['LastUpdateStatus']],
+    ['LastUpdateStatusReasonCode', fields['LastUpdateStatusReasonCode']],
+    ['LastUpdateStatusReason', fields['LastUpdateStatusReason']],
+  ];
+  const parts: string[] = [];
+  for (const [key, value] of status) {
+    if (typeof value === 'string' && value !== '') parts.push(`${key}=${value}`);
+  }
+  return parts;
+}
+
+/**
+ * The rejections a readiness waiter's `GetFunction` polls met, deduplicated by
+ * name and message, with a count each.
+ *
+ * Recorded because `@smithy/util-waiter` keeps only `<status>: <message>` of a
+ * rejection as its `observedResponses` key, which drops the `name` / `$fault`
+ * that `describeAwsFailure` (`src/utils/aws-failure-text.ts`, issue #2302)
+ * classifies on. Holding the real `Error` lets that ONE classifier decide what
+ * of each rejection is safe to throw, instead of a second one re-derived from
+ * a string.
+ */
+class WaiterRejections {
+  /** By `name`, then by `message`: two-level, so no joined string key is needed. */
+  private readonly seen = new Map<string, Map<string, { error: Error; count: number }>>();
+  /** The same entries in first-seen order, which is the order they are rendered in. */
+  private readonly ordered: Array<{ error: Error; count: number }> = [];
+
+  /** Rejections that were not an `Error`: nothing to classify, so only counted. */
+  nonErrors = 0;
+
+  record(error: unknown): void {
+    if (!(error instanceof Error)) {
+      this.nonErrors += 1;
+      return;
+    }
+    let byMessage = this.seen.get(error.name);
+    if (byMessage === undefined) {
+      byMessage = new Map();
+      this.seen.set(error.name, byMessage);
+    }
+    const entry = byMessage.get(error.message);
+    if (entry === undefined) {
+      const created = { error, count: 1 };
+      byMessage.set(error.message, created);
+      this.ordered.push(created);
+    } else entry.count += 1;
+  }
+
+  entries(): Array<{ error: Error; count: number }> {
+    return [...this.ordered];
+  }
+}
+
+/**
+ * `client`, with every rejected `send` recorded into `rejections` and rethrown
+ * unchanged — the client handed to the two readiness waiters, so their
+ * failure can be described from the real errors. A prototype-chained view, so
+ * the waiter still reads the real client's `config` (its 403 warning logger).
+ * Every argument is forwarded; a callback-form call (no promise returned) is
+ * passed through unobserved.
+ */
+function observingLambdaClient(client: LambdaClient, rejections: WaiterRejections): LambdaClient {
+  const send = client.send.bind(client) as (...args: unknown[]) => unknown;
+  const observed = Object.create(client) as LambdaClient;
+  Object.defineProperty(observed, 'send', {
+    value: (...args: unknown[]): unknown => {
+      const result = send(...args);
+      if (!(result instanceof Promise)) return result;
+      return result.catch((error: unknown) => {
+        rejections.record(error);
+        throw error;
+      });
+    },
+  });
+  return observed;
+}
+
+/** The HTTP status of a rejection, when a deserialized response carried one. */
+function rejectionStatus(error: Error): number | undefined {
+  const status = (error as { $metadata?: { httpStatusCode?: unknown } }).$metadata?.httpStatusCode;
+  return typeof status === 'number' ? status : undefined;
+}
+
+/**
+ * Whether a rejection is a failure to DESERIALIZE the response, whose text can
+ * quote the body: V8's `JSON.parse` `SyntaxError` message carries ~10
+ * characters either side of the error position, and the SDK keeps the raw body
+ * on `$responseBodyText` / `$response`. Such a rejection is reported by status
+ * and name only, on both the thrown and the debug side — a truncated
+ * `GetFunction` body puts a fragment of an environment variable there.
+ */
+function carriesResponseBody(error: Error): boolean {
+  const e = error as { $responseBodyText?: unknown; $response?: unknown; $fault?: unknown };
+  return (
+    e.$responseBodyText !== undefined ||
+    (e.$response !== undefined && e.$fault === undefined) ||
+    error.name === 'SyntaxError' ||
+    error.message.includes('Deserialization error')
+  );
+}
+
+/** One recorded rejection as a thrown-text line: status plus `describeAwsFailure`'s summary. */
+function rejectionLine(error: Error, count: number): string {
+  const status = rejectionStatus(error);
+  const prefix = `(x${count}) ${status === undefined ? '' : `${status}: `}`;
+  if (carriesResponseBody(error)) return safeMsg`${prefix}${error.name} (response body withheld)`;
+  // `safeMsg`: a pass-through summary is the rejection's own free text (a
+  // transport message), flattened to one line so it cannot forge a row.
+  return safeMsg`${prefix}${describeAwsFailure(error).summary}`;
+}
+
+/**
+ * Each recorded rejection's FULL text, for `logger.debug` — the half
+ * `describeAwsFailure` withheld from the thrown message (an AWS `AccessDenied`
+ * names the caller's account, role and session). Only the redacted ones: a
+ * pass-through is already in the thrown text.
+ */
+function waiterRejectionDebugLines(rejections: WaiterRejections): string[] {
+  const lines: string[] = [];
+  for (const { error, count } of rejections.entries()) {
+    const described = describeAwsFailure(error);
+    if (!described.redacted || carriesResponseBody(error)) continue;
+    const status = rejectionStatus(error);
+    lines.push(
+      `(x${count}) ${status === undefined ? '' : `${status}: `}${error.name}: ${described.detail}`
+    );
+  }
+  return lines;
+}
+
+/**
+ * A Lambda readiness-waiter failure, described without its payload, or
+ * `undefined` when `error` is not one (its message is not a JSON object
+ * carrying a `state`) — see `waitForBackingLambdaReady` for the whole argument.
+ *
+ * EVERY arm of `@smithy/util-waiter`'s `checkExceptions` can carry the whole
+ * `GetFunction` response, `Configuration.Environment.Variables` in plaintext
+ * and the presigned `Code.Location` included:
+ *
+ *  - a FAILURE throws `JSON.stringify(result)`, whose `reason` is the response;
+ *  - a TIMEOUT or ABORT throws `JSON.stringify({...result, reason: '<fixed>'})`,
+ *    and `result.observedResponses` is keyed by `createMessageFromResponse`:
+ *    `<status>: OK` for a response carrying `$metadata.httpStatusCode` (every
+ *    response the real Lambda client returns), `JSON.stringify(response)` for
+ *    one that does not, and `<status>: <message>` / `<message>` for a rejected
+ *    poll — whose message is an AWS `AccessDenied` naming the caller's account,
+ *    role and session, or a credential / network failure.
+ *
+ * `JSON.stringify` escapes a secret containing `"`, `\` or a newline out of a
+ * literal masker's reach, `Code.Location` is in no secrets bag, and a function
+ * still holding a ROTATED secret's old plaintext holds one no bag of this
+ * deploy knows. So what is kept is an allowlist:
+ *
+ *  - the waiter state and its fixed `reason` string;
+ *  - the function's status fields, from `reason`, or else from the most
+ *    recently FIRST-SEEN observed key that parses as one (`observedResponses`
+ *    keeps each key at its first-seen position, so a repeated key is not
+ *    moved to the end);
+ *  - `<status>: OK` keys;
+ *  - each recorded REJECTION as `describeAwsFailure` summarizes it — its class
+ *    for an AWS-authored one (a credential failure included), its text for a
+ *    transport or cdkd one — with the withheld half going to `logger.debug`
+ *    ({@link waiterRejectionDebugLines}); a deserialization failure by status
+ *    and name only ({@link carriesResponseBody}).
+ *
+ * A `{` / `[`-leading key (a serialized response) is only COUNTED; so is a
+ * non-`Error` rejection, and every rejection key when there is no record to
+ * classify it by (the rejection keys themselves are never rendered).
+ */
+function describeLambdaWaiterFailure(
+  error: unknown,
+  rejections: WaiterRejections
+): string | undefined {
+  if (!(error instanceof Error)) return undefined;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(message);
+    parsed = JSON.parse(error.message);
   } catch {
     return undefined;
   }
-  const reason = (parsed as { reason?: unknown } | null)?.reason;
-  const config = (reason as { Configuration?: unknown } | null)?.Configuration;
-  if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined;
-  const fields = config as Record<string, unknown>;
-  const parts: string[] = [];
-  for (const key of [
-    'State',
-    'StateReasonCode',
-    'StateReason',
-    'LastUpdateStatus',
-    'LastUpdateStatusReasonCode',
-    'LastUpdateStatusReason',
-  ]) {
-    const value = fields[key];
-    if (typeof value === 'string' && value !== '') parts.push(`${key}=${value}`);
+  if (typeof parsed !== 'object' || parsed === null || !('state' in parsed)) return undefined;
+  const result = parsed as { state?: unknown; reason?: unknown; observedResponses?: unknown };
+  const observed =
+    typeof result.observedResponses === 'object' &&
+    result.observedResponses !== null &&
+    !Array.isArray(result.observedResponses)
+      ? (result.observedResponses as Record<string, unknown>)
+      : {};
+  const parts = lambdaStatusParts(result.reason);
+  if (parts.length === 0) {
+    for (const key of Object.keys(observed).reverse()) {
+      let response: unknown;
+      try {
+        response = JSON.parse(key);
+      } catch {
+        continue;
+      }
+      const observedParts = lambdaStatusParts(response);
+      if (observedParts.length > 0) {
+        parts.push(...observedParts);
+        break;
+      }
+    }
   }
-  return parts.length > 0 ? parts.join(', ') : undefined;
+  const lines: string[] = [];
+  let payloads = 0;
+  let rejectionKeys = 0;
+  for (const [key, count] of Object.entries(observed)) {
+    if (key.startsWith('{') || key.startsWith('[')) payloads += 1;
+    else if (/^\d{3}: OK$/.test(key)) {
+      lines.push(typeof count === 'number' ? `(x${count}) ${key}` : key);
+    } else rejectionKeys += 1;
+  }
+  const recorded = rejections.entries();
+  for (const { error: rejection, count } of recorded) {
+    lines.push(rejectionLine(rejection, count));
+  }
+  if (lines.length > 0) parts.push(`observed: ${lines.join('; ')}`);
+  if (payloads > 0) parts.push(`${payloads} observed response(s) withheld`);
+  const nonErrors = rejections.nonErrors;
+  if (nonErrors > 0) parts.push(`${nonErrors} non-Error rejection(s) withheld`);
+  if (recorded.length === 0 && nonErrors === 0 && rejectionKeys > 0) {
+    // A deliberate fail-closed backstop, unreachable while both waiters get
+    // the observing client: a rejection key with no record to classify it by
+    // is counted, never rendered. Reached by the thrown-retry suite, which
+    // mocks the waiters.
+    parts.push(`${rejectionKeys} observed error message(s) withheld`);
+  }
+  const state = typeof result.state === 'string' ? result.state : 'failure';
+  const reason =
+    typeof result.reason === 'string' && result.reason !== '' ? `: ${result.reason}` : '';
+  return (
+    `${error.name} (waiter ${state}${reason}; ` +
+    `${parts.length > 0 ? parts.join(', ') : 'no function status reported'}). ` +
+    `The waiter's raw payload is withheld because it embeds the whole GetFunction ` +
+    `response, environment variables included; run \`aws lambda get-function\` for the detail.`
+  );
+}
+
+/**
+ * If `error` is a failed Lambda waiter, overwrite its `message` (and the first
+ * line of its `stack`) IN PLACE with the {@link describeLambdaWaiterFailure}
+ * text and return that text; otherwise return `undefined` and leave `error`
+ * alone.
+ *
+ * In place, not only in the wrapper's message, because the caught error stays
+ * the wrapper's direct `cause` (the classifiers walk the chain, and
+ * `scripts/check-provider-error-cause.ts` requires the caught value itself),
+ * and a render that walks the chain — the CLI's fatal `util.inspect` of an
+ * escaped error — would otherwise print the payload.
+ */
+function withholdWaiterPayload(error: unknown, rejections: WaiterRejections): string | undefined {
+  const described = describeLambdaWaiterFailure(error, rejections);
+  if (described === undefined || !(error instanceof Error)) return undefined;
+  const header = `${error.name}: ${error.message}`;
+  const stack = typeof error.stack === 'string' ? error.stack : '';
+  try {
+    Object.defineProperty(error, 'message', {
+      value: described,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+    Object.defineProperty(error, 'stack', {
+      value: stack.startsWith(header)
+        ? `${error.name}: ${described}${stack.slice(header.length)}`
+        : `${error.name}: ${described}`,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  } catch {
+    // A frozen error cannot be rewritten: the wrapper's message still withholds
+    // the payload, but its cause would not. Unreachable for
+    // `@smithy/util-waiter`, which throws a plain, extensible `Error`.
+  }
+  return described;
 }
 
 /**
  * Render a Lambda readiness-waiter failure for a message that is persisted
- * (issue #2033) — see `waitForBackingLambdaReady` for the whole argument.
- *
- * TIMEOUT / ABORT keep the waiter's own message: its `observedResponses` keys
- * are status lines `@smithy/util-waiter` builds itself (`403: <AWS message>`),
- * which is exactly the diagnostic a stalled waiter needs and carries no
- * response body. Every other state serialized the full `GetFunction` response,
- * so that arm reports the error NAME plus the function's own status fields.
+ * (issue #2033). Anything that is not a waiter-shaped error (unreachable from
+ * the two waiter calls, which catch every client exception) keeps only its
+ * NAME: the fallback withholds too rather than relaying an unknown message.
  */
-function describeWaiterFailure(error: unknown): string {
+function describeWaiterFailure(error: unknown, rejections: WaiterRejections): string {
+  const withheld = withholdWaiterPayload(error, rejections);
+  if (withheld !== undefined) return withheld;
   const name = error instanceof Error ? error.name : 'Error';
-  const message = error instanceof Error ? error.message : String(error);
-  if (name === 'TimeoutError' || name === 'AbortError') return message;
-  const status = extractWaiterFunctionStatus(message);
   return (
-    `${name} (${status ?? 'no function status reported'}). ` +
+    `${name} (no function status reported). ` +
     `The waiter's raw payload is withheld because it embeds the whole GetFunction ` +
     `response, environment variables included; run \`aws lambda get-function\` for the detail.`
   );
@@ -2282,6 +2531,7 @@ export class CustomResourceProvider implements ResourceProvider {
     // SNS-backed custom resources have no Lambda to recycle (the token is a
     // topic ARN); skip the pointless, guaranteed-to-fail API call.
     if (this.isSnsServiceToken(serviceToken)) return;
+    const rejections = new WaiterRejections();
     try {
       await this.lambdaClient.send(
         new UpdateFunctionConfigurationCommand({
@@ -2292,15 +2542,44 @@ export class CustomResourceProvider implements ResourceProvider {
       await waitUntilFunctionUpdatedV2(
         // Explicit cadence per the repo-wide waiter rule (#1291 item 5);
         // matches the Lambda V2 waiters' own dense 1s default.
-        { client: this.lambdaClient, maxWaitTime: 120, minDelay: 1, maxDelay: 5 },
+        {
+          client: observingLambdaClient(this.lambdaClient, rejections),
+          maxWaitTime: 120,
+          minDelay: 1,
+          maxDelay: 5,
+        },
         { FunctionName: serviceToken }
       );
     } catch (error) {
+      // A failed `waitUntilFunctionUpdatedV2` carries the whole `GetFunction`
+      // response in its message (see `describeLambdaWaiterFailure`), and this
+      // logger masks nothing: withhold it here too. An
+      // `UpdateFunctionConfiguration` failure is not waiter-shaped and keeps
+      // its AWS detail — unless it failed to deserialize the response, a
+      // `FunctionConfiguration` whose `Environment.Variables` the parse
+      // message can quote (`carriesResponseBody`).
       this.logger.debug(
         `Could not recycle backing function for ${logicalId} (${
-          describeAwsFailure(error).detail
+          withholdWaiterPayload(error, rejections) ??
+          (error instanceof Error && carriesResponseBody(error)
+            ? `${error.name} (response body withheld)`
+            : describeAwsFailure(error).detail)
         }); retrying invoke without a forced cold start`
       );
+      this.debugWaiterRejections(logicalId, rejections);
+    }
+  }
+
+  /**
+   * The full text of each rejection a failed readiness waiter recorded that
+   * `describeAwsFailure` withheld from the thrown message (issue #2302): an
+   * AWS `AccessDenied` names the caller's account, role and session, so it
+   * belongs at `debug`, where it still separates a missing grant from a
+   * policy `Deny`.
+   */
+  private debugWaiterRejections(logicalId: string, rejections: WaiterRejections): void {
+    for (const line of waiterRejectionDebugLines(rejections)) {
+      this.logger.debug(safeMsg`Readiness waiter for ${logicalId} observed ${line}`);
     }
   }
 
@@ -2407,7 +2686,7 @@ export class CustomResourceProvider implements ResourceProvider {
    *    AWS::CloudFormation::CustomResource=15m`. The marker is a property of
    *    the error object, so unlike a wording test it cannot be defeated by AWS
    *    rephrasing the denial.
-   *  - On the non-TIMEOUT arm (`State: Failed`, i.e. an ENI / VPC failure) the
+   *  - On the FAILURE arm (`State: Failed`, i.e. an ENI / VPC failure) the
    *    serialized result carries `reason` and `final`, which for this waiter
    *    are the ENTIRE `GetFunction` response — `Configuration.Environment.
    *    Variables` included. That message reached `ProvisioningError.message`
@@ -2415,32 +2694,55 @@ export class CustomResourceProvider implements ResourceProvider {
    *    `deployments/{runId}.jsonl`, a durable store that outlives
    *    `cdkd destroy` and is contractually "error + metadata only, never
    *    resource properties, because they may contain secrets"
-   *    (`docs/deployment-events.md`). So this arm interpolates the error NAME
-   *    plus a fixed sentence, and recovers only the function's own
-   *    `State` / `StateReason` / `StateReasonCode` — AWS-authored status
-   *    fields — from the serialized payload. The TIMEOUT / ABORT arms keep
-   *    their message: `observedResponses` keys are status lines built by
-   *    `createMessageFromResponse`, never a response body.
+   *    (`docs/deployment-events.md`).
+   *  - On the TIMEOUT / ABORT arms `reason` is a fixed string, but an
+   *    `observedResponses` key is the serialized response for one without
+   *    `$metadata.httpStatusCode`, and a rejected poll's own message otherwise
+   *    — the 403 above, which names the caller's account, role and session
+   *    (issue #4255).
+   *
+   * So every arm is rendered by `describeWaiterFailure` from an allowlist (see
+   * `describeLambdaWaiterFailure`): each rejection the waiter's client met is
+   * RECORDED and summarized by `describeAwsFailure` — `403: AccessDeniedException`
+   * in the thrown text, AWS's sentence at `logger.debug` before the throw. The
+   * caught error is rewritten IN PLACE to the same text, since it stays this
+   * wrapper's `cause`.
    */
   private async waitForBackingLambdaReady(serviceToken: string, logicalId: string): Promise<void> {
+    // One record per waiter: rejections the first waiter polled through
+    // before succeeding say nothing about why the second one failed.
+    let rejections = new WaiterRejections();
     try {
       await waitUntilFunctionActiveV2(
         // Explicit cadence per the repo-wide waiter rule (#1291 item 5);
         // matches the Lambda V2 waiters' own dense 1s default.
-        { client: this.lambdaClient, maxWaitTime: 600, minDelay: 1, maxDelay: 5 },
+        {
+          client: observingLambdaClient(this.lambdaClient, rejections),
+          maxWaitTime: 600,
+          minDelay: 1,
+          maxDelay: 5,
+        },
         { FunctionName: serviceToken }
       );
+      rejections = new WaiterRejections();
       await waitUntilFunctionUpdatedV2(
         // Explicit cadence per the repo-wide waiter rule (#1291 item 5);
         // matches the Lambda V2 waiters' own dense 1s default.
-        { client: this.lambdaClient, maxWaitTime: 600, minDelay: 1, maxDelay: 5 },
+        {
+          client: observingLambdaClient(this.lambdaClient, rejections),
+          maxWaitTime: 600,
+          minDelay: 1,
+          maxDelay: 5,
+        },
         { FunctionName: serviceToken }
       );
     } catch (error) {
+      this.debugWaiterRejections(logicalId, rejections);
       throw markNonRetryable(
         new Error(
           `Lambda backing custom resource ${logicalId} (${serviceToken}) did not reach a ready state for Invoke: ${describeWaiterFailure(
-            error
+            error,
+            rejections
           )}`,
           { cause: error }
         )
