@@ -10080,9 +10080,7 @@ export class IntrinsicFunctionResolver {
                 [lookupRegion, this.logIdent(lookupRegion, context)],
               ],
               context
-            ).text(
-              error instanceof Error ? error.message : String(error)
-            )
+            ).text(error instanceof Error ? error.message : String(error))
         );
         continue;
       }
