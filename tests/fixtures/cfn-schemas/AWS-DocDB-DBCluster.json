@@ -167,13 +167,5 @@
       "Key",
       "Value"
     ]
-  },
-  "propertyShapes": {
-    "AvailabilityZones": "array",
-    "EnableCloudwatchLogsExports": "array",
-    "ServerlessV2ScalingConfiguration": "object",
-    "Tags": "array",
-    "Tags[]": "object",
-    "VpcSecurityGroupIds": "array"
   }
 }

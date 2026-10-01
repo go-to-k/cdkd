@@ -802,15 +802,21 @@ function meetShapes(arms) {
  * - `allOf` arms add up, `oneOf` / `anyOf` arms keep only what every arm a
  *   value could match agrees on ({@link meetShapes});
  * - `additionalProperties` / `patternProperties` VALUES are not followed: they
- *   sit under user-chosen keys.
+ *   sit under user-chosen keys;
+ * - a schema without `handlers` (a legacy type) yields nothing at all.
  *
  * @param {string} schemaJson
  * @returns {Record<string, string>}
  */
 export function extractPropertyShapes(schemaJson) {
-  /** @type {{properties?: Record<string, unknown>, definitions?: Record<string, unknown>}} */
+  /** @type {{properties?: Record<string, unknown>, definitions?: Record<string, unknown>, handlers?: unknown}} */
   const schema = JSON.parse(schemaJson);
   if (!schema.properties || typeof schema.properties !== 'object') return {};
+  // A schema with no `handlers` belongs to a legacy type CloudFormation does
+  // not validate against it, and such schemas are known to be wrong:
+  // `AWS::CodeBuild::Project`'s `FilterGroup` is an empty closed object where
+  // the real shape (and CDK's output) is a list of filters.
+  if (!schema.handlers || typeof schema.handlers !== 'object') return {};
   const definitions =
     schema.definitions && typeof schema.definitions === 'object' ? schema.definitions : {};
 

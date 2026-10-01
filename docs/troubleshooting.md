@@ -22,6 +22,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
   - ["Custom resource X: Y resolved to the value of a secret"](#custom-resource-x-y-resolved-to-the-value-of-a-secret)
   - ["The following resources declare a nested property block without a member it requires"](#the-following-resources-declare-a-nested-property-block-without-a-member-it-requires)
+  - ["Properties validation failed": a list where an object is expected, or the reverse](#properties-validation-failed-a-list-where-an-object-is-expected-or-the-reverse)
   - ["Resource already exists" Error](#resource-already-exists-error)
   - [An unsupported resource type](#an-unsupported-resource-type)
   - [Replacing a resource, and the refusal that guards it](#replacing-a-resource-and-the-refusal-that-guards-it)
@@ -699,6 +700,41 @@ new ecs.CfnService(this, 'Service', {
     deploymentCircuitBreaker: { enable: true, rollback: true },
   },
 });
+```
+
+### "Properties validation failed": a list where an object is expected, or the reverse
+
+**Symptoms:**
+
+```
+Properties validation failed: the following resources declare a property whose kind contradicts the resource type's schema:
+  - Queue (AWS::SQS::Queue): #/Tags: expected type: JSONArray, found: JSONObject
+```
+
+**Causes:**
+
+A template property is an object where the resource type's schema requires a
+list, or a list where it requires an object. CloudFormation refuses the same
+template with the same words. Without the refusal the value reached the
+provider and failed inside an AWS call with an unrelated-looking error, or was
+dropped.
+
+The check runs at pre-flight on every deploy, before any AWS call:
+
+- Only a list against an object is refused. A scalar mismatch is left to
+  CloudFormation's and the service's own checks.
+- A property is checked only where the schema admits exactly one of the two
+  kinds, and only for types whose schema CloudFormation validates.
+- A value that is an unresolved intrinsic (`Ref`, `Fn::If`, `Fn::Split`, ...)
+  is not refused, since its resolved kind is not known yet. Array elements are
+  named by index (`Tags[1]`).
+
+**Solution:** give the property the kind the schema declares, usually after an
+`addPropertyOverride` that wrote the wrong one. There is no `--allow-*` escape
+hatch, because CloudFormation rejects the template too.
+
+```typescript
+queue.addPropertyOverride('Tags', [{ Key: 'team', Value: 'platform' }]); // a list, not { Key, Value }
 ```
 
 ### "Resource already exists" Error

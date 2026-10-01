@@ -10,7 +10,9 @@ import { describe, it, expect } from 'vite-plus/test';
 import { extractPropertyShapes } from '../../../scripts/refresh-cfn-schemas.mjs';
 import { collectPropertyShapes } from '../../../scripts/gen-property-shape.ts';
 
-const shapes = (schema: unknown) => extractPropertyShapes(JSON.stringify(schema));
+// Every case but the legacy one declares `handlers`: a handler-less schema yields nothing.
+const shapes = (schema: Record<string, unknown>) =>
+  extractPropertyShapes(JSON.stringify({ handlers: { create: {} }, ...schema }));
 
 describe('extractPropertyShapes', () => {
   it('keys each array / object kind by dotted path, `[]` for elements, $refs resolved', () => {
@@ -160,6 +162,119 @@ describe('extractPropertyShapes', () => {
 
   it('returns nothing for a schema without properties', () => {
     expect(shapes({ definitions: {} })).toEqual({});
+  });
+
+  it('returns nothing for a legacy schema without handlers, whose schema CloudFormation does not validate', () => {
+    // The shape of AWS::CodeBuild::Project's `FilterGroup`: an empty closed
+    // object in the registry schema, a list of filters in every real template.
+    const legacy = {
+      properties: { FilterGroups: { type: 'array', items: { $ref: '#/definitions/FilterGroup' } } },
+      definitions: { FilterGroup: { type: 'object', additionalProperties: false } },
+    };
+    expect(extractPropertyShapes(JSON.stringify(legacy))).toEqual({});
+    expect(shapes(legacy)).toEqual({ FilterGroups: 'array', 'FilterGroups[]': 'object' });
+  });
+
+  it('treats an arm with patternProperties as open even when additionalProperties is false', () => {
+    expect(
+      shapes({
+        properties: {
+          X: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                patternProperties: { '.*': {} },
+                properties: { A: { type: 'string' } },
+              },
+              { type: 'object', properties: { L: { type: 'array' } } },
+            ],
+          },
+        },
+      })
+    ).toEqual({ X: 'object' });
+  });
+
+  it('keeps element kinds only when every array-admitting arm constrains its items', () => {
+    expect(
+      shapes({
+        properties: {
+          OneHasItems: { oneOf: [{ type: 'array' }, { type: 'array', items: { type: 'object' } }] },
+          BothHaveItems: {
+            oneOf: [
+              { type: 'array', items: { type: 'object' } },
+              { type: 'array', items: { $ref: '#/definitions/Obj' } },
+            ],
+          },
+        },
+        definitions: { Obj: { type: 'object' } },
+      })
+    ).toEqual({ BothHaveItems: 'array', 'BothHaveItems[]': 'object', OneHasItems: 'array' });
+  });
+
+  it('counts a typeless arm as one an object can match', () => {
+    expect(
+      shapes({
+        properties: {
+          X: {
+            oneOf: [
+              { properties: { A: { type: 'string' } } },
+              { type: 'object', properties: { L: { type: 'array' } } },
+            ],
+          },
+        },
+      })
+    ).toEqual({});
+  });
+
+  it('carries closed-ness through nested combinators: a meet is closed only when every arm is, an allOf when any is', () => {
+    const otherArm = { type: 'object', properties: { L: { type: 'array' } } };
+    expect(
+      shapes({
+        properties: {
+          // Inner oneOf of a closed and an open arm is OPEN, so L stays unconstrained.
+          MeetOpen: {
+            oneOf: [
+              {
+                oneOf: [
+                  { type: 'object', additionalProperties: false, properties: { A: { type: 'string' } } },
+                  { type: 'object', properties: { A: { type: 'string' } } },
+                ],
+              },
+              otherArm,
+            ],
+          },
+          // A closed node joined with an open allOf arm stays CLOSED, so the other arm decides L.
+          JoinClosed: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: { A: { type: 'string' } },
+                allOf: [{ properties: { B: { type: 'string' } } }],
+              },
+              otherArm,
+            ],
+          },
+        },
+      })
+    ).toEqual({ JoinClosed: 'object', 'JoinClosed.L': 'array', MeetOpen: 'object' });
+  });
+
+  it('ignores a non-local $ref and stops at the depth cap', () => {
+    let deep: Record<string, unknown> = { type: 'object' };
+    for (let i = 13; i >= 1; i--) deep = { type: 'object', properties: { [`L${i}`]: deep } };
+    const out = shapes({
+      properties: {
+        Remote: { $ref: 'https://example.com/schema.json#/definitions/Obj' },
+        Deep: deep,
+      },
+      definitions: { Obj: { type: 'object' } },
+    });
+    expect(out).not.toHaveProperty('Remote');
+    const depths = Object.keys(out).map((p) => p.split('.').length);
+    expect(Math.max(...depths)).toBe(12);
+    expect(depths).toHaveLength(12);
   });
 });
 

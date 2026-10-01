@@ -298,35 +298,5 @@
     "ResourceTags": [
       "Key"
     ]
-  },
-  "propertyShapes": {
-    "Budget": "object",
-    "Budget.AutoAdjustData": "object",
-    "Budget.AutoAdjustData.HistoricalOptions": "object",
-    "Budget.BudgetLimit": "object",
-    "Budget.CostFilters": "object",
-    "Budget.CostTypes": "object",
-    "Budget.FilterExpression": "object",
-    "Budget.FilterExpression.And": "array",
-    "Budget.FilterExpression.CostCategories": "object",
-    "Budget.FilterExpression.CostCategories.MatchOptions": "array",
-    "Budget.FilterExpression.CostCategories.Values": "array",
-    "Budget.FilterExpression.Dimensions": "object",
-    "Budget.FilterExpression.Dimensions.MatchOptions": "array",
-    "Budget.FilterExpression.Dimensions.Values": "array",
-    "Budget.FilterExpression.Or": "array",
-    "Budget.FilterExpression.Tags": "object",
-    "Budget.FilterExpression.Tags.MatchOptions": "array",
-    "Budget.FilterExpression.Tags.Values": "array",
-    "Budget.Metrics": "array",
-    "Budget.PlannedBudgetLimits": "object",
-    "Budget.TimePeriod": "object",
-    "NotificationsWithSubscribers": "array",
-    "NotificationsWithSubscribers[]": "object",
-    "NotificationsWithSubscribers[].Notification": "object",
-    "NotificationsWithSubscribers[].Subscribers": "array",
-    "NotificationsWithSubscribers[].Subscribers[]": "object",
-    "ResourceTags": "array",
-    "ResourceTags[]": "object"
   }
 }

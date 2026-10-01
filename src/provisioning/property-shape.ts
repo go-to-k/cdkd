@@ -14,12 +14,13 @@
  * ## Refuse only what CloudFormation refuses
  *
  * - Only array-versus-object is refused. A scalar where an object or list is
- *   wanted (or the reverse) passes: CloudFormation coerces scalars, and a
- *   legacy `Json` property takes a string.
+ *   wanted (or the reverse) is not refused here: a legacy `Json` property
+ *   takes a string, so the check is kept to array-versus-object.
  * - The table lists a path only where the schema admits EXACTLY one of the two
  *   kinds (`scripts/refresh-cfn-schemas.mjs`'s `extractPropertyShapes` holds the
- *   rules), so a type list, a combinator whose arms disagree, or an unknown
- *   type or path passes.
+ *   rules), so a type list, a combinator whose arms disagree, a legacy type
+ *   (a schema with no `handlers`, which CloudFormation does not validate
+ *   against), or an unknown type or path passes.
  * - Pre-flight runs BEFORE intrinsic resolution: an intrinsic (`Ref`, any
  *   `Fn::*`) stands in for any kind — `Fn::If` arms, `Fn::Split`, `Fn::GetAZs`
  *   and `Fn::Cidr` all yield lists — so its subtree is skipped. A

@@ -117,6 +117,21 @@ describe('findPropertyShapeViolations against the generated table', () => {
     ).toEqual([]);
   });
 
+  it('checks a multi-key object carrying an Fn:: key: it is not an intrinsic', () => {
+    expect(
+      findPropertyShapeViolations('AWS::SQS::Queue', { Tags: { 'Fn::If': ['C', [], []], Extra: 1 } })
+    ).toEqual([{ resourceType: 'AWS::SQS::Queue', path: 'Tags', expected: 'array', found: 'object' }]);
+  });
+
+  it('passes the CodeBuild webhook filter groups CDK synthesizes (a legacy type, so no rows)', () => {
+    expect(PROPERTY_SHAPES.has('AWS::CodeBuild::Project')).toBe(false);
+    expect(
+      findPropertyShapeViolations('AWS::CodeBuild::Project', {
+        Triggers: { Webhook: true, FilterGroups: [[{ Type: 'EVENT', Pattern: 'PUSH' }]] },
+      })
+    ).toEqual([]);
+  });
+
   it('a key named after an Object.prototype member is not walked into a prototype', () => {
     expect(
       findPropertyShapeViolations('AWS::SQS::Queue', { constructor: [1], toString: { a: 1 } })

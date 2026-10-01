@@ -245,25 +245,5 @@
       "TimeoutAction",
       "TimeoutDurationMinutes"
     ]
-  },
-  "propertyShapes": {
-    "InstanceTypeConfigs": "array",
-    "InstanceTypeConfigs[]": "object",
-    "InstanceTypeConfigs[].Configurations": "array",
-    "InstanceTypeConfigs[].Configurations[]": "object",
-    "InstanceTypeConfigs[].Configurations[].ConfigurationProperties": "object",
-    "InstanceTypeConfigs[].Configurations[].Configurations": "array",
-    "InstanceTypeConfigs[].EbsConfiguration": "object",
-    "InstanceTypeConfigs[].EbsConfiguration.EbsBlockDeviceConfigs": "array",
-    "InstanceTypeConfigs[].EbsConfiguration.EbsBlockDeviceConfigs[]": "object",
-    "InstanceTypeConfigs[].EbsConfiguration.EbsBlockDeviceConfigs[].VolumeSpecification": "object",
-    "LaunchSpecifications": "object",
-    "LaunchSpecifications.OnDemandSpecification": "object",
-    "LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions": "object",
-    "LaunchSpecifications.SpotSpecification": "object",
-    "ResizeSpecifications": "object",
-    "ResizeSpecifications.OnDemandResizeSpecification": "object",
-    "ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions": "object",
-    "ResizeSpecifications.SpotResizeSpecification": "object"
   }
 }

@@ -9,8 +9,8 @@ unlisted: true
 A scheduled job keeps `tests/fixtures/cfn-schemas/*.json` current with what AWS
 publishes. A property missing from them still reaches AWS, because it routes
 through Cloud Control; the fixtures are what let an SDK provider take a
-property over and what keep the read-only, create-only and nested-required
-data current. This page is the operator's side of it: what arrives, and what
+property over and what keep the read-only, create-only, nested-required and
+property-shape data current. This page is the operator's side of it: what arrives, and what
 to do with it.
 
 The reasoning behind the design — why a scheduled PR rather than a CI check,
@@ -131,7 +131,8 @@ Merge it. Properties were added and nothing else.
 A template using one of those properties already routes through Cloud
 Control before the merge, as an unrecognized property. The merge records them
 as known properties the SDK provider does not wire, which puts them on the
-backfill list and brings their create-only and nested-required data in.
+backfill list and brings their create-only, nested-required and
+property-shape data in.
 
 Newly unaccounted **writable** properties are listed in the pull request. They
 reach the standing backfill checklist when this PR MERGES, not when the job runs

@@ -450,6 +450,8 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
     definitions: {
       Cfg: { type: 'object', required: ['Inner'], properties: { Inner: { type: 'string' } } },
     },
+    // `extractPropertyShapes` captures nothing from a handler-less (legacy) schema.
+    handlers: { create: { permissions: [] } },
   };
 
   /**
@@ -604,6 +606,7 @@ describe('serializeFixture matches the committed corpus byte-for-byte', () => {
         createOnlyProperties: ['/properties/A'],
         primaryIdentifier: ['/properties/A'],
         required: ['A'],
+        handlers: { create: { permissions: [] } },
       }),
       'AWS::Test::Type',
       '2026-01-01'
