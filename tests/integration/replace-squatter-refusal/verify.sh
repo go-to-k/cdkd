@@ -208,15 +208,18 @@ fi
 # The parsed marker names the SENT name; the sentinel is the refusal's own
 # closing clause, independent of it. Sentinel without marker = the wording
 # drifted or a different name was sent — never read as "no refusal".
+# Since go-to-k/cdkd#4291 the marker is on the refusal's own
+# `Collision diagnosis:` line, the line right after the sentinel's, so the
+# pairing reads that line rather than the sentinel's.
 C_SENTINEL="--replace was NOT applied and nothing was deleted"
 C_MARKER="the cdkd naming rule generates RepositoryName \"${GENERATED_REPO}\""
 if ! grep -qF -- "${C_SENTINEL}" "${LOG_DIR}/c.log"; then
   echo "[verify] FAIL: deploy --replace exited ${C_RC} without the #3979 holder refusal (output above)" >&2
   exit 1
 fi
-if ! grep -F -- "${C_SENTINEL}" "${LOG_DIR}/c.log" | grep -qF -- "${C_MARKER}"; then
-  echo "[verify] FAIL: the refusal is present but does not name the sent ${GENERATED_REPO} (wording drifted, or a different name was sent):" >&2
-  grep -F -- "${C_SENTINEL}" "${LOG_DIR}/c.log" | sed 's/^/  /' >&2
+if ! grep -F -A1 -- "${C_SENTINEL}" "${LOG_DIR}/c.log" | grep -F 'Collision diagnosis: ' | grep -qF -- "${C_MARKER}"; then
+  echo "[verify] FAIL: the refusal is present but its diagnosis does not name the sent ${GENERATED_REPO} (wording drifted, or a different name was sent):" >&2
+  grep -F -A1 -- "${C_SENTINEL}" "${LOG_DIR}/c.log" | sed 's/^/  /' >&2
   exit 1
 fi
 if grep -qF 'deleting old Repo' "${LOG_DIR}/c.log"; then

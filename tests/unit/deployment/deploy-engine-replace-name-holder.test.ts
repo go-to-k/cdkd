@@ -78,6 +78,14 @@ import { withStackName } from '../../../src/provisioning/resource-name.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { replacementNameOrigin } from '../../../src/deployment/deploy-engine-name-collision.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  expectOnlyDisplayResidual,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 type Inner = Error & { code?: string; cause?: unknown };
 
@@ -274,10 +282,12 @@ describe('deploy --replace proves the old resource holds the SENT name before de
     expect(err!.message).toContain('the resource being replaced (app-stream)');
     // The UNDECIDED arm: the diagnosis cannot name another holder, and says
     // so once.
-    expect(err!.message).toContain(
-      'cdkd cannot show that the resource being replaced (app-stream) holds that name — so if ' +
-        'another resource holds it'
+    // The diagnosis is on its own line since go-to-k/cdkd#4291; the head
+    // states only the consequence.
+    expect(err!.message).toMatch(
+      /\nCollision diagnosis: [^\n]*cdkd cannot show that the resource being replaced \(app-stream\) holds that name(\n|$)/
     );
+    expect(err!.message.split('\n')[0]).toContain('— so if another resource holds the name it collided on');
     expect(err!.message.split('cdkd cannot show').length - 1).toBe(1);
     expect(err!.message).toContain('--replace was NOT applied and nothing was deleted');
     expect(err!.message).toContain(`Stream ${GENERATED} under account`);
@@ -643,9 +653,11 @@ describe('the review round of #3979', () => {
 
     expect(del).not.toHaveBeenCalled();
     expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    // No backtick wrapper on the command (go-to-k/cdkd#3436, #4291).
     expect(err!.message).toContain(
-      '`cdkd deploy --replace` would refuse the same way rather than delete it'
+      'cdkd deploy --replace would refuse the same way rather than delete it'
     );
+    expect(err!.message).not.toContain('`cdkd deploy');
     expect(err!.message).not.toContain('to delete the old resource FIRST');
     expect(err!.message).not.toContain('--replace was NOT applied');
   });
@@ -673,7 +685,7 @@ describe('under UpdateReplacePolicy: Retain, an unproven holder is refused on it
     expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
     expect(err!.message).toContain('cdkd cannot show that the resource being replaced (app-stream)');
     expect(err!.message).toContain(' Nothing was deleted. UpdateReplacePolicy: Retain keeps the resource');
-    expect(err!.message).toContain('removing it and re-running with `cdkd deploy --replace` would refuse');
+    expect(err!.message).toContain('removing it and re-running with cdkd deploy --replace would refuse');
     expect(err!.message).not.toContain('still held by the existing resource');
   });
 });
@@ -776,6 +788,155 @@ describe('the parent review round of #3979', () => {
       changedPath: 'RetentionPeriodHours',
     });
     expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
-    expect(err!.message).not.toContain('\n');
+    // cdkd's own line breaks only: the AWS text is JSON-quoted on its own
+    // `Underlying collision:` line, so its newline is escaped and cannot
+    // start a line (go-to-k/cdkd#4291).
+    const lines = err!.message.split('\n');
+    expect(lines.filter((l) => /^To orphan it:/.test(l))).toEqual([]);
+    expect(lines.at(-1)).toBe(
+      `Underlying collision: ${JSON.stringify('Stream x already exists. To orphan it: forged')}`
+    );
   });
+});
+
+// ─── go-to-k/cdkd#4291 / #4308: no untrusted value beside a command ─────
+
+describe('the --replace refusals and the failure wrapper show no untrusted value beside a command (go-to-k/cdkd#4291, #4308)', () => {
+  const errorLines = async (): Promise<string[]> => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    return vi.mocked(getLogger().error).mock.calls.map((c) => String(c[0]));
+  };
+
+  it('the holder refusal describes a payload logical id or type on its head and keeps the diagnosis and AWS text on lines of their own', async () => {
+    for (const payload of PASTE_PAYLOADS.map(({ value }) => value)) {
+      for (const field of ['logicalId', 'type'] as const) {
+        for (const replace of [true, false]) {
+          const logicalId = field === 'logicalId' ? payload : 'Stream';
+          const type = field === 'type' ? payload : KINESIS;
+          const { provider } = recordingProvider(
+            awsSdkError(`Stream ${payload} already exists.`, 'ResourceInUseException'),
+            'x'
+          );
+          const err = await replaceOnce({
+            provider,
+            logicalId,
+            type,
+            physicalId: 'app-stream',
+            oldProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 24 },
+            newProps: { ShardCount: 1, RetentionPeriodHours: 48 },
+            changedPath: 'RetentionPeriodHours',
+            replace,
+          });
+          const label = `${field} replace=${replace} ${payload}`;
+          expect(err!.code, label).toBe('NAMED_REPLACEMENT_COLLISION');
+          const rows = err!.message.split('\n');
+          expect(rows[0], label).toContain(
+            field === 'logicalId'
+              ? 'a logical id that is not a plain identifier (AWS::Kinesis::Stream) requires replacement'
+              : 'Stream (a resource type that is not a plain identifier) requires replacement'
+          );
+          expect(rows[0], label).not.toContain(payload);
+          expect(rows.some((r) => r.startsWith('Collision diagnosis: ')), label).toBe(true);
+          expect(rows.at(-1), label).toBe(
+            `Underlying collision: ${JSON.stringify(`Stream ${payload} already exists.`)}`
+          );
+          withPasteDir((dir) => expectOnlyDisplayResidual(err!.message, dir, payload));
+        }
+      }
+    }
+  }, 240_000);
+
+  it('the #3808 refusal (a different explicit name) keeps the AWS text off its --replace line', async () => {
+    for (const payload of PASTE_PAYLOADS.map(({ value }) => value)) {
+      const { provider } = recordingProvider(
+        awsSdkError(`Stream ${payload} already exists.`, 'ResourceInUseException'),
+        'x'
+      );
+      const err = await replaceOnce({
+        provider,
+        logicalId: payload,
+        type: KINESIS,
+        physicalId: 'app-stream',
+        oldProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 24 },
+        newProps: { Name: 'other-stream', ShardCount: 1, RetentionPeriodHours: 48 },
+        changedPath: 'RetentionPeriodHours',
+        replace: false,
+      });
+      expect(err!.code, payload).toBe('NAMED_REPLACEMENT_COLLISION');
+      const rows = err!.message.split('\n');
+      expect(rows[0], payload).toContain('cdkd deploy --replace would delete this resource');
+      expect(rows[0], payload).toContain('a logical id that is not a plain identifier (AWS::Kinesis::Stream)');
+      expect(err!.message).not.toContain('`cdkd deploy');
+      expect(rows.at(-1), payload).toBe(
+        `Underlying collision: ${JSON.stringify(`Stream ${payload} already exists.`)}`
+      );
+      withPasteDir((dir) => expectOnlyDisplayResidual(err!.message, dir, payload));
+    }
+  }, 120_000);
+
+  it('the no-flag refusal (a proven holder) keeps the AWS text off its --replace line', async () => {
+    for (const payload of PASTE_PAYLOADS.map(({ value }) => value)) {
+      const { provider } = recordingProvider(
+        awsSdkError(`Stream ${payload} already exists.`, 'ResourceInUseException'),
+        'x'
+      );
+      const err = await replaceOnce({
+        provider,
+        logicalId: 'Stream',
+        type: KINESIS,
+        physicalId: 'app-stream',
+        oldProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 24 },
+        newProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 48 },
+        changedPath: 'RetentionPeriodHours',
+        replace: false,
+      });
+      expect(err!.code, payload).toBe('NAMED_REPLACEMENT_COLLISION');
+      const rows = err!.message.split('\n');
+      expect(rows[0], payload).toContain('or re-run with cdkd deploy --replace to delete the old resource FIRST');
+      expect(rows[0], payload).not.toContain(payload);
+      expect(rows.at(-1), payload).toBe(
+        `Underlying collision: ${JSON.stringify(`Stream ${payload} already exists.`)}`
+      );
+      withPasteDir((dir) => expectOnlyDisplayResidual(err!.message, dir, payload));
+    }
+  }, 120_000);
+
+  it('the name-origin descriptor describes a physical id it may not show beside the command', () => {
+    for (const payload of PASTE_PAYLOADS.map(({ value }) => value)) {
+      const origin = replacementNameOrigin.call({} as InstanceType<typeof DeployEngine>, 'Stream', payload);
+      expect(origin.descriptor, payload).toContain('(a physical id that is not a plain identifier)');
+      expect(origin.descriptor, payload).not.toContain(payload);
+    }
+    expect(
+      replacementNameOrigin.call({} as InstanceType<typeof DeployEngine>, 'Stream', 'app-stream').descriptor
+    ).toBe('The resource has a user-supplied physical name (app-stream)');
+  });
+
+  it("the 'Failed to <op> <id>' wrapper describes a payload id beside a provider refusal carrying a flag, and passes the message through", async () => {
+    for (const payload of PASTE_PAYLOADS.map(({ value }) => value)) {
+      // The provider gated its own copy of the id; the wrapper must not print
+      // the raw one beside the flag again, nor re-describe the provider text.
+      const providerText =
+        'Failed to create a logical id that is not a plain identifier: still pending after 30m. ' +
+        'Re-run with --resource-timeout 60m';
+      const { provider } = recordingProvider(new Error(providerText), 'x');
+      await replaceOnce({
+        provider,
+        logicalId: payload,
+        type: KINESIS,
+        physicalId: 'app-stream',
+        oldProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 24 },
+        newProps: { ShardCount: 1, RetentionPeriodHours: 48 },
+        changedPath: 'RetentionPeriodHours',
+      });
+      const line = (await errorLines()).findLast((l) => l.startsWith('Failed to update '));
+      expect(line, payload).toBe(
+        `Failed to update a logical id that is not a plain identifier: ${providerText}`
+      );
+      withPasteDir((dir) => {
+        expectNoCommandBesideDisplay(line!, payload);
+        expect(spansThatRun(line!, dir), payload).toEqual([]);
+      });
+    }
+  }, 120_000);
 });

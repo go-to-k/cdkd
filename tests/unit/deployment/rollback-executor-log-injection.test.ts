@@ -1091,12 +1091,19 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // rendered text cannot pass quietly.
     expect(src).toContain('isNameCollisionErrorFrom(createError, op.logicalId)');
     expect(src).not.toContain('isNameCollisionError(msg)');
-    expect(src).toContain('.replace(/[\\s\\p{Cf}\\p{Default_Ignorable_Code_Point}\\u2800]{2,}/gu, \' \')');
-    expect(src).toMatch(/return displayAwsMessage\(\s*displaySafe\(msg\)\.replace\(/);
+    // The collapse and the JSON boundary live in `collision-text.ts` since
+    // go-to-k/cdkd#4291, shared with the deploy engine's `--replace` twin.
+    const collision = readFileSync(
+      new URL('../../../src/deployment/collision-text.ts', import.meta.url),
+      'utf8'
+    );
+    expect(collision).toContain('.replace(/[\\s\\p{Cf}\\p{Default_Ignorable_Code_Point}\\u2800]{2,}/gu, \' \')');
+    expect(collision).toMatch(/return displayAwsMessage\(\s*displaySafe\(msg\)\.replace\(/);
+    expect(collision).toContain('return JSON.stringify(collisionText(maskedMsg));');
     // Through the op's masker since issue #4037, and inside a JSON boundary
     // since go-to-k/cdkd#4214.
     expect(src).toContain('${collisionLine(mask(msg))}');
-    expect(src).toContain('return JSON.stringify(collisionText(maskedMsg));');
+    expect(src).toContain("import { collisionLine } from './collision-text.js';");
   });
 
   it('a forged OLD type (issue #2668) cannot forge a line through the Type-change renders', async () => {

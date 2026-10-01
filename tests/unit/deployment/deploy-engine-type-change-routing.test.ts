@@ -778,7 +778,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       `which cdkd does not know to share a name space with ${NEW_TYPE}`
     );
     // No `--replace` advice: the flag would refuse the same way.
-    expect(chainText(err)).toContain('`cdkd deploy --replace` would refuse the same way');
+    expect(chainText(err)).toContain('cdkd deploy --replace would refuse the same way');
     expect(chainText(err)).not.toContain('to delete the old resource FIRST');
     expect(providerFor(OLD_TYPE).delete).not.toHaveBeenCalled();
   });

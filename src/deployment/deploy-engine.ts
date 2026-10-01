@@ -1,6 +1,7 @@
 import { getLogger } from '../utils/logger.js';
 import { pasteableCommand } from '../utils/pasteable-command.js';
 import { withProducerRegions } from './producer-regions-scope.js';
+import { logicalIdShown } from '../provisioning/composite-id.js';
 import {
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
@@ -3450,8 +3451,14 @@ export class DeployEngine {
       // verbatim for a resource with no recorded secret.
       this.logger.error(
         this.maskForResource(
+          // The masking KEY stays the raw id; the DISPLAYED id is named only
+          // when plain (go-to-k/cdkd#4308). `message` can be a provider
+          // refusal ending in a pasteable flag (`--resource-timeout`), and the
+          // provider already gated its own copy of the id, so this line must
+          // not print the raw id beside it again. `message` itself is passed
+          // through as the provider wrote it, never re-described.
           logicalId,
-          `Failed to ${change.changeType.toLowerCase()} ${logicalId}: ${message}`
+          `Failed to ${change.changeType.toLowerCase()} ${logicalIdShown(logicalId)}: ${message}`
         )
       );
 
@@ -3493,7 +3500,9 @@ export class DeployEngine {
       // AFTER `extractDeploymentEventError` above, which masks separately via
       // `recordEvent` and would otherwise mask twice for no benefit.
       throw new ProvisioningError(
-        `Failed to ${change.changeType.toLowerCase()} resource ${logicalId}`,
+        // Named only when plain, as on the log line above (go-to-k/cdkd#4308):
+        // the CLI prints this head above the cause, which can carry a flag.
+        `Failed to ${change.changeType.toLowerCase()} resource ${logicalIdShown(logicalId)}`,
         resourceType,
         logicalId,
         stateResources[logicalId]?.physicalId,
