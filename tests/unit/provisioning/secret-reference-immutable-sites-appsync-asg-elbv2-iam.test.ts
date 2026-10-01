@@ -907,4 +907,26 @@ describe('AutoScalingGroup: an AWS failure quoting the group name', () => {
     expect(error.cause).toBe(awsFailure);
     expect(hasRedactedCause(error)).toBe(true);
   });
+
+  it('an AWS failure with nothing to mask is not stamped', async () => {
+    const awsFailure = new Error('ScalingActivityInProgress: busy');
+    mockSend.mockRejectedValue(awsFailure);
+    let caught: unknown;
+    try {
+      await new ASGProvider().update(
+        'Asg',
+        NAME,
+        'AWS::AutoScaling::AutoScalingGroup',
+        { AutoScalingGroupName: NAME, MinSize: '0', MaxSize: '2' },
+        { AutoScalingGroupName: REF, MinSize: '0', MaxSize: '1' },
+        context
+      );
+    } catch (error) {
+      caught = error;
+    }
+    const error = caught as ProvisioningError;
+    expect(error.message).toContain('Failed to update AutoScalingGroup Asg');
+    expect(error.cause).toBe(awsFailure);
+    expect(hasRedactedCause(error)).toBe(false);
+  });
 });

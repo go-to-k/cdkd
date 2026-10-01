@@ -301,7 +301,7 @@ set -e
 if [ "${UPDATE_RC}" -ne 0 ]; then
   for refusal in "StageName is immutable" "Cannot update ServiceName" \
     "GraphqlApi.Name is immutable" "DataSource.Name is immutable" "EntityAlreadyExists" \
-    "already exists"; do
+    "A policy called"; do
     if grep -qF "${refusal}" "${DEPLOY_LOG}"; then
       echo "FAIL: the update failed with '${refusal}': the recorded secret reference was compared with the resolved value (go-to-k/cdkd#4275)" >&2
     fi
