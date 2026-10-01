@@ -2683,9 +2683,8 @@ describe('reportDriftBaselineGaps', () => {
 
   it('groups a MIXED refused list by remedy in a FIXED class order, each id under its own (issue #3465)', () => {
     // Record order interleaves the classes AND puts the reason-less one before
-    // the unverifiable-parameter one, so neither record order nor a sort on the
-    // remedy text yields the asserted group order, and one remedy for the
-    // whole list misplaces an id.
+    // the unverifiable-parameter one, so record order does not yield the
+    // asserted group order, and one remedy for the whole list misplaces an id.
     const messages = refusedWarnings({
       Legacy: refusedRecord(),
       Clearable: refusedRecord('incomplete-resolution'),
