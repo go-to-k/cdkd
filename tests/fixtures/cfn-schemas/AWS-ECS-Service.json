@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Service",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-01",
   "properties": [
     "AvailabilityZoneRebalancing",
     "CapacityProviderStrategy",
@@ -163,9 +163,13 @@
       "ValueFrom"
     ],
     "VpcLatticeConfigurations": [
+      "AdvancedConfiguration",
+      "AlternateTargetGroupArn",
       "PortName",
+      "ProductionListenerRule",
       "RoleArn",
-      "TargetGroupArn"
+      "TargetGroupArn",
+      "TestListenerRule"
     ],
     "DeploymentController": [
       "Type"
@@ -308,6 +312,10 @@
       "Services.Tls.RoleArn"
     ],
     "VpcLatticeConfigurations": [
+      "AdvancedConfiguration",
+      "AdvancedConfiguration.AlternateTargetGroupArn",
+      "AdvancedConfiguration.ProductionListenerRule",
+      "AdvancedConfiguration.TestListenerRule",
       "PortName",
       "RoleArn",
       "TargetGroupArn"
@@ -399,7 +407,8 @@
     "VpcLatticeConfiguration": {
       "TargetGroupArn": "scalar",
       "PortName": "scalar",
-      "RoleArn": "scalar"
+      "RoleArn": "scalar",
+      "AdvancedConfiguration": "object"
     },
     "PlacementStrategy": {
       "Field": "scalar",
@@ -473,6 +482,11 @@
     "ForceNewDeployment": {
       "EnableForceNewDeployment": "scalar",
       "ForceNewDeploymentNonce": "scalar"
+    },
+    "VpcLatticeAdvancedConfiguration": {
+      "TestListenerRule": "scalar",
+      "AlternateTargetGroupArn": "scalar",
+      "ProductionListenerRule": "scalar"
     },
     "DeploymentAlarms": {
       "AlarmNames": "array",

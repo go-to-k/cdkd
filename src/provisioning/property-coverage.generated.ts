@@ -2168,7 +2168,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'StreamModeDetails',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([['WarmThroughputMiBps', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>([
+        ['RecordDistributionStrategy', 'not yet implemented by cdkd'],
+        ['WarmThroughputMiBps', 'not yet implemented by cdkd'],
+      ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'WarmThroughputObject']),
       ccRouteUnavailable: false,
