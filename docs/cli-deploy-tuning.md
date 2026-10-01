@@ -409,8 +409,9 @@ the deploy, matching `cdk deploy`.
 
 The path and message are printed with terminal control characters removed (an
 escape sequence, a carriage return, `U+2028`, a bidi override), so an assembly
-read with `-a <dir>` cannot rewrite cdkd's output through an annotation. A
-multi-line message keeps its line breaks.
+read with `-a <dir>` cannot move the cursor, erase a line or recolour cdkd's
+output through an annotation. A multi-line message keeps its line breaks, so
+its continuation lines are the assembly's own text.
 
 `cdkd synth` checks every synthesized stack unless you name one, in which
 case it checks that stack.

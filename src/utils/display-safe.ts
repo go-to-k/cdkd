@@ -292,6 +292,10 @@ const TERMINAL_UNSAFE_KEEPING_LINE_BREAKS = new RegExp(
  * bidi overrides and isolates. A CRLF pair is normalised to LF first, so a
  * Windows-authored message keeps its line breaks instead of gaining a space.
  *
+ * Unlike `safeMsg`, cdkd's OWN colours go too: a value that keeps its
+ * newlines could otherwise print a whole line in cdkd's red or green, and no
+ * legitimate value of this class carries an escape sequence.
+ *
  * Applied at the CALL SITE although `ConsoleLogger` runs `terminalSafe` over
  * every line: that sink cannot remove an OSC whole (two raw values could open
  * and close one around cdkd's own text), and a caller holding any other
@@ -304,10 +308,9 @@ const TERMINAL_UNSAFE_KEEPING_LINE_BREAKS = new RegExp(
  * how a continuation line is set apart.
  */
 export function displaySafeMultiline(value: unknown): string {
-  return replaceUnsafe(
-    toDisplayText(value).replace(/\r\n/g, '\n'),
-    TERMINAL_UNSAFE_KEEPING_LINE_BREAKS
-  );
+  return toDisplayText(value)
+    .replace(/\r\n/g, '\n')
+    .replace(TERMINAL_UNSAFE_KEEPING_LINE_BREAKS, (match) => (match.length === 1 ? ' ' : ''));
 }
 
 /**

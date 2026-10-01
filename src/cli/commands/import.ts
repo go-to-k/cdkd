@@ -74,6 +74,7 @@ import {
   displayAwsMessage,
   displayIdent,
   displaySafe,
+  displaySafeMultiline,
   displayStackName,
   isPasteableIdent,
   safeMsg,
@@ -84,6 +85,7 @@ import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
+  describeFileReadFailure,
   displayAssemblyPath,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -1125,7 +1127,9 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       }
     } finally {
       await lockManager.releaseLock(stackInfo.stackName, targetRegion).catch((err) => {
-        logger.warn(`Failed to release lock: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(
+          `Failed to release lock: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}`
+        );
       });
     }
   } finally {
@@ -1596,7 +1600,13 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
       ...(result.attributes !== undefined && { attributes: result.attributes }),
     };
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
+    // `displaySafeMultiline`, not `displaySafe`: a provider refusal may put
+    // its remedy on a line of its own, and joining the lines would set that
+    // command beside the values the refusal describes. What it strips is an
+    // AWS error echoing a template-supplied value with control characters in
+    // it (go-to-k/cdkd#3479). The import plan's `failed` row prints this same
+    // text as its reason.
+    const msg = displaySafeMultiline(error instanceof Error ? error.message : String(error));
     // The provider refusals end in a `--resource` remedy, so this line names
     // the logical id and type only when plain and describes them otherwise
     // (go-to-k/cdkd#3950's S1 rule, judged per line): printed raw, they put back
@@ -4008,7 +4018,7 @@ function readNestedChildTemplate(
   } catch (err) {
     throw new Error(
       `Failed to read nested-stack template for ${displayIdent(childLogicalId)} at ` +
-        `${displayAssemblyPath(templatePath)}: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}`
+        `${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
     );
   }
   try {
@@ -4016,7 +4026,7 @@ function readNestedChildTemplate(
   } catch (err) {
     throw new Error(
       `Failed to parse nested-stack template for ${displayIdent(childLogicalId)} at ` +
-        `${displayAssemblyPath(templatePath)}: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}`
+        `${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
     );
   }
 }

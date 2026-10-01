@@ -65,6 +65,13 @@ describe('processStackMessages display (go-to-k/cdkd#3479)', () => {
     expect(logger.warn).toHaveBeenCalledWith('[Warning at /MyStack] first\nsecond third');
   });
 
+  it("drops cdkd's own colours from the message, so a continuation line cannot borrow them", () => {
+    const logger = render([
+      { level: 'warning', path: '/MyStack', message: 'ok\n\x1b[32mDeployment complete\x1b[0m' },
+    ]);
+    expect(logger.warn).toHaveBeenCalledWith('[Warning at /MyStack] ok\nDeployment complete');
+  });
+
   it('still fails on an error annotation after sanitizing it', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     expect(() =>

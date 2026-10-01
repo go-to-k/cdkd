@@ -58,9 +58,12 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveUseCdkBootstrapAssets: vi.fn(() => false),
 }));
 
+const mockCreateAssetRedirectResolver = vi.hoisted(() =>
+  vi.fn(() => async (): Promise<unknown> => undefined)
+);
 vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/assets/asset-redirect.js')>()),
-  createAssetRedirectResolver: vi.fn(() => async (): Promise<unknown> => undefined),
+  createAssetRedirectResolver: mockCreateAssetRedirectResolver,
 }));
 
 const stsSend = vi.hoisted(() => vi.fn(async () => ({ Account: '123456789012' })));
@@ -107,10 +110,11 @@ vi.mock('../../../src/cli/commands/retire-cfn-stack.js', async () => {
 });
 
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
+const mockGetState = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<unknown>>());
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     verifyBucketExists: vi.fn(async () => undefined),
-    getState: vi.fn(async () => null),
+    getState: mockGetState,
     saveState: mockSaveState,
   })),
 }));
@@ -205,6 +209,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockSaveState.mockResolvedValue('"etag"');
   mockReleaseLock.mockResolvedValue(undefined);
+  mockGetState.mockResolvedValue(null);
+  mockCreateAssetRedirectResolver.mockImplementation(() => async (): Promise<unknown> => undefined);
   readlineQuestion.mockResolvedValue('n');
   mockGetProvider.mockReturnValue({
     import: vi.fn(async () => ({ physicalId: 'phys', attributes: {} })),
@@ -233,7 +239,9 @@ describe('cdkd import renders template-derived identifiers display-safe (go-to-k
   it('the nested-stack shape refusal: each id list and the parent stack name', async () => {
     const parent = `P${NEL}PARENTFORGED`;
     const onlyInTemplate = `T${C1_CSI}2KTEMPLATEFORGED`;
-    const listForger = 'A, B';
+    // No space, so only `listMember` gives it a boundary: a bare `A,B` in a
+    // `', '`-joined list reads as two ids.
+    const listForger = 'A,B';
     const onlyInAws = `W${LF}AWSFORGED`;
     mockSynthesize.mockResolvedValue({
       stacks: [
@@ -260,10 +268,10 @@ describe('cdkd import renders template-derived identifiers display-safe (go-to-k
     // would read as a separator), the plain id bare.
     // `displayIdent`'s ASCII allowlist blanks the C1 introducer itself; the
     // `2K` after it is inert text once nothing introduces it.
-    expect(refusal).toContain('["T 2KTEMPLATEFORGED", "A, B"]');
+    expect(refusal).toContain('["T 2KTEMPLATEFORGED", "A,B"]');
     expect(refusal).toContain('["W AWSFORGED"]');
     // The missing-asset-path row lists every template id, and Plain stays bare.
-    expect(refusal).toContain('["T 2KTEMPLATEFORGED", "A, B", Plain]');
+    expect(refusal).toContain('["T 2KTEMPLATEFORGED", "A,B", Plain]');
   });
 
   it('the nested child walk: Adopting / state written lines, and a plain child renders unchanged', async () => {
@@ -442,6 +450,158 @@ describe('cdkd import renders template-derived identifiers display-safe (go-to-k
     const prompt = String(readlineQuestion.mock.calls[0]?.[0]);
     expect(forging(prompt)).toEqual([]);
     expect(prompt).toMatch(/^Write state for "S PROMPTFORGED" \(us-east-1\) with 1 resource\(s\)\?/);
+  });
+
+  it('a provider failure: the error line and the import plan row keep line breaks but no forging byte', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [stackInfo('S', { Resources: { Q: { Type: 'AWS::SQS::Queue' } } } as CloudFormationTemplate)],
+    });
+    mockGetProvider.mockReturnValue({
+      import: vi.fn(async () => {
+        throw new Error(`denied${NEL}FAILFORGED${C1_CSI}2K${LF}second line`);
+      }),
+    });
+
+    await runImport(['--app', 'x', '--yes']).catch(() => undefined);
+
+    const error = errorSpy.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Failed to import'));
+    expect(error).toBe('Failed to import Q (AWS::SQS::Queue): denied FAILFORGED\nsecond line');
+    const row = infoSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('FAILFORGED'));
+    expect(row).toBe('  ✗ Q (AWS::SQS::Queue) — denied FAILFORGED\nsecond line');
+  });
+
+  it('the root lock-release warning bounds and sanitizes the release error', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [stackInfo('S', { Resources: { Q: { Type: 'AWS::SQS::Queue' } } } as CloudFormationTemplate)],
+    });
+    mockReleaseLock.mockRejectedValue(new Error(`release failed${LF}ROOTRELEASEFORGED`));
+
+    await runImport(['--app', 'x', '--yes']);
+
+    expect(warnSpy.mock.calls.map((c) => String(c[0]))).toContain(
+      'Failed to release lock: release failed ROOTRELEASEFORGED'
+    );
+  });
+
+  it('the merge plan line and the no-new-physical-ids debug line', async () => {
+    const name = `S${NEL}MERGEFORGED`;
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        stackInfo(name, {
+          Resources: { Q: { Type: 'AWS::SQS::Queue' }, R: { Type: 'AWS::SQS::Queue' } },
+        } as CloudFormationTemplate),
+      ],
+    });
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 10,
+        stackName: name,
+        region: 'us-east-1',
+        resources: { R: { physicalId: 'r', resourceType: 'AWS::SQS::Queue', properties: {} } },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"e"',
+    });
+
+    await runImport(['--app', 'x', '--resource', 'Q=q-url', '--yes']);
+    expect(infoSpy.mock.calls.map((c) => String(c[0]))).toContain(
+      'Merging into existing state for "S MERGEFORGED" (us-east-1): preserving 1 unlisted resource(s)'
+    );
+
+    mockGetState.mockResolvedValue(null);
+    mockTryGetCfnResourceMap.mockResolvedValue(new Map([['NotInTemplate', 'x']]));
+    await runImport(['--app', 'x', '--yes']);
+    expect(debugSpy.mock.calls.map((c) => String(c[0]))).toContain(
+      'CloudFormation stack "S MERGEFORGED" contributed no new physical IDs.'
+    );
+    expectNoForging(allLogLines());
+  });
+
+  it('the asset-rewrite lines, at the root and for a nested child', async () => {
+    const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+    const cdkBucket = 'cdk-hnb659fds-assets-111111111111-us-east-1';
+    const map = buildAssetRedirectMap(
+      {
+        version: '38.0.0',
+        files: {
+          aaaa1111: {
+            displayName: 'Code',
+            source: { path: 'asset.aaaa1111', packaging: 'zip' },
+            destinations: { d1: { bucketName: cdkBucket, objectKey: 'k.zip' } },
+          },
+        },
+        dockerImages: {},
+      },
+      {
+        assetBucket: 'cdkd-assets-111111111111-us-east-1',
+        containerRepo: 'cdkd-container-assets-111111111111-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      },
+      '111111111111',
+      'us-east-1'
+    );
+    mockCreateAssetRedirectResolver.mockImplementation(() => async () => map);
+    const parent = `P${LS}ASSETFORGED`;
+    const child = `C${NEL}KIDFORGED`;
+    const childPath = join(dir, 'child.json');
+    const assetProps = { PolicyName: 'p', DataUrl: `s3://${cdkBucket}/k.zip` };
+    writeFileSync(
+      childPath,
+      JSON.stringify({ Resources: { Pol: { Type: 'AWS::IAM::Policy', Properties: assetProps } } })
+    );
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        stackInfo(
+          parent,
+          {
+            Resources: {
+              [child]: NESTED,
+              Pol: { Type: 'AWS::IAM::Policy', Properties: assetProps },
+            },
+          } as CloudFormationTemplate,
+          { [child]: childPath }
+        ),
+      ],
+    });
+    mockGetCfnResourceTree.mockResolvedValue(
+      tree(parent, [[child, 'arn:c'], ['Pol', 'pol']], [[child, tree('arn:c', [['Pol', 'pol']])]])
+    );
+
+    await runImport(['--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+    const info = infoSpy.mock.calls.map((c) => String(c[0]));
+    expect(info.some((l) => l.startsWith('Note: 1 asset reference(s) in stack "P ASSETFORGED" are recorded'))).toBe(true);
+    expect(
+      info.some((l) => l.startsWith('Note: 1 asset reference(s) in nested stack "P ASSETFORGED~C KIDFORGED" are'))
+    ).toBe(true);
+    expect(debugSpy.mock.calls.map((c) => String(c[0]))).toContain(
+      'Rewrote 1 asset reference(s) to cdkd asset storage in template of stack "P ASSETFORGED"'
+    );
+    expectNoForging(allLogLines());
+  });
+
+  it('the parameter-resolution failure text is bounded', async () => {
+    // Its two siblings are not driven here: `evaluateConditions` catches per
+    // condition, so the condition arm needs a throw outside that loop, and
+    // the 'Default'-only arm needs the defaults pass to fail as well. Both
+    // render through the same `displayAwsMessage` call shape as this one.
+    const long = 'Z'.repeat(5000);
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        stackInfo('S', {
+          Parameters: { [`Req${long}`]: { Type: 'String' } },
+          Resources: { Q: { Type: 'AWS::SQS::Queue' } },
+        } as unknown as CloudFormationTemplate),
+      ],
+    });
+
+    await runImport(['--app', 'x', '--yes']);
+
+    const debug = debugSpy.mock.calls.map((c) => String(c[0]));
+    const param = debug.find((l) => l.startsWith('Template parameter resolution failed'));
+    expect(param).toMatch(/\[cut: \d+ more characters withheld\] — retrying/);
   });
 
   it('the unresolved-intrinsics warning: the resolver echo is bounded and stays on its line', async () => {

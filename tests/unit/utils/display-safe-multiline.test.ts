@@ -39,6 +39,13 @@ describe('displaySafeMultiline', () => {
     );
   });
 
+  it("removes every SGR whole, cdkd's own colours included", () => {
+    // `safeMsg` keeps cdkd's colours inside a value; a value that keeps its
+    // newlines must not, or it could print a whole line in cdkd's red.
+    expect(displaySafeMultiline('a\x1b[31mRED\x1b[0m b')).toBe('aRED b');
+    expect(displaySafeMultiline('a\x1b[8mHIDDEN\x1b[28m b')).toBe('aHIDDEN b');
+  });
+
   it('keeps the newline around a stripped sequence, and nothing else', () => {
     const out = displaySafeMultiline('line one\x1b[2K\r\nline two\u0085');
     expect(out).toBe('line one\nline two ');

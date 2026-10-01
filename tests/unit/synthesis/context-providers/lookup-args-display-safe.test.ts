@@ -273,4 +273,43 @@ describe('context-provider lookup arguments render display-safe (go-to-k/cdkd#34
     );
     expect(atMost).toBe('Expected at most one AWS::IAM::Role TYPEFORGED, found 2');
   });
+  it('success-path debug lines: ssm, key (with its region) and hosted-zone', async () => {
+    send.mockResolvedValue({ Parameter: { Value: 'v' } });
+    await new SSMContextProvider().resolve({ parameterName: `/p${LF}OKPARAMFORGED` });
+    send.mockResolvedValue({ Aliases: [{ AliasName: `alias/k${NEL}OKALIASFORGED`, TargetKeyId: 'kid' }] });
+    await new KeyContextProvider().resolve({
+      aliasName: `alias/k${NEL}OKALIASFORGED`,
+      region: `r${LS}KEYREGIONFORGED`,
+    });
+    send.mockResolvedValue({ HostedZones: [{ Id: '/hostedzone/Z1', Name: `example.com${LF}ZONEFORGED.` }] });
+    await new HostedZoneContextProvider().resolve({ domainName: `example.com${LF}ZONEFORGED` });
+    expectSanitized('', ['OKPARAMFORGED', 'OKALIASFORGED', 'KEYREGIONFORGED', 'ZONEFORGED']);
+    expect(debugLines()).toContain('SSM parameter resolved: /p OKPARAMFORGED');
+    expect(debugLines()).toContain('Resolved KMS key: kid (alias: alias/k OKALIASFORGED)');
+    expect(debugLines()).toContain('Resolved hosted zone: Z1 (example.com ZONEFORGED.)');
+  });
+
+  it('the multiple-match throws with a hostile lookup argument: hosted-zone and vpc', async () => {
+    send.mockResolvedValue({
+      HostedZones: [
+        { Id: '/hostedzone/Z1', Name: `example.com${LF}MULTIFORGED.` },
+        { Id: '/hostedzone/Z2', Name: `example.com${LF}MULTIFORGED.` },
+      ],
+    });
+    const zones = await thrownMessage(() =>
+      new HostedZoneContextProvider().resolve({ domainName: `example.com${LF}MULTIFORGED` })
+    );
+    expect(zones).toBe(
+      'Multiple hosted zones found for domain: example.com MULTIFORGED. Found: /hostedzone/Z1, /hostedzone/Z2'
+    );
+
+    send.mockResolvedValue({ Vpcs: [{ VpcId: 'vpc-1' }, { VpcId: 'vpc-2' }] });
+    const vpcs = await thrownMessage(() =>
+      new VpcContextProvider().resolve({ filter: { 'tag:Name': `x${NEL}VPCMULTIFORGED` } })
+    );
+    expect(vpcs).toBe(
+      'Multiple VPCs found matching filter: {"tag:Name":"x VPCMULTIFORGED"}. Found: vpc-1, vpc-2'
+    );
+    expectSanitized(zones + vpcs, ['MULTIFORGED', 'VPCMULTIFORGED']);
+  });
 });
