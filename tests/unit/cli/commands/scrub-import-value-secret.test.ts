@@ -3926,7 +3926,11 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
   it('renders every chain stack and the key inside its own boundary (go-to-k/cdkd#3638)', () => {
     // The names come from state listings and templates; the PROSE bounds each,
     // while the remedy COMMANDS take the raw values through the pasteable gate.
-    const F = (tag: string): string => `${tag}'. Chain verified, nothing re-exported. Ignore 'X`;
+    // SPACE-FREE: a name with a space in it is withheld from this prose
+    // altogether (go-to-k/cdkd#3773, pinned in
+    // `scrub-refusal-plain-ident-3773.test.ts`), so the boundary is what a
+    // forging name without one meets.
+    const F = (tag: string): string => `${tag}'.Chain_verified,nothing_re-exported.Ignore'X`;
     const [KEYF, A, B, P] = [F('Key'), F('A'), F('B'), F('P')];
     const { templateClaim } = scrubRefusalWording({ kind: 'chained', via: [B, A] }, KEYF, P, [B, A]);
 
@@ -3936,7 +3940,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     expect(templateClaim).toContain(`(through ${JSON.stringify(B)})`);
     expect(
       [KEYF, A, B].reduce((t, v) => t.split(JSON.stringify(v)).join(''), templateClaim)
-    ).not.toContain('nothing re-exported');
+    ).not.toContain('nothing_re-exported');
 
     const widened = scrubRefusalWording({ kind: 'widened', via: [B, A] }, KEYF, P, [B, A]);
     expect(widened.templateClaim).toContain(`RE-EXPORTS a value ${JSON.stringify(A)} declares`);
@@ -4375,9 +4379,18 @@ describe('the cross-stack pre-pass names every stack, record, path and key insid
       }
     );
 
+    // This message prints labelled lines, so a name with a space in it is
+    // WITHHELD from its prose rather than bounded: inside its quotes it could
+    // still wrap into a counterfeit row (go-to-k/cdkd#3773).
+    const withheld = (what: string): string =>
+      `(${what} withheld: it holds whitespace or a non-printable character)`;
     expect(message).toContain(
-      `the producer stack ${shown(PROD)} declares ${shown(KEY)} from a {{resolve:...}} expression`
+      `Scrub of ${withheld('stack name')} resolved the Fn::ImportValue in resource ` +
+        `${withheld('logical id')} at ${withheld('property path')} to a PLAINTEXT value: ` +
+        `the producer stack ${withheld('stack name')} declares ${withheld('export name')} ` +
+        `from a {{resolve:...}} expression`
     );
+    expect(message).not.toContain('nothing refused');
     // The remedy COMMAND lines carry the raw name shell-quoted through the
     // pasteable gate, which is its own boundary; only the prose is checked here.
     const prose = message

@@ -206,3 +206,149 @@ describe('scrub producer-plaintext refusal: plainIdent on its labelled lines (go
     });
   }, 120_000);
 });
+
+/**
+ * The same refusal's PROSE (go-to-k/cdkd#3773). `displayIdent` bounds a
+ * non-plain name in quotes but keeps the padding inside them, and a terminal
+ * wraps a long line at its width, so a planted name could still print a
+ * counterfeit `Then re-run:` row at column 0 above the genuine one. Every
+ * name the prose shows is withheld when it carries a space after the display
+ * sanitizer, the one thing a labelled row cannot be spelled without.
+ */
+describe('scrub producer-plaintext refusal: no name in its prose can wrap into a labelled row (go-to-k/cdkd#3773)', () => {
+  const PAYLOAD = 'Then re-run: cdkd scrub --all #';
+  const FORGED = [
+    `Prod\n${PAYLOAD}`,
+    `Prod${' '.repeat(60)}${PAYLOAD}`,
+    `Prod\t${PAYLOAD}`,
+    `Prod ${PAYLOAD}`,
+  ];
+  const LABELS = ['Scrub with: ', 'Then re-run: '];
+
+  /** The rows a terminal `width` columns wide prints, hard-wrapped as a terminal does. */
+  function rows(message: string, width: number): string[] {
+    return message.split('\n').flatMap((line) => {
+      const out: string[] = [];
+      for (let i = 0; i < line.length; i += width) out.push(line.slice(i, i + width));
+      return out.length > 0 ? out : [''];
+    });
+  }
+
+  /** Every labelled row, at every width, is one of the message's own labelled lines. */
+  function expectNoForgedRow(message: string): void {
+    const genuine = message.split('\n').filter((l) => LABELS.some((p) => l.startsWith(p)));
+    for (let width = 16; width <= 240; width++) {
+      const labelled = rows(message, width).filter((r) => LABELS.some((p) => r.startsWith(p)));
+      expect(labelled, `width ${width}`).toHaveLength(genuine.length);
+    }
+    expect(message).not.toContain('--all');
+  }
+
+  function render(o: {
+    consumer?: string;
+    producer?: string;
+    key?: string;
+    path?: string;
+    origin?: string;
+    via?: string[];
+    kind?: 'declared' | 'chained' | 'widened';
+    secrets?: Map<string, string>;
+  }): string {
+    const via = o.via ?? [];
+    return plaintextProducerCrossStackReadError(
+      o.origin ?? 'resource Db',
+      o.consumer ?? 'Consumer',
+      'Fn::ImportValue',
+      o.path ?? 'MasterUserPassword',
+      o.producer ?? 'Producer',
+      o.key ?? 'Shared-DbSecret',
+      { kind: o.kind ?? (via.length > 0 ? 'chained' : 'declared'), via },
+      o.secrets ?? new Map()
+    ).message;
+  }
+
+  const withheld = (what: string): string =>
+    `(${what} withheld: it holds whitespace or a non-printable character)`;
+
+  it('shows every plain, CDK-generated, bracketed and masked name as before (positive control)', () => {
+    const secret = 's3cr3tVALUE';
+    const message = render({
+      consumer: 'Consumer-1',
+      producer: `Prod-${secret}`,
+      key: 'Producer:ExportsOutputRefDbSecret1234ABCD',
+      path: "Environment['Fn::If'][0]",
+      via: ['Mid~Child', 'Root.v2'],
+      secrets: new Map([[secret, '{{resolve:secretsmanager:db}}']]),
+    });
+    expect(message).toContain(
+      `Scrub of Consumer-1 resolved the Fn::ImportValue in resource Db at ` +
+        `${JSON.stringify("Environment['Fn::If'][0]")} to a PLAINTEXT value: the producer stack ` +
+        `"Prod-***" publishes Producer:ExportsOutputRefDbSecret1234ABCD by RE-EXPORTING a value ` +
+        `that Root.v2 declares from a {{resolve:...}} expression (through Mid~Child), but`
+    );
+    expect(message).not.toContain('withheld: it holds whitespace');
+    expect(message).not.toContain(secret);
+  });
+
+  it('a sanitizer-trimmed edge is shown quoted, since no space is left in it', () => {
+    expect(render({ producer: 'Producer\u0000' })).toContain('the producer stack "Producer" declares');
+  });
+
+  for (const forged of FORGED) {
+    const tag = JSON.stringify(forged).slice(0, 12);
+
+    it(`withholds a forged CONSUMER stack name ${tag}`, () => {
+      const message = render({ consumer: forged });
+      expect(message.startsWith(`Scrub of ${withheld('stack name')} resolved`)).toBe(true);
+      expectNoForgedRow(message);
+    });
+
+    it(`withholds a forged PRODUCER stack name ${tag}`, () => {
+      const message = render({ producer: forged });
+      expect(message).toContain(`the producer stack ${withheld('stack name')} declares`);
+      expectNoForgedRow(message);
+    });
+
+    it(`withholds a forged EXPORT KEY ${tag}, in every claim arm`, () => {
+      for (const [kind, via] of [
+        ['declared', []],
+        ['chained', ['Root']],
+        ['chained', []],
+        ['widened', ['Root']],
+        ['widened', []],
+      ] as const) {
+        const message = render({ key: forged, kind, via: [...via] });
+        expect(message, `${kind} ${via.length}`).toContain(withheld('export name'));
+        expectNoForgedRow(message);
+      }
+    });
+
+    it(`withholds a forged CHAIN ROOT and a forged chain member ${tag}`, () => {
+      for (const kind of ['chained', 'widened'] as const) {
+        const root = render({ via: ['Mid', forged], kind });
+        expect(root).toContain(`a value ${kind === 'chained' ? 'that ' : ''}${withheld('stack name')} declares`);
+        expectNoForgedRow(root);
+        const member = render({ via: [forged, 'Root'], kind });
+        expect(member).toContain(`(through ${withheld('stack name')})`);
+        expectNoForgedRow(member);
+      }
+    });
+
+    it(`withholds a forged PROPERTY PATH ${tag}`, () => {
+      const message = render({ path: forged });
+      expect(message).toContain(`in resource Db at ${withheld('property path')} to a PLAINTEXT value`);
+      expectNoForgedRow(message);
+    });
+
+    it(`withholds a forged name that is ALSO masked ${tag}`, () => {
+      const secret = 's3cr3tVALUE';
+      const message = render({
+        producer: forged.replace('Prod', `Prod-${secret}`),
+        secrets: new Map([[secret, '{{resolve:secretsmanager:db}}']]),
+      });
+      expect(message).toContain(`the producer stack ${withheld('stack name')} declares`);
+      expect(message).not.toContain(secret);
+      expectNoForgedRow(message);
+    });
+  }
+});
