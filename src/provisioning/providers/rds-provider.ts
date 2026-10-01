@@ -962,7 +962,7 @@ export class RDSProvider implements ResourceProvider {
     context: DeleteContext | undefined,
     flip: ProtectionFlipRecord
   ): Promise<void> {
-    this.logger.debug(`Deleting DBCluster ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting DBCluster ${logicalId}`);
     // Issue #4029: set once a global-cluster detach was issued, so a delete
     // failing after it says the cluster is already standalone.
     let detachedFrom: string | undefined;
@@ -997,7 +997,7 @@ export class RDSProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
+              `Could not disable deletion protection for DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -1033,16 +1033,18 @@ export class RDSProvider implements ResourceProvider {
       // AWS took the delete: a later throw is the WAIT failing, and the guard
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
+      // Not the identifier: it embeds the physical id, which may be secret-derived
+      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
-          `Deleting DBCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+          `Deleting DBCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`
         );
       }
 
       this.logger.debug(`Successfully initiated deletion of DBCluster ${logicalId}`);
 
       // Wait for cluster to be fully deleted
-      await this.waitForClusterDeleted(physicalId, RDS_DELETE_WAIT_MS);
+      await this.waitForClusterDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
       if (error instanceof GlobalClusterDetachError) {
         // Non-retryable so the destroy / deploy classifiers never read an AWS
@@ -1067,7 +1069,7 @@ export class RDSProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DBCluster ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(`DBCluster ${logicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1428,7 +1430,7 @@ export class RDSProvider implements ResourceProvider {
     context: DeleteContext | undefined,
     flip: ProtectionFlipRecord
   ): Promise<void> {
-    this.logger.debug(`Deleting DBInstance ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting DBInstance ${logicalId}`);
 
     try {
       // `--remove-protection`: flip DeletionProtection off in-place
@@ -1460,7 +1462,7 @@ export class RDSProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
+              `Could not disable deletion protection for DBInstance ${logicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -1487,16 +1489,18 @@ export class RDSProvider implements ResourceProvider {
       );
       // AWS took the delete: see `deleteDBClusterOnce`.
       flip.deleteAccepted = true;
+      // Not the identifier: it embeds the physical id, which may be secret-derived
+      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
-          `Deleting DBInstance ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+          `Deleting DBInstance ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`
         );
       }
 
       this.logger.debug(`Successfully initiated deletion of DBInstance ${logicalId}`);
 
       // Wait for instance to be fully deleted
-      await this.waitForInstanceDeleted(physicalId, RDS_DELETE_WAIT_MS);
+      await this.waitForInstanceDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
@@ -1507,7 +1511,7 @@ export class RDSProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DBInstance ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(`DBInstance ${logicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1727,6 +1731,7 @@ export class RDSProvider implements ResourceProvider {
    * Wait for a DBCluster to be deleted
    */
   private async waitForClusterDeleted(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1738,7 +1743,7 @@ export class RDSProvider implements ResourceProvider {
         const cluster = await this.describeDBCluster(dbClusterIdentifier);
         const status = cluster?.Status;
 
-        this.logger.debug(`DBCluster ${dbClusterIdentifier} status: ${status}`);
+        this.logger.debug(`DBCluster ${logicalId} status: ${status}`);
 
         if (!cluster) return;
       } catch (error) {
@@ -1752,7 +1757,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for DBCluster ${dbClusterIdentifier} to be deleted`);
+    throw new Error(`Timed out waiting for DBCluster ${logicalId} to be deleted`);
   }
 
   /**
@@ -1784,6 +1789,7 @@ export class RDSProvider implements ResourceProvider {
    * Wait for a DBInstance to be deleted
    */
   private async waitForInstanceDeleted(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1795,7 +1801,7 @@ export class RDSProvider implements ResourceProvider {
         const instance = await this.describeDBInstance(dbInstanceIdentifier);
         const status = instance?.DBInstanceStatus;
 
-        this.logger.debug(`DBInstance ${dbInstanceIdentifier} status: ${status}`);
+        this.logger.debug(`DBInstance ${logicalId} status: ${status}`);
 
         if (!instance) return;
       } catch (error) {
@@ -1809,7 +1815,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for DBInstance ${dbInstanceIdentifier} to be deleted`);
+    throw new Error(`Timed out waiting for DBInstance ${logicalId} to be deleted`);
   }
 
   private sleep(ms: number): Promise<void> {

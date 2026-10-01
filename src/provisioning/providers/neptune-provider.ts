@@ -685,7 +685,7 @@ export class NeptuneProvider implements ResourceProvider {
     context: DeleteContext | undefined,
     flip: ProtectionFlipRecord
   ): Promise<void> {
-    this.logger.debug(`Deleting Neptune DBCluster ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting Neptune DBCluster ${logicalId}`);
 
     try {
       // `--remove-protection`: flip DeletionProtection off in-place
@@ -720,7 +720,7 @@ export class NeptuneProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
+              `Could not disable deletion protection for Neptune DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -740,16 +740,18 @@ export class NeptuneProvider implements ResourceProvider {
       // AWS took the delete: a later throw is the WAIT failing, and the guard
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
+      // Not the identifier: it embeds the physical id, which may be secret-derived
+      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
-          `Deleting Neptune DBCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+          `Deleting Neptune DBCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`
         );
       }
 
       this.logger.debug(`Successfully initiated deletion of Neptune DBCluster ${logicalId}`);
 
       // Wait for cluster to be fully deleted
-      await this.waitForClusterDeleted(physicalId);
+      await this.waitForClusterDeleted(logicalId, physicalId);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
@@ -760,7 +762,7 @@ export class NeptuneProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Neptune DBCluster ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(`Neptune DBCluster ${logicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1139,6 +1141,7 @@ export class NeptuneProvider implements ResourceProvider {
    * Wait for a DBCluster to be deleted (no SDK waiter — manual poll).
    */
   private async waitForClusterDeleted(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1150,7 +1153,7 @@ export class NeptuneProvider implements ResourceProvider {
         const cluster = await this.describeDBCluster(dbClusterIdentifier);
         const status = cluster?.Status;
 
-        this.logger.debug(`Neptune DBCluster ${dbClusterIdentifier} status: ${status}`);
+        this.logger.debug(`Neptune DBCluster ${logicalId} status: ${status}`);
 
         if (!cluster) return;
       } catch (error) {
@@ -1164,7 +1167,7 @@ export class NeptuneProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for Neptune DBCluster ${dbClusterIdentifier} to be deleted`);
+    throw new Error(`Timed out waiting for Neptune DBCluster ${logicalId} to be deleted`);
   }
 
   /**
