@@ -262,18 +262,18 @@ redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
 remove-protection	2026-10-01T02:52:46Z	PASS	1303	verify.sh	PR #4278 deploy-engine masking mixin; rc ok, orph clean
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
-replace-squatter-refusal	2026-09-30T17:28:22Z	PASS	80	verify.sh	rc ok, orph clean
+replace-squatter-refusal	2026-10-01T04:57:13Z	PASS	151	verify.sh	rc ok, orph clean; #4214 name-holder diagnosis line
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, orph clean
 replacement-rename-onto-holder	2026-09-30T22:24:02Z	PASS	185	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-09-30T10:32:09Z	PASS	150	verify.sh	PR #4208 (#4157) re-run on the head rebased over #4217 (DeployEngine mixin move); rc ok, destroy 0 errors, no state/lock/CFn leftovers
-rollback-cross-region-secret	2026-09-30T14:07:49Z	PASS	215	verify.sh	rc ok, orph clean (#4231)
+rollback-command	2026-10-01T04:57:13Z	PASS	345	verify.sh	rc ok, orph clean; #4214 rollback refusal display (3 del/0 err)
+rollback-cross-region-secret	2026-10-01T04:57:13Z	PASS	361	verify.sh	rc ok, orph clean; #4214 secret-region refusals
 rollback-deletion-policy-snapshot	2026-09-29T08:18:12Z	PASS	120	verify.sh	rc ok, orph clean (#4029 PR #4072)
 rollback-explicit-name-rewrite	2026-09-29T17:59:17Z	PASS	211	verify.sh	rc ok, orph clean (PR #4141 generic name segments)
 rollback-failure-injection	2026-09-30T08:40:10Z	PASS	365	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-rollback-nested-cross-region-secret	2026-09-30T14:07:49Z	PASS	275	verify.sh	rc ok, orph clean; phase 2d (drift --revert on the child) red pre-#4213 at its Value-drift guard (#4231)
+rollback-nested-cross-region-secret	2026-10-01T04:57:13Z	PASS	397	verify.sh	rc ok, orph clean; #4214 reworded unproven-region refusal needle
 rollback-replacement-retain	2026-09-29T04:29:59Z	PASS	70	verify.sh	PR #4035 (#4024) @1e939cd1 on 11c8d52d; rc ok, orph clean
 rollback-replay-cc-generated-name	2026-09-28T22:10:42Z	PASS	155	verify.sh	PR #4010 (#3979) @8c7cec41 on 9d7cf4cb; rc ok, IAM Role replacement reversed to generated name (no collision, guard not reached), no name-holder refusal, orph clean
 rollback-replay-effective-props	2026-09-27T19:24:50Z	PASS	255	verify.sh	rc ok, orph clean (#1706)
