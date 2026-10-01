@@ -403,6 +403,9 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     const log = this.operationSinks(context?.maskSecrets, [
       [properties['FunctionName'], recorded.functionName],
       [previousProperties['FunctionName'], recorded.functionName],
+      // The bare name too: AWS may quote the function by name, not by ARN.
+      [properties['FunctionName'], canonicalLambdaFunctionName(recorded.functionName)],
+      [previousProperties['FunctionName'], canonicalLambdaFunctionName(recorded.functionName)],
       [properties['Qualifier'], recorded.qualifier],
       [previousProperties['Qualifier'], recorded.qualifier],
       [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
@@ -444,11 +447,6 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
         new PutFunctionEventInvokeConfigCommand(this.buildPutInput(properties, log))
       );
       log.debug(`Successfully updated Lambda EventInvokeConfig ${logicalId}`);
-      return {
-        physicalId: this.physicalIdAfterUpdate(logicalId, physicalId, properties, log.mask),
-        wasReplaced: false,
-        attributes: {},
-      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
@@ -464,6 +462,13 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
           )
       );
     }
+    // Outside the `try`: its separator refusal is cdkd's own, so it must not be
+    // re-labelled as an AWS failure nor stamped retryable by the wrap above.
+    return {
+      physicalId: this.physicalIdAfterUpdate(logicalId, physicalId, properties, log.mask),
+      wasReplaced: false,
+      attributes: {},
+    };
   }
 
   async delete(

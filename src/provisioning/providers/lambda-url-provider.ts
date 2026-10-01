@@ -9,6 +9,7 @@ import {
   type InvokeMode,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
+import { canonicalLambdaFunctionName } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
@@ -222,6 +223,9 @@ export class LambdaUrlProvider implements ResourceProvider {
     const log = this.operationSinks(context?.maskSecrets, [
       [properties['TargetFunctionArn'], physicalId],
       [previousProperties['TargetFunctionArn'], physicalId],
+      // The bare name too: AWS may quote the function by name, not by ARN.
+      [properties['TargetFunctionArn'], canonicalLambdaFunctionName(physicalId)],
+      [previousProperties['TargetFunctionArn'], canonicalLambdaFunctionName(physicalId)],
       [
         properties['TargetFunctionArn'],
         typeof properties['TargetFunctionArn'] === 'string'

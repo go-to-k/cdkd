@@ -7,6 +7,7 @@ import {
   type FunctionUrlAuthType,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
+import { canonicalLambdaFunctionName } from '../../utils/lambda-function-name.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -265,9 +266,14 @@ export class LambdaPermissionProvider implements ResourceProvider {
     const recordedFunction = physicalId.includes('|')
       ? physicalId.slice(0, physicalId.lastIndexOf('|')) || undefined
       : undefined;
+    const recordedFunctionName =
+      recordedFunction === undefined ? undefined : canonicalLambdaFunctionName(recordedFunction);
     const log = this.operationSinks(context?.maskSecrets, [
       [properties['FunctionName'], recordedFunction],
       [previousProperties['FunctionName'], recordedFunction],
+      // The bare name too: AWS may quote the function by name, not by ARN.
+      [properties['FunctionName'], recordedFunctionName],
+      [previousProperties['FunctionName'], recordedFunctionName],
       // The remove falls back to the desired name when none was recorded.
       [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
     ]);

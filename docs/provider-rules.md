@@ -300,7 +300,7 @@ implementation. Three details are worth copying:
     subscription). Those internal re-creates never receive `replayingState` —
     `update()`'s own context is an `UpdateContext`, and the most any of the
     five builds from it is a `CreateContext` carrying only `maskSecrets` (IAM
-    role and IAM managed policy, issue
+    role, IAM managed policy and Lambda permission, issue
     [#2177](https://github.com/go-to-k/cdkd/issues/2177)) — and the
     `properties` they forward ARE a state record during a rollback replay. So
     the refusal would fire on a replay with no way to detect it. None of those
