@@ -136,6 +136,7 @@ import type { ResolverContext } from '../../../src/deployment/intrinsic-function
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
+import { RESOLVER_FAMILY } from '../_resolver-family.js';
 
 /** A promise the test body opens by hand. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -1658,8 +1659,6 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
     // edit actually reaches for — and the failure message says so rather
     // than claiming to have proved the absence of concurrency.
     const CONCURRENCY_COMBINATORS = new Set(['all', 'allSettled', 'any', 'race']);
-    const file = join(import.meta.dirname, '../../../src/deployment/intrinsic-function-resolver.ts');
-    const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
     const found: { api: string; inside: string }[] = [];
     const enclosing = (node: ts.Node): string => {
       for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
@@ -1687,7 +1686,12 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
       }
       ts.forEachChild(node, walk);
     };
-    walk(sf);
+    // Every file of the split resolver (#4337), so moving a helper between
+    // them never takes a combinator out of the scan.
+    for (const rel of RESOLVER_FAMILY) {
+      const file = join(import.meta.dirname, '../../..', rel);
+      walk(ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true));
+    }
 
     // Sorted, so the assertion pins WHICH calls exist and where, not the
     // order a tree walk happens to reach them (the `race` encloses the

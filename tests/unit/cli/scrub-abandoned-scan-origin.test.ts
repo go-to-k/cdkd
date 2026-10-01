@@ -31,15 +31,13 @@ import { fileURLToPath } from 'node:url';
 
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { readResolverFamily } from '../_resolver-family.js';
 
 const scrubSource = readFileSync(
   fileURLToPath(new URL('../../../src/cli/commands/scrub.ts', import.meta.url)),
   'utf8'
 );
-const resolverSource = readFileSync(
-  fileURLToPath(new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url)),
-  'utf8'
-);
+const resolverSource = readResolverFamily();
 
 /**
  * The patterns as the shipped module spells them, read out of the source rather

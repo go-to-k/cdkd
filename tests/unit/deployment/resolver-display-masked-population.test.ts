@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vite-plus/test';
 import ts from 'typescript-v6';
+import { familyLocation, readResolverFamily } from '../_resolver-family.js';
 
 /**
  * Functions that return a MASKING ANSWER and nothing more — masked text that is
@@ -92,7 +93,8 @@ const RAW_MASKERS = [
  * population floor that proves the builder is still the file's render route.
  */
 
-const SUBJECT = 'src/deployment/intrinsic-function-resolver.ts';
+// The whole split resolver (#4337): host plus `intrinsic-resolver-*.ts`.
+const SUBJECT = 'intrinsic-function-resolver-family.ts';
 
 /**
  * The subject with comments removed.
@@ -113,8 +115,7 @@ const SUBJECT = 'src/deployment/intrinsic-function-resolver.ts';
  * strip, and why every rule that needs real structure uses the parser instead.
  */
 function rawSubject(): string {
-  const repoRoot = path.resolve(import.meta.dirname, '../../..');
-  return readFileSync(path.join(repoRoot, SUBJECT), 'utf8');
+  return readResolverFamily();
 }
 
 /**
@@ -300,7 +301,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     expect(
       refs
         .filter((r) => r.method !== 'maskThenStripThenMask')
-        .map((r) => `${SUBJECT}:${r.line} in ${r.method}`),
+        .map((r) => `${familyLocation(r.line)} in ${r.method}`),
       'a call to the bare masker escaped `maskThenStripThenMask`. Its result is masked but NOT ' +
         'control-stripped, so rendering it anywhere lets a template-supplied name carry ESC / CR / ' +
         'U+2028 to a terminal (go-to-k/cdkd#3426). Use `this.displayMasked(value, context)`.'
@@ -321,7 +322,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     expect(
       refs
         .filter((r) => r.method !== 'displayMasked')
-        .map((r) => `${SUBJECT}:${r.line} in ${r.method}`),
+        .map((r) => `${familyLocation(r.line)} in ${r.method}`),
       'a call to `maskThenStripThenMask` escaped `displayMasked`. It strips control characters but ' +
         'does NOT run `displaySafe`, so U+2028 / U+2029 and the bidi overrides survive. Use ' +
         '`this.displayMasked(value, context)`, which is that composition plus the sanitizer.'
@@ -353,7 +354,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
       .split('\n')
       .map((line, i) => ({ line: i + 1, text: line }))
       .filter(({ text }) => new RegExp(`\\$\\{\\s*this\\.(${[...RAW_MASKERS].join('|')})\\(`).test(text))
-      .map(({ line, text }) => `${SUBJECT}:${line}  ${text.trim()}`);
+      .map(({ line, text }) => `${familyLocation(line)}  ${text.trim()}`);
 
     expect(
       RAW_MASKERS.length,

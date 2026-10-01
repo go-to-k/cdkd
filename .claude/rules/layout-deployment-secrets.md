@@ -3,6 +3,7 @@ description: cdkd secret-redaction layout (dynamic-reference redaction, masking 
 paths:
   - 'src/deployment/secret-redaction.ts'
   - 'src/deployment/intrinsic-function-resolver.ts'
+  - 'src/deployment/intrinsic-resolver-*.ts'
   - 'src/deployment/masking-retry-logger.ts'
   - 'src/deployment/secret-region-classification.ts'
   - 'src/cli/commands/scrub.ts'

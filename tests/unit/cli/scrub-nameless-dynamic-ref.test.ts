@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readResolverFamily } from '../_resolver-family.js';
 
 /**
  * `cdkd scrub` must not report a run CLEAN when the resolver refused a
@@ -52,7 +53,6 @@ import { dirname, join } from 'node:path';
  * Retire this file, and the marker with it, when the throws become typed.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const RESOLVER = join(repoRoot, 'src', 'deployment', 'intrinsic-function-resolver.ts');
 const SCRUB = join(repoRoot, 'src', 'cli', 'commands', 'scrub.ts');
 
 /** The literal scrub keys on, spelled here a THIRD time on purpose. */
@@ -79,7 +79,7 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     // recovery re-raises. Reword the throws to `Dynamic ref: ` and both go
     // silent together: scrub reports CLEAN over a nameless reference, and the
     // recovery downgrades a refusal to a skipped unit. Neither fails loudly.
-    const resolver = readFileSync(RESOLVER, 'utf8');
+    const resolver = readResolverFamily();
     const declared = resolver.match(
       /const DYNAMIC_REFERENCE_PREFIX = '([^']*)'/
     )?.[1];
@@ -97,7 +97,7 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
   });
 
   it('every nameless-required throw in the resolver is matched by a marker', () => {
-    const resolver = readFileSync(RESOLVER, 'utf8');
+    const resolver = readResolverFamily();
     const throws = namelessRequiredThrows(resolver);
 
     // Floor: the checker must prove it SEES its input. A regex that silently
@@ -133,7 +133,7 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     // Read from the RESOLVER since go-to-k/cdkd#3181 moved the declaration
     // beside the throws; scrub imports it. The `scrub still consumes it` case
     // below is what keeps that import from being dropped silently.
-    const resolver = readFileSync(RESOLVER, 'utf8');
+    const resolver = readResolverFamily();
     const block = resolver.match(
       /const NAMELESS_DYNAMIC_REFERENCE_MARKERS = \[([\s\S]*?)\] as const;/
     );
@@ -165,7 +165,7 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     ];
     // Non-vacuity: each named sibling must really be a throw in the resolver,
     // or this case is asserting things about messages nothing produces.
-    const resolver = readFileSync(RESOLVER, 'utf8');
+    const resolver = readResolverFamily();
     for (const sibling of SIBLINGS) {
       const stem = sibling.slice(0, sibling.indexOf("'"));
       expect(
