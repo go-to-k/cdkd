@@ -6,7 +6,8 @@ import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../types/resource.js';
 import { type ResourceChange, type ResourceState, shouldRetainResource } from '../types/state.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
-import { pasteableCommand } from '../utils/pasteable-command.js';
+import { isPasteableIdent } from '../utils/display-safe.js';
+import { pasteableCommand, plainOrDescribed } from '../utils/pasteable-command.js';
 import { formatResourceLine } from '../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 import { isMarkedNonRetryable } from './retryable-errors.js';
@@ -16,6 +17,31 @@ declare module './deploy-engine.js' {
     /** @internal */
     provisionDelete: OmitThisParameter<typeof provisionDelete>;
   }
+}
+
+/**
+ * The skip reason of a delete REFUSED because its logical id is not a plain
+ * identifier ({@link isDeletableLogicalId}). A fixed constant, plain prose, so
+ * `deleteSkippedMessage` shows it and the already-deleted classifiers never
+ * match it.
+ */
+export const NON_PLAIN_LOGICAL_ID_SKIP_REASON =
+  'the state record logical id is not a plain identifier, so cdkd sent no delete';
+
+/**
+ * May a DELETE of this `state.resources` key reach a provider (go-to-k/cdkd#4175)?
+ *
+ * The key is state-sourced and validated nowhere (go-to-k/cdkd#2947), and
+ * every provider prints it raw in its delete-path lines and errors, so a
+ * `X$(touch OWNED)` key runs as shell when such a line is pasted. The gate is
+ * HERE, at the two delete callers (this arm and `destroy-runner.ts`), rather
+ * than per provider message: a non-plain key is SKIPPED before any provider
+ * sees it, so the record is KEPT and `cdkd state orphan` (which calls no
+ * provider) still removes it. The predicate is `plainOrDescribed`'s, so a key
+ * refused here is exactly one every other line describes.
+ */
+export function isDeletableLogicalId(logicalId: string): boolean {
+  return isPasteableIdent(logicalId);
 }
 
 /** The `DELETE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
@@ -35,7 +61,9 @@ export async function provisionDelete(
   const renderer = getLiveRenderer();
   const currentResource = existingState;
   if (!currentResource) {
-    throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
+    throw new Error(
+      `Cannot delete ${plainOrDescribed(logicalId, 'logical id')}: resource not found in state`
+    );
   }
 
   // Honor `DeletionPolicy: Retain` / `RetainExceptOnCreate`.
@@ -51,10 +79,26 @@ export async function provisionDelete(
     currentResource.deletionPolicy ?? template?.Resources?.[logicalId]?.DeletionPolicy;
   if (shouldRetainResource(deletionPolicy)) {
     this.logger.info(
-      `Retaining ${logicalId} (${resourceType}) - DeletionPolicy: ${deletionPolicy}`
+      `Retaining ${plainOrDescribed(logicalId, 'logical id')} (${resourceType}) - DeletionPolicy: ${deletionPolicy}`
     );
     delete stateResources[logicalId];
     return;
+  }
+
+  // Issue #4175: no provider (and no final-snapshot step, which prints the id
+  // too) sees a non-plain state key. Below the Retain arm on purpose: that arm
+  // calls no provider and only drops the record.
+  if (!isDeletableLogicalId(logicalId)) {
+    return reportDeleteSkip.call(
+      this,
+      logicalId,
+      resourceType,
+      currentResource.physicalId,
+      NON_PLAIN_LOGICAL_ID_SKIP_REASON,
+      stackName,
+      counts,
+      progress
+    );
   }
 
   // Honor `DeletionPolicy: Snapshot` (issues #1352 / #1353) — see
@@ -160,56 +204,16 @@ export async function provisionDelete(
   // mis-accounting this branch used to commit.
   const deleteSkipped = deleteSkipReason(deleteResult);
   if (deleteSkipped !== undefined) {
-    if (progress) progress.current++;
-    const skipPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
-    renderer.removeTask(logicalId);
-    this.logger.info(
-      `${skipPrefix}${formatResourceLine(
-        'skipped',
-        logicalId,
-        resourceType,
-        `skipped (${deleteSkipped})`
-      )}`
+    return reportDeleteSkip.call(
+      this,
+      logicalId,
+      resourceType,
+      currentResource.physicalId,
+      deleteSkipped,
+      stackName,
+      counts,
+      progress
     );
-    this.logger.warn(
-      deleteSkippedMessage(
-        logicalId,
-        currentResource.physicalId,
-        deleteSkipped,
-        'while removing it from the template'
-      ) +
-        `. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the ` +
-        `delete. Repair the record first (for a nested stack it is the CHILD's own ` +
-        `state, whose other resources may already be gone), or delete the resource by ` +
-        `hand and drop the record.` +
-        // `--stack-region` on BOTH, and `state orphan` is why: without
-        // it that command drops the record for this NAME IN EVERY REGION
-        // (`orphanCommandFor`'s header in `export.ts` states the same
-        // rule), so an operator repairing one region would silently
-        // orphan the resources another region's record points at. M2 of
-        // the go-to-k/cdkd#3499 review.
-        `\nInspect it with: ${
-          pasteableCommand('cdkd state show', [
-            { value: stackName, hole: 'stack' },
-            { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
-          ]).command
-        }` +
-        `\nDrop the record with: ${
-          pasteableCommand('cdkd state orphan', [
-            { value: stackName, hole: 'stack' },
-            { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
-          ]).command
-        }`
-    );
-    // Deliberately NO `delete stateResources[logicalId]` and NO
-    // `counts.deleted++`. Dropping the record is the data-loss half:
-    // the user would have neither the AWS resource deleted nor a cdkd
-    // record pointing at it. Keeping it also means the resource is
-    // still diffed as a DELETE next run, which is why a skip here is a
-    // warning rather than a resource failure — unlike `cdkd destroy`,
-    // `cdkd deploy` self-heals on the next run.
-    if (counts) counts.deleteSkipped++;
-    return { deleteSkipped };
   }
 
   delete stateResources[logicalId];
@@ -219,4 +223,70 @@ export async function provisionDelete(
   renderer.removeTask(logicalId);
   this.logger.info(`${deletePrefix}${formatResourceLine('deleted', logicalId, resourceType)}`);
   return;
+}
+
+/**
+ * A DELETE that did not happen: the provider reported `'skipped'`, or the
+ * #4175 gate refused the key before any provider saw it. The record is KEPT.
+ */
+function reportDeleteSkip(
+  this: DeployEngine,
+  logicalId: string,
+  resourceType: string,
+  physicalId: string,
+  deleteSkipped: string,
+  stackName: string,
+  counts: ProvisionCounts | undefined,
+  progress: { current: number; total: number } | undefined
+): ResourceOutcomeSignal {
+  if (progress) progress.current++;
+  const skipPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+  getLiveRenderer().removeTask(logicalId);
+  this.logger.info(
+    `${skipPrefix}${formatResourceLine(
+      'skipped',
+      // Issue #4175: the row is printed for a gate-refused key too.
+      plainOrDescribed(logicalId, 'logical id'),
+      resourceType,
+      `skipped (${deleteSkipped})`
+    )}`
+  );
+  this.logger.warn(
+    deleteSkippedMessage(
+      logicalId,
+      physicalId,
+      deleteSkipped,
+      'while removing it from the template'
+    ) +
+      `. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the ` +
+      `delete. Repair the record first (for a nested stack it is the CHILD's own ` +
+      `state, whose other resources may already be gone), or delete the resource by ` +
+      `hand and drop the record.` +
+      // `--stack-region` on BOTH, and `state orphan` is why: without
+      // it that command drops the record for this NAME IN EVERY REGION
+      // (`orphanCommandFor`'s header in `export.ts` states the same
+      // rule), so an operator repairing one region would silently
+      // orphan the resources another region's record points at. M2 of
+      // the go-to-k/cdkd#3499 review.
+      `\nInspect it with: ${
+        pasteableCommand('cdkd state show', [
+          { value: stackName, hole: 'stack' },
+          { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+        ]).command
+      }` +
+      `\nDrop the record with: ${
+        pasteableCommand('cdkd state orphan', [
+          { value: stackName, hole: 'stack' },
+          { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+        ]).command
+      }`
+  );
+  // Deliberately NO `delete stateResources[logicalId]` and NO
+  // `counts.deleted++`. Dropping the record is the data-loss half:
+  // the user would have neither the AWS resource deleted nor a cdkd
+  // record pointing at it. Keeping it also means the resource is
+  // still diffed as a DELETE next run, which is why a skip here is a
+  // warning rather than a resource failure.
+  if (counts) counts.deleteSkipped++;
+  return { deleteSkipped };
 }

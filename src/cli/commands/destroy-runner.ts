@@ -13,8 +13,13 @@ import { formatResourceLine } from '../../utils/resource-line.js';
 import {
   deleteIndeterminateGuards,
   deleteSkipReason,
+  deleteSkippedMessage,
   UNSPECIFIED_SKIP_REASON,
 } from '../../deployment/delete-outcome.js';
+import {
+  isDeletableLogicalId,
+  NON_PLAIN_LOGICAL_ID_SKIP_REASON,
+} from '../../deployment/deploy-engine-delete.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import {
@@ -915,7 +920,11 @@ export async function runDestroyForStack(
     // `resources` key carrying a newline forges rows and a fake orphan tally into
     // the very banner the y/N answers, while an ESC run in a `resourceType`
     // redraws the lines above it.
-    logger.info(`  - ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)})`);
+    // go-to-k/cdkd#4175: the key is also DESCRIBED when not plain — a pasted
+    // `X$(touch OWNED)` row runs; such a record is skipped by the loop anyway.
+    logger.info(
+      `  - ${plainOrDescribed(logicalId, 'logical id')} (${displaySafe(resource.resourceType)})`
+    );
   }
 
   // When `--remove-protection` is set, surface a count of resources that
@@ -982,7 +991,7 @@ export async function runDestroyForStack(
       // which is what makes the id findable in AWS — an interior control
       // character becomes a space, by the same rule that defuses the forged row.
       logger.info(
-        `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)})  ` +
+        `  - ${plainOrDescribed(entry.logicalId, 'logical id')} (${displaySafe(entry.state.resourceType)})  ` +
           `${displaySafe(entry.state.physicalId)}`
       );
     }
@@ -1477,7 +1486,7 @@ export async function runDestroyForStack(
               DependsOn: [...depsArray, logicalId],
             };
             logger.debug(
-              `Implicit delete dependency: ${displaySafe(depId)} (${displaySafe(depType)}) must be deleted before ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)})`
+              `Implicit delete dependency: ${plainOrDescribed(depId, 'logical id')} (${displaySafe(depType)}) must be deleted before ${plainOrDescribed(logicalId, 'logical id')} (${displaySafe(resource.resourceType)})`
             );
           }
         }
@@ -1498,7 +1507,7 @@ export async function runDestroyForStack(
           DependsOn: [...depsArray, after],
         };
         logger.debug(
-          `Implicit delete dependency: ${displaySafe(before)} (${displaySafe(state.resources[before]?.resourceType)}) must be deleted before ${displaySafe(after)} (${displaySafe(state.resources[after]?.resourceType)})`
+          `Implicit delete dependency: ${plainOrDescribed(before, 'logical id')} (${displaySafe(state.resources[before]?.resourceType)}) must be deleted before ${plainOrDescribed(after, 'logical id')} (${displaySafe(state.resources[after]?.resourceType)})`
         );
       }
     }
@@ -1540,7 +1549,9 @@ export async function runDestroyForStack(
 
         const resource = state.resources[logicalId];
         if (!resource) {
-          logger.warn(`Resource ${displaySafe(logicalId)} not found in state, skipping`);
+          logger.warn(
+            `Resource ${plainOrDescribed(logicalId, 'logical id')} not found in state, skipping`
+          );
           return;
         }
 
@@ -1552,7 +1563,7 @@ export async function runDestroyForStack(
         // resource in state" behavior for users who haven't redeployed yet.
         if (shouldRetainResource(resource.deletionPolicy)) {
           logger.info(
-            `  ⊘ ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) retained — DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
+            `  ⊘ ${plainOrDescribed(logicalId, 'logical id')} (${displaySafe(resource.resourceType)}) retained — DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
           );
           result.retainedCount++;
           ctx.eventRecorder?.record({
@@ -1562,6 +1573,49 @@ export async function runDestroyForStack(
             logicalId,
             resourceType: resource.resourceType,
             ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+          });
+          return;
+        }
+
+        // Issue #4175: a non-plain state key reaches no provider — every
+        // provider prints it raw on its delete path, so a pasted line would run
+        // it. SKIPPED, so the record is kept and `cdkd state orphan` (which
+        // calls no provider) still removes it. Below the Retain arm, which
+        // calls no provider either, and above the live label and the
+        // final-snapshot step, which print the id too.
+        if (!isDeletableLogicalId(logicalId)) {
+          logger.info(
+            `  ${formatResourceLine(
+              'skipped',
+              plainOrDescribed(logicalId, 'logical id'),
+              resource.resourceType,
+              `skipped (${NON_PLAIN_LOGICAL_ID_SKIP_REASON})`
+            )}`
+          );
+          logger.warn(
+            deleteSkippedMessage(
+              logicalId,
+              resource.physicalId,
+              NON_PLAIN_LOGICAL_ID_SKIP_REASON,
+              'by this destroy'
+            ) +
+              `. Its cdkd state record was KEPT. Delete the resource by hand if it still ` +
+              `exists, then drop the record.`
+          );
+          result.skippedCount++;
+          // THIS stack's record, even for a nested-stack row: the child was
+          // never touched, so `stateTargetFor`'s child target is not where the
+          // refused key lives.
+          skippedStateTargets.add(stackName);
+          ctx.eventRecorder?.record({
+            eventType: 'RESOURCE_SKIPPED',
+            stackName,
+            operation: 'DELETE',
+            logicalId,
+            resourceType: resource.resourceType,
+            ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+            ...(resource.physicalId && { physicalId: resource.physicalId }),
+            reason: NON_PLAIN_LOGICAL_ID_SKIP_REASON,
           });
           return;
         }
