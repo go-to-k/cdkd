@@ -116,12 +116,10 @@ const safeCount = (value: unknown): string => (typeof value === 'number' ? Strin
  * Deliberately NOT appended to the "no runs matched" arm: that arm returns
  * before any `deleteRawObjects` call, so there is no delete to qualify.
  *
- * The converse does NOT hold, and the gap is tracked on issue #2624 rather than
- * closed here: `pruneRuns({ all: true })` reports `indexDeleted: true`
- * unconditionally (its `DeleteObjects` is idempotent, so it "succeeds" on an
- * empty prefix), so the arms this note IS appended to can fire for a stack that
- * had no history at all. Making that gate truthful is a behaviour change, not a
- * wording one.
+ * The converse holds too: `pruneRuns` reports `indexDeleted` only for an index
+ * that EXISTED in its listing (issue #2624), not because the idempotent
+ * `DeleteObjects` succeeded, so the arms this note IS appended to never fire
+ * for a stack that had no history at all.
  */
 const NONCURRENT_VERSIONS_SURVIVE_NOTE =
   // "bootstrapping with cdkd", never `cdkd bootstrap`: both prune lines this
