@@ -88,7 +88,7 @@
  *   - src/provisioning/providers/*.ts — each SDK provider's `handledProperties`
  *     (which types it serves) + the attribute-object keys its create/update
  *     records, parsed via the TypeScript Compiler API.
- *   - src/deployment/intrinsic-function-resolver.ts — the set of types the
+ *   - src/deployment/intrinsic-resolver/getatt.ts — the set of types the
  *     `constructAttribute` method references.
  *
  * Writes: docs/_generated/sdk-attr-coverage.{json,md}.
@@ -133,7 +133,8 @@ const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
-const RESOLVER_FILE = resolve(repoRoot, 'src/deployment/intrinsic-function-resolver.ts');
+// `constructAttribute` lives in the resolver's GetAtt module (#4337).
+const RESOLVER_FILE = resolve(repoRoot, 'src/deployment/intrinsic-resolver/getatt.ts');
 const OUT_JSON = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.json');
 const OUT_MD = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.md');
 
@@ -313,7 +314,7 @@ export function collectStoredAttributeKeys(source: string, fileName = 'provider.
 
 /**
  * Collect the set of `AWS::X::Y` resource types referenced anywhere inside the
- * `constructAttribute` method of intrinsic-function-resolver.ts. A type with a
+ * `constructAttribute` method / mixin function (`intrinsic-resolver/getatt.ts`). A type with a
  * per-type handler there can build its own ARN, so it is not a gap even when
  * the provider does not cache it.
  */
@@ -324,7 +325,8 @@ export function collectConstructAttributeTypes(source: string, fileName = 'resol
   let methodBody: ts.Node | undefined;
   const findMethod = (node: ts.Node): void => {
     if (
-      ts.isMethodDeclaration(node) &&
+      (ts.isMethodDeclaration(node) || ts.isFunctionDeclaration(node)) &&
+      node.name !== undefined &&
       ts.isIdentifier(node.name) &&
       node.name.text === 'constructAttribute'
     ) {

@@ -1545,18 +1545,31 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
     };
 
     const collect = (node: ts.Node): void => {
-      const isHidden = (mods: ts.NodeArray<ts.ModifierLike> | undefined): boolean =>
+      // `@internal` is the split resolver's spelling of `private` (#4337):
+      // the member is public to the type checker only so a mixin can reach it.
+      const isHidden = (decl: ts.Node, mods: ts.NodeArray<ts.ModifierLike> | undefined): boolean =>
         mods?.some(
           (m) => m.kind === ts.SyntaxKind.PrivateKeyword || m.kind === ts.SyntaxKind.ProtectedKeyword
-        ) === true;
+        ) === true || ts.getJSDocTags(decl).some((t) => t.tagName.text === 'internal');
       if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
         const { calls, opensBudget } = bodyFacts(node);
         members.set(node.name.text, {
           name: node.name.text,
-          isPublic: !isHidden(node.modifiers),
+          isPublic: !isHidden(node, node.modifiers),
           calls,
           opensBudget,
         });
+      }
+      // A mixin method split out of the class (#4337): `export function
+      // name(this: IntrinsicFunctionResolver, ...)`, augmented `@internal`.
+      if (
+        ts.isFunctionDeclaration(node) &&
+        node.name !== undefined &&
+        node.body !== undefined &&
+        node.parameters[0]?.name.getText() === 'this'
+      ) {
+        const { calls, opensBudget } = bodyFacts(node);
+        members.set(node.name.text, { name: node.name.text, isPublic: false, calls, opensBudget });
       }
       // A callable FIELD is an entry point too: `readonly foo = async () => ...`
       if (
@@ -1568,7 +1581,7 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
         const { calls, opensBudget } = bodyFacts(node.initializer);
         members.set(node.name.text, {
           name: node.name.text,
-          isPublic: !isHidden(node.modifiers),
+          isPublic: !isHidden(node, node.modifiers),
           calls,
           opensBudget,
         });
@@ -1576,6 +1589,10 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
       ts.forEachChild(node, collect);
     };
     collect(sf);
+    for (const rel of RESOLVER_FAMILY.slice(1)) {
+      const abs = join(import.meta.dirname, '../../..', rel);
+      collect(ts.createSourceFile(abs, readFileSync(abs, 'utf8'), ts.ScriptTarget.Latest, true));
+    }
 
     expect(
       DRAIN_SEEDS.every((seed) => members.has(seed)),

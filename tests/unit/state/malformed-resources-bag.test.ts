@@ -7465,9 +7465,9 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
       'an S3 OBJECT key being written, not a key anything is looked up by',
     ],
     [
-      'src/deployment/intrinsic-function-resolver.ts',
+      'src/deployment/intrinsic-resolver/getatt.ts',
       1,
-      ':6608 `${physicalId}#${attributeName}` INSIDE a switch, so the second half is ' +
+      '`${physicalId}#${attributeName}` in constructAttribute, INSIDE a switch, so the second half is ' +
         'one of five literals at that point; a closed second half is what makes a ' +
         'separator injective here',
     ],

@@ -69,7 +69,7 @@ that `cdkd import` of a `DBInstance` records those attributes too.
 
 ### Where it hooks in
 
-- **Resolver** (`intrinsic-function-resolver.ts`). `resolveGetAtt` calls
+- **Resolver** (`intrinsic-resolver/getatt.ts`). `resolveGetAtt` calls
   `constructWithStaleRecordHeal` instead of `constructGuardedAttribute`:
   1. PROBE — construct under a derived context carrying
      `staleAttributeHeal: { phase: 'probe' }`. `guardedPhysicalIdFallback` raises

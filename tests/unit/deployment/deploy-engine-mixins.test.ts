@@ -2,12 +2,13 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 
 /**
- * `DeployEngine` method groups live in mixin modules (issue #4200): a
- * `declare module '../deploy-engine.js'` augmentation tells the type checker the
- * method exists, and `deploy-engine.ts` assigns the module's function onto
- * `DeployEngine.prototype`. A MISSING assignment therefore typechecks clean and
+ * `DeployEngine` (issue #4200) and `IntrinsicFunctionResolver` (issue #4337)
+ * method groups live in mixin modules: a `declare module '../<host>.js'`
+ * augmentation tells the type checker the method exists, and the host module
+ * assigns the mixin's function onto the class prototype. A MISSING assignment therefore typechecks clean and
  * fails only when the method is first called at runtime, which for a rare
  * refusal path may be never in the unit suite.
  *
@@ -18,80 +19,97 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
  */
 const DEPLOYMENT_DIR = fileURLToPath(new URL('../../../src/deployment/', import.meta.url));
 
-const AUGMENTATION =
-  /declare module '(?:\.\.?\/)+deploy-engine\.js' \{\s*interface DeployEngine \{([\s\S]*?)\n {2}\}/g;
+/**
+ * One row per class split this way: the module the augmentation names, the
+ * class whose prototype receives the methods, and a floor of known files and
+ * members so a parser that silently matches nothing cannot pass.
+ */
+const HOSTS = [
+  {
+    module: 'deploy-engine',
+    cls: DeployEngine,
+    files: [
+      'deploy-engine/create.ts',
+      'deploy-engine/delete.ts',
+      'deploy-engine/dependencies.ts',
+      'deploy-engine/deploy-flow.ts',
+      'deploy-engine/execute.ts',
+      'deploy-engine/heal.ts',
+      'deploy-engine/masking.ts',
+      'deploy-engine/name-collision.ts',
+      'deploy-engine/observed-capture.ts',
+      'deploy-engine/outputs.ts',
+      'deploy-engine/provision.ts',
+      'deploy-engine/record-shape.ts',
+      'deploy-engine/replacement.ts',
+      'deploy-engine/resolver-context.ts',
+      'deploy-engine/rollback.ts',
+      'deploy-engine/routing.ts',
+      'deploy-engine/update-in-place.ts',
+      'deploy-engine/update-replace.ts',
+      'deploy-engine/update.ts',
+    ],
+    members: [
+      'replacementNameOrigin',
+      'orphanedNameCollisionAdvice',
+      'resolveOutputs',
+      'performRollback',
+      'drainObservedCaptures',
+      'redactOutputs',
+      'replaceDeleteFirstAndRecreate',
+      'healStaleAttributes',
+      'provisionCreate',
+      'provisionUpdate',
+      'updateByReplacement',
+      'updateInPlace',
+      'provisionDelete',
+      'provisionResource',
+      'executeDeployment',
+      'doDeployWithPrefetch',
+      'buildResolverContext',
+      'peekRoutingForLabel',
+      'propertiesToRecord',
+      'addImplicitDeleteDependencies',
+    ],
+  },
+  {
+    module: 'intrinsic-function-resolver',
+    cls: IntrinsicFunctionResolver,
+    files: ['intrinsic-resolver/getatt.ts'],
+    members: ['resolveGetAtt', 'constructAttribute', 'refuseUnconstructibleAttribute'],
+  },
+] as const;
 
 /** A member line: `name:`, `name?:`, `readonly name:`, or a method `name(` / `name<`. */
 const MEMBER = /^\s+(?:readonly\s+)?(\w+)\??\s*[:(<]/gm;
 
-function mixinModules(): Array<{ file: string; names: string[] }> {
+function mixinModules(host: (typeof HOSTS)[number]): Array<{ file: string; names: string[] }> {
+  const augmentation = new RegExp(
+    `declare module '(?:\\.\\.?/)+${host.module.replace(/-/g, '\\-')}\\.js' \\{\\s*interface ${host.cls.name} \\{([\\s\\S]*?)\\n {2}\\}`,
+    'g'
+  );
   return readdirSync(DEPLOYMENT_DIR, { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
     .flatMap((file) => {
-      const blocks = [...readFileSync(`${DEPLOYMENT_DIR}${file}`, 'utf8').matchAll(AUGMENTATION)];
+      const blocks = [...readFileSync(`${DEPLOYMENT_DIR}${file}`, 'utf8').matchAll(augmentation)];
       if (blocks.length === 0) return [];
       const names = blocks.flatMap((b) => [...b[1]!.matchAll(MEMBER)].map((m) => m[1]!));
       return [{ file, names }];
     });
 }
 
-describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () => {
+describe.each(HOSTS)('$module mixin modules are wired onto the prototype (#4200, #4337)', (host) => {
   it('finds the mixin modules, and every augmentation declares at least one member', () => {
-    const modules = mixinModules();
-    expect(modules.map((m) => m.file)).toEqual(
-      expect.arrayContaining([
-        'deploy-engine/create.ts',
-        'deploy-engine/delete.ts',
-        'deploy-engine/dependencies.ts',
-        'deploy-engine/deploy-flow.ts',
-        'deploy-engine/execute.ts',
-        'deploy-engine/heal.ts',
-        'deploy-engine/masking.ts',
-        'deploy-engine/name-collision.ts',
-        'deploy-engine/observed-capture.ts',
-        'deploy-engine/outputs.ts',
-        'deploy-engine/provision.ts',
-        'deploy-engine/record-shape.ts',
-        'deploy-engine/replacement.ts',
-        'deploy-engine/resolver-context.ts',
-        'deploy-engine/rollback.ts',
-        'deploy-engine/routing.ts',
-        'deploy-engine/update-in-place.ts',
-        'deploy-engine/update-replace.ts',
-        'deploy-engine/update.ts',
-      ])
-    );
+    const modules = mixinModules(host);
+    expect(modules.map((m) => m.file)).toEqual(expect.arrayContaining([...host.files]));
     for (const { file, names } of modules) {
       expect(names.length, `${file}: augmentation parsed to no members`).toBeGreaterThan(0);
     }
-    expect(modules.flatMap((m) => m.names)).toEqual(
-      expect.arrayContaining([
-        'replacementNameOrigin',
-        'orphanedNameCollisionAdvice',
-        'resolveOutputs',
-        'performRollback',
-        'drainObservedCaptures',
-        'redactOutputs',
-        'replaceDeleteFirstAndRecreate',
-        'healStaleAttributes',
-        'provisionCreate',
-        'provisionUpdate',
-        'updateByReplacement',
-        'updateInPlace',
-        'provisionDelete',
-        'provisionResource',
-        'executeDeployment',
-        'doDeployWithPrefetch',
-        'buildResolverContext',
-        'peekRoutingForLabel',
-        'propertiesToRecord',
-        'addImplicitDeleteDependencies',
-      ])
-    );
+    expect(modules.flatMap((m) => m.names)).toEqual(expect.arrayContaining([...host.members]));
   });
 
   it('exports every augmented member and assigns it as the SAME prototype method', async () => {
-    for (const { file, names } of mixinModules()) {
+    for (const { file, names } of mixinModules(host)) {
       const mod = (await import(pathToFileURL(`${DEPLOYMENT_DIR}${file}`).href)) as Record<
         string,
         unknown
@@ -101,8 +119,8 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
           'function'
         );
         expect(
-          (DeployEngine.prototype as unknown as Record<string, unknown>)[name],
-          `${file}: DeployEngine.prototype.${name} is not wired — add it to the assignments after the class in deploy-engine.ts`
+          (host.cls.prototype as unknown as Record<string, unknown>)[name],
+          `${file}: ${host.cls.name}.prototype.${name} is not wired — add it to the assignments after the class in ${host.module}.ts`
         ).toBe(mod[name]);
       }
     }

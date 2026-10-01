@@ -816,10 +816,13 @@ describe('the pre-pass walks what the RESOLVER walks (issue #2133 review)', () =
     );
     const scrubSrc = readFileSync(`${here}../../../../src/cli/commands/scrub.ts`, 'utf8');
 
-    const dispatch = resolverSrc.slice(
-      resolverSrc.indexOf('private async resolveValue('),
-      resolverSrc.indexOf('private async resolveRef(')
-    );
+    // Modifier-agnostic: the split resolver (#4337) relaxes `private` members a
+    // mixin reads to `@internal`.
+    const dispatchStart = resolverSrc.search(/^ {2}(?:private )?async resolveValue\(/m);
+    const dispatchEnd = resolverSrc.search(/^ {2}(?:private )?async resolveRef\(/m);
+    expect(dispatchStart, 'resolveValue moved or was renamed').toBeGreaterThan(-1);
+    expect(dispatchEnd).toBeGreaterThan(dispatchStart);
+    const dispatch = resolverSrc.slice(dispatchStart, dispatchEnd);
     // Scanned as `'X' in obj`, NOT as `if ('X' in obj)`. The `if (` form only
     // matches a SINGLE-LINE condition, and `Condition`'s arm is wrapped — so it
     // was never parsed, the `.filter` below was DEAD, and its comment described
