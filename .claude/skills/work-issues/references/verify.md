@@ -16,7 +16,9 @@
 
 **Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
 Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase →
-integ → marker. A lane REPORTS `markgate status integ-destroy --explain`'s
+integ → marker. A TEST-only fix round may overlap the parent's integ in the
+lane's tree, but brief the lane to run no build there: a build rewrites the
+live fixture's `dist/` (#4302, #4303). A lane REPORTS `markgate status integ-destroy --explain`'s
 line, never "integ not needed": comment-only edits count (#3873). The
 gate's `hash: diff` stales on a rebase only when main changed a scoped file
 THIS branch changes too, so a set marker on a MERGEABLE PR needs no rebase
