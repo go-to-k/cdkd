@@ -12890,6 +12890,16 @@ export class IntrinsicFunctionResolver {
           continue;
         }
 
+        // Issue #4266: a `secretsmanager` / `ssm-secure` result is a secret by
+        // SPELLING, so the issue #4166 refusal needs no lookup to know it
+        // applies. Refused before the lookup, before the region arms and the
+        // cache, so an id assembled from another secret is never sent to AWS,
+        // where CloudTrail records it. A plain `ssm` token still needs the
+        // lookup to learn its `Type`, and is refused after it.
+        if (!persistedText && (service === 'secretsmanager' || service === 'ssm-secure')) {
+          this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
+        }
+
         // WHICH REGION MUST ANSWER for this reference (issue #2134). Asked HERE,
         // token by token, because here is the first point at which the COMPLETE
         // expression exists: `resolveSub` and `resolveJoin` both re-enter this
