@@ -305,8 +305,9 @@ const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
  *
  * Known residuals, NOT closed here: a plain id holding `,` is named bare and
  * reads as two entries in the `', '`-joined list (go-to-k/cdkd#3179); and a
- * plain id that is a command WORD (`touch`, `reboot`) starts a pasted clause
- * as that command (go-to-k/cdkd#4249).
+ * plain id that is a command WORD (`touch`, `reboot`), or a path to one
+ * (`./x`, `/usr/bin/touch`), starts a pasted clause as that command
+ * (go-to-k/cdkd#4249).
  */
 function namedLogicalId(id: string): string {
   return displayLogicalId(id) === id && isInertUnquoted(id) && !ASSIGNMENT_WORD.test(id)
