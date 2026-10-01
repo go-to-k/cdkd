@@ -169,8 +169,6 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
 kinesis-stream-mode-switch	2026-10-01T02:52:52Z	PASS	116	verify.sh	PR #4252 (#4239 arrow paste sites) at dc71dd51d; rc ok, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-01T05:17:08Z	PASS	115	verify.sh	rc ok, orph clean
-lambda	2026-10-01T04:01:28Z	PASS	155	verify.sh	rc ok, orph clean (#4241)
 lambda	2026-10-01T05:37:57Z	PASS	135	verify.sh	PR #4286 deploy-engine replacement + heal mixins; rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
@@ -262,7 +260,6 @@ recreate-via-cc-api	2026-09-30T17:28:22Z	PASS	301	verify.sh	rc ok, orph clean
 recreate-via-sdk-provider	2026-09-30T17:28:22Z	PASS	240	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-10-01T05:13:52Z	PASS	2134	verify.sh	PR #4235 (#2204 ELBv2 + ASG remove-protection compensation) re-run after merging main incl. #4257 (retryable classification) @b7cca6d; rc ok, NLB step 4b re-enabled deletion_protection; an earlier run with the ELBv2 fix copy-reverted went RED at the re-enable assertion; no leftovers
 remove-protection	2026-10-01T05:37:57Z	PASS	1342	verify.sh	PR #4286 deploy-engine replacement + heal mixins; rc ok, orph clean(first attempt blocked before assertions by a peer lane's live lock)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-01T04:57:13Z	PASS	151	verify.sh	rc ok, orph clean; #4214 name-holder diagnosis line
