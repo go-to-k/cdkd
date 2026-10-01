@@ -2128,6 +2128,11 @@
       "scenarios": []
     },
     {
+      "name": "secret-derived-immutable-names",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "secrets-array-nested",
       "annotated": true,
       "scenarios": [
@@ -3204,6 +3209,7 @@
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
     "sdk-to-cc-autoroute",
+    "secret-derived-immutable-names",
     "secrets-rotation-schedule",
     "secretsmanager-update-value-source",
     "servicediscovery",

@@ -111,6 +111,7 @@ import {
   withDerivedNameMasks,
   type MaskedLogSinks,
 } from '../masked-retry-logger.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
@@ -1397,10 +1398,24 @@ export class ECSProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
-    // ServiceName is immutable - if changed, requires replacement
+    // ServiceName is immutable - if changed, requires replacement. A
+    // secret-derived name is recorded as its `{{resolve:...}}` reference and
+    // handed here resolved: the name the physical id carries decides instead
+    // (go-to-k/cdkd#4263).
     const newServiceName = properties['ServiceName'] as string | undefined;
     const oldServiceName = previousProperties['ServiceName'] as string | undefined;
-    if (newServiceName && oldServiceName && newServiceName !== oldServiceName) {
+    if (
+      newServiceName &&
+      oldServiceName &&
+      newServiceName !== oldServiceName &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'ServiceName',
+        desired: newServiceName,
+        previous: oldServiceName,
+        physicalName: recordedServiceNames(physicalId).service,
+      }))
+    ) {
       throw new ProvisioningError(
         `Cannot update ServiceName for ECS service ${logicalId} (immutable property, requires replacement)`,
         resourceType,

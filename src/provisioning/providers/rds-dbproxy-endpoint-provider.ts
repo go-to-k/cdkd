@@ -31,9 +31,12 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -242,7 +245,8 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(
@@ -259,9 +263,22 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     // Defensive: reject diffs in immutable fields. Replacement-rules.ts
     // SHOULD have routed those to a CREATE+DELETE replacement upstream, but
     // we double-check here so a missing rule entry doesn't silently corrupt
-    // state (the PR #387 round 1 blocker class).
+    // state (the PR #387 round 1 blocker class). A secret-derived value is
+    // recorded as its `{{resolve:...}}` reference and handed here resolved,
+    // which is no change; the physical id IS the endpoint name
+    // (go-to-k/cdkd#4275).
     for (const field of ['DBProxyName', 'DBProxyEndpointName', 'VpcSubnetIds', 'TargetRole']) {
-      if (JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])) {
+      if (
+        JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field]) &&
+        !(await unchangedBehindSecretReference({
+          resourceType,
+          key: field,
+          desired: properties[field],
+          previous: previousProperties[field],
+          physicalName: field === 'DBProxyEndpointName' ? physicalId : undefined,
+          maskSecrets: context?.maskSecrets,
+        }))
+      ) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
@@ -276,7 +293,10 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     const oldSG = (previousProperties['VpcSecurityGroupIds'] as string[]) ?? [];
     const newSG = (properties['VpcSecurityGroupIds'] as string[]) ?? [];
     if (JSON.stringify(oldSG) !== JSON.stringify(newSG)) {
-      this.logger.debug(`Updating DBProxyEndpoint ${physicalId} security groups`);
+      // The physical id is the endpoint name, which can be secret-derived.
+      this.logger.debug(
+        `Updating DBProxyEndpoint ${maskerOrIdentity(context?.maskSecrets)(physicalId)} security groups`
+      );
       try {
         await client.send(
           new ModifyDBProxyEndpointCommand({
@@ -300,7 +320,8 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       previousProperties['Tags'],
       properties['Tags'],
       resourceType,
-      logicalId
+      logicalId,
+      context?.maskSecrets
     );
 
     return { physicalId, wasReplaced: false };
@@ -480,7 +501,9 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     oldTags: unknown,
     newTags: unknown,
     resourceType: string,
-    logicalId: string
+    logicalId: string,
+    // The physical id is a name that can be secret-derived (go-to-k/cdkd#4275).
+    maskSecrets?: MaskerFn
   ): Promise<void> {
     // Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
     // unreadable record untags nothing.
@@ -512,7 +535,9 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         if (arn) this.attributeCache.set(arnCacheKey, arn);
       } catch (error) {
         this.logger.debug(
-          `Skipping tag diff for ${physicalId} (no ARN): ${describeAwsFailure(error).detail}`
+          maskerOrIdentity(maskSecrets)(
+            `Skipping tag diff for ${maskerOrIdentity(maskSecrets)(physicalId)} (no ARN): ${describeAwsFailure(error).detail}`
+          )
         );
         return;
       }

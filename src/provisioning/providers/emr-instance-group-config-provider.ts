@@ -20,10 +20,12 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { isRedactedRecordedValue } from '../redacted-delete-address.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
 
 /**
@@ -247,7 +249,8 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const changed = (key: string): boolean => !jsonEqual(properties[key], previousProperties[key]);
 
@@ -255,10 +258,25 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     // property is registry-createOnly (routed through DELETE+CREATE before
     // reaching here); a createOnly change that arrives anyway means the
     // replacement layer was bypassed — refuse it with a --replace pointer.
+    // A secret-derived `Name` is recorded as its `{{resolve:...}}` reference
+    // and handed here resolved, which is no change (go-to-k/cdkd#4275).
     const MUTABLE = new Set(['InstanceCount', 'AutoScalingPolicy']);
     for (const key of Object.keys({ ...properties, ...previousProperties })) {
       if (!changed(key)) continue;
-      if (!MUTABLE.has(key)) {
+      if (
+        !MUTABLE.has(key) &&
+        // `JobFlowId` ADDRESSES the calls below by its desired value, so a secret
+        // rotated under an unchanged reference would reach another cluster:
+        // never exempted.
+        (key === 'JobFlowId' ||
+          !(await unchangedBehindSecretReference({
+            resourceType,
+            key,
+            desired: properties[key],
+            previous: previousProperties[key],
+            maskSecrets: context?.maskSecrets,
+          })))
+      ) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,

@@ -73,6 +73,7 @@ import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 
 /** The ApiGatewayV2 types whose delete addresses the child through `ApiId`. */
 const API_ID_ADDRESSED_TYPES: ReadonlySet<string> = new Set([
@@ -1857,10 +1858,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'ApiId is immutable on AWS::ApiGatewayV2::Stage; re-deploy with cdkd deploy --replace'
       );
     }
+    // A `StageName` taken from a secret is recorded as its `{{resolve:...}}`
+    // reference and handed here resolved, so the two sides never compare
+    // equal: the physical id, which IS the stage name, decides instead
+    // (go-to-k/cdkd#4264).
     if (
       properties['StageName'] !== undefined &&
       previousProperties['StageName'] !== undefined &&
-      properties['StageName'] !== previousProperties['StageName']
+      properties['StageName'] !== previousProperties['StageName'] &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'StageName',
+        desired: properties['StageName'],
+        previous: previousProperties['StageName'],
+        physicalName: physicalId,
+      }))
     ) {
       throw new ResourceUpdateNotSupportedError(
         resourceType,

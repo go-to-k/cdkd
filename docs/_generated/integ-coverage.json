@@ -290,6 +290,7 @@
         "local-start-api-websocket",
         "migrate-from-cfn",
         "redacted-delete-address",
+        "secret-derived-immutable-names",
         "serverless-api"
       ],
       "signals": {
@@ -326,6 +327,10 @@
           "l2"
         ],
         "redacted-delete-address": [
+          "l1",
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
           "l1",
           "literal"
         ],
@@ -435,6 +440,7 @@
         "local-start-api-websocket",
         "migrate-from-cfn",
         "redacted-delete-address",
+        "secret-derived-immutable-names",
         "serverless-api"
       ],
       "signals": {
@@ -462,6 +468,10 @@
           "l2"
         ],
         "redacted-delete-address": [
+          "l1",
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
           "l1",
           "literal"
         ],
@@ -3146,7 +3156,8 @@
         "local-start-alb-from-state",
         "local-start-service",
         "local-start-service-watch-fast",
-        "replacement-rename-onto-holder"
+        "replacement-rename-onto-holder",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "drift-revert": [
@@ -3184,6 +3195,10 @@
         "replacement-rename-onto-holder": [
           "l1",
           "literal"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -3197,7 +3212,8 @@
         "local-start-alb",
         "local-start-alb-from-state",
         "local-start-service",
-        "local-start-service-watch-fast"
+        "local-start-service-watch-fast",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "ecs-bluegreen": [
@@ -3230,6 +3246,10 @@
         "local-start-service-watch-fast": [
           "l1",
           "literal"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -3250,6 +3270,7 @@
         "local-start-alb-from-state",
         "local-start-service",
         "local-start-service-watch-fast",
+        "secret-derived-immutable-names",
         "secrets-array-nested"
       ],
       "signals": {
@@ -3299,6 +3320,10 @@
         ],
         "local-start-service-watch-fast": [
           "l2"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ],
         "secrets-array-nested": [
           "l1",

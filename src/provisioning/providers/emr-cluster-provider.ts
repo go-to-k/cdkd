@@ -51,12 +51,14 @@ import {
   toSdkInstanceTypeConfigs,
   toSdkStepConfigs,
 } from '../emr-configuration.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -555,7 +557,8 @@ export class EMRClusterProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -631,11 +634,23 @@ export class EMRClusterProvider implements ResourceProvider {
 
     // Any changed top-level property that is neither registry-createOnly
     // (which never reaches here) nor a known mutable one is refused. This
-    // guard fires only if the replacement layer is bypassed.
+    // guard fires only if the replacement layer is bypassed. A secret-derived
+    // value (a `Name`, a `KerberosAttributes` password) is recorded as its
+    // `{{resolve:...}}` reference and handed here resolved, which is no change
+    // (go-to-k/cdkd#4275).
     for (const key of Object.keys({ ...properties, ...previousProperties })) {
       if (key === 'Instances') continue;
       if (!changed(key)) continue;
-      if (!MUTABLE_TOP_LEVEL_PROPS.has(key)) {
+      if (
+        !MUTABLE_TOP_LEVEL_PROPS.has(key) &&
+        !(await unchangedBehindSecretReference({
+          resourceType,
+          key,
+          desired: properties[key],
+          previous: previousProperties[key],
+          maskSecrets: context?.maskSecrets,
+        }))
+      ) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,

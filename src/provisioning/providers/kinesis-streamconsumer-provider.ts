@@ -27,9 +27,30 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+
+/**
+ * The stream ARN and consumer name a consumer ARN carries
+ * (`<stream ARN>/consumer/<ConsumerName>:<creation timestamp>`), or
+ * `undefined` for any other shape. The LAST marker: a consumer name cannot
+ * hold a `/`, while a stream may itself be named `consumer`.
+ */
+function consumerArnParts(
+  consumerArn: string
+): { streamArn: string; consumerName: string } | undefined {
+  const marker = '/consumer/';
+  const at = consumerArn.lastIndexOf(marker);
+  if (at <= 0) return undefined;
+  const rest = consumerArn.slice(at + marker.length);
+  const colon = rest.lastIndexOf(':');
+  if (colon <= 0) return undefined;
+  return { streamArn: consumerArn.slice(0, at), consumerName: rest.slice(0, colon) };
+}
 
 /**
  * SDK Provider for AWS::Kinesis::StreamConsumer.
@@ -178,7 +199,8 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -188,7 +210,8 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
         physicalId,
         resourceType,
         properties,
-        previousProperties
+        previousProperties,
+        context?.maskSecrets
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
@@ -211,7 +234,8 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets: MaskerFn | undefined
   ): Promise<ResourceUpdateResult> {
     // Only Tags are mutable. Reject any non-Tags diff with
     // ResourceUpdateNotSupportedError so the user gets a clear hint.
@@ -220,7 +244,29 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     const newStreamArn = properties['StreamARN'];
     const oldStreamArn = previousProperties['StreamARN'];
 
-    if (newConsumerName !== oldConsumerName || newStreamArn !== oldStreamArn) {
+    // A secret-derived value is recorded as its `{{resolve:...}}` reference
+    // and handed here resolved, which is no change: the consumer ARN carries
+    // both the stream ARN and the consumer name, and decides instead
+    // (go-to-k/cdkd#4275).
+    const fromArn = consumerArnParts(physicalId);
+    const unchanged = async (
+      key: string,
+      desired: unknown,
+      previous: unknown,
+      fromId?: string
+    ): Promise<boolean> =>
+      desired === previous ||
+      unchangedBehindSecretReference({
+        resourceType,
+        key,
+        desired,
+        previous,
+        physicalName: fromId,
+      });
+    if (
+      !(await unchanged('ConsumerName', newConsumerName, oldConsumerName, fromArn?.consumerName)) ||
+      !(await unchanged('StreamARN', newStreamArn, oldStreamArn, fromArn?.streamArn))
+    ) {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
@@ -234,7 +280,8 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       resourceType,
       logicalId,
       previousProperties['Tags'],
-      properties['Tags']
+      properties['Tags'],
+      maskSecrets
     );
 
     // Re-fetch attributes for the result.
@@ -256,9 +303,12 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       }
     } catch (err) {
       // Best-effort attribute refresh — do not fail the update path on
-      // a transient read error.
+      // a transient read error. Masked: the consumer ARN carries the consumer
+      // name, which can be secret-derived.
       this.logger.debug(
-        `DescribeStreamConsumer(${physicalId}) failed: ${describeAwsFailure(err).detail}`
+        maskerOrIdentity(maskSecrets)(
+          `DescribeStreamConsumer(${physicalId}) failed: ${describeAwsFailure(err).detail}`
+        )
       );
     }
 
@@ -417,8 +467,11 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    // The consumer ARN carries the consumer name, which can be secret-derived.
+    maskSecrets?: MaskerFn
   ): Promise<void> {
+    const mask = maskerOrIdentity(maskSecrets);
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
@@ -432,7 +485,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
         new UntagResourceCommand({ ResourceARN: consumerArn, TagKeys: tagsToRemove })
       );
       this.logger.debug(
-        `Removed ${tagsToRemove.length} tag(s) from Kinesis stream consumer ${consumerArn}`
+        mask(`Removed ${tagsToRemove.length} tag(s) from Kinesis stream consumer ${consumerArn}`)
       );
     }
     if (Object.keys(tagsToAdd).length > 0) {
@@ -440,7 +493,9 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
         new TagResourceCommand({ ResourceARN: consumerArn, Tags: tagsToAdd })
       );
       this.logger.debug(
-        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Kinesis stream consumer ${consumerArn}`
+        mask(
+          `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Kinesis stream consumer ${consumerArn}`
+        )
       );
     }
   }

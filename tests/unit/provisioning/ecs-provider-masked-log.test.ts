@@ -572,6 +572,31 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
       expect(lines).not.toContain(TINY_A);
       expect(lines).not.toContain(TINY_B);
     });
+
+    it('update() Service whose RECORDED ServiceName is the reference: the lines past the ServiceName guard are masked (go-to-k/cdkd#4263)', async () => {
+      // Before go-to-k/cdkd#4263 the guard refused this shape (desired
+      // plaintext, recorded reference) before any line below it ran.
+      const arn = serviceArn(TINY_B, TINY_A);
+      fakeEcs({
+        UpdateServiceCommand: () => ({ service: { serviceArn: arn, serviceName: TINY_A } }),
+      });
+      await provider.update(
+        'Svc',
+        arn,
+        'AWS::ECS::Service',
+        { Cluster: TINY_B, ServiceName: TINY_A, DesiredCount: 2 },
+        {
+          Cluster: TINY_B,
+          ServiceName: `{{resolve:secretsmanager:svc:SecretString:name}}`,
+          DesiredCount: 1,
+        },
+        { maskSecrets }
+      );
+      const lines = transcript();
+      expect(lines).toContain(WITHHELD_AWS_COMMAND);
+      expect(lines).not.toContain(TINY_A);
+      expect(lines).not.toContain(TINY_B);
+    });
   });
 
   describe('the desired Cluster value itself', () => {
