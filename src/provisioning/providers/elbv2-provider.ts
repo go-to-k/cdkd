@@ -64,7 +64,11 @@ import {
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { createMaskedRetryLogger, maskerOrIdentity } from '../masked-retry-logger.js';
+import {
+  createMaskedRetryLogger,
+  maskerOrIdentity,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -78,7 +82,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -531,8 +535,26 @@ export class ELBv2Provider implements ResourceProvider {
   }
 
   /**
-   * Mask a caught AWS error's message before it is interpolated into the
-   * `ProvisioningError` this provider throws (issue #2050, review round 2).
+   * Mask a caught AWS error's message before it is interpolated into a line
+   * this provider logs (issue #2050, review round 2). A thrown `create()` /
+   * `update()` failure goes through {@link wrapMaskedError} instead, which
+   * masks the same text and also stamps the wrap.
+   *
+   * Masks `error.message` rather than the assembled sentence ON PURPOSE. The
+   * two are NOT equivalent: handing the masker the raw message can reach
+   * `maskSecretsInText`'s WHOLE-VALUE arm, which matches at ANY length, while
+   * a longer assembled sentence can only ever reach the SUBSTRING arm, which
+   * ignores needles below 4 characters. See `SecretMaskingContext` in
+   * `src/types/resource.ts`.
+   */
+  private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
+    const mask = maskerOrIdentity(maskSecrets);
+    return mask(error instanceof Error ? error.message : String(error));
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked RAW, as {@link maskErrorMessage} does (issue #2050).
    *
    * NOT a duplicate of {@link maskedRetryLogger}, and strictly WIDER than it.
    * `withRetry` rethrows the RAW error, and `deploy-engine.ts` prints the
@@ -543,21 +565,19 @@ export class ELBv2Provider implements ResourceProvider {
    * gated on `propagationRetries > 0 || serverErrorRetries > 0`, and a
    * validation error that fails on attempt 0 satisfies neither.
    *
-   * Masks `error.message` rather than the assembled sentence ON PURPOSE. The
-   * two are NOT equivalent: handing the masker the raw message can reach
-   * `maskSecretsInText`'s WHOLE-VALUE arm, which matches at ANY length, while
-   * a longer assembled sentence can only ever reach the SUBSTRING arm, which
-   * ignores needles below 4 characters. See `SecretMaskingContext` in
-   * `src/types/resource.ts`.
-   *
-   * The `cause` chain is deliberately left UNMASKED and unwrapped by every
-   * caller of this helper: `isRetryableTransientError` walks `cause` for
-   * `$metadata.httpStatusCode`, and rewriting or dropping it would silently
-   * change retry classification. Only the human-readable message is rewritten.
+   * The `cause` stays the ORIGINAL, unmasked error, and a message the mask
+   * changed is stamped so the retry classifiers read that chain rather than
+   * the masked message (`wrapMaskedAwsError`, issue #4259): a secret that
+   * spells part of the retry table's wording would otherwise turn a transient
+   * failure terminal. A method, so `gen-update-wrap-coverage` sees the catch
+   * that throws it as a wrap.
    */
-  private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
-    const mask = maskerOrIdentity(maskSecrets);
-    return mask(error instanceof Error ? error.message : String(error));
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -635,12 +655,17 @@ export class ELBv2Provider implements ResourceProvider {
       // ProvisioningError already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update ELBv2 resource ${logicalId}: ${this.maskErrorMessage(error, context?.maskSecrets)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update ELBv2 resource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -934,12 +959,17 @@ export class ELBv2Provider implements ResourceProvider {
       // NON-RETRYABLE `CreateLoadBalancer` rejection — nothing on this path
       // goes through `withRetry`, so there is no give-up summary behind it.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create LoadBalancer ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create LoadBalancer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1581,12 +1611,17 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create TargetGroup ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create TargetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1829,12 +1864,17 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update TargetGroup ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update TargetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2032,12 +2072,17 @@ export class ELBv2Provider implements ResourceProvider {
       // classifier walks it for `$metadata`, so only the human-readable
       // message is masked.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Listener ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Listener ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -2166,12 +2211,17 @@ export class ELBv2Provider implements ResourceProvider {
       // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
       // create path above.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Listener ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Listener ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
