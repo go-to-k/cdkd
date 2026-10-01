@@ -124,7 +124,9 @@ export interface DeploymentEventsPruneResult {
   deletedRunIds: string[];
   /** Run ids whose `{runId}.jsonl` object survived the prune. */
   remainingRunIds: string[];
-  /** Whether `index.json` was deleted (true only when no runs remain). */
+  /** Whether an `index.json` that EXISTED was deleted (only when no runs
+   *  remain). Read from the prune's own listing, never from the delete call:
+   *  `DeleteObjects` succeeds on an absent key, so it proves nothing (#2624). */
   indexDeleted: boolean;
 }
 
@@ -612,13 +614,24 @@ export class DeploymentEventsReader {
       .sort()
       .reverse();
     const indexKey = deploymentEventsIndexKey(this.backend.prefix, stackName, region);
+    // Whether the index existed, from the SAME listing the run ids come from.
+    // The delete below cannot answer this: `DeleteObjects` reports success for
+    // an absent key, so on an empty prefix it would let the caller announce
+    // the removal of an index that never existed (issue #2624).
+    const indexExisted = keys.includes(indexKey);
 
     if (opts.all === true) {
       const toDelete = runIdsDesc.map((id) =>
         deploymentEventsKey(this.backend.prefix, stackName, region, id)
       );
+      // The index key stays in the delete even when the listing lacked it, so
+      // an index written after the listing is still removed; only the REPORT
+      // depends on the listing. That race under-claims (false); the opposite
+      // one -- a concurrent prune deleting the index between our listing and
+      // our delete -- reports the peer's removal as ours, a true claim about
+      // the bucket with only the attribution off.
       await this.backend.deleteRawObjects([...toDelete, indexKey]);
-      return { deletedRunIds: runIdsDesc, remainingRunIds: [], indexDeleted: true };
+      return { deletedRunIds: runIdsDesc, remainingRunIds: [], indexDeleted: indexExisted };
     }
 
     // Resolve the count window. When neither keep nor olderThan is given,
@@ -657,7 +670,8 @@ export class DeploymentEventsReader {
       stackName,
       region,
       deletedSet,
-      remainingRunIds.length === 0
+      remainingRunIds.length === 0,
+      indexExisted
     );
     await this.backend.deleteRawObjects(deleteKeys);
     return { deletedRunIds: candidates, remainingRunIds, indexDeleted };
@@ -667,18 +681,20 @@ export class DeploymentEventsReader {
    * Drop the pruned run ids from `index.json`, or delete the index entirely
    * when no `.jsonl` streams remain. A corrupt / unreadable index is left
    * untouched (the `.jsonl` files are the source of truth; `cdkd events`
-   * falls back to key enumeration). Returns whether the index was deleted.
+   * falls back to key enumeration). Returns whether an index that EXISTED
+   * (`indexExisted`, from the caller's listing) was deleted.
    */
   private async rewriteIndexAfterPrune(
     indexKey: string,
     stackName: string,
     region: string,
     deletedRunIds: Set<string>,
-    noRunsRemain: boolean
+    noRunsRemain: boolean,
+    indexExisted: boolean
   ): Promise<boolean> {
     if (noRunsRemain) {
       await this.backend.deleteRawObjects([indexKey]);
-      return true;
+      return indexExisted;
     }
     let raw: string | null;
     try {

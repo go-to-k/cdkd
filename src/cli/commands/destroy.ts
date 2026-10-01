@@ -152,13 +152,12 @@ export async function purgeEventsAfterDestroy(
   }
   try {
     const purge = await reader.pruneRuns(stackName, region, { all: true });
-    // This gate is CONSTANT-TRUE today, and the gap is tracked on issue #2624
-    // rather than closed here: `pruneRuns({ all: true })` reports
-    // `indexDeleted: true` unconditionally (its `DeleteObjects` is idempotent,
-    // so it "succeeds" on an empty prefix), so the second disjunct always
-    // fires and the line below can announce a purge for a stack that had no
-    // history at all. Making it truthful is a behaviour change, not a wording
-    // one. Same note on `NONCURRENT_VERSIONS_SURVIVE_NOTE` in events.ts.
+    // `indexDeleted` is true only when an index EXISTED in the prune's listing
+    // (issue #2624) — not merely because the idempotent `DeleteObjects`
+    // succeeded — so a prefix with no history prints nothing here. In a live
+    // destroy that is rare: `eventRecorder.finalize()` runs first and writes
+    // this run's record plus `index.json`, so the prefix is empty only when
+    // those writes did not land.
     if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
       logger.info(
         `  Purged deployment-event history for ${displaySafe(stackName)} (${displaySafe(region)}). Where the state ` +
