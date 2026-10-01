@@ -72,6 +72,7 @@ import {
 import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
+import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.js';
 import { isAwsCliLiteral } from '../../provisioning/replacement-protection-advice.js';
@@ -5195,11 +5196,12 @@ export async function buildImportPlan(
 
     // Issue #2274: a record whose properties hold the REDACTION MASK cannot be
     // handed to CloudFormation. `***` is what cdkd persists where a `NoEcho`
-    // custom resource's `Data` was resolved into a property, and there is
-    // nothing to re-derive the real value from — so the exported template would
-    // declare the literal mask, which CFn would either refuse at IMPORT (the
-    // template must describe the live resource) or WRITE onto it at the next
-    // update. Blocked per resource, like every other unexportable shape here,
+    // custom resource's `Data` was resolved into a property, or where a
+    // property holds the `Fn::Base64` encoding of a secret (issues #2759 /
+    // #3119), and there is nothing to re-derive the real value from — so the
+    // exported template would declare the literal mask, which CFn would either
+    // refuse at IMPORT (the template must describe the live resource) or WRITE
+    // onto it at the next update. Blocked per resource, like every other unexportable shape here,
     // so the rest of the stack still reports. The `attributes` twin (issue
     // #2932) is NOT a whole-bag test beside this one: it sits at the identifier
     // choke point below, scoped to the one position the export reads —
@@ -5208,9 +5210,17 @@ export async function buildImportPlan(
       blocked.push({
         logicalId,
         resourceType,
-        // TWO POPULATIONS, and this named only the first until issue
+        // THREE POPULATIONS, each with its own remedy, because nothing in the
+        // record says which wrote the mask (issue
+        // [#2881](https://github.com/go-to-k/cdkd/issues/2881)). ARM (2), the
+        // `Fn::Base64` encoding of a secret, is the one `resolveBase64`
+        // registers as a mask-only needle (issues #2759 / #3119): no custom
+        // resource is involved, and every deploy masks it again, so neither
+        // the NoEcho remedy nor a re-deploy helps — only changing the template.
+        //
+        // ARM (3) was absent, the message naming arm (1) alone, until issue
         // [#2847](https://github.com/go-to-k/cdkd/issues/2847)'s round-2
-        // review. ARM (2) was then NARROWED by round 3's trace: this blocker
+        // review, and was then NARROWED by round 3's trace: this blocker
         // tests `properties`, while `CloudControlProvider.import` masks only
         // `attributes`, so "adopted through the Cloud Control fallback" named a
         // route that cannot put a mask here and sent the user at the wrong
@@ -5228,11 +5238,15 @@ export async function buildImportPlan(
         // template for one that is not there.
         reason:
           "cdkd state holds only the redaction mask ('***') for at least one property, and " +
-          'cdkd cannot re-derive the value. There are two ways a record comes to hold it. ' +
+          'cdkd cannot re-derive the value. There are three ways a record comes to hold it. ' +
           '(1) A NoEcho custom-resource value: forcing the custom resource to update does NOT ' +
           'clear this — the handler supplies the value to the deploy and cdkd re-masks it on ' +
           'the way into state, so the export still has nothing to declare. Stop setting NoEcho ' +
-          'on that response and re-deploy, then export again. (2) The value was SPLICED from a ' +
+          'on that response and re-deploy, then export again. (2) The Fn::Base64 encoding of a ' +
+          'secret value (a {{resolve:...}} dynamic reference under Fn::Base64, such as EC2 ' +
+          'UserData): cdkd never records that encoding, so no deploy clears this. Stop encoding ' +
+          'the secret into the property (have the resource read the secret at run time instead) ' +
+          'and re-deploy, then export again. (3) The value was SPLICED from a ' +
           "masked record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' " +
           'resolving an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. ' +
           // NO backtick wrapper. Pasted WITH its wrapper a backtick span is
@@ -5244,7 +5258,7 @@ export async function buildImportPlan(
           `cdkd import ${commandHole('stack')} --resource ` +
           `${commandHole('logicalId')}=${commandHole('physicalId')} --force (granting ` +
           'cloudformation:DescribeType first if the import warned that it could not read the ' +
-          'schema), then re-run whichever command wrote this property. Either way you can also ' +
+          'schema), then re-run whichever command wrote this property. In every case you can also ' +
           'export this stack without that resource and adopt it into CloudFormation by hand. ' +
           'See https://github.com/go-to-k/cdkd/issues/2274.',
       });
@@ -6992,18 +7006,48 @@ export function reportDriftBaselineGaps(
   }
 
   if (refused.length > 0) {
-    logger.warn(
-      `${refused.length} of ${entries.length} resource(s) had their baseline REFUSED by a ` +
-        `\`cdkd import\` run, because their recorded properties can no longer position the ` +
-        `secret redaction. \`cdkd state refresh-observed\` will decline them too — capturing ` +
-        `a readback against those properties could persist a resolved secret into state.json ` +
-        `in plaintext. Deploy a change to each one to restore its baseline.`
-    );
-    for (const [logicalId] of refused.slice(0, NAMED_BASELINE_IDS)) {
-      logger.warn(`  ${displayLogicalId(logicalId)}`);
+    // "Deploy a change" is the remedy for one refusal class only (issue
+    // #3465): an unverifiable-parameter refusal survives every in-place
+    // update, and a reason-less one may. `refusedBaselineRemedy` names the
+    // other two, so the list is grouped by remedy — the deploy-clearable group
+    // first — and a group's ids sit under the remedy that is true for them.
+    const groups = new Map<string | undefined, string[]>();
+    for (const [logicalId, record] of refused) {
+      const remedy = refusedBaselineRemedy(record);
+      const ids = groups.get(remedy) ?? [];
+      ids.push(logicalId);
+      groups.set(remedy, ids);
     }
-    if (refused.length > NAMED_BASELINE_IDS) {
-      logger.warn(`  ... and ${refused.length - NAMED_BASELINE_IDS} more`);
+    const ordered = [...groups].sort(
+      ([a], [b]) => Number(a !== undefined) - Number(b !== undefined)
+    );
+    const deployRemedy = 'Deploy a change to each one to restore its baseline.';
+    const head =
+      `${refused.length} of ${entries.length} resource(s) had their baseline REFUSED by a ` +
+      `\`cdkd import\` run, because their recorded properties can no longer position the ` +
+      `secret redaction. \`cdkd state refresh-observed\` will decline them too — capturing ` +
+      `a readback against those properties could persist a resolved secret into state.json ` +
+      `in plaintext.`;
+    const listIds = (ids: string[]): void => {
+      for (const logicalId of ids.slice(0, NAMED_BASELINE_IDS)) {
+        logger.warn(`  ${displayLogicalId(logicalId)}`);
+      }
+      if (ids.length > NAMED_BASELINE_IDS) {
+        logger.warn(`  ... and ${ids.length - NAMED_BASELINE_IDS} more`);
+      }
+    };
+    if (ordered.length === 1) {
+      const [remedy, ids] = ordered[0]!;
+      logger.warn(
+        safeMsg`${head} ${remedy === undefined ? deployRemedy : `For each one: ${remedy}`}`
+      );
+      listIds(ids);
+    } else {
+      logger.warn(`${head} The remedy depends on why each one was refused.`);
+      for (const [remedy, ids] of ordered) {
+        logger.warn(safeMsg`${ids.length} of them: ${remedy ?? deployRemedy}`);
+        listIds(ids);
+      }
     }
   }
 }

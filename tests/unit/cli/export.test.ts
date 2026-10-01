@@ -2627,6 +2627,95 @@ describe('reportDriftBaselineGaps', () => {
     expect(messages.some((m) => m.trim() === 'Refused')).toBe(true);
   });
 
+  // Issue #3465: "deploy a change" is the remedy for the `incomplete-resolution`
+  // class only. An `unverifiable-parameter` refusal survives every in-place
+  // update, and a reason-less one (an older cdkd's) may, so each refused id
+  // must sit under the remedy that is true for it.
+  function refusedRecord(reason?: 'unverifiable-parameter' | 'incomplete-resolution') {
+    return {
+      physicalId: 'p',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: {},
+      observedBaselineRefused: true,
+      ...(reason !== undefined ? { observedBaselineRefusalReason: reason } : {}),
+    };
+  }
+  function refusedWarnings(resources: Record<string, unknown>): string[] {
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: resources as never,
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    return logger.warn.mock.calls.map((c) => String(c[0]));
+  }
+
+  it('keeps the deploy-a-change remedy for an incomplete-resolution refusal (issue #3465)', () => {
+    const messages = refusedWarnings({ Held: refusedRecord('incomplete-resolution') });
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatch(/REFUSED/);
+    expect(messages[0]).toMatch(/Deploy a change to each one to restore its baseline\.$/);
+    expect(messages[1]).toBe('  Held');
+  });
+
+  it('does NOT tell an unverifiable-parameter refusal that a deploy clears it (issue #3465)', () => {
+    const messages = refusedWarnings({ Held: refusedRecord('unverifiable-parameter') });
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatch(/REFUSED/);
+    expect(messages[0]).not.toMatch(/Deploy a change to each one/);
+    expect(messages[0]).toMatch(/Deploying a change does NOT clear this refusal/);
+    expect(messages[0]).toMatch(/replaces the resource/);
+    expect(messages[1]).toBe('  Held');
+  });
+
+  it('hedges a reason-less refusal on whether the resource reads a template parameter (issue #3465)', () => {
+    const messages = refusedWarnings({ Held: refusedRecord() });
+    expect(messages[0]).not.toMatch(/Deploy a change to each one/);
+    expect(messages[0]).toMatch(/recorded without a reason/);
+    expect(messages[0]).toMatch(/unless the resource reads a template parameter/);
+  });
+
+  it('groups a MIXED refused list by remedy, each id under its own (issue #3465)', () => {
+    // Record order interleaves the classes, so a group-by that kept record
+    // order, or one remedy for the whole list, misplaces an id.
+    const messages = refusedWarnings({
+      Sticky: refusedRecord('unverifiable-parameter'),
+      Clearable: refusedRecord('incomplete-resolution'),
+      Legacy: refusedRecord(),
+      Clearable2: refusedRecord('incomplete-resolution'),
+    });
+    expect(messages[0]).toMatch(/^4 of 4 resource\(s\) had their baseline REFUSED/);
+    expect(messages[0]).toMatch(/The remedy depends on why each one was refused\.$/);
+    // The deploy-clearable group first, then the others in record order.
+    expect(messages.slice(1)).toEqual([
+      '2 of them: Deploy a change to each one to restore its baseline.',
+      '  Clearable',
+      '  Clearable2',
+      expect.stringMatching(/^1 of them: Deploying a change does NOT clear this refusal/),
+      '  Sticky',
+      expect.stringMatching(/^1 of them: This refusal was recorded without a reason/),
+      '  Legacy',
+    ]);
+  });
+
+  it('caps the ids per remedy group (issue #3465)', () => {
+    const resources: Record<string, unknown> = {};
+    for (let i = 0; i < 25; i++) resources[`Sticky${i}`] = refusedRecord('unverifiable-parameter');
+    resources['Clearable'] = refusedRecord('incomplete-resolution');
+    const messages = refusedWarnings(resources);
+    const stickyRows = messages.filter((m) => m.startsWith('  Sticky'));
+    expect(stickyRows.length).toBeGreaterThan(0);
+    expect(stickyRows.length).toBeLessThan(25);
+    expect(messages).toContain(`  ... and ${25 - stickyRows.length} more`);
+    expect(messages).toContain('  Clearable');
+  });
+
   /**
    * Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018) item 2: an
    * ENTRY that is not an object.
@@ -4834,6 +4923,41 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     expect(result.blocked[0]!.reason).not.toMatch(
       /(record|baseline)[^.]{0,40}(written|adopted)[^.]{0,40}(Cloud Control|cdkd import)/i
     );
+  });
+
+  // Issue #2881: a THIRD writer reaches this blocker. `resolveBase64` registers
+  // the encoding of a secret as a mask-only needle, so a deploy persists `***`
+  // in `properties` (pinned by `deploy-engine-base64-secret-noop.test.ts`:
+  // `properties.Value === '***'`), with no custom resource anywhere near it.
+  // Both remedies the message offered before are wrong for it: there is no
+  // NoEcho to stop setting, and every deploy masks the encoding again.
+  it('names the Fn::Base64 encoding of a secret as a cause, with a remedy no deploy replaces (issue #2881)', async () => {
+    const state = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Ud: { resourceType: 'AWS::SSM::Parameter' } },
+    });
+    // The shape a deploy records for `Value: { 'Fn::Base64': '...{{resolve:...}}' }`.
+    state.resources['Ud']!.properties = { Name: '/app/ud', Type: 'String', Value: '***' };
+    const template = {
+      Resources: {
+        Ud: { Type: 'AWS::SSM::Parameter', Properties: { Name: '/app/ud', Value: 'x' } },
+      },
+    };
+
+    const result = await buildImportPlan(state, template, cfnClientStub, 'Root');
+
+    expect(result.blocked).toHaveLength(1);
+    const reason = result.blocked[0]!.reason;
+    expect(reason).toMatch(/three ways a record comes to hold it/);
+    expect(reason).toMatch(/\(2\) The Fn::Base64 encoding of a secret value/);
+    expect(reason).toMatch(/no deploy clears this/);
+    expect(reason).toMatch(/Stop encoding the secret into the property/);
+    // The other two arms are still named, so the Base64 arm was added, not
+    // substituted.
+    expect(reason).toMatch(/\(1\) A NoEcho custom-resource value/);
+    expect(reason).toMatch(/\(3\) The value was SPLICED from a masked record of ANOTHER resource/);
+    expect(reason).not.toMatch(/two ways/);
   });
 
   it('does NOT block an ordinary resource whose properties carry no mask', async () => {

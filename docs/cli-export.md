@@ -83,7 +83,7 @@ offending resource is named in one message so you can fix them in one pass.
 | Blocked | Why | Remedy |
 | --- | --- | --- |
 | A template resource with no cdkd state entry | Nothing to hand over — cdkd does not know its physical id. | Import it first, or remove it from the stack. |
-| A resource whose recorded properties hold the redaction mask `***` | A `NoEcho` Custom Resource value cdkd cannot re-derive. | See below. |
+| A resource whose recorded properties hold the redaction mask `***` | A value cdkd cannot re-derive: a `NoEcho` Custom Resource value, the `Fn::Base64` encoding of a secret, or a mask copied from another record. | See below. |
 | A resource whose CloudFormation import identifier would be the redaction mask `***` | The recorded attribute cdkd reads as the identifier (an `AWS::S3Tables::Table` `TableARN`, an `AWS::EC2::SecurityGroupIngress` `Id`, ...) was masked by a Cloud Control import, or the physical id itself is masked. | Re-import the resource with `cloudformation:DescribeType` granted, or export without it. See below. |
 | An `AWS::CloudFormation::Stack` row with no matching nested-stack entry in cdkd state | The child's state record is missing, so its resources cannot be imported. | Repair or re-import the child's state. |
 | A resource type CloudFormation cannot import | See [Resource types CloudFormation cannot import](#resource-types-cloudformation-cannot-import). | Remove the resource, or destroy it and let CloudFormation create it fresh. |
@@ -108,11 +108,25 @@ unblock the export: without the root record there is nothing to migrate, and
 without a nested child's record the export refuses the tree as missing that
 child.
 
-**About the `***` mask.** Forcing the Custom Resource to update does not clear
-the block: the handler supplies the value to the *deploy*, and cdkd re-masks it
-on the way into state — which is what the export reads. Either stop setting
-`NoEcho` on that response and re-deploy, then export again, or export the stack
-without that resource and adopt it into CloudFormation by hand.
+**About the `***` mask.** The remedy depends on what put the mask there, and
+the record does not say which:
+
+- **A `NoEcho` Custom Resource value.** Forcing the Custom Resource to update
+  does not clear the block: the handler supplies the value to the *deploy*, and
+  cdkd re-masks it on the way into state — which is what the export reads. Stop
+  setting `NoEcho` on that response and re-deploy, then export again.
+- **The `Fn::Base64` encoding of a secret** — a `{{resolve:...}}` dynamic
+  reference under `Fn::Base64`, as in EC2 `UserData`. cdkd never records that
+  encoding, so no deploy clears it. Stop encoding the secret into the property
+  (have the resource read the secret at run time instead) and re-deploy, then
+  export again.
+- **A mask copied from another record**, by `cdkd orphan --force` or by a
+  `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over a masked value. Repair
+  the record that holds the mask with a selective `cdkd import --force`, then
+  re-run whichever command wrote this property.
+
+In every case you can also export the stack without that resource and adopt it
+into CloudFormation by hand.
 
 A mask in a record's `attributes` is a different population and is judged
 differently. `cdkd import` writes the mask there for every Cloud Control model
@@ -569,6 +583,15 @@ first `cdk deploy` after the migration may surface unexpected changes if AWS
 has drifted from the synth template. Run `cdkd state refresh-observed '<stack>'`
 (or any redeploy) before exporting, then `cdkd drift '<stack>'` to verify. The
 warning is non-blocking by design — you decide whether to proceed.
+
+A resource whose baseline a `cdkd import` run **refused** is listed apart:
+`cdkd state refresh-observed` declines it too. The list is grouped by remedy.
+Deploying a change to the resource restores its baseline, unless the refusal was
+over a template parameter whose deployed value cdkd could not prove; then only
+replacing the resource, or re-importing it while a CloudFormation stack can
+prove the value, clears it. A refusal recorded by an older cdkd without its
+reason is treated this way when the resource reads a template parameter. See
+[the drift baseline an import records](import.md#the-drift-baseline-an-import-records).
 
 A `resources` **bag** that is not a JSON object never reaches this report: the
 export refuses such a record first (see
