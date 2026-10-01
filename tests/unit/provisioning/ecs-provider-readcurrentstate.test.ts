@@ -772,6 +772,106 @@ describe('ECSProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
+  // go-to-k/cdkd#4272: ECS keeps LISTING a deleted resource for a while under a
+  // terminal status. Each reader answers "gone" for that status only, and
+  // present for every other one, so a live resource never reads as deleted.
+  describe('a deleted resource ECS still lists (go-to-k/cdkd#4272)', () => {
+    it.each([
+      ['INACTIVE', false],
+      ['ACTIVE', true],
+      ['PROVISIONING', true],
+      ['DEPROVISIONING', true],
+      ['FAILED', true],
+      [undefined, true],
+    ])('Cluster with status %s reads as present=%s', async (status, present) => {
+      mockSend.mockResolvedValueOnce({ clusters: [{ clusterName: 'my-cluster', status }] });
+
+      const result = await provider.readCurrentState(
+        'my-cluster',
+        'ClusterLogical',
+        'AWS::ECS::Cluster'
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      if (present) {
+        expect(result?.ClusterName).toBe('my-cluster');
+      } else {
+        expect(result).toBeUndefined();
+      }
+    });
+
+    it.each([
+      ['INACTIVE', false],
+      ['ACTIVE', true],
+      ['DRAINING', true],
+      [undefined, true],
+    ])('Service with status %s reads as present=%s', async (status, present) => {
+      mockSend.mockResolvedValueOnce({
+        services: [{ serviceName: 'my-svc', status, launchType: 'FARGATE' }],
+      });
+
+      const result = await provider.readCurrentState(
+        'arn:aws:ecs:us-east-1:123:service/my-cluster/my-svc',
+        'SvcLogical',
+        'AWS::ECS::Service'
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      if (present) {
+        expect(result?.ServiceName).toBe('my-svc');
+      } else {
+        expect(result).toBeUndefined();
+      }
+    });
+
+    it.each([
+      ['INACTIVE', false],
+      ['DELETE_IN_PROGRESS', false],
+      ['ACTIVE', true],
+      [undefined, true],
+    ])('TaskDefinition with status %s reads as present=%s', async (status, present) => {
+      mockSend.mockResolvedValueOnce({ taskDefinition: { family: 'my-td', status } });
+
+      const result = await provider.readCurrentState(
+        'arn:aws:ecs:us-east-1:123:task-definition/my-td:1',
+        'TdLogical',
+        'AWS::ECS::TaskDefinition'
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      if (present) {
+        expect(result?.Family).toBe('my-td');
+      } else {
+        expect(result).toBeUndefined();
+      }
+    });
+
+    it.each([
+      ['INACTIVE', false],
+      ['DELETE_IN_PROGRESS', false],
+      ['ACTIVE', true],
+      [undefined, true],
+    ])(
+      'import of a TaskDefinition with status %s adopts it=%s',
+      async (status, adopted) => {
+        const arn = 'arn:aws:ecs:us-east-1:123:task-definition/my-td:1';
+        mockSend.mockResolvedValueOnce({ taskDefinition: { taskDefinitionArn: arn, status } });
+
+        const result = await provider.import({
+          logicalId: 'TdLogical',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          stackName: 'Stack',
+          region: 'us-east-1',
+          properties: {},
+          knownPhysicalId: arn,
+        });
+
+        expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTaskDefinitionCommand);
+        expect(result).toEqual(adopted ? { physicalId: arn, attributes: {} } : null);
+      }
+    );
+  });
+
   it('surfaces Cluster Tags from DescribeClusters with aws:* filtered out', async () => {
     mockSend.mockResolvedValueOnce({
       clusters: [

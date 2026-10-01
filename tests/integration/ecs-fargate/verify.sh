@@ -25,6 +25,12 @@
 # Terraform's `wait_for_steady_state = false`). The post-deploy assertion
 # proves the wait was effective rather than a no-op.
 #
+# Phase 1c and Phase 3 (issue #4272) run `cdkd drift --json` before and after
+# the destroy: the live Cluster / Service / TaskDefinition must be compared,
+# and, with the pre-destroy state put back for one read-only run, the deleted
+# ones must not be. The Service arm discriminates only when ECS still lists it
+# as INACTIVE; the run says which arms it verified.
+#
 # Phase 1b (issue #807) additionally redeploys with CDKD_TEST_UPDATE=true
 # (container command change -> TaskDefinition replacement) and asserts the
 # Service's `taskDefinition` tracks the NEW revision ARN — i.e. the
@@ -81,6 +87,20 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
+  rm -f "${SAVED_STATE:-}" "${DEAD_SVC_ERR:-}"
+  # Phase 3 (issue #4272) put a DESTROYED stack's state back for one drift
+  # run. Interrupted there, remove it directly: `state destroy` over records
+  # of deleted resources may fail, and a failure below keeps the file.
+  if [ "${PHASE3_RESTORED:-0}" = "1" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    local key
+    for key in "${STATE_KEY}" "cdkd/${STACK}/${REGION}/lock.json"; do
+      if ! aws s3 rm "s3://${STATE_BUCKET}/${key}" >/dev/null 2>&1; then
+        echo "WARN: could not remove s3://${STATE_BUCKET}/${key} restored by Phase 3; delete it by hand" >&2
+      fi
+    done
+    PHASE3_RESTORED=0
+    return 0
+  fi
   # `set +u` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
@@ -511,6 +531,65 @@ if [ "$(echo "${NEW_TD_COMMAND}" | jq -c .)" != '["echo","hello-updated"]' ]; th
 fi
 echo "    OK: service taskDefinition tracks the new ACTIVE revision ${SERVICE_TD_AFTER} (replacement propagated — issue #807 CLOSED)"
 
+# --- Phase 1c: drift reads the live ECS resources as present (issue #4272) ---
+# The negative control for Phase 3: with every ECS resource ACTIVE, `cdkd
+# drift` must COMPARE the Cluster, Service and TaskDefinition (clean or
+# drifted), so the "not compared" verdict Phase 3 asserts after the destroy
+# comes from the deleted status, not from a read that never works. The state
+# captured here is what Phase 3 puts back.
+#
+# drift_ecs_verdicts prints `<type> <verdict>` for each of the three ECS
+# types: `compared` (drifted or clean), `notSupported` (the read answered
+# nothing, which is how drift reports a resource that is not there),
+# `skipped`, or `notCompared` (only in the incomplete list, e.g. a read that
+# threw). It fails the run on a drift exit code that is not a verdict
+# (0 / 1 / 2), or a payload that does not hold exactly one of each type.
+drift_ecs_verdicts() {
+  local out rc
+  out="$(mktemp)"
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json >"${out}"
+  rc=$?
+  set -e
+  case "${rc}" in
+    0 | 1 | 2) ;;
+    *)
+      echo "FAIL: cdkd drift --json exited ${rc}" >&2
+      rm -f "${out}"
+      exit 1
+      ;;
+  esac
+  # Explicit `|| return`: errexit is not inherited into a command
+  # substitution on every bash, so do not lean on it for the verdict.
+  node -e '
+const fs = require("fs");
+const [s] = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const primary = [["compared", [...s.drifted, ...s.clean]], ["notSupported", s.notSupported], ["skipped", s.skipped]];
+for (const type of ["AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition"]) {
+  const found = primary.flatMap(([k, list]) => list.filter((o) => o.type === type).map(() => k));
+  // An incomplete DRIFTED entry also sits in notCompared, so that list only
+  // decides the verdict for a resource no primary list holds.
+  const incomplete = s.notCompared.filter((o) => o.type === type).length;
+  if (found.length > 1 || (found.length === 0 && incomplete !== 1)) {
+    throw new Error(`expected one ${type} in the drift payload, found ${JSON.stringify(found)} + ${incomplete} incomplete: ${JSON.stringify(s)}`);
+  }
+  console.log(`${type} ${found[0] ?? "notCompared"}`);
+}' "${out}" || { rm -f "${out}"; return 1; }
+  rm -f "${out}"
+}
+
+echo "==> Phase 1c: drift compares the live ECS Cluster / Service / TaskDefinition (issue #4272 control)"
+LIVE_VERDICTS="$(drift_ecs_verdicts)"
+echo "${LIVE_VERDICTS}" | sed 's/^/    /'
+if [ "$(echo "${LIVE_VERDICTS}" | grep -c ' compared$')" != "3" ]; then
+  echo "FAIL: drift did not compare all three live ECS resources; Phase 3's not-compared verdict would prove nothing" >&2
+  exit 1
+fi
+echo "    OK: all three live ECS resources were compared"
+
+SAVED_STATE="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${SAVED_STATE}" >/dev/null
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -521,5 +600,94 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
+# --- Phase 3: drift reads the DELETED ECS resources as gone (issue #4272) ---
+# ECS keeps describing a deleted cluster (and service) as INACTIVE for a while,
+# and a deregistered task definition revision as INACTIVE indefinitely. Before
+# #4272, readCurrentState returned their properties, so drift COMPARED a
+# deleted resource. Put the pre-destroy state back for one read-only drift run,
+# then remove it again before asserting anything, so a failing assertion
+# cannot leave a state file naming deleted resources behind; PHASE3_RESTORED
+# makes the EXIT / INT / TERM cleanup remove it directly if the run is cut
+# short inside that window.
+echo "==> Phase 3: drift over the destroyed stack's saved state (issue #4272)"
+# Probe the ids the saved state RECORDS, which are what drift reads.
+DEAD_CLUSTER_ID=$(jq -r '[.resources[] | select(.resourceType == "AWS::ECS::Cluster") | .physicalId] | if length == 1 then .[0] else "" end' "${SAVED_STATE}")
+DEAD_TD_ID=$(jq -r '[.resources[] | select(.resourceType == "AWS::ECS::TaskDefinition") | .physicalId] | if length == 1 then .[0] else "" end' "${SAVED_STATE}")
+if [ -z "${DEAD_CLUSTER_ID}" ] || [ -z "${DEAD_TD_ID}" ]; then
+  echo "FAIL: the saved state does not record exactly one ECS Cluster and one TaskDefinition" >&2
+  exit 1
+fi
+DEAD_CLUSTER_STATUS=$(aws ecs describe-clusters --clusters "${DEAD_CLUSTER_ID}" --region "${REGION}" \
+  --query 'clusters[0].status' --output text)
+DEAD_TD_STATUS=$(aws ecs describe-task-definition --task-definition "${DEAD_TD_ID}" --region "${REGION}" \
+  --query 'taskDefinition.status' --output text)
+# A lookup that FAILS aborts here with AWS's own error (no `|| fallback`:
+# the gone-probe fence forbids swallowing a capture's failure).
+# Premise guard: if ECS already stopped listing the cluster, it reads as gone
+# with or without the fix, and the cluster arm would pass vacuously.
+if [ "${DEAD_CLUSTER_STATUS}" != "INACTIVE" ] || [ "${DEAD_TD_STATUS}" != "INACTIVE" ]; then
+  echo "FAIL: premise not met: after destroy ECS reports cluster '${DEAD_CLUSTER_STATUS}' and task definition '${DEAD_TD_STATUS}', expected both INACTIVE" >&2
+  exit 1
+fi
+echo "    premise: ECS still lists the deleted cluster and task definition as INACTIVE"
+
+# The Service arm discriminates only when DescribeServices still answers
+# INACTIVE for it. Under a deleted cluster it may instead list nothing or
+# refuse with a not-found error, and then the Service reads as absent with or
+# without the fix: assert it is not compared, but do not claim it verified.
+DEAD_SVC_ID=$(jq -r '[.resources[] | select(.resourceType == "AWS::ECS::Service") | .physicalId] | if length == 1 then .[0] else "" end' "${SAVED_STATE}")
+if [ -z "${DEAD_SVC_ID}" ]; then
+  echo "FAIL: the saved state does not record exactly one ECS Service" >&2
+  exit 1
+fi
+DEAD_SVC_ERR="$(mktemp)"
+if DEAD_SVC_OUT=$(aws ecs describe-services --cluster "${DEAD_CLUSTER_ID}" --services "${DEAD_SVC_ID}" \
+  --region "${REGION}" --output json 2>"${DEAD_SVC_ERR}"); then
+  DEAD_SVC_STATUS=$(printf '%s' "${DEAD_SVC_OUT}" | jq -r '.services[0].status // "not-listed"')
+elif DEAD_SVC_OUT="$(cat "${DEAD_SVC_ERR}")" && printf '%s' "${DEAD_SVC_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  DEAD_SVC_STATUS="not-listed"
+else
+  echo "FAIL: describe-services for the deleted service did not answer: ${DEAD_SVC_OUT}" >&2
+  exit 1
+fi
+rm -f "${DEAD_SVC_ERR}"
+echo "    service: ECS reports '${DEAD_SVC_STATUS}' for the deleted service"
+
+# Conditional write: a state file that appeared since the destroy (another run
+# of this fixture) fails the put instead of being overwritten. The flag is set
+# only AFTER the put lands, so that failure leaves the other file alone.
+aws s3api put-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --body "${SAVED_STATE}" \
+  --if-none-match '*' >/dev/null
+PHASE3_RESTORED=1
+set +e
+DEAD_VERDICTS="$(drift_ecs_verdicts)"
+DEAD_RC=$?
+set -e
+aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+PHASE3_RESTORED=0
+rm -f "${SAVED_STATE}"
+assert_gone "restored state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after Phase 3" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+if [ "${DEAD_RC}" != "0" ]; then
+  echo "FAIL: drift over the destroyed stack's state did not produce a verdict" >&2
+  exit 1
+fi
+echo "${DEAD_VERDICTS}" | sed 's/^/    /'
+# All three must stay uncompared; only the ones ECS still lists as INACTIVE
+# are named as verified below.
+for type in AWS::ECS::Cluster AWS::ECS::Service AWS::ECS::TaskDefinition; do
+  if ! echo "${DEAD_VERDICTS}" | grep -qx "${type} notSupported"; then
+    echo "FAIL: drift read the deleted ${type} as present (issue #4272): $(echo "${DEAD_VERDICTS}" | grep "^${type} ")" >&2
+    exit 1
+  fi
+done
+if [ "${DEAD_SVC_STATUS}" = "INACTIVE" ]; then
+  PHASE3_VERIFIED="Cluster / Service / TaskDefinition"
+else
+  PHASE3_VERIFIED="Cluster / TaskDefinition"
+  echo "    note: ECS no longer lists the deleted service as INACTIVE, so its arm reads absent either way; the Service rule is unit-covered only on this run"
+fi
+echo "    OK: drift no longer compares the deleted ECS ${PHASE3_VERIFIED} that ECS still lists as INACTIVE"
+
 echo ""
-echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + SDK-routed ServiceConnectConfiguration/VolumeConfigurations delivery (#609 route flip) + #807 replacement propagation + clean destroy)"
+echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + SDK-routed ServiceConnectConfiguration/VolumeConfigurations delivery (#609 route flip) + #807 replacement propagation + #4272 drift leaves the deleted ECS ${PHASE3_VERIFIED} uncompared + clean destroy)"
