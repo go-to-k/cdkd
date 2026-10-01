@@ -94,6 +94,20 @@ import {
   type ProtectionFlipRecord,
   type ProtectionGuardSite,
 } from './deletion-protection-compensation.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+
+/**
+ * The `Name` a load balancer ARN carries
+ * (`...:loadbalancer/app/<name>/<id>`), or `undefined` when the physical id is
+ * not one, so the caller keeps its own comparison (go-to-k/cdkd#4275).
+ */
+function loadBalancerNameFromArn(arn: string): string | undefined {
+  const marker = ':loadbalancer/';
+  const at = arn.indexOf(marker);
+  if (at < 0) return undefined;
+  const segments = arn.slice(at + marker.length).split('/');
+  return segments.length === 3 && segments[1] !== '' ? segments[1] : undefined;
+}
 
 /**
  * Test seam for the capacity-reservation stabilize poll (mirrors
@@ -1016,16 +1030,31 @@ export class ELBv2Provider implements ResourceProvider {
       'MinimumLoadBalancerCapacity',
       'EnableCapacityReservationProvisionStabilize',
     ]);
-    const stripHandled = (p: Record<string, unknown>): Record<string, unknown> => {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(p)) {
-        if (!handledKeys.has(k)) out[k] = v;
+    // Compared key by key: a secret-derived value is recorded as its
+    // `{{resolve:...}}` reference and handed here resolved, which is no change
+    // (go-to-k/cdkd#4275). `Name` is decided by the name the ARN carries; any
+    // other key takes the masker arm, which only a key the engine replaces on
+    // every change (`Type`, `Scheme`) can pass.
+    let immutableChanged = false;
+    for (const key of new Set([...Object.keys(properties), ...Object.keys(previousProperties)])) {
+      if (handledKeys.has(key)) continue;
+      if (JSON.stringify(properties[key]) === JSON.stringify(previousProperties[key])) continue;
+      if (
+        await unchangedBehindSecretReference({
+          resourceType,
+          key,
+          desired: properties[key],
+          previous: previousProperties[key],
+          physicalName: key === 'Name' ? loadBalancerNameFromArn(physicalId) : undefined,
+          maskSecrets,
+        })
+      ) {
+        continue;
       }
-      return out;
-    };
-    if (
-      JSON.stringify(stripHandled(properties)) !== JSON.stringify(stripHandled(previousProperties))
-    ) {
+      immutableChanged = true;
+      break;
+    }
+    if (immutableChanged) {
       // Issue [#2610] site 1. `--replace` alone cannot succeed on a load
       // balancer whose `deletion_protection.enabled` attribute is on: the
       // replacement's DELETE runs from the deploy engine, which never sets
@@ -1283,7 +1312,8 @@ export class ELBv2Provider implements ResourceProvider {
       resourceType,
       logicalId,
       previousProperties['Tags'],
-      properties['Tags']
+      properties['Tags'],
+      maskSecrets
     );
 
     return { physicalId, wasReplaced: false };
@@ -1852,7 +1882,8 @@ export class ELBv2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskSecrets
       );
 
       this.logger.debug(`Successfully updated TargetGroup ${logicalId}`);
@@ -2195,7 +2226,8 @@ export class ELBv2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskSecrets
       );
 
       this.logger.debug(`Successfully updated Listener ${logicalId}`);
@@ -2536,8 +2568,12 @@ export class ELBv2Provider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    // A load balancer ARN carries its `Name`, which can be secret-derived
+    // (go-to-k/cdkd#4275); absent means unmasked.
+    maskSecrets?: SecretMasker
   ): Promise<void> {
+    const mask = maskerOrIdentity(maskSecrets);
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
@@ -2550,11 +2586,11 @@ export class ELBv2Provider implements ResourceProvider {
       await this.getClient().send(
         new RemoveTagsCommand({ ResourceArns: [arn], TagKeys: tagsToRemove })
       );
-      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ELBv2 resource ${arn}`);
+      this.logger.debug(mask(`Removed ${tagsToRemove.length} tag(s) from ELBv2 resource ${arn}`));
     }
     if (tagsToAdd.length > 0) {
       await this.getClient().send(new AddTagsCommand({ ResourceArns: [arn], Tags: tagsToAdd }));
-      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ELBv2 resource ${arn}`);
+      this.logger.debug(mask(`Added/updated ${tagsToAdd.length} tag(s) on ELBv2 resource ${arn}`));
     }
   }
 

@@ -494,10 +494,15 @@
     {
       "resourceType": "AWS::AppSync::DataSource",
       "integs": [
-        "appsync"
+        "appsync",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "appsync": [
+          "l1",
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
           "l1",
           "literal"
         ]
@@ -506,11 +511,16 @@
     {
       "resourceType": "AWS::AppSync::GraphQLApi",
       "integs": [
-        "appsync"
+        "appsync",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "appsync": [
           "l1"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -3897,7 +3907,8 @@
         "iam-managed-policy",
         "iam-secret-derived-principals",
         "import-attributes",
-        "import-auto-mode"
+        "import-auto-mode",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "iam-managed-policy": [
@@ -3911,6 +3922,10 @@
           "literal"
         ],
         "import-auto-mode": [
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
           "literal"
         ]
       }
