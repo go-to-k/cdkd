@@ -146,7 +146,7 @@ cd "$target_dir" 2>/dev/null || exit 0
 #   delete SKIPS a removal (go-to-k/cdkd#4156), in words the filter misses.
 #   `provider-registry.ts` joined for the same reason (issue #2720): its
 #   `getProviderFor` picks the provider that DELETES a resource --
-#   `deploy-engine/delete.ts`'s plain delete, `deploy-engine/update-replace.ts`'s replacement old-delete,
+#   `deploy-engine/delete.ts`'s plain delete, the `deploy-engine/update-*.ts` old-deletes,
 #   `destroy-runner.ts`, and seven sites in `rollback-executor.ts` all
 #   read it -- so one routing change reroutes DELETE for every resource
 #   in a template. Hunk-filtering it was measured to be a fail-open: five
