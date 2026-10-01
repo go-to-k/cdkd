@@ -1003,12 +1003,16 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       const tpl = template('d1');
       tpl.Resources['Reader']!.DeletionPolicy = 'Retain';
 
-      await makeEngine({ captureObservedState: false }).deploy(STACK, tpl);
+      const result = await makeEngine({ captureObservedState: false }).deploy(STACK, tpl);
 
       expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
       expect(callsFor(provider.create, 'Reader')).toHaveLength(0);
       const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
       expect(saved.resources['Reader']?.deletionPolicy).toBe('Retain');
+      // Counted ONCE, as an update (with `Cr`'s): the metadata arm returns
+      // rather than falling into the held-value skip below it (#4305).
+      expect(result.updated).toBe(2);
+      expect(result.unchanged).toBe(0);
       expect(saved.resources['Reader']?.properties['TopicName']).toBe('***');
     });
 

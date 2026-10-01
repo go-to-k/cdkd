@@ -37,7 +37,7 @@ routes on the STATE record's `resourceType` and `provisionedBy`; everything aime
 at the new one routes on the template's type.** A recorded type that differs from
 the template's is always a replacement — never an in-place update, never a no-op.
 
-### Deploy engine (`provisionResourceBody`, `case 'UPDATE'`)
+### Deploy engine (`provisionUpdate`, the UPDATE arm of `provisionResourceBody`)
 
 `oldResourceType = currentResource.resourceType`, `typeChanged = oldResourceType
 !== resourceType`.

@@ -144,6 +144,93 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     return deleteMock.mock.calls[0][4] as Record<string, unknown>;
   }
 
+  describe('DeletionPolicy: Retain on a template DELETE (#4305)', () => {
+    // The DELETE arm's FIRST decision. Retain must leave the live resource
+    // alone: no provider delete, no snapshot, the record dropped from state,
+    // and nothing counted as deleted.
+    async function deleteWithCounts(
+      stateExtra: Record<string, unknown>,
+      template: CloudFormationTemplate
+    ): Promise<{ stateResources: Record<string, unknown>; counts: Record<string, number> }> {
+      const engine = makeEngine();
+      const change: ResourceChange = {
+        logicalId: 'Target',
+        changeType: 'DELETE',
+        resourceType: 'AWS::RDS::DBInstance',
+        currentProperties: {},
+      };
+      const stateResources: Record<string, unknown> = {
+        Target: {
+          physicalId: 'phys-target',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+          ...stateExtra,
+        },
+      };
+      const counts = {
+        created: 0,
+        updated: 0,
+        deleted: 0,
+        skipped: 0,
+        deleteSkipped: 0,
+        updatePartial: 0,
+      };
+      type ProvisionResourceFn = (
+        logicalId: string,
+        change: ResourceChange,
+        stateResources: Record<string, unknown>,
+        stackName: string,
+        template: CloudFormationTemplate,
+        parameterValues: undefined,
+        conditions: undefined,
+        counts: Record<string, number>
+      ) => Promise<void>;
+      const provisionResource = (
+        engine as unknown as { provisionResource: ProvisionResourceFn }
+      ).provisionResource.bind(engine);
+      await provisionResource(
+        'Target',
+        change,
+        stateResources,
+        'MyStack',
+        template,
+        undefined,
+        undefined,
+        counts
+      );
+      return { stateResources, counts };
+    }
+
+    it('a recorded Retain leaves the resource alive and drops only the record', async () => {
+      const { stateResources, counts } = await deleteWithCounts(
+        { deletionPolicy: 'Retain' },
+        { Resources: {} }
+      );
+      expect(deleteProvider.delete).not.toHaveBeenCalled();
+      expect(mockCreatePreDeleteFinalSnapshot).not.toHaveBeenCalled();
+      expect(stateResources).not.toHaveProperty('Target');
+      expect(counts['deleted']).toBe(0);
+    });
+
+    it('pre-v5 state: a Retain only the template declares is honoured the same way', async () => {
+      const { stateResources, counts } = await deleteWithCounts({}, {
+        Resources: { Target: { Type: 'AWS::RDS::DBInstance', DeletionPolicy: 'Retain' } },
+      } as unknown as CloudFormationTemplate);
+      expect(deleteProvider.delete).not.toHaveBeenCalled();
+      expect(stateResources).not.toHaveProperty('Target');
+      expect(counts['deleted']).toBe(0);
+    });
+
+    it('control: with no Retain the same record IS deleted and counted', async () => {
+      const { stateResources, counts } = await deleteWithCounts({}, { Resources: {} });
+      expect(deleteProvider.delete).toHaveBeenCalledTimes(1);
+      expect(stateResources).not.toHaveProperty('Target');
+      expect(counts['deleted']).toBe(1);
+    });
+  });
+
   it('Tier A type (RDS DBInstance): threads a generated finalSnapshotIdentifier into DeleteContext', async () => {
     await invokeDelete(makeEngine(), 'AWS::RDS::DBInstance', { deletionPolicy: 'Snapshot' });
     const ctx = deleteContextArg();

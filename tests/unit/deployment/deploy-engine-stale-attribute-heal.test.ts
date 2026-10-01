@@ -580,6 +580,10 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
       expect(mockProvider.update).not.toHaveBeenCalled();
       expect(mockProvider.import).toHaveBeenCalledTimes(1);
       expect(result.outputs?.['ParamArn']).toBe(REAL_ARN);
+      // Counted ONCE, as an update: the metadata arm returns rather than
+      // falling into the no-change skip below it (#4305).
+      expect(result.updated).toBe(1);
+      expect(result.unchanged).toBe(0);
       const record = savedStates().at(-1)!.resources['Param']!;
       expect(record.deletionPolicy).toBe('Retain');
       expect(record.attributes).toEqual({ Type: 'String', Value: 'v', Arn: REAL_ARN });
