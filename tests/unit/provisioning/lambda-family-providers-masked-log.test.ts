@@ -325,7 +325,13 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
   });
 
   it('masks the template-path AuthType refusal and never stamps it', async () => {
-    const spy = spyMasker();
+    // A masker that CHANGES the refusal text: a wrap that stamps only when the
+    // mask changed something would stamp here, so `false` below means unstamped.
+    const seen: string[] = [];
+    const changing = (t: string): string => {
+      seen.push(t);
+      return t.replace('AuthType', '***');
+    };
     fakeLambda({});
     const error = await thrown(
       new LambdaUrlProvider().update(
@@ -334,10 +340,11 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
         type,
         { TargetFunctionArn: fnArn(PUBLIC), AuthType: 7 },
         { TargetFunctionArn: fnArn(PUBLIC), AuthType: 'AWS_IAM' },
-        { maskSecrets: spy.mask }
+        { maskSecrets: changing }
       )
     );
-    expect(spy.seen().some((t) => t.startsWith('AWS::Lambda::Url AuthType must be'))).toBe(true);
+    expect(seen.some((t) => t.startsWith('AWS::Lambda::Url AuthType must be'))).toBe(true);
+    expect(error.message).toContain('AWS::Lambda::Url *** must be');
     expect(hasRedactedCause(error)).toBe(false);
     expect(error.message.endsWith('Nothing was applied to Lambda URL Url; fix the template value')).toBe(
       true
@@ -587,6 +594,26 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
     expect(error.message).not.toContain(`function:${TINY}`);
     expect(error.message).toContain('function:***');
     expect(hasRedactedCause(error)).toBe(true);
+  });
+
+  it('masks the bare name of a PREVIOUS whole-ARN secret FunctionName the remove targets', async () => {
+    const raw = awsAuthored('AccessDeniedException', `Not authorized on function ${ARN_SECRET_NAME}`);
+    fakeLambda({
+      RemovePermissionCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaPermissionProvider().update(
+        'Perm',
+        'PermStatement',
+        type,
+        props(PUBLIC),
+        props(ARN_SECRET),
+        { maskSecrets }
+      )
+    );
+    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks a rotated recorded function AWS quotes back when the remove fails', async () => {
