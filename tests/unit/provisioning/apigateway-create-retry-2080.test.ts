@@ -12,8 +12,10 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy } = vi.hoisted(() => ({
+const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy, sharedRegion } = vi.hoisted(() => ({
   mockSend: vi.fn(),
+  /** The shared client's `config.region`, so a case can make it reject. */
+  sharedRegion: vi.fn(),
   warnSpy: vi.fn(),
   debugSpy: vi.fn(),
   /** `[command name, which client]` per send. */
@@ -32,7 +34,7 @@ const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy } = vi.hoisted(() => 
 vi.mock('../../../src/utils/aws-clients.js', () => {
   // Not the ambient default, so a create client built from `ambientRegion()`
   // instead of the shared client's region is told apart.
-  const config = { region: () => Promise.resolve('ap-southeast-2') };
+  const config = { region: () => sharedRegion() as Promise<string> };
   return {
     getAwsClients: () => ({
       apiGateway: {
@@ -240,6 +242,8 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
     warnSpy.mockReset();
     debugSpy.mockReset();
     sentVia.length = 0;
+    sharedRegion.mockReset();
+    sharedRegion.mockResolvedValue('ap-southeast-2');
     provider = new ApiGatewayProvider();
   });
 
@@ -544,6 +548,31 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
       expect(aws.count('GetDeploymentsCommand')).toBe(1);
       expect(aws.deployments.map((d) => d.id)).toEqual(['dep1', 'dep2']);
     });
+  });
+
+  it('two creates on a cold provider build ONE create client', async () => {
+    const { APIGatewayClient } = await import('@aws-sdk/client-api-gateway');
+    const before = vi.mocked(APIGatewayClient).mock.calls.length;
+
+    await Promise.all([
+      provider.create('A', 'AWS::ApiGateway::Authorizer', AUTH_PROPS),
+      provider.create('D', 'AWS::ApiGateway::Deployment', DEP_PROPS),
+    ]);
+
+    expect(vi.mocked(APIGatewayClient).mock.calls.length - before).toBe(1);
+  });
+
+  it('a rejected region read is not cached: the next create builds the client', async () => {
+    sharedRegion.mockRejectedValueOnce(new Error('Region is missing'));
+
+    await expect(
+      provider.create('Child', 'AWS::ApiGateway::Authorizer', AUTH_PROPS)
+    ).rejects.toThrow('Region is missing');
+    const result = await provider.create('Child', 'AWS::ApiGateway::Authorizer', AUTH_PROPS);
+
+    expect(result.physicalId).toBe('auth1');
+    expect(aws.authorizers).toHaveLength(1);
+    expect(sharedRegion).toHaveBeenCalledTimes(2);
   });
 
   it.each([
