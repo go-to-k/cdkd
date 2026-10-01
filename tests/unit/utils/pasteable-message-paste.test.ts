@@ -13,7 +13,7 @@
  * SPELLING pins and the paste case is defence in depth over the rendered text;
  * at the SSM site the paste case alone reds the revert.
  *
- * go-to-k/cdkd#3436 asks for this separately from the source fence, and the
+ * go-to-k/cdkd#3436 asked for this separately from its (since removed) source fence, and the
  * reason is its shape C. A `shellQuote`d value in PROSE needs no command and no
  * placeholder to be dangerous: an apostrophe anywhere EARLIER in the sentence
  * (`this stack's name`, `the record's region`, `doesn't`) opens a shell quote,

@@ -38,10 +38,16 @@ In scope:
 - A secret (a `NoEcho` parameter, a `{{resolve:...}}` dynamic reference, a
   value derived from one) reaching state, logs, CLI output, deployment events
   or an exports index in plaintext.
-- Terminal control characters or escape sequences from a resource, state or
-  AWS value reaching the terminal unstripped.
-- cdkd itself passing an untrusted value to a shell or a child process.
-- Deletion or modification of a resource cdkd does not own.
+- Terminal control characters or escape sequences from a template, resource,
+  state or AWS value reaching the terminal unstripped.
+- A secret or credential placed on a child process's command line, left on
+  disk, or handed to a process or container that does not need it.
+- cdkd itself passing an untrusted value to a shell or a child process, or
+  resolving a file path outside where it belongs.
+- A local emulator's authorizer or signature check accepting a request AWS
+  would reject.
+- Deletion or modification of a resource cdkd does not own, or deleting one it
+  does own without the snapshot or retention the template asks for.
 
 Out of scope:
 

@@ -134,8 +134,8 @@ claim says you took it inside the window.
 §2's disjointness and §3-0's quarantine are hard gates, not ranking factors. Rank
 what survives both, in order, moving on only to break a tie:
 
-1. **Security first** — `/review-pr`'s security-surface bullets are the canonical
-   list; when in doubt treat it as security, and split a security umbrella into
+1. **Security first** — SECURITY.md's in-scope list is the canonical list (its
+   out-of-scope class never ranks here); split a security umbrella into
    its sites rather than deferring it.
 2. **Umbrellas last** (except under rule 1): `umbrella` / `audit:` / `Backfill` /
    a TABLE of sites — the test is whether ONE lane can close it completely.

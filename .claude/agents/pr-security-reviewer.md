@@ -94,8 +94,8 @@ command, a template, or a query.
   smell IS the security defect, flag it.
 - Documentation prose.
 - **SECURITY.md's out-of-scope class**: a printed value that would run if an
-  operator pasted the line into a shell. Raise none, at any severity. Its
-  in-scope list is your scope.
+  operator pasted the line into a shell. Raise none, at any severity; the rest
+  of your focus list stands.
 
 ## Report format
 
