@@ -5,7 +5,8 @@ import {
   quotedOrDescribed,
   withheldTargetClause,
 } from './pasteable-command.js';
-import { displayAwsMessage, isPasteableIdent, plainIdentOr } from './display-safe.js';
+import { displayAwsMessage, isPasteableIdent, plainIdentOr, safeMsg } from './display-safe.js';
+import { hasResourceTypeShape, TIMEOUT_FLAG_RESOURCE_TYPE } from './resource-type-shape.js';
 import { getLogger } from './logger.js';
 
 /**
@@ -164,11 +165,28 @@ export class ResourceTimeoutError extends CdkdError {
   ) {
     const elapsedLabel = formatDuration(elapsedMs);
     const timeoutLabel = formatDuration(timeoutMs);
+    // The logical id and type come from a template or a state record, and this
+    // multi-line message is printed whole (the destroy runner's failure line).
+    // A line break in either would open a line of its own, and padding would
+    // wrap into one on screen -- a counterfeit row (go-to-k/cdkd#3773). So each
+    // is named only in the shape a real one has, and described otherwise;
+    // `safeMsg` folds whatever else is interpolated.
+    const shownId = plainOrDescribed(logicalId, 'logical id');
+    const shownType = hasResourceTypeShape(resourceType)
+      ? resourceType
+      : 'a resource type that is not printable as typed';
+    // The per-type form names the type only when `--resource-timeout` would
+    // accept it: the parser reads the same pattern.
+    const remedy =
+      hasResourceTypeShape(resourceType) && TIMEOUT_FLAG_RESOURCE_TYPE.test(resourceType)
+        ? safeMsg`slow ENI provisioning. Re-run with --resource-timeout ${resourceType}=<DURATION>\n` +
+          'to bump the budget for this resource type only, or --verbose to see the\n'
+        : 'slow ENI provisioning. Re-run with a larger --resource-timeout <DURATION>,\n' +
+          'or --verbose to see the\n';
     super(
-      `Resource ${logicalId} (${resourceType}) in ${region} timed out after ${timeoutLabel} during ${operation} (elapsed ${elapsedLabel}).\n` +
+      safeMsg`Resource ${shownId} (${shownType}) in ${region} timed out after ${timeoutLabel} during ${operation} (elapsed ${elapsedLabel}).\n` +
         'This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or\n' +
-        `slow ENI provisioning. Re-run with --resource-timeout ${resourceType}=<DURATION>\n` +
-        'to bump the budget for this resource type only, or --verbose to see the\n' +
+        remedy +
         'underlying provider activity.',
       'RESOURCE_TIMEOUT'
     );

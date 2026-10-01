@@ -1,7 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Command } from 'commander';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  type PasteableCommand,
+  pasteableCommand,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import {
   findNestedTemplateTreeDefect,
   isAbsoluteAssetPath,
@@ -3656,8 +3660,10 @@ export function scrubRefusalWording(
   verdict: SecretExpressionVerdict,
   loggedExportKey: string,
   loggedProducerStack: string,
-  loggedVia: readonly string[]
-): { templateClaim: string; remedy: string; remedyCommands: string[] } {
+  loggedVia: readonly string[],
+  /** The logged names masking ALTERED — each carries a `***` its stored name does not. */
+  maskedNames: ReadonlySet<string> = new Set()
+): { templateClaim: string; remedy: string; remedyCommands: string[]; withheldClause: string } {
   const chain = dedupePreservingOrder(loggedVia, 'first');
   const chainRoot = chain[chain.length - 1];
   // The PROSE renders each name with its own boundary (go-to-k/cdkd#3638); the
@@ -3696,22 +3702,48 @@ export function scrubRefusalWording(
   // The commands leave the prose and become labelled lines the caller appends
   // LAST (go-to-k/cdkd#3436). `remedyCommands` is ordered head-of-chain first,
   // which is the order they must be run in.
-  const remedyCommands = scrubOrder.map(
-    (name) =>
-      // `patternMatched`: scrub resolves its argument through `matchStacks`, so
-      // a producer named `Prod*` would select every stack it matches — quoting
-      // stops the SHELL expanding it, not cdkd.
-      `Scrub with: ${
-        pasteableCommand('cdkd scrub', [
-          { value: name, hole: 'stack', opts: { patternMatched: true } },
-        ]).command
-      }`
-  );
+  const built = scrubOrder.map((name) => scrubCommandFor(name));
+  const remedyCommands = built.map((b) => `Scrub with: ${b.command}`);
+  // Every hole is explained in the prose, BEFORE the labelled lines. One
+  // clause per distinct sentence: two producers withheld for the same reason
+  // would otherwise print the same sentence twice. The subject carries no
+  // apostrophe: every clause's own quotes come in pairs, so a clause line keeps
+  // the quote parity of the lines pasted around it (go-to-k/cdkd#4205).
+  const subject = scrubOrder.length > 1 ? 'A producer stack name' : 'The producer stack name';
+  // A MASKED name is withheld for its `***`, which the gate reads as a pattern
+  // — a reason that is true of the masked spelling and false of the stored
+  // name, so it gets its own sentence instead of the gate's.
+  const withheldClause = [
+    ...new Set(
+      built.map((b, i) =>
+        b.withheld.length > 0 && maskedNames.has(scrubOrder[i]!)
+          ? ` ${subject} holds a value recorded as a secret, so it is shown masked and is not ` +
+            `named in the command below; list the records as stored with ` +
+            `'cdkd state list --long' and act on the record whose stack name matches.`
+          : withheldTargetClause(b, 'stack', 'cdkd scrub', subject)
+      )
+    ),
+  ].join('');
   const remedy =
     scrubOrder.length > 1
       ? `Scrub the producers first, from the head of the chain, in the order below`
       : `Scrub the producer first`;
-  return { templateClaim, remedy, remedyCommands };
+  return { templateClaim, remedy, remedyCommands, withheldClause };
+}
+
+/**
+ * The `cdkd scrub <stack>` a refusal prints on a labelled line.
+ *
+ * `patternMatched`: scrub resolves its argument through `matchStacks`, so a
+ * stack named `Prod*` would select every stack it matches — quoting stops the
+ * SHELL expanding it, not cdkd. `plainIdent`: the command sits beside a
+ * labelled line, so a name is named only when it cannot spell one — a padded,
+ * shell-quoted name wraps on screen into a counterfeit row (go-to-k/cdkd#3773).
+ */
+function scrubCommandFor(stackName: string): PasteableCommand {
+  return pasteableCommand('cdkd scrub', [
+    { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+  ]);
 }
 
 /**
@@ -3832,12 +3864,33 @@ export function plaintextProducerCrossStackReadError(
   //
   // Both halves are built by {@link scrubRefusalWording}, which is where the
   // `widened` / `chained` split and the chain de-duplication live.
-  const { templateClaim, remedy, remedyCommands } = scrubRefusalWording(
+  const maskedNames = new Set<string>();
+  const loggedVia = verdict.via.map((s) => {
+    const logged = maskSecretsInText(s, secrets);
+    if (logged !== s) maskedNames.add(logged);
+    return logged;
+  });
+  if (loggedProducerStack !== producerStack) maskedNames.add(loggedProducerStack);
+  // The wording dedupes the chain by its LOGGED spelling, so a masked name and
+  // a stack genuinely named that way (`Prod-***`) collapse into one command.
+  // The secret sentence would be false of the genuine one, so an ambiguous
+  // spelling keeps the gate's own reason, which is true of the spelling shown.
+  for (const raw of [producerStack, ...verdict.via]) maskedNames.delete(raw);
+  const { templateClaim, remedy, remedyCommands, withheldClause } = scrubRefusalWording(
     verdict,
     loggedExportKey,
     loggedProducerStack,
-    verdict.via.map((s) => maskSecretsInText(s, secrets))
+    loggedVia,
+    maskedNames
   );
+  const rerun = scrubCommandFor(stackName);
+  // On a line of their OWN, ahead of the labelled lines: each clause points at
+  // `cdkd state list --long`, and the prose line above DISPLAYS the names, so
+  // a pasted span covering both would carry a command beside a displayed
+  // value (the go-to-k/cdkd#4205 paste rule).
+  const withheld = (
+    withheldClause + withheldTargetClause(rerun, 'stack', 'cdkd scrub', 'This stack name')
+  ).trim();
   return new ScrubRefusalError(
     `Scrub of ${displayStackName(stackName)} resolved the ${intrinsic} in ${origin}` +
       `${path ? ` at ${maskedIdent(path, secrets)}` : ''} to a PLAINTEXT value: the producer stack ` +
@@ -3847,12 +3900,9 @@ export function plaintextProducerCrossStackReadError(
       `this stack's place, so it cannot redact the imported secret and must not report this ` +
       `stack clean. ${remedy}, then re-run scrub for this stack — the read will then ` +
       `return the expression and this stack is scrubbed normally.` +
+      (withheld === '' ? '' : `\n${withheld}`) +
       `\n${remedyCommands.join('\n')}` +
-      `\nThen re-run: ${
-        pasteableCommand('cdkd scrub', [
-          { value: stackName, hole: 'stack', opts: { patternMatched: true } },
-        ]).command
-      }`,
+      `\nThen re-run: ${rerun.command}`,
     'SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT'
   );
 }

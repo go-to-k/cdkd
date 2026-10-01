@@ -6,6 +6,7 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { isIamRoleArn } from '../utils/role-arn.js';
+import { TIMEOUT_FLAG_RESOURCE_TYPE } from '../utils/resource-type-shape.js';
 import { shellBoundedDisplay } from '../utils/pasteable-command.js';
 import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
@@ -270,12 +271,12 @@ export function guardStackRegionOptions(cmd: Command): void {
 
 /**
  * Validate that a token's left-hand side looks like a CloudFormation
- * resource type (e.g. `AWS::S3::Bucket`). The check is intentionally
- * loose — we don't maintain a closed list of types — but it does reject
- * obvious typos / missing scopes so users see the error at parse time
- * rather than silently storing `s3:bucket=30m` and never matching.
+ * resource type (e.g. `AWS::S3::Bucket`), so users see the error at parse
+ * time rather than silently storing `s3:bucket=30m` and never matching. The
+ * pattern is shared with `ResourceTimeoutError`'s remedy, which may only
+ * suggest a type this accepts.
  */
-const RESOURCE_TYPE_REGEX = /^[A-Z][A-Za-z0-9]+::[A-Z][A-Za-z0-9]+::[A-Z][A-Za-z0-9]+$/;
+const RESOURCE_TYPE_REGEX = TIMEOUT_FLAG_RESOURCE_TYPE;
 
 /**
  * Custom commander `argParser` for the repeatable timeout flags.

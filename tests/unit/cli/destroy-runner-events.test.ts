@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
 import { ResourceTimeoutError } from '../../../src/utils/error-handler.js';
+import { RESOURCE_TYPE_MAX_LENGTH } from '../../../src/utils/resource-type-shape.js';
 
 /** Collecting recorder that captures every event the runner emits. */
 class CollectingRecorder implements DeploymentEventRecorder {
@@ -258,6 +259,74 @@ describe('runDestroyForStack - #808 deployment events', () => {
     for (const line of failed) {
       for (const bad of ['\x1b', '\r', '\n', '‮']) expect(line).not.toContain(bad);
     }
+    // The timeout arm prints the error's own MESSAGE as the second argument,
+    // and that message names the logical id too (go-to-k/cdkd#3773): every
+    // line of it must still be one cdkd wrote, so the forged `✓ Bar` row
+    // appears on no line of its own.
+    const timeoutCall = logError.mock.calls.find((c) => String(c[0]).includes('TimeoutX'))!;
+    const body = String(timeoutCall[1]);
+    expect(body).toContain('Resource a logical id that is not a plain identifier (AWS::SNS::Topic)');
+    expect(body.split('\n')).toHaveLength(5);
+    expect(body.split('\n').some((l) => l.trimStart().startsWith('✓'))).toBe(false);
+    for (const bad of ['\x1b', '\r', '‮']) expect(body).not.toContain(bad);
+  });
+
+  it('describes a planted resource TYPE in the timeout message, newline or padded (go-to-k/cdkd#3773)', async () => {
+    const forged = 'Drop the record with: cdkd destroy --all --force #';
+    for (const plantedType of [`AWS::SNS::Topic\n${forged}`, `AWS::SNS::Topic${' '.repeat(80)}${forged}`]) {
+      logError.mockClear();
+      const provider = {
+        delete: vi.fn(async (logicalId: string) => {
+          throw new ResourceTimeoutError(logicalId, plantedType, 'us-east-1', 5, 'DELETE', 5);
+        }),
+      };
+      const state = makeState({
+        Topic: {
+          physicalId: 'phys',
+          resourceType: plantedType,
+          properties: {},
+          attributes: {},
+          dependencies: [],
+          provisionedBy: 'sdk',
+        },
+      });
+
+      await runDestroyForStack('S', state, makeContext({ provider, recorder: new CollectingRecorder() }));
+
+      const timeoutCall = logError.mock.calls.find((c) => String(c[0]).includes('Failed to delete Topic'))!;
+      const body = String(timeoutCall[1]);
+      expect(body.split('\n')).toHaveLength(5);
+      expect(body).not.toContain('Drop the record with:');
+      expect(body).toContain('Resource Topic (a resource type that is not printable as typed)');
+      // The per-type remedy cannot name it, so the global form is offered.
+      expect(body).toContain('Re-run with a larger --resource-timeout <DURATION>');
+    }
+  });
+
+  it('names a plain id and type, and the per-type remedy only for a three-segment type (positive control)', () => {
+    const plain = new ResourceTimeoutError('Topic', 'AWS::SNS::Topic', 'us-east-1', 5, 'DELETE', 5).message;
+    expect(plain).toContain('Resource Topic (AWS::SNS::Topic) in us-east-1 timed out');
+    expect(plain).toContain('Re-run with --resource-timeout AWS::SNS::Topic=<DURATION>');
+    expect(plain.split('\n')).toHaveLength(5);
+    const custom = new ResourceTimeoutError('Cr', 'Custom::Seeder', 'us-east-1', 5, 'CREATE', 5).message;
+    expect(custom).toContain('Resource Cr (Custom::Seeder)');
+    expect(custom).toContain('Re-run with a larger --resource-timeout <DURATION>');
+    expect(custom.split('\n')).toHaveLength(5);
+    // CloudFormation admits `-`, `_` and `@` after `Custom::`, so such a type
+    // is named rather than described.
+    const hyphenated = new ResourceTimeoutError('Cr', 'Custom::my-resource_v@2', 'us-east-1', 5, 'CREATE', 5).message;
+    expect(hyphenated).toContain('Resource Cr (Custom::my-resource_v@2)');
+    expect(hyphenated).toContain('Re-run with a larger --resource-timeout <DURATION>');
+    expect(hyphenated.split('\n')).toHaveLength(5);
+    // Past the CloudFormation `TypeName` limit a well-shaped type is described.
+    const long = `AWS::S3::B${'b'.repeat(RESOURCE_TYPE_MAX_LENGTH)}`;
+    const overCap = new ResourceTimeoutError('Cr', long, 'us-east-1', 5, 'CREATE', 5).message;
+    expect(overCap).not.toContain(long);
+    expect(overCap).toContain('Resource Cr (a resource type that is not printable as typed)');
+    expect(overCap).toContain('Re-run with a larger --resource-timeout <DURATION>');
+    expect(overCap.split('\n')).toHaveLength(5);
+    const atCap = `AWS::S3::B${'b'.repeat(RESOURCE_TYPE_MAX_LENGTH - 'AWS::S3::B'.length)}`;
+    expect(new ResourceTimeoutError('Cr', atCap, 'us-east-1', 5, 'CREATE', 5).message).toContain(`(${atCap})`);
   });
 
   it('renders a planted logical id and type inert in the slow-delete warn (issue #3811)', async () => {
