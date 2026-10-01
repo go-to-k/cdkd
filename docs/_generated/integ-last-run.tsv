@@ -85,7 +85,7 @@ docdb-neptune	2026-09-30T17:44:01Z	PASS	5476	verify.sh	PR #4234 (#4111 final-sna
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-10-01T15:12:57Z	PASS	235	verify.sh	PR #4343 resolver module scope split; rc ok, orph clean
 drift-revert-arrays	2026-09-29T23:22:50Z	PASS	185	verify.sh	PR #4053 (#4042 + #4051 codecommit rename adopted by recorded RepositoryId; UpdateContext.recordedAttributes from every update() caller) @a46f094/a7ca35d; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-drift-revert-vpc	2026-10-01T15:12:57Z	PASS	366	verify.sh	PR #4343 resolver module scope split; rc ok, orph clean
+drift-revert-vpc	2026-10-01T15:13:41Z	PASS	360	verify.sh	PR #4334 mask-refusal Base64 cause; rc ok, orph clean
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
@@ -124,7 +124,7 @@ eventbridge-pipes	2026-09-29T02:38:06Z	PASS	180	verify.sh	PR #4028 round 2 (#397
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-01T10:13:53Z	PASS	100	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
-export	2026-10-01T15:12:57Z	PASS	220	verify.sh	PR #4343 resolver module scope split; rc ok, orph clean
+export	2026-10-01T15:17:40Z	PASS	231	verify.sh	PR #4334 mask-refusal Base64 cause; rc ok, orph clean
 export-nested-stack	2026-10-01T08:35:50Z	PASS	191	verify.sh	rc ok, orph clean (#4245)
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
 fsx-lustre	2026-09-29T11:59:09Z	PASS	872	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
@@ -260,7 +260,7 @@ recreate-via-cc-api	2026-09-30T17:28:22Z	PASS	301	verify.sh	rc ok, orph clean
 recreate-via-sdk-provider	2026-09-30T17:28:22Z	PASS	240	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-10-01T15:12:57Z	PASS	2104	verify.sh	PR #4343 resolver module scope split; rc ok, orph clean
+remove-protection	2026-10-01T15:55:34Z	PASS	2129	verify.sh	PR #4334 mask-refusal Base64 cause; rc ok, orph clean
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-01T11:06:17Z	PASS	70	verify.sh	rc ok, orph clean; #4265 reworded diagnosis C_MARKER
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
