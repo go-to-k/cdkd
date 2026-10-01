@@ -593,7 +593,9 @@ over a template parameter whose deployed value cdkd could not prove; then only
 replacing the resource, or re-importing it while a CloudFormation stack can
 prove the value, clears it. A refusal recorded by an older cdkd without its
 reason is treated this way when the resource reads a template parameter in the
-template being exported, the same reading the next deploy applies. See
+template the CDK app synthesizes, the same reading the next deploy applies.
+With `--template`, or for a resource that template no longer defines, the
+warning cannot tell and says so. See
 [the drift baseline an import records](import.md#the-drift-baseline-an-import-records).
 
 A `resources` **bag** that is not a JSON object never reaches this report: the

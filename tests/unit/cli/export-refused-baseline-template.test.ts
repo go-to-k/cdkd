@@ -1,11 +1,13 @@
 /**
  * Issue [#3465](https://github.com/go-to-k/cdkd/issues/3465), the WIRING half:
  * `cdkd export` hands `reportDriftBaselineGaps` the template it migrates
- * against, so a REASON-LESS refused baseline is classified the way the next
- * deploy reads it. The classification itself is pinned in `export.test.ts`
- * by calling the report directly; this drives the real command through
- * `createExportCommand()` with `--template` (the harness of
- * `export-non-interactive-confirm.test.ts`) and reads what it warned.
+ * against when it SYNTHESIZED the app, so a REASON-LESS refused baseline is
+ * classified the way the next deploy reads it — and NOT a `--template` file,
+ * which the next deploy does not read. The classification itself is pinned in
+ * `export.test.ts` by calling the report directly; this drives the real
+ * command through `createExportCommand()` (the harness of
+ * `export-non-interactive-confirm.test.ts`, plus a `Synthesizer` double) and
+ * reads what it warned.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
@@ -28,9 +30,15 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+const mockSynthesize = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/synthesis/synthesizer.js', () => ({
+  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mockSynthesize })),
+  synthesisStatusMessage: (_app: unknown, msg: string) => msg,
+}));
+
 vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
-  resolveApp: vi.fn(() => undefined),
+  resolveApp: vi.fn(() => 'node app.js'),
   resolveUseCdkBootstrapAssets: vi.fn(() => false),
 }));
 
@@ -145,16 +153,22 @@ function stateRecord(): { state: Record<string, unknown>; etag: string } {
   };
 }
 
-async function refusedWarning(bucketName: unknown): Promise<string | undefined> {
-  writeFileSync(templatePath, JSON.stringify(template(bucketName)), 'utf-8');
+async function refusedWarning(
+  bucketName: unknown,
+  source: 'synth' | 'file'
+): Promise<string | undefined> {
+  const tpl = template(bucketName);
+  writeFileSync(templatePath, JSON.stringify(tpl), 'utf-8');
+  mockSynthesize.mockResolvedValue({
+    stacks: [{ stackName: STACK, displayName: STACK, region: REGION, template: tpl }],
+  });
   const cmd = createExportCommand();
   cmd.exitOverride();
   await cmd
     .parseAsync(
       [
         STACK,
-        '--template',
-        templatePath,
+        ...(source === 'file' ? ['--template', templatePath] : []),
         '--state-bucket',
         'test-bucket',
         '--stack-region',
@@ -199,16 +213,26 @@ afterEach(() => {
 
 describe('cdkd export classifies a reason-less refused baseline against its template (issue #3465)', () => {
   it('names the sticky remedy when the resource reads a declared parameter', async () => {
-    const warning = await refusedWarning({ Ref: 'Env' });
+    const warning = await refusedWarning({ Ref: 'Env' }, 'synth');
+    expect(mockSynthesize).toHaveBeenCalled();
     expect(warning).toBeDefined();
     expect(warning).toMatch(/For each one: Deploying a change does NOT clear this refusal/);
     expect(warning).not.toMatch(/recorded without a reason/);
   });
 
   it('names the deploy remedy when the resource reads no parameter', async () => {
-    const warning = await refusedWarning('literal-bucket');
+    const warning = await refusedWarning('literal-bucket', 'synth');
+    expect(mockSynthesize).toHaveBeenCalled();
     expect(warning).toBeDefined();
     expect(warning).toMatch(/Deploy a change to each one to restore its baseline\.$/);
     expect(warning).not.toMatch(/recorded without a reason/);
+  });
+
+  it('keeps the hedged remedy under --template, which the next deploy does not read', async () => {
+    // The same template that classified as sticky through synthesis above.
+    const warning = await refusedWarning({ Ref: 'Env' }, 'file');
+    expect(mockSynthesize).not.toHaveBeenCalled();
+    expect(warning).toBeDefined();
+    expect(warning).toMatch(/For each one: This refusal was recorded without a reason/);
   });
 });

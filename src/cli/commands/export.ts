@@ -3023,7 +3023,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             // legacy probe can run, and a command carrying it matches no record.
             region: migrationPending ? undefined : targetRegion,
           },
-          template
+          options.template ? undefined : template
         );
         if (allSynthStacks.length > 0) {
           const crossRefs = scanCrossStackReferences(allSynthStacks, resolvedStackName);
@@ -3261,7 +3261,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           // See the nested-tree call above: a legacy record's key has no region.
           region: migrationPending ? undefined : targetRegion,
         },
-        template
+        options.template ? undefined : template
       );
 
       // Cross-stack consumer scan. After this stack moves to CFn, its
@@ -6760,8 +6760,8 @@ export function reportDriftBaselineGaps(
    */
   loaded?: { stackName: string; region: string | undefined },
   /**
-   * The template export migrates against — the synthesized one, or the
-   * `--template` the user passed. It classifies a REASON-LESS refused baseline
+   * The template the CDK app synthesized, which the next deploy reads too —
+   * never a `--template` file. It classifies a REASON-LESS refused baseline
    * exactly (issue #3465); without it that class keeps the hedged remedy.
    */
   template?: Record<string, unknown>
@@ -7036,13 +7036,16 @@ export function reportDriftBaselineGaps(
     // update. A REASON-LESS one (an older cdkd's) survives it exactly when the
     // template names a declared parameter at that resource — the
     // `resourcesNamingDeclaredParameter` reading the next deploy applies at its
-    // start (`stampReasonlessParameterRefusals`) to the template it is handed,
-    // which is the synthesized template export holds here (or the
-    // `--template` the user supplied). So with a template a reason-less record
-    // is classified exactly, failing closed into the sticky class like the
-    // deploy does; only without one (a direct caller) does it keep the hedged
-    // remedy. The list is grouped by class in a FIXED order — deploy-clearable,
-    // unverifiable-parameter, reason-less — each id under the remedy true for it.
+    // start (`stampReasonlessParameterRefusals`) to the template the CDK app
+    // synthesizes. So given THAT template (export passes it only when it
+    // synthesized the app, never a `--template` file, which the next deploy
+    // does not read) a reason-less record is classified exactly, failing
+    // closed into the sticky class like the deploy does. A row the template no
+    // longer defines is one the deploy would DELETE, so no deploy remedy is
+    // true of it, and it keeps the hedged remedy, as does every reason-less
+    // record when no template is given. The list is grouped by class in a
+    // FIXED order — deploy-clearable, unverifiable-parameter, reason-less —
+    // each id under the remedy true for it.
     const stickyRemedy = refusedBaselineRemedy({
       observedBaselineRefused: true,
       observedBaselineRefusalReason: 'unverifiable-parameter',
@@ -7058,7 +7061,7 @@ export function reportDriftBaselineGaps(
       let slot: 0 | 1 | 2;
       if (refusedBaselineRemedy(record) === undefined) slot = 0;
       else if (hasUnverifiableParameterRefusal(record)) slot = 1;
-      else if (template === undefined) slot = 2;
+      else if (template === undefined || !definesResource(template, logicalId)) slot = 2;
       else {
         namesParameter ??= resourcesNamingDeclaredParameter(
           template as unknown as Parameters<typeof resourcesNamingDeclaredParameter>[0]
@@ -7101,6 +7104,15 @@ export function reportDriftBaselineGaps(
       }
     }
   }
+}
+
+/** Whether `template` has its own `Resources` entry for `logicalId`. */
+function definesResource(template: Record<string, unknown>, logicalId: string): boolean {
+  const resources = template['Resources'];
+  // An unreadable `Resources` answers TRUE, so the predicate's fail-closed
+  // reading (every id names a parameter) decides, as at deploy.
+  if (resources === null || typeof resources !== 'object' || Array.isArray(resources)) return true;
+  return Object.prototype.hasOwnProperty.call(resources, logicalId);
 }
 
 /**

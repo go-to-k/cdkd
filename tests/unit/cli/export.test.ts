@@ -2716,6 +2716,10 @@ describe('reportDriftBaselineGaps', () => {
     Parameters: { Env: { Type: 'String', Default: 'dev' } },
     Resources: {
       ReadsParam: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'Env' } } },
+      ReadsParamClearable: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Value: { Ref: 'Env' } },
+      },
       Plain: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'literal' } },
     },
   };
@@ -2743,17 +2747,31 @@ describe('reportDriftBaselineGaps', () => {
         Plain: refusedRecord(),
         Clearable: refusedRecord('incomplete-resolution'),
         Sticky: refusedRecord('unverifiable-parameter'),
+        // A RECORDED reason wins over the template: an incomplete-resolution
+        // refusal stays deploy-clearable even where the template names a
+        // parameter at that resource.
+        ReadsParamClearable: refusedRecord('incomplete-resolution'),
       },
       PARAM_TEMPLATE
     );
     expect(messages.slice(1)).toEqual([
-      '2 of them — deploy a change to each one to restore its baseline.',
+      '3 of them — deploy a change to each one to restore its baseline.',
       '  Plain',
       '  Clearable',
+      '  ReadsParamClearable',
       expect.stringMatching(/^2 of them — for each one: Deploying a change does NOT clear/),
       '  ReadsParam',
       '  Sticky',
     ]);
+  });
+
+  it('keeps the hedged remedy for a reason-less row the template no longer defines (issue #3465)', () => {
+    // The predicate answers "names no parameter" for an absent id, since the
+    // deploy DELETES that resource; "deploy a change restores its baseline"
+    // would be false of it.
+    const messages = refusedWarnings({ Gone: refusedRecord() }, PARAM_TEMPLATE);
+    expect(messages[0]).toMatch(/For each one: This refusal was recorded without a reason/);
+    expect(messages[0]).not.toMatch(/Deploy a change to each one/);
   });
 
   it('fails CLOSED into the sticky class on an unreadable template, as the deploy does (issue #3465)', () => {
