@@ -191,8 +191,8 @@ const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
  * role / Lambda permission / SNS subscription). Those are NOT template-driven
  * — this executor's `revert` arm calls `provider.update(...)` with
  * `previousState.properties`, so they forward a STATE record on a replay — and
- * they still pass no `replayingState` (IAM role / IAM managed policy forward
- * only the masker, issue #2177; the rest pass no `CreateContext` at all), so
+ * they still pass no `replayingState` (IAM role / IAM managed policy / Lambda
+ * permission forward only the masker, issue #2177; the rest pass no `CreateContext` at all), so
  * a create-side pre-flight refusal would still fire there. The constraint that
  * follows is on providers, not on this constant: a provider with a create-side
  * pre-flight refusal must not re-create inside `update()`. See `CreateContext`

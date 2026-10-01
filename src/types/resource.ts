@@ -623,8 +623,8 @@ export interface SecretMaskingContext {
  * `maskSecrets` capability — so read the invariant as "the flag is unset",
  * not as "the context is absent", which is how this paragraph used to read.
  * The five providers that re-create inside their own `update()` pass either
- * nothing or a context carrying ONLY the masker (IAM role / IAM managed policy,
- * issue #2177), so "every provider call" would be too strong.)
+ * nothing or a context carrying ONLY the masker (IAM role / IAM managed policy /
+ * Lambda permission, issue #2177), so "every provider call" would be too strong.)
  * Widening this to `stateBorne` would silently sweep them in and delete a
  * configuration on a rollback. Since issue
  * [#3141](https://github.com/go-to-k/cdkd/issues/3141) those arms DO announce
@@ -839,10 +839,10 @@ export interface CreateContext extends SecretMaskingContext {
    * its own `update()` (`this.create(logicalId, resourceType, properties)` —
    * ACM certificate, IAM managed policy, IAM role, Lambda permission, SNS
    * subscription today) receives no replay signal: none forwards
-   * `replayingState` to its own `create()` (IAM role and IAM managed policy
-   * pass a `CreateContext` carrying ONLY `maskSecrets`, issue #2177; the rest
-   * pass none) — and during a rollback replay the `properties` it forwards
-   * ARE a state record. The INFORMATION does reach `update()`: its context is
+   * `replayingState` to its own `create()` (IAM role, IAM managed policy and
+   * Lambda permission pass a `CreateContext` carrying ONLY `maskSecrets`,
+   * issue #2177; the rest pass none) — and during a rollback replay the
+   * `properties` it forwards ARE a state record. The INFORMATION does reach `update()`: its context is
    * an {@link UpdateContext}, which since issue #3141 carries its own
    * {@link UpdateContext.replayingState}, set by both rollback revert arms. None
    * of the five forwards it. (This sentence has been

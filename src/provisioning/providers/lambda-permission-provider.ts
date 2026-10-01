@@ -10,15 +10,24 @@ import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 
 /**
@@ -60,6 +69,11 @@ const DEPLOY_SKIP_CAVEAT =
   `re-attempts it — but a REPLACEMENT / rollback delete FAILS the resource instead ` +
   `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, remove the resource by hand.`;
 
+/** `value` when it is a string, else `undefined` (a derived-name pair's name side). */
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
 /**
  * AWS Lambda Permission Provider
  *
@@ -93,14 +107,54 @@ export class LambdaPermissionProvider implements ResourceProvider {
   }
 
   /**
-   * Create a Lambda permission
+   * The masked sinks ONE `create()` / `update()` logs and refuses through
+   * (issue #2177, `.claude/rules/provider-masking.md`): `createMaskedLogSinks`
+   * over the context's masker, extended by `withDerivedNameMasks` with `pairs`
+   * -- each `[template value, name derived from it]`. A permission addresses
+   * its function by the `FunctionName` the template may have resolved from a
+   * secret, and a Cloud Control-shaped physical id embeds it. Built per call;
+   * never cached on the provider, which serves concurrent resources.
+   */
+  private operationSinks(
+    maskSecrets: MaskerFn | undefined,
+    pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
+  ): MaskedLogSinks {
+    return withDerivedNameMasks(this.logger, createMaskedLogSinks(this.logger, maskSecrets), pairs);
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked (issue #2177): AWS quotes a rejected request value back (a
+   * function name, a source ARN). The `cause` stays unmasked, and a message
+   * the mask changed is stamped so the retry classifiers read that chain
+   * (`wrapMaskedAwsError`, issue #4244). A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
+  /**
+   * Create a Lambda permission.
+   *
+   * `context` is read for its masker only (issue #2177).
    */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Lambda permission ${logicalId}`);
+    // Issue #2177: every create() line and failure goes through this one sink
+    // set.
+    const log = this.operationSinks(context?.maskSecrets, [
+      [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
+    ]);
+    log.debug(`Creating Lambda permission ${logicalId}`);
 
     const functionName = properties['FunctionName'] as string;
     if (!functionName) {
@@ -162,7 +216,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
 
       await this.lambdaClient.send(new AddPermissionCommand(addParams));
 
-      this.logger.debug(`Successfully created Lambda permission ${logicalId}: ${statementId}`);
+      log.debug(`Successfully created Lambda permission ${logicalId}: ${statementId}`);
 
       return {
         physicalId: statementId,
@@ -172,12 +226,17 @@ export class LambdaPermissionProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Lambda permission ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        statementId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Lambda permission ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            statementId,
+            cause
+          )
       );
     }
   }
@@ -186,15 +245,33 @@ export class LambdaPermissionProvider implements ResourceProvider {
    * Update a Lambda permission
    *
    * Lambda permissions cannot be updated in-place. Remove old and add new.
+   *
+   * `context` is read for its masker only (issue #2177), and forwarded to the
+   * re-adding `create()` as that masker alone, never `replayingState`.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Lambda permission ${logicalId}: ${physicalId}`);
+    // Issue #2177: every update() line and failure goes through this one sink
+    // set. A Cloud Control-shaped physical id (`<function>|<statementId>`)
+    // embeds the function the record addresses; either side's `FunctionName`
+    // being secret-derived makes that segment a needle (the previous side
+    // covers a rotated secret whose old plaintext is in no bag of this deploy).
+    const recordedFunction = physicalId.includes('|')
+      ? physicalId.slice(0, physicalId.lastIndexOf('|')) || undefined
+      : undefined;
+    const log = this.operationSinks(context?.maskSecrets, [
+      [properties['FunctionName'], recordedFunction],
+      [previousProperties['FunctionName'], recordedFunction],
+      // The remove falls back to the desired name when none was recorded.
+      [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
+    ]);
+    log.debug(`Updating Lambda permission ${logicalId}: ${physicalId}`);
 
     try {
       // Remove old permission
@@ -215,11 +292,14 @@ export class LambdaPermissionProvider implements ResourceProvider {
         if (!(error instanceof ResourceNotFoundException)) {
           throw error;
         }
-        this.logger.debug(`Old permission ${oldStatementId} not found, continuing with add`);
+        log.debug(`Old permission ${oldStatementId} not found, continuing with add`);
       }
 
-      // Add new permission
-      const createResult = await this.create(logicalId, resourceType, properties);
+      // Add new permission. The masker only (extended by this operation's
+      // needles), never `replayingState`.
+      const createResult = await this.create(logicalId, resourceType, properties, {
+        maskSecrets: log.mask,
+      });
 
       return {
         physicalId: createResult.physicalId,
@@ -231,12 +311,17 @@ export class LambdaPermissionProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Lambda permission ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Lambda permission ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

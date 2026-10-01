@@ -14,6 +14,7 @@ import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   CreateContext,
@@ -26,6 +27,12 @@ import type {
 } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 
 /**
  * Classify an event source mapping by its `EventSourceArn` so that
@@ -397,6 +404,42 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   }
 
   /**
+   * The masked sinks ONE `create()` / `update()` logs and refuses through
+   * (issue #2177, `.claude/rules/provider-masking.md`): `createMaskedLogSinks`
+   * over the context's masker, extended by `withDerivedNameMasks` so a short
+   * secret-derived `FunctionName` is masked where AWS quotes it back. The
+   * physical id is an AWS-assigned UUID, so no recorded name needs a needle.
+   * Built per call; never cached on the provider, which serves concurrent
+   * resources.
+   */
+  private operationSinks(
+    maskSecrets: MaskerFn | undefined,
+    properties: Record<string, unknown>
+  ): MaskedLogSinks {
+    const functionName = properties['FunctionName'];
+    return withDerivedNameMasks(this.logger, createMaskedLogSinks(this.logger, maskSecrets), [
+      [functionName, typeof functionName === 'string' ? functionName : undefined],
+    ]);
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked (issue #2177): AWS quotes a rejected request value back (a source
+   * ARN, a Kafka bootstrap server, a filter pattern). The `cause` stays
+   * unmasked, and a message the mask changed is stamped so the retry
+   * classifiers read that chain (`wrapMaskedAwsError`, issue #4244). A
+   * method, so `gen-update-wrap-coverage` sees the catch that throws it as a
+   * wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
+  /**
    * Create a Lambda Event Source Mapping
    */
   async create(
@@ -405,7 +448,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating event source mapping ${logicalId}`);
+    // Issue #2177: every create() line and failure goes through this one sink
+    // set.
+    const log = this.operationSinks(context?.maskSecrets, properties);
+    log.debug(`Creating event source mapping ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
@@ -426,9 +472,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       if (context?.replayingState !== true) {
         throw new ProvisioningError(message, resourceType, logicalId);
       }
-      this.logger.warn(
-        safeMsg`${message} Proceeding without it: this create replays a cdkd state record.`
-      );
+      log.warn(safeMsg`${message} Proceeding without it: this create replays a cdkd state record.`);
     }
 
     try {
@@ -545,7 +589,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         throw new Error('CreateEventSourceMapping did not return UUID');
       }
 
-      this.logger.debug(`Successfully created event source mapping ${logicalId}: ${uuid}`);
+      log.debug(`Successfully created event source mapping ${logicalId}: ${uuid}`);
 
       return {
         physicalId: uuid,
@@ -561,12 +605,17 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create event source mapping ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create event source mapping ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -592,6 +641,9 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // Issue #2177: every update() line and failure goes through this one sink
+    // set.
+    const log = this.operationSinks(context?.maskSecrets, properties);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     // update() never names ConsumptionMode (kafkaConfigForUpdate), so only a
@@ -607,7 +659,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
         throw new ProvisioningError(message, resourceType, logicalId, physicalId);
       }
-      this.logger.warn(
+      log.warn(
         safeMsg`${message} Proceeding without it: this update restores a recorded or read-back configuration.`
       );
     }
@@ -618,6 +670,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         resourceType,
         properties,
         previousProperties,
+        log,
         context
       );
     } catch (error) {
@@ -626,12 +679,17 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       // raised deeper in the body already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update event source mapping ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update event source mapping ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -642,9 +700,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating event source mapping ${logicalId}: ${physicalId}`);
+    log.debug(`Updating event source mapping ${logicalId}: ${physicalId}`);
 
     const updateParams: import('@aws-sdk/client-lambda').UpdateEventSourceMappingCommandInput = {
       UUID: physicalId,
@@ -829,11 +888,12 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        log
       );
     }
 
-    this.logger.debug(`Successfully updated event source mapping ${logicalId}`);
+    log.debug(`Successfully updated event source mapping ${logicalId}`);
 
     return {
       physicalId,
@@ -861,12 +921,13 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    log: MaskedLogSinks
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
+      log.warn(tagWarning);
     }
     const tagsToAdd = Object.fromEntries(plan.set);
     const tagsToRemove = plan.remove;
@@ -875,11 +936,11 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       await this.lambdaClient.send(
         new UntagResourceCommand({ Resource: arn, TagKeys: tagsToRemove })
       );
-      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from EventSourceMapping ${arn}`);
+      log.debug(`Removed ${tagsToRemove.length} tag(s) from EventSourceMapping ${arn}`);
     }
     if (Object.keys(tagsToAdd).length > 0) {
       await this.lambdaClient.send(new TagResourceCommand({ Resource: arn, Tags: tagsToAdd }));
-      this.logger.debug(
+      log.debug(
         `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on EventSourceMapping ${arn}`
       );
     }

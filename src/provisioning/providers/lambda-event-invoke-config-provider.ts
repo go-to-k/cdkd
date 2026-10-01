@@ -14,11 +14,11 @@ import {
 } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { packCompositeId, type CompositeIdOptions } from '../composite-id.js';
-import type { CreateContext } from '../../types/resource.js';
+import type { CreateContext, UpdateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -26,6 +26,17 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
+
+/** `value` when it is a string, else `undefined` (a derived-name pair's name side). */
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
 
 /**
  * AWS Lambda EventInvokeConfig Provider
@@ -73,6 +84,38 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   }
 
   /**
+   * The masked sinks ONE `create()` / `update()` logs and refuses through
+   * (issue #2177, `.claude/rules/provider-masking.md`): `createMaskedLogSinks`
+   * over the context's masker, extended by `withDerivedNameMasks` with `pairs`
+   * -- each `[template value, name derived from it]`. The physical id
+   * `<FunctionName>|<Qualifier>` embeds both template values verbatim, either
+   * of which can be secret-derived. Built per call; never cached on the
+   * provider, which serves concurrent resources.
+   */
+  private operationSinks(
+    maskSecrets: MaskerFn | undefined,
+    pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
+  ): MaskedLogSinks {
+    return withDerivedNameMasks(this.logger, createMaskedLogSinks(this.logger, maskSecrets), pairs);
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked (issue #2177): AWS quotes a rejected request value back (a
+   * function name, a destination ARN). The `cause` stays unmasked, and a
+   * message the mask changed is stamped so the retry classifiers read that
+   * chain (`wrapMaskedAwsError`, issue #4244). A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
+  /**
    * Compose the Cloud-Control-compatible compound physical id.
    */
   private buildPhysicalId(
@@ -103,7 +146,8 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   private physicalIdAfterUpdate(
     logicalId: string,
     physicalId: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: MaskerFn
   ): string {
     const next = properties['FunctionName'];
     if (typeof next !== 'string') return physicalId;
@@ -112,8 +156,9 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     const nextQualifier =
       typeof properties['Qualifier'] === 'string' ? properties['Qualifier'] : qualifier;
     // Verbatim, as `create()` records it: an ARN's account and region are part
-    // of what the id addresses.
-    return this.buildPhysicalId(logicalId, next, nextQualifier);
+    // of what the id addresses. The separator refusal quotes the segment, so
+    // it goes through the operation's masker (issue #2177).
+    return this.buildPhysicalId(logicalId, next, nextQualifier, { maskSecrets: mask });
   }
 
   /**
@@ -126,7 +171,8 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<void> {
     const next = properties['FunctionName'];
     if (typeof next !== 'string') return;
@@ -139,14 +185,18 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
         );
         return resp.Configuration?.FunctionArn?.replace(/:\$LATEST$/, '');
       } catch (error) {
-        throw new ProvisioningError(
-          `Failed to update Lambda EventInvokeConfig ${logicalId}: could not resolve its ` +
-            `FunctionName to confirm the re-spelling names the same function: ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          error instanceof Error ? error : undefined
+        throw this.wrapMaskedError(
+          log.mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to update Lambda EventInvokeConfig ${logicalId}: could not resolve its ` +
+                `FunctionName to confirm the re-spelling names the same function: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              error instanceof Error ? error : undefined
+            )
         );
       }
     };
@@ -154,9 +204,14 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     if (recordedArn !== undefined && recordedArn === nextArn) return;
     throw markNonRetryable(
       new ProvisioningError(
-        `Refusing to update Lambda EventInvokeConfig ${logicalId} in place: its FunctionName ` +
-          `now resolves to ${nextArn ?? 'an unreadable function'}, not the function the recorded ` +
-          `config is on (${recordedArn ?? 'unreadable'}). Nothing was changed.`,
+        // Each ARN embeds a function name the template may have resolved from
+        // a secret: masked RAW, then the whole message (issue #2177).
+        log.mask(
+          `Refusing to update Lambda EventInvokeConfig ${logicalId} in place: its FunctionName ` +
+            `now resolves to ${nextArn === undefined ? 'an unreadable function' : log.value(nextArn)}, ` +
+            `not the function the recorded config is on ` +
+            `(${recordedArn === undefined ? 'unreadable' : log.value(recordedArn)}). Nothing was changed.`
+        ),
         resourceType,
         logicalId,
         physicalId
@@ -206,7 +261,8 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   }
 
   private buildPutInput(
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): import('@aws-sdk/client-lambda').PutFunctionEventInvokeConfigCommandInput {
     const functionName = properties['FunctionName'] as string;
     // Shared by create() and update(), so this one WARNS: a rollback replays
@@ -228,7 +284,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       properties['Qualifier'],
       '$LATEST',
       'AWS::Lambda::EventInvokeConfig Qualifier',
-      { coerceNumber: true, onUnusable: (message) => this.logger.warn(message) }
+      { coerceNumber: true, onUnusable: (message) => log.warn(message) }
     );
     const input: import('@aws-sdk/client-lambda').PutFunctionEventInvokeConfigCommandInput = {
       FunctionName: functionName,
@@ -255,7 +311,13 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Lambda EventInvokeConfig ${logicalId}`);
+    // Issue #2177: every create() line and failure goes through this one sink
+    // set.
+    const log = this.operationSinks(context?.maskSecrets, [
+      [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
+      [properties['Qualifier'], stringOrUndefined(properties['Qualifier'])],
+    ]);
+    log.debug(`Creating Lambda EventInvokeConfig ${logicalId}`);
 
     const functionName = properties['FunctionName'] as string;
     if (!functionName) {
@@ -269,7 +331,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       properties['Qualifier'],
       '$LATEST',
       'AWS::Lambda::EventInvokeConfig Qualifier',
-      { coerceNumber: true, ...replayWarn(this.logger, context) }
+      { coerceNumber: true, ...replayWarn(log, context) }
     );
 
     // Refuse a `|` in either segment BEFORE `PutFunctionEventInvokeConfig`
@@ -289,43 +351,64 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       {
         // Issue #2176: the refusal QUOTES the offending segment value, on the
         // thrown arm (durable) and the warn arm (terminal) alike, so the masker
-        // goes through unconditionally -- it is absent on the paths that have no
-        // context, where it degrades to identity.
-        maskSecrets: context?.maskSecrets,
+        // goes through unconditionally -- the operation's, which is identity on
+        // the paths that have no context (issue #2177).
+        maskSecrets: log.mask,
         ...(context?.replayingState === true && {
-          onRefusal: (message: string) => this.logger.warn(message),
+          onRefusal: (message: string) => log.warn(message),
         }),
       }
     );
 
     try {
       await this.lambdaClient.send(
-        new PutFunctionEventInvokeConfigCommand(this.buildPutInput(properties))
+        new PutFunctionEventInvokeConfigCommand(this.buildPutInput(properties, log))
       );
-      this.logger.debug(
-        `Successfully created Lambda EventInvokeConfig ${logicalId}: ${physicalId}`
-      );
+      log.debug(`Successfully created Lambda EventInvokeConfig ${logicalId}: ${physicalId}`);
       return { physicalId, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Lambda EventInvokeConfig ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        functionName,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Lambda EventInvokeConfig ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            functionName,
+            cause
+          )
       );
     }
   }
 
+  /**
+   * `context` is read for its masker only (issue #2177).
+   */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Lambda EventInvokeConfig ${logicalId}: ${physicalId}`);
+    // Issue #2177: every update() line and failure goes through this one sink
+    // set. The recorded physical id carries the function and qualifier; either
+    // side's template value being secret-derived makes the recorded segment a
+    // needle (the previous side covers a rotated secret whose old plaintext is
+    // in no bag of this deploy). Both can only over-mask.
+    const recorded = this.parsePhysicalId(physicalId);
+    const log = this.operationSinks(context?.maskSecrets, [
+      [properties['FunctionName'], recorded.functionName],
+      [previousProperties['FunctionName'], recorded.functionName],
+      [properties['Qualifier'], recorded.qualifier],
+      [previousProperties['Qualifier'], recorded.qualifier],
+      [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
+      [properties['Qualifier'], stringOrUndefined(properties['Qualifier'])],
+    ]);
+    log.debug(`Updating Lambda EventInvokeConfig ${logicalId}: ${physicalId}`);
 
     // Diff-based no-op: `cdkd drift --revert` round-trips the observed snapshot
     // back through update() on a no-drift resource, leaving new === previous.
@@ -346,28 +429,39 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false, attributes: {} };
     }
 
-    await this.refuseRespellingToAnotherFunction(logicalId, resourceType, physicalId, properties);
+    await this.refuseRespellingToAnotherFunction(
+      logicalId,
+      resourceType,
+      physicalId,
+      properties,
+      log
+    );
 
     try {
       // Full-replace write (Put, not the CC patch) — this is the whole reason
       // this type has an SDK provider. See the class doc comment.
       await this.lambdaClient.send(
-        new PutFunctionEventInvokeConfigCommand(this.buildPutInput(properties))
+        new PutFunctionEventInvokeConfigCommand(this.buildPutInput(properties, log))
       );
-      this.logger.debug(`Successfully updated Lambda EventInvokeConfig ${logicalId}`);
+      log.debug(`Successfully updated Lambda EventInvokeConfig ${logicalId}`);
       return {
-        physicalId: this.physicalIdAfterUpdate(logicalId, physicalId, properties),
+        physicalId: this.physicalIdAfterUpdate(logicalId, physicalId, properties, log.mask),
         wasReplaced: false,
         attributes: {},
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Lambda EventInvokeConfig ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Lambda EventInvokeConfig ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
