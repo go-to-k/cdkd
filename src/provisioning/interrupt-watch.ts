@@ -157,8 +157,8 @@ export class InterruptedWaitError extends Error {
  * difference decides correctness rather than style. A ceiling has to be sized
  * against the deepest real chain, and that chain GROWS: the flat case is 2 (the
  * provider's own wrap, then the command's), `DagExecutor` adds none — it
- * collects rather than wraps (`dag-executor.ts:178`) — but `deploy-engine.ts`
- * adds one `ProvisioningError` PER NESTED-STACK LEVEL (`deploy-engine/provision.ts`'s `provisionResource`;
+ * collects rather than wraps (`dag-executor.ts:178`) — but the engine adds one
+ * `ProvisioningError` PER NESTED-STACK LEVEL (`deploy-engine/provision.ts`'s `provisionResource`;
  * `NestedStackProvider.create` adds none of its own). A depth-5 cap therefore
  * missed at four levels of nesting, and missing here is not a degraded answer:
  * it is a full automatic rollback on Ctrl-C. The visited set gives the

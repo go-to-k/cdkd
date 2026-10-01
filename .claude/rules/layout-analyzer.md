@@ -113,7 +113,7 @@ and `secretSpanInStoredKey`. A removed non-alphanumeric ALIAS (listed in
 names (debug lines, warnings) are control-stripped.
 
 **A deliberate SECOND implementation, not shared code**: extracting the
-deploy-side block would edit `src/deployment/deploy-engine.ts` and pull a
+deploy-side block would edit `src/deployment/deploy-engine/` and pull a
 diff-only fix into the `integ-destroy` gate scope.
 `tests/unit/analyzer/outputs-diff.test.ts` pays for that with an anti-drift
 fence that READS the engine and watches the DEFINITION of deploy's
