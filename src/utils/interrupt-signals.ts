@@ -153,8 +153,9 @@ export interface CommandInterruptWatch {
  * it to stop.
  *
  * The runner's outer `finally` re-syncs
- * `result.interrupted ||= lock.interrupted && statePreserved` to cover the widest such window (renderer teardown, state flush, lock release),
- * and that line is marked TACTICAL in its own comment: it narrows the window
+ * `result.interrupted ||= lock.interrupted && statePreserved` to cover the
+ * widest such window (renderer teardown, state flush, lock release), and that
+ * line is marked TACTICAL in its own comment: it narrows the window
  * rather than removing it. Two gaps survive it, and neither is reachable from
  * inside the runner at all:
  *

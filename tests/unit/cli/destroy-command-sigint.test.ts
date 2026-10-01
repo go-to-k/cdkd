@@ -10,8 +10,9 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
  * ONLY channel from the runner to the `--all` loop was
  * `DestroyRunResult.interrupted` — assigned ONCE, inside the runner's `try`,
  * after its level loop. The runner's outer `finally` re-syncs it
- * (`result.interrupted ||= lock.interrupted && statePreserved`) and that line is marked TACTICAL in the
- * source: it narrows the window, it does not close it. Two gaps survive, and
+ * (`result.interrupted ||= lock.interrupted && statePreserved`) and that line
+ * is marked TACTICAL in the source: it narrows the window, it does not close
+ * it. Two gaps survive, and
  * these cases drive both:
  *
  *  - the runner removes its SIGINT listener BEFORE the re-sync and its

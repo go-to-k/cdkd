@@ -231,13 +231,13 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     // `result.interrupted` is assigned once inside the `try`, after the level
     // loop. Keeping `sigintHandler` armed across the renderer teardown, the
     // state flush and the lock release — which is what fixed the stranded lock
-    // — moved a whole class of signals to AFTER that read, so `lock.interrupted`
-    // flipped too late and the flag stayed false. `destroy.ts` read exactly that flag to
-    // decide whether to stop, and registered no SIGINT handler of its own, so
-    // `--all` went on to delete the NEXT STACK after the user asked it to stop.
-    // The outer `finally`'s
-    // `result.interrupted ||= lock.interrupted && statePreserved` re-sync is what
-    // covers that window, and it is what this case pins.
+    // — moved a whole class of signals to AFTER that read, so
+    // `lock.interrupted` flipped too late and the flag stayed false.
+    // `destroy.ts` read exactly that flag to decide whether to stop, and
+    // registered no SIGINT handler of its own, so `--all` went on to delete
+    // the NEXT STACK after the user asked it to stop. The outer `finally`'s
+    // `result.interrupted ||= lock.interrupted && statePreserved` re-sync is
+    // what covers that window, and it is what this case pins.
     //
     // The ordering pinned elsewhere in this file is still the fix for the
     // STRANDED LOCK, which is what the file is about. The `--all`-kept-going

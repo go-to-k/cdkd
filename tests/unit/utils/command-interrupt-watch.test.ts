@@ -171,8 +171,8 @@ describe('watchCommandInterrupt (issue #2117)', () => {
     // registers its handler ~200 lines in, after the strong-reference
     // pre-flight scan and the per-stack prompt. Deferring across that window
     // swallowed the signal entirely: no notice, no exit, no escalation — and
-    // the runner then started with `draining` false and deleted the whole
-    // stack the user had just asked to stop.
+    // the runner then started with `lock.interrupted` false and deleted the
+    // whole stack the user had just asked to stop.
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const cap = captureStderr();
     try {

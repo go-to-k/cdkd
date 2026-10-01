@@ -336,9 +336,9 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
   });
 
   it('does NOT report interrupted when the signal lands after the state was DELETED', async () => {
-    // The outer `finally`'s `result.interrupted ||= lock.interrupted` re-sync
-    // used to run UNGATED (no `&& statePreserved`), and everything it spans (`renderer.stop()`, the `saveChain`
-    // flush, the real `deleteState` S3 round-trip, `releaseLock`) happens with
+    // The outer `finally`'s interrupt re-sync used to run UNGATED (no
+    // `&& statePreserved`), and everything it spans (`renderer.stop()`, the
+    // `saveChain` flush, the real `deleteState` S3 round-trip, `releaseLock`) happens with
     // `sigintHandler` still armed and AFTER the in-`try` read that decided
     // `preserveState`. So a signal there flipped the PER-STACK flag true over a
     // stack whose state file was already gone — and `destroy.ts` / `state.ts`
