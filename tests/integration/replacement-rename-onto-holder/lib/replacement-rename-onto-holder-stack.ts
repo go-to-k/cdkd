@@ -7,7 +7,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * Fixture for issues #3937 and #3931: a replacement that RENAMES a resource
- * onto a name another resource already holds.
+ * onto a name another resource already holds — and for #4180, a plain CREATE
+ * onto one.
  *
  * covers: AWS::SQS::Queue, AWS::SNS::Topic, AWS::ECS::Cluster, AWS::ECR::Repository
  *
@@ -28,6 +29,9 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *     the recreate that used to delete the old repository FIRST. ECR's
  *     `CreateRepository` refuses a taken name, so the holder turns the rename
  *     into a collision, and an empty repository costs nothing.
+ *   - `NEW_QUEUE_NAME` (`NewQueue`, #4180): optional. When set, the stack
+ *     gains a second queue, so the deploy CREATES it under that name — the
+ *     plain-CREATE sibling of the `QUEUE_NAME` rename.
  */
 export class ReplacementRenameOntoHolderStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -51,6 +55,12 @@ export class ReplacementRenameOntoHolderStack extends cdk.Stack {
 
     const cluster = new ecs.CfnCluster(this, 'Cluster', { clusterName });
     cluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    const newQueueName = process.env.NEW_QUEUE_NAME;
+    if (newQueueName) {
+      const newQueue = new sqs.CfnQueue(this, 'NewQueue', { queueName: newQueueName });
+      newQueue.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    }
 
     const repo = new ecr.CfnRepository(this, 'Repo', {
       repositoryName: repoName,

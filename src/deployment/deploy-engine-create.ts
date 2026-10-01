@@ -1,11 +1,27 @@
 import type { DeployEngine } from './deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from './deploy-engine.js';
-import type { CloudFormationTemplate } from '../types/resource.js';
+import type { ProvisionedBy } from '../provisioning/provider-registry.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import type { ResourceChange, ResourceState } from '../types/state.js';
+import { displayAwsMessage, displaySafe } from '../utils/display-safe.js';
+import { CdkdError } from '../utils/error-handler.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
 import { formatResourceLine } from '../utils/resource-line.js';
+import { getAccountInfo } from './intrinsic-function-resolver.js';
+import {
+  createNameQuestion,
+  probeErrorMeansNameHeld,
+  createLookupArn,
+  probeFoundSameId,
+} from './replacement-name-holder.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
-import { createSecretMasker, recordNestedStackParameterExpressions } from './secret-redaction.js';
+import { markNonRetryable } from './retryable-errors.js';
+import {
+  type RecordedSecretValues,
+  createSecretMasker,
+  maskSecretsInText,
+  recordNestedStackParameterExpressions,
+} from './secret-redaction.js';
 
 declare module './deploy-engine.js' {
   interface DeployEngine {
@@ -119,6 +135,19 @@ export async function provisionCreate(
       ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
       : resolvedProps;
 
+  // go-to-k/cdkd#4180: a create that hands back or overwrites a resource
+  // already holding its explicit name must not run onto one.
+  await refuseTakenCreateName.call(this, {
+    logicalId,
+    resourceType,
+    stackName,
+    createProvider,
+    createdVia: createDecision.provisionedBy,
+    createProps,
+    secrets: createSecrets,
+    stateResources,
+  });
+
   const result = await this.withRetry(
     () =>
       // Issue #1903: the SAME bag, bound to this call's async chain so
@@ -197,4 +226,168 @@ export async function provisionCreate(
   renderer.removeTask(logicalId);
   this.logger.info(`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`);
   return;
+}
+
+/**
+ * Refuse a plain CREATE whose explicit name another resource already holds,
+ * for a type whose SDK create would hand that resource back or overwrite it
+ * instead of failing (go-to-k/cdkd#4180, {@link createNameQuestion}). Without
+ * it the deploy "succeeds" with the existing resource, records it as this
+ * stack's, and a later `cdkd destroy` deletes it. CloudFormation fails the
+ * same create with "already exists", so this refuses with nothing created —
+ * also when the lookup cannot be made or fails, since a guess either way can
+ * take over someone else's resource.
+ *
+ * A holder this stack's state records under ANOTHER logical id (a construct
+ * moved or renamed, keeping its explicit name) is refused with its own
+ * advice: deleting or importing it would hand one resource to two records,
+ * and the plan's later DELETE of the old id would then delete it.
+ *
+ * The lookup and the create are two calls: a resource created under the name
+ * between them is not seen.
+ */
+async function refuseTakenCreateName(
+  this: DeployEngine,
+  input: {
+    logicalId: string;
+    resourceType: string;
+    stackName: string;
+    createProvider: ResourceProvider;
+    createdVia: ProvisionedBy | undefined;
+    createProps: Record<string, unknown>;
+    secrets: RecordedSecretValues;
+    stateResources: Record<string, ResourceState>;
+  }
+): Promise<void> {
+  const { logicalId, resourceType, secrets } = input;
+  const question = createNameQuestion({
+    resourceType,
+    createdVia: input.createdVia,
+    properties: input.createProps,
+  });
+  if (question === undefined) return;
+  // Every SDK provider of a name-adopting type implements `import()` (pinned
+  // in `replacement-name-holder.test.ts`); one without it is a test double.
+  const lookup = input.createProvider.import?.bind(input.createProvider);
+  if (lookup === undefined) return;
+
+  // Mask BEFORE sanitizing: `displaySafe` rewrites control characters, after
+  // which a secret-derived value no longer matches its needle.
+  const shown = (value: string): string => displaySafe(maskSecretsInText(value, secrets));
+  const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
+  const named = `${question.property} ${shown(question.desiredName)}`;
+  const adoptsText =
+    `its create API hands back or overwrites an existing resource of that name instead of ` +
+    `refusing it`;
+  const refuse = (message: string, cause?: unknown): never => {
+    throw markNonRetryable(
+      new CdkdError(
+        maskSecretsInText(message, secrets),
+        'NAMED_CREATE_COLLISION',
+        cause instanceof Error ? cause : undefined
+      )
+    );
+  };
+
+  // Step Functions and SNS are looked up by the ARN the name would take.
+  let knownPhysicalId: string | undefined;
+  const byArn = ['AWS::SNS::Topic', 'AWS::StepFunctions::StateMachine'].includes(resourceType)
+    ? createLookupArn(resourceType, question.desiredName, await getAccountInfo(this.stackRegion))
+    : undefined;
+  if (byArn !== undefined && 'unbuildable' in byArn) {
+    return refuse(
+      byArn.unbuildable === 'name'
+        ? `${subject} is created with ${named}, and ${adoptsText}, but cdkd cannot build the ` +
+            `ARN that name would take to check whether another resource already holds it: ` +
+            `the name contains ":". Nothing was created. Choose a name without ":".`
+        : `${subject} is created with ${named}, and ${adoptsText}, but cdkd cannot check ` +
+            `whether another resource already holds it: STS did not report this deploy's ` +
+            `account. Nothing was created. Re-run the deploy once STS can report the account.`
+    );
+  }
+  if (byArn !== undefined) knownPhysicalId = byArn.arn;
+
+  let found: Awaited<ReturnType<NonNullable<ResourceProvider['import']>>>;
+  try {
+    found = await this.withRetry(
+      () =>
+        lookup({
+          logicalId,
+          resourceType,
+          stackName: input.stackName,
+          region: this.stackRegion,
+          // The name as a STRING: a provider's lookup reads only a string
+          // name, so a numeric one (which the create sends as its decimal
+          // spelling) would otherwise look up nothing and read as free.
+          properties: { ...input.createProps, [question.property]: question.desiredName },
+          ...(knownPhysicalId !== undefined && { knownPhysicalId }),
+        }),
+      logicalId,
+      undefined,
+      undefined,
+      input.createProvider
+    );
+  } catch (probeError) {
+    if (probeErrorMeansNameHeld(resourceType, probeError)) {
+      return refuse(
+        `${subject} is created with ${named}, and S3 answered 403 Forbidden for that bucket: ` +
+          `another account owns that name, or a bucket of this account denies this identity ` +
+          `\`s3:ListBucket\`, or the request's credentials were rejected. Nothing was created. ` +
+          `Choose another name, or if the bucket is yours grant \`s3:ListBucket\` on it (or ` +
+          `delete it) and re-run.`,
+        probeError
+      );
+    }
+    const status = (probeError as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata
+      ?.httpStatusCode;
+    if (resourceType === 'AWS::S3::Bucket' && status === 301) {
+      return refuse(
+        `${subject} is created with ${named}, and S3 answered 301 for that bucket: a bucket of ` +
+          `that name already exists in another region. Nothing was created. Choose another ` +
+          `name, or delete that bucket if it is yours and re-run.`,
+        probeError
+      );
+    }
+    return refuse(
+      `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
+        `whether another resource already holds it: ` +
+        `${displayAwsMessage(maskSecretsInText(probeError instanceof Error ? probeError.message : String(probeError), secrets))}. ` +
+        `Nothing was created. Re-run the deploy once the check can succeed.`,
+      probeError
+    );
+  }
+  if (found === null) return;
+  const holderId = found.physicalId;
+  const ownHolder = Object.entries(input.stateResources).find(
+    ([otherId, record]) =>
+      otherId !== logicalId &&
+      record.resourceType === resourceType &&
+      probeFoundSameId(resourceType, record.physicalId, holderId)
+  );
+  if (ownHolder !== undefined) {
+    return refuse(
+      `${subject} is created with ${named}, which this stack's ${displaySafe(ownHolder[0])} ` +
+        `(${shown(holderId)}) already holds — a construct moved or renamed keeps its explicit ` +
+        `name under a new logical id. Since ${adoptsText}, the create would hand back that ` +
+        `resource and the removal of ${displaySafe(ownHolder[0])} would then delete it. Nothing ` +
+        `was created. Give the new resource another name, or deploy the removal of ` +
+        `${displaySafe(ownHolder[0])} first. Do not delete or import that resource: it is ` +
+        `already this stack's.`
+    );
+  }
+  // A nested-stack child (`<parent>~<logicalId>`) cannot be a `cdkd import`
+  // target: import resolves top-level stacks from the assembly only, the
+  // reason `orphanedNameCollisionAdvice` withholds the command there too.
+  const ownRemedy = input.stackName.includes('~')
+    ? `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +
+      `and re-run.`
+    : `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +
+      `or adopt it with \`cdkd import\` and re-run.`;
+  return refuse(
+    `${subject} is created with ${named}, and an existing resource ` +
+      `(${shown(holderId)}) already holds that name. Since ${adoptsText}, ` +
+      `creating it would take that resource over and record it as this stack's, for a later ` +
+      `\`cdkd destroy\` to delete. Nothing was created. Choose a name no other resource holds; ` +
+      ownRemedy
+  );
 }

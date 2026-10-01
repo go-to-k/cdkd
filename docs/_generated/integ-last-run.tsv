@@ -169,7 +169,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-10-01T10:13:53Z	PASS	91	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 kinesis-stream-mode-switch	2026-10-01T02:52:52Z	PASS	116	verify.sh	PR #4252 (#4239 arrow paste sites) at dc71dd51d; rc ok, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-01T15:12:57Z	PASS	141	verify.sh	PR #4343 resolver module scope split; rc ok, orph clean
+lambda	2026-10-01T16:48:53Z	PASS	105	verify.sh	PR #4344 named-create lookup; rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -265,7 +265,7 @@ rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok,
 replace-squatter-refusal	2026-10-01T11:06:17Z	PASS	70	verify.sh	rc ok, orph clean; #4265 reworded diagnosis C_MARKER
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, orph clean
-replacement-rename-onto-holder	2026-10-01T11:06:17Z	PASS	185	verify.sh	rc ok, orph clean; #4265 cleanup-skip line (4 del/0 err)
+replacement-rename-onto-holder	2026-10-01T16:48:53Z	PASS	196	verify.sh	PR #4344 B5/C5 create-onto-held-name arm; rc ok, orph clean
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-10-01T04:57:13Z	PASS	345	verify.sh	rc ok, orph clean; #4214 rollback refusal display (3 del/0 err)

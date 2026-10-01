@@ -136,14 +136,15 @@ export function replacementRequestsDifferentName(input: {
  * holds: it RETURNS that resource (SQS `CreateQueue` with matching attributes,
  * SNS `CreateTopic`, Step Functions `CreateStateMachine` with an identical
  * definition, ECS `CreateCluster` for an ACTIVE cluster — measured) or
- * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or —
- * S3 — the provider reads `BucketAlreadyOwnedByYou`
- * (and the `us-east-1` legacy 200) as success and configures the existing
- * bucket. A replacement renamed onto such a name "succeeds" with
+ * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or the
+ * provider reads the refusal as success and configures the existing resource
+ * (S3's `BucketAlreadyOwnedByYou` and the `us-east-1` legacy 200; CloudWatch
+ * Logs' `ResourceAlreadyExistsException`). A replacement renamed onto such a name "succeeds" with
  * someone else's resource, which the deploy then records as its own and a
- * later destroy deletes (go-to-k/cdkd#3937). The create cannot tell a fresh
+ * later destroy deletes (go-to-k/cdkd#3937); a plain CREATE under such a name
+ * does the same (go-to-k/cdkd#4180). The create cannot tell a fresh
  * resource from an existing one, so the caller asks BEFORE it
- * ({@link replacementNameProbe}). Cloud Control is exempt: its handlers
+ * ({@link replacementNameProbe}, {@link createNameQuestion}). Cloud Control is exempt: its handlers
  * refuse an existing identifier with `AlreadyExists`.
  *
  * Not here yet, though their creates adopt too (go-to-k/cdkd#3937 tracks
@@ -159,6 +160,7 @@ const NAME_ADOPTING_SDK_CREATE_TYPES: ReadonlySet<string> = new Set([
   'AWS::CloudWatch::Alarm',
   'AWS::ECS::Cluster',
   'AWS::Events::Rule',
+  'AWS::Logs::LogGroup',
   'AWS::S3::Bucket',
   'AWS::SNS::Topic',
   'AWS::SQS::Queue',
@@ -209,6 +211,80 @@ export function replacementNameProbe(input: {
     knownPhysicalId: `arn:${other[1]}:states:${other[2]}:${other[3]}:stateMachine:${input.change.desiredName}`,
   };
 }
+
+/** A plain CREATE's explicit name, for {@link createNameQuestion}. */
+export interface CreateNameQuestion {
+  /** The template's name property, e.g. `QueueName`. */
+  property: string;
+  /** The name the create sends. */
+  desiredName: string;
+}
+
+/**
+ * The plain-CREATE sibling of {@link replacementNameProbe}
+ * (go-to-k/cdkd#4180): the explicit name a name-adopting create is about to
+ * send, which the caller looks up before the create. `undefined` when the
+ * create cannot adopt (another type, the Cloud Control route) or carries no
+ * explicit name.
+ *
+ * A holder found under the name is refused whoever owns it, as
+ * CloudFormation's create fails with "already exists". That includes cdkd's
+ * own orphan from an earlier interrupted deploy: nothing in AWS tells it apart
+ * from a resource made outside the stack, and a template-supplied name may
+ * belong to anyone — the reason the orphan-adoption pre-pass never adopts an
+ * explicitly named resource either. A cdkd-generated name is not asked: it is
+ * derived from the stack and logical id, so its holder is presumed this
+ * stack's own, the premise that pre-pass is built on (a maintainer decision,
+ * go-to-k/cdkd#4345).
+ */
+export function createNameQuestion(input: {
+  resourceType: string;
+  createdVia: ProvisionedBy | undefined;
+  properties: Record<string, unknown>;
+}): CreateNameQuestion | undefined {
+  if (!replacementCreateAdoptsName(input.resourceType, input.createdVia)) return undefined;
+  const property = explicitNamePropertyFor(input.resourceType);
+  if (property === undefined) return undefined;
+  // A number reaches the create as one, which AWS takes as its decimal
+  // spelling, so it is a name to look up too.
+  const raw = input.properties[property];
+  const desiredName =
+    typeof raw === 'number' && Number.isFinite(raw)
+      ? String(raw)
+      : nameValue(input.properties, property);
+  return desiredName === undefined ? undefined : { property, desiredName };
+}
+
+/**
+ * The ARN a NEW resource named `name` would take, for the types whose
+ * {@link createNameQuestion} lookup goes by ARN: Step Functions (its
+ * `import()` has no name lookup) and SNS (whose name lookup pages `ListTopics`
+ * region-wide). `undefined` for any other type, which looks the name up
+ * itself. Otherwise the ARN, or why it cannot be built honestly:
+ * `'name'` for a name carrying `:`, `'account'` for an account
+ * `getAccountInfo` FABRICATED because STS was unreachable (or a malformed
+ * one) — a lookup of a made-up ARN answers "free".
+ */
+export function createLookupArn(
+  resourceType: string,
+  name: string,
+  account: { partition: string; region: string; accountId: string; fabricated?: boolean }
+): { arn: string } | { unbuildable: 'name' | 'account' } | undefined {
+  const shape = CREATE_LOOKUP_ARN[resourceType];
+  if (shape === undefined) return undefined;
+  if (name.includes(':')) return { unbuildable: 'name' };
+  if (account.fabricated === true || !/^\d{12}$/.test(account.accountId) || account.region === '') {
+    return { unbuildable: 'account' };
+  }
+  return {
+    arn: `arn:${account.partition}:${shape.service}:${account.region}:${account.accountId}:${shape.prefix}${name}`,
+  };
+}
+
+const CREATE_LOOKUP_ARN: Readonly<Record<string, { service: string; prefix: string }>> = {
+  'AWS::SNS::Topic': { service: 'sns', prefix: '' },
+  'AWS::StepFunctions::StateMachine': { service: 'states', prefix: 'stateMachine:' },
+};
 
 /** Any ARN carrying a region and a 12-digit account: partition, region, account. */
 const ANY_ARN = /^arn:([^:]+):[^:]+:([a-z0-9-]+):(\d{12}):/;

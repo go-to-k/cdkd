@@ -262,8 +262,11 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
   private async getAlarmArn(alarmName: string): Promise<string> {
     try {
       const response = await this.cloudWatchClient.send(
+        // Omitted, `AlarmTypes` means metric alarms only, which made the
+        // composite read below unreachable (go-to-k/cdkd#4180).
         new DescribeAlarmsCommand({
           AlarmNames: [alarmName],
+          AlarmTypes: ['MetricAlarm', 'CompositeAlarm'],
         })
       );
       const arn = response.MetricAlarms?.[0]?.AlarmArn;
@@ -564,7 +567,12 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     if (explicit) {
       try {
         const resp = await this.cloudWatchClient.send(
-          new DescribeAlarmsCommand({ AlarmNames: [explicit] })
+          // Both types: omitted, `AlarmTypes` means metric alarms only, so a
+          // composite alarm holding the name read as free (go-to-k/cdkd#4180).
+          new DescribeAlarmsCommand({
+            AlarmNames: [explicit],
+            AlarmTypes: ['MetricAlarm', 'CompositeAlarm'],
+          })
         );
         return resp.MetricAlarms?.[0] || resp.CompositeAlarms?.[0]
           ? { physicalId: explicit, attributes: {} }

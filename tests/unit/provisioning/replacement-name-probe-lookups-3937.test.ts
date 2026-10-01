@@ -11,16 +11,19 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { GetQueueUrlCommand, QueueDoesNotExist } from '@aws-sdk/client-sqs';
 import { DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
 import { HeadBucketCommand } from '@aws-sdk/client-s3';
+import { DescribeLogGroupsCommand } from '@aws-sdk/client-cloudwatch-logs';
 
 const sqsSend = vi.fn();
 const cloudWatchSend = vi.fn();
 const s3Send = vi.fn();
+const logsSend = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     sqs: { send: sqsSend, config: { region: () => Promise.resolve('us-east-1') } },
     cloudWatch: { send: cloudWatchSend, config: { region: () => Promise.resolve('us-east-1') } },
     s3: { send: s3Send, config: { region: () => Promise.resolve('us-east-1') } },
+    cloudWatchLogs: { send: logsSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),
 }));
 
@@ -46,6 +49,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { SQSQueueProvider } from '../../../src/provisioning/providers/sqs-queue-provider.js';
 import { CloudWatchAlarmProvider } from '../../../src/provisioning/providers/cloudwatch-alarm-provider.js';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { replacementNameProbe } from '../../../src/deployment/replacement-name-holder.js';
 
 const base = { logicalId: 'Fn', stackName: 'MyStack', region: 'us-east-1' };
@@ -65,6 +69,7 @@ const probeFor = (resourceType: string) =>
 describe('the #3937 name probe against the real SQS and CloudWatch lookups', () => {
   beforeEach(() => {
     sqsSend.mockReset();
+    logsSend.mockReset();
     cloudWatchSend.mockReset();
     s3Send.mockReset();
   });
@@ -159,6 +164,47 @@ describe('the #3937 name probe against the real SQS and CloudWatch lookups', () 
     const command = cloudWatchSend.mock.calls[0]![0] as DescribeAlarmsCommand;
     expect(command).toBeInstanceOf(DescribeAlarmsCommand);
     expect(command.input.AlarmNames).toEqual(['theirs']);
+    // Omitted, AlarmTypes means metric alarms only (go-to-k/cdkd#4180).
+    expect(command.input.AlarmTypes).toEqual(['MetricAlarm', 'CompositeAlarm']);
+  });
+
+  it('CloudWatch: a COMPOSITE alarm holding the name is found (#4180)', async () => {
+    cloudWatchSend.mockResolvedValueOnce({
+      MetricAlarms: [],
+      CompositeAlarms: [{ AlarmName: 'theirs' }],
+    });
+
+    const found = await new CloudWatchAlarmProvider().import({
+      ...base,
+      resourceType: 'AWS::CloudWatch::Alarm',
+      properties: { AlarmName: 'theirs' },
+      ...probeFor('AWS::CloudWatch::Alarm'),
+    });
+
+    expect(found).toEqual({ physicalId: 'theirs', attributes: {} });
+  });
+
+  it('Logs: looks the create bag LogGroupName up EXACTLY, not by prefix (#4180)', async () => {
+    logsSend.mockResolvedValueOnce({ logGroups: [{ logGroupName: '/app/theirs' }] });
+    const found = await new LogsLogGroupProvider().import({
+      ...base,
+      resourceType: 'AWS::Logs::LogGroup',
+      properties: { LogGroupName: '/app/theirs' },
+      ...probeFor('AWS::Logs::LogGroup'),
+    });
+    expect(found).toEqual({ physicalId: '/app/theirs', attributes: {} });
+    const command = logsSend.mock.calls[0]![0] as DescribeLogGroupsCommand;
+    expect(command).toBeInstanceOf(DescribeLogGroupsCommand);
+    expect(command.input.logGroupNamePrefix).toBe('/app/theirs');
+
+    logsSend.mockResolvedValueOnce({ logGroups: [{ logGroupName: '/app/theirs-2' }] });
+    const longer = await new LogsLogGroupProvider().import({
+      ...base,
+      resourceType: 'AWS::Logs::LogGroup',
+      properties: { LogGroupName: '/app/theirs' },
+      ...probeFor('AWS::Logs::LogGroup'),
+    });
+    expect(longer).toBeNull();
   });
 
   it('CloudWatch: any other lookup failure throws, so the probe refuses', async () => {

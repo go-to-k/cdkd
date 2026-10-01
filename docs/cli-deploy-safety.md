@@ -777,7 +777,8 @@ nothing deleted, and the old resource is deleted only once the new one exists.
 Some create APIs do not collide at all: SQS `CreateQueue`, SNS `CreateTopic`,
 Step Functions `CreateStateMachine` and ECS `CreateCluster` return the resource
 already holding the name, EventBridge `PutRule` and CloudWatch `PutMetricAlarm` overwrite it, and
-cdkd's S3 provider reads `BucketAlreadyOwnedByYou` as success. For those types
+cdkd's S3 and CloudWatch Logs providers read `BucketAlreadyOwnedByYou` and
+`ResourceAlreadyExistsException` as success. For those types
 on cdkd's SDK providers, a replacement that changes the name — or moves an
 EventBridge rule to another bus, or changes `Type` onto one of these types —
 first looks the new name up. When another resource holds it, the deploy fails
@@ -785,6 +786,19 @@ with `NAMED_REPLACEMENT_COLLISION` and nothing is created or deleted — the
 create would otherwise take that resource over and record it as the stack's,
 for a later `cdkd destroy` to delete. A lookup that cannot run fails the same
 way.
+
+A plain create of one of these types with an explicit name looks the name up
+too. When a resource already holds it, or the lookup cannot run, the deploy
+fails with `NAMED_CREATE_COLLISION` and nothing is created, as
+CloudFormation's create fails with "already exists". This holds even when the resource is this stack's
+own, left by an earlier interrupted deploy: nothing in AWS tells the two apart.
+Delete it, or adopt it with [`cdkd import`](import.md), then re-run. When the
+holder is this stack's own resource under another logical id (a construct moved
+or renamed, keeping its name), the error names that id: give the new resource
+another name, or deploy that id's removal first. A log group declared
+explicitly that something else already created — for example a Lambda
+function's `/aws/lambda/<name>` group, created on its first invocation — is
+refused the same way. A create under a name cdkd generates is not looked up.
 
 #### When cdkd cannot show the old resource holds the name
 

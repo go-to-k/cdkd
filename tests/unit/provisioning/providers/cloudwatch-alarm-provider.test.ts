@@ -89,7 +89,7 @@ describe('CloudWatchAlarmProvider import', () => {
     expect(result).toEqual({ physicalId: 'my-alarm', attributes: {} });
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(DescribeAlarmsCommand);
-    expect(mockSend.mock.calls[0][0].input).toEqual({ AlarmNames: ['my-alarm'] });
+    expect(mockSend.mock.calls[0][0].input).toEqual({ AlarmNames: ['my-alarm'], AlarmTypes: ['MetricAlarm', 'CompositeAlarm'] });
   });
 
   it('returns null without any AWS call when no override is supplied (no aws:cdk:path tag walk)', async () => {
