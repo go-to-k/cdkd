@@ -81,7 +81,10 @@ import {
 } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { injectiveKey } from '../../state/record-keys.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  pasteableAwsCommand,
+  type PasteableAwsCommand,
+} from '../replacement-protection-advice.js';
 import { collectOrphanIds, reportPossibleOrphans } from './apigateway-orphan-report.js';
 import {
   AmbiguousCreateLatch,
@@ -334,6 +337,25 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
+   * ` --region <r>` for an orphan report's pasteable commands (issue #2080),
+   * from the client the lookup listed through: without it a stack deployed
+   * outside the operator's default region pastes a read against the wrong
+   * region, and its NotFound reads as "no orphan". Empty when the region
+   * cannot be read -- the report must never fail the create.
+   */
+  private async orphanCommandRegionArg(
+    aws: ReturnType<typeof pasteableAwsCommand>
+  ): Promise<PasteableAwsCommand> {
+    let region: string | undefined;
+    try {
+      region = await this.getClient().config.region();
+    } catch {
+      region = undefined;
+    }
+    return region ? aws` --region ${region}` : aws``;
+  }
+
+  /**
    * A `create()` / `update()` failure wrap quoting the caught error's text
    * masked (issue #2177): AWS quotes a rejected request value back (a stage
    * name, an integration URI, an authorizer URI) off the RESOLVED `properties`
@@ -581,6 +603,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       const orphanWindow = createApiLatch.take(logicalId);
       if (orphanWindow !== undefined) {
         const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
         await reportPossibleOrphans(logicalId, orphanWindow, log, {
           action: 'CreateApi',
           listAction: 'GetApis',
@@ -606,8 +629,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
                   ? a.ApiId
                   : undefined
             ),
-          inspect: (id) => aws`aws apigatewayv2 get-api --api-id ${id}`.render(),
-          remove: (id) => aws`aws apigatewayv2 delete-api --api-id ${id}`.render(),
+          inspect: (id) => aws`aws apigatewayv2 get-api --api-id ${id}${regionArg}`.render(),
+          remove: (id) => aws`aws apigatewayv2 delete-api --api-id ${id}${regionArg}`.render(),
         });
       }
       const attemptStartMs = Date.now();
@@ -939,6 +962,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       const orphanWindow = createIntegrationLatch.take(logicalId);
       if (orphanWindow !== undefined) {
         const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
         await reportPossibleOrphans(logicalId, orphanWindow, log, {
           action: 'CreateIntegration',
           listAction: 'GetIntegrations',
@@ -965,7 +989,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
                   : undefined
             ),
           inspect: (id) =>
-            aws`aws apigatewayv2 get-integration --api-id ${apiId} --integration-id ${id}`.render(),
+            aws`aws apigatewayv2 get-integration --api-id ${apiId} --integration-id ${id}${regionArg}`.render(),
         });
       }
       const attemptStartMs = Date.now();
@@ -1239,6 +1263,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       const orphanWindow = createAuthorizerLatch.take(logicalId);
       if (orphanWindow !== undefined) {
         const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
         await reportPossibleOrphans(logicalId, orphanWindow, log, {
           action: 'CreateAuthorizer',
           listAction: 'GetAuthorizers',
@@ -1265,7 +1290,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
                   : undefined
             ),
           inspect: (id) =>
-            aws`aws apigatewayv2 get-authorizer --api-id ${apiId} --authorizer-id ${id}`.render(),
+            aws`aws apigatewayv2 get-authorizer --api-id ${apiId} --authorizer-id ${id}${regionArg}`.render(),
         });
       }
       const attemptStartMs = Date.now();

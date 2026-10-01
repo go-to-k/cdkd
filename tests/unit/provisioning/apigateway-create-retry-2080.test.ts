@@ -276,7 +276,7 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
       const line = reportFor('CreateAuthorizer');
       expect(line).toContain('auth1');
       expect(line).toContain(
-        'aws apigateway get-authorizer --rest-api-id rest1 --authorizer-id auth1'
+        'aws apigateway get-authorizer --rest-api-id rest1 --authorizer-id auth1 --region ap-southeast-2'
       );
       expect(line).not.toContain('delete-authorizer');
       expect(line).toContain('does not adopt or delete');
@@ -340,6 +340,35 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
       expect(line).not.toContain('twin5');
     });
 
+    it('a recorded child id under ANOTHER REST API does not hide a same-id candidate here', async () => {
+      // `auth1` is recorded under rest2; an unrecorded `auth1` in rest1 is still a candidate.
+      const earlier = await provider.create('Other', 'AWS::ApiGateway::Authorizer', {
+        ...AUTH_PROPS,
+        RestApiId: 'rest2',
+      });
+      expect(earlier.physicalId).toBe('auth1');
+      aws.authorizers.push({ id: 'auth1', restApiId: 'rest1', name: 'jwt-auth', type: 'TOKEN' });
+      aws.failNext.set('CreateAuthorizerCommand', [transient500()]);
+
+      await createWithRetry('AWS::ApiGateway::Authorizer', AUTH_PROPS);
+
+      expect(reportFor('CreateAuthorizer')).toContain('--authorizer-id auth1');
+    });
+
+    it('omits --region from the commands when the client region cannot be read', async () => {
+      aws.loseNextCreateResponse = transient500();
+      // Create client builds first (resolves), then the report's region read rejects.
+      sharedRegion.mockResolvedValueOnce('ap-southeast-2');
+      sharedRegion.mockRejectedValueOnce(new Error('Region is missing'));
+
+      await createWithRetry('AWS::ApiGateway::Authorizer', AUTH_PROPS);
+
+      const line = reportFor('CreateAuthorizer')!;
+      expect(line).toContain(
+        'aws apigateway get-authorizer --rest-api-id rest1 --authorizer-id auth1.'
+      );
+    });
+
     it('masks a short secret-derived authorizer name as a WHOLE value', async () => {
       aws.loseNextCreateResponse = transient500();
 
@@ -357,6 +386,7 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
 
       const line = reportFor('CreateAuthorizer')!;
       expect(line).toContain('auth1');
+      expect(line).toContain('named ***');
       expect(line).not.toContain('named zq');
     });
 
@@ -459,10 +489,10 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
       const line = reportFor('CreateDeployment')!;
       expect(line).toContain('dep1');
       const read = line.indexOf(
-        'aws apigateway get-deployment --rest-api-id rest1 --deployment-id dep1'
+        'aws apigateway get-deployment --rest-api-id rest1 --deployment-id dep1 --region ap-southeast-2'
       );
       const remove = line.indexOf(
-        'aws apigateway delete-deployment --rest-api-id rest1 --deployment-id dep1'
+        'aws apigateway delete-deployment --rest-api-id rest1 --deployment-id dep1 --region ap-southeast-2'
       );
       expect(read).toBeGreaterThan(-1);
       expect(remove).toBeGreaterThan(read);
@@ -509,6 +539,76 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
       await createWithRetry('AWS::ApiGateway::Deployment', { RestApiId: 'rest1' });
 
       expect(reportFor('CreateDeployment')).toContain('dep1');
+    });
+
+    it('follows GetDeployments pagination to a candidate on a later page', async () => {
+      aws.pageSize = 1;
+      aws.deployments.push(
+        { id: 'a', restApiId: 'rest1', description: 'x', createdDate: new Date(Date.now()) },
+        { id: 'b', restApiId: 'rest1', description: 'y', createdDate: new Date(Date.now()) }
+      );
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry('AWS::ApiGateway::Deployment', DEP_PROPS);
+
+      const line = reportFor('CreateDeployment')!;
+      expect(line).toContain('--deployment-id dep1');
+      expect(line).not.toContain('incomplete');
+    });
+
+    it('names at most five candidates and five delete commands, then an ellipsis', async () => {
+      for (let i = 0; i < 6; i++) {
+        aws.deployments.push({
+          id: `twin${i}`,
+          restApiId: 'rest1',
+          description: 'v1',
+          createdDate: new Date(Date.now()),
+        });
+      }
+      aws.failNext.set('CreateDeploymentCommand', [transient500()]);
+
+      await createWithRetry('AWS::ApiGateway::Deployment', DEP_PROPS);
+
+      const line = reportFor('CreateDeployment')!;
+      expect(line).toContain('6 deployment(s) were created');
+      expect(line).toContain('twin4, ...');
+      expect(line.split('delete-deployment').length - 1).toBe(5);
+      expect(line.split('get-deployment').length - 1).toBe(5);
+      expect(line).not.toContain('twin5');
+    });
+
+    it('a dated lookup that finds nothing in a complete listing stays at debug', async () => {
+      aws.failNext.set('CreateDeploymentCommand', [transient500()]);
+
+      await createWithRetry('AWS::ApiGateway::Deployment', DEP_PROPS);
+
+      expect(aws.count('GetDeploymentsCommand')).toBe(1);
+      expect(warnLines()).toEqual([]);
+      const line = debugSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes('No listed deployment(s)'));
+      expect(line).toContain('(between 2026-09-30T23:59:55.000Z and ');
+    });
+
+    it('masks a short secret-derived description as a WHOLE value', async () => {
+      aws.loseNextCreateResponse = transient500();
+
+      await withRetry(
+        () =>
+          provider.create(
+            'Child',
+            'AWS::ApiGateway::Deployment',
+            { ...DEP_PROPS, Description: 'zq' },
+            { maskSecrets: (t) => (t === 'zq' ? '***' : t) }
+          ),
+        'Child',
+        { sleep: advancingSleep }
+      );
+
+      const line = reportFor('CreateDeployment')!;
+      expect(line).toContain('dep1');
+      expect(line).toContain('described ***');
+      expect(line).not.toContain('described zq');
     });
 
     it('two ambiguous attempts in a row: the second report covers the FIRST attempt too', async () => {

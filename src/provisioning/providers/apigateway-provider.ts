@@ -66,7 +66,10 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  pasteableAwsCommand,
+  type PasteableAwsCommand,
+} from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
   redactedDeleteAddressFields,
@@ -270,6 +273,25 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
     );
     return this.createClient;
+  }
+
+  /**
+   * ` --region <r>` for an orphan report's pasteable commands (issue #2080),
+   * from the client the lookup listed through: without it a stack deployed
+   * outside the operator's default region pastes a read against the wrong
+   * region, and its NotFound reads as "no orphan". Empty when the region
+   * cannot be read -- the report must never fail the create.
+   */
+  private async orphanCommandRegionArg(
+    aws: ReturnType<typeof pasteableAwsCommand>
+  ): Promise<PasteableAwsCommand> {
+    let region: string | undefined;
+    try {
+      region = await this.apiGatewayClient.config.region();
+    } catch {
+      region = undefined;
+    }
+    return region ? aws` --region ${region}` : aws``;
   }
 
   /**
@@ -705,6 +727,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       const orphanWindow = createAuthorizerLatch.take(logicalId);
       if (orphanWindow !== undefined) {
         const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
         await reportPossibleOrphans(logicalId, orphanWindow, log, {
           action: 'CreateAuthorizer',
           listAction: 'GetAuthorizers',
@@ -731,7 +754,7 @@ export class ApiGatewayProvider implements ResourceProvider {
                   : undefined
             ),
           inspect: (id) =>
-            aws`aws apigateway get-authorizer --rest-api-id ${restApiId} --authorizer-id ${id}`.render(),
+            aws`aws apigateway get-authorizer --rest-api-id ${restApiId} --authorizer-id ${id}${regionArg}`.render(),
         });
       }
       const createClient = await this.getCreateClient();
@@ -1226,6 +1249,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       const orphanWindow = createDeploymentLatch.take(logicalId);
       if (orphanWindow !== undefined) {
         const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
         await reportPossibleOrphans(logicalId, orphanWindow, log, {
           action: 'CreateDeployment',
           listAction: 'GetDeployments',
@@ -1252,9 +1276,9 @@ export class ApiGatewayProvider implements ResourceProvider {
                   : undefined
             ),
           inspect: (id) =>
-            aws`aws apigateway get-deployment --rest-api-id ${restApiId} --deployment-id ${id}`.render(),
+            aws`aws apigateway get-deployment --rest-api-id ${restApiId} --deployment-id ${id}${regionArg}`.render(),
           remove: (id) =>
-            aws`aws apigateway delete-deployment --rest-api-id ${restApiId} --deployment-id ${id}`.render(),
+            aws`aws apigateway delete-deployment --rest-api-id ${restApiId} --deployment-id ${id}${regionArg}`.render(),
         });
       }
       const createClient = await this.getCreateClient();

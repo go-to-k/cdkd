@@ -12,12 +12,16 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy } = vi.hoisted(() => ({
+const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy, ctorArgs } = vi.hoisted(() => ({
   mockSend: vi.fn(),
+  /** Every `ApiGatewayV2Client` constructor's options, in order. */
+  ctorArgs: [] as Array<{ region?: unknown }>,
   warnSpy: vi.fn(),
   debugSpy: vi.fn(),
   /** `[command name, client config]` per send, so a test can see WHICH client sent it. */
-  sentVia: [] as Array<[string, { retryStrategy: () => Promise<unknown> }]>,
+  sentVia: [] as Array<
+    [string, { region: () => Promise<unknown>; retryStrategy: () => Promise<unknown> }]
+  >,
   /** A stand-in for the SDK's resolved V2 retry strategy. */
   baseStrategy: {
     acquireInitialRetryToken: async (_scope: string) => 'token',
@@ -31,9 +35,10 @@ vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-apigatewayv2')>();
   return {
     ...actual,
-    ApiGatewayV2Client: vi.fn().mockImplementation(() => {
+    ApiGatewayV2Client: vi.fn().mockImplementation((options: { region?: unknown }) => {
+      ctorArgs.push(options);
       const config = {
-        region: () => Promise.resolve('us-east-1'),
+        region: () => Promise.resolve(options.region ?? 'us-east-1'),
         retryStrategy: async (): Promise<unknown> => baseStrategy,
       };
       return {
@@ -259,6 +264,7 @@ const AUTH_PROPS = {
 describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detection only)', () => {
   let provider: ApiGatewayV2Provider;
   let aws: FakeApiGatewayV2;
+  let savedRegion: string | undefined;
 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -270,11 +276,17 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
     warnSpy.mockReset();
     debugSpy.mockReset();
     sentVia.length = 0;
+    ctorArgs.length = 0;
+    // Not the SDK's fallback, so a client built without the stack region is told apart.
+    savedRegion = process.env['AWS_REGION'];
+    process.env['AWS_REGION'] = 'eu-west-3';
     provider = new ApiGatewayV2Provider();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    if (savedRegion === undefined) delete process.env['AWS_REGION'];
+    else process.env['AWS_REGION'] = savedRegion;
   });
 
   const createWithRetry = (type: string, props: Record<string, unknown>, logicalId = 'Res') =>
@@ -297,8 +309,8 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       expect(aws.calls).not.toContain('DeleteApiCommand');
       const line = reportFor('CreateApi')!;
       expect(line).toContain('api1');
-      const read = line.indexOf('aws apigatewayv2 get-api --api-id api1');
-      const remove = line.indexOf('aws apigatewayv2 delete-api --api-id api1');
+      const read = line.indexOf('aws apigatewayv2 get-api --api-id api1 --region eu-west-3');
+      const remove = line.indexOf('aws apigatewayv2 delete-api --api-id api1 --region eu-west-3');
       expect(read).toBeGreaterThan(-1);
       expect(remove).toBeGreaterThan(read);
       expect(line).toContain('does not adopt or delete');
@@ -403,6 +415,7 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
 
       const line = reportFor('CreateApi')!;
       expect(line).toContain('api1');
+      expect(line).toContain('named ***');
       expect(line).not.toContain('named zq');
     });
 
@@ -448,7 +461,7 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       expect(result.physicalId).toBe('int2');
       const line = reportFor('CreateIntegration')!;
       expect(line).toContain(
-        'aws apigatewayv2 get-integration --api-id httpapi1 --integration-id int1'
+        'aws apigatewayv2 get-integration --api-id httpapi1 --integration-id int1 --region eu-west-3'
       );
       expect(line).not.toContain('delete-integration');
     });
@@ -504,6 +517,81 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       expect(lines[1]).toContain('(at 2026-09-30T23:59:55.000Z)');
     });
 
+    it('follows GetIntegrations pagination to a candidate on a later page', async () => {
+      aws.pageSize = 1;
+      aws.integrations.push(
+        { IntegrationId: 'a', ApiId: 'httpapi1', IntegrationType: 'MOCK' },
+        { IntegrationId: 'b', ApiId: 'httpapi1', IntegrationType: 'MOCK' }
+      );
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry('AWS::ApiGatewayV2::Integration', INT_PROPS);
+
+      const line = reportFor('CreateIntegration')!;
+      expect(line).toContain('--integration-id int1');
+      expect(line).not.toContain('incomplete');
+    });
+
+    it('matches an integration with no URI only to a create with none', async () => {
+      aws.integrations.push({
+        IntegrationId: 'withuri',
+        ApiId: 'httpapi1',
+        IntegrationType: 'MOCK',
+        IntegrationUri: 'https://example.com',
+      });
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry('AWS::ApiGatewayV2::Integration', {
+        ApiId: 'httpapi1',
+        IntegrationType: 'MOCK',
+      });
+
+      const line = reportFor('CreateIntegration')!;
+      expect(line).toContain('--integration-id int1');
+      expect(line).not.toContain('withuri');
+    });
+
+    it('masks a secret-derived integration URI as a WHOLE value', async () => {
+      const secretUri = 'https://hooks.example.com/zq';
+      aws.loseNextCreateResponse = transient500();
+
+      await withRetry(
+        () =>
+          provider.create(
+            'Res',
+            'AWS::ApiGatewayV2::Integration',
+            { ApiId: 'httpapi1', IntegrationType: 'HTTP_PROXY', IntegrationUri: secretUri },
+            { maskSecrets: (t) => (t === secretUri ? '***' : t) }
+          ),
+        'Res',
+        { sleep: advancingSleep }
+      );
+
+      const line = reportFor('CreateIntegration')!;
+      expect(line).toContain('int1');
+      expect(line).toContain('to ***');
+      expect(line).not.toContain(secretUri);
+    });
+
+    it('a recorded integration id under ANOTHER API does not hide a same-id candidate here', async () => {
+      const earlier = await provider.create('Other', 'AWS::ApiGatewayV2::Integration', {
+        ...INT_PROPS,
+        ApiId: 'httpapi2',
+      });
+      expect(earlier.physicalId).toBe('int1');
+      aws.integrations.push({
+        IntegrationId: 'int1',
+        ApiId: 'httpapi1',
+        IntegrationType: INT_PROPS.IntegrationType,
+        IntegrationUri: INT_PROPS.IntegrationUri,
+      });
+      aws.failNext.set('CreateIntegrationCommand', [transient500()]);
+
+      await createWithRetry('AWS::ApiGatewayV2::Integration', INT_PROPS);
+
+      expect(reportFor('CreateIntegration')).toContain('--integration-id int1');
+    });
+
     it('a DEFINITE CreateIntegration failure (a 4xx) triggers no lookup', async () => {
       aws.failNext.set('CreateIntegrationCommand', [propagationDenied()]);
 
@@ -523,7 +611,9 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       expect(aws.authorizers.map((a) => a.AuthorizerId)).toEqual(['auth1', 'auth2']);
       expect(result.physicalId).toBe('auth2');
       const line = reportFor('CreateAuthorizer')!;
-      expect(line).toContain('aws apigatewayv2 get-authorizer --api-id httpapi1 --authorizer-id auth1');
+      expect(line).toContain(
+        'aws apigatewayv2 get-authorizer --api-id httpapi1 --authorizer-id auth1 --region eu-west-3'
+      );
       expect(line).not.toContain('delete-authorizer');
     });
 
@@ -567,6 +657,42 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       expect(lines[1]).toContain('(at 2026-09-30T23:59:55.000Z)');
     });
 
+    it('follows GetAuthorizers pagination to a candidate on a later page', async () => {
+      aws.pageSize = 1;
+      aws.authorizers.push(
+        { AuthorizerId: 'a', ApiId: 'httpapi1', Name: 'a', AuthorizerType: 'JWT' },
+        { AuthorizerId: 'b', ApiId: 'httpapi1', Name: 'b', AuthorizerType: 'JWT' }
+      );
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry('AWS::ApiGatewayV2::Authorizer', AUTH_PROPS);
+
+      const line = reportFor('CreateAuthorizer')!;
+      expect(line).toContain('--authorizer-id auth1');
+      expect(line).not.toContain('incomplete');
+    });
+
+    it('masks a short secret-derived authorizer name as a WHOLE value', async () => {
+      aws.loseNextCreateResponse = transient500();
+
+      await withRetry(
+        () =>
+          provider.create(
+            'Res',
+            'AWS::ApiGatewayV2::Authorizer',
+            { ...AUTH_PROPS, Name: 'zq' },
+            { maskSecrets: (t) => (t === 'zq' ? '***' : t) }
+          ),
+        'Res',
+        { sleep: advancingSleep }
+      );
+
+      const line = reportFor('CreateAuthorizer')!;
+      expect(line).toContain('auth1');
+      expect(line).toContain('named ***');
+      expect(line).not.toContain('named zq');
+    });
+
     it('a throttled CreateAuthorizer triggers no lookup', async () => {
       aws.failNext.set('CreateAuthorizerCommand', [throttled()]);
 
@@ -575,6 +701,26 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       expect(aws.count('GetAuthorizersCommand')).toBe(0);
       expect(aws.authorizers).toHaveLength(1);
     });
+  });
+
+  it('builds the create client in the stack region, like the shared client', async () => {
+    await provider.create('Res', 'AWS::ApiGatewayV2::Api', API_PROPS);
+
+    // The mock's region() echoes the constructor's `region`, else the SDK-like
+    // fallback `us-east-1`: only a client built WITH the stack region says eu-west-3.
+    const createConfig = sentVia.find(([name]) => name === 'CreateApiCommand')![1];
+    expect(await createConfig.region()).toBe('eu-west-3');
+    expect(ctorArgs.map((o) => o.region)).toEqual(['eu-west-3', 'eu-west-3']);
+  });
+
+  it('two creates build ONE create client', async () => {
+    await Promise.all([
+      provider.create('A', 'AWS::ApiGatewayV2::Api', API_PROPS),
+      provider.create('I', 'AWS::ApiGatewayV2::Integration', INT_PROPS),
+    ]);
+
+    // The shared client and one create client.
+    expect(ctorArgs).toHaveLength(2);
   });
 
   it.each([
