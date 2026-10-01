@@ -762,9 +762,10 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       it(`...and in the ${service} unrecognized-Type warn, when the lookup SUCCEEDS with a Type cdkd does not know`, async () => {
         // The one arm where the assembled name reaches a WARN at default
         // verbosity: the lookup returns a value whose `Type` is neither
-        // String / StringList nor SecureString. The output then resolves
-        // (the value is treated as a secret), so there is no failure warn —
-        // the exposure is this line alone.
+        // String / StringList nor SecureString. The value is then treated as a
+        // secret, so the output is refused (issue #4166: a secret result of a
+        // reference assembled from a secret is never recorded) — after this
+        // warn, and with the name masked in both lines.
         unknownTypeParams.add(`/probe/${PASSWORD}`);
         await makeEngine().deploy(stackName, templateWith({ Leak: { Value: ssmAssembled() } }));
 
@@ -775,7 +776,12 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
         expect(typeWarns).toHaveLength(1);
         expect(typeWarns[0]).toContain(`SSM parameter '/probe/***' reported an unrecognized Type 'Weird'`);
         for (const line of lines) expect(line).not.toContain(PASSWORD);
-        expect(outputFailureWarn()).toBeUndefined();
+        expect(outputFailureWarn()).toBe(
+          `Failed to resolve output Leak: Refusing to resolve {{resolve:${service}:/probe/***}}: ` +
+            'the reference was assembled from a secret value and resolves to a secret, so recording ' +
+            'it would write that value into state inside the reference. Build the reference name ' +
+            'from non-secret values.'
+        );
       });
 
       it(`...and in the ${service} throttle-retry label`, async () => {

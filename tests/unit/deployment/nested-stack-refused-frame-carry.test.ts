@@ -479,18 +479,22 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
     });
   }
 
-  it('does not certify a used variable whose secret is itself reference text the final pass resolves again', async () => {
-    const { bag, resolved } = await deployRow({
+  it('refuses a used variable whose secret is itself reference text the final pass resolves again', async () => {
+    // The first stage's secret value IS the second token's text, so that token
+    // is assembled from a secret and resolves to one: recording it would write
+    // the first secret into state as the second's expression (issue #4166).
+    const message = await deployRow({
       Pin: { 'Fn::Sub': ['port:${V}', { V: '{{resolve:ssm:/app/ref}}' }] },
-    });
-    // Premises: two stages, both secret, one span in the record's input. The
-    // record's count and token test refuse it, and so does the carry's own
-    // pair gate (the span's token resolved to the second token, not the
-    // middle); the hand-built count case below pins the count alone.
-    expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
-    expect(bag.get('{{resolve:ssm:/app/pin}}')).toBe('{{resolve:ssm:/app/ref}}');
-    expect(bag.get(PIN)).toBe('{{resolve:ssm:/app/pin}}');
-    expect(bag.has(`port:${PIN}`)).toBe(false);
+    }).then(
+      () => undefined,
+      (e: unknown) => (e instanceof Error ? e.message : String(e))
+    );
+    expect(message).toBe(
+      'Refusing to resolve ***: ' +
+        'the reference was assembled from a secret value and resolves to a secret, so recording it ' +
+        'would write that value into state inside the reference. Build the reference name from ' +
+        'non-secret values.'
+    );
   });
 
   it('does not stringify an UNUSED intrinsic variable to build the record', async () => {
@@ -618,36 +622,35 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
   }
 });
 
-describe('issue #3306 review M0: a recorded secret INSIDE the carried token is refused', () => {
+describe('issue #3306 review M0: a recorded secret INSIDE the token is refused where it resolves', () => {
   // `Name` is a secret the row's bag holds (inherited, above the needle
   // floor). Substituted into the token's parameter name, it would be carried
   // verbatim in the spelling: the row, the child and a grandchild's entry
-  // would hold it where the value scan leaves only the sub-floor `q7`.
+  // would hold it where the value scan leaves only the sub-floor `q7`. Since
+  // issue #4166 the resolver refuses the token's secret result before
+  // recording it, so nothing reaches the carry or the position pass.
   const NAME = 'pinname-long';
   const INHERITED: RecordedSecretValues = new Map([
     [NAME, '{{resolve:secretsmanager:cdkd-name-probe:SecretString:name}}'],
   ]);
   const INNER = (): unknown => ({ 'Fn::Sub': '{{resolve:ssm:/app/${Name}}}' });
-  // `rowToo`: whether the PARENT's own row is this carry's to protect. For
-  // the top-level Sub it is not: the position pass's frame arm writes that
-  // row from the token the resolver recorded, carry or no carry -- a
-  // different class, stated on the carry's residual (e) and asserted
-  // neither way here.
-  for (const [label, pin, rowToo] of [
-    ['a top-level Fn::Sub', { 'Fn::Sub': 'port:{{resolve:ssm:/app/${Name}}}' }, false],
-    ['a nested Fn::Sub part', { 'Fn::Join': ['', ['port:', INNER()]] }, true],
-    ['an Fn::If around that Join', { 'Fn::If': ['On', { 'Fn::Join': ['', ['port:', INNER()]] }, 'x'] }, true],
-    ['an intrinsic Fn::Sub variable', { 'Fn::Sub': ['port:${V}', { V: INNER() }] }, true],
+  for (const [label, pin] of [
+    ['a top-level Fn::Sub', { 'Fn::Sub': 'port:{{resolve:ssm:/app/${Name}}}' }],
+    ['a nested Fn::Sub part', { 'Fn::Join': ['', ['port:', INNER()]] }],
+    ['an Fn::If around that Join', { 'Fn::If': ['On', { 'Fn::Join': ['', ['port:', INNER()]] }, 'x'] }],
+    ['an intrinsic Fn::Sub variable', { 'Fn::Sub': ['port:${V}', { V: INNER() }] }],
   ] as const) {
-    it(`does not carry ${label} whose token spells an inherited secret`, async () => {
-      const { bag, resolved, record } = await deployRow({ Pin: pin }, { Name: NAME }, INHERITED);
-      // Premises: the value frames the sub-floor pin, and the bag holds the
-      // name as a secret.
-      expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
-      expect(bag.has(NAME)).toBe(true);
-      expect(bag.has(`port:${PIN}`)).toBe(false);
-      expect(String(await childPersist(bag, 'Pin', `port:${PIN}`))).not.toContain(NAME);
-      if (rowToo) expect(String(record.Parameters['Pin'])).not.toContain(NAME);
+    it(`refuses ${label} whose token spells an inherited secret`, async () => {
+      const message = await deployRow({ Pin: pin }, { Name: NAME }, INHERITED).then(
+        () => undefined,
+        (e: unknown) => (e instanceof Error ? e.message : String(e))
+      );
+      expect(message).toBe(
+        'Refusing to resolve {{resolve:ssm:/app/***}}: ' +
+          'the reference was assembled from a secret value and resolves to a secret, so recording it ' +
+          'would write that value into state inside the reference. Build the reference name from ' +
+          'non-secret values.'
+      );
     });
   }
 });
@@ -741,6 +744,41 @@ describe('issue #3156: a record the resolver would not write is refused, not cer
   it('refuses a record whose one replacement produced another value', () => {
     const substitutions = [{ token: TOKEN, value: 'zz', secret: true }];
     expect(carryOver({ ...FAITHFUL, substitutions }).has(`port:${PIN}`)).toBe(false);
+  });
+
+  // The carry's own backstop for a token spelling ANOTHER recorded secret (the
+  // #4130 review's M0). Since issue #4166 the resolver refuses such a token
+  // first when a secret was substituted into it, so this case hand-builds the
+  // record instead of resolving one.
+  it('refuses a record whose token spells another secret the bag holds', () => {
+    const name = 'pinname-long';
+    const token = `{{resolve:ssm:/app/${name}}}`;
+    const join = { 'Fn::Join': ['', ['port:', token]] };
+    const carry = (bag: RecordedSecretValues): RecordedSecretValues => {
+      recordResolvedPair(bag, token, PIN);
+      recordIntrinsicLeafResolution(bag, join, {
+        input: `port:${token}`,
+        output: `port:${PIN}`,
+        substitutions: [{ token, value: PIN, secret: true }],
+        complete: true,
+      });
+      recordNestedStackParameterExpressions(
+        bag,
+        NESTED,
+        { Parameters: { Pin: `port:${PIN}` } },
+        { Parameters: { Pin: join } }
+      );
+      return bag;
+    };
+    // CONTROL: the same record with no other secret in the bag certifies.
+    expect(carry(new Map([[PIN, token]])).get(`port:${PIN}`)).toBe(`port:${token}`);
+    const bag = carry(
+      new Map([
+        [PIN, token],
+        [name, '{{resolve:secretsmanager:cdkd-name-probe:SecretString:name}}'],
+      ])
+    );
+    expect(bag.has(`port:${PIN}`)).toBe(false);
   });
 });
 

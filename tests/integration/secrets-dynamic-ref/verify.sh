@@ -126,6 +126,10 @@ SECURE_PARAM_NAME="cdkd-test-dynref-secure-${ACCOUNT_ID}"
 # Issue #2743: the IAM role the `CDKD_TEST_SERVICE_SPAN=resource` probe declares
 # and cdkd must REFUSE to create. Must match the stack's own spelling.
 SERVICE_SPAN_ROLE_NAME="cdkd-test-dynref-service-span-${ACCOUNT_ID}"
+# Issue #4166: the prefix of the SecureString parameter Phase 1b3b creates out
+# of band, NAMED after the password. Must match the stack's own spelling; the
+# full name holds the password, so it is never printed.
+SECRET_NAMED_PARAM_PREFIX="cdkd-test-dynref-named-${ACCOUNT_ID}-"
 # ...and the throwaway role Phase 1b4's PREMISE check creates and deletes itself,
 # to prove IAM accepts a `{{resolve:...}}` Description at all.
 SERVICE_SPAN_PREMISE_ROLE_NAME="cdkd-test-dynref-span-premise-${ACCOUNT_ID}"
@@ -518,6 +522,8 @@ cleanup() {
   # The SecureString parameter is created by this script, so cdkd never deletes
   # it — the ONLY thing that keeps it from being an orphan is this sweep.
   aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # Issue #4166: created by this script too.
+  aws ssm delete-parameter --name "${SECRET_NAMED_PARAM_PREFIX}${EXPECTED_PASSWORD}" --region "${REGION}" >/dev/null 2>&1 || true
   # Issue #2743: exists only if the refusal under test REGRESSED, and then it
   # holds the password inside a bogus token -- so it is swept on every path.
   aws iam delete-role --role-name "${SERVICE_SPAN_ROLE_NAME}" >/dev/null 2>&1 || true
@@ -577,6 +583,29 @@ if [ "${SECURE_TYPE}" != "SecureString" ]; then
   exit 1
 fi
 echo "    OK: SecureString parameter created"
+# Issue #4166: a SecureString whose NAME holds the password, which Phase 1b3b's
+# output assembles a reference to. Proven a SecureString too: a String would
+# resolve to a public value, which records nothing and is not refused, so the
+# phase would fail for the wrong reason. Every AWS error here can name the
+# parameter, so its text goes through `diag_output`, never to the terminal.
+if ! NAMED_OUT=$(aws ssm put-parameter --name "${SECRET_NAMED_PARAM_PREFIX}${EXPECTED_PASSWORD}" --type SecureString \
+  --value "cdkd-named-secure-value" --overwrite --region "${REGION}" 2>&1); then
+  echo "FAIL: could not create the password-named SecureString parameter (issue #4166)" >&2
+  diag_output "${NAMED_OUT}"
+  exit 1
+fi
+if ! NAMED_TYPE=$(aws ssm get-parameter --name "${SECRET_NAMED_PARAM_PREFIX}${EXPECTED_PASSWORD}" --region "${REGION}" \
+  --query 'Parameter.Type' --output text 2>&1); then
+  echo "FAIL: could not read back the password-named SecureString parameter (issue #4166)" >&2
+  diag_output "${NAMED_TYPE}"
+  exit 1
+fi
+if [ "${NAMED_TYPE}" != "SecureString" ]; then
+  echo "FAIL: expected the password-named parameter to be a SecureString (issue #4166)" >&2
+  diag_output "${NAMED_TYPE}"
+  exit 1
+fi
+echo "    OK: password-named SecureString parameter created"
 
 # resolved_line_carries_pin <line> -> 0 when the line, colour codes stripped,
 # carries the two-character pin bounded by non-alphanumerics (issue #3100).
@@ -1109,6 +1138,62 @@ if [ "${SPAN_PERSISTED}" != "false" ]; then
   exit 1
 fi
 echo "    OK: the service-position output was refused masked, and neither the log nor state.json carries the password (#2743)"
+
+# --- Phase 1b3b: a secret in the NAME of a RESOLVABLE reference (issue #4166)
+# `CDKD_TEST_SECRET_NAMED_REF=output` declares `SecretNamedRef`, an `Fn::Sub`
+# whose body `{{resolve:ssm:<prefix>${Pw}}}` assembles a reference to the
+# password-named SecureString created above. The resolver used to resolve it
+# and persist the assembled token, password inside, as the output's
+# expression. Its secret result is now refused, so the output is warned about
+# and skipped. Its own deploy, for the reason Phase 1b2 states.
+echo "==> Phase 1b3b: CDKD_TEST_SECRET_NAMED_REF=output probe deploy (issue #4166)"
+if ! DEPLOY_OUT_NAMED=$(CDKD_TEST_SECRET_NAMED_REF=output node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the CDKD_TEST_SECRET_NAMED_REF=output probe deploy exited non-zero -- a refused OUTPUT is warned about and skipped, and the deploy exits 0 (issue #4166)" >&2
+  diag_output "${DEPLOY_OUT_NAMED}"
+  exit 1
+fi
+NAMED_SHAPE=$(jq -r --arg secret "${SECRET_NAME}" --arg prefix "${SECRET_NAMED_PARAM_PREFIX}" '.Outputs.SecretNamedRef.Value
+  | if . == null then "absent"
+    elif type != "object" then "not-an-intrinsic"
+    else .["Fn::Sub"] end
+  | if . == null then "absent"
+    elif (type == "array" and length == 2
+          and .[0] == ("{{resolve:ssm:" + $prefix + "${Pw}}}")
+          and .[1].Pw == ("{{resolve:secretsmanager:" + $secret + ":SecretString:password}}")) then "Fn::Sub"
+    elif . == "not-an-intrinsic" or . == "absent" then .
+    else "other" end' "${SYNTH_TEMPLATE}")
+if [ "${NAMED_SHAPE}" != "Fn::Sub" ]; then
+  echo "FAIL: premise: SecretNamedRef synthesized as '${NAMED_SHAPE}', not an Fn::Sub ['{{resolve:ssm:<prefix>\${Pw}}}', {Pw: <password reference>}] -- the #4166 arm is not what this deploy exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: SecretNamedRef puts the password reference in an ssm reference's name (${NAMED_SHAPE})"
+# The log negative FIRST and over the whole `--verbose` log.
+if [[ "${DEPLOY_OUT_NAMED}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: the secret-named probe deploy's log carries the resolved password in plaintext (issue #4166)" >&2
+  exit 1
+fi
+# The sentinel that the refusal ran: a deploy that resolved the output passes
+# every negative here for free. The lookup SUCCEEDED first, which is what
+# separates this refusal from a not-found parameter.
+if [[ "${DEPLOY_OUT_NAMED}" != *"Failed to resolve output SecretNamedRef: Refusing to resolve {{resolve:ssm:${SECRET_NAMED_PARAM_PREFIX}***}}: the reference was assembled from a secret value and resolves to a secret"* ]]; then
+  echo "FAIL: the probe deploy did not report 'Failed to resolve output SecretNamedRef: Refusing to resolve {{resolve:ssm:<prefix>***}}: the reference was assembled from a secret value and resolves to a secret' (issue #4166)" >&2
+  diag_output "${DEPLOY_OUT_NAMED}"
+  exit 1
+fi
+NAMED_STATE=$(mktemp)
+SCRATCH_FILES+=("${NAMED_STATE}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${NAMED_STATE}" --quiet
+assert_password_paths "state.json after the secret-named OUTPUT probe deploy" by-design "${NAMED_STATE}"
+NAMED_PERSISTED=$(jq -r '.outputs | has("SecretNamedRef")' "${NAMED_STATE}")
+if [ "${NAMED_PERSISTED}" != "false" ]; then
+  echo "FAIL: state.outputs has a SecretNamedRef key -- a refused output must not be persisted at all (issue #4166); has=${NAMED_PERSISTED}" >&2
+  exit 1
+fi
+echo "    OK: the secret-named output was refused masked; the log carries no password, state.json only the Secret's own, and no SecretNamedRef key (#4166)"
 
 # --- Phase 1b4: the same token as a RESOURCE PROPERTY (issue #2743) ---------
 # The higher-severity half. Before the fix the provider was handed
@@ -3851,6 +3936,26 @@ fi
 echo "    OK: destroy left the unmanaged SecureString parameter intact"
 aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null
 assert_gone "out-of-band SecureString parameter '${SECURE_PARAM_NAME}' still exists after its explicit delete" aws ssm get-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}"
+# Issue #4166: the password-named parameter, deleted and proven gone the same
+# way. Not through `gone_probe`, which prints the command and AWS's text on an
+# undetermined answer, and both name the parameter. `get-parameters` answers a
+# missing name with an empty `Parameters` list rather than an error, so the
+# count alone settles it and nothing that names the parameter is printed.
+if ! NAMED_OUT=$(aws ssm delete-parameter --name "${SECRET_NAMED_PARAM_PREFIX}${EXPECTED_PASSWORD}" --region "${REGION}" 2>&1); then
+  echo "FAIL: could not delete the password-named SecureString parameter (issue #4166)" >&2
+  diag_output "${NAMED_OUT}"
+  exit 1
+fi
+if ! NAMED_LEFT=$(aws ssm get-parameters --names "${SECRET_NAMED_PARAM_PREFIX}${EXPECTED_PASSWORD}" --region "${REGION}" \
+  --query 'length(Parameters)' --output text 2>&1); then
+  echo "FAIL: could not probe whether the password-named SecureString parameter is gone (issue #4166)" >&2
+  diag_output "${NAMED_LEFT}"
+  exit 1
+fi
+if [ "${NAMED_LEFT}" != "0" ]; then
+  echo "FAIL: the password-named SecureString parameter still exists after its explicit delete (issue #4166)" >&2
+  exit 1
+fi
 echo "    OK: out-of-band SecureString parameter is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

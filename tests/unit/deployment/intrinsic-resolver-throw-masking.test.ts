@@ -972,17 +972,28 @@ describe('#2827 review — the SUCCESS-path log lines beside every masked throw'
     // `VersionStage`, as a real lookup would for a valid stage). The echo is
     // emitted before the lookup either way, so the case drives the resolve and
     // reads the log, which is where the regression would show.
+    //
+    // Since issue #4166 the resolved secret is then refused (the reference
+    // was assembled from a secret), AFTER the lookup and its echo.
     const h = makeHarness();
-    const resolved = await h.resolver.resolve(
-      {
-        'Fn::Sub': [
-          `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password:\${Pw}}}`,
-          { Pw: ref('password') },
-        ],
-      },
-      h.context as never
+    const message = await h.resolver
+      .resolve(
+        {
+          'Fn::Sub': [
+            `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password:\${Pw}}}`,
+            { Pw: ref('password') },
+          ],
+        },
+        h.context as never
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => (e instanceof Error ? e.message : String(e))
+      );
+    expect(message, 'the premise: the lookup SUCCEEDS, so only the refusal stops it').toMatch(
+      /^Refusing to resolve \{\{resolve:secretsmanager:[^}]*\}\}: the reference was assembled from a secret value/
     );
-    expect(resolved, 'the premise: this shape RESOLVES').toBe(PASSWORD);
+    expect(message).not.toContain(PASSWORD);
 
     const echoes = loggedLines().filter((l) =>
       l.includes('Resolving dynamic reference: secretsmanager:')

@@ -1365,7 +1365,9 @@ of that string is therefore not in state either. A longer string is kept as it
 is in two cases. The first is a value that occurs only inside the text of a
 `{{resolve:...}}` reference to a service cdkd resolves: the reference is kept
 so it can be resolved again, which means a reference NAME built from a
-`NoEcho` value stores that value in the clear. The second is a value that IS
+`NoEcho` value stores that value in the clear when the reference resolves to a
+public value. One that resolves to a secret is refused instead: see
+[the troubleshooting entry](troubleshooting.md#refusing-to-resolve-a-reference-whose-name-was-built-from-a-secret). The second is a value that IS
 public text state already holds: the region, the stack name, one of the custom
 resource's literal template properties, its `ServiceToken` or one of that
 ARN's `:`-separated parts (its account id, for example). For a value read

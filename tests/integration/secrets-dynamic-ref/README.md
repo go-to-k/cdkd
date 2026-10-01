@@ -83,6 +83,17 @@ covers the optional-trailing-field grammar.
      scanned for the password too. State is checked by the SET OF PATHS
      holding the password, because the fixture's own Secret keeps it in
      `properties.SecretString` by design.
+   - Phase 1b3b (issue [#4166](https://github.com/go-to-k/cdkd/issues/4166)):
+     a probe deploy under `CDKD_TEST_SECRET_NAMED_REF=output`, whose `Fn::Sub`
+     body `{{resolve:ssm:<prefix>${Pw}}}` puts the resolved password in the
+     NAME of an `ssm` reference. The script creates a SecureString under that
+     name out of band first, so the lookup succeeds. The deploy exits 0, warns
+     `Failed to resolve output SecretNamedRef: Refusing to resolve
+     {{resolve:ssm:<prefix>***}}: the reference was assembled from a secret
+     value and resolves to a secret`. The log carries no password,
+     `state.json` holds it only where the Secret keeps it, and state has no
+     `SecretNamedRef` output key. The password-named parameter is deleted and
+     proven gone at teardown.
    - Phase 1b5 (issue [#2743](https://github.com/go-to-k/cdkd/issues/2743)):
      seeds `outputs.ServiceSpanLegacy = {{resolve:<password>}}` into
      `state.json` (what a release before the refusal persisted), runs a real
