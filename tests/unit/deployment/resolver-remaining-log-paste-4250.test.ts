@@ -214,11 +214,13 @@ const SITES: readonly Site[] = [
     pick: (l) => l.includes('using default value'),
   },
   {
+    // A parsed-JSON list Default, which `coerceParameterDefault` passes
+    // through, so the line takes the structured (JSON) arm.
     site: 'Parameter list default (a JSON render)',
     drive: (v) =>
       linesOf(() =>
         resolver().resolveParameters({
-          Parameters: { P: { Type: 'CommaDelimitedList', Default: `a,${v}` } },
+          Parameters: { P: { Type: 'CommaDelimitedList', Default: ['a', v] } },
           Resources: {},
         } as unknown as CloudFormationTemplate)
       ),
@@ -293,9 +295,32 @@ const SITES: readonly Site[] = [
     pick: starts('Failed to evaluate condition '),
   },
   {
+    // The caught message names the condition too: the circular refusal
+    // quotes it inside cdkd's own `"…"`.
+    site: 'failed condition WARN, a circular condition',
+    drive: (v) =>
+      linesOf(() =>
+        resolver().evaluateConditions(
+          ctx({ template: { Conditions: { [v]: { Condition: v } }, Resources: {} } })
+        )
+      ),
+    pick: starts('Failed to evaluate condition '),
+  },
+  {
     site: 'Fn::If condition not in context WARN',
     drive: (v) => linesOf(() => resolver().resolve({ 'Fn::If': [v, 'a', 'b'] }, ctx({ conditions: {} }))),
     pick: (l) => l.includes('not found in context'),
+  },
+  // ---- Fn::Sub placeholders and the Ref they re-enter (DEFAULT verbosity) ---
+  {
+    site: 'Ref not-found WARN and the Fn::Sub keep-placeholder WARN',
+    drive: (v) => linesOf(() => resolver().resolve({ 'Fn::Sub': `a-\${${v}}` }, ctx())),
+    pick: (l) => l.startsWith('Ref ') || l.startsWith('Fn::Sub variable '),
+  },
+  {
+    site: 'Fn::Sub keep-placeholder WARN, a dotted placeholder',
+    drive: (v) => linesOf(() => resolver().resolve({ 'Fn::Sub': `a-\${${v}.Arn}` }, ctx())),
+    pick: starts('Fn::Sub variable '),
   },
   // ---- a state record named like a parameter -----------------------------
   {
@@ -406,6 +431,19 @@ const SITES: readonly Site[] = [
     pick: starts('Unknown attribute '),
   },
   {
+    site: 'stale-record WARN, the attribute name',
+    drive: (v) =>
+      linesOf(() =>
+        resolver().resolve(
+          { 'Fn::GetAtt': ['Q', v] },
+          oneResource('Q', 'AWS::SQS::Queue', 'physicalId', {
+            attributeHealer: async () => ({ kind: 'not-found' }),
+          })
+        )
+      ),
+    pick: starts('The state record for '),
+  },
+  {
     site: 'stale-record WARN, the logical id',
     drive: (v) =>
       linesOf(() =>
@@ -484,6 +522,68 @@ const SITES: readonly Site[] = [
                 producerRegion: 'us-east-1',
               }),
             } as unknown as ExportIndexStore,
+          })
+        )
+      );
+    },
+    pick: starts('Re-resolving dynamic reference(s) in '),
+  },
+  {
+    site: 'ImportValue resolved from the exports index, the producer region',
+    drive: (v) =>
+      linesOf(() =>
+        resolver().resolve(
+          { 'Fn::ImportValue': 'Exp' },
+          ctx({
+            stackName: 'Consumer',
+            stateBackend: backend([]),
+            exportIndex: {
+              lookup: async () => ({ value: 'val', producerStack: 'Producer', producerRegion: v }),
+            } as unknown as ExportIndexStore,
+          })
+        )
+      ),
+    pick: starts('Resolved Fn::ImportValue: '),
+  },
+  {
+    site: 'ImportValue resolved from a stack, the listed region',
+    drive: (v) =>
+      linesOf(() =>
+        resolver().resolve(
+          { 'Fn::ImportValue': 'Exp' },
+          ctx({ stateBackend: backend([{ stackName: 'Producer', region: v, outputs: { Exp: 'val' } }]) })
+        )
+      ),
+    pick: starts('Resolved Fn::ImportValue: '),
+  },
+  {
+    site: 'Re-resolving line, the producer stack of a state-scan import',
+    drive: (v) => {
+      aws.ssm = async () => ({ Parameter: { Value: 'x', Type: 'String' } });
+      return linesOf(() =>
+        resolver().resolve(
+          { 'Fn::ImportValue': 'Exp' },
+          ctx({
+            stateBackend: backend([
+              { stackName: v, region: 'us-east-1', outputs: { Exp: '{{resolve:ssm:/p}}' } },
+            ]),
+          })
+        )
+      );
+    },
+    pick: starts('Re-resolving dynamic reference(s) in '),
+  },
+  {
+    site: 'Re-resolving line, the output name of a GetStackOutput',
+    drive: (v) => {
+      aws.ssm = async () => ({ Parameter: { Value: 'x', Type: 'String' } });
+      return linesOf(() =>
+        resolver().resolve(
+          { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: v } },
+          ctx({
+            stateBackend: backend([
+              { stackName: 'Producer', region: 'us-east-1', outputs: { [v]: '{{resolve:ssm:/p}}' } },
+            ]),
           })
         )
       );
@@ -719,6 +819,22 @@ const SITES: readonly Site[] = [
     pick: starts('Resolving dynamic reference: ssm:'),
   },
   {
+    site: 'secretsmanager Resolving line, the version stage and id',
+    drive: (v) => {
+      aws.secrets = async () => ({ SecretString: JSON.stringify({ k: 'val' }) });
+      return linesOf(() => resolver().resolve(`{{resolve:secretsmanager:sid:SecretString:k:${v}:${v}}}`, ctx()));
+    },
+    pick: starts('Resolving dynamic reference: secretsmanager:'),
+  },
+  {
+    site: 'ssm unrecognized-Type WARN, the parameter name',
+    drive: (v) => {
+      aws.ssm = async () => ({ Parameter: { Value: 'val', Type: 'Weird' } });
+      return linesOf(() => resolver().resolve(`{{resolve:ssm:${v}}}`, ctx()));
+    },
+    pick: starts('SSM parameter '),
+  },
+  {
     site: 'ssm unrecognized-Type WARN, the Type AWS reported',
     drive: (v) => {
       aws.ssm = async () => ({ Parameter: { Value: 'val', Type: v } });
@@ -730,6 +846,19 @@ const SITES: readonly Site[] = [
     site: 'unsupported dynamic reference service WARN',
     drive: (v) => linesOf(() => resolver().resolve(`{{resolve:${v}}}`, ctx())),
     pick: starts('Unsupported dynamic reference service: '),
+  },
+  {
+    // A secret ARN's region is not gated before the guest resolver is built:
+    // the refusal comes after this line.
+    site: 'producer-region resolver line, a secret ARN region',
+    drive: (v) =>
+      linesOf(() =>
+        resolver().resolve(
+          `{{resolve:secretsmanager:arn:aws:secretsmanager:${v}:123456789012:secret:x:SecretString:k}}`,
+          ctx()
+        )
+      ),
+    pick: starts('Using a producer-region resolver for '),
   },
   // ---- the region-scoped clients line ---------------------------------------
   {
@@ -811,6 +940,61 @@ describe('a value on the resolver\'s remaining log lines runs nothing when paste
     expect(fallback).toContain(
       'Unknown attribute Whatever for resource type AWS::SQS::Queue, returning physical ID'
     );
+  });
+});
+
+describe('a name the display sanitizer ALTERED is described, not shown trimmed (#4250 review)', () => {
+  // `Prod<NBSP>`, `Prod ` and `Prod<TAB>` sanitize to a bare `Prod`, and
+  // `ProdЖ` holds non-ASCII: printed as the sanitizer left them, each would be
+  // byte-identical to (or a homoglyph of) another stack's name, and the
+  // malformed-record refusal tells the operator to repair THAT record.
+  const ALTERED = ['Prod\u00a0', 'Prod ', 'Prod\t', 'Prod\u0416'];
+
+  it.each(ALTERED)('%j', async (name) => {
+    const refusal = (
+      await linesOf(() =>
+        resolver().resolve(
+          { 'Fn::GetStackOutput': { StackName: name, OutputName: 'Out' } },
+          ctx({ stateBackend: backend([{ stackName: name, region: 'us-east-1', outputs: 'torn' }]) })
+        )
+      )
+    ).find(starts('Fn::GetStackOutput: the state record of producer stack '));
+    expect(refusal).toContain(`producer stack ${UNSHOWABLE_VALUE} (us-east-1)`);
+    aws.cfn = async () => {
+      throw new Error('AccessDenied');
+    };
+    const warn = (
+      await linesOf(() =>
+        resolver('us-east-1', true).resolve(
+          { 'Fn::GetStackOutput': { StackName: name, OutputName: 'Out' } },
+          ctx({ stateBackend: backend([]) })
+        )
+      )
+    ).find((l) => l.includes('DescribeStacks fallback failed'));
+    expect(warn).toContain(`for stack ${UNSHOWABLE_VALUE} (us-east-1)`);
+  });
+
+  it('describes a stack name past the length an identifier render cut', async () => {
+    const name = 'P'.repeat(2000);
+    const lines = await linesOf(() =>
+      resolver().resolve(
+        { 'Fn::GetStackOutput': { StackName: name, OutputName: 'O'.repeat(300) } },
+        ctx({ stateBackend: backend([]) })
+      )
+    );
+    expect(lines).toContain(
+      `Resolving Fn::GetStackOutput: StackName=${UNSHOWABLE_VALUE}, Region=us-east-1, OutputName=${UNSHOWABLE_VALUE}`
+    );
+  });
+
+  it('CONTROL: an unaltered plain name prints', async () => {
+    const lines = await linesOf(() =>
+      resolver().resolve(
+        { 'Fn::GetStackOutput': { StackName: 'Prod', OutputName: 'Out' } },
+        ctx({ stateBackend: backend([]) })
+      )
+    );
+    expect(lines).toContain('Resolving Fn::GetStackOutput: StackName=Prod, Region=us-east-1, OutputName=Out');
   });
 });
 

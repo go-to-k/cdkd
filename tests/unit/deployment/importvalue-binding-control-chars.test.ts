@@ -87,13 +87,6 @@ const HOSTILE = `Prod${ESC}[2K\rEvil`;
 /** U+2028: `stripControlChars` does NOT touch it; `displaySafe` does. */
 const LS = ' ';
 
-/**
- * ESC alone, with no `[` or CR: shell-inert as raw text, so a log line prints
- * it unless a sanitizer removed the ESC first (`stripControlChars` deletes it,
- * leaving `ProdcEvil`).
- */
-const SNEAKY = `Prod${ESC}cEvil`;
-
 /** A state backend holding no stacks at all, so every export lookup misses. */
 function emptyBackend(): S3StateBackend {
   return {
@@ -267,17 +260,17 @@ describe('the parameter-value debug lines sanitize too (go-to-k/cdkd#3426 sweep)
       const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
       await resolver.resolveParameters({
         Resources: {},
-        Parameters: { Stage: { Type: 'String', Default: SNEAKY } },
+        Parameters: { Stage: { Type: 'String', Default: HOSTILE } },
       });
     });
 
     // BOUND THE ARM: three branches render through this closure, and the two
     // others print a different sentence.
     expect(logged, 'the default-value parameter line never fired').toContain('using default value');
-    // SNEAKY rather than HOSTILE since go-to-k/cdkd#4250: HOSTILE's `[` and
-    // CR make the line describe it whatever this closure does, and SNEAKY is
-    // shell-inert once its ESC is gone, so it prints, stripped.
-    expect(logged).toContain('using default value ProdcEvil');
+    // Since go-to-k/cdkd#4250 a value the sanitizer ALTERED is described on
+    // this line, so the case pins that no ESC or CR reaches it, not which
+    // pass removed them.
+    expect(logged).toContain(`using default value ${UNSHOWABLE_VALUE}`);
     expect(logged, 'a raw ESC reached the parameter debug line').not.toContain(ESC);
     expect(logged, 'a raw CR reached the parameter debug line').not.toContain('\r');
   });
