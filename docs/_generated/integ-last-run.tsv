@@ -59,7 +59,7 @@ conditions	2026-09-07T16:22:35Z	PASS	30	verify.sh	issue 2748 lane, FINAL tree (r
 conditions-and-if	2026-09-08T12:44:00Z	PASS	95	verify.sh	issue #2767 + #2802; Fn::If, evaluateConditions, the resolved-parameters bag and its deploy-engine consumer; 2 deleted 0 errors
 conditions-update-2	2026-07-26T19:05:27Z	PASS	83	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-cross-region-concurrent-stacks	2026-09-25T13:49:20Z	PASS	291	verify.sh	rc ok, orph clean; sha 0c502fe99 (#3718, post-rebase)
+cross-region-concurrent-stacks	2026-10-01T12:54:14Z	PASS	276	verify.sh	rc ok, orph clean; --purge-events printed Purged for both stacks; sha 27960bb82 (#4327)
 cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression sweep; cross-region bucket round-trip ok, temp bucket removed
 cross-stack-cfn-fallback	2026-09-25T09:36:54Z	PASS	120	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
