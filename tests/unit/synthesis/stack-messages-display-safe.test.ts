@@ -72,6 +72,13 @@ describe('processStackMessages display (go-to-k/cdkd#3479)', () => {
     expect(logger.warn).toHaveBeenCalledWith('[Warning at /MyStack] ok\nDeployment complete');
   });
 
+  it("drops cdkd's own colours from the path too", () => {
+    const logger = render([
+      { level: 'info', path: '/My\x1b[31mStack\x1b[0m', message: 'm' },
+    ]);
+    expect(logger.info).toHaveBeenCalledWith('[Info at /MyStack] m');
+  });
+
   it('still fails on an error annotation after sanitizing it', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     expect(() =>

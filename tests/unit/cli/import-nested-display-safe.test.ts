@@ -475,6 +475,23 @@ describe('cdkd import renders template-derived identifiers display-safe (go-to-k
     expect(row).toBe('  ✗ Q (AWS::SQS::Queue) — denied FAILFORGED\nsecond line');
   });
 
+  it('a provider failure is bounded, its own line breaks kept', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [stackInfo('S', { Resources: { Q: { Type: 'AWS::SQS::Queue' } } } as CloudFormationTemplate)],
+    });
+    mockGetProvider.mockReturnValue({
+      import: vi.fn(async () => {
+        throw new Error(`Value ${'V'.repeat(5000)} failed${LF}Re-adopt with:${LF}cdkd import`);
+      }),
+    });
+
+    await runImport(['--app', 'x', '--yes']).catch(() => undefined);
+
+    const error = errorSpy.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Failed to import'));
+    expect(error).toMatch(/V+ \[cut: \d+ more characters withheld\]$/);
+    expect(error!.length).toBeLessThan(4096 + 200);
+  });
+
   it('the root lock-release warning bounds and sanitizes the release error', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [stackInfo('S', { Resources: { Q: { Type: 'AWS::SQS::Queue' } } } as CloudFormationTemplate)],

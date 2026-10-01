@@ -163,7 +163,8 @@ export function collectStackMessages(
  * CSI or an `ESC [ 2 K` + CR in either field.
  *
  * - `path` is a construct path, which has no line break of its own, so
- *   `safeMsg` flattens it.
+ *   `safeMsg` flattens it, after `displaySafeMultiline` has removed every
+ *   escape sequence: `safeMsg` alone keeps cdkd's own colours in a value.
  * - `message` takes `displaySafeMultiline`, because CDK writes multi-line
  *   warnings and `displaySafe` would join every line. Continuation lines print
  *   unindented, as the CDK CLI prints them; that a continuation line can begin
@@ -174,7 +175,7 @@ export function collectStackMessages(
  * same line forges just as well.
  */
 function annotationLine(label: 'Warning' | 'Info' | 'Error', msg: StackMessage): string {
-  return safeMsg`[${label} at ${msg.path}] ` + displaySafeMultiline(msg.message);
+  return safeMsg`[${label} at ${displaySafeMultiline(msg.path)}] ` + displaySafeMultiline(msg.message);
 }
 
 /**

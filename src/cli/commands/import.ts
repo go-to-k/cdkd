@@ -74,7 +74,6 @@ import {
   displayAwsMessage,
   displayIdent,
   displaySafe,
-  displaySafeMultiline,
   displayStackName,
   isPasteableIdent,
   safeMsg,
@@ -1600,13 +1599,14 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
       ...(result.attributes !== undefined && { attributes: result.attributes }),
     };
   } catch (error) {
-    // `displaySafeMultiline`, not `displaySafe`: a provider refusal may put
-    // its remedy on a line of its own, and joining the lines would set that
-    // command beside the values the refusal describes. What it strips is an
-    // AWS error echoing a template-supplied value with control characters in
-    // it (go-to-k/cdkd#3479). The import plan's `failed` row prints this same
-    // text as its reason.
-    const msg = displaySafeMultiline(error instanceof Error ? error.message : String(error));
+    // Line breaks KEPT: a provider refusal may put its remedy on a line of
+    // its own, and joining the lines would set that command beside the values
+    // the refusal describes. What it strips, and bounds, is an AWS error
+    // echoing a template-supplied value (go-to-k/cdkd#3479). The import plan's
+    // `failed` row prints this same text as its reason.
+    const msg = displayAwsMessage(error instanceof Error ? error.message : String(error), {
+      keepLineBreaks: true,
+    });
     // The provider refusals end in a `--resource` remedy, so this line names
     // the logical id and type only when plain and describes them otherwise
     // (go-to-k/cdkd#3950's S1 rule, judged per line): printed raw, they put back

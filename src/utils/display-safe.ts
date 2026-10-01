@@ -502,8 +502,11 @@ export const AWS_MESSAGE_MAX_CODE_POINTS = 4096;
  * The marker is spelled exactly as `displayIdent`'s, so the two cannot teach a
  * reader two different things about the same event.
  */
-export function displayAwsMessage(value: unknown): string {
-  const sanitized = displaySafe(value);
+export function displayAwsMessage(value: unknown, opts?: { keepLineBreaks?: boolean }): string {
+  // `keepLineBreaks` for a text whose own layout puts a remedy on a line of
+  // its own (a provider refusal): {@link displaySafeMultiline} instead of
+  // `displaySafe`, bounded the same way (go-to-k/cdkd#3479).
+  const sanitized = opts?.keepLineBreaks ? displaySafeMultiline(value) : displaySafe(value);
   const { text, truncated } = truncateCodePoints(sanitized, AWS_MESSAGE_MAX_CODE_POINTS);
   if (!truncated) return text;
   const withheld = Array.from(sanitized).length - Array.from(text).length;
