@@ -5,7 +5,7 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-acm-certificate	2026-10-01T13:26:54Z	PASS	115	verify.sh	rc ok, orph clean; #4295 resource-timeout hole + gated ids
+acm-certificate	2026-10-01T19:54:22Z	PASS	141	verify.sh	rc ok, orph clean; #4275 secret-derived immutable arm
 agentcore-tools	2026-09-14T14:50:12Z	PASS	113	verify.sh	#3103 gating: 3 phases ok, 5 deleted 0 err 0 orph
 alb	2026-09-29T04:11:48Z	FAIL	220	verify.sh	PR #4032 merge-gate run; pre-existing listener routing.http.response.server.enabled removal assertion (#2085, tooling backlog); Targets update phases pass; destroy clean, 0 orphans
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
@@ -181,7 +181,7 @@ lambda-esm-self-managed-kafka	2026-09-27T12:27:25Z	PASS	120	verify.sh	rc ok, orp
 lambda-event-invoke-config-update	2026-10-01T10:13:53Z	PASS	186	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 8 deleted 0 errors, orph clean
 lambda-layer-version-update	2026-10-01T10:13:53Z	PASS	101	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 3 deleted 0 errors, orph clean
 lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
-lambda-microvm-image	2026-10-01T13:26:54Z	PASS	596	verify.sh	rc ok, orph clean; #4295 resource-timeout hole + gated ids
+lambda-microvm-image	2026-10-01T19:54:22Z	PASS	928	verify.sh	rc ok, orph clean; #4275 secret-derived immutable arm
 lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph clean (#4241)
 lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
 lambda-url-authtype-replay	2026-10-01T10:13:53Z	PASS	181	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean

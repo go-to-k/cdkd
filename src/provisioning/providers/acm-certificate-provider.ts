@@ -29,8 +29,10 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 
 /**
  * True for ACM's refusal to delete a certificate a consumer still references
@@ -458,7 +460,8 @@ export class ACMCertificateProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating ACM certificate ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -475,9 +478,30 @@ export class ACMCertificateProvider implements ResourceProvider {
       'CertificateAuthorityArn',
       'KeyAlgorithm',
     ] as const;
-    const changedImmutable = immutableFields.find(
-      (k) => JSON.stringify(properties[k]) !== JSON.stringify(previousProperties[k])
-    );
+    // A secret-derived value is recorded as its `{{resolve:...}}` reference
+    // and handed here resolved, which is no change, so it must not REPLACE the
+    // certificate (go-to-k/cdkd#4275). The physical id is the certificate ARN,
+    // which carries none of these values, so the masker arm decides, and only
+    // on a key the engine itself replaces on any change; ValidationMethod is
+    // not one, so a secret-derived one still replaces. The writes below
+    // address the certificate by its ARN and never send these keys.
+    let changedImmutable: (typeof immutableFields)[number] | undefined;
+    for (const k of immutableFields) {
+      if (JSON.stringify(properties[k]) === JSON.stringify(previousProperties[k])) continue;
+      if (
+        await unchangedBehindSecretReference({
+          resourceType,
+          key: k,
+          desired: properties[k],
+          previous: previousProperties[k],
+          maskSecrets: context?.maskSecrets,
+        })
+      ) {
+        continue;
+      }
+      changedImmutable = k;
+      break;
+    }
     if (changedImmutable) {
       this.logger.debug(`${changedImmutable} changed, replacing ACM certificate: ${physicalId}`);
       // Issue #2169 covers this call too, for free: if the new certificate's

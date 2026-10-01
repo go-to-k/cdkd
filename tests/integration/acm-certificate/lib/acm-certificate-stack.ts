@@ -64,6 +64,24 @@ export class AcmCertificateStack extends cdk.Stack {
       cfnCert.domainValidationOptions = undefined;
     }
 
+    // Phase 4 (go-to-k/cdkd#4275): a second certificate whose DomainName comes
+    // from a Secrets Manager secret, present only while verify.sh names the
+    // secret. cdkd records the `{{resolve:secretsmanager:...}}` expression and
+    // hands `update()` the resolved name, which the provider used to read as a
+    // DomainName change and REPLACE the certificate on any update.
+    // `CDKD_TEST_SECRET_CERT_TAG` is that update: a Tags-only change. L1, so the
+    // template carries DomainName / ValidationMethod / Tags and nothing else.
+    const secretName = process.env['CDKD_TEST_SECRET_NAME'];
+    if (secretName !== undefined && secretName !== '') {
+      new acm.CfnCertificate(this, 'SecretCertificate', {
+        domainName: cdk.SecretValue.secretsManager(secretName, {
+          jsonField: 'domain',
+        }).unsafeUnwrap(),
+        validationMethod: 'DNS',
+        tags: [{ key: 'phase', value: process.env['CDKD_TEST_SECRET_CERT_TAG'] ?? 'v1' }],
+      });
+    }
+
     new cdk.CfnOutput(this, 'CertificateArn', {
       value: cert.certificateArn,
       description: 'ARN of the test ACM certificate (PENDING_VALIDATION — synthetic domain)',

@@ -7,7 +7,7 @@
     "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 28
+    "classesWithBlindSpots": 27
   },
   "classes": [
     {
@@ -24,7 +24,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -69,7 +70,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -84,7 +86,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -99,7 +102,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -114,7 +118,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -144,7 +149,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -153,9 +159,7 @@
         }
       ],
       "gaps": [],
-      "blindSpots": [
-        "computed key in update()"
-      ]
+      "blindSpots": []
     },
     {
       "file": "agentcore-browser-provider.ts",
