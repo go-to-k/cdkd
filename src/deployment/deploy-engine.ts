@@ -1,26 +1,21 @@
 import { getLogger } from '../utils/logger.js';
-import { ProvisioningError } from '../utils/error-handler.js';
-import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
+import { withStackName } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { type StaleAttributeHealOutcome } from './stale-attribute-heal.js';
 import {
-  markSameGenerationBag,
   redactSecretsForState,
   scrubResourceRecord,
   maskSecretsInText,
   hasMaskableValues,
-  inheritNestedStackParameterAssociations,
   type RecordedSecretValues,
 } from './secret-redaction.js';
-import { DagExecutor } from './dag-executor.js';
 import {
   isInlinePolicyClaimedByCompletedWriter,
   type InlinePolicyWrite,
 } from './inline-policy-claims.js';
 import type {
   CloudFormationTemplate,
-  EffectivePropertiesResult,
   InlinePolicyClaimed,
   ResourceProvider,
 } from '../types/resource.js';
@@ -37,7 +32,6 @@ import type { ExportIndexStore } from '../state/export-index-store.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
-import { withoutSilentDropProperties } from '../provisioning/property-coverage.js';
 import { injectiveKey } from '../state/record-keys.js';
 import {
   prefetchCreateOnlyPropertyPaths,
@@ -45,20 +39,14 @@ import {
 } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
-import {
-  IMPLICIT_DELETE_DEPENDENCIES,
-  computeImplicitDeleteEdges,
-} from '../analyzer/implicit-delete-deps.js';
 import { withRetry, type RetryLogger } from './retry.js';
 import { maskingRetryLogger } from './masking-retry-logger.js';
-import { findUnrewrittenAssetReferences } from '../assets/asset-redirect.js';
 import {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   type DeployEngineOptions,
   type DeployResult,
 } from './deploy-engine/options.js';
-import { deriveLabelRouting } from './label-routing.js';
 import * as nameCollisionMixin from './deploy-engine/name-collision.js';
 import * as outputsMixin from './deploy-engine/outputs.js';
 import * as rollbackMixin from './deploy-engine/rollback.js';
@@ -72,6 +60,10 @@ import * as deleteMixin from './deploy-engine/delete.js';
 import * as provisionMixin from './deploy-engine/provision.js';
 import * as executeMixin from './deploy-engine/execute.js';
 import * as deployFlowMixin from './deploy-engine/deploy-flow.js';
+import * as resolverContextMixin from './deploy-engine/resolver-context.js';
+import * as routingMixin from './deploy-engine/routing.js';
+import * as recordShapeMixin from './deploy-engine/record-shape.js';
+import * as dependenciesMixin from './deploy-engine/dependencies.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -88,20 +80,6 @@ export { deriveLabelRouting, type LabelRoutingState } from './label-routing.js';
  * an absent entry and an empty one cannot behave differently. Never written to.
  */
 export const EMPTY_SECRETS: RecordedSecretValues = new Map();
-
-/**
- * One entry the resolver pushed into `ResolverContext.redactedAttributeReads`
- * (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
- *
- * An INLINE TYPE-ONLY alias rather than a named import, for the reason this
- * file states at its other resolver types: 72 of the 80 suites that `vi.mock`
- * `intrinsic-function-resolver.js` use a bare factory exposing only
- * `getAccountInfo`, so a new VALUE import reds them with a missing-export
- * error. A type import is erased at build time and reds nothing — which is
- * also why the two consumers below can now share the resolver's own
- * definition instead of re-deriving the structure from a rendered string.
- */
-type RedactedAttributeRead = import('./intrinsic-function-resolver.js').RedactedAttributeRead;
 
 /**
  * Reported up from a template-DELETE whose provider returned
@@ -819,149 +797,6 @@ export class DeployEngine {
     return withStackName(stackName, () => this.doDeploy(stackName, template));
   }
 
-  /**
-   * Resolver context with the imports-recording and exports-index
-   * fields wired in. Keeps the four+ inline context construction
-   * sites consistent — pass through callable as
-   * `this.buildResolverContext({...}, stackName)`.
-   */
-  /** @internal */
-  buildResolverContext(
-    base: {
-      template: CloudFormationTemplate;
-      resources: Record<string, ResourceState>;
-      parameters?: Record<string, unknown>;
-      conditions?: Record<string, boolean>;
-      /**
-       * The masked-read bag, supplied by the CALLER and only by a caller that
-       * READS it (issue #2847 round-4 review). Absent means the resolver serves
-       * the mask exactly as `main` does.
-       *
-       * It used to be set here on EVERY context this method builds, on the
-       * argument that an array nobody consults costs nothing and that omitting
-       * it would leave a future provisioning site silently unguarded. The first
-       * half stopped being true when `resolveRefValue` began deciding the
-       * masked-leaf SKIP from the bag's PRESENCE: on the deploy-internal DIFF
-       * context — which has no refusal reader — the skip fired anyway, so
-       * `{Ref: X}` resolved to the raw physical id and was compared against the
-       * `'***'` in state. Measured on a pre-existing issue #2274 stack (a
-       * `NoEcho` value in `properties.TableName`, a sibling `{Ref: Tbl}`):
-       * NO_CHANGE and a clean deploy on `main`, a spurious UPDATE and then a
-       * hard failure at the provisioning refusal with the bag present. Fail-
-       * closed, so never an exposure — but a regression for existing users and
-       * a divergence from standalone `cdkd diff`, which is bagless and still
-       * reports NO_CHANGE.
-       *
-       * The second half is answered by making the decision VISIBLE instead of
-       * ambient: a provisioning site that wants the guard passes the bag on the
-       * line where it builds its context, and
-       * `tests/unit/deployment/deploy-engine-resolver-context-bag-scope.test.ts`
-       * asserts which sites do.
-       */
-      redactedAttributeReads?: RedactedAttributeRead[];
-    },
-    stackName: string
-  ): import('./intrinsic-function-resolver.js').ResolverContext {
-    // FRESH per-context map — see the field note at the bottom of the returned
-    // object. Named here rather than inlined so the nested-stack parameter
-    // associations can be copied onto it (issue #2291).
-    const recordedSecretValues = new Map<string, string>();
-    // Issue #2291: the parent recorded, per child PARAMETER NAME, which
-    // `{{resolve:...}}` expression that parameter was resolved from. Copy those
-    // onto this resource's bag as `{Ref: <ParamName>}` position associations,
-    // so a child leaf spelling the parameter persists ITS OWN expression rather
-    // than whichever one the plaintext-keyed inherited map kept.
-    //
-    // NOT the issue #2087 pre-seed this file's note below warns about, and the
-    // difference is which store decides SCOPE. That defect pre-loaded the
-    // PLAINTEXT map, which is what `redactSecretsForState` substring-matches
-    // with — so every resource's literals became rewritable. These associations
-    // can only change an answer for a leaf whose value is already a plaintext in
-    // THIS bag, i.e. only for a resource whose own resolution consumed the
-    // parameter. They decide WHICH expression such a leaf takes, never WHETHER
-    // a leaf is rewritten.
-    if (this.options.inheritedSecrets && this.options.inheritedSecrets.size > 0) {
-      inheritNestedStackParameterAssociations(recordedSecretValues, this.options.inheritedSecrets);
-    }
-    return {
-      template: base.template,
-      resources: base.resources,
-      ...(base.parameters &&
-        Object.keys(base.parameters).length > 0 && { parameters: base.parameters }),
-      ...(base.conditions &&
-        Object.keys(base.conditions).length > 0 && { conditions: base.conditions }),
-      stateBackend: this.stateBackend,
-      stackName,
-      ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
-      recordedImports: this.recordedImports,
-      recordedOutputReads: this.recordedOutputReads,
-      // Issue #1852: on EVERY context this engine builds — the diff pass, both
-      // provisioning arms and the outputs pass all read the same stale record,
-      // and the heal is memoized, so whichever asks first pays the one read.
-      attributeHealer: (logicalId, resource) =>
-        this.healStaleAttributes(logicalId, resource, stackName),
-      // The pairs the PARENT resolved for this stack, on a nested-stack child
-      // engine only (issue #1903). NOT pre-loaded into the map below: the
-      // resolver copies a pair across at the moment a resource's `{Ref: Param}`
-      // actually resolves to a value carrying that plaintext
-      // (`recordInheritedParameterSecrets`), so the pair lands in the bag of
-      // the resource that consumed the parameter and nowhere else.
-      //
-      // The first cut DID pre-load every context's map, and that was issue
-      // #2087: `redactSecretsForState` substring-matches at or above
-      // `MIN_NEEDLE_LENGTH`, so a child resource that never referenced the
-      // parameter but spells `my-production-bucket` while the secret is
-      // `production` had `my-{{resolve:...}}-bucket` persisted. The desired
-      // side does NOT mirror that — `redactParametersForDiff` rewrites only the
-      // PARAMETERS — so the stack acquired a perpetual UPDATE, or a perpetual
-      // REPLACEMENT on a create-only property. The rationale that shipped with
-      // it ("the same over-approximation the parent already accepts") was
-      // simply wrong: the parent scopes its bag to the ONE resource whose
-      // resolution produced the secret, because `perResourceSecrets` is keyed
-      // by logical id. Recording at resolution time gives the child the SAME
-      // scoping rule.
-      //
-      // PARITY, not perfection, and the residual is worth naming rather than
-      // leaving to be rediscovered: within a resource that genuinely DOES
-      // consume the parameter, `redactSecretsForState` still substring-matches
-      // every leaf, so an UNRELATED literal in that same resource carrying the
-      // plaintext verbatim is rewritten too. The parent has exactly that
-      // residual for a resource that resolves a `{{resolve:...}}`, so this is
-      // the child reaching parity with it — not a claim that no
-      // over-approximation remains.
-      //
-      // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a parent bag
-      // holding only LOG-ONLY needles (a `NoEcho` parameter's value) must still
-      // reach the child's resolver, which masks with it and carries it into the
-      // bag of the child resource consuming the parameter. Every reader of
-      // this field that PERSISTS or positions still asks `size` itself.
-      ...(this.options.inheritedSecrets &&
-        hasMaskableValues(this.options.inheritedSecrets) && {
-          inheritedSecrets: this.options.inheritedSecrets,
-        }),
-      // FRESH per-context map: the resolver records each resolved secret
-      // (plaintext -> `{{resolve:...}}` expression) here (GHSA fix). The caller
-      // captures it and stores it per-logicalId in `perResourceSecrets` (or in
-      // `outputSecrets` for the outputs pass) so each bag is redacted only with
-      // the secrets substituted during ITS OWN resolution — see the
-      // `perResourceSecrets` field doc for why per-resource, not session-wide.
-      recordedSecretValues,
-      // Issue #2274. `noEchoAttributeResources` goes on EVERY context this
-      // method builds — the diff / no-op one included — because it can only ADD
-      // mask-only needles to a bag, which is right wherever that bag ends up
-      // redacting something and inert wherever it does not.
-      //
-      // `redactedAttributeReads` is the opposite and comes from the CALLER: it
-      // is an OPT-IN whose presence changes what the resolver SERVES, so it
-      // belongs only where a reader exists. The `base` field's own doc carries
-      // the measurement that forced the split.
-      noEchoAttributeResources: this.noEchoAttributeResources,
-      ...(base.redactedAttributeReads && {
-        redactedAttributeReads: base.redactedAttributeReads,
-      }),
-    };
-  }
-
   /** @internal Body in `deploy-engine/masking.ts` (#4200). */
   static maskedRecordRemedyFor = maskingMixin.maskedRecordRemedyFor;
 
@@ -1285,102 +1120,6 @@ export class DeployEngine {
   }
 
   /**
-   * Is this resource pinned to Cloud Control for this deploy (`--pin-cc-api`)?
-   *
-   * ONE implementation, called by the update dispatch and by the progress
-   * label. They carried separate copies of this expression for one revision,
-   * and a mutation probe caught the predictable result: neutering the LABEL's
-   * copy left every test green, because the only cases that existed exercised
-   * the dispatch's. Same shape as the duplicated flip predicate this lane
-   * already collapsed once.
-   *
-   * SCOPED BY STACK, like `recreateTargets`. `NestedStackProvider.runChildDeploy`
-   * spreads the parent's options into every child engine, and a logical id is
-   * unique only within one template, so an unscoped set would pin a same-named
-   * resource in a stack the user never named — silently, since a pin produces
-   * no output of its own.
-   */
-  /** @internal */
-  isPinnedToCcApi(stackName: string, logicalId: string): boolean {
-    return (
-      this.options.pinCcApi?.stackName === stackName &&
-      this.options.pinCcApi.logicalIds.has(logicalId)
-    );
-  }
-
-  /**
-   * The `--recreate-via-*` direction for this resource, or `undefined`.
-   *
-   * Stack-scoped for the same reason as {@link isPinnedToCcApi}, and extracted
-   * for a sharper one: the LABEL and the DISPATCH were computing "is this a
-   * replacement" from DIFFERENT expressions. The dispatch asks
-   * `propertyDrivenReplacement || recreateFlagged`; the label asked only the
-   * property half. So a `--recreate-via-*` target whose property change does
-   * not itself force a replacement took the label's non-replacement path and
-   * was routed from the state record, while the dispatch routed it from the
-   * flag -- mislabelling in BOTH directions, and rendering `Updating` over a
-   * destroy + recreate.
-   *
-   * Three review rounds fixed three instances of that one class (the pin, then
-   * the sticky inputs, then this) by subtracting one input at a time from the
-   * label. The class closes by asking the same QUESTION at both sites instead.
-   */
-  /** @internal */
-  recreateDirectionFor(stackName: string, logicalId: string): 'sdk' | 'cc-api' | undefined {
-    const targets =
-      this.options.recreateTargets?.stackName === stackName
-        ? this.options.recreateTargets
-        : undefined;
-    if (targets === undefined) return undefined;
-    if (targets.viaCcApi.has(logicalId)) return 'cc-api';
-    if (targets.viaSdkProvider.has(logicalId)) return 'sdk';
-    return undefined;
-  }
-
-  /** @internal */
-  peekRoutingForLabel(
-    change: ResourceChange,
-    existingState: ResourceState | undefined,
-    stackName: string,
-    logicalId: string,
-    needsReplacement = false,
-    recreateDirection?: 'sdk' | 'cc-api'
-  ): 'sdk' | 'cc-api' | undefined {
-    // The pin is resolved HERE rather than inside `deriveLabelRouting` because
-    // that function is exported and unit-tested without an engine; keeping it
-    // free of `this.options` is what lets it be called with a plain registry.
-    // `needsReplacement` already folds in the flag half -- the caller computes
-    // it once so the VERB and this tag cannot disagree, which is the whole
-    // lesson of {@link recreateDirectionFor}'s docstring.
-    if (needsReplacement) {
-      // Mirror `replaceDecision` argument for argument: it routes the NEW
-      // physical resource, so it passes the recreate hint as `provisionedBy`
-      // (never the record's layer — stickiness exists to spare an EXISTING
-      // resource from churn, and a replacement is not that), `forceCcApi` only
-      // for the CC direction, and the record's bag as `previousProperties` —
-      // the baseline an unrecognized property is compared against (issue
-      // #3713). `deriveLabelRouting` derives both from this synthetic record,
-      // so it carries the hint and the record's `properties`, nothing else.
-      const hintRecord = {
-        ...(recreateDirection !== undefined && { provisionedBy: recreateDirection }),
-        ...(existingState?.properties !== undefined && { properties: existingState.properties }),
-      };
-      return deriveLabelRouting(
-        change,
-        hintRecord,
-        this.providerRegistry,
-        recreateDirection === 'cc-api'
-      );
-    }
-    return deriveLabelRouting(
-      change,
-      existingState,
-      this.providerRegistry,
-      this.isPinnedToCcApi(stackName, logicalId)
-    );
-  }
-
-  /**
    * #808 — forward one structured deployment event to the optional
    * recorder. No-op when no recorder was supplied. `record()` is
    * contractually synchronous and never-throwing, but we still guard
@@ -1425,322 +1164,9 @@ export class DeployEngine {
     return next;
   }
 
-  /**
-   * Issue #1002 PR 2 — §7 step 3 post-resolution audit (defense in depth).
-   * No-op in legacy mode (`options.assetRedirect` unset). In cdkd-assets
-   * mode, a resolved property still naming a mapped SOURCE (CDK bootstrap)
-   * bucket / repo means a template shape the §7 rewrite missed — fail the
-   * resource loudly BEFORE provisioning instead of deploying a split-brain
-   * reference (assets live in cdkd storage, the property points at the CDK
-   * bootstrap bucket that `cdk gc` may have emptied).
-   */
-  /** @internal */
-  auditResolvedAssetReferences(
-    logicalId: string,
-    resourceType: string,
-    resolvedProps: Record<string, unknown>
-  ): void {
-    const redirect = this.options.assetRedirect;
-    if (!redirect) return;
-    const findings = findUnrewrittenAssetReferences(resolvedProps, redirect);
-    if (findings.length === 0) return;
-    const detail = findings.map((f) => `  - ${f.path}: still references '${f.source}'`).join('\n');
-    throw new ProvisioningError(
-      `Unrewritten asset reference on '${logicalId}' (${resourceType}): this region uses ` +
-        `cdkd-owned asset storage, but the following resolved properties still point at the ` +
-        `CDK bootstrap storage that 'cdk gc' may garbage-collect:\n${detail}\n` +
-        `This is a template shape cdkd's asset-reference rewrite did not cover — deploying it ` +
-        `would split-brain the stack (assets in cdkd storage, properties reading the CDK ` +
-        `bucket). Please report this at https://github.com/go-to-k/cdkd/issues with the ` +
-        `property shape. Workaround: deploy with --use-cdk-bootstrap-assets to pin the ` +
-        `legacy destinations for this app.`,
-      resourceType,
-      logicalId
-    );
-  }
-
-  /**
-   * Create a resource with retry for transient errors
-   *
-   * Some resources fail immediately after their dependencies are created due to
-   * AWS eventual consistency (e.g., Lambda fails if IAM Role hasn't propagated yet).
-   * CloudFormation handles this internally; cdkd retries with exponential backoff.
-   */
-  /**
-   * Extract ALL dependencies for a resource from the template.
-   *
-   * Uses TemplateParser.extractDependencies() to capture Ref, Fn::GetAtt,
-   * and DependsOn dependencies. This ensures the state contains complete
-   * dependency information for correct deletion ordering (not just DependsOn).
-   *
-   * Template Parameter names are filtered out (issue #1032): a `Ref` to a
-   * CFn Parameter is not a provisioning-order edge, and the destroy-side
-   * graph build (which reconstructs a pseudo-template from state with no
-   * `Parameters` section) would warn `depends on <Param>, but <Param> not
-   * found in template` for every parameter-referencing resource.
-   */
-  /** @internal */
-  extractAllDependencies(
-    template: CloudFormationTemplate | undefined,
-    logicalId: string
-  ): string[] | undefined {
-    const resource = template?.Resources?.[logicalId];
-    if (!resource) return undefined;
-    const parser = new TemplateParser();
-    const parameterNames = new Set(Object.keys(template?.Parameters ?? {}));
-    const deps = [...parser.extractDependencies(resource)].filter(
-      (dep) => !parameterNames.has(dep)
-    );
-    return deps.length > 0 ? deps : undefined;
-  }
-
-  /**
-   * The properties to RECORD in cdkd state for a just-provisioned resource.
-   *
-   * Normally the DESIRED (resolved) bag: state is the record of what the user
-   * asked for, and the #1160 absent-field removal derivation reads it as the
-   * previous side on the next deploy, so it must stay template-shaped.
-   *
-   * A provider may override it by returning `effectiveProperties` when it
-   * deliberately NARROWED what it sent (issue #1591). Recording the desired
-   * bag there would describe something AWS does not hold, and since
-   * `readCurrentState` can only return what AWS does hold, the difference is
-   * PERMANENT phantom drift — reported by every `cdkd drift`, and "repaired"
-   * by `drift --revert` into another `update()` that narrows and re-reports.
-   * The provider is the only layer that knows what it dropped, so it says so
-   * and the engine records that instead.
-   *
-   * The SECOND narrowing (issue #2750) is the ROUTE's, not a provider's, and
-   * the provider cannot report it: a silent-drop property is one the SDK
-   * Provider has no wiring for at all, so it never sees the key to say it
-   * dropped it. `provisionedBy === 'sdk'` is the whole condition — on that
-   * route `getProviderFor` has already established that every silent drop in
-   * this bag is allow-listed (an un-allowed one would have auto-routed the
-   * resource to Cloud Control, which forwards the full map), so "what the SDK
-   * route writes" and "what this deploy's flags permit dropping" are the same
-   * set and no flag needs re-reading here.
-   *
-   * Recording the wider bag is what reopened the silent-drop class through the
-   * state file: the record claimed a value AWS did not hold, so the later
-   * Cloud Control re-route diffed the property as unchanged and its JSON Patch
-   * omitted it. Every other reader of the bag was told the same lie —
-   * `cdkd drift` (for a provider with no `readCurrentState`), rollback replay,
-   * `cdkd export`, `cdkd state`.
-   */
-  /** @internal */
-  propertiesToRecord(
-    desiredProperties: Record<string, unknown>,
-    result: EffectivePropertiesResult,
-    resourceType: string,
-    provisionedBy: 'sdk' | 'cc-api'
-  ): Record<string, unknown> {
-    // Issue #2516: the desired bag is THIS pass's own resolution of today's
-    // template and the provider just succeeded with it, so the object state
-    // will hold is marked same-generation — the one fact the persist choke
-    // point needs to write an embedded 1-3 character secret as its token
-    // rather than leaving it in plaintext below the value scan's needle
-    // floor. An `effectiveProperties` replacement is NOT marked: a provider
-    // may carry previous-state values into it (the DynamoDB global-table
-    // provider restores the previous GSIs and billing mode), so an
-    // object-level mark on it would vouch for leaves this pass never
-    // resolved. Such a bag keeps the residual, stated on
-    // `positionByEmbeddedSpan`.
-    //
-    // The mark goes on AFTER the route's silent-drop narrowing (issue #2750),
-    // never before: that helper returns a NEW object whenever it drops a key,
-    // so a mark taken first would sit on an object the record never holds.
-    // Narrowing a bag this pass resolved leaves it this pass's own, so the
-    // mark is still the engine's to make.
-    if (result.effectiveProperties) {
-      return provisionedBy === 'sdk'
-        ? withoutSilentDropProperties(resourceType, result.effectiveProperties)
-        : result.effectiveProperties;
-    }
-    const written =
-      provisionedBy === 'sdk'
-        ? withoutSilentDropProperties(resourceType, desiredProperties)
-        : desiredProperties;
-    return markSameGenerationBag(written);
-  }
-
-  /**
-   * Read `DeletionPolicy` / `UpdateReplacePolicy` from the synth template
-   * so they can be persisted in `ResourceState` (schema v5+). Always returns
-   * both keys (`undefined` when the template does not carry the attribute)
-   * so that spreading into an existing `ResourceState` reliably overrides a
-   * previously-recorded value back to `undefined` — required when the user
-   * removes the attribute from their CDK code. `JSON.stringify` then omits
-   * the `undefined` keys when state is serialized to S3.
-   */
-  /** @internal */
-  extractTemplateAttributes(
-    template: CloudFormationTemplate | undefined,
-    logicalId: string
-  ): {
-    deletionPolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
-    updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
-  } {
-    const resource = template?.Resources?.[logicalId];
-    return {
-      deletionPolicy: resource?.DeletionPolicy,
-      updateReplacePolicy: resource?.UpdateReplacePolicy,
-    };
-  }
-
   // Type-based implicit deletion ordering rules are defined in
   // src/analyzer/implicit-delete-deps.ts so the deploy DELETE phase and the
   // standalone destroy command apply the same rules.
-
-  /**
-   * Build a per-resource map of "must be deleted before me" dependencies for
-   * the DELETE phase, derived from state-recorded dependencies plus implicit
-   * type-based ordering rules.
-   *
-   * For a resource X, the returned set contains every resource Y such that Y
-   * must finish deleting before X starts — i.e., Y depends on X (or is otherwise
-   * required to vanish first per implicit type rules).
-   */
-  /**
-   * Returns true if the executor still has un-started pending nodes —
-   * used to distinguish "SIGINT cancelled real work" from "SIGINT landed
-   * after all nodes already completed" (the latter should not error).
-   */
-  /** @internal */
-  hasPending<T>(executor: DagExecutor<T>): boolean {
-    for (const node of executor.values()) {
-      if (node.state === 'pending') return true;
-    }
-    return false;
-  }
-
-  /** @internal */
-  buildDeletionDependencies(deleteIds: Set<string>, state: StackState): Map<string, Set<string>> {
-    const dependedBy = new Map<string, Set<string>>();
-    for (const id of deleteIds) {
-      dependedBy.set(id, new Set());
-    }
-
-    for (const id of deleteIds) {
-      const resource = state.resources[id];
-      if (!resource?.dependencies) continue;
-      for (const dep of resource.dependencies) {
-        if (!deleteIds.has(dep)) continue;
-        // id depends on dep → dep must be deleted AFTER id (i.e., id is in dep's deletion deps)
-        dependedBy.get(dep)!.add(id);
-      }
-    }
-
-    this.addImplicitDeleteDependencies(deleteIds, state, dependedBy);
-
-    return dependedBy;
-  }
-
-  /**
-   * Add implicit delete dependency edges based on resource type relationships.
-   *
-   * Some AWS resources have ordering constraints during deletion that are NOT
-   * expressed via Ref/GetAtt in CloudFormation templates. For example, an
-   * InternetGateway cannot be deleted until its VPCGatewayAttachment is removed,
-   * even though the attachment references the IGW (not the other way around).
-   *
-   * This method inspects resource types and adds edges so that dependents
-   * (e.g., VPCGatewayAttachment) are deleted BEFORE the resources they implicitly
-   * depend on (e.g., InternetGateway).
-   */
-  private addImplicitDeleteDependencies(
-    deleteIds: Set<string>,
-    state: StackState,
-    dependedBy: Map<string, Set<string>>
-  ): void {
-    // Build a type → logical IDs index for resources being deleted
-    const typeToIds = new Map<string, string[]>();
-    for (const id of deleteIds) {
-      const resource = state.resources[id];
-      if (!resource) continue;
-      const ids = typeToIds.get(resource.resourceType) ?? [];
-      ids.push(id);
-      typeToIds.set(resource.resourceType, ids);
-    }
-
-    for (const id of deleteIds) {
-      const resource = state.resources[id];
-      if (!resource) continue;
-
-      const mustDeleteAfter = IMPLICIT_DELETE_DEPENDENCIES[resource.resourceType];
-      if (!mustDeleteAfter) continue;
-
-      for (const depType of mustDeleteAfter) {
-        const depIds = typeToIds.get(depType);
-        if (!depIds) continue;
-
-        for (const depId of depIds) {
-          // depId (of depType) must be deleted BEFORE id (of resource.resourceType)
-          // In the dependedBy map: id is "depended on" by depId
-          // meaning depId will be picked first (deleted first)
-          if (!dependedBy.has(id)) dependedBy.set(id, new Set());
-          if (!dependedBy.get(id)!.has(depId)) {
-            dependedBy.get(id)!.add(depId);
-            this.logger.debug(
-              `Implicit delete dependency: ${depId} (${depType}) must be deleted before ${id} (${resource.resourceType})`
-            );
-          }
-        }
-      }
-    }
-
-    // Per-resource implicit delete edges that cannot be inferred from a
-    // type-pair rule (e.g. CompositeAlarm -> the metric alarms its AlarmRule
-    // references by name, which carry no Ref / Fn::GetAtt edge).
-    const scoped: Record<string, ResourceState> = {};
-    for (const id of deleteIds) {
-      const resource = state.resources[id];
-      if (resource) scoped[id] = resource;
-    }
-    for (const { before, after } of computeImplicitDeleteEdges(scoped)) {
-      // `before` must be deleted before `after`, so `before` is in `after`'s
-      // deletion deps (picked / deleted first).
-      if (!dependedBy.has(after)) dependedBy.set(after, new Set());
-      if (!dependedBy.get(after)!.has(before)) {
-        dependedBy.get(after)!.add(before);
-        this.logger.debug(
-          `Implicit delete dependency: ${before} (${scoped[before]?.resourceType}) must be deleted before ${after} (${scoped[after]?.resourceType})`
-        );
-      }
-    }
-  }
-
-  /**
-   * Prepare a property map for a Cloud Control API call. When a Tier 1
-   * resource is routed via Cloud Control (either because the user's
-   * template hit silent-drop properties under #614 or because the resource
-   * is sticky-routed via `provisionedBy: 'cc-api'`), CC requires the full
-   * property map — including identifier-like fields (`BucketName`,
-   * `RoleName`, etc.) that the SDK provider would have auto-generated.
-   * This helper threads the property prep through the registered SDK
-   * provider's `preparePropertiesForFallback` hook when defined, falling
-   * back to `applyDefaultNameForFallback` (which mints stack-prefixed
-   * names matching what the SDK provider would have done) otherwise.
-   *
-   * A type with no registered SDK provider (Tier 2 / CC-native) takes the
-   * `applyDefaultNameForFallback` arm too, which fills a name only when the
-   * type has a `FALLBACK_NAME_RULES` entry (`AWS::Lambda::CapacityProvider`,
-   * issue #3174) and returns the bag unchanged otherwise. An UPDATE drops the
-   * generated name again (`withoutGeneratedFallbackName`).
-   */
-  /** @internal */
-  preparePropertiesForCcApi(
-    resourceType: string,
-    resolvedProps: Record<string, unknown>,
-    logicalId: string
-  ): Record<string, unknown> {
-    const sdkProvider = this.providerRegistry.getRegisteredTypes().includes(resourceType)
-      ? this.providerRegistry.getProvider(resourceType)
-      : undefined;
-    if (sdkProvider?.preparePropertiesForFallback) {
-      return sdkProvider.preparePropertiesForFallback(logicalId, resourceType, resolvedProps);
-    }
-    return applyDefaultNameForFallback(logicalId, resourceType, resolvedProps);
-  }
 
   /**
    * Execute an operation with retry for transient IAM propagation errors.
@@ -1830,6 +1256,23 @@ export class DeployEngine {
     return maskingRetryLogger(this.logger, secrets);
   }
 }
+
+DeployEngine.prototype.hasPending = dependenciesMixin.hasPending;
+DeployEngine.prototype.buildDeletionDependencies = dependenciesMixin.buildDeletionDependencies;
+DeployEngine.prototype.addImplicitDeleteDependencies =
+  dependenciesMixin.addImplicitDeleteDependencies;
+
+DeployEngine.prototype.auditResolvedAssetReferences = recordShapeMixin.auditResolvedAssetReferences;
+DeployEngine.prototype.extractAllDependencies = recordShapeMixin.extractAllDependencies;
+DeployEngine.prototype.propertiesToRecord = recordShapeMixin.propertiesToRecord;
+DeployEngine.prototype.extractTemplateAttributes = recordShapeMixin.extractTemplateAttributes;
+
+DeployEngine.prototype.isPinnedToCcApi = routingMixin.isPinnedToCcApi;
+DeployEngine.prototype.recreateDirectionFor = routingMixin.recreateDirectionFor;
+DeployEngine.prototype.peekRoutingForLabel = routingMixin.peekRoutingForLabel;
+DeployEngine.prototype.preparePropertiesForCcApi = routingMixin.preparePropertiesForCcApi;
+
+DeployEngine.prototype.buildResolverContext = resolverContextMixin.buildResolverContext;
 
 DeployEngine.prototype.doDeployWithPrefetch = deployFlowMixin.doDeployWithPrefetch;
 
