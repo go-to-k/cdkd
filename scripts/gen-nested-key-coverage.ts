@@ -1194,12 +1194,15 @@ const API_GATEWAY_V2_WRITE_FLOORS = {
  * `minWrittenMembers` is 105 rather than the `GraphQLApi` entry's old 100
  * because the hygiene band (>= half the calibration-scoped yield) now floors
  * it at 102 — the old value had drifted under the band as the file grew, and
- * a floor below the band fences nothing. No `minHandoffPoints`: the provider
- * hands off no blob generically, so the walk is not load-bearing for any of
- * the three.
+ * a floor below the band fences nothing. Raised again to 107 by
+ * go-to-k/cdkd#4275, whose immutable-identity guards (the
+ * `unchangedBehindSecretReference` evidence objects) grew the yield until the
+ * band floored it there.
+ * No `minHandoffPoints`: the provider hands off no blob generically, so the
+ * walk is not load-bearing for any of the three.
  */
 const APPSYNC_WRITE_FLOORS = {
-  minWrittenMembers: 105,
+  minWrittenMembers: 107,
   minWriteScopes: 24,
 } as const;
 

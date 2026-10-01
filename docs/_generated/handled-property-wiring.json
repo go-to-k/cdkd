@@ -2070,7 +2070,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -2080,6 +2081,7 @@
             "createResolver",
             "update",
             "updateApiKey",
+            "updateDataSource",
             "updateGraphQLSchema"
           ]
         },
@@ -2543,13 +2545,15 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
             "createDataSource",
             "createGraphQLApi",
             "update",
+            "updateDataSource",
             "updateGraphQLApi"
           ]
         },
@@ -2831,7 +2835,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -9933,8 +9938,9 @@
       "gaps": [],
       "blindSpots": [
         "computed key in canonicalizeDriftPair()",
+        "computed key in updateLoadBalancer()",
         "computed key in updateTargetGroup()",
-        "stripHandled(...) in updateLoadBalancer()"
+        "Object.keys(...) in updateLoadBalancer()"
       ]
     },
     {
