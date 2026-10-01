@@ -741,6 +741,14 @@ const PASTEABLE_COMMAND = new RegExp(
  * {@link expectOnlyDisplayResidual} runs this by default; on its own it is
  * what an S1 row's block-rule case asserts, until the row describes the value
  * instead of showing it.
+ *
+ * Its `--flag` arm is BROADER than the rule for one line class: a progress
+ * ANNOTATION naming a flag the operator already passed (`Orphaning created
+ * resource <id> (--orphan)`, `(--revert-failed)`, `(--skip-final-snapshot)`,
+ * the `[--orphan]` plan label). Those lines invite no command, so they are out
+ * of the S1 scope and keep their values displayed per go-to-k/cdkd#3092
+ * (maintainer ruling on go-to-k/cdkd#4265). Do not run this helper on them,
+ * and do not describe their values to make it pass.
  */
 export function expectNoCommandBesideDisplay(message: string, value: string): void {
   const escaped = JSON.stringify(value).slice(1, -1);

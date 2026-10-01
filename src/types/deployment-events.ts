@@ -147,6 +147,15 @@ export interface DeploymentEventError {
   awsErrorCode?: string;
   /** AWS request id from the same AWS-SDK-shaped error, when present. */
   requestId?: string;
+  /**
+   * `true` only when every line break in `message` is cdkd's OWN: set by the
+   * rollback executor for its labelled-remedy refusals, keyed on the error
+   * object's identity (go-to-k/cdkd#4265). `cdkd events` prints such a
+   * message one line per line and folds every other message onto one, so a
+   * provider's newline cannot forge a row. Absent on events written before
+   * it existed, which therefore fold.
+   */
+  ownLines?: boolean;
 }
 
 /**

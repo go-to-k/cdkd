@@ -49,6 +49,7 @@
 import {
   commandHole,
   pasteableCommand,
+  physicalIdShownBesideCommand,
   plainOrDescribed,
   quotedOrDescribed,
   withheldTargetClause,
@@ -106,7 +107,6 @@ import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { CdkdError } from '../utils/error-handler.js';
 import {
   IDENT_MAX_CODE_POINTS,
-  ROLE_ARN_MAX_CODE_POINTS,
   displayAwsMessage,
   displayIdent,
   displaySafe,
@@ -261,7 +261,11 @@ function maskedRollbackEventError(error: unknown, mask: MaskerFn): DeploymentEve
   // refusals are masked at CONSTRUCTION bar their re-run and `--orphan`
   // commands, which must reach the reader intact; the unroutable refusal
   // carries no physical id or name at all (logical id, types, fixed prose).
-  if (isOwnRemedyError(error)) return extracted;
+  // `ownLines` tells `cdkd events` that every line break in this message is
+  // cdkd's own, so it may print them as lines (go-to-k/cdkd#4265); any other
+  // message is folded there, since a provider's newline could forge a
+  // `To orphan it:` row (M7 of the go-to-k/cdkd#3764 review).
+  if (isOwnRemedyError(error)) return { ...extracted, ownLines: true };
   // The op's masker (issue #4037), not the bag alone: an arm that resolved no
   // secret still masks a secret-derived physical id. Identity when nothing
   // changed, so an event with nothing to mask keeps its extracted object.
@@ -509,34 +513,22 @@ const DESCRIBED_PHYSICAL_ID = 'a physical id that is not a plain identifier';
 
 /**
  * How the collision refusals name a physical id (already MASKED by the
- * caller): itself when `displayIdent` is the identity on it at the role-ARN
- * cap — an ARN, a URL or a bare name, which the operator needs to delete a
- * resource by hand — and {@link DESCRIBED_PHYSICAL_ID} otherwise. It is state
- * or journal text on a line that names a `cdkd` command (go-to-k/cdkd#4214):
- * a JSON-quoted `$( )` id runs there when pasted into zsh.
- *
- * One exception keeps the mask legible: an id whose only non-plain characters
- * are cdkd's own {@link SECRET_MASK} keeps `displayIdent`'s JSON render
- * (`"***"`). Every other character in it is plain, and a `*` is literal inside
- * the double quotes, so nothing in it expands or runs when pasted.
+ * caller): as `physicalIdShownBesideCommand` (`src/utils/pasteable-command.ts`)
+ * decides, with its mask arm on, and {@link DESCRIBED_PHYSICAL_ID} when it
+ * declines. That helper owns the rule (go-to-k/cdkd#4265): no leading `-`,
+ * inert with its quotes stripped, `displayIdent`'s identity at the role-ARN
+ * cap, and an id whose only non-plain characters are {@link SECRET_MASK} kept
+ * in its JSON render (`"***"`). The id is state or journal text on a line that
+ * names a `cdkd` command (go-to-k/cdkd#4214), where a JSON-quoted `$( )` id
+ * runs when pasted into zsh.
  */
 function refusalPhysicalId(maskedPhysicalId: unknown): string {
-  if (typeof maskedPhysicalId !== 'string') return DESCRIBED_PHYSICAL_ID;
-  const plain = (text: string): boolean =>
-    displayIdent(text, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }) === text;
-  // A leading `-`, `=` or `~` is refused in the shown arm: display-only here,
-  // but the leading position is where the option and tilde shapes live
-  // (`isPasteableIdent`'s rule; review of #4270).
-  if (/^[-=~]/.test(maskedPhysicalId)) return DESCRIBED_PHYSICAL_ID;
-  if (plain(maskedPhysicalId)) return maskedPhysicalId;
-  const rest = maskedPhysicalId.split(SECRET_MASK);
-  const rendered = displayIdent(maskedPhysicalId, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
-  // A render the cap cut carries `[cut: ...]`, which is not the id: describe it.
-  return rest.length > 1 &&
-    rest.every((part) => part === '' || plain(part)) &&
-    rendered === JSON.stringify(maskedPhysicalId)
-    ? rendered
-    : DESCRIBED_PHYSICAL_ID;
+  // The repo's one rule (`physicalIdShownBesideCommand`, shared with the
+  // delete-skip sentence since go-to-k/cdkd#4265), with the mask arm on.
+  return (
+    physicalIdShownBesideCommand(maskedPhysicalId, { maskToken: SECRET_MASK }) ??
+    DESCRIBED_PHYSICAL_ID
+  );
 }
 
 /**
@@ -1390,21 +1382,12 @@ async function prepareCreateRollbackFinalSnapshot(
         }
       );
       return undefined;
-    // Both refusals print the id and type RAW beside `--skip-final-snapshot`
-    // and an `aws` command, and here they are journal text: described when not
-    // plain (go-to-k/cdkd#4214).
+    // Raw values: both builders describe a non-plain id or type themselves
+    // (go-to-k/cdkd#4265), so a value described here would be described twice.
     case 'refuse-cc-routed':
-      throw ccRoutedFinalSnapshotError(
-        shownLogicalId(logicalId),
-        refusalResourceType(resourceType),
-        SKIP_FINAL_SNAPSHOT_FLAG
-      );
+      throw ccRoutedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
     case 'refuse-unsupported-type':
-      throw unsupportedFinalSnapshotError(
-        shownLogicalId(logicalId),
-        refusalResourceType(resourceType),
-        SKIP_FINAL_SNAPSHOT_FLAG
-      );
+      throw unsupportedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
   }
 }
 

@@ -139,7 +139,7 @@ glue-securityconfig-replace	2026-10-01T03:22:05Z	PASS	60	verify.sh	rc ok, orph c
 glue-update-hardening	2026-10-01T06:24:56Z	PASS	326	verify.sh	rc ok, orph clean; #4273 glue table import warnings (21 del/0 err)
 healthimaging-stateful-update-fallback	2026-09-30T17:28:22Z	PASS	566	verify.sh	rc ok, orph clean
 iam-access-key	2026-10-01T03:22:05Z	PASS	85	verify.sh	rc ok, orph clean (#4257)
-iam-managed-policy	2026-10-01T03:22:05Z	PASS	85	verify.sh	rc ok, orph clean (#4257)
+iam-managed-policy	2026-10-01T11:06:17Z	PASS	75	verify.sh	rc ok, orph clean; #4265 IAM skip-reason wording
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-propagation-stress	2026-09-29T09:52:03Z	PASS	116	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean; swept the runtime-created WorkerFn log group
 iam-role-policies-drift-clean	2026-09-30T14:27:46Z	PASS	160	verify.sh	PR #4216 (#4156) re-run on the rebase over #4218: rc ok, Phase 2c hand-off (swap, delete beside create, to-role) kept every name with its new owner; pre-fix revert (earlier run) went RED at Phase 2c; 11 deleted 0 errors, orph clean
@@ -234,11 +234,11 @@ multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 sta
 multi-resource	2026-08-15T00:16:55Z	PASS	77	standard	0 err / 0 orph; broad-set regression check for #1916
 multi-stack-deps	2026-08-20T13:25:47Z	PASS	66	standard	#2053 on the lane-A+B+peer combined tree (2123/2057 merged under us); --all loop, 0 errors, 0 orphans
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
-nested-stack	2026-09-30T03:37:15Z	PASS	80	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers; re-run on the final head after the review's nested-child-journal fix
+nested-stack	2026-10-01T11:06:17Z	PASS	65	verify.sh	rc ok, orph clean; #4265 nested-stack provider
 nested-stack-3level	2026-10-01T07:41:07Z	PASS	215	verify.sh	rc ok, orph clean (#4243)
 nested-stack-deep	2026-09-30T10:20:59Z	PASS	105	verify.sh	rc ok, orph clean; PR #4221 (#4094 bound child params + conditions)
 nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
-nested-stack-rollback	2026-09-30T11:33:23Z	PASS	100	verify.sh	rc ok, orph clean (#4215)
+nested-stack-rollback	2026-10-01T11:06:17Z	PASS	105	verify.sh	rc ok, orph clean; #4265 nested child name in skip reasons
 nested-stack-secret	2026-10-01T07:41:07Z	PASS	255	verify.sh	rc ok, orph clean (#4243)
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -262,10 +262,10 @@ redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
 remove-protection	2026-10-01T08:47:54Z	PASS	2098	verify.sh	PR #4305 deploy-engine provision arms split; rc ok, orph clean
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
-replace-squatter-refusal	2026-10-01T04:57:13Z	PASS	151	verify.sh	rc ok, orph clean; #4214 name-holder diagnosis line
+replace-squatter-refusal	2026-10-01T11:06:17Z	PASS	70	verify.sh	rc ok, orph clean; #4265 reworded diagnosis C_MARKER
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, orph clean
-replacement-rename-onto-holder	2026-09-30T22:24:02Z	PASS	185	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
+replacement-rename-onto-holder	2026-10-01T11:06:17Z	PASS	185	verify.sh	rc ok, orph clean; #4265 cleanup-skip line (4 del/0 err)
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-10-01T04:57:13Z	PASS	345	verify.sh	rc ok, orph clean; #4214 rollback refusal display (3 del/0 err)

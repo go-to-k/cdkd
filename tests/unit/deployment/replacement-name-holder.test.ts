@@ -448,7 +448,7 @@ describe('replacementOldHoldsSentName', () => {
       const other = ask(`${sent}x`);
       expect(other.holds, type).toBe(false);
       expect(other.holds === false && other.diagnosis, type).toContain(
-        `cdkd's rule generates ${property} "${sent}"`
+        `the cdkd naming rule generates ${property} "${sent}"`
       );
       // On the Cloud Control route the bag itself carries whatever was sent.
       expect(ask(sent, 'cc-api').holds, type).toBe(false);

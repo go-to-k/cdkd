@@ -17,6 +17,7 @@ import {
 } from '@aws-sdk/client-elasticache';
 import { CdkdError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { logicalIdShown, resourceTypeShown } from './composite-id.js';
 
 /** Minimal logger surface used here (avoids coupling to the full Logger type). */
 type InfoLogger = { info(message: string): void; debug(message: string): void };
@@ -436,7 +437,11 @@ export function ccRoutedFinalSnapshotError(
   skipFlagHint: string
 ): CdkdError {
   return new CdkdError(
-    `${logicalId} (${resourceType}) has DeletionPolicy: Snapshot, but the resource is ` +
+    // Both values come from a state record, and this line names an `aws`
+    // command and the `--skip-final-snapshot` flag: each is named only when
+    // plain, described otherwise, here in the builder so every caller is
+    // covered (go-to-k/cdkd#4265, go-to-k/cdkd#3950's S1 rule).
+    `${logicalIdShown(logicalId)} (${resourceTypeShown(resourceType)}) has DeletionPolicy: Snapshot, but the resource is ` +
       `managed via the Cloud Control API route (provisionedBy: cc-api), which has no ` +
       `final-snapshot delete parameter — deleting it now would destroy its data WITHOUT ` +
       `the final snapshot the policy promises. Create a snapshot manually ` +
@@ -460,7 +465,8 @@ export function unsupportedFinalSnapshotError(
   skipFlagHint: string
 ): CdkdError {
   return new CdkdError(
-    `${logicalId} (${resourceType}) has DeletionPolicy: Snapshot, but cdkd does not ` +
+    // Named only when plain, as in `ccRoutedFinalSnapshotError`.
+    `${logicalIdShown(logicalId)} (${resourceTypeShown(resourceType)}) has DeletionPolicy: Snapshot, but cdkd does not ` +
       `implement final snapshots for this type (CloudFormation itself only supports Snapshot ` +
       `on: EC2 Volume, ElastiCache CacheCluster / ReplicationGroup, Neptune / RDS / DocDB ` +
       `clusters, RDS instances, Redshift clusters). ` +

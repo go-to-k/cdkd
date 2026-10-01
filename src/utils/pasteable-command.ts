@@ -92,8 +92,10 @@
  */
 
 import {
+  displayIdent,
   displaySafe,
   isPasteableIdent,
+  ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
   truncateCodePoints,
   UNRENDERABLE,
@@ -443,6 +445,42 @@ export function plainOrDescribed(value: string, what: string): string {
  */
 export function quotedOrDescribed(value: string, what: string): string {
   return isPasteableIdent(value) ? `'${value}'` : plainOrDescribed(value, what);
+}
+
+/**
+ * The one answer to "may this physical id be SHOWN on a line that also names
+ * a command or a flag?" (go-to-k/cdkd#4265, unifying the rollback refusals'
+ * and the delete-skip sentence's copies). Returns the text to print, or
+ * `undefined` when the caller must describe the id instead.
+ *
+ * Shown as itself when it does not start with `-` (the option shape), stays
+ * inert with its quotes stripped ({@link isInertUnquoted}: no shell meta, no
+ * leading `#` / `=`, no `~` at the start or after `=` / `:`), and
+ * `displayIdent` is the identity on it at the role-ARN cap, so an ARN, a URL
+ * or a bare name the operator needs stays legible.
+ *
+ * `maskToken`, for a caller whose id was already MASKED: an id whose only
+ * non-plain characters are that token keeps `displayIdent`'s JSON render
+ * (`"***"`), since a `*` is literal inside the double quotes; a render the cap
+ * cut is described.
+ */
+export function physicalIdShownBesideCommand(
+  value: unknown,
+  opts?: { maskToken?: string }
+): string | undefined {
+  // A leading `=` / `~` is `isInertUnquoted`'s to refuse; `-` is not in it.
+  if (typeof value !== 'string' || value.startsWith('-')) return undefined;
+  const plain = (text: string): boolean =>
+    isInertUnquoted(text) &&
+    displayIdent(text, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }) === text;
+  if (plain(value)) return value;
+  const token = opts?.maskToken;
+  if (token === undefined || token === '' || !value.includes(token)) return undefined;
+  const rendered = displayIdent(value, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
+  return value.split(token).every((part) => part === '' || plain(part)) &&
+    rendered === JSON.stringify(value)
+    ? rendered
+    : undefined;
 }
 
 /**
