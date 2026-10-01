@@ -35,6 +35,7 @@ import {
   EXAMINED_FLOORS,
   type Shape,
 } from '../../../scripts/check-template-keyed-bag-reads.ts';
+import { RESOLVER_FAMILY } from '../_resolver-family.js';
 
 /**
  * The pre-sweep sources, CHECKED IN rather than read from `origin/main`.
@@ -75,6 +76,13 @@ describe('check-template-keyed-bag-reads', () => {
       for (const file of SCANNED_FILES) {
         expect(() => readFileSync(file, 'utf8')).not.toThrow();
       }
+    });
+
+    it('lists every file of the split resolver (#4337)', () => {
+      // The list stays a list, but a module split out of the resolver is not
+      // optional: dropping one takes its bag reads out of the scan, which the
+      // floors catch only when the module is large.
+      expect([...SCANNED_FILES]).toEqual(expect.arrayContaining([...RESOLVER_FAMILY]));
     });
   });
 

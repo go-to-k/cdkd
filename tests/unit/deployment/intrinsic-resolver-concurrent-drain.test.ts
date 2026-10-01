@@ -1448,8 +1448,10 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
     //   a `drainDeadlines.run` in a branch that does not cover the call
     //
     // The seeds themselves are seeds rather than exemptions, so making
-    // `resolveValue` or `resolveJoin` public reds too -- an outside caller of
-    // one gets no store.
+    // `resolveValue` or `resolveJoin` public (dropping `private` / `@internal`)
+    // reds too -- an outside caller of one gets no store. That an `@internal`
+    // member has no outside caller is held by
+    // `split-host-internal-callers.test.ts`, since the compiler no longer is.
     const file = join(import.meta.dirname, '../../../src/deployment/intrinsic-function-resolver.ts');
     const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
 
@@ -1544,6 +1546,32 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
       return { calls, opensBudget };
     };
 
+    // Each mixin's augmentation member, and whether it is tagged `@internal`.
+    const augmentationInternal = new Map<string, boolean>();
+    for (const rel of RESOLVER_FAMILY.slice(1)) {
+      const abs = join(import.meta.dirname, '../../..', rel);
+      const msf = ts.createSourceFile(abs, readFileSync(abs, 'utf8'), ts.ScriptTarget.Latest, true);
+      const visitAug = (n: ts.Node): void => {
+        if (
+          ts.isInterfaceDeclaration(n) &&
+          n.name.text === 'IntrinsicFunctionResolver' &&
+          ts.isModuleBlock(n.parent)
+        ) {
+          for (const m of n.members) {
+            if (m.name !== undefined && ts.isIdentifier(m.name)) {
+              augmentationInternal.set(
+                m.name.text,
+                ts.getJSDocTags(m).some((t) => t.tagName.text === 'internal')
+              );
+            }
+          }
+        }
+        ts.forEachChild(n, visitAug);
+      };
+      visitAug(msf);
+    }
+    expect(augmentationInternal.size, 'no mixin augmentation parsed').toBeGreaterThan(0);
+
     const collect = (node: ts.Node): void => {
       // `@internal` is the split resolver's spelling of `private` (#4337):
       // the member is public to the type checker only so a mixin can reach it.
@@ -1569,7 +1597,14 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
         node.parameters[0]?.name.getText() === 'this'
       ) {
         const { calls, opensBudget } = bodyFacts(node);
-        members.set(node.name.text, { name: node.name.text, isPublic: false, calls, opensBudget });
+        // Public exactly when its augmentation member carries no `@internal`.
+        const augmented = augmentationInternal.get(node.name.text);
+        members.set(node.name.text, {
+          name: node.name.text,
+          isPublic: augmented === false,
+          calls,
+          opensBudget,
+        });
       }
       // A callable FIELD is an entry point too: `readonly foo = async () => ...`
       if (
