@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import type { ArtifactManifest, MetadataEntry } from '../types/assembly.js';
-import { displayStackName } from '../utils/display-safe.js';
+import { displaySafeMultiline, displayStackName, safeMsg } from '../utils/display-safe.js';
 import {
   describeFileReadFailure,
   displayAssemblyPath,
@@ -119,19 +119,7 @@ export function collectStackMessages(
       // text quotes either a construct path out of the side file or the
       // `JSON.parse` failure on its bytes. `formatError` sanitizes only an
       // error's `cause`, never its `message`.
-      //
-      // The annotation DISPLAY in `processStackMessages` below is still raw,
-      // and that is an OPEN residual rather than a decision
-      // (go-to-k/cdkd#3479). The argument for leaving it -- that the text is
-      // authored by the CDK app the user just ran, so it is the same trust
-      // bucket as the app's own stderr, which `AppExecutor.spawn` relays
-      // verbatim through `logger.info` -- holds ONLY when cdkd executed an app.
-      // It does not under `-a <dir>`: `isPreSynthesizedAssembly` reads
-      // `manifest.json` directly with no subprocess, and `deploy` / `synth`
-      // then display annotations out of that same untrusted file.
-      // What blocks the fix here is that an annotation legitimately carries
-      // newlines, so `displaySafe` (which maps them to spaces) is the wrong
-      // helper and the right one does not exist yet.
+      // The annotation DISPLAY below is sanitized too: see `annotationLine`.
       // NO `cause`: `formatError` prints a cause's message on a `Caused by:`
       // line, and Node's errno text repeats the path there inside its own
       // quotes -- the echo `describeFileReadFailure` just removed from this
@@ -167,6 +155,29 @@ export function collectStackMessages(
 }
 
 /**
+ * One annotation as `processStackMessages` prints it (go-to-k/cdkd#3479).
+ *
+ * Both halves come out of the assembly, and under `-a <dir>`
+ * (`isPreSynthesizedAssembly`) no app ran at all, so the text is not the
+ * user's own app talking: a `cdk.out` from CI or a colleague can carry a C1
+ * CSI or an `ESC [ 2 K` + CR in either field.
+ *
+ * - `path` is a construct path, which has no line break of its own, so
+ *   `safeMsg` flattens it.
+ * - `message` takes `displaySafeMultiline`, because CDK writes multi-line
+ *   warnings and `displaySafe` would join every line. Continuation lines print
+ *   unindented, as the CDK CLI prints them; that a continuation line can begin
+ *   with any text is the residual that helper documents, and it is accepted
+ *   here rather than indenting every legitimate multi-line warning.
+ *
+ * Sanitizing only `path` would not be a partial fix: a raw `message` on the
+ * same line forges just as well.
+ */
+function annotationLine(label: 'Warning' | 'Info' | 'Error', msg: StackMessage): string {
+  return safeMsg`[${label} at ${msg.path}] ` + displaySafeMultiline(msg.message);
+}
+
+/**
  * Print annotation messages for the given stacks and fail per the CDK
  * CLI's rules (issues #1228 / #1230): every message is displayed at its
  * level (`[Error|Warning|Info at /path] message`); by default any error
@@ -192,14 +203,14 @@ export function processStackMessages(
       switch (msg.level) {
         case 'warning':
           hasWarnings = true;
-          logger.warn(`[Warning at ${msg.path}] ${msg.message}`);
+          logger.warn(annotationLine('Warning', msg));
           break;
         case 'info':
-          logger.info(`[Info at ${msg.path}] ${msg.message}`);
+          logger.info(annotationLine('Info', msg));
           break;
         case 'error':
           hasErrors = true;
-          logger.error(`[Error at ${msg.path}] ${msg.message}`);
+          logger.error(annotationLine('Error', msg));
           break;
       }
     }

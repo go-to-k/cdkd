@@ -407,6 +407,11 @@ the deploy, matching `cdk deploy`.
 `addWarning(...)` and `addInfo(...)` print as `[Warning at /path] ...` and
 `[Info at /path] ...`, and the run proceeds.
 
+The path and message are printed with terminal control characters removed (an
+escape sequence, a carriage return, `U+2028`, a bidi override), so an assembly
+read with `-a <dir>` cannot rewrite cdkd's output through an annotation. A
+multi-line message keeps its line breaks.
+
 `cdkd synth` checks every synthesized stack unless you name one, in which
 case it checks that stack.
 Other synth-driven commands — `diff`, `list`, `import` and friends — do not fail

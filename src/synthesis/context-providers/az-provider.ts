@@ -1,6 +1,7 @@
 import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -20,7 +21,7 @@ export class AZContextProvider implements ContextProvider {
   async resolve(props: Record<string, unknown>): Promise<string[]> {
     const region = (props['region'] as string) || this.awsConfig?.region;
 
-    this.logger.debug(`Fetching availability zones for region: ${region}`);
+    this.logger.debug(safeMsg`Fetching availability zones for region: ${region}`);
 
     const client = new EC2Client({ ...ambientClientDefaults(), ...(region && { region }) });
 
@@ -33,7 +34,7 @@ export class AZContextProvider implements ContextProvider {
         .filter(Boolean)
         .sort();
 
-      this.logger.debug(`Found ${azs.length} availability zones: ${azs.join(', ')}`);
+      this.logger.debug(safeMsg`Found ${azs.length} availability zones: ${azs.join(', ')}`);
       return azs;
     } finally {
       client.destroy();

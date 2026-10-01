@@ -1,6 +1,7 @@
 import { KMSClient, ListAliasesCommand } from '@aws-sdk/client-kms';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -25,7 +26,7 @@ export class KeyContextProvider implements ContextProvider {
       throw new Error('Key context provider requires aliasName property');
     }
 
-    this.logger.debug(`Looking up KMS key by alias: ${aliasName} (region: ${region})`);
+    this.logger.debug(safeMsg`Looking up KMS key by alias: ${aliasName} (region: ${region})`);
 
     const client = new KMSClient({ ...ambientClientDefaults(), ...(region && { region }) });
 
@@ -44,16 +45,16 @@ export class KeyContextProvider implements ContextProvider {
         const match = (response.Aliases ?? []).find((a) => a.AliasName === normalizedAlias);
         if (match) {
           if (!match.TargetKeyId) {
-            throw new Error(`KMS alias '${aliasName}' found but has no target key`);
+            throw new Error(safeMsg`KMS alias ${aliasName} found but has no target key`);
           }
-          this.logger.debug(`Resolved KMS key: ${match.TargetKeyId} (alias: ${aliasName})`);
+          this.logger.debug(safeMsg`Resolved KMS key: ${match.TargetKeyId} (alias: ${aliasName})`);
           return { keyId: match.TargetKeyId };
         }
 
         nextMarker = response.NextMarker;
       } while (nextMarker);
 
-      throw new Error(`No KMS key found with alias: ${aliasName}`);
+      throw new Error(safeMsg`No KMS key found with alias: ${aliasName}`);
     } finally {
       client.destroy();
     }

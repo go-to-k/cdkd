@@ -1,6 +1,7 @@
 import { EC2Client, DescribeSecurityGroupsCommand } from '@aws-sdk/client-ec2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -24,7 +25,7 @@ export class SecurityGroupContextProvider implements ContextProvider {
     const vpcId = props['vpcId'] as string | undefined;
 
     this.logger.debug(
-      `Looking up security group (id: ${securityGroupId}, name: ${securityGroupName}, region: ${region})`
+      safeMsg`Looking up security group (id: ${securityGroupId}, name: ${securityGroupName}, region: ${region})`
     );
 
     const client = new EC2Client({ ...ambientClientDefaults(), ...(region && { region }) });
@@ -51,12 +52,12 @@ export class SecurityGroupContextProvider implements ContextProvider {
       const groups = response.SecurityGroups ?? [];
       if (groups.length === 0) {
         throw new Error(
-          `No security group found (id: ${securityGroupId}, name: ${securityGroupName})`
+          safeMsg`No security group found (id: ${securityGroupId}, name: ${securityGroupName})`
         );
       }
 
       const sg = groups[0]!;
-      this.logger.debug(`Resolved security group: ${sg.GroupId}`);
+      this.logger.debug(safeMsg`Resolved security group: ${sg.GroupId}`);
 
       return {
         securityGroupId: sg.GroupId,

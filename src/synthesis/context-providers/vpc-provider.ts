@@ -9,6 +9,7 @@ import {
 } from '@aws-sdk/client-ec2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -32,7 +33,9 @@ export class VpcContextProvider implements ContextProvider {
     const subnetGroupNameTag = (props['subnetGroupNameTag'] as string) || 'aws-cdk:subnet-name';
     const returnVpnGateways = props['returnVpnGateways'] as boolean | undefined;
 
-    this.logger.debug(`Looking up VPC (region: ${region}, filter: ${JSON.stringify(filter)})`);
+    this.logger.debug(
+      safeMsg`Looking up VPC (region: ${region}, filter: ${JSON.stringify(filter)})`
+    );
 
     const client = new EC2Client({ ...ambientClientDefaults(), ...(region && { region }) });
 
@@ -49,18 +52,18 @@ export class VpcContextProvider implements ContextProvider {
 
       const vpcs = vpcsResponse.Vpcs ?? [];
       if (vpcs.length === 0) {
-        throw new Error(`No VPC found matching filter: ${JSON.stringify(filter)}`);
+        throw new Error(safeMsg`No VPC found matching filter: ${JSON.stringify(filter)}`);
       }
       if (vpcs.length > 1) {
         throw new Error(
-          `Multiple VPCs found matching filter: ${JSON.stringify(filter)}. ` +
-            `Found: ${vpcs.map((v) => v.VpcId).join(', ')}`
+          safeMsg`Multiple VPCs found matching filter: ${JSON.stringify(filter)}. ` +
+            safeMsg`Found: ${vpcs.map((v) => v.VpcId).join(', ')}`
         );
       }
 
       const vpc = vpcs[0]!;
       const vpcId = vpc.VpcId!;
-      this.logger.debug(`Found VPC: ${vpcId}`);
+      this.logger.debug(safeMsg`Found VPC: ${vpcId}`);
 
       // 2. Get subnets
       const subnetsResponse = await client.send(
@@ -158,7 +161,7 @@ export class VpcContextProvider implements ContextProvider {
       }
 
       this.logger.debug(
-        `VPC ${vpcId}: ${publicSubnets.length} public, ${privateSubnets.length} private, ${isolatedSubnets.length} isolated subnets`
+        safeMsg`VPC ${vpcId}: ${publicSubnets.length} public, ${privateSubnets.length} private, ${isolatedSubnets.length} isolated subnets`
       );
 
       return result;

@@ -1,6 +1,7 @@
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -25,7 +26,7 @@ export class SSMContextProvider implements ContextProvider {
       throw new Error('SSM context provider requires parameterName property');
     }
 
-    this.logger.debug(`Reading SSM parameter: ${parameterName} (region: ${region})`);
+    this.logger.debug(safeMsg`Reading SSM parameter: ${parameterName} (region: ${region})`);
 
     const client = new SSMClient({ ...ambientClientDefaults(), ...(region && { region }) });
 
@@ -39,10 +40,10 @@ export class SSMContextProvider implements ContextProvider {
           this.logger.debug(`SSM parameter not found, returning dummy value`);
           return props['dummyValue'];
         }
-        throw new Error(`SSM parameter not found: ${parameterName}`);
+        throw new Error(safeMsg`SSM parameter not found: ${parameterName}`);
       }
 
-      this.logger.debug(`SSM parameter resolved: ${parameterName}`);
+      this.logger.debug(safeMsg`SSM parameter resolved: ${parameterName}`);
       return response.Parameter.Value;
     } finally {
       client.destroy();

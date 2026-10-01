@@ -71,6 +71,7 @@ import {
   type ParameterTaint,
 } from '../../analyzer/parameter-dependence.js';
 import {
+  displayAwsMessage,
   displayIdent,
   displaySafe,
   displayStackName,
@@ -339,7 +340,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     }
     const targetRegion = stackInfo.region || region;
 
-    logger.info(`Target stack: ${stackInfo.stackName} (${targetRegion})`);
+    logger.info(safeMsg`Target stack: ${displayStackName(stackInfo.stackName)} (${targetRegion})`);
 
     // Issue #1002 PR 2 — when the target region is in cdkd-assets mode,
     // rewrite the template's asset references BEFORE anything reads it
@@ -381,7 +382,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       const rewritten = rewriteTemplateAssetReferences(stackInfo.template, assetRedirect);
       logger.debug(
         `Rewrote ${rewritten} asset reference(s) to cdkd asset storage in template of ` +
-          `stack ${stackInfo.stackName}`
+          safeMsg`stack ${displayStackName(stackInfo.stackName)}`
       );
       if (rewritten > 0) {
         // Deliberately does NOT claim what AWS currently holds. Synth always
@@ -391,7 +392,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         // UPDATE (state holds `cdk-*`, the template holds `cdkd-*`) and issues
         // the calls; it is a no-op at AWS, not an absent one.
         logger.info(
-          `Note: ${rewritten} asset reference(s) in stack ${stackInfo.stackName} are recorded in ` +
+          safeMsg`Note: ${rewritten} asset reference(s) in stack ${displayStackName(stackInfo.stackName)} are recorded in ` +
             `state at their pre-rewrite (CDK bootstrap) values, so the next 'cdkd deploy' ` +
             `repoints any resource that still holds them to cdkd asset storage.`
         );
@@ -465,7 +466,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // state writes after the root import) AND their children, and so
       // on. The tree shape is the unit of truth.
       logger.info(
-        `Resolving physical IDs from CloudFormation stack '${migrationCfnStackName}' (recursive)...`
+        safeMsg`Resolving physical IDs from CloudFormation stack ${displayStackName(migrationCfnStackName)} (recursive)...`
       );
       migrationTree = await getCloudFormationResourceTree(
         migrationCfnStackName,
@@ -605,7 +606,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         });
         if (mergeStats.derived > 0) {
           logger.info(
-            `Resolved ${mergeStats.derived} physical ID(s) from CloudFormation stack '${stackInfo.stackName}'. ` +
+            safeMsg`Resolved ${mergeStats.derived} physical ID(s) from CloudFormation stack ${displayStackName(stackInfo.stackName)}. ` +
               `To adopt AND retire that stack, use --migrate-from-cloudformation.`
           );
         } else {
@@ -613,12 +614,12 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           // already overridden, or no overlapping logical ids) from "no such
           // stack" -- otherwise both look identical in the logs.
           logger.debug(
-            `CloudFormation stack '${stackInfo.stackName}' contributed no new physical IDs.`
+            safeMsg`CloudFormation stack ${displayStackName(stackInfo.stackName)} contributed no new physical IDs.`
           );
         }
       } else {
         logger.debug(
-          `No CloudFormation stack named '${stackInfo.stackName}' — resolving physical IDs per provider.`
+          safeMsg`No CloudFormation stack named ${displayStackName(stackInfo.stackName)} — resolving physical IDs per provider.`
         );
       }
     }
@@ -738,7 +739,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           (id) => !overrides.has(id)
         ).length;
         logger.info(
-          `Merging into existing state for ${stackInfo.stackName} (${targetRegion}): ` +
+          safeMsg`Merging into existing state for ${displayStackName(stackInfo.stackName)} (${targetRegion}): ` +
             `preserving ${preservedCount} unlisted resource(s)` +
             (conflicts.length > 0 ? `, overwriting ${conflicts.length} listed entry(ies)` : '')
         );
@@ -932,7 +933,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
             ? ` (${importedCount} new/overwritten + ${preservedCount} preserved)`
             : '';
         const ok = await confirmPrompt(
-          `Write state for ${stackInfo.stackName} (${targetRegion}) ` +
+          safeMsg`Write state for ${displayStackName(stackInfo.stackName)} (${targetRegion}) ` +
             `with ${totalAfter} resource(s)${breakdown}?`
         );
         if (!ok) {
@@ -1037,7 +1038,9 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         saveOptions.migrateLegacy = true;
       }
       await stateBackend.saveState(stackInfo.stackName, targetRegion, stackState, saveOptions);
-      logger.info(`✓ State written: ${stackInfo.stackName} (${targetRegion})`);
+      logger.info(
+        safeMsg`✓ State written: ${displayStackName(stackInfo.stackName)} (${targetRegion})`
+      );
       logger.info(
         `  ${importedRows.length} resource(s) imported. ` +
           `Run 'cdkd diff' to see how the imported state lines up with the template.`
@@ -2314,7 +2317,7 @@ export async function resolveImportedProperties(
     // `${VpcId}` is still refused and still named by `unboundParameterNames`
     // below; a `${Stage}` now resolves to its declared default.
     logger.debug(
-      `Template parameter resolution failed during import-time property resolution: ${err instanceof Error ? err.message : String(err)} — retrying with the template's 'Default'-carrying parameters only; resources referencing an unbindable parameter will still be skipped per-resource.`
+      `Template parameter resolution failed during import-time property resolution: ${displayAwsMessage(err instanceof Error ? err.message : String(err))} — retrying with the template's 'Default'-carrying parameters only; resources referencing an unbindable parameter will still be skipped per-resource.`
     );
     try {
       parameters = await resolver.resolveParameters(defaultOnlyParameterTemplate(template));
@@ -2340,7 +2343,7 @@ export async function resolveImportedProperties(
       // resolver's claim about this arm cannot go stale unnoticed.
       parameters = {};
       logger.debug(
-        `'Default'-only template parameter resolution also failed during import-time property resolution: ${defaultsErr instanceof Error ? defaultsErr.message : String(defaultsErr)} — continuing without parameters; resources referencing them will be skipped per-resource.`
+        `'Default'-only template parameter resolution also failed during import-time property resolution: ${displayAwsMessage(defaultsErr instanceof Error ? defaultsErr.message : String(defaultsErr))} — continuing without parameters; resources referencing them will be skipped per-resource.`
       );
     }
   }
@@ -2362,7 +2365,7 @@ export async function resolveImportedProperties(
     });
   } catch (err) {
     logger.debug(
-      `Template condition evaluation failed during import-time property resolution: ${err instanceof Error ? err.message : String(err)} — continuing without conditions.`
+      `Template condition evaluation failed during import-time property resolution: ${displayAwsMessage(err instanceof Error ? err.message : String(err))} — continuing without conditions.`
     );
   }
 
@@ -2532,9 +2535,14 @@ export async function resolveImportedProperties(
       // type are shown only when plain, and the resolver's message, which can
       // quote any template value, ends its own line, so the remedies naming
       // `cdkd destroy` / `cdkd orphan` / `cdkd import` start the next one. The
-      // parameter names on that line are shown only when plain too.
+      // parameter names on that line are shown only when plain too. The
+      // resolver's message takes `displayAwsMessage` AFTER the mask (the mask
+      // matches the raw text). The resolver already sanitizes the operands it
+      // echoes, so what this adds is the BOUND -- the echo makes the message's
+      // length the template's choice -- plus this line's own guarantee for
+      // any resolver message that does not (go-to-k/cdkd#3479).
       logger.warn(
-        `Failed to resolve intrinsics in Properties for imported resource ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}.\n` +
+        `Failed to resolve intrinsics in Properties for imported resource ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): ${displayAwsMessage(maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues))}.\n` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource from state with 'cdkd orphan <StackPath>/<Path/To/Resource>'.` +
           (unboundParameterNames.length > 0
             ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.map((name) => plainOrDescribed(name, 'parameter name')).join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
@@ -2657,7 +2665,7 @@ export async function resolveImportedProperties(
       );
     } catch (err) {
       logger.debug(
-        `observed-baseline discard walk failed for imported ${logicalId} (${resource.resourceType}): ${err instanceof Error ? err.name : typeof err} — refusing the baseline fail-closed.`
+        safeMsg`observed-baseline discard walk failed for imported ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): ${err instanceof Error ? err.name : typeof err} — refusing the baseline fail-closed.`
       );
       discardsNonInertSubtree = true;
     }
@@ -3038,9 +3046,15 @@ function printSummary(rows: ImportRow[]): void {
     counts[r.outcome]++;
     const tag = formatOutcome(r.outcome);
     const detail =
-      r.outcome === 'imported' ? ` (${r.physicalId})` : r.reason ? ` — ${r.reason}` : '';
+      r.outcome === 'imported'
+        ? ` (${displaySafe(r.physicalId)})`
+        : r.reason
+          ? ` — ${r.reason}`
+          : '';
     // A row's reason can carry the `--resource` remedy, so the logical id and
-    // type are named only when plain (go-to-k/cdkd#3950).
+    // type are named only when plain (go-to-k/cdkd#3950). The physical id is
+    // sanitized: a nested-stack row's is the synthesized cdkd-local ARN, which
+    // embeds the template's logical id (go-to-k/cdkd#3479).
     logger.info(
       `  ${tag} ${logicalIdShown(r.logicalId)} (${resourceTypeShown(r.resourceType)})${detail}`
     );
@@ -3419,7 +3433,7 @@ export async function captureObservedForImportedResources(
         // refused can carry a baseline the refusal distrusts.
         delete resource.observedProperties;
         logger.debug(
-          `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties cannot be shown to spell every dynamic reference the deployed resource was built from, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until ${
+          `observedProperties capture SKIPPED for imported ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): the recorded properties cannot be shown to spell every dynamic reference the deployed resource was built from, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until ${
             parameterRefusalStands
               ? `it is REPLACED, or re-imported while a CloudFormation stack can prove its parameters were deployed at their 'Default' — an in-place deploy binds the same 'Default' and cannot restore the baseline`
               : `the next successful deploy`
@@ -3535,7 +3549,7 @@ export async function captureObservedForImportedResources(
         // `..."assword": SUPER-SECR"...`. So log what identifies the failure
         // without quoting the input, the way `parseResourceModel` already does.
         logger.debug(
-          `observedProperties capture for imported ${logicalId} (${resource.resourceType}) failed: ${err instanceof Error ? err.name : typeof err} — drift will fall back to template properties for this resource until the next successful deploy.`
+          safeMsg`observedProperties capture for imported ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}) failed: ${err instanceof Error ? err.name : typeof err} — drift will fall back to template properties for this resource until the next successful deploy.`
         );
       }
     })
@@ -3579,6 +3593,17 @@ function synthesizeNestedStackArn(
   logicalId: string
 ): string {
   return `arn:cdkd-local:${childRegion}:${accountId}:nested-stack/${parentStackName}/${logicalId}`;
+}
+
+/**
+ * A list of logical ids inside `validateNestedStackShape`'s `[...]` brackets.
+ * The ids are template `Resources` keys (or the AWS tree's, which mirror a
+ * deployed template), so each renders through `displayIdent` with
+ * `listMember`: a planted `A, B` or `A] — run ...` gains a visible boundary
+ * instead of reading as two ids or as cdkd's own clause (go-to-k/cdkd#3479).
+ */
+function shownIdList(ids: string[]): string {
+  return ids.map((id) => displayIdent(id, { listMember: true })).join(', ');
 }
 
 /**
@@ -3634,14 +3659,14 @@ function validateNestedStackShape(
   if (inTemplateMissingFromAws.length > 0) {
     problems.push(
       `template has nested-stack row(s) not present in CloudFormation: ` +
-        `[${inTemplateMissingFromAws.join(', ')}] — run \`cdk deploy\` first ` +
+        `[${shownIdList(inTemplateMissingFromAws)}] — run \`cdk deploy\` first ` +
         `so the AWS-side stack matches the synth template`
     );
   }
   if (inAwsMissingFromTemplate.length > 0) {
     problems.push(
       `CloudFormation has nested-child stack(s) not present in the synth template: ` +
-        `[${inAwsMissingFromTemplate.join(', ')}] — the CDK code was edited ` +
+        `[${shownIdList(inAwsMissingFromTemplate)}] — the CDK code was edited ` +
         `to remove these children, but the live CFn stack still has them. ` +
         `Run \`cdk deploy\` to apply the removal, or revert the CDK edit`
     );
@@ -3649,13 +3674,13 @@ function validateNestedStackShape(
   if (inTemplateMissingNestedTemplatePath.length > 0) {
     problems.push(
       `synth cloud assembly is missing nested-template asset paths for row(s) ` +
-        `[${inTemplateMissingNestedTemplatePath.join(', ')}] — verify CDK 2.x ` +
+        `[${shownIdList(inTemplateMissingNestedTemplatePath)}] — verify CDK 2.x ` +
         `\`cdk.NestedStack\` emits Metadata['aws:asset:path'] (default behavior)`
     );
   }
   if (problems.length > 0) {
     throw new Error(
-      `cdkd import --migrate-from-cloudformation: parent stack '${parentStackName}' ` +
+      `cdkd import --migrate-from-cloudformation: parent stack ${displayStackName(parentStackName)} ` +
         `template ↔ CloudFormation shape mismatch:\n  - ${problems.join('\n  - ')}`
     );
   }
@@ -3755,14 +3780,18 @@ async function importNestedStackChildrenRecursive(args: {
     if (!childTemplatePath) {
       throw new Error(
         `cdkd import --migrate-from-cloudformation: missing nested-template ` +
-          `path for '${childLogicalId}' under parent '${parentStackName}' — ` +
+          `path for ${displayIdent(childLogicalId)} under parent ${displayStackName(parentStackName)} — ` +
           `validateNestedStackShape should have rejected this; please file a bug.`
       );
     }
 
+    // Both ids are template-derived (`childLogicalId` is a `Resources` key, and
+    // `childStackName` embeds it), so they render through `displayIdent` /
+    // `displayStackName`, which supply their own boundary rather than the
+    // `'...'` a planted quote could close (go-to-k/cdkd#3479).
     logger.info(
-      `Adopting nested stack '${childLogicalId}' as cdkd stack '${childStackName}' ` +
-        `(${childRegion})...`
+      safeMsg`Adopting nested stack ${displayIdent(childLogicalId)} as cdkd stack ${displayStackName(childStackName)} ` +
+        safeMsg`(${childRegion})...`
     );
 
     const childTemplate = readNestedChildTemplate(childTemplatePath, childLogicalId);
@@ -3783,7 +3812,7 @@ async function importNestedStackChildrenRecursive(args: {
         // values and the next deploy shows UPDATEs the user was never warned
         // about.
         logger.info(
-          `Note: ${childRewritten} asset reference(s) in nested stack ${childStackName} are ` +
+          safeMsg`Note: ${childRewritten} asset reference(s) in nested stack ${displayStackName(childStackName)} are ` +
             `recorded in state at their pre-rewrite (CDK bootstrap) values, so the next ` +
             `'cdkd deploy' repoints any resource that still holds them to cdkd asset storage.`
         );
@@ -3908,7 +3937,7 @@ async function importNestedStackChildrenRecursive(args: {
 
       await stateBackend.saveState(childStackName, childRegion, childStackState);
       logger.info(
-        `✓ Nested stack state written: ${childStackName} (${childRegion}) — ` +
+        safeMsg`✓ Nested stack state written: ${displayStackName(childStackName)} (${childRegion}) — ` +
           `${rows.filter((r) => r.outcome === 'imported').length} resource(s) imported.`
       );
 
@@ -3950,8 +3979,8 @@ async function importNestedStackChildrenRecursive(args: {
     } finally {
       await lockManager.releaseLock(childStackName, childRegion).catch((err) => {
         logger.warn(
-          `Failed to release lock for nested stack '${childStackName}' (${childRegion}): ` +
-            `${err instanceof Error ? err.message : String(err)}`
+          safeMsg`Failed to release lock for nested stack ${displayStackName(childStackName)} (${childRegion}): ` +
+            displayAwsMessage(err instanceof Error ? err.message : String(err))
         );
       });
     }
@@ -3978,16 +4007,16 @@ function readNestedChildTemplate(
     raw = readFileSync(templatePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `Failed to read nested-stack template for '${childLogicalId}' at ` +
-        `${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to read nested-stack template for ${displayIdent(childLogicalId)} at ` +
+        `${displayAssemblyPath(templatePath)}: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}`
     );
   }
   try {
     return JSON.parse(raw) as CloudFormationTemplate;
   } catch (err) {
     throw new Error(
-      `Failed to parse nested-stack template for '${childLogicalId}' at ` +
-        `${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to parse nested-stack template for ${displayIdent(childLogicalId)} at ` +
+        `${displayAssemblyPath(templatePath)}: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}`
     );
   }
 }

@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-route-53';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -31,7 +32,7 @@ export class HostedZoneContextProvider implements ContextProvider {
       throw new Error('Hosted zone context provider requires domainName property');
     }
 
-    this.logger.debug(`Looking up hosted zone: ${domainName} (private: ${privateZone})`);
+    this.logger.debug(safeMsg`Looking up hosted zone: ${domainName} (private: ${privateZone})`);
 
     const client = new Route53Client({ ...ambientClientDefaults(), ...(region && { region }) });
 
@@ -70,16 +71,16 @@ export class HostedZoneContextProvider implements ContextProvider {
 
       if (filtered.length === 0) {
         throw new Error(
-          `No hosted zone found for domain: ${domainName}` +
-            (privateZone !== undefined ? ` (private: ${privateZone})` : '') +
-            (vpcId ? ` (vpcId: ${vpcId})` : '')
+          safeMsg`No hosted zone found for domain: ${domainName}` +
+            (privateZone !== undefined ? safeMsg` (private: ${privateZone})` : '') +
+            (vpcId ? safeMsg` (vpcId: ${vpcId})` : '')
         );
       }
 
       if (filtered.length > 1) {
         throw new Error(
-          `Multiple hosted zones found for domain: ${domainName}. ` +
-            `Found: ${filtered.map((z) => z.Id).join(', ')}`
+          safeMsg`Multiple hosted zones found for domain: ${domainName}. ` +
+            safeMsg`Found: ${filtered.map((z) => z.Id).join(', ')}`
         );
       }
 
@@ -87,7 +88,7 @@ export class HostedZoneContextProvider implements ContextProvider {
       // Strip /hostedzone/ prefix from ID
       const zoneId = zone.Id!.replace('/hostedzone/', '');
 
-      this.logger.debug(`Resolved hosted zone: ${zoneId} (${zone.Name})`);
+      this.logger.debug(safeMsg`Resolved hosted zone: ${zoneId} (${zone.Name})`);
 
       return {
         Id: zoneId,

@@ -2037,10 +2037,10 @@ describe('cdkd import', () => {
           );
         }
         expectNoCommandBesideDisplay(warning!, value);
-        // The echoing case's first line shows the resolver's text raw, which
-        // runs when that line alone is pasted: a display residual of the
-        // resolver's own messages, outside this fix (tracked in
-        // go-to-k/cdkd#3479). The line that names the commands is still
+        // The echoing case's first line shows the template value, sanitized
+        // and bounded but still able to run when that line alone is pasted:
+        // it is a diagnostic quoting the template, and it names no command
+        // (go-to-k/cdkd#3479). The line that names the commands is still
         // required to run nothing.
         const echoes = lines[0]!.includes(value);
         expect(echoes, value).toBe(echo === true);

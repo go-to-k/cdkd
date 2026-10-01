@@ -1,6 +1,7 @@
 import { EC2Client, DescribeImagesCommand } from '@aws-sdk/client-ec2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -22,7 +23,7 @@ export class AmiContextProvider implements ContextProvider {
     const owners = props['owners'] as string[] | undefined;
     const filters = props['filters'] as Record<string, string[]> | undefined;
 
-    this.logger.debug(`Looking up AMI (region: ${region})`);
+    this.logger.debug(safeMsg`Looking up AMI (region: ${region})`);
 
     const client = new EC2Client({ ...ambientClientDefaults(), ...(region && { region }) });
 
@@ -47,7 +48,7 @@ export class AmiContextProvider implements ContextProvider {
       }
 
       const imageId = images[0]!.ImageId!;
-      this.logger.debug(`Resolved AMI: ${imageId}`);
+      this.logger.debug(safeMsg`Resolved AMI: ${imageId}`);
       return imageId;
     } finally {
       client.destroy();

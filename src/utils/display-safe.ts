@@ -274,6 +274,42 @@ export function safeMsg(strings: TemplateStringsArray, ...values: unknown[]): st
   return out;
 }
 
+const TERMINAL_UNSAFE_KEEPING_LINE_BREAKS = new RegExp(
+  `${CSI}|${OSC}|${CONTROL_EXCEPT_NEWLINE_AND_TAB}`,
+  'g'
+);
+
+/**
+ * {@link safeMsg}'s per-value rule WITHOUT the flattening: for an untrusted
+ * value whose NEWLINES are content, not an attack — a CDK annotation's text
+ * (`Annotations.of(x).addWarning(...)`), which CDK itself writes across lines
+ * (go-to-k/cdkd#3479). `displaySafe` maps every newline to a space and would
+ * mangle every multi-line warning.
+ *
+ * What it strips is the FORGING class rather than the line break: a CSI or OSC
+ * whole, a bare CR (which returns the cursor and overwrites the line it is on),
+ * C1 (`U+009B` is a live CSI in UTF-8), `U+0085`, `U+2028` / `U+2029` and the
+ * bidi overrides and isolates. A CRLF pair is normalised to LF first, so a
+ * Windows-authored message keeps its line breaks instead of gaining a space.
+ *
+ * Applied at the CALL SITE although `ConsoleLogger` runs `terminalSafe` over
+ * every line: that sink cannot remove an OSC whole (two raw values could open
+ * and close one around cdkd's own text), and a caller holding any other
+ * logger would get nothing.
+ *
+ * RESIDUAL, by design: a value that keeps its newlines can begin a line with
+ * any text it likes, cdkd-sounding prose included. That is what "preserves
+ * newlines" means, and it is why this is NOT the default — a value with no
+ * legitimate line break takes `safeMsg` / `displaySafe`. The caller decides
+ * how a continuation line is set apart.
+ */
+export function displaySafeMultiline(value: unknown): string {
+  return replaceUnsafe(
+    toDisplayText(value).replace(/\r\n/g, '\n'),
+    TERMINAL_UNSAFE_KEEPING_LINE_BREAKS
+  );
+}
+
 /**
  * Cut `text` to at most `maxCodePoints` CODE POINTS, never splitting a
  * surrogate pair.

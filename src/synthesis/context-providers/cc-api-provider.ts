@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-cloudcontrol';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -38,7 +39,9 @@ export class CcApiContextProvider implements ContextProvider {
     }
 
     this.logger.debug(
-      `CC API lookup: ${typeName}${exactIdentifier ? ` (id: ${exactIdentifier})` : ''} (region: ${region})`
+      safeMsg`CC API lookup: ${typeName}` +
+        (exactIdentifier ? safeMsg` (id: ${exactIdentifier})` : '') +
+        safeMsg` (region: ${region})`
     );
 
     const client = new CloudControlClient({
@@ -72,7 +75,8 @@ export class CcApiContextProvider implements ContextProvider {
           return dummyValue;
         }
         throw new Error(
-          `No ${typeName} resource found${exactIdentifier ? ` with identifier ${exactIdentifier}` : ''}`
+          safeMsg`No ${typeName} resource found` +
+            (exactIdentifier ? safeMsg` with identifier ${exactIdentifier}` : '')
         );
       }
 
@@ -188,22 +192,22 @@ export class CcApiContextProvider implements ContextProvider {
     identifier?: string
   ): void {
     const count = resources.length;
-    const context = identifier ? ` with identifier ${identifier}` : '';
+    const context = identifier ? safeMsg` with identifier ${identifier}` : '';
 
     switch (expectedMatchCount) {
       case 'exactly-one':
         if (count !== 1) {
-          throw new Error(`Expected exactly one ${typeName}${context}, found ${count}`);
+          throw new Error(safeMsg`Expected exactly one ${typeName}` + `${context}, found ${count}`);
         }
         break;
       case 'at-least-one':
         if (count < 1) {
-          throw new Error(`Expected at least one ${typeName}${context}, found none`);
+          throw new Error(safeMsg`Expected at least one ${typeName}` + `${context}, found none`);
         }
         break;
       case 'at-most-one':
         if (count > 1) {
-          throw new Error(`Expected at most one ${typeName}${context}, found ${count}`);
+          throw new Error(safeMsg`Expected at most one ${typeName}` + `${context}, found ${count}`);
         }
         break;
       case 'any':

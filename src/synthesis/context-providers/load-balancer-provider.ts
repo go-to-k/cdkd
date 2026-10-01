@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 /**
@@ -26,7 +27,9 @@ export class LoadBalancerContextProvider implements ContextProvider {
     const loadBalancerArn = props['loadBalancerArn'] as string | undefined;
     const loadBalancerType = props['loadBalancerType'] as string | undefined;
 
-    this.logger.debug(`Looking up load balancer (arn: ${loadBalancerArn}, region: ${region})`);
+    this.logger.debug(
+      safeMsg`Looking up load balancer (arn: ${loadBalancerArn}, region: ${region})`
+    );
 
     const client = new ElasticLoadBalancingV2Client({
       ...ambientClientDefaults(),
@@ -47,11 +50,11 @@ export class LoadBalancerContextProvider implements ContextProvider {
       }
 
       if (lbs.length === 0) {
-        throw new Error(`No load balancer found (arn: ${loadBalancerArn})`);
+        throw new Error(safeMsg`No load balancer found (arn: ${loadBalancerArn})`);
       }
 
       const lb = lbs[0]!;
-      this.logger.debug(`Resolved load balancer: ${lb.LoadBalancerArn}`);
+      this.logger.debug(safeMsg`Resolved load balancer: ${lb.LoadBalancerArn}`);
 
       return {
         loadBalancerArn: lb.LoadBalancerArn,
@@ -89,7 +92,7 @@ export class LoadBalancerListenerContextProvider implements ContextProvider {
     const listenerProtocol = props['listenerProtocol'] as string | undefined;
 
     this.logger.debug(
-      `Looking up load balancer listener (arn: ${listenerArn}, lb: ${loadBalancerArn}, region: ${region})`
+      safeMsg`Looking up load balancer listener (arn: ${listenerArn}, lb: ${loadBalancerArn}, region: ${region})`
     );
 
     const client = new ElasticLoadBalancingV2Client({
@@ -116,12 +119,12 @@ export class LoadBalancerListenerContextProvider implements ContextProvider {
 
       if (listeners.length === 0) {
         throw new Error(
-          `No listener found (arn: ${listenerArn}, lb: ${loadBalancerArn}, port: ${listenerPort})`
+          safeMsg`No listener found (arn: ${listenerArn}, lb: ${loadBalancerArn}, port: ${listenerPort})`
         );
       }
 
       const listener = listeners[0]!;
-      this.logger.debug(`Resolved listener: ${listener.ListenerArn}`);
+      this.logger.debug(safeMsg`Resolved listener: ${listener.ListenerArn}`);
 
       return {
         listenerArn: listener.ListenerArn,

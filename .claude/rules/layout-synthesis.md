@@ -19,9 +19,8 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   `macro-expander.ts` and `src/synthesis/context-providers/index.ts` (where the
   `provider` / `key` LOOKUP stays raw and the provider failure text takes
   `displayAwsMessage`, since a lookup argument echoed back makes the LENGTH
-  attacker-chosen too). **Not yet everywhere**: the lookup arguments inside
-  `context-providers/*-provider.ts` and `stack-messages.ts`'s annotation display
-  are open rows on that issue. A joined list sanitizes per ELEMENT so the
+  attacker-chosen too); the `*-provider.ts` modules build their lines with
+  `safeMsg`. A joined list sanitizes per ELEMENT so the
   separator stays byte-exact; `displaySafe` replaces globally, so that is a
   formatting rule, not a safety one.
 - **assembly-reader.ts** renders EVERY assembly-derived value — a manifest key,
@@ -42,10 +41,10 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   ([#3482](https://github.com/go-to-k/cdkd/issues/3482)); `describeStack` in
   `src/cli/stack-matcher.ts` applies the same rule to the same values for every
   other command. `stack-messages.ts`'s side-file refusal follows the
-  same rule; its annotation DISPLAY does not YET — an open residual on
-  [#3479](https://github.com/go-to-k/cdkd/issues/3479), blocked on a helper that
-  preserves newlines, NOT a settled decision: that prose is the user's own app's
-  only when an app ran, which `-a <dir>` skips.
+  same rule, and its annotation DISPLAY flattens the construct path and passes
+  the message through `displaySafeMultiline`, which keeps a multi-line CDK
+  warning's newlines: that prose is the user's own app's only when an app ran,
+  which `-a <dir>` skips.
 - Every path those two build from the manifest — `directoryName`,
   `templateFile`, an asset-manifest `file`, `Metadata['aws:asset:path']`,
   `additionalMetadataFile` — goes through `resolveAssemblyPath`
