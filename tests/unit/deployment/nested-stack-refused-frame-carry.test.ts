@@ -745,6 +745,41 @@ describe('issue #3156: a record the resolver would not write is refused, not cer
     const substitutions = [{ token: TOKEN, value: 'zz', secret: true }];
     expect(carryOver({ ...FAITHFUL, substitutions }).has(`port:${PIN}`)).toBe(false);
   });
+
+  // The carry's own backstop for a token spelling ANOTHER recorded secret (the
+  // #4130 review's M0). Since issue #4166 the resolver refuses such a token
+  // first when a secret was substituted into it, so this case hand-builds the
+  // record instead of resolving one.
+  it('refuses a record whose token spells another secret the bag holds', () => {
+    const name = 'pinname-long';
+    const token = `{{resolve:ssm:/app/${name}}}`;
+    const join = { 'Fn::Join': ['', ['port:', token]] };
+    const carry = (bag: RecordedSecretValues): RecordedSecretValues => {
+      recordResolvedPair(bag, token, PIN);
+      recordIntrinsicLeafResolution(bag, join, {
+        input: `port:${token}`,
+        output: `port:${PIN}`,
+        substitutions: [{ token, value: PIN, secret: true }],
+        complete: true,
+      });
+      recordNestedStackParameterExpressions(
+        bag,
+        NESTED,
+        { Parameters: { Pin: `port:${PIN}` } },
+        { Parameters: { Pin: join } }
+      );
+      return bag;
+    };
+    // CONTROL: the same record with no other secret in the bag certifies.
+    expect(carry(new Map([[PIN, token]])).get(`port:${PIN}`)).toBe(`port:${token}`);
+    const bag = carry(
+      new Map([
+        [PIN, token],
+        [name, '{{resolve:secretsmanager:cdkd-name-probe:SecretString:name}}'],
+      ])
+    );
+    expect(bag.has(`port:${PIN}`)).toBe(false);
+  });
 });
 
 describe('issue #3156 point 2: a grandchild no longer prints the value', () => {

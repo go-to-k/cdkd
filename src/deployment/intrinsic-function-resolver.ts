@@ -12155,7 +12155,7 @@ export class IntrinsicFunctionResolver {
 
   /**
    * Whether the dynamic-reference token `fullMatch` was ASSEMBLED from a
-   * secret (issues #2743, #4166): its log text differs from the token, so a
+   * secret (issue #2743): its log text differs from the token, so a
    * twin mask sits inside it (floor-free, which is how a substituted secret of
    * any length shows), or the needle mask changes the raw token (a recorded
    * plaintext of four or more characters sits in it with no twin, which is
@@ -12171,6 +12171,30 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * The issue #4166 variant of {@link tokenAssembledFromSecret}: the twin half
+   * as is, the needle half against `inheritedSecrets` ONLY. That half exists
+   * for a `Ref` to a parameter a parent decrypted, which leaves no twin mask;
+   * a secret substituted within this pass leaves one. The pass's own bag is
+   * left out because it holds every secret this resource already resolved,
+   * and one that merely coincides with a LITERAL token's text (`DB_USER`'s
+   * `myapp` inside `DB_PASSWORD`'s secret id) discloses nothing, so refusing
+   * on it would fail a template by property order alone.
+   */
+  private tokenAssembledForRecording(
+    fullMatch: string,
+    tokenLogText: string,
+    context: ResolverContext | undefined
+  ): boolean {
+    if (tokenLogText !== fullMatch) return true;
+    const inherited = context?.inheritedSecrets;
+    return (
+      inherited !== undefined &&
+      inherited.size > 0 &&
+      maskRecordedSecretsInText(fullMatch, inherited) !== fullMatch
+    );
+  }
+
+  /**
    * Refuse a SECRET result of a resolvable token ASSEMBLED from a secret
    * (issue #4166): `{{resolve:ssm:/app/${Name}}}` with `Name` a secret, where
    * `/app/<Name>` is a `SecureString`. Recording that result would make the
@@ -12180,6 +12204,10 @@ export class IntrinsicFunctionResolver {
    * that refused the expression would leave the token's plaintext in the
    * clear instead, so the refusal belongs here, before anything is recorded
    * or cached.
+   *
+   * "Assembled" is {@link tokenAssembledForRecording}: a twin mask in the
+   * token, or a secret a parent passed in. A secret this pass resolved that
+   * merely coincides with a literal token's text is not counted.
    *
    * Called only once the token has resolved to a secret: a lookup failure
    * keeps its own masked error, and a public result records no expression.
@@ -12191,7 +12219,7 @@ export class IntrinsicFunctionResolver {
     tokenLogText: string,
     context: ResolverContext | undefined
   ): void {
-    if (!this.tokenAssembledFromSecret(fullMatch, tokenLogText, context)) return;
+    if (!this.tokenAssembledForRecording(fullMatch, tokenLogText, context)) return;
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Refusing to resolve ${this.displayMasked(tokenLogText, context)}: the reference was ` +
@@ -12722,8 +12750,8 @@ export class IntrinsicFunctionResolver {
    * retry, where replaying the literal is a correct no-op. So this entry point
    * keeps the warn-and-leave for every such token, and the value scan redacts
    * whatever is persisted afterwards (issue #2743). A resolvable token
-   * assembled from a secret that resolves to a secret is REFUSED on the
-   * template route, since recording it would persist the other secret inside
+   * assembled from a secret (a twin mask in it, or a secret a parent passed
+   * in) that resolves to a secret is REFUSED on the template route, since recording it would persist the other secret inside
    * the reference (issue #4166); here it resolves, for the same two reasons.
    */
   async resolveDynamicReferences(value: string, context?: ResolverContext): Promise<string> {
@@ -13107,7 +13135,14 @@ export class IntrinsicFunctionResolver {
           // so the next pass re-asks instead of inheriting a transient answer.
           if (param.type === 'SecureString') {
             if (decrypt) pinSecureVerdict = true;
-            else this.pinSecretVerdict(fullMatch, true);
+            // The comparison path resolves nothing, so it cannot refuse; it
+            // still must not pin a token the deploy path would refuse.
+            else if (
+              persistedText ||
+              !this.tokenAssembledForRecording(fullMatch, tokenLogText, context)
+            ) {
+              this.pinSecretVerdict(fullMatch, true);
+            }
           } else if (!param.secure) {
             this.pinSecretVerdict(fullMatch, false);
           } else {
@@ -13120,9 +13155,10 @@ export class IntrinsicFunctionResolver {
             if (!decrypt) {
               // Comparison path: the value in hand is ciphertext, which is neither
               // what state holds nor safe to cache. Leave the expression
-              // unresolved, exactly as the secretsmanager skip above does — now
-              // that the type is known, later passes short-circuit before the
-              // lookup.
+              // unresolved, exactly as the secretsmanager skip above does — once
+              // a SecureString verdict is pinned above, later passes
+              // short-circuit before the lookup (a TEMPLATE token assembled from
+              // a secret is not pinned, so it is looked up again, issue #4166).
               complete = false;
               continue;
             }

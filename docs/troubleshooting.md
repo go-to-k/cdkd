@@ -1563,7 +1563,20 @@ Rotate the secret either way.
 Refusing to resolve {{resolve:ssm:/app/***}}: the reference was assembled from a secret value and resolves to a secret, so recording it would write that value into state inside the reference. Build the reference name from non-secret values.
 ```
 
-The resource or stack Output fails as in the section above.
+The resource or stack Output fails as in the section above. `cdkd import`
+resolves template properties the same way: it warns `Failed to resolve
+intrinsics in Properties for imported resource '<id>' ...` with this message
+and records that resource's properties in their template form.
+
+A second shape prints the whole reference masked:
+
+```
+Refusing to resolve ***: the reference was assembled from a secret value and resolves to a secret, ...
+```
+
+There a secret's whole VALUE is itself `{{resolve:...}}` text (an `ssm`
+parameter holding `{{resolve:ssm:/app/pin}}`, used through `Fn::Sub`), and cdkd
+resolves that text again as a reference.
 
 **Causes:**
 
@@ -1580,19 +1593,24 @@ Value:
 
 cdkd stores a resolved secret in `state.json` as the reference that resolved
 it. Here that reference holds the other secret, so storing it would write that
-secret into state. A name that spells a secret of four or more characters
-which the deploy already resolved is refused too, even when the text is
-written literally.
+secret into state. A name that spells a secret of four or more characters is
+refused too, even when the text is written literally, if a parent stack
+passed that secret in as a decrypted parameter. A secret this stack's own
+deploy resolved does not count: two references to one secret, where the first
+one's value (`myapp`) also appears in the second one's literal text
+(`myapp-db`), both resolve, in either order.
 
 Not refused: a reference whose result is public (an `ssm` `String` or
-`StringList` parameter) or empty, and one whose lookup fails, which reports its own
-error with the name masked. `cdkd drift` and a rollback replay read what
+`StringList` parameter) or empty, and one whose lookup fails, which reports
+its own error with the name masked. `cdkd drift` and a rollback replay read what
 state already holds and are not refused.
 
 **Solution:**
 
 Build the reference name from values that are not secrets: a literal, or a
-plain parameter. If such a template was deployed before cdkd refused it, the
+plain parameter. For the second shape, write the reference to the target in
+the template instead of storing `{{resolve:...}}` text as a secret's value.
+If such a template was deployed before cdkd refused it, the
 stack's state record can hold the other secret inside the stored reference.
 [`cdkd scrub`](cli-scrub.md) leaves text inside a `secretsmanager` / `ssm` /
 `ssm-secure` reference as written, so it does not remove it: deploy the

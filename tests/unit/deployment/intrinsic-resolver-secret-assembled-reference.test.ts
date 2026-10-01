@@ -17,7 +17,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import {
+  MIN_NEEDLE_LENGTH,
+  SECRET_MASK,
   clearRecordedSecretExpressions,
+  maskRecordedSecretsInText,
   inheritNestedStackParameterAssociations,
   isRecordedSecretExpression,
   markSameGenerationBag,
@@ -73,7 +76,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
         // An EMPTY secret: its result records nothing, so it is not refused.
         if (name === `/empty/${NAME}`) return { Parameter: { Value: '', Type: 'SecureString' } };
         // The ARN form a region-pinned token sends (resolved by a sibling).
-        if (name === `/app/${NAME}` || name === `/app/${SHORT_NAME}` || name?.endsWith(`:parameter/app/${NAME}`)) return { Parameter: { Value: 'q7', Type: 'SecureString' } };
+        // `crnoechovalue`: a custom resource's NoEcho `Data` value.
+        if (name === '/app/crnoechovalue' || name === `/app/${NAME}` || name === `/app/${SHORT_NAME}` || name?.endsWith(`:parameter/app/${NAME}`)) return { Parameter: { Value: 'q7', Type: 'SecureString' } };
         if (name === `/app/${BIG_NAME}`) return { Parameter: { Value: BIG_VALUE, Type: 'SecureString' } };
         // A PUBLIC parameter named by the secret: its result records nothing.
         if (name === `/pub/${NAME}`) return { Parameter: { Value: 'public-value', Type: 'String' } };
@@ -85,6 +89,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     secretsManager: {
       send: vi.fn(async (command: { input?: { SecretId?: string } }) => {
         if (command.input?.SecretId === SECRET_ID) return { SecretString: JSON.stringify({ name: SHORT_NAME }) };
+        // Review M0: a secret whose `username` is a substring of its own id.
+        if (command.input?.SecretId === 'myapp-db') {
+          return { SecretString: JSON.stringify({ username: 'myapp', password: 'db-password-value' }) };
+        }
         const notFound = new Error("Secrets Manager can't find the specified secret.");
         notFound.name = 'ResourceNotFoundException';
         throw notFound;
@@ -282,6 +290,54 @@ describe('issue #4166: a resolvable token assembled from a secret is refused', (
 });
 
 describe('issue #4166: what the refusal leaves alone', () => {
+  // Review M0: `DB_USER` resolves first and records `myapp`, which the
+  // `DB_PASSWORD` token spells literally. Literal template text discloses
+  // nothing, so neither key order may refuse.
+  for (const order of [
+    ['DB_USER', 'DB_PASSWORD'],
+    ['DB_PASSWORD', 'DB_USER'],
+  ] as const) {
+    it(`does not refuse a literal token spelling a secret this pass resolved (${order.join(' before ')})`, async () => {
+      const tokens = {
+        DB_USER: '{{resolve:secretsmanager:myapp-db:SecretString:username}}',
+        DB_PASSWORD: '{{resolve:secretsmanager:myapp-db:SecretString:password}}',
+      };
+      // Premise: `myapp` clears the needle floor, and the union masker the
+      // unsupported-service refusal uses changes the literal password token.
+      expect('myapp'.length).toBeGreaterThanOrEqual(MIN_NEEDLE_LENGTH);
+      expect(maskRecordedSecretsInText(tokens.DB_PASSWORD, new Map([['myapp', 'x']]))).not.toBe(tokens.DB_PASSWORD);
+      const properties = Object.fromEntries(order.map((key) => [key, tokens[key]]));
+      const { resolved } = await persist(properties, false);
+      expect(resolved).toEqual({ DB_USER: 'myapp', DB_PASSWORD: 'db-password-value' });
+    });
+  }
+
+  it('the comparison path does not pin the verdict of a token the deploy path would refuse', async () => {
+    // Review M2: `skipDynamicReferences` reads the `Type` without decrypting
+    // and resolves nothing. CONTROL: the same token from a plain name is pinned.
+    const token = `{{resolve:ssm:/app/${NAME}}}`;
+    const compare = async (secret: boolean): Promise<void> => {
+      const context = { ...contextFor(new Map(), secret), skipDynamicReferences: true };
+      await new IntrinsicFunctionResolver('us-east-1').resolve(
+        { A: { 'Fn::Sub': 'port:{{resolve:ssm:/app/${Name}}}' } },
+        context as never
+      );
+    };
+    await compare(true);
+    expect(ssmCalls.count, 'premise: the comparison path looked the parameter up').toBe(1);
+    expect(isRecordedSecretExpression(token)).toBe(false);
+    await compare(false);
+    expect(isRecordedSecretExpression(token)).toBe(true);
+  });
+
+  it('the comparison path over PERSISTED text pins the verdict, as its deploy path records it', async () => {
+    const token = `{{resolve:ssm:/app/${NAME}}}`;
+    const context = { ...contextFor(new Map(), true), skipDynamicReferences: true };
+    await new IntrinsicFunctionResolver('us-east-1').resolveDynamicReferences(`port:${token}`, context as never);
+    expect(ssmCalls.count, 'premise: the comparison path looked the parameter up').toBe(1);
+    expect(isRecordedSecretExpression(token)).toBe(true);
+  });
+
   it('CONTROL: the same token with a name that is NOT a secret persists its expression', async () => {
     const { resolved, record } = await persist({ A: { 'Fn::Sub': 'port:{{resolve:ssm:/app/${Name}}}' } }, false);
     expect(resolved['A']).toBe('port:q7');
@@ -338,9 +394,53 @@ describe('issue #4166: what the refusal leaves alone', () => {
       expect(resolved, read).toBe('port:q7');
     }
     expect(ssmCalls.count, 'premise: the sibling looked up once').toBe(2);
+    for (const line of everyLine()) expect(line).not.toContain(NAME);
     // CONTROL: the same text as a TEMPLATE leaf is refused. Its name spells a
     // recorded four-or-more-character secret, the bound issue #2743 set.
     const message = await refusalOf(persist({ A: `port:{{resolve:ssm:/app/${NAME}}}` }, true));
     expect(message).toBe(`Refusing to resolve {{resolve:ssm:/app/***}}: ${REFUSAL_TAIL}`);
+  });
+});
+
+describe('issue #4166: a custom resource NoEcho value in a reference name', () => {
+  const noEchoContext = (skipDynamicReferences: boolean) => ({
+    ...contextFor(new Map([['crnoechovalue', SECRET_MASK]]), false),
+    resources: {
+      CR: { physicalId: 'cr-phys', resourceType: 'Custom::Probe', attributes: { Password: 'crnoechovalue' } },
+    },
+    template: { Parameters: {}, Resources: { CR: { Type: 'Custom::Probe', Properties: {} } } },
+    ...(skipDynamicReferences ? { skipDynamicReferences: true } : {}),
+  });
+
+  it('the comparison path does not pin its verdict either: the twin half', async () => {
+    // Review M2, the twin half: the value reaches the token through its twin
+    // mask, not through an inherited needle.
+    await new IntrinsicFunctionResolver('us-east-1').resolve(
+      { A: { 'Fn::Sub': 'port:{{resolve:ssm:/app/${CR.Password}}}' } },
+      noEchoContext(true) as never
+    );
+    expect(ssmCalls.count, 'premise: the comparison path looked the parameter up').toBe(1);
+    expect(isRecordedSecretExpression('{{resolve:ssm:/app/crnoechovalue}}')).toBe(false);
+  });
+
+  it('is refused: the value is a mask-only key of the pass bag, and its twin masks it', async () => {
+    // What `docs/state-management.md` says about a reference NAME built from a
+    // `NoEcho` value: when the reference resolves to a secret it is refused.
+    const bag: RecordedSecretValues = new Map([['crnoechovalue', SECRET_MASK]]);
+    const context = {
+      ...contextFor(bag, false),
+      resources: {
+        CR: { physicalId: 'cr-phys', resourceType: 'Custom::Probe', attributes: { Password: 'crnoechovalue' } },
+      },
+      template: { Parameters: {}, Resources: { CR: { Type: 'Custom::Probe', Properties: {} } } },
+    };
+    const message = await refusalOf(
+      new IntrinsicFunctionResolver('us-east-1').resolve(
+        { A: { 'Fn::Sub': 'port:{{resolve:ssm:/app/${CR.Password}}}' } },
+        context as never
+      )
+    );
+    expect(message).toBe(`Refusing to resolve {{resolve:ssm:/app/***}}: ${REFUSAL_TAIL}`);
+    for (const line of everyLine()) expect(line).not.toContain('crnoechovalue');
   });
 });
