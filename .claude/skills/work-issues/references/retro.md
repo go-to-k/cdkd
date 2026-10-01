@@ -42,8 +42,8 @@ gh issue list --state open --limit 200 --json number,title,updatedAt,labels \
   done
 ```
 
-Report `closed N / filed M (new K / folded J)`; when weighing whether to file a
-finding, file it.
+Report `closed N / filed M (new K / folded J)`. A run whose filed count tops
+its closed count says so, and names which filed items §5-f's bar admitted.
 
 ### 10-a. Evidence: only what this run actually produced
 

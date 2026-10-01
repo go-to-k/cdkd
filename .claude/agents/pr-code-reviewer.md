@@ -44,6 +44,7 @@ Read every changed file end-to-end. For each, ask:
 
   Mark any such finding `spec (secondary)` and say it defers to `pr-spec-reviewer` if that axis ran. **Cap it at `minor` unless it is independently a code defect**: the parent sorts on SEVERITY alone, so a `blocker` here blocks the marker whatever the defer sentence says, and this pass does not have the calibration to earn that.
 - Documentation prose.
+- SECURITY.md's out-of-scope class (a printed value that would run if pasted into a shell), and any site OUTSIDE the diff that fails AGENTS.md's "File only what a user can hit" — every finding you raise becomes work.
 
 ## Report format
 
