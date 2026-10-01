@@ -216,7 +216,8 @@ export async function provisionCreate(
     result.physicalId,
     resourceType,
     resolvedProps,
-    { ...createCaptureSiblings, afterOwnWrite: true }
+    { ...createCaptureSiblings, afterOwnWrite: true },
+    createSecrets
   );
 
   if (counts) counts.created++;

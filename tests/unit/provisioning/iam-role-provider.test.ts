@@ -551,6 +551,52 @@ describe('IAMRoleProvider', () => {
         expect(sent(DeleteRoleCommand)).toHaveLength(1);
       });
 
+      // Issue #1160: a removal reset is an UPDATE value. A rename that also
+      // drops MaxSessionDuration creates the new role from the TEMPLATE bag,
+      // not one carrying the injected reset.
+      it('a rename that also removes MaxSessionDuration creates the role without the reset', async () => {
+        mockSend.mockResolvedValueOnce({
+          Role: { RoleName: 'my-role', Arn: 'arn:aws:iam::0:role/my-role', RoleId: 'r2' },
+        }); // create()
+        mockSend.mockResolvedValue({}); // the delete()'s cleanup calls all succeed
+
+        await provider.update(
+          'L',
+          'MyStack-my-role',
+          'AWS::IAM::Role',
+          { RoleName: 'my-role', AssumeRolePolicyDocument: DOC },
+          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC, MaxSessionDuration: 7200 }
+        );
+
+        const create = sent(CreateRoleCommand);
+        expect(create).toHaveLength(1);
+        expect((create[0] as { input: Record<string, unknown> }).input).not.toHaveProperty(
+          'MaxSessionDuration'
+        );
+      });
+
+      it('the same on the engine path, where the caller already injected the reset', async () => {
+        mockSend.mockResolvedValueOnce({
+          Role: { RoleName: 'my-role', Arn: 'arn:aws:iam::0:role/my-role', RoleId: 'r2' },
+        }); // create()
+        mockSend.mockResolvedValue({});
+
+        await provider.update(
+          'L',
+          'MyStack-my-role',
+          'AWS::IAM::Role',
+          { RoleName: 'my-role', AssumeRolePolicyDocument: DOC, MaxSessionDuration: 3600 },
+          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC, MaxSessionDuration: 7200 },
+          { removedProperties: new Set(['MaxSessionDuration']) }
+        );
+
+        const create = sent(CreateRoleCommand);
+        expect(create).toHaveLength(1);
+        expect((create[0] as { input: Record<string, unknown> }).input).not.toHaveProperty(
+          'MaxSessionDuration'
+        );
+      });
+
       // The replacement arm re-derives the name inside `create()`, so a Path
       // mismatch on a revert must refuse rather than replace under the bare name.
       it('refuses a Path revert instead of replacing the role', async () => {

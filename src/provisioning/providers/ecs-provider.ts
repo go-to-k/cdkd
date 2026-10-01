@@ -119,7 +119,7 @@ import {
   type MaskedLogSinks,
 } from '../masked-retry-logger.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -367,6 +367,29 @@ export class ECSProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ECSProvider');
 
+  /**
+   * Issue #1160: `UpdateService` keeps an absent member's live value, so a
+   * Service property REMOVED from the template is sent its CFn / API default.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::ECS::Service',
+      new Map<string, unknown>([
+        // Empty list reverts the service to its launch type (AWS-documented).
+        // If the service was created with a capacity provider and no launch
+        // type, AWS rejects the reset — the same constraint CloudFormation
+        // faces.
+        ['CapacityProviderStrategy', []],
+        ['PlacementConstraints', []],
+        ['PlatformVersion', 'LATEST'],
+        ['HealthCheckGracePeriodSeconds', 0],
+        ['EnableECSManagedTags', false],
+        ['PropagateTags', 'NONE'],
+        ['EnableExecuteCommand', false],
+      ]),
+    ],
+  ]);
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::ECS::Cluster',
@@ -587,6 +610,13 @@ export class ECSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     switch (resourceType) {
       case 'AWS::ECS::Cluster':
         // A Cluster's physical id IS its name.
@@ -1764,22 +1794,14 @@ export class ECSProvider implements ResourceProvider {
     // reset (immutable / required / always-carried): ServiceName (immutable,
     // guarded above), Cluster / TaskDefinition / DesiredCount /
     // NetworkConfiguration, SchedulingStrategy (create-only).
-    const capacityProviderStrategyInput = clearOnUpdateRemoval(
-      this.convertCapacityProviderStrategy(
-        properties['CapacityProviderStrategy'] as Array<Record<string, unknown>> | undefined
-      ),
-      previousProperties['CapacityProviderStrategy'] as CapacityProviderStrategyItem[] | undefined,
-      // Empty list reverts the service to its launch type (AWS-documented). If
-      // the service was created with a capacity provider and no launch type,
-      // AWS rejects the reset — the same constraint CloudFormation faces.
-      []
+    // The constant resets arrive in `properties` from `removalDefaults`;
+    // `PlacementStrategies` accepts the `PlacementStrategy` alias, so its
+    // reset stays local.
+    const capacityProviderStrategyInput = this.convertCapacityProviderStrategy(
+      properties['CapacityProviderStrategy'] as Array<Record<string, unknown>> | undefined
     );
-    const placementConstraintsInput = clearOnUpdateRemoval(
-      this.convertPlacementConstraints(
-        properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
-      ),
-      previousProperties['PlacementConstraints'] as PlacementConstraint[] | undefined,
-      []
+    const placementConstraintsInput = this.convertPlacementConstraints(
+      properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
     );
     const placementStrategyInput = clearOnUpdateRemoval(
       this.convertPlacementStrategies(
@@ -1792,31 +1814,13 @@ export class ECSProvider implements ResourceProvider {
         | undefined,
       []
     );
-    const platformVersionInput = clearOnUpdateRemoval(
-      properties['PlatformVersion'] as string | undefined,
-      previousProperties['PlatformVersion'] as string | undefined,
-      'LATEST'
-    );
-    const healthCheckGracePeriodSecondsInput = clearOnUpdateRemoval(
-      properties['HealthCheckGracePeriodSeconds'] as number | undefined,
-      previousProperties['HealthCheckGracePeriodSeconds'] as number | undefined,
-      0
-    );
-    const enableECSManagedTagsInput = clearOnUpdateRemoval(
-      properties['EnableECSManagedTags'] as boolean | undefined,
-      previousProperties['EnableECSManagedTags'] as boolean | undefined,
-      false
-    );
-    const propagateTagsInput = clearOnUpdateRemoval(
-      properties['PropagateTags'] as PropagateTags | undefined,
-      previousProperties['PropagateTags'] as PropagateTags | undefined,
-      'NONE'
-    );
-    const enableExecuteCommandInput = clearOnUpdateRemoval(
-      properties['EnableExecuteCommand'] as boolean | undefined,
-      previousProperties['EnableExecuteCommand'] as boolean | undefined,
-      false
-    );
+    const platformVersionInput = properties['PlatformVersion'] as string | undefined;
+    const healthCheckGracePeriodSecondsInput = properties['HealthCheckGracePeriodSeconds'] as
+      | number
+      | undefined;
+    const enableECSManagedTagsInput = properties['EnableECSManagedTags'] as boolean | undefined;
+    const propagateTagsInput = properties['PropagateTags'] as PropagateTags | undefined;
+    const enableExecuteCommandInput = properties['EnableExecuteCommand'] as boolean | undefined;
 
     // issue #609 backfill — the previously silent-dropped Service members on
     // the update path. All of the config blobs below are change-gated (like
@@ -3023,12 +3027,14 @@ export class ECSProvider implements ResourceProvider {
    * `observedProperties`, which normally carries the member too, and its
    * `preserveUntemplated` arm recurses via `mergeUntemplatedValue` and keeps
    * AWS-only members — but it is real when an `observedProperties` snapshot
-   * predates AWS reporting the member. This is NOT specific to this resolver:
-   * every `clearOnUpdateRemoval` site in the codebase — 78 across 14 provider
-   * files before this PR, 80 with this resolver's two — carries the same
-   * exposure, so fixing it belongs to that shared contract, not here. It is
-   * written down and unit-pinned so the next member copied onto this pattern
-   * does not inherit the premise unchecked.
+   * predates AWS reporting the member. Kept on purpose (issue #1160): a
+   * nested `clearOnUpdateRemoval` that read presence from the desired bag
+   * instead would stop reverting a console change the baseline declares as
+   * unset (the Lambda URL `Cors` placeholder arm depends on the readback), so
+   * only a TOP-LEVEL removal is judged template-vs-template
+   * (`UpdateContext.removedProperties`), which is empty on that path. It is
+   * unit-pinned so the next member copied onto this pattern does not inherit
+   * the premise unchecked.
    */
   private resolveDeploymentConfiguration(
     properties: Record<string, unknown>,

@@ -774,6 +774,20 @@ export interface UpdateContext extends SecretMaskingContext {
    * proceeds.
    */
   inlinePolicyClaimed?: InlinePolicyClaimed | undefined;
+
+  /**
+   * Issue #1160: the top-level properties the previous TEMPLATE declared and
+   * the desired one omits, computed once by the caller
+   * (`prepareRemovalForUpdate`, `src/provisioning/update-removal.ts`), which
+   * has ALREADY injected each one {@link ResourceProvider.removalDefaults}
+   * declares into the desired bag. Set by every `update()` caller: the deploy's
+   * in-place UPDATE, both rollback revert arms (state record vs state record),
+   * and `drift --revert`, where it is EMPTY: its previous side is an AWS
+   * readback, which never counts as a template declaration, and its desired
+   * bag starts from that readback, so no top-level key is absent from it.
+   * ABSENT means a direct call, where `withRemovalDefaults` injects instead.
+   */
+  removedProperties?: ReadonlySet<string> | undefined;
 }
 
 /** A principal kind an inline policy is written onto. */
@@ -976,6 +990,29 @@ export interface ResourceProvider {
    * (this field is a development-time annotation, not runtime behavior).
    */
   unhandledByDesign?: ReadonlyMap<string, ReadonlyMap<string, string>>;
+
+  /**
+   * Issue #1160: per resource type, the value to send for a top-level property
+   * REMOVED from the template, where the update API keeps an absent field's
+   * live value (merge semantics) and CloudFormation resets it to its default.
+   * The value is CFn-shaped and must be what CloudFormation / AWS treats as
+   * the default. The update CALLER injects it into the bag passed to
+   * `update()` only; state records the template as-is. Only a CONSTANT that
+   * `update()` forwards verbatim belongs here — a coerced, aliased, nested or
+   * conditional clear stays a `clearOnUpdateRemoval` site in the provider.
+   */
+  removalDefaults?: ReadonlyMap<string, ReadonlyMap<string, unknown>>;
+
+  /**
+   * Issue #1160: per resource type, the properties whose REMOVAL `update()`
+   * already handles itself (a local clear, a diff, a full-replace call, or a
+   * removal that is not a valid template transition, such as a required or
+   * create-only one). An entry here is the opt-in to the caller's warning,
+   * so it must list EVERY such property of the type: any removed property in
+   * neither this set nor {@link removalDefaults} is named as left at its
+   * current AWS value. A type with no entry is never warned about.
+   */
+  removalHandledInUpdate?: ReadonlyMap<string, ReadonlySet<string>>;
 
   /**
    * If true, the provider refuses CC API fallback for create/update.

@@ -86,6 +86,9 @@ export class LambdaConfigFieldRemovalStack extends cdk.Stack {
         UpdateRuntimeOn: 'FunctionUpdate',
       });
       cfnFn.addPropertyOverride('CodeSigningConfigArn', codeSigning.ref);
+      // Issue #1160: a removal cdkd does NOT reset (no `removalDefaults`
+      // entry), so the removal phase must WARN naming it, and AWS keeps it.
+      cfnFn.addPropertyOverride('RecursiveLoop', 'Allow');
     }
 
     // Durable / tenancy function — present in BOTH phases (see the class

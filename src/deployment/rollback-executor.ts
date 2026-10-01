@@ -77,6 +77,11 @@ import {
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import {
+  prepareRemovalForUpdate,
+  removalWarning,
+  withoutInjectedRemovals,
+} from '../provisioning/update-removal.js';
+import {
   applyDefaultNameForFallback,
   explicitNamePropertyFor,
   withSkipPrefix,
@@ -2927,15 +2932,38 @@ async function updateWithRollbackRetry(
   /** The op's masker ({@link createOpMasker}) for the retry lines. */
   mask: MaskerFn
 ): Promise<ResourceUpdateResult> {
+  // Issue #1160, for BOTH revert arms: each hands over two state records, so
+  // the removal is template-vs-template on either. Once per op, outside the
+  // retry loop, exactly as the deploy's in-place update does it.
+  const [, , resourceType, desired, previous, context] = args;
+  const removal = prepareRemovalForUpdate(provider, resourceType, desired, previous);
+  const revertArgs: Parameters<ResourceProvider['update']> = [
+    args[0],
+    args[1],
+    resourceType,
+    removal.properties,
+    previous,
+    { ...context, ...removal.context },
+  ];
+  // An injected reset is sent, never recorded: the record keeps the template.
+  // The warning follows a SUCCESSFUL revert only, as on the deploy side.
+  const recorded = (result: ResourceUpdateResult): ResourceUpdateResult => {
+    if (removal.unhandled.length > 0) {
+      logger.warn(mask(removalWarning(logicalId, resourceType, removal.unhandled, 'rollback')));
+    }
+    return withoutInjectedRemovals(result, removal.injected);
+  };
   if (provider.disableOuterRetry) {
     // Single-shot — the provider handles transient errors internally, and an
     // outer retry would invalidate its per-call invariant state.
-    return await withCurrentResourceSecrets(secrets, () => provider.update(...args));
+    return recorded(
+      await withCurrentResourceSecrets(secrets, () => provider.update(...revertArgs))
+    );
   }
-  return await withRetry(
+  const result = await withRetry(
     // INSIDE the retry arrow, so the store is bound per ATTEMPT, exactly as the
     // deploy engine binds its own provider calls.
-    () => withCurrentResourceSecrets(secrets, () => provider.update(...args)),
+    () => withCurrentResourceSecrets(secrets, () => provider.update(...revertArgs)),
     // A LABEL to `withRetry` -- it names the operation in the retry / give-up
     // lines and is used for nothing else -- so it takes this file's rendering
     // (issue #3092): `retry.ts` sanitizes its label too, but a label is not
@@ -2951,6 +2979,7 @@ async function updateWithRollbackRetry(
       }),
     }
   );
+  return recorded(result);
 }
 
 /**

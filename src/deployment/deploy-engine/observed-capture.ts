@@ -16,8 +16,9 @@ import {
   recaptureMaskedBaseline,
   resolveRecordSecrets,
 } from '../masked-baseline-recapture.js';
+import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
-import { markSameGenerationBag } from '../secret-redaction.js';
+import { markSameGenerationBag, type RecordedSecretValues } from '../secret-redaction.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -60,7 +61,8 @@ export function kickOffObservedCapture(
   physicalId: string,
   resourceType: string,
   resolvedProps: Record<string, unknown>,
-  context?: import('../../types/resource.js').ReadCurrentStateContext
+  context?: import('../../types/resource.js').ReadCurrentStateContext,
+  secrets?: RecordedSecretValues
 ): void {
   if (this.options.captureObservedState !== true) return;
   // A capture that cannot run still SUPERSEDES the deploy-start refresh task
@@ -69,14 +71,22 @@ export function kickOffObservedCapture(
   this.observedCaptureTasks.delete(logicalId);
   if (!provider.readCurrentState) return;
 
-  const promise = provider
-    .readCurrentState(physicalId, logicalId, resourceType, resolvedProps, context)
-    .catch((err: unknown) => {
-      this.logger.debug(
-        `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
-      );
-      return undefined;
-    });
+  const readCurrentState = provider.readCurrentState.bind(provider);
+  const read = (): Promise<Record<string, unknown> | undefined> =>
+    readCurrentState(physicalId, logicalId, resourceType, resolvedProps, context).catch(
+      (err: unknown) => {
+        this.logger.debug(
+          `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
+        );
+        return undefined;
+      }
+    );
+  // go-to-k/cdkd#4362: the readback runs AFTER the create / update call
+  // returned, so outside the scope that call bound. Bind the SAME bag again,
+  // around the whole chain: a promise reaction runs in the scope it was
+  // registered in, so the `catch` line above (AWS may echo a submitted,
+  // secret-derived name) is sink-masked too, not only the provider's own lines.
+  const promise = secrets === undefined ? read() : withCurrentResourceSecrets(secrets, read);
   this.observedCaptureTasks.set(logicalId, promise);
 }
 
@@ -604,12 +614,10 @@ export function kickOffMaskedBaselineRecapture(
       );
       return undefined;
     }
-    const readback = await readCurrentState(
-      resource.physicalId,
-      logicalId,
-      resource.resourceType,
-      properties,
-      context
+    // The readback can carry the plaintext just resolved, so it runs inside
+    // that bag's sink scope, like the post-write capture (#4362).
+    const readback = await withCurrentResourceSecrets(secrets, () =>
+      readCurrentState(resource.physicalId, logicalId, resource.resourceType, properties, context)
     );
     if (readback === undefined) return undefined;
     const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });

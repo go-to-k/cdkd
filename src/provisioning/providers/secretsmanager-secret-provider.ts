@@ -29,7 +29,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import {
   createMaskedLogSinks,
   isSecretDerivedValue,
@@ -286,6 +286,18 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Issue #1160: UpdateSecret has merge semantics (an absent input field means
+   * "no change"), so a REMOVED Description is sent as the clear sentinel `''`
+   * — CFn resets it to "no description" (live-verified 2026-07-27: after
+   * `Description: ''` DescribeSecret omits Description again, so the reset is
+   * drift-clean). `KmsKeyId` treats `''` as absent on both sides, so its reset
+   * stays a local `clearOnUpdateRemoval` site.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    ['AWS::SecretsManager::Secret', new Map<string, unknown>([['Description', '']])],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.smClient = awsClients.secretsManager;
@@ -438,6 +450,13 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     // Issue #2177: ONE masked sink per operation. The physical id is an ARN
     // embedding the secret's NAME, so it is masked whenever that name is
     // secret-derived: from the desired `Name`, or, after a rotated secret,
@@ -510,17 +529,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // user-intended `Description: ''` (clear-the-description) on
       // `cdkd drift --revert`. AWS UpdateSecret accepts empty string for
       // Description (treated as "no description").
-      // #1160 reset-on-removal — UpdateSecret has merge semantics (an absent
-      // input field means "no change"), so a Description REMOVED from the
-      // template must be sent as the explicit clear sentinel `''` via
-      // `clearOnUpdateRemoval` (CFn resets a removed Description to "no
-      // description"; live-verified 2026-07-27: after `Description: ''`
-      // DescribeSecret omits Description again, so the reset is drift-clean).
-      const description = clearOnUpdateRemoval(
-        properties['Description'] as string | undefined,
-        previousProperties['Description'] as string | undefined,
-        ''
-      );
+      // A Description REMOVED from the template arrives as its
+      // `removalDefaults` reset, `''` (#1160).
+      const description = properties['Description'] as string | undefined;
       if (description !== undefined) updateParams.Description = description;
       // `KmsKeyId`: readCurrentState emits `KmsKeyId: ''` as a placeholder
       // when the secret uses the AWS-managed key (no customer KMS key set), so

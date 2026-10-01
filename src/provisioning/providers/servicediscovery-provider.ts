@@ -45,7 +45,7 @@ import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { withRemovalDefaults } from '../update-removal.js';
 import {
   createMaskedRetryLogger,
   maskerOrIdentity,
@@ -86,6 +86,13 @@ import { markAuxiliaryFailure } from '../auxiliary-failure.js';
  */
 const PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL = 60;
 const PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL = 15;
+
+/** The three namespace kinds, which share one Description removal reset. */
+const NAMESPACE_TYPES = [
+  'AWS::ServiceDiscovery::PrivateDnsNamespace',
+  'AWS::ServiceDiscovery::HttpNamespace',
+  'AWS::ServiceDiscovery::PublicDnsNamespace',
+] as const;
 
 /**
  * AWS Service Discovery Provider
@@ -133,6 +140,26 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         'ServiceAttributes',
       ]),
     ],
+  ]);
+
+  /**
+   * Issue #1160: each namespace kind's `Update*Namespace` change object
+   * MERGES (absent = "no change"), so a Description REMOVED from the
+   * template is reset with the `''` clear sentinel — the CFn-parity shape,
+   * live A/B'd 2026-08-11 on the private kind. `SOA.TTL` is nested, so its
+   * reset stays in {@link resolveSoaTtlChange}.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>(
+    NAMESPACE_TYPES.map((type) => [type, new Map<string, unknown>([['Description', '']])])
+  );
+
+  /** Issue #1160: every other namespace property, each removal handled. */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    // Name / Vpc are create-only; Tags are diffed; Properties carries the
+    // SOA TTL, reset by resolveSoaTtlChange.
+    ['AWS::ServiceDiscovery::PrivateDnsNamespace', new Set(['Name', 'Vpc', 'Tags', 'Properties'])],
+    ['AWS::ServiceDiscovery::HttpNamespace', new Set(['Name', 'Tags'])],
+    ['AWS::ServiceDiscovery::PublicDnsNamespace', new Set(['Name', 'Tags', 'Properties'])],
   ]);
 
   private getClient(): ServiceDiscoveryClient {
@@ -264,6 +291,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
         return this.updateNamespace(
@@ -474,11 +508,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
     const namespaceChange: PrivateDnsNamespaceChange = {};
 
-    const description = clearOnUpdateRemoval(
-      properties['Description'] as string | undefined,
-      previousProperties['Description'] as string | undefined,
-      ''
-    );
+    // A REMOVED Description arrives as its `removalDefaults` reset, `''`.
+    const description = properties['Description'] as string | undefined;
     if (description !== undefined) {
       namespaceChange.Description = description;
     }
@@ -723,11 +754,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
-    const description = clearOnUpdateRemoval(
-      properties['Description'] as string | undefined,
-      previousProperties['Description'] as string | undefined,
-      ''
-    );
+    // A REMOVED Description arrives as its `removalDefaults` reset, `''`.
+    const description = properties['Description'] as string | undefined;
 
     try {
       if (description !== undefined) {
@@ -911,11 +939,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
     const namespaceChange: PublicDnsNamespaceChange = {};
 
-    const description = clearOnUpdateRemoval(
-      properties['Description'] as string | undefined,
-      previousProperties['Description'] as string | undefined,
-      ''
-    );
+    // A REMOVED Description arrives as its `removalDefaults` reset, `''`.
+    const description = properties['Description'] as string | undefined;
     if (description !== undefined) {
       namespaceChange.Description = description;
     }

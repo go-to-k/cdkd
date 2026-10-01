@@ -7,7 +7,7 @@
     "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 27
+    "classesWithBlindSpots": 35
   },
   "classes": [
     {
@@ -3404,7 +3404,8 @@
       "gaps": [],
       "blindSpots": [
         "computed key in canonicalizeDriftProperties()",
-        "object spread in canonicalizeDriftProperties()"
+        "object spread in canonicalizeDriftProperties()",
+        "withRemovalDefaults(...) in update()"
       ]
     },
     {
@@ -3766,7 +3767,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "cloudwatch-alarm-provider.ts",
@@ -5708,7 +5711,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "docdb-subnet-group-provider.ts",
@@ -8519,7 +8524,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "efs-provider.ts",
@@ -9254,7 +9261,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "elbv2-provider.ts",
@@ -12777,7 +12786,10 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "object spread in update()",
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "iam-user-group-provider.ts",
@@ -14338,7 +14350,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "walk(...) in jsonEscapedPairs()"
+        "walk(...) in jsonEscapedPairs()",
+        "withRemovalDefaults(...) in update()"
       ]
     },
     {
@@ -15414,7 +15427,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "nested-stack-provider.ts",
@@ -16314,7 +16329,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "route53-provider.ts",
@@ -17731,7 +17748,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "object spread in retainPreviousGenerateBlock()"
+        "object spread in retainPreviousGenerateBlock()",
+        "withRemovalDefaults(...) in update()"
       ]
     },
     {
@@ -17949,7 +17967,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "sns-subscription-provider.ts",

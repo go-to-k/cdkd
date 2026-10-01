@@ -14,7 +14,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -22,6 +22,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
@@ -139,6 +140,14 @@ export class DocDBProvider implements ResourceProvider {
    */
   readonly disableCcApiFallback = true;
 
+  /**
+   * Issue #1160: the CFn default a property REMOVED from the template is
+   * reset to — the Modify/Update API keeps an absent field's live value.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    ['AWS::DocDB::DBCluster', new Map<string, unknown>([['DeletionProtection', false]])],
+  ]);
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::DocDB::DBCluster',
@@ -215,8 +224,16 @@ export class DocDBProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     switch (resourceType) {
       case 'AWS::DocDB::DBCluster':
         return this.updateDBCluster(
@@ -367,7 +384,7 @@ export class DocDBProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
-      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
       // NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky (possibly major) version change cdkd
@@ -392,11 +409,7 @@ export class DocDBProvider implements ResourceProvider {
           // CFn default: deletion protection isn't enabled by default
           // (live-verified 2026-07-27: a cluster created without the field
           // reads DeletionProtection=false).
-          DeletionProtection: clearOnUpdateRemoval(
-            properties['DeletionProtection'] as boolean | undefined,
-            previousProperties['DeletionProtection'] as boolean | undefined,
-            false
-          ),
+          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           // CFn/API default: 1 day (ModifyDBClusterMessage doc).
           BackupRetentionPeriod: clearOnUpdateRemoval(
             properties['BackupRetentionPeriod'] != null

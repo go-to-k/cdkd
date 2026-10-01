@@ -78,7 +78,7 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { withRemovalDefaults } from '../update-removal.js';
 
 /** `[raw template value, function name it became]` (see {@link lambdaOperationSinks}). */
 type NamePair = readonly [raw: unknown, name: string | undefined];
@@ -502,6 +502,73 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'RuntimeManagementConfig',
         'DurableConfig',
         'TenancyConfig',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalDefaults`): the CFn default each
+   * UpdateFunctionConfiguration field is reset to when the template removes
+   * it, since an absent field there means "no change" (#1155, #1157).
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::Lambda::Function',
+      new Map<string, unknown>([
+        ['Timeout', 3],
+        ['MemorySize', 128],
+        // Empty string clears the description.
+        ['Description', ''],
+        // Empty Variables map removes all env vars (the whole-block removal
+        // twin of the per-key removal the diff already handles).
+        ['Environment', { Variables: {} }],
+        // Empty list detaches all layers.
+        ['Layers', []],
+        ['TracingConfig', { Mode: 'PassThrough' }],
+        ['EphemeralStorage', { Size: 512 }],
+        // Empty TargetArn detaches the DLQ.
+        ['DeadLetterConfig', { TargetArn: '' }],
+        // Empty string resets to the AWS-managed default key.
+        ['KmsKeyArn', ''],
+        // Empty list removes all EFS mounts.
+        ['FileSystemConfigs', []],
+        // Empty object resets container image overrides to the image defaults.
+        ['ImageConfig', {}],
+        // ApplyOn: 'None' disables SnapStart.
+        ['SnapStart', { ApplyOn: 'None' }],
+        // LogFormat: 'Text' is the CFn default (Text format clears the
+        // JSON-only ApplicationLogLevel / SystemLogLevel filters).
+        ['LoggingConfig', { LogFormat: 'Text' }],
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every other
+   * property whose removal `update()` handles. `RecursiveLoop` is absent on
+   * purpose: a removal keeps its live value, so the caller names it.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Lambda::Function',
+      new Set([
+        // Required, or create-only (a removal replaces the function).
+        'Code',
+        'Role',
+        'Handler',
+        'Runtime',
+        'FunctionName',
+        'PackageType',
+        'TenancyConfig',
+        // A presence toggle is routed to replacement (replacement-rules.ts).
+        'DurableConfig',
+        // Diffed, or reset by their own call.
+        'Tags',
+        'Architectures',
+        'VpcConfig',
+        'ReservedConcurrentExecutions',
+        'CodeSigningConfigArn',
+        'RuntimeManagementConfig',
       ]),
     ],
   ]);
@@ -1036,6 +1103,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     // Issues #2178 / #2177: every update() line and refusal goes through this
     // one sink set. `properties` arrives RESOLVED, and a provider's own logger
     // reaches no engine mask. Absent means unmasked. The recorded name is
@@ -1103,90 +1177,38 @@ export class LambdaFunctionProvider implements ResourceProvider {
           Role: properties['Role'] as string | undefined,
           Handler: properties['Handler'] as string | undefined,
           Runtime: properties['Runtime'] as Runtime | undefined,
-          // Every optional field below is cleared-on-removal (see
-          // clearOnUpdateRemoval): UpdateFunctionConfiguration treats an
-          // ABSENT field as "no change", so a template that drops a
+          // Every optional field below is cleared-on-removal through
+          // `removalDefaults` (issue #1160): UpdateFunctionConfiguration treats
+          // an ABSENT field as "no change", so a template that drops a
           // previously-set field must send an explicit reset value or AWS
           // silently keeps the old one — while CFn resets it to the
-          // property's default. Same hazard VpcConfig handles via
-          // buildVpcConfigForUpdate. (Role/Handler/Runtime are required by
-          // CFn for their package type, so removal is not a valid template
-          // transition and they pass through directly.)
-          // CFn default: 3 seconds.
-          Timeout: clearOnUpdateRemoval(
-            properties['Timeout'] as number | undefined,
-            previousProperties['Timeout'] as number | undefined,
-            3
-          ),
-          // CFn default: 128 MB.
-          MemorySize: clearOnUpdateRemoval(
-            properties['MemorySize'] as number | undefined,
-            previousProperties['MemorySize'] as number | undefined,
-            128
-          ),
-          // Empty string clears the description.
-          Description: clearOnUpdateRemoval(
-            properties['Description'] as string | undefined,
-            previousProperties['Description'] as string | undefined,
-            ''
-          ),
-          // Empty Variables map removes all env vars (the whole-block
-          // removal twin of the per-key removal the diff already handles).
-          // The new side is normalized first: `Environment: {}` (present,
-          // no Variables key) must become `{Variables: {}}` — live-verified
+          // property's default. The caller (or `withRemovalDefaults` above,
+          // on a direct call) has already put that value in `properties`.
+          // VpcConfig is the exception: buildVpcConfigForUpdate. (Role/Handler/
+          // Runtime are required by CFn for their package type, so removal is
+          // not a valid template transition and they pass through directly.)
+          Timeout: properties['Timeout'] as number | undefined,
+          MemorySize: properties['MemorySize'] as number | undefined,
+          Description: properties['Description'] as string | undefined,
+          // The new side is normalized: `Environment: {}` (present, no
+          // Variables key) must become `{Variables: {}}` — live-verified
           // 2026-07-22 that the API keeps the old env vars for a
           // Variables-less Environment, while the template's declarative
           // meaning is "no env vars" (issue #1158).
-          Environment: clearOnUpdateRemoval(
-            this.normalizeEnvironmentForUpdate(
-              properties['Environment'] as { Variables?: Record<string, string> } | undefined
-            ),
-            previousProperties['Environment'] as { Variables?: Record<string, string> } | undefined,
-            { Variables: {} }
+          Environment: this.normalizeEnvironmentForUpdate(
+            properties['Environment'] as { Variables?: Record<string, string> } | undefined
           ),
-          // Empty list detaches all layers.
-          Layers: clearOnUpdateRemoval(
-            properties['Layers'] as string[] | undefined,
-            previousProperties['Layers'] as string[] | undefined,
-            []
-          ),
-          // CFn default: PassThrough.
-          TracingConfig: clearOnUpdateRemoval(
-            properties['TracingConfig'] as TracingConfig | undefined,
-            previousProperties['TracingConfig'] as TracingConfig | undefined,
-            { Mode: 'PassThrough' }
-          ),
-          // CFn default: 512 MB.
-          EphemeralStorage: clearOnUpdateRemoval(
-            properties['EphemeralStorage'] as EphemeralStorage | undefined,
-            previousProperties['EphemeralStorage'] as EphemeralStorage | undefined,
-            { Size: 512 }
-          ),
+          Layers: properties['Layers'] as string[] | undefined,
+          TracingConfig: properties['TracingConfig'] as TracingConfig | undefined,
+          EphemeralStorage: properties['EphemeralStorage'] as EphemeralStorage | undefined,
           VpcConfig: this.buildVpcConfigForUpdate(
             properties['VpcConfig'],
             previousProperties['VpcConfig']
           ),
-          DeadLetterConfig: clearOnUpdateRemoval(
-            properties['DeadLetterConfig'] as DeadLetterConfig | undefined,
-            previousProperties['DeadLetterConfig'] as DeadLetterConfig | undefined,
-            // Empty TargetArn detaches the DLQ.
-            { TargetArn: '' }
-          ),
+          DeadLetterConfig: properties['DeadLetterConfig'] as DeadLetterConfig | undefined,
           // CFn names this `KmsKeyArn`; the Lambda SDK input field is `KMSKeyArn`.
-          // Empty string resets to the AWS-managed default key.
-          KMSKeyArn: clearOnUpdateRemoval(
-            properties['KmsKeyArn'] as string | undefined,
-            previousProperties['KmsKeyArn'] as string | undefined,
-            ''
-          ),
-          // Empty list removes all EFS mounts.
-          FileSystemConfigs: clearOnUpdateRemoval(
-            properties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
-            previousProperties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
-            []
-          ),
-          // Empty object resets container image overrides to the image defaults.
-          //
+          KMSKeyArn: properties['KmsKeyArn'] as string | undefined,
+          FileSystemConfigs: properties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
           // Kept-but-partial (a sub-field dropped from a still-present
           // ImageConfig) is WHOLE-OBJECT REPLACE, so passing the new block
           // through verbatim IS CloudFormation parity and no sub-field
@@ -1198,28 +1220,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
           //     live — the two unspecified sub-fields were cleared, not merged.
           //   - CFn: dropping `Command` + `WorkingDirectory` from a kept
           //     `ImageConfig` block reached the same end state.
-          //   - The `{}` clear value below is verified too: the SDK call with
+          //   - The `{}` removal value is verified too: the SDK call with
           //     `ImageConfig: {}` and a CFn template dropping the whole block
           //     both leave `ImageConfigResponse` absent.
-          ImageConfig: clearOnUpdateRemoval(
-            properties['ImageConfig'] as ImageConfig | undefined,
-            previousProperties['ImageConfig'] as ImageConfig | undefined,
-            {}
-          ),
-          // ApplyOn: 'None' disables SnapStart.
-          SnapStart: clearOnUpdateRemoval(
-            properties['SnapStart'] as SnapStart | undefined,
-            previousProperties['SnapStart'] as SnapStart | undefined,
-            { ApplyOn: 'None' }
-          ),
-          // LogFormat: 'Text' resets to the CFn default (Text format clears
-          // the JSON-only ApplicationLogLevel / SystemLogLevel filters).
-          LoggingConfig: clearOnUpdateRemoval(
-            properties['LoggingConfig'] as LoggingConfig | undefined,
-            previousProperties['LoggingConfig'] as LoggingConfig | undefined,
-            { LogFormat: 'Text' }
-          ),
-          // DELIBERATELY NOT clearOnUpdateRemoval — the only property in this
+          ImageConfig: properties['ImageConfig'] as ImageConfig | undefined,
+          SnapStart: properties['SnapStart'] as SnapStart | undefined,
+          LoggingConfig: properties['LoggingConfig'] as LoggingConfig | undefined,
+          // DELIBERATELY NOT in `removalDefaults` — the only property in this
           // block for which the reset-to-default idiom does not apply. Live
           // probe (us-east-1, 2026-08-11) established both halves:
           //   - ADD (previous absent -> desired present) is REJECTED by AWS
@@ -1394,7 +1401,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // `PutRuntimeManagementConfig` API. There is no delete counterpart, so
       // REMOVAL is expressed by re-sending the AWS default (`UpdateRuntimeOn:
       // 'Auto'`), which is what CFn resets the property to — the same
-      // reset-to-default idiom `clearOnUpdateRemoval` applies to the
+      // reset-to-default idiom `removalDefaults` applies to the
       // UpdateFunctionConfiguration fields above. `RuntimeVersionArn` is only
       // meaningful under `Manual` and is dropped by the reset.
       const newRuntimeManagementConfig = properties['RuntimeManagementConfig'] as
@@ -1629,7 +1636,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * template's declarative meaning is "no env vars", so a Variables-less
    * block is rewritten to the explicit-clear `{Variables: {}}`. A present
    * `Variables` map (even empty) and an absent `Environment` pass through
-   * unchanged — removal handling stays with `clearOnUpdateRemoval`. A `null`
+   * unchanged — removal handling stays with `removalDefaults`. A `null`
    * block (hand-written JSON) is treated like absent rather than crashing on
    * the property read.
    */

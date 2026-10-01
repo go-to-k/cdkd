@@ -890,7 +890,8 @@ export async function updateByReplacement(
     createResult.physicalId,
     resourceType,
     resolvedProps,
-    { afterOwnWrite: true }
+    { afterOwnWrite: true },
+    updateSecrets
   );
 
   if (counts) counts.updated++;

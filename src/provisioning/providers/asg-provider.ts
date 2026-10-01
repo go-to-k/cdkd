@@ -45,7 +45,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import {
   protectedReplacementAdvice,
   pasteableAwsCommand,
@@ -314,10 +314,11 @@ function itemsOf(read: ListRead): unknown[] {
  * DeletionProtection / MixedInstancesPolicy / LaunchTemplate.
  *
  * `UpdateAutoScalingGroup` has merge semantics (absent input field = "no
- * change"), so update() routes every optional mutable field through
- * `clearOnUpdateRemoval` — a property REMOVED from the template is reset to
- * its CFn default / SDK-documented clear sentinel, matching CloudFormation
- * (issue #1160).
+ * change"), so every optional mutable field has a removal reset — declared
+ * in `removalDefaults`, or a local `clearOnUpdateRemoval` for a coerced or
+ * aliased one: a property REMOVED from the template is reset to its CFn
+ * default / SDK-documented clear sentinel, matching CloudFormation (issue
+ * #1160).
  *
  * Sub-shape diffs are applied via dedicated AWS APIs before the main
  * `UpdateAutoScalingGroup` call:
@@ -505,6 +506,39 @@ export class ASGProvider implements ResourceProvider {
    * released or aged-out record takes its level with it.
    */
   private readonly removedProtection = new WeakMap<ProtectionFlipRecord, string>();
+
+  /**
+   * Issue #1160: the reset `UpdateAutoScalingGroup` is sent for a property the
+   * template REMOVED (models_0.d.ts = the AWS SDK command/model doc).
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::AutoScaling::AutoScalingGroup',
+      new Map<string, unknown>([
+        // SDK doc: "EC2 is the default health check and cannot be disabled.
+        // ... Only specify EC2 if you must clear a value that was previously
+        // set."
+        ['HealthCheckType', 'EC2'],
+        // CFn/API default termination policy.
+        ['TerminationPolicies', ['Default']],
+        ['NewInstancesProtectedFromScaleIn', false],
+        ['CapacityRebalance', false],
+        // SDK doc: "By default, Amazon EC2 Auto Scaling specifies units".
+        ['DesiredCapacityType', 'units'],
+        // SDK doc (both sub-fields): "To clear a previously set value,
+        // specify a value of -1."
+        ['InstanceMaintenancePolicy', { MinHealthyPercentage: -1, MaxHealthyPercentage: -1 }],
+        // SDK doc: "default - Auto Scaling uses the Capacity Reservation
+        // preference from your launch template or an open Capacity
+        // Reservation." — the behavior of a group that never set the field.
+        ['CapacityReservationSpecification', { CapacityReservationPreference: 'default' }],
+        // SDK doc: "The default is balanced-best-effort."
+        ['AvailabilityZoneDistribution', { CapacityDistributionStrategy: 'balanced-best-effort' }],
+        // SDK doc: "Default: none" — also the flip-off value delete() uses.
+        ['DeletionProtection', 'none'],
+      ]),
+    ],
+  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1009,6 +1043,13 @@ export class ASGProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') {
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,
@@ -1166,11 +1207,10 @@ export class ASGProvider implements ResourceProvider {
 
       // issue #1160: `UpdateAutoScalingGroup` has merge semantics — an absent
       // input field means "no change" — while CloudFormation resets a property
-      // REMOVED from the template to its default. Resolve every optional
-      // mutable field through `clearOnUpdateRemoval` so a removal sends the
-      // explicit CFn default (or the SDK-documented clear sentinel) instead of
-      // silently keeping the old live value. Each reset value's doc basis is
-      // noted inline (models_0.d.ts = the AWS SDK command/model doc).
+      // REMOVED from the template to its default. A constant reset arrives in
+      // `properties` from `removalDefaults` (see its declaration for each
+      // value's doc basis); the coerced / aliased fields below resolve theirs
+      // locally through `clearOnUpdateRemoval`.
       //
       // Deliberately NOT reset on removal:
       //   - DesiredCapacity: CFn leaves current capacity unmanaged when the
@@ -1206,14 +1246,7 @@ export class ASGProvider implements ResourceProvider {
       //     Reservation); the kept-partial object passes through unchanged.
       //   - AvailabilityZoneDistribution: single sub-field — no partial shape
       //     exists.
-      const healthCheckTypeInput = clearOnUpdateRemoval(
-        properties['HealthCheckType'] as string | undefined,
-        previousProperties['HealthCheckType'] as string | undefined,
-        // SDK doc: "EC2 is the default health check and cannot be disabled.
-        // ... Only specify EC2 if you must clear a value that was previously
-        // set."
-        'EC2'
-      );
+      const healthCheckTypeInput = properties['HealthCheckType'] as string | undefined;
       const healthCheckGracePeriodInput = clearOnUpdateRemoval(
         properties['HealthCheckGracePeriod'] != null
           ? Number(properties['HealthCheckGracePeriod'])
@@ -1236,22 +1269,11 @@ export class ASGProvider implements ResourceProvider {
         // CFn default: 300 seconds.
         300
       );
-      const terminationPoliciesInput = clearOnUpdateRemoval(
-        properties['TerminationPolicies'] as string[] | undefined,
-        previousProperties['TerminationPolicies'] as string[] | undefined,
-        // CFn/API default termination policy.
-        ['Default']
-      );
-      const newInstancesProtectedInput = clearOnUpdateRemoval(
-        properties['NewInstancesProtectedFromScaleIn'] as boolean | undefined,
-        previousProperties['NewInstancesProtectedFromScaleIn'] as boolean | undefined,
-        false
-      );
-      const capacityRebalanceInput = clearOnUpdateRemoval(
-        properties['CapacityRebalance'] as boolean | undefined,
-        previousProperties['CapacityRebalance'] as boolean | undefined,
-        false
-      );
+      const terminationPoliciesInput = properties['TerminationPolicies'] as string[] | undefined;
+      const newInstancesProtectedInput = properties['NewInstancesProtectedFromScaleIn'] as
+        | boolean
+        | undefined;
+      const capacityRebalanceInput = properties['CapacityRebalance'] as boolean | undefined;
       const maxInstanceLifetimeInput = clearOnUpdateRemoval(
         properties['MaxInstanceLifetime'] != null
           ? Number(properties['MaxInstanceLifetime'])
@@ -1262,12 +1284,7 @@ export class ASGProvider implements ResourceProvider {
         // SDK doc: "To clear a previously set value, specify a new value of 0."
         0
       );
-      const desiredCapacityTypeInput = clearOnUpdateRemoval(
-        properties['DesiredCapacityType'] as string | undefined,
-        previousProperties['DesiredCapacityType'] as string | undefined,
-        // SDK doc: "By default, Amazon EC2 Auto Scaling specifies units".
-        'units'
-      );
+      const desiredCapacityTypeInput = properties['DesiredCapacityType'] as string | undefined;
       const defaultInstanceWarmupInput = clearOnUpdateRemoval(
         properties['DefaultInstanceWarmup'] != null
           ? Number(properties['DefaultInstanceWarmup'])
@@ -1279,39 +1296,18 @@ export class ASGProvider implements ResourceProvider {
         // property but specify -1 for the value."
         -1
       );
-      const instanceMaintenancePolicyInput = clearOnUpdateRemoval(
-        properties['InstanceMaintenancePolicy'] as InstanceMaintenancePolicy | undefined,
-        previousProperties['InstanceMaintenancePolicy'] as InstanceMaintenancePolicy | undefined,
-        // SDK doc (both sub-fields): "To clear a previously set value,
-        // specify a value of -1."
-        { MinHealthyPercentage: -1, MaxHealthyPercentage: -1 }
-      );
-      const capacityReservationSpecInput = clearOnUpdateRemoval(
-        properties['CapacityReservationSpecification'] as
-          | CapacityReservationSpecification
-          | undefined,
-        previousProperties['CapacityReservationSpecification'] as
-          | CapacityReservationSpecification
-          | undefined,
-        // SDK doc: "default - Auto Scaling uses the Capacity Reservation
-        // preference from your launch template or an open Capacity
-        // Reservation." — the behavior of a group that never set the field.
-        { CapacityReservationPreference: 'default' }
-      );
-      const availabilityZoneDistributionInput = clearOnUpdateRemoval(
-        properties['AvailabilityZoneDistribution'] as AvailabilityZoneDistribution | undefined,
-        previousProperties['AvailabilityZoneDistribution'] as
-          | AvailabilityZoneDistribution
-          | undefined,
-        // SDK doc: "The default is balanced-best-effort."
-        { CapacityDistributionStrategy: 'balanced-best-effort' }
-      );
-      const deletionProtectionInput = clearOnUpdateRemoval(
-        properties['DeletionProtection'] as DeletionProtection | undefined,
-        previousProperties['DeletionProtection'] as DeletionProtection | undefined,
-        // SDK doc: "Default: none" — also the flip-off value delete() uses.
-        'none'
-      );
+      const instanceMaintenancePolicyInput = properties['InstanceMaintenancePolicy'] as
+        | InstanceMaintenancePolicy
+        | undefined;
+      const capacityReservationSpecInput = properties['CapacityReservationSpecification'] as
+        | CapacityReservationSpecification
+        | undefined;
+      const availabilityZoneDistributionInput = properties['AvailabilityZoneDistribution'] as
+        | AvailabilityZoneDistribution
+        | undefined;
+      const deletionProtectionInput = properties['DeletionProtection'] as
+        | DeletionProtection
+        | undefined;
 
       await this.getClient().send(
         new UpdateAutoScalingGroupCommand({
