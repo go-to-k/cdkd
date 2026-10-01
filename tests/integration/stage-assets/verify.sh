@@ -38,6 +38,7 @@
 #      leave the stack's state untouched (go-to-k/cdkd#3507).
 #   3e. (Phase 2e) `orphan --dry-run` by a construct path that starts with
 #      the Stage resolves the Stage stack and writes nothing (go-to-k/cdkd#3943).
+#   3f. (Phase 2f) the same as 3d for `export --dry-run` (go-to-k/cdkd#3507).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -107,7 +108,7 @@ cleanup() {
   rc=$?
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  # An interrupt inside Phase 2b, 2c or 2d would otherwise leave cdk.out with the
+  # An interrupt inside Phase 2b, 2c, 2d or 2f would otherwise leave cdk.out with the
   # Stage's manifest hidden.
   if [ -n "${STAGE_DIR:-}" ] && [ -f "${STAGE_DIR}/manifest.json.hidden" ]; then
     mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
@@ -440,6 +441,41 @@ if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
   exit 1
 fi
 echo "    OK: Stage construct path resolved, state untouched"
+
+# --- Phase 2f: export while the Stage fails to load names the Stage ---------
+# The export twin of Phase 2d (go-to-k/cdkd#3507). `--dry-run` keeps a
+# regression that got past selection from submitting a changeset; selection
+# refuses before any state read, so the state object keeps its ETag.
+echo "==> Phase 2f: export with the Stage manifest hidden names the Stage"
+ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ -z "${ETAG_BEFORE}" ]; then
+  echo "FAIL: could not read the state object's ETag before Phase 2f" >&2
+  exit 1
+fi
+mv "${STAGE_DIR}/manifest.json" "${STAGE_DIR}/manifest.json.hidden"
+set +e
+HIDDEN_OUT=$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" export "${STACK_PATH}" --app cdk.out \
+  --dry-run --yes --state-bucket "${STATE_BUCKET}" 2>&1)
+HIDDEN_RC=$?
+set -e
+mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
+printf '%s\n' "${HIDDEN_OUT}"
+if [ "${HIDDEN_RC}" -eq 0 ]; then
+  echo "FAIL: export with the Stage hidden exited 0, expected a selection refusal" >&2
+  exit 1
+fi
+if ! printf '%s' "${HIDDEN_OUT}" | grep -qF "No stacks matching ${STACK_PATH} found in assembly. The assembly has no stacks. Stage CdkdStageAssets failed to load"; then
+  echo "FAIL: export did not name the pattern and the Stage that failed to load" >&2
+  exit 1
+fi
+ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
+  echo "FAIL: state object changed across a refused export (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: Stage named, state untouched"
 
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"
