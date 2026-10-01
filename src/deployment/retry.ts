@@ -105,7 +105,7 @@ export const IAM_PROPAGATION_MAX_RETRIES = 26;
  *
  * **Where the numbers come from — precedent, not a fresh guess.** They are the
  * delete-then-re-create sites' existing budget, chosen for this exact window
- * (`deploy-engine.ts`'s `--replace` fallback and `rollback-executor.ts`'s
+ * (`deploy-engine-replacement.ts`'s `--replace` fallback and `rollback-executor.ts`'s
  * reverse-replacement both pass `maxRetries: 8, initialDelayMs: 2_000,
  * maxDelayMs: 10_000`). Adopting it here makes the ordinary create path and
  * the re-create sites ride the SAME window with the SAME budget, which is the
@@ -133,7 +133,8 @@ export const IAM_PROPAGATION_MAX_RETRIES = 26;
  * **But "only the delay grid changes" understates the effect at the NESTED
  * sites, so state the compounding rather than implying there is none.** Three
  * call sites wrap a DEFAULT-schedule `withRetry` inside their own outer loop
- * (`deploy-engine.ts`'s two `--replace` / recreate sites and
+ * (`deploy-engine-replacement.ts`'s `--replace` fallback,
+ * `deploy-engine-update.ts`'s named replacement, and
  * `rollback-executor.ts`'s reverse-replacement). The inner loop is the one
  * this grid changes, and the outer one re-enters it per attempt, so the
  * product grows with it: total sleep on a cooldown at those sites measures

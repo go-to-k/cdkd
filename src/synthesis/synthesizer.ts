@@ -15,6 +15,7 @@ import { SynthesisError } from '../utils/error-handler.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { displaySafe, displayStackName } from '../utils/display-safe.js';
+import { plainOrDescribed } from '../utils/pasteable-command.js';
 
 /**
  * Every manifest- or template-derived value this module RENDERS goes through
@@ -389,10 +390,10 @@ export class Synthesizer {
       (await resolveSdkDefaultRegion(options.profile));
     if (!region) {
       throw new SynthesisError(
-        `Stack(s) [${stacksWithMacros.map((s) => displaySafe(s.stackName)).join(', ')}] ` +
+        `Stack(s) [${stacksWithMacros.map((s) => plainOrDescribed(s.stackName, 'stack name')).join(', ')}] ` +
           `use CloudFormation ` +
           `macros (Transform / Fn::Transform) but cdkd could not resolve an AWS region for the ` +
-          `expansion round-trip. Set AWS_REGION, pass --region <r>, or set env: { region: '<r>' } ` +
+          `expansion round-trip. Set AWS_REGION, pass --region '<r>', or set env: { region: '<r>' } ` +
           `in your CDK Stack constructor.`
       );
     }
@@ -448,11 +449,11 @@ export class Synthesizer {
       const oversize = stacksWithMacros.find((s) => JSON.stringify(s.template).length > 51_200);
       if (oversize) {
         throw new SynthesisError(
-          `Stack ${displayStackName(oversize.stackName)} uses CloudFormation macros AND its serialized ` +
+          `Stack ${plainOrDescribed(oversize.stackName, 'stack name')} uses CloudFormation macros AND its serialized ` +
             `template exceeds the 51,200-byte inline TemplateBody limit, so cdkd must ` +
             `upload the template to S3 for the transient expansion changeset. cdkd could ` +
             `not resolve a state bucket: STS GetCallerIdentity failed AND --state-bucket ` +
-            `was not provided. Pass --state-bucket <name> (cdkd uses the same bucket as ` +
+            `was not provided. Pass --state-bucket '<name>' (cdkd uses the same bucket as ` +
             `cdkd deploy state storage; typically 'cdkd-state-<accountId>').`
         );
       }

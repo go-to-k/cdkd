@@ -344,6 +344,8 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
     const warnNeedle = '--assume-role passed without an ARN';
     expect(stderr.split(warnNeedle).length - 1).toBe(1);
     expect(stdout).not.toContain(warnNeedle);
+    // The remedy's hole is quoted (go-to-k/cdkd#4295).
+    expect(stderr).toContain("pass the ARN explicitly: --assume-role '<arn>'.");
   });
   /**
    * Issue #2419. The Lambda RIE puts `START` / `END` / `REPORT` and every

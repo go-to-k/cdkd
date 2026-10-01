@@ -3,6 +3,8 @@ description: the shared ResourceDeleteResult helpers
 paths:
   - 'src/deployment/delete-outcome.ts'
   - 'src/deployment/deploy-engine.ts'
+  - 'src/deployment/deploy-engine-delete.ts'
+  - 'src/deployment/deploy-engine-update.ts'
   - 'src/deployment/deploy-engine-replacement.ts'
   - 'src/deployment/rollback-executor.ts'
   - 'src/cli/commands/destroy-runner.ts'
@@ -22,7 +24,11 @@ Two wording rules are load-bearing: it says cdkd did NOT CONFIRM the delete and
 the resource MAY STILL EXIST, never why (a refusing custom-resource handler DID
 get the call), and it lacks the phrases the already-deleted classifiers
 substring-match (`does not exist`, `not found`, `NoSuchEntity`). Skips are
-handled OUTSIDE the `catch`.
+handled OUTSIDE the `catch`. Callers put a flag or a `cdkd` command on its line,
+so it SHOWS each value only when plain and describes it otherwise — a skip
+reason must stay plain prose to be shown ([#4265](https://github.com/go-to-k/cdkd/issues/4265)).
+A caller whose line carries no command passes `commandFreeLine`, so the
+physical id, possibly the only trace of the resource, is shown, bounded.
 
 **Guard pair** ([#2301](https://github.com/go-to-k/cdkd/issues/2301)).
 `withIndeterminateGuard` / `deleteIndeterminateGuards` are the WRITE and READ

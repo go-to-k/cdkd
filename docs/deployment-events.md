@@ -94,8 +94,10 @@ recorder), so its only surface for a suppressed guard is the summary line and
 its warning.
 
 Failure events carry an `error` object: `{ name, message, awsErrorCode?,
-requestId? }`. The AWS error code + request id are extracted from the
-innermost AWS-SDK-shaped error in the thrown error's `.cause` chain.
+requestId?, ownLines? }`. The AWS error code + request id are extracted from the
+innermost AWS-SDK-shaped error in the thrown error's `.cause` chain. `ownLines`
+is `true` only on a rollback refusal cdkd built itself (see
+[Rendering](#rendering-the-human-path-sanitises-json-output-escapes)).
 
 ### Security: no resource properties, and a MASKED error message
 
@@ -173,6 +175,21 @@ exceptions named below — a counter that is not a number renders as `?`, and a
 run result cdkd cannot render is coloured as unknown rather than as a failure.
 cdkd's own colouring is unaffected: the sanitising wraps the value, not the
 coloured token.
+
+An error `message` is folded onto one line unless the event's `error.ownLines`
+is `true`. cdkd sets that only on a rollback refusal it built itself, whose
+every line break is its own. Such a message is sanitised one LINE at a time,
+and each line after the first prints on its own, indented deeper than any event
+row or detail line. The refusal keeps a provider's text and its `To orphan it:`
+command on separate lines so that a value shown beside a pasteable command
+cannot run when the line is pasted. Any other message folds, because a
+provider's own newline could otherwise forge such a row. An event written
+before the field existed has no marker and folds.
+
+The reader trusts the stored marker. A principal who can write the state
+bucket can therefore set `ownLines: true` on a message with newlines of its
+own, but that principal can already forge the whole event, so the marker grants
+no privilege beyond write access to the store.
 
 `<unrenderable>` is a statement about the INPUT — "something was recorded here
 and sanitising consumed it" — so on the error line, the one field there that

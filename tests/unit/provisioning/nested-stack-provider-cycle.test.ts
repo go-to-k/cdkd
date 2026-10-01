@@ -519,7 +519,11 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       const reason = (result as { reason: string }).reason;
       expect(reason).toContain('skipped 1 resource(s)');
       expect(controls(reason)).toEqual([]);
-      expect(reason).toContain('FORGED');
+      // Described, not shown: the reason is printed beside a flag or a `cdkd`
+      // command, and a selection starting inside it would run the name's
+      // words (go-to-k/cdkd#4265).
+      expect(reason).toContain('nested stack a stack name that is not a plain identifier');
+      expect(reason).not.toContain('FORGED');
     });
 
     it('getAttribute(): an attribute outside the recorded Outputs map', async () => {

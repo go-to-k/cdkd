@@ -310,7 +310,7 @@ export async function replaceDeleteFirstAndRecreate(
     // because `provisionResource`'s catch masks the whole chain further up
     // the stack. NOT "one frame up" as the twin's note says — that wording
     // is exact only there; this throw sits in
-    // `replaceDeleteFirstAndRecreate`, called from `provisionResourceBody`,
+    // `replaceDeleteFirstAndRecreate`, called from `provisionUpdate`,
     // which `provisionResource` invokes through `withResourceDeadline`. The
     // `cause` is what keeps the AWS
     // rejection behind the sentence readable — `extractDeploymentEventError`
@@ -708,7 +708,11 @@ export async function deleteReplacedAfterCreate(
         logicalId,
         currentResource.physicalId,
         skipReason,
-        'while cleaning up the replaced resource'
+        'while cleaning up the replaced resource',
+        // No command on this line, and the id is the only trace left of the
+        // resource: show it, bounded, rather than describe it
+        // (go-to-k/cdkd#4265).
+        { commandFreeLine: true }
       )}. Delete it manually — it is no longer tracked in state.`
     );
   } else if (!deleteFailed) {

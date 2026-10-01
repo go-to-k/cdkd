@@ -173,8 +173,9 @@ function runnerTailEmitsSignal(): void {
     const runnerHandler = (): void => {};
     process.on('SIGINT', runnerHandler);
     try {
-      // The signal arrives after the runner read its own `draining` flag, so it
-      // reports `false` — and before this fix nothing else carried it onward.
+      // The signal arrives after the runner read its own `lock.interrupted`, so
+      // it reports `false` — and before this fix nothing else carried it
+      // onward.
       process.emit('SIGINT', 'SIGINT');
     } finally {
       process.removeListener('SIGINT', runnerHandler);

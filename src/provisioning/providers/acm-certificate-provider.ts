@@ -19,6 +19,7 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, normalizeAwsTagsToCfn, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { acquireIdempotencyToken, type IdempotencyToken } from './idempotency-token.js';
 import type {
@@ -306,8 +307,11 @@ export class ACMCertificateProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const detail = error instanceof Error ? error.message : String(error);
+      // The survivor note can join this line with a pasteable `aws acm
+      // delete-certificate`, so the logical id is shown only when plain
+      // (go-to-k/cdkd#4295).
       throw new ProvisioningError(
-        `Failed to create ACM certificate ${logicalId}: ${detail}` +
+        `Failed to create ACM certificate ${logicalIdShown(logicalId)}: ${detail}` +
           (survivorNote === undefined ? '' : ` ${survivorNote}`),
         resourceType,
         logicalId,
@@ -439,7 +443,9 @@ export class ACMCertificateProvider implements ResourceProvider {
       // re-classify a terminal create failure as transient. Every word below is
       // therefore ours and pattern-free by construction.
       return (
-        `The certificate ${certificateArn} this attempt created could NOT be deleted, ` +
+        // Appended to the refusal's own line, so the ARN is shown only when
+        // plain, as the refusal head shows it (go-to-k/cdkd#4295).
+        `The certificate ${isPlainImportValue(certificateArn) ? certificateArn : VALUE_NOT_SHOWN} this attempt created could NOT be deleted, ` +
         `and cdkd is not tracking it -- retire it with ` +
         `${pasteableAwsCommand()`aws acm delete-certificate --certificate-arn ${certificateArn} --region ${this.regionOfArn(certificateArn)}`.render()} ` +
         `(the reason is in the warning above).`
@@ -822,8 +828,11 @@ export class ACMCertificateProvider implements ResourceProvider {
           status === 'REVOKED' ||
           status === 'EXPIRED'
         ) {
+          // A failed cleanup appends the survivor note, with its pasteable
+          // `aws acm delete-certificate`, to this line, so the logical id and
+          // the ARN are shown only when plain (go-to-k/cdkd#4295).
           throw new ProvisioningError(
-            `ACM certificate ${logicalId} (${certificateArn}) entered terminal status ${status} during validation. ` +
+            `ACM certificate ${logicalIdShown(logicalId)} ${isPlainImportValue(certificateArn) ? `(${certificateArn})` : VALUE_NOT_SHOWN} entered terminal status ${status} during validation. ` +
               `Check ACM console / DNS records to diagnose.`,
             resourceType,
             logicalId,
@@ -874,8 +883,11 @@ export class ACMCertificateProvider implements ResourceProvider {
         }
       }
 
+      // This line also names `--resource-timeout`, so the logical id and the
+      // ARN are shown only when plain and the per-type duration is a quoted
+      // hole (go-to-k/cdkd#4295): a bare `<duration>` redirects when pasted.
       throw new ProvisioningError(
-        `ACM certificate ${logicalId} (${certificateArn}) did not reach ISSUED status within ${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s. ` +
+        `ACM certificate ${logicalIdShown(logicalId)} ${isPlainImportValue(certificateArn) ? `(${certificateArn})` : VALUE_NOT_SHOWN} did not reach ISSUED status within ${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s. ` +
           // Conditional, because the certificate is about to be deleted and
           // this sentence is the user's instruction for what to do next. If no
           // poll ever carried a `ResourceRecord`, nothing was printed and
@@ -887,7 +899,7 @@ export class ACMCertificateProvider implements ResourceProvider {
           `ACM reuses a domain's validation CNAME across certificates, so records you add now validate the next attempt. ` +
           `To wait LONGER, raise CDKD_ACM_POLL_ATTEMPTS / CDKD_ACM_POLL_INTERVAL_MS — this cap is the provider's OWN ` +
           `and is what just fired; --resource-timeout alone will not lengthen it. Past ~30m also raise ` +
-          `--resource-timeout AWS::CertificateManager::Certificate=<duration>, or the engine's per-resource deadline ` +
+          `--resource-timeout AWS::CertificateManager::Certificate=${commandHole('duration')}, or the engine's per-resource deadline ` +
           `becomes the shorter of the two. Or set CDKD_NO_WAIT=true to keep the certificate and validate it out of band.`,
         resourceType,
         logicalId,

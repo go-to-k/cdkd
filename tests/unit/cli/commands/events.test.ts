@@ -363,6 +363,20 @@ describe('cdkd events prune command', () => {
     expect(removed).toBeDefined();
     expect(removed).toContain('earlier versions of the deleted keys survive');
   });
+
+  it('--all on a stack with no event history claims no removal (issue #2624)', async () => {
+    // Nothing under the prefix. `--stack-region` is what reaches the prune
+    // here: without it, region discovery finds no history and refuses first.
+    // The index key is still sent to the idempotent `DeleteObjects`, which
+    // succeeds for an absent key; a store that reported that success as
+    // `indexDeleted` made this print "Removed the empty deployment-event
+    // index" for an index that never existed.
+    await eventsPruneCommand('MyStack', { all: true, yes: true, stackRegion: 'us-east-1' });
+    const out = logLines.join('\n');
+    expect(out).toContain('No runs matched');
+    expect(out).not.toContain('Removed the empty deployment-event index');
+    expect(out).not.toContain('earlier versions of the deleted keys survive');
+  });
 });
 
 /**

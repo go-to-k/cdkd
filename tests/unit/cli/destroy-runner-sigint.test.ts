@@ -20,6 +20,9 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
 // flag exactly as a real SIGINT would.
 
 const warnSpy = vi.hoisted(() => vi.fn());
+// A spy rather than a plain function so a case can assert the first-signal
+// notice is routed THROUGH the live renderer (go-to-k/cdkd#2174).
+const printAboveSpy = vi.hoisted(() => vi.fn((write: () => void) => write()));
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -56,7 +59,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
     addTask: vi.fn(),
     removeTask: vi.fn(),
     updateTaskLabel: vi.fn(),
-    printAbove: (write: () => void) => write(),
+    printAbove: printAboveSpy,
   }),
 }));
 
@@ -225,6 +228,31 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('interrupted'));
   });
 
+  it('the first SIGINT prints the drain notice through the live renderer', async () => {
+    const state = makeState({ A: res() });
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(((() => true) as unknown) as typeof process.stderr.write);
+    printAboveSpy.mockClear();
+    mockProviderDelete.mockImplementation(() => {
+      capturedSigintHandlers[0]!();
+      return Promise.resolve();
+    });
+
+    let text = '';
+    try {
+      await runDestroyForStack('TestStack', state, makeCtx());
+      text = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+
+    expect(printAboveSpy).toHaveBeenCalledOnce();
+    expect(text).toContain(
+      'Interrupted — finishing in-flight deletes, then flushing state and releasing the lock'
+    );
+  });
+
   it('schedules no deletes in subsequent levels once draining (level-boundary gate)', async () => {
     // Diamond: D depends on B and C; B and C both depend on A. Deletion order
     // (reverse DAG) = level [D], then level [B, C], then level [A]. Fire the
@@ -308,15 +336,16 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
   });
 
   it('does NOT report interrupted when the signal lands after the state was DELETED', async () => {
-    // The outer `finally`'s `result.interrupted ||= draining` re-sync used to
-    // run UNGATED, and everything it spans (`renderer.stop()`, the `saveChain`
-    // flush, the real `deleteState` S3 round-trip, `releaseLock`) happens with
-    // `sigintHandler` still armed and AFTER the in-`try` read that decided
-    // `preserveState`. So a signal there flipped the PER-STACK flag true over a
-    // stack whose state file was already gone — and `destroy.ts` / `state.ts`
-    // OR that flag unconditionally into the terminal verdict, so the command
-    // exited 2 with "State preserved — re-run 'cdkd destroy' to finish" over a
-    // destroy that had fully completed. Both halves of that sentence false.
+    // The outer `finally`'s interrupt re-sync used to run UNGATED (no
+    // `&& statePreserved`), and everything it spans (`renderer.stop()`, the
+    // `saveChain` flush, the real `deleteState` S3 round-trip, `releaseLock`)
+    // happens with `sigintHandler` still armed and AFTER the in-`try` read
+    // that decided `preserveState`. So a signal there flipped the PER-STACK
+    // flag true over a stack whose state file was already gone — and
+    // `destroy.ts` / `state.ts` OR that flag unconditionally into the terminal
+    // verdict, so the command exited 2 with
+    // "State preserved — re-run 'cdkd destroy' to finish" over a destroy that
+    // had fully completed. Both halves of that sentence false.
     //
     // Firing from inside `deleteState` puts the signal exactly in that window:
     // past the in-`try` read, before the runner's `removeListener`.

@@ -10,9 +10,9 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
  * ONLY channel from the runner to the `--all` loop was
  * `DestroyRunResult.interrupted` — assigned ONCE, inside the runner's `try`,
  * after its level loop. The runner's outer `finally` re-syncs it
- * (`result.interrupted ||= draining`) and that line is marked TACTICAL in the
- * source: it narrows the window, it does not close it. Two gaps survive, and
- * these cases drive both:
+ * (`result.interrupted ||= lock.interrupted && statePreserved`) and that line
+ * is marked TACTICAL in the source: it narrows the window, it does not close
+ * it. Two gaps survive, and these cases drive both:
  *
  *  - the runner removes its SIGINT listener BEFORE the re-sync and its
  *    `return`, so a signal there is seen by nobody;
@@ -220,7 +220,7 @@ function cleanRunResult(): Record<string, unknown> {
  * Registering a listener is load-bearing, not decoration: `interruptWatch`
  * defers to a graceful owner only when one is actually armed, so a mock that
  * registers nothing takes the pre-registration `process.exit(130)` and pins a
- * different path entirely. The real branch arms `emptySigintHandler` around
+ * different path entirely. The real branch arms its stack-lock guard handler around
  * exactly this window.
  */
 async function emptyStateRunTakingASignal(): Promise<Record<string, unknown>> {

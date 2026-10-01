@@ -21,6 +21,12 @@
  * pin the whole message BYTE FOR BYTE rather than a readable substring.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 const mockExecute = vi.hoisted(() => vi.fn());
 const mockReadManifest = vi.hoisted(() => vi.fn());
@@ -85,11 +91,22 @@ vi.mock('@aws-sdk/client-sts', () => ({
   GetCallerIdentityCommand: vi.fn(),
 }));
 
-vi.mock('node:fs', () => ({
-  mkdirSync: vi.fn(),
-  existsSync: () => false,
-  statSync: () => ({ isDirectory: () => false }),
-}));
+// The synthesizer's own fs reads are stubbed; everything else is the real
+// module, and a `mkdirSync` under the OS temp dir is real too, because the
+// paste harness builds its scratch tree there (go-to-k/cdkd#4295).
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const { tmpdir } = await import('node:os');
+  return {
+    ...actual,
+    mkdirSync: (path: unknown, ...rest: unknown[]) =>
+      typeof path === 'string' && path.startsWith(tmpdir())
+        ? (actual.mkdirSync as (...a: unknown[]) => unknown)(path, ...rest)
+        : undefined,
+    existsSync: () => false,
+    statSync: () => ({ isDirectory: () => false }),
+  };
+});
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({ ...loggerSpies, child: () => loggerSpies, setLevel: vi.fn() }),
@@ -221,6 +238,41 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
       }));
     }
 
+    it('names no payload stack beside --region (go-to-k/cdkd#4295)', async () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = await messageOf(() =>
+          new Synthesizer().expandMacrosForStacks(
+            stacksWithNoRegion([value, 'Plain']) as never,
+            { app: 'node app.js' },
+            { region: undefined }
+          )
+        );
+        expect(message, value).toContain(
+          'Stack(s) [a stack name that is not a plain identifier, Plain] use CloudFormation macros'
+        );
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+        });
+      }
+    }, 120_000);
+
+    // `~root` and `-rf` survive `displayIdent` unchanged, yet a pasted shell
+    // expands the one and reads the other as an option, so they are described.
+    it.each(['~root', '-rf'])('describes %s beside --region (go-to-k/cdkd#4295)', async (name) => {
+      const message = await messageOf(() =>
+        new Synthesizer().expandMacrosForStacks(
+          stacksWithNoRegion([name, 'Plain']) as never,
+          { app: 'node app.js' },
+          { region: undefined }
+        )
+      );
+      expect(message).toContain(
+        'Stack(s) [a stack name that is not a plain identifier, Plain] use CloudFormation macros'
+      );
+      expect(message).not.toContain(`[${name}`);
+    });
+
     it('sanitizes each stack name SEPARATELY', async () => {
       const synthesizer = new Synthesizer();
       const message = await messageOf(() =>
@@ -230,10 +282,12 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
           { region: undefined }
         )
       );
+      // The line names `--region`, so since go-to-k/cdkd#4295 a stack name
+      // that is not a plain identifier is described rather than shown.
       expect(message).toBe(
-        `Stack(s) [${HOSTILE.macroStackA.clean}, ${HOSTILE.macroStackB.clean}] ` +
+        'Stack(s) [a stack name that is not a plain identifier, a stack name that is not a plain identifier] ' +
           'use CloudFormation macros (Transform / Fn::Transform) but cdkd could not resolve an ' +
-          'AWS region for the expansion round-trip. Set AWS_REGION, pass --region <r>, or set ' +
+          "AWS region for the expansion round-trip. Set AWS_REGION, pass --region '<r>', or set " +
           "env: { region: '<r>' } in your CDK Stack constructor."
       );
       expect(hasForgingCharacter(message)).toBe(false);
@@ -251,7 +305,7 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
       expect(message).toBe(
         'Stack(s) [Alpha, Beta] use CloudFormation macros (Transform / Fn::Transform) but cdkd ' +
           'could not resolve an AWS region for the expansion round-trip. Set AWS_REGION, pass ' +
-          "--region <r>, or set env: { region: '<r>' } in your CDK Stack constructor."
+          "--region '<r>', or set env: { region: '<r>' } in your CDK Stack constructor."
       );
     });
   });
@@ -279,10 +333,45 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
           { region: 'us-east-1' }
         )
       );
-      expect(message.startsWith(`Stack ${JSON.stringify(HOSTILE.oversizeStack.clean)} uses CloudFormation`)).toBe(
-        true
-      );
+      // The line names `--state-bucket`, so since go-to-k/cdkd#4295 the name is
+      // described rather than shown in a JSON boundary.
+      expect(
+        message.startsWith('Stack a stack name that is not a plain identifier uses CloudFormation')
+      ).toBe(true);
       expect(hasForgingCharacter(message)).toBe(false);
+    });
+
+    it('names no payload stack beside --state-bucket (go-to-k/cdkd#4295)', async () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = await messageOf(() =>
+          new Synthesizer().expandMacrosForStacks(
+            oversizeStack(value) as never,
+            { app: 'node app.js' },
+            { region: 'us-east-1' }
+          )
+        );
+        expect(message, value).toContain(
+          'Stack a stack name that is not a plain identifier uses CloudFormation macros AND'
+        );
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+        });
+      }
+    }, 120_000);
+
+    it.each(['~root', '-rf'])('describes %s beside --state-bucket (go-to-k/cdkd#4295)', async (name) => {
+      const message = await messageOf(() =>
+        new Synthesizer().expandMacrosForStacks(
+          oversizeStack(name) as never,
+          { app: 'node app.js' },
+          { region: 'us-east-1' }
+        )
+      );
+      expect(message).toContain(
+        'Stack a stack name that is not a plain identifier uses CloudFormation macros AND'
+      );
+      expect(message).not.toContain(`Stack ${name} `);
     });
 
     it('leaves an ordinary stack name byte-identical', async () => {
@@ -295,6 +384,8 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
         )
       );
       expect(message.startsWith("Stack ProdStack uses CloudFormation")).toBe(true);
+      // The remedy's hole is quoted (go-to-k/cdkd#4295).
+      expect(message).toContain("Pass --state-bucket '<name>' (cdkd uses");
     });
   });
 

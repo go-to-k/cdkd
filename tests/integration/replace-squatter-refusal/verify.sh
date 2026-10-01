@@ -209,7 +209,7 @@ fi
 # closing clause, independent of it. Sentinel without marker = the wording
 # drifted or a different name was sent — never read as "no refusal".
 C_SENTINEL="--replace was NOT applied and nothing was deleted"
-C_MARKER="cdkd's rule generates RepositoryName \"${GENERATED_REPO}\""
+C_MARKER="the cdkd naming rule generates RepositoryName \"${GENERATED_REPO}\""
 if ! grep -qF -- "${C_SENTINEL}" "${LOG_DIR}/c.log"; then
   echo "[verify] FAIL: deploy --replace exited ${C_RC} without the #3979 holder refusal (output above)" >&2
   exit 1

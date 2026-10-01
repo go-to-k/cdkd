@@ -634,7 +634,7 @@ describe('expandMacros — TemplateURL fallback (over 51,200 bytes)', () => {
         // a clear MacroExpansionError naming --state-bucket.
         cfnClient: client as never,
       })
-    ).rejects.toThrow(/cdkd needs a state bucket to upload.*--state-bucket/s);
+    ).rejects.toThrow(/cdkd needs a state bucket to upload.*--state-bucket '<name>'.*\('cdkd-state-<accountId>'\)/s);
   });
 
   // CR-MJ1 (companion): sub-51 KB templates DON'T need stateBucket,

@@ -384,11 +384,11 @@ export const UNREPRODUCIBLE_LOCK_CLAUSE =
 /**
  * The force-quit banner's recovery sentence.
  *
- * Exported so the two `destroy-runner.ts` banners do not each decide what to
- * say when {@link buildForceUnlockCommand} suppresses — a banner ending in a
- * bare `run: ` is the shape the review found, and two copies of the branch is
- * how the next one drifts. Returns a leading-space clause so the caller can
- * concatenate it unconditionally.
+ * Exported so the force-quit banner (`src/cli/commands/stack-lock-guard.ts`)
+ * does not decide on its own what to say when {@link buildForceUnlockCommand}
+ * suppresses — a banner ending in a bare `run: ` is the shape the review found.
+ * Returns a leading-space clause so the caller can concatenate it
+ * unconditionally.
  */
 export function forceQuitRecoveryClause(
   stackName: string,

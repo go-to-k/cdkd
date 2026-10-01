@@ -179,7 +179,7 @@ describe('the --assume-role messages never put a logical id inside cdkd quotes (
     }
     // The pasteable example names a plain id.
     const miss = messages.find((m) => m.site === 'local start-api: miss')!.message;
-    expect(miss).toContain('--assume-role Fn=<arn>');
+    expect(miss).toContain("--assume-role Fn='<arn>'");
   });
 
   it('describes every non-plain payload, names none of it, and no pasted span runs', () => {
@@ -325,7 +325,7 @@ describe('the --assume-role messages shell-bound a non-plain role ARN (go-to-k/c
       })
     );
     expect(refusal).toContain(`is not a well-formed IAM role ARN: ${MALFORMED}. Refusing to start`);
-    expect(refusal).toMatch(/or pin one explicitly with --assume-role Fn=<arn>\.$/);
+    expect(refusal).toMatch(/or pin one explicitly with --assume-role Fn='<arn>'\.$/);
   });
 
   it('shell-quotes every non-plain ARN, and no pasted span runs', () => {

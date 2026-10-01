@@ -258,6 +258,8 @@ describe('resolveHostCredentialsForSigV4: the agent is signed for by its CALLER,
         `must not suggest the flag the user already passed (assumedRolePublished=${assumedRolePublished})`
       ).not.toContain('--profile');
       expect(passed, 'the other two remedies still apply').toContain('--assume-role');
+      // The remedy's hole is quoted (go-to-k/cdkd#4295).
+      expect(passed).toContain("--assume-role '<arn>'");
       expect(passed).toContain('AWS_ACCESS_KEY_ID');
 
       // The control: without the flag, the same branch DOES offer it. Without
@@ -266,7 +268,7 @@ describe('resolveHostCredentialsForSigV4: the agent is signed for by its CALLER,
         assumedRolePublished,
         profileAlreadyPassed: false,
       }).message;
-      expect(notPassed).toContain('pass --profile <name>');
+      expect(notPassed).toContain("pass --profile '<name>'");
     }
   });
 

@@ -61,6 +61,12 @@ vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) => {
 import { loadStateForStack } from '../../../src/cli/commands/local-state-loader.js';
 import { getAwsClients, resetAwsClients } from '../../../src/utils/aws-clients.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 /**
  * `getLogger()` returns a module-global singleton and the loader calls it per
@@ -263,6 +269,55 @@ describe('loadStateForStack — globalClients lifecycle', () => {
 
       expect(result?.region).toBe('US-EAST-1');
       expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1');
+    });
+
+    it('quotes the --stack-region hole when the stack spans regions with no synth match (go-to-k/cdkd#4295)', async () => {
+      primeState([
+        { stackName: 'MyStack', region: 'ap-south-1' },
+        { stackName: 'MyStack', region: 'eu-west-1' },
+      ]);
+
+      const result = await loadStateForStack('MyStack', undefined, { statePrefix: 'cdkd' });
+
+      expect(result).toBeUndefined();
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('has state in multiple regions');
+      expect(warned).toContain("Re-run with --stack-region '<region>'. Falling back.");
+    });
+
+    it('names no payload stack or region beside --stack-region (go-to-k/cdkd#4295)', async () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        warnSpy.mockClear();
+        primeState([
+          { stackName: value, region: 'ap-south-1' },
+          { stackName: value, region: `eu${value}` },
+        ]);
+        await loadStateForStack(value, undefined, { statePrefix: 'cdkd' });
+        const warned = warnSpy.mock.calls
+          .map((c) => String(c[0]))
+          .find((l) => l.includes('has state in multiple regions'));
+        expect(warned, value).toContain(
+          'stack a stack name that is not a plain identifier has state in multiple regions (ap-south-1, a region that is not a plain identifier)'
+        );
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(warned!, value);
+          expect(spansThatRun(warned!, dir), `${value}: ${warned}`).toEqual([]);
+        });
+      }
+    }, 120_000);
+
+    it('describes a plain region over the 255-character cap (go-to-k/cdkd#4295)', async () => {
+      const long = 'a'.repeat(256);
+      primeState([
+        { stackName: 'MyStack', region: 'ap-south-1' },
+        { stackName: 'MyStack', region: long },
+      ]);
+      await loadStateForStack('MyStack', undefined, { statePrefix: 'cdkd' });
+      const warned = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes('has state in multiple regions'));
+      expect(warned).toContain('(ap-south-1, a region that is not a plain identifier)');
+      expect(warned).not.toContain(long);
     });
 
     it('leaves the canonical synth-region match byte-identical', async () => {

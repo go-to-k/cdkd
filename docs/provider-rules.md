@@ -351,6 +351,14 @@ implementation. Three details are worth copying:
     after the failure validate the retry's certificate too. If your service has
     no such property, say so and choose differently.
 
+    A failing AUXILIARY call in `create()` — a tag, policy, attribute or other
+    write after the main create — must be marked with
+    `markAuxiliaryFailure(error, logicalId)` (`src/provisioning/auxiliary-failure.ts`,
+    issue [#3826](https://github.com/go-to-k/cdkd/issues/3826)), or that
+    object's "already exists" can be classified as the resource's own name
+    collision, and `--replace` or a replacement rollback then deletes the live
+    resource.
+
   - **`maskSecrets` — mask a resolved property value before you log it.**
     Both `CreateContext` and `UpdateContext` extend a shared
     `SecretMaskingContext`, whose one optional field is
@@ -1616,8 +1624,8 @@ Two placement rules go with it:
   leaving the payload-building code outside the `try` as well turns a
   malformed-template crash into a raw `TypeError` with no resource context.
 - **Check that every `provider.update()` call site retries.** Adding a read to
-  `update()` makes it newly sensitive to throttling. `deploy-engine.ts` and
-  `drift.ts` wrap their calls in `withRetry`; `rollback-executor.ts` did not
+  `update()` makes it newly sensitive to throttling. `deploy-engine-update.ts`
+  and `drift.ts` wrap their calls in `withRetry`; `rollback-executor.ts` did not
   until issue #1461, so the new read would have failed a rollback op that
   previously issued no read at all — and the best-effort catch there counts
   that as a failure and moves on. A transient failure on a RECOVERY path is
@@ -1722,11 +1730,14 @@ Two placement rules go with it:
     moves the window a signal can arrive in, so re-check anything that READS the
     interrupt.** `destroy-runner.ts` assigns `result.interrupted` once, inside
     its `try` — so arming across the teardown made a first Ctrl-C there set
-    `draining` after the only read, leaving the flag false and letting
+    `lock.interrupted` after the only read, leaving the flag false and letting
     `destroy --all` delete the next stack. It re-syncs with
-    `result.interrupted ||= draining` at the end of the `finally`. That is
-    tactical: the real defect is that flag being the only channel, which is
-    [#2117](https://github.com/go-to-k/cdkd/issues/2117).
+    `result.interrupted ||= lock.interrupted && statePreserved` at the end of
+    the `finally`; the `statePreserved` gate keeps a stack whose state was
+    already deleted from reporting `interrupted`. That is tactical: the real
+    defect was that flag being the only channel, which
+    [#2117](https://github.com/go-to-k/cdkd/issues/2117) closed with a
+    command-scoped interrupt handler the `--all` loop reads live.
 
   **An interrupt is not a failure — but it is not a reason to leave AWS state
   behind either.** Two shapes to check in any wait you add, and they pull in
@@ -1750,7 +1761,8 @@ Two placement rules go with it:
   paths decide a resource is already gone by SUBSTRING-matching the error
   message, and an interrupt's message embeds a name the user chose — so a
   logical id containing `NotFoundException` used to drop a live resource's state
-  row. `destroy-runner.ts` and `deploy-engine.ts` both check
+  row. `destroy-runner.ts` and the deploy engine's delete arms (`deploy-engine-update.ts`,
+  `deploy-engine-delete.ts`) all check
   `isInterruptedWaitError` ahead of that match; any new message-based classifier
   on a delete path needs the same guard.
 

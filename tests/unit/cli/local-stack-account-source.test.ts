@@ -35,6 +35,8 @@ const PROFILE_ACCOUNT = '333333333333';
 const stsClientConfigs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 /** Flip to make every `GetCallerIdentity` reject, for the warning-label cases. */
 const stsFailure = vi.hoisted(() => ({ on: false }));
+/** Flip to make `GetCallerIdentity` answer with no `Account`. */
+const stsNoAccount = vi.hoisted(() => ({ on: false }));
 
 /** The account the mocked STS reports for the identity a client was built with. */
 function accountFor(config: Record<string, unknown>): string {
@@ -52,6 +54,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
     return {
       send: vi.fn(async () => {
         if (stsFailure.on) throw new Error('sts unavailable');
+        if (stsNoAccount.on) return {};
         return { Account: accountFor(config) };
       }),
       destroy: vi.fn(),
@@ -284,4 +287,45 @@ describe('an STS failure is warned under the state-source flag actually in use',
       expect(messages.some((m) => m.startsWith(other))).toBe(false);
     });
   });
+});
+
+describe('local run-task: resolvePlaceholderAccount with no Account (go-to-k/cdkd#4295)', () => {
+  it('quotes the --assume-task-role hole in its refusal', async () => {
+    stsNoAccount.on = true;
+    try {
+      await expect(
+        resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
+          region: 'us-east-1',
+        } as never)
+      ).rejects.toThrow("Pass the ARN explicitly: --assume-task-role '<arn>'");
+    } finally {
+      stsNoAccount.on = false;
+    }
+  });
+
+  it('describes a payload ARN beside --assume-task-role', async () => {
+    const { PASTE_PAYLOADS, expectNoCommandBesideDisplay, spansThatRun, withPasteDir } =
+      await import('../utils/paste-harness.js');
+    stsNoAccount.on = true;
+    try {
+      for (const { value } of PASTE_PAYLOADS) {
+        const message = await resolvePlaceholderAccount(
+          `arn:aws:iam::\${AWS::AccountId}:role/${value}`,
+          { region: 'us-east-1' } as never
+        ).then(
+          () => '',
+          (e: unknown) => (e as Error).message
+        );
+        expect(message, value).toContain(
+          'cannot resolve placeholder ARN (not shown: it is not a plain identifier).'
+        );
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+        });
+      }
+    } finally {
+      stsNoAccount.on = false;
+    }
+  }, 120_000);
 });

@@ -215,6 +215,36 @@ describe('LambdaMicrovmImageProvider', () => {
       );
     });
 
+    it('names no payload logical id or ARN beside --resource-timeout on the poll-cap refusal, and quotes its hole (go-to-k/cdkd#4295)', async () => {
+      const refusal = async (logicalId: string, arn: string): Promise<string> => {
+        mockSend.mockReset();
+        mockSend.mockResolvedValueOnce({ imageArn: arn, state: 'CREATING' });
+        mockSend.mockResolvedValue({ state: 'CREATING' });
+        const err: unknown = await provider.create(logicalId, TYPE, minimalProps()).then(
+          () => undefined,
+          (e: unknown) => e
+        );
+        expect(err, `${logicalId} ${arn}`).toBeInstanceOf(Error);
+        const message = (err as Error).message;
+        expect(message).toContain(
+          "Increase --resource-timeout AWS::Lambda::MicrovmImage='<duration>' or set CDKD_NO_WAIT=true."
+        );
+        return message;
+      };
+      for (const { value } of PASTE_PAYLOADS) {
+        const byId = await refusal(value, ARN);
+        const byArn = await refusal('MyImage', `${ARN}${value}`);
+        expect(byId, value).toContain(`MicroVM image a logical id that is not a plain identifier (${ARN})`);
+        expect(byArn, value).toContain('MicroVM image MyImage (not shown: it is not a plain identifier) did not');
+        withPasteDir((dir) => {
+          for (const message of [byId, byArn]) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
+
     it('skips the poll when CDKD_NO_WAIT=true', async () => {
       process.env['CDKD_NO_WAIT'] = 'true';
       mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });

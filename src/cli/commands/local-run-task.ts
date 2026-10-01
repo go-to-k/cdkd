@@ -11,7 +11,8 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { displayIdent, plainIdentOr, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { VALUE_NOT_SHOWN } from '../../provisioning/import-helpers.js';
 import {
   applyRoleArnIfSet,
   assertFlagRoleArn,
@@ -411,7 +412,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
         throw new Error(
           `--assume-task-role passed without an ARN but the task definition has no resolvable TaskRoleArn. ` +
             `Either the task definition does not set TaskRoleArn, or it points at a resource cdkd cannot resolve to an IAM Role at synth time. ` +
-            `Pass the ARN explicitly: --assume-task-role <arn>`
+            `Pass the ARN explicitly: --assume-task-role '<arn>'`
         );
       }
       resolvedRoleArn = await resolvePlaceholderAccount(task.taskRoleArn, options);
@@ -569,8 +570,9 @@ export async function resolvePlaceholderAccount(
     const account = identity.Account;
     if (!account) {
       throw new Error(
-        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. ` +
-          `Pass the ARN explicitly: --assume-task-role <arn>`
+        // cdkd-arn-display: the template ARN is shown only when plain (`plainIdentOr` at the role-ARN cap) and described otherwise, since this line names `--assume-task-role` (go-to-k/cdkd#4295).
+        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN ${plainIdentOr(arn, VALUE_NOT_SHOWN, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. ` +
+          `Pass the ARN explicitly: --assume-task-role '<arn>'`
       );
     }
     return arn.split(TASK_ROLE_ACCOUNT_PLACEHOLDER).join(account);

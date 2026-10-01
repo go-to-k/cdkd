@@ -38,6 +38,8 @@ import {
   producerRecordKey,
 } from '../../state/malformed-resources-bag.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
+import { quotedOrDescribed } from '../../utils/pasteable-command.js';
+import { regionShown } from '../region-options.js';
 
 export interface LoadStateForStackOptions {
   stackRegion?: string;
@@ -274,10 +276,15 @@ export async function loadStateForStack(
     } else if (refs.length === 1) {
       targetRegion = refs[0]!.region ?? synthRegion ?? region;
     } else {
-      const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
+      // Names `--stack-region`, so the stack name and every region are shown
+      // only when plain and described otherwise (go-to-k/cdkd#4295).
+      const seen = refs
+        .map((r) => (r.region === undefined ? '(legacy)' : regionShown(r.region)))
+        .join(', ');
       logger.warn(
-        `${prefix}: stack '${stackName}' has state in multiple regions (${seen}). ` +
-          `Re-run with --stack-region <region>. Falling back.`
+        // cdkd-raw-beside-safe: `prefix` is the caller's flag label (a literal), and `seen` is already built from `regionShown` per region above.
+        `${prefix}: stack ${quotedOrDescribed(stackName, 'stack name')} has state in multiple regions (${seen}). ` +
+          `Re-run with --stack-region '<region>'. Falling back.`
       );
       return undefined;
     }

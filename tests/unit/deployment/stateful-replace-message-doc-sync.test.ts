@@ -172,6 +172,19 @@ describe('the stateful-replace refusal and its documented example stay in sync',
       flattenWhitespace(readFileSync(path, 'utf8')),
     ])
   ) as Record<keyof typeof SOURCE_PATHS, string>;
+  // `engine` is `DeployEngine`'s whole source: the class file plus the mixin
+  // modules that augment it (#4200), where the provisioning arms now live.
+  const deploymentDir = join(repoRoot, 'src', 'deployment');
+  sources.engine = flattenWhitespace(
+    [
+      readFileSync(SOURCE_PATHS.engine, 'utf8'),
+      ...readdirSync(deploymentDir)
+        .filter((f) => f.endsWith('.ts') && f !== 'deploy-engine.ts')
+        .sort()
+        .map((f) => readFileSync(join(deploymentDir, f), 'utf8'))
+        .filter((src) => src.includes("declare module './deploy-engine.js'")),
+    ].join('\n')
+  );
   const doc = readFileSync(docPath, 'utf8');
   const docBlocks = fencedTextBlocks(doc).map(flattenWhitespace);
   /**
@@ -248,8 +261,8 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     //   recreate-targets.ts        -> --recreate-via-cc-api,
     //                                 --recreate-via-sdk-provider
     //                                 (one pre-flight probe, two flags)
-    //   deploy-engine.ts (diff)    -> property-driven replacement
-    //   deploy-engine.ts (update-  -> --replace,
+    //   deploy-engine-update.ts (diff) -> property-driven replacement
+    //   deploy-engine-update.ts (update- -> --replace,
     //     failure fallback)           Cloud Control auto-fallback
     //                                 (one guard, two triggers)
     //   rollback-executor.ts       -> NO row. It is an ADVISORY reader: it
@@ -345,8 +358,8 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     expect(readers.length).toBeGreaterThanOrEqual(5);
     expect(readers.map((f) => f.slice(repoRoot.length + 1)).sort()).toEqual([
       'src/cli/commands/recreate-confirm-prompt.ts',
-      'src/deployment/deploy-engine.ts',
-      'src/deployment/deploy-engine.ts',
+      'src/deployment/deploy-engine-update.ts',
+      'src/deployment/deploy-engine-update.ts',
       'src/deployment/recreate-targets.ts',
       'src/deployment/rollback-executor.ts',
     ]);

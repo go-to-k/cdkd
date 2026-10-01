@@ -367,7 +367,7 @@ async function localStartApiCommand(
       );
     }
     logger.warn(
-      "[deprecated] --api <id> will be removed in a future major release. Use the positional argument instead: 'cdkd local start-api <id>'."
+      "[deprecated] --api '<id>' will be removed in a future major release. Use the positional argument instead: 'cdkd local start-api <id>'."
     );
     apiFilter = options.api;
   }
@@ -519,7 +519,7 @@ async function localStartApiCommand(
     );
     if (targetStacks.length === 0) {
       throw new Error(
-        'No stacks matched. Pass --stack <name> (or --from-cfn-stack <name>) or run from a single-stack app.'
+        "No stacks matched. Pass --stack '<name>' (or --from-cfn-stack '<name>') or run from a single-stack app."
       );
     }
 
@@ -1425,7 +1425,7 @@ export function pickTargetStacks(
   // its routes — but for v1 we require an explicit selection so users
   // don't accidentally serve a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, or a stack-qualified target like "<StackName>/<construct>" to pick a target. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
+    `Multi-stack app: pass --stack '<name>', --from-cfn-stack '<name>', or a stack-qualified target like "<StackName>/<construct>" to pick a target. Available stacks: ${stacks.map((s) => plainOrDescribed(s.stackName, 'stack name')).join(', ')}.`
   );
 }
 
@@ -1769,7 +1769,7 @@ function assumeRolePin(logicalId: string): string {
   // `plainOrDescribed` is the value itself on this arm, spelled through the
   // helper so the render names its own gate.
   return isPasteableIdent(logicalId)
-    ? `--assume-role ${plainOrDescribed(logicalId, 'logical id')}=<arn>`
+    ? `--assume-role ${plainOrDescribed(logicalId, 'logical id')}='<arn>'`
     : "--assume-role, naming this Lambda's logical id";
 }
 

@@ -119,7 +119,9 @@ export const MEMBERSHIP_MALFORMED_USERS_SKIP_REASON =
  * than read as deleted, which would drop the last trace of that membership.
  */
 export const MEMBERSHIP_SECRET_USER_NOT_MEMBER_SKIP_REASON =
-  "the secret's current value names a user outside the group; the value may have rotated";
+  // Plain prose (no `'`, no `;`): `deleteSkippedMessage` shows only such a
+  // reason (go-to-k/cdkd#4265).
+  'the current value of the secret names a user outside the group — the value may have rotated';
 
 /**
  * What an `AWS::IAM::UserToGroupAddition` update or delete says about a

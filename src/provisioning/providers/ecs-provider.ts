@@ -89,7 +89,13 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  isPlainImportValue,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+  VALUE_NOT_SHOWN,
+} from '../import-helpers.js';
+import { logicalIdShown } from '../composite-id.js';
 import {
   planTagDiff,
   tagPlanWarning,
@@ -1263,7 +1269,7 @@ export class ECSProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           log.warn(
-            `Failed to clean up partially-created ECS service ${logicalId} (${service.serviceArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${aws`aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`.render()}`
+            `Failed to clean up partially-created ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}: ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${aws`aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`.render()}`
           );
         }
         // The SDK waiter's bare "Waiter has timed out" explains nothing.
@@ -1271,8 +1277,10 @@ export class ECSProvider implements ResourceProvider {
         // ProvisioningError in the outer catch preserves it verbatim, and
         // the cause chain keeps the original waiter error reachable for
         // `cdkd events` metadata extraction.
+        // Names `--full-wait` and two `aws` commands, so the logical id is
+        // shown only when plain (go-to-k/cdkd#4295).
         throw new Error(
-          `ECS service ${logicalId} did not reach steady state under --full-wait: ${waitError instanceof Error ? waitError.message : String(waitError)}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
+          `ECS service ${logicalIdShown(logicalId)} did not reach steady state under --full-wait: ${waitError instanceof Error ? waitError.message : String(waitError)}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
           { cause: waitError }
         );
       }
@@ -1291,7 +1299,10 @@ export class ECSProvider implements ResourceProvider {
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to create ECS service ${logicalId}: ${text}`,
+            // The wrapped text can be the `--full-wait` refusal, with its `aws`
+            // commands, so the logical id is shown only when plain
+            // (go-to-k/cdkd#4295).
+            `Failed to create ECS service ${logicalIdShown(logicalId)}: ${text}`,
             resourceType,
             logicalId,
             serviceName,
@@ -1391,7 +1402,7 @@ export class ECSProvider implements ResourceProvider {
     // INFO has no masked sink; the finished line goes through the same mask.
     this.logger.info(
       log.mask(
-        `ECS service ${logicalId} accepted (not waiting for steady state${fullWaitHint}). ` +
+        `ECS service ${logicalIdShown(logicalId)} accepted (not waiting for steady state${fullWaitHint}). ` +
           `To wait manually: ${aws`aws ecs wait services-stable${clusterArg} --services ${serviceRef}`.render()}`
       )
     );
