@@ -24,7 +24,8 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displaySafe, plainIdentOr } from '../../utils/display-safe.js';
-import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -284,6 +285,23 @@ export class LogsLogGroupProvider implements ResourceProvider {
     const awsClients = getAwsClients();
     this.logsClient = awsClients.cloudWatchLogs;
     this.stsClient = awsClients.sts;
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * through the operation's masker: an AWS error can echo a request value (a
+   * resolved tag value). The text is masked RAW, the `cause` stays unmasked,
+   * and a message the mask changed is stamped so the retry classifiers read
+   * that chain rather than the masked message (`wrapMaskedAwsError`, issue
+   * #4259). A method, so `gen-update-wrap-coverage` sees the catch that
+   * throws it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
   }
 
   /**
@@ -555,12 +573,17 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // CreateLogGroup sends the resolved tag values, which an AWS error can
       // echo: the message goes through the operation's masker.
       const mask = maskerOrIdentity(context?.maskSecrets);
-      throw new ProvisioningError(
-        `Failed to create log group ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        logGroupName,
-        cause
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create log group ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            logGroupName,
+            cause
+          )
       );
     }
   }
@@ -615,12 +638,17 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // An AWS error can echo a request value (a resolved tag value), so the
       // message goes through the operation's masker.
       const mask = maskerOrIdentity(context?.maskSecrets);
-      throw new ProvisioningError(
-        `Failed to update log group ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update log group ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

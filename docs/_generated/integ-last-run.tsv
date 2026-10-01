@@ -111,7 +111,7 @@ efs-immutable-replacement	2026-09-30T08:37:29Z	PASS	75	verify.sh	PR #4182 (#2177
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-10-01T03:22:05Z	PASS	160	verify.sh	rc ok, orph clean (#4257)
 elasticache-replicationgroup-getatt	2026-09-29T14:00:50Z	PASS	776	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-elbv2-same-name-replacement	2026-09-29T02:36:21Z	PASS	75	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, same-name --replace still delete-first, 12 deleted 0 errors, orph clean
+elbv2-same-name-replacement	2026-10-01T07:41:42Z	PASS	85	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 12 deleted 0 errors, orph clean
 emr-cluster	2026-09-30T17:19:24Z	PASS	715	verify.sh	PR #4246 (#2204 EMR --remove-protection compensation wraps delete) @ceb272363; rc ok, destroy 0 errors, no state/IAM/VPC/cluster leftovers
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
@@ -222,9 +222,9 @@ local-start-cloudfront	2026-09-24T15:31:24Z	PASS	10	verify.sh	rc ok, docker clea
 local-start-service	2026-09-25T05:52:32Z	PASS	91	verify.sh	rc ok, docker sweep clean, 0 orphans (#3698)
 local-start-service-watch-fast	2026-09-24T15:31:14Z	PASS	205	verify.sh	rc ok, docker clean (#3652 engine-only containment)
 log-pipeline	2026-07-31T07:44:41Z	PASS	95	standard	issue #1326 removalPolicy fix verified: stream deleted on destroy, 0 orphans
-loggroup-class-guard	2026-10-01T02:52:52Z	PASS	115	verify.sh	PR #4252 (#4239 arrow paste sites) at dc71dd51d; rc ok, orph clean
-loggroup-kms-associate	2026-09-24T03:51:15Z	PASS	60	verify.sh	rc ok, orph clean (#3269)
-loggroup-never-expire-guard	2026-09-06T08:17:58Z	PASS	110	verify.sh	PR2695 gate run; 9 phases incl. new 4b string-retention + 4c observed-only arms, destroy 3 deleted 0 errors, 0 orphans
+loggroup-class-guard	2026-10-01T07:41:42Z	PASS	126	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 1 deleted 0 errors, orph clean
+loggroup-kms-associate	2026-10-01T07:41:42Z	PASS	76	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 2 deleted 0 errors, orph clean
+loggroup-never-expire-guard	2026-10-01T07:41:42Z	PASS	150	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 3 deleted 0 errors, orph clean
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 microservices	2026-08-13T18:47:41Z	PASS	44	standard	Issue #1874 broad integ at rebased head 133a9660 (merged PR #1884 region fold + PR #1885); 19 created / 19 deleted, 0 errors, 0 orphans
 migrate-from-cfn	2026-09-29T07:13:32Z	PASS	388	run.sh	PR #4058 merge-gate run; rc ok, orph clean
@@ -240,7 +240,7 @@ nested-stack-deep	2026-09-30T10:20:59Z	PASS	105	verify.sh	rc ok, orph clean; PR 
 nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
 nested-stack-rollback	2026-09-30T11:33:23Z	PASS	100	verify.sh	rc ok, orph clean (#4215)
 nested-stack-secret	2026-09-30T10:20:59Z	PASS	210	verify.sh	rc ok, orph clean; PR #4221 (#4094 bound child params + conditions)
-nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 24 deleted 0 errors, 0 orphans (VPC/ENI clean)
+nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-parameter-masking	2026-10-01T02:52:52Z	PASS	151	verify.sh	PR #4252 (#4239 arrow paste sites) at dc71dd51d; rc ok, orph clean
 opensearch-domain-getatt	2026-08-10T08:05:51Z	PASS	1798	verify.sh	0810 P2 sweep b13; 60m CC delete floor ok, 0 err 0 orph
