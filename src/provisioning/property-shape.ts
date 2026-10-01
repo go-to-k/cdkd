@@ -28,8 +28,10 @@
  *
  * ## Cost
  *
- * The table is a static generated module. A type's rows are turned into a tree
- * on first use and cached, and the walk visits only template keys the tree
+ * The table is a static generated module holding one JSON string per type,
+ * so importing it costs a string scan on every CLI start (the deploy-engine
+ * chunk is loaded by every command); a type's string is parsed into a tree on
+ * first use and cached, and the walk visits only template keys the tree
  * names, so a resource costs O(its properties) and a type outside the table one
  * Map lookup. No AWS call.
  */
@@ -81,8 +83,8 @@ function treeFor(resourceType: string): ShapeNode | undefined {
   const cached = treeCache.get(resourceType);
   if (cached) return cached;
   const rows = PROPERTY_SHAPES.get(resourceType);
-  if (!rows) return undefined;
-  const tree = buildShapeTree(rows);
+  if (rows === undefined) return undefined;
+  const tree = buildShapeTree(JSON.parse(rows) as Record<string, 'array' | 'object'>);
   treeCache.set(resourceType, tree);
   return tree;
 }

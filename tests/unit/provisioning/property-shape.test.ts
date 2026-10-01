@@ -14,8 +14,8 @@ import { PROPERTY_SHAPES } from '../../../src/provisioning/property-shape.genera
 
 describe('findPropertyShapeViolations against the generated table', () => {
   it('the table carries the rows these cases rely on', () => {
-    expect(PROPERTY_SHAPES.get('AWS::SQS::Queue')).toMatchObject({ Tags: 'array', 'Tags[]': 'object' });
-    expect(PROPERTY_SHAPES.get('AWS::Lambda::Function')).toMatchObject({
+    expect(JSON.parse(PROPERTY_SHAPES.get('AWS::SQS::Queue')!)).toMatchObject({ Tags: 'array', 'Tags[]': 'object' });
+    expect(JSON.parse(PROPERTY_SHAPES.get('AWS::Lambda::Function')!)).toMatchObject({
       VpcConfig: 'object',
       'VpcConfig.SubnetIds': 'array',
       Environment: 'object',

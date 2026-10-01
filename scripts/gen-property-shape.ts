@@ -68,12 +68,13 @@ function main(): void {
     );
   }
 
+  // One JSON STRING per type, parsed on first use: a string literal costs the
+  // parser almost nothing, and this module sits in the chunk every command
+  // loads, so an object literal per row would be paid on every CLI start.
   const body = table
     .map(([type, rows]) => {
-      const lines = rows
-        .map(([path, kind]) => `    ${JSON.stringify(path)}: ${JSON.stringify(kind)},`)
-        .join('\n');
-      return `  [\n    ${JSON.stringify(type)},\n    {\n${lines}\n    },\n  ],`;
+      const json = JSON.stringify(Object.fromEntries(rows));
+      return `  [${JSON.stringify(type)}, ${JSON.stringify(json)}],`;
     })
     .join('\n');
 
@@ -82,16 +83,15 @@ function main(): void {
  * Source: the \`propertyShapes\` section of tests/fixtures/cfn-schemas/*.json.
  * Regenerate: \`vp run gen:property-shape\`.
  *
- * Per resource type, each property PATH (dotted; \`[]\` marks an array's
- * elements) mapped to the JSON kind its schema requires there. Only paths whose
- * schema admits exactly one of \`array\` / \`object\` are listed; the pre-flight
- * refusal in \`property-shape.ts\` reads them.
+ * Per resource type, a JSON object mapping each property PATH (dotted; \`[]\`
+ * marks an array's elements) to the JSON kind its schema requires there. Only
+ * paths whose schema admits exactly one of \`array\` / \`object\` are listed;
+ * the pre-flight refusal in \`property-shape.ts\` parses a type's string on its
+ * first lookup. Strings rather than object literals keep this module's import
+ * cost off every CLI start.
  */
 
-export const PROPERTY_SHAPES: ReadonlyMap<
-  string,
-  Readonly<Record<string, 'array' | 'object'>>
-> = new Map<string, Readonly<Record<string, 'array' | 'object'>>>([
+export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, string>([
 ${body}
 ]);
 `;

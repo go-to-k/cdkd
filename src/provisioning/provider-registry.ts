@@ -23,6 +23,7 @@ import {
   findMutuallyExclusiveViolations,
 } from './mutually-exclusive-properties.js';
 import { buildNestedRequiredMessage, findNestedRequiredViolations } from './nested-required.js';
+import { validatePropertyShapes } from './property-shape.js';
 import {
   buildSecureReferenceMessage,
   findSecureReferencePaths,
@@ -820,7 +821,11 @@ export class ProviderRegistry {
    * should not first produce a page of routing chatter. Issue
    * [#1802](https://github.com/go-to-k/cdkd/issues/1802) adds the nested
    * `required` check ({@link validateNestedRequiredProperties}) at the same
-   * point, for the same reason.
+   * point, for the same reason. Issue
+   * [#4357](https://github.com/go-to-k/cdkd/issues/4357) puts the property
+   * SHAPE check (`property-shape.ts`: a list where the schema wants an object,
+   * or the reverse) FIRST, since a wrong-kind value would otherwise surface
+   * through the nested `required` walk as an unrelated missing member.
    *
    * @see findAutoRouteHits for the pure-functional pre-deploy plan-builder
    *      that returns the same information without logging.
@@ -838,6 +843,7 @@ export class ProviderRegistry {
     // is an Iterable — the deploy engine passes an array today, but a
     // generator would be silently empty on the second pass.
     const materialized = [...resources];
+    validatePropertyShapes(materialized);
     this.validateMutuallyExclusiveProperties(materialized);
     this.validateNestedRequiredProperties(materialized);
     this.validateCustomResourceSecureReferences(materialized);
