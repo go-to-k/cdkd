@@ -29,7 +29,7 @@ import {
   hasUnverifiableParameterRefusal,
 } from '../types/state.js';
 import { bold, gray, green, yellow } from '../utils/colors.js';
-import { safeMsg } from '../utils/display-safe.js';
+import { ROLE_ARN_MAX_CODE_POINTS, displayIdent, safeMsg } from '../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../utils/error-handler.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
 import { formatResourceLine } from '../utils/resource-line.js';
@@ -37,6 +37,16 @@ import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 import { collisionLine, markOwnLines } from './collision-text.js';
 import { logicalIdShown, resourceTypeShown } from '../provisioning/composite-id.js';
 import { physicalIdShownBesideCommand } from '../utils/pasteable-command.js';
+
+/**
+ * A value on a Retain refusal's line, which names no command or flag: shown,
+ * never described, but BOUNDED by `displayIdent` (sanitized, JSON-quoted when
+ * not plain), so a template or state value with a newline cannot forge a row
+ * on the terminal (security review of #4342).
+ */
+function retainShown(value: string, maxCodePoints?: number): string {
+  return displayIdent(value, maxCodePoints === undefined ? undefined : { maxCodePoints });
+}
 import {
   type FreshNoEchoCeilingVerdict,
   type FreshNoEchoReadback,
@@ -1218,7 +1228,7 @@ export async function provisionUpdate(
             }
           );
           throw new CdkdError(
-            `${logicalId} (${resourceType}) requires replacement, but its physical name ` +
+            `${retainShown(logicalId)} (${retainShown(resourceType)}) requires replacement, but its physical name ` +
               `is still held by the existing resource AND UpdateReplacePolicy: Retain ` +
               `pins that resource in place. ${retainNameOrigin.descriptor}. ` +
               `${retainNameOrigin.remedy} — with Retain, the old resource keeps the name, so a ` +
@@ -1310,9 +1320,9 @@ export async function provisionUpdate(
             { besideCommand: false }
           );
           throw new CdkdError(
-            `${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
+            `${retainShown(logicalId)} (${retainShown(resourceType)}) requires replacement, but its Create API is ` +
               `name-idempotent: the create-first attempt returned the existing resource ` +
-              `(${currentResource.physicalId}) instead of creating a new one, and ` +
+              `(${retainShown(currentResource.physicalId, ROLE_ARN_MAX_CODE_POINTS)}) instead of creating a new one, and ` +
               `UpdateReplacePolicy: Retain pins that resource in place. ` +
               `${idempotentNameOrigin.descriptor}. ${idempotentNameOrigin.remedy} — with ` +
               `Retain, the old resource keeps the name, so a same-name replacement can ` +
@@ -2197,7 +2207,7 @@ export async function provisionUpdate(
           // schedule on a path that cannot succeed.
           throw markNonRetryable(
             new CdkdError(
-              `${logicalId} (${resourceType}) requires replacement because the ` +
+              `${retainShown(logicalId)} (${retainShown(resourceType)}) requires replacement because the ` +
                 `provisioning layer cannot update it in place — but its physical name ` +
                 `is still held by the existing resource AND ` +
                 `UpdateReplacePolicy: Retain pins that resource in place. ` +
@@ -2242,9 +2252,9 @@ export async function provisionUpdate(
             // the create SUCCEEDED; the failure is what it returned.
             throw markNonRetryable(
               new CdkdError(
-                `${logicalId} (${resourceType}) requires replacement, but its Create ` +
+                `${retainShown(logicalId)} (${retainShown(resourceType)}) requires replacement, but its Create ` +
                   `API is name-idempotent: the create returned the existing resource ` +
-                  `(${currentResource.physicalId}) instead of creating a new one, and ` +
+                  `(${retainShown(currentResource.physicalId, ROLE_ARN_MAX_CODE_POINTS)}) instead of creating a new one, and ` +
                   `UpdateReplacePolicy: Retain pins that resource in place, so the new ` +
                   `properties were not applied. ${idempotentNameOrigin.descriptor}. ` +
                   `${idempotentNameOrigin.remedy} — with Retain, the old resource keeps ` +

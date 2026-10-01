@@ -5,7 +5,7 @@ import {
 } from '../utils/pasteable-command.js';
 import { getCurrentStackName, looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';
 import type { ChangeType } from '../types/state.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { ROLE_ARN_MAX_CODE_POINTS, displayIdent, displaySafe } from '../utils/display-safe.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import type { DeployEngine } from './deploy-engine.js';
 import { isNameCollisionErrorFrom } from './retryable-errors.js';
@@ -50,16 +50,20 @@ export function replacementNameOrigin(
   physicalId: string,
   /**
    * `false` for a caller whose line names no command or flag (the Retain
-   * refusals): the id is then shown as recorded, since it is the operator's
-   * handle on the resource. Default `true`, for the no-flag refusals that
+   * refusals): the id is then shown bounded by `displayIdent`, never
+   * described, since it is the operator's handle on the resource. Default `true`, for the no-flag refusals that
    * name `cdkd deploy --replace` after this text, where it is shown only when
    * plain (go-to-k/cdkd#4291).
    */
   opts: { besideCommand?: boolean } = {}
 ): { descriptor: string; remedy: string } {
+  // Beside no command the id is still BOUNDED (`displayIdent`: sanitized, and
+  // JSON-quoted when not plain), never raw: a state value with a newline would
+  // otherwise forge a row on the terminal (security review of #4342). It is
+  // never described there, so the operator keeps the handle.
   const shownId =
     opts.besideCommand === false
-      ? physicalId
+      ? displayIdent(physicalId, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
       : (physicalIdShownBesideCommand(physicalId) ??
         'a physical id that is not a plain identifier');
   if (looksLikeCdkdGeneratedName(physicalId, logicalId, getCurrentStackName())) {

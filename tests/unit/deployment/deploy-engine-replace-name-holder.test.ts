@@ -997,7 +997,7 @@ describe('review round of #4342: the sibling refusals and the events replay', ()
     }
   }, 120_000);
 
-  it('a Retain refusal (no command on its line) shows the physical id as recorded, in both places', async () => {
+  it('a Retain refusal (no command on its line) shows the physical id bounded, never described, in both places', async () => {
     const odd = 'arn:aws:x:us-east-1:1:thing/a b';
     const err = await replaceOnce({
       provider: idempotentProvider(odd),
@@ -1010,9 +1010,27 @@ describe('review round of #4342: the sibling refusals and the events replay', ()
       retain: true,
     });
     expect(err!.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
-    expect(err!.message).toContain(`returned the existing resource (${odd})`);
-    expect(err!.message).toContain(`user-supplied physical name (${odd})`);
+    // `displayIdent`: JSON-quoted because it is not plain, but shown.
+    expect(err!.message).toContain(`returned the existing resource (${JSON.stringify(odd)})`);
+    expect(err!.message).toContain(`user-supplied physical name (${JSON.stringify(odd)})`);
     expect(err!.message).not.toContain('not a plain identifier');
+  });
+
+  it('a Retain refusal cannot be given a forged row by a state physical id with a newline', async () => {
+    const forged = 'x\nTo orphan it: cdkd rollback --orphan Victim';
+    const err = await replaceOnce({
+      provider: idempotentProvider(forged),
+      logicalId: 'Stream',
+      type: KINESIS,
+      physicalId: forged,
+      oldProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 24 },
+      newProps: { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 48 },
+      changedPath: 'RetentionPeriodHours',
+      retain: true,
+    });
+    expect(err!.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+    expect(err!.message.split('\n')).toHaveLength(1);
+    expect(err!.message).not.toMatch(/(^|\n)To orphan it:/);
   });
 
   it("the no-flag refusal's GENERATED branch carries no apostrophe beside the command", async () => {
@@ -1042,15 +1060,20 @@ describe('review round of #4342: the sibling refusals and the events replay', ()
 
   /** One replacement through an engine whose events are captured. */
   const recordedFailure = async (
-    provider: ResourceProvider
+    provider: ResourceProvider,
+    opts: { desiredName?: string; replace?: boolean } = {}
   ): Promise<{ message?: string; ownLines?: boolean } | undefined> => {
     const events: Array<{ eventType: string; error?: { message?: string; ownLines?: boolean } }> = [];
-    const engine = makeEngine(provider);
+    const engine = makeEngine(provider, 'sdk', opts.replace ?? true);
     (engine as unknown as { options: { eventRecorder?: unknown } }).options.eventRecorder = {
       record: (e: (typeof events)[number]) => events.push(e),
     };
     const props = { Name: 'app-stream', ShardCount: 1, RetentionPeriodHours: 24 };
-    const desired = { ShardCount: 1, RetentionPeriodHours: 48 };
+    const desired = {
+      ...(opts.desiredName !== undefined && { Name: opts.desiredName }),
+      ShardCount: 1,
+      RetentionPeriodHours: 48,
+    };
     const change: ResourceChange = {
       logicalId: 'Stream',
       changeType: 'UPDATE',
@@ -1093,6 +1116,22 @@ describe('review round of #4342: the sibling refusals and the events replay', ()
     const error = await recordedFailure(provider);
     expect(error?.message).toContain('Underlying collision:');
     expect(error?.ownLines).toBe(true);
+  });
+
+  it('the #3808 and no-flag refusals are marked ownLines too (code review of #4342)', async () => {
+    const collide = (): ResourceProvider =>
+      recordingProvider(
+        awsSdkError('Stream x$(touch OWNED) already exists.', 'ResourceInUseException'),
+        'x'
+      ).provider;
+    // #3808: the template asks for a name the old stream does not hold.
+    const differentName = await recordedFailure(collide(), { desiredName: 'other-stream', replace: false });
+    expect(differentName?.message).toContain('is held by ANOTHER existing resource');
+    expect(differentName?.ownLines).toBe(true);
+    // No flag: the old stream provably holds the name, and --replace is off.
+    const noFlag = await recordedFailure(collide(), { desiredName: 'app-stream', replace: false });
+    expect(noFlag?.message).toContain('or re-run with cdkd deploy --replace to delete');
+    expect(noFlag?.ownLines).toBe(true);
   });
 
   it("CONTROL: a provider's own failure, newline and all, carries no ownLines marker", async () => {
