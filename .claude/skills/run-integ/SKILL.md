@@ -236,7 +236,7 @@ verify, clean up.
    the only proof a schema bump auto-migrates (deploy under vN, swap binary, read
    works, the next write persists vN+1, destroy clean), and
    `integ-schema-migration-gate.sh` blocks `gh pr merge` on a PR bumping the
-   version constant in `src/types/state.ts` until it has run. Never set by hand.
+   version constant in `src/types/state.ts` until it has run. Never set without that test's clean run.
 
    **The test-name condition is IN the block, not only in the sentence above
    it.** Step 9's block is unconditional, so pasting both after any clean run
