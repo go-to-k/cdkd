@@ -103,6 +103,11 @@ CEILING_REMOVAL_TABLE_READ=61
 CEILING_REMOVAL_TABLE_WRITE=57
 CEILING_REMOVAL_GSI_READ=43
 CEILING_REMOVAL_GSI_WRITE=39
+# issue go-to-k/cdkd#3255: the provisioned table declares PITR with this period
+# on every deploy; the table below exists only in the create-arm refusal deploy
+# and must NEVER be created.
+PITR_PERIOD=7
+PITR_REFUSED_TABLE="cdkd-ondemand-test-pitr-refused-table"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -123,6 +128,7 @@ cleanup() {
   aws dynamodb delete-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws dynamodb delete-table --table-name "${PITR_REFUSED_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -297,6 +303,29 @@ assert_provisioned_capacity() {
 }
 
 assert_provisioned_capacity "${PROV_INITIAL_READ}" "${PROV_INITIAL_WRITE}" "Phase 1"
+
+# --- issue go-to-k/cdkd#3255 BASELINE: the declared PITR period is live ----
+# `UpdateContinuousBackups` settles asynchronously, so poll for ENABLED at the
+# declared period. This baseline is what the refusal phases compare against: a
+# period still at 7 after them proves nothing was sent.
+assert_pitr_period() { # usage: assert_pitr_period <expected> <phase>
+  local expected="$1" phase="$2" status="" period=""
+  for _ in $(seq 1 24); do
+    status=$(aws dynamodb describe-continuous-backups --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
+      --query 'ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus' --output text) || return 1
+    period=$(aws dynamodb describe-continuous-backups --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
+      --query 'ContinuousBackupsDescription.PointInTimeRecoveryDescription.RecoveryPeriodInDays' --output text) || return 1
+    if [ "${status}" = "ENABLED" ] && [ "${period}" = "${expected}" ]; then
+      echo "    OK (${phase}): PITR ENABLED with RecoveryPeriodInDays=${expected} on AWS"
+      return 0
+    fi
+    sleep 5
+  done
+  echo "FAIL (${phase}, issue #3255): PITR is '${status}' with RecoveryPeriodInDays='${period}', expected ENABLED / ${expected}" >&2
+  exit 1
+}
+assert_pitr_period "${PITR_PERIOD}" "Phase 1" \
+  || { echo "FAIL (Phase 1, issue #3255): describe-continuous-backups failed for ${PROV_TABLE_NAME}" >&2; exit 1; }
 
 # --- Phase 1.5: in-place ProvisionedThroughput UPDATE -----------------
 # Re-deploy with CDKD_TEST_UPDATE=true, which flips the provisioned table's
@@ -669,6 +698,53 @@ if [ -z "${DROPPED_GSI_OK}" ]; then
 fi
 echo "    OK: the GSI removed in the same deploy as the flip is gone (issue #1617 CLOSED)"
 
+# --- Phase 1.7: a RecoveryPeriodInDays CloudFormation rejects is REFUSED ----
+# (issue go-to-k/cdkd#3255). Pre-fix each deploy below went GREEN: the period
+# was dropped with a warning, PITR was (re)enabled at DynamoDB's default of 35,
+# and state recorded the declared `' 14 '` -- permanent drift. Each must now
+# FAIL before any AWS call. Both keep CDKD_TEST_UPDATE=true, so the only
+# template difference from Phase 1.5 is the one under test.
+refusal_deploy() { # usage: refusal_deploy <arm>; prints the ANSI-stripped output
+  local out rc=0
+  out=$(CDKD_TEST_UPDATE=true CDKD_TEST_PITR_REFUSE="$1" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes 2>&1) || rc=$?
+  out=$(printf '%s\n' "${out}" | sed $'s/\x1b\\[[0-9;]*m//g')
+  if [ "${rc}" = 0 ]; then
+    printf '%s\n' "${out}" >&2
+    echo "FAIL (issue #3255, $1 arm): the deploy SUCCEEDED; a RecoveryPeriodInDays of ' 14 ' must be refused" >&2
+    exit 1
+  fi
+  # here-string, not `printf | grep -q`: under pipefail an early-exiting grep
+  # SIGPIPEs printf and a MATCH would read as a failure.
+  if ! grep -qF 'PointInTimeRecoverySpecification.RecoveryPeriodInDays must be an integer between 1 and 35' <<<"${out}"; then
+    printf '%s\n' "${out}" >&2
+    echo "FAIL (issue #3255, $1 arm): the deploy failed (rc=${rc}), but not with the RecoveryPeriodInDays refusal" >&2
+    exit 1
+  fi
+  echo "    OK ($1 arm): the deploy was refused (rc=${rc}) naming RecoveryPeriodInDays"
+}
+
+echo "==> Phase 1.7a: re-spell the live table's period as ' 14 ' (update arm)"
+refusal_deploy update
+assert_pitr_period "${PITR_PERIOD}" "Phase 1.7a" \
+  || { echo "FAIL (Phase 1.7a, issue #3255): describe-continuous-backups failed for ${PROV_TABLE_NAME}" >&2; exit 1; }
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+RECORDED_PERIOD=$(echo "${STATE}" | jq -c --arg t "${PROV_TABLE_NAME}" \
+  '[.resources[] | select(.resourceType == "AWS::DynamoDB::Table" and .properties.TableName == $t) | .properties.PointInTimeRecoverySpecification.RecoveryPeriodInDays] | first')
+if [ "${RECORDED_PERIOD}" != "${PITR_PERIOD}" ]; then
+  echo "FAIL (issue #3255): state records RecoveryPeriodInDays ${RECORDED_PERIOD} after the refused deploy, expected ${PITR_PERIOD}" >&2
+  exit 1
+fi
+echo "    OK: state still records RecoveryPeriodInDays=${PITR_PERIOD}"
+
+echo "==> Phase 1.7b: a NEW table declaring ' 14 ' (create arm)"
+refusal_deploy create
+assert_gone "issue #3255: ${PITR_REFUSED_TABLE} exists -- the create was not refused before CreateTable" \
+  aws dynamodb describe-table --table-name "${PITR_REFUSED_TABLE}" --region "${REGION}"
+echo "    OK: ${PITR_REFUSED_TABLE} was never created"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -772,4 +848,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + per-member ceiling REMOVAL at both positions + clean destroy)"
+echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + per-member ceiling REMOVAL at both positions + malformed RecoveryPeriodInDays refused on create and update + clean destroy)"
