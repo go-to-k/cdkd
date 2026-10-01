@@ -19,8 +19,8 @@ claim did not name, ask LIVE (#4273):
 
 ```bash
 # <file> is the REPO-RELATIVE path (exact match). `files` stops at 100 per PR,
-# so a longer PR is printed too: read it with `gh api --paginate
-# repos/go-to-k/cdkd/pulls/<N>/files`.
+# so a longer PR is printed too: check it with `gh api --paginate
+# repos/go-to-k/cdkd/pulls/<N>/files -q '.[].filename' | grep -xF '<file>'`.
 gh pr list --state open --limit 200 --json number,files,changedFiles \
   -q '.[] | select(any(.files[]; .path == "<file>")
         or .changedFiles > (.files | length)) | .number'
