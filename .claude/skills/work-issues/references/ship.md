@@ -63,8 +63,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. Its `merge=union` keeps both LOCALLY,
   but GitHub ignores that driver: a `main` commit adding ledger rows next to
-  this PR's turns it CONFLICTING, and CI never fires. Rebase locally, then run
-  `vp run integ-ledger-normalize` and commit it before the push.
+  this PR's turns it CONFLICTING, and CI never fires. Rebase locally, then
+  normalize before the push (Merge, below).
 
 ### Merge
 
