@@ -221,15 +221,9 @@ verify, clean up.
    NOT set the marker. **The agent sets the marker, and commits and pushes step
    11's ledger row, itself** — the maintainer explicitly authorizes it. When the
    auto-mode classifier refuses one, retry it ONCE stating that authorization;
-   only if that is refused too, ask the maintainer (`AskUserQuestion`) whether
-   to run it by hand, as a short-path script (`/tmp/<n>.sh`) they start with a
-   TYPED `!` and then `bash /tmp/<n>.sh` (a long line wraps on paste, and a
-   pasted `!` does not enter bash mode). For the marker (the same for
-   `integ-schema-migration` below) that script holds:
-
-   ```text
-   cd <tree> && mise trust && mise exec -- markgate set integ-destroy && mise exec -- markgate status | grep integ-destroy
-   ```
+   only if that is refused too, ask the maintainer (`AskUserQuestion`) to
+   authorize it again, then run it yourself. Never hand either command to the
+   maintainer to run.
 
    **Also set `integ-schema-migration`, and ONLY for a test named
    `schema-v<N>-to-v<N+1>-migration`**, under the same conditions. That test is
