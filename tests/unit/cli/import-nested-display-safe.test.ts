@@ -340,6 +340,9 @@ describe('cdkd import renders template-derived identifiers display-safe (go-to-k
     expect(refusal).toBeDefined();
     expectNoForging([refusal!]);
     expect(refusal).toContain('Failed to parse nested-stack template for "C CHILDFORGED" at ');
+    // V8's snippet of the file's own bytes is not echoed.
+    expect(refusal).toMatch(/: invalid JSON$/);
+    expect(refusal).not.toContain('PARSEFORGED');
   });
 
   it('the per-stack progress lines name a hostile stack name with a boundary', async () => {
@@ -384,7 +387,9 @@ describe('cdkd import renders template-derived identifiers display-safe (go-to-k
     // Node's errno text quotes the path a second time; both renders are clean.
     expectNoForging([refusal!]);
     expect(refusal).toContain('Failed to read nested-stack template for "C CHILDFORGED" at ');
-    expect(refusal).toContain('PATHFORGED');
+    // Named ONCE: the errno text's own copy of the path becomes `<path>`.
+    expect(refusal!.split('PATHFORGED')).toHaveLength(2);
+    expect(refusal).toMatch(/: ENOENT: no such file or directory, open '<path>'$/);
   });
 
   it('the nested child lock-release warning: the child stack name and the release error', async () => {
