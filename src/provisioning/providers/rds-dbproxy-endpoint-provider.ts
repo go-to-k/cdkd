@@ -36,7 +36,13 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskerOrIdentity,
+  withDerivedNameMasks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -259,6 +265,17 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       DBPROXY_TAG_OPTIONS
     );
     const client = this.getClient();
+    // The physical id IS the endpoint name, which can be secret-derived. Paired
+    // with the RECORDED name (go-to-k/cdkd#4339): after a secret rotation the
+    // physical id is the PRE-rotation value, which this deploy's masker never
+    // resolved, and a previous side still spelling `{{resolve:` makes it a
+    // needle. The guard below keeps the deploy's own masker; every message of
+    // this update reads this one.
+    const { mask } = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[previousProperties['DBProxyEndpointName'], physicalId]]
+    );
 
     // Defensive: reject diffs in immutable fields. Replacement-rules.ts
     // SHOULD have routed those to a CREATE+DELETE replacement upstream, but
@@ -293,10 +310,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     const oldSG = (previousProperties['VpcSecurityGroupIds'] as string[]) ?? [];
     const newSG = (properties['VpcSecurityGroupIds'] as string[]) ?? [];
     if (JSON.stringify(oldSG) !== JSON.stringify(newSG)) {
-      // The physical id is the endpoint name, which can be secret-derived.
-      this.logger.debug(
-        `Updating DBProxyEndpoint ${maskerOrIdentity(context?.maskSecrets)(physicalId)} security groups`
-      );
+      this.logger.debug(`Updating DBProxyEndpoint ${mask(physicalId)} security groups`);
       try {
         await client.send(
           new ModifyDBProxyEndpointCommand({
@@ -305,7 +319,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE', resourceType, logicalId, physicalId);
+        throw this.wrapError(error, 'UPDATE', resourceType, logicalId, physicalId, mask);
       }
     }
 
@@ -321,7 +335,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       properties['Tags'],
       resourceType,
       logicalId,
-      context?.maskSecrets
+      mask
     );
 
     return { physicalId, wasReplaced: false };
@@ -553,14 +567,28 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
           new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: toRemove })
         );
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE (remove tags)', resourceType, logicalId, physicalId);
+        throw this.wrapError(
+          error,
+          'UPDATE (remove tags)',
+          resourceType,
+          logicalId,
+          physicalId,
+          maskerOrIdentity(maskSecrets)
+        );
       }
     }
     if (toAdd.length > 0) {
       try {
         await client.send(new AddTagsToResourceCommand({ ResourceName: arn, Tags: toAdd }));
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE (add tags)', resourceType, logicalId, physicalId);
+        throw this.wrapError(
+          error,
+          'UPDATE (add tags)',
+          resourceType,
+          logicalId,
+          physicalId,
+          maskerOrIdentity(maskSecrets)
+        );
       }
     }
   }
@@ -613,16 +641,24 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     op: string,
     resourceType: string,
     logicalId: string,
-    physicalId: string | undefined
+    physicalId: string | undefined,
+    // AWS can quote a secret-derived name, the pre-rotation one included
+    // (go-to-k/cdkd#4339); stamped exactly when the mask changed its text.
+    // Absent means unmasked.
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): ProvisioningError {
-    const message = error instanceof Error ? error.message : String(error);
     const cause = error instanceof Error ? error : undefined;
-    return new ProvisioningError(
-      `${op} failed for ${logicalId}: ${message}`,
-      resourceType,
-      logicalId,
-      physicalId,
-      cause
+    return wrapMaskedAwsError(
+      mask,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `${op} failed for ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        )
     );
   }
 }

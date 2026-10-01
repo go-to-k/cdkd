@@ -28,7 +28,12 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { maskerOrIdentity } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 
 /**
  * SDK Provider for AWS S3 Vectors resources
@@ -50,6 +55,18 @@ export class S3VectorsProvider implements ResourceProvider {
       new Set(['VectorBucketName', 'EncryptionConfiguration', 'Tags']),
     ],
   ]);
+
+  /**
+   * A failure wrap quoting AWS's text through `mask`, stamped exactly when the
+   * mask changed it (go-to-k/cdkd#4339).
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
 
   private getClient(): S3VectorsClient {
     if (!this.client) {
@@ -137,6 +154,17 @@ export class S3VectorsProvider implements ResourceProvider {
     // (read as empty, it would untag every recorded key).
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
+    // The physical id IS the bucket name, which can be secret-derived. Paired
+    // with the RECORDED name (go-to-k/cdkd#4339): after a secret rotation the
+    // physical id is the PRE-rotation value, which this deploy's masker never
+    // resolved, and a previous side still spelling `{{resolve:` makes it a
+    // needle. Every message of this update below reads this one masker.
+    const { mask } = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[previousProperties['VectorBucketName'], physicalId]]
+    );
+
     // Guard: a create-only property reaching update() means the engine did not
     // replace — fail loudly rather than silently leaving AWS unchanged. A
     // secret-derived value is recorded as its `{{resolve:...}}` reference and
@@ -157,7 +185,7 @@ export class S3VectorsProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `'${createOnly}' is immutable (create-only) on VectorBucket '${physicalId}'; a change requires replacement (cdkd deploy --replace --force-stateful-recreation — the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED)`
+          `'${createOnly}' is immutable (create-only) on VectorBucket '${mask(physicalId)}'; a change requires replacement (cdkd deploy --replace --force-stateful-recreation — the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED)`
         );
       }
     }
@@ -187,17 +215,22 @@ export class S3VectorsProvider implements ResourceProvider {
       resourceArn = got.vectorBucket?.vectorBucketArn;
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to resolve ARN for S3 VectorBucket ${logicalId} (${physicalId}) before tag update: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to resolve ARN for S3 VectorBucket ${logicalId} (${mask(physicalId)}) before tag update: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
     if (!resourceArn) {
       throw new ProvisioningError(
-        `Could not resolve ARN for S3 VectorBucket ${logicalId} (${physicalId}); cannot apply tag update.`,
+        `Could not resolve ARN for S3 VectorBucket ${logicalId} (${mask(physicalId)}); cannot apply tag update.`,
         resourceType,
         logicalId,
         physicalId
@@ -215,18 +248,23 @@ export class S3VectorsProvider implements ResourceProvider {
       }
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update tags for S3 VectorBucket ${logicalId} (${physicalId}): ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update tags for S3 VectorBucket ${logicalId} (${mask(physicalId)}): ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
 
     // The physical id is the bucket name, which can be secret-derived.
     this.logger.debug(
-      `Updated tags for S3 VectorBucket ${logicalId} (${maskerOrIdentity(context?.maskSecrets)(physicalId)}): set ${Object.keys(toSet).length}, removed ${toRemove.length}`
+      `Updated tags for S3 VectorBucket ${logicalId} (${mask(physicalId)}): set ${Object.keys(toSet).length}, removed ${toRemove.length}`
     );
     return { physicalId, wasReplaced: false };
   }

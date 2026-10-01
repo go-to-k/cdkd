@@ -114,12 +114,17 @@ import { shellQuote } from '../state/lock-contention-message.js';
 export const DELETION_PROTECTION_DOC_POINTER =
   '"Deletion protection blocks a replacement, and deploy cannot clear it" in docs/cli-deploy-safety.md';
 
-/** What the message says when the resource id cannot be named on a command line. */
+/**
+ * What the message says when the resource id cannot be named on a command
+ * line. The secret-derived reason covers a name a masker hides, the
+ * pre-rotation value of a rotated secret included (go-to-k/cdkd#4339).
+ */
 export const UNNAMEABLE_ID_CLAUSE =
   'Then disable protection out of band, via the console: the physical id cdkd recorded for this ' +
   'resource cannot be reproduced safely on a command line (sanitizing would change it, so a ' +
   'command would act on a different resource, or it holds a character or prefix a pasted shell ' +
-  'line, or the AWS CLI itself, would act on).';
+  'line, or the AWS CLI itself, would act on, or it is derived from a secret, which a pasted ' +
+  'command would print).';
 
 /**
  * A value the aws CLI ITSELF acts on, however the shell passed it
