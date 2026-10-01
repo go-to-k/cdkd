@@ -290,9 +290,15 @@ function isRoleArnSite(expression: string): boolean {
  * only when `isPasteableIdent` admits it, which requires `displayIdent` to
  * return it unchanged, and print a fixed description otherwise. So neither
  * can be weaker than `displayIdent` at any input.
+ *
+ * `shownBesideCommandOrDescribed` / `envVarsOverrideExample` (go-to-k/cdkd#4322)
+ * print the value only when `physicalIdShownBesideCommand` admits it, which
+ * requires `displayIdent` to return it unchanged at the role-ARN cap (and
+ * `isInertUnquoted`, and no leading `-`), and a fixed description or
+ * placeholder otherwise. So neither can be weaker than `displayIdent` either.
  */
 const SANITIZER_CALL =
-  /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath|plainOrDescribed|quotedOrDescribed)\s*\(/;
+  /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath|plainOrDescribed|quotedOrDescribed|shownBesideCommandOrDescribed|envVarsOverrideExample)\s*\(/;
 
 /**
  * A local holding an ALREADY-sanitized profile, as `safeProfile` / `shownProfile`

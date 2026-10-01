@@ -484,6 +484,30 @@ export function physicalIdShownBesideCommand(
 }
 
 /**
+ * {@link physicalIdShownBesideCommand} for prose: the value when it may be
+ * shown beside a flag, otherwise `a <what> that is not a plain identifier`
+ * (go-to-k/cdkd#4322). For a value whose legitimate spellings carry `/`, `:`
+ * or a leading `_` (a cdk path, an image URI, an env var name), where
+ * {@link plainOrDescribed} would describe the ordinary case too.
+ */
+export function shownBesideCommandOrDescribed(value: string, what: string): string {
+  return physicalIdShownBesideCommand(value) ?? `a ${what} that is not a plain identifier`;
+}
+
+/**
+ * The `--env-vars` override example a dropped env var's warning prints,
+ * `{"<cdk path>":{"<name>":"<literal>"}}` (go-to-k/cdkd#4322). Each value sits
+ * inside double quotes, where `$( )` and backticks still expand, so each is
+ * shown only when {@link physicalIdShownBesideCommand} admits it and is a
+ * quoted placeholder otherwise.
+ */
+export function envVarsOverrideExample(overrideKey: string, envVarName: string): string {
+  const key = physicalIdShownBesideCommand(overrideKey) ?? '<cdk path>';
+  const name = physicalIdShownBesideCommand(envVarName) ?? '<variable name>';
+  return `{"${key}":{"${name}":"<literal>"}}`;
+}
+
+/**
  * True when `value` stays inert with its quotes stripped: it does not match
  * {@link PASTE_ARG_UNSAFE}. The test {@link withholdReason}'s `'shell-active'`
  * arm applies, exported for every site outside this function that prints a

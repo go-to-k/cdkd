@@ -40,6 +40,13 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
 }));
 
 import { resolveContainerImagePlan } from '../../../src/cli/commands/local-invoke.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 function makeImageLambda(overrides: Partial<ResolvedImageLambda> = {}): ResolvedImageLambda {
   return {
@@ -278,5 +285,54 @@ describe('resolveContainerImagePlan', () => {
     );
 
     expect(plan.tmpfs).toBeUndefined();
+  });
+});
+
+describe('resolveContainerImagePlan: the ECR-fallback line names the image URI only when inert beside --ecr-role-arn (go-to-k/cdkd#4322)', () => {
+  async function fallbackLine(imageUri: string): Promise<string> {
+    loadManifestMock.mockResolvedValue({ dockerImages: {} });
+    getDockerImageBySourceHashMock.mockReturnValue(undefined);
+    parseEcrUriMock.mockReturnValue({ accountId: '1', region: 'us-east-1', repository: 'r', tag: 't' });
+    pullEcrImageMock.mockResolvedValue('img');
+    architectureToPlatformMock.mockReturnValue('linux/amd64');
+    const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => undefined);
+    try {
+      await resolveContainerImagePlan(makeImageLambda({ imageUri }), {
+        pull: true,
+      } as Parameters<typeof resolveContainerImagePlan>[1]);
+      return info.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('No matching cdk.out asset'))
+        .join('\n');
+    } finally {
+      info.mockRestore();
+    }
+  }
+
+  it('shows an ordinary ECR URI, as before', async () => {
+    expect(await fallbackLine('111111111111.dkr.ecr.us-east-1.amazonaws.com/repo:abcdef')).toContain(
+      'No matching cdk.out asset for 111111111111.dkr.ecr.us-east-1.amazonaws.com/repo:abcdef; falling back to ECR pull'
+    );
+  });
+
+  it('names no payload URI beside --ecr-role-arn', async () => {
+    for (const { value } of PASTE_PAYLOADS) {
+      const line = await fallbackLine(`111111111111.dkr.ecr.us-east-1.amazonaws.com/${value}`);
+      expect(line, value).toContain(
+        'No matching cdk.out asset for a container image URI that is not a plain identifier; falling back'
+      );
+      withPasteDir((dir) => {
+        expectNoCommandBesideDisplay(line, value);
+        expect(spansThatRun(line, dir), `${value}: ${line}`).toEqual([]);
+      });
+    }
+  }, 120_000);
+
+  // `displayIdent` leaves both unchanged; a pasted shell expands the one and
+  // reads the other as an option.
+  it.each(['~root/repo:tag', '-rf'])('describes %s', async (uri) => {
+    expect(await fallbackLine(uri)).toContain(
+      'No matching cdk.out asset for a container image URI that is not a plain identifier;'
+    );
   });
 });

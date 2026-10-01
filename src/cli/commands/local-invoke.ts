@@ -19,7 +19,13 @@ import {
   ROLE_ARN_MAX_CODE_POINTS,
   safeMsg,
 } from '../../utils/display-safe.js';
-import { quotedOrDescribed, shellBoundedDisplay } from '../../utils/pasteable-command.js';
+import {
+  envVarsOverrideExample,
+  plainOrDescribed,
+  quotedOrDescribed,
+  shellBoundedDisplay,
+  shownBesideCommandOrDescribed,
+} from '../../utils/pasteable-command.js';
 import {
   displayAssemblyPath,
   renderAssemblyPathEscape,
@@ -624,10 +630,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       // `cdkd local invoke` target shape;
       // the resolver's prefix rule accepts either form.
       const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? lambda.logicalId;
-      logger.warn(
-        `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
-          `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
-      );
+      logger.warn(droppedEnvVarWarning(key, overrideKeyExample));
     }
 
     // Auto-resolve the execution-role ARN from state when the user passed
@@ -1032,6 +1035,18 @@ export async function materializeLambdaLayersIncludingArns(
  * and the constant is centralized here so a future fixture / docs
  * update has a single grep target.
  */
+/**
+ * The warning for a template env var dropped because it holds an intrinsic.
+ * It names `--env-vars`, so the variable name and the override example's
+ * values are shown only when inert beside a flag (go-to-k/cdkd#4322).
+ */
+export function droppedEnvVarWarning(key: string, overrideKeyExample: string): string {
+  return (
+    `Environment variable ${shownBesideCommandOrDescribed(key, 'variable name')} contains a CloudFormation intrinsic and was dropped. ` +
+    `Override it with --env-vars (e.g. ${envVarsOverrideExample(overrideKeyExample, key)}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
+  );
+}
+
 export function resolveTmpfsForLambda(
   lambda: ResolvedLambda
 ): { target: string; sizeMb: number } | undefined {
@@ -1042,14 +1057,18 @@ export function resolveTmpfsForLambda(
     // when `--tmpfs /tmp` overlays whatever their Dockerfile placed
     // there at build time. Matches the issue spec note about logging
     // a single line on container images.
+    // Both lines name `--tmpfs`, so the logical id is shown only when plain
+    // (go-to-k/cdkd#4322).
     logger.info(
-      `Lambda ${lambda.logicalId}: capping /tmp at ${lambda.ephemeralStorageMb} MiB via --tmpfs (overlays any base-image /tmp content)`
+      // cdkd-raw-beside-safe: `ephemeralStorageMb` is a finite number >= 1 (`extractEphemeralStorageMb` drops anything else).
+      `Lambda ${plainOrDescribed(lambda.logicalId, 'logical id')}: capping /tmp at ${lambda.ephemeralStorageMb} MiB via --tmpfs (overlays any base-image /tmp content)`
     );
   } else {
     // ZIP Lambdas: base image's /tmp is just an overlay-fs path, so
     // the cap is uneventful — debug-level keeps the default output clean.
     logger.debug(
-      `Lambda ${lambda.logicalId}: applying EphemeralStorage cap via --tmpfs /tmp:size=${lambda.ephemeralStorageMb}m`
+      // cdkd-raw-beside-safe: `ephemeralStorageMb` is a finite number >= 1 (`extractEphemeralStorageMb` drops anything else).
+      `Lambda ${plainOrDescribed(lambda.logicalId, 'logical id')}: applying EphemeralStorage cap via --tmpfs /tmp:size=${lambda.ephemeralStorageMb}m`
     );
   }
   return { target: '/tmp', sizeMb: lambda.ephemeralStorageMb };
@@ -1151,8 +1170,10 @@ export async function resolveContainerImagePlan(
           'Re-synthesize the CDK app (so cdk.out includes the build context) or deploy the image to ECR first.'
       );
     }
+    // Names `--ecr-role-arn`, so the template's image URI is shown only when
+    // inert beside a flag (go-to-k/cdkd#4322).
     logger.info(
-      `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (cross-region is supported — the ECR client is built for the image URI's region; pass --ecr-role-arn for a cross-account image)...`
+      `No matching cdk.out asset for ${shownBesideCommandOrDescribed(lambda.imageUri, 'container image URI')}; falling back to ECR pull (cross-region is supported — the ECR client is built for the image URI's region; pass --ecr-role-arn for a cross-account image)...`
     );
     imageRef = await pullEcrImage(lambda.imageUri, {
       skipPull: options.pull === false,

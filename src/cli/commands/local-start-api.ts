@@ -130,12 +130,14 @@ import {
 } from '../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
-import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { isPasteableIdent } from './state-file-keys.js';
 import {
+  envVarsOverrideExample,
   plainOrDescribed,
   quotedOrDescribed,
   shellBoundedDisplay,
+  shownBesideCommandOrDescribed,
 } from '../../utils/pasteable-command.js';
 import {
   strandedProfileCredentialsNotice,
@@ -539,9 +541,7 @@ async function localStartApiCommand(
       routedStackNames,
       fromCfnTipEmitted,
       (routedStackName) => {
-        logger.info(
-          `tip: --from-cfn-stack value matches the routed stack name (${routedStackName}); you can omit the value: \`cdkd local start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
-        );
+        logger.info(fromCfnRedundancyTip(routedStackName));
       }
     );
 
@@ -586,9 +586,7 @@ async function localStartApiCommand(
         if (!stageMap.has(r.apiLogicalId)) missingApis.add(r.apiLogicalId);
       }
       for (const apiId of missingApis) {
-        logger.warn(
-          `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
-        );
+        logger.warn(stageMissWarning(options.stage, apiId));
       }
     }
     attachStageContext(routes, stageMap);
@@ -1470,6 +1468,68 @@ export function shouldEmitFromCfnRedundancyTip(
  *
  * @internal exported for unit tests.
  */
+/**
+ * The one-shot tip when `--from-cfn-stack`'s value equals the routed stack
+ * name. It names the flag and a backticked command, so the stack name is shown
+ * only when plain (go-to-k/cdkd#4322).
+ */
+export function fromCfnRedundancyTip(routedStackName: string): string {
+  return `tip: --from-cfn-stack value matches the routed stack name (${plainOrDescribed(routedStackName, 'stack name')}); you can omit the value: \`cdkd local start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`;
+}
+
+/**
+ * The warning for an API with no Stage named by `--stage`. The stage is the
+ * operator's own argv; the API logical id comes from the template, so it is
+ * shown only when plain (go-to-k/cdkd#4322).
+ */
+export function stageMissWarning(stage: string | undefined, apiId: string): string {
+  // cdkd-raw-beside-safe: `stage` is the operator's own `--stage` argv value.
+  return `--stage '${stage}' did not match any Stage on API ${quotedOrDescribed(apiId, 'logical id')}; routes on that API will get stageVariables: null.`;
+}
+
+/** `--from-state`'s debug line for a substituted env var (go-to-k/cdkd#4322). */
+export function stateSubstitutedDebug(logicalId: string, key: string): string {
+  return `Lambda ${plainOrDescribed(logicalId, 'logical id')}: --from-state substituted env var ${shownBesideCommandOrDescribed(key, 'variable name')}`;
+}
+
+/**
+ * `--from-state`'s warning for an env var it could not substitute
+ * (go-to-k/cdkd#4322). The resolver's reason quotes template text (`Ref 'X'`),
+ * so it goes on a line of its own that names no flag; the line with the
+ * `--from-state` / `--env-vars` remedy shows the logical id and the variable
+ * name only when inert beside a flag.
+ */
+export function stateUnsubstitutedWarnings(
+  logicalId: string,
+  key: string,
+  reason: string
+): [string, string] {
+  const id = plainOrDescribed(logicalId, 'logical id');
+  const name = shownBesideCommandOrDescribed(key, 'variable name');
+  return [
+    `Lambda ${id}: could not substitute env var ${name} from state: ${displaySafe(reason)}`,
+    `Lambda ${id}: --from-state could not substitute env var ${name}. Override it via --env-vars or it will be dropped.`,
+  ];
+}
+
+/**
+ * The warning for a template env var dropped because it holds an intrinsic.
+ * It names `--env-vars` and `--from-state`, so the logical id, the variable
+ * name and the override example's values are shown only when inert beside a
+ * flag (go-to-k/cdkd#4322).
+ */
+export function droppedEnvVarWarning(
+  logicalId: string,
+  key: string,
+  overrideKeyExample: string
+): string {
+  return (
+    `Lambda ${plainOrDescribed(logicalId, 'logical id')}: env var ${shownBesideCommandOrDescribed(key, 'variable name')} contains a CloudFormation intrinsic and was dropped. ` +
+    `Override it with --env-vars (e.g. ${envVarsOverrideExample(overrideKeyExample, key)}) ` +
+    `or pass --from-state to recover deployed values.`
+  );
+}
+
 export function tryEmitFromCfnRedundancyTipOnce(
   fromCfnStack: string | boolean | undefined,
   routedStackNames: readonly string[],
@@ -1957,13 +2017,10 @@ async function buildContainerSpec(args: {
     templateEnv = env;
     stateAudit = audit;
     for (const key of audit.resolvedKeys) {
-      getLogger().debug(`Lambda ${logicalId}: --from-state substituted env var ${key}`);
+      getLogger().debug(stateSubstitutedDebug(logicalId, key));
     }
     for (const { key, reason } of audit.unresolved) {
-      getLogger().warn(
-        `Lambda ${logicalId}: --from-state could not substitute env var ${key} (${reason}). ` +
-          `Override it via --env-vars or it will be dropped.`
-      );
+      for (const line of stateUnsubstitutedWarnings(logicalId, key, reason)) getLogger().warn(line);
     }
   }
   const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
@@ -1980,11 +2037,7 @@ async function buildContainerSpec(args: {
     // `cdkd local invoke` target shape;
     // the resolver's prefix rule accepts either form.
     const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? logicalId;
-    getLogger().warn(
-      `Lambda ${logicalId}: env var ${key} contains a CloudFormation intrinsic and was dropped. ` +
-        `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}) ` +
-        `or pass --from-state to recover deployed values.`
-    );
+    getLogger().warn(droppedEnvVarWarning(logicalId, key, overrideKeyExample));
   }
 
   const dockerEnv: Record<string, string> = {
@@ -2180,7 +2233,9 @@ export async function resolveContainerImageForStartApi(
     // so a cross-account pull works only with credentials that already hold
     // `ecr:GetAuthorizationToken` + `ecr:BatchGetImage` on the repository
     // (issue #2536).
-    `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (uses your own credentials — this command has no --ecr-role-arn, so a cross-account image needs cross-account ECR permissions)...`
+    // Names `--ecr-role-arn`, so the template's image URI is shown only when
+    // inert beside a flag (go-to-k/cdkd#4322).
+    `No matching cdk.out asset for ${shownBesideCommandOrDescribed(lambda.imageUri, 'container image URI')}; falling back to ECR pull (uses your own credentials — this command has no --ecr-role-arn, so a cross-account image needs cross-account ECR permissions)...`
   );
   const imageRef = await pullEcrImage(lambda.imageUri, { skipPull });
   return { imageRef };

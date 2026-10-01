@@ -19,7 +19,12 @@ import {
   ROLE_ARN_MAX_CODE_POINTS,
   safeMsg,
 } from '../../utils/display-safe.js';
-import { quotedOrDescribed, shellBoundedDisplay } from '../../utils/pasteable-command.js';
+import {
+  envVarsOverrideExample,
+  quotedOrDescribed,
+  shellBoundedDisplay,
+  shownBesideCommandOrDescribed,
+} from '../../utils/pasteable-command.js';
 import { displayAssemblyPath } from '../../utils/assembly-path.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { foldRegionOption } from '../region-options.js';
@@ -1057,7 +1062,9 @@ export async function resolveInboundAuthorization(
 
   if (options.verifyAuth === false) {
     logger.warn(
-      `Runtime '${resolved.logicalId}' declares a customJwtAuthorizer, but --no-verify-auth was set — ` +
+      // Names `--no-verify-auth`, so the logical id is shown only when plain
+      // (go-to-k/cdkd#4322).
+      `Runtime ${quotedOrDescribed(resolved.logicalId, 'logical id')} declares a customJwtAuthorizer, but --no-verify-auth was set — ` +
         `skipping inbound JWT verification (local-dev escape hatch).`
     );
     return header;
@@ -1125,7 +1132,7 @@ export async function buildSigV4HeadersIfRequested(
   }
   if (resolved.jwtAuthorizer) {
     getLogger().warn(
-      `Runtime '${resolved.logicalId}' declares a customJwtAuthorizer; --sigv4 ignored (JWT path takes precedence).`
+      `Runtime ${quotedOrDescribed(resolved.logicalId, 'logical id')} declares a customJwtAuthorizer; --sigv4 ignored (JWT path takes precedence).`
     );
     return undefined;
   }
@@ -1618,9 +1625,11 @@ export async function buildContainerEnv(
   const envResult = resolveEnvVars(resolved.logicalId, cdkPath, templateEnv, overrides);
   for (const key of envResult.unresolved) {
     const overrideKeyExample = cdkPath?.replace(/\/Resource$/, '') ?? resolved.logicalId;
+    // Names `--env-vars`, so the variable name and the example's values are
+    // shown only when inert beside a flag (go-to-k/cdkd#4322).
     logger.warn(
-      `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
-        `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), ` +
+      `Environment variable ${shownBesideCommandOrDescribed(key, 'variable name')} contains a CloudFormation intrinsic and was dropped. ` +
+        `Override it with --env-vars (e.g. ${envVarsOverrideExample(overrideKeyExample, key)}), ` +
         `or pass a state-source flag (e.g. --from-cfn-stack) to recover deployed values.`
     );
   }
