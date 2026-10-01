@@ -89,6 +89,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   compositeIdFormatMessage,
   compositeIdSkipResult,
+  logicalIdShown,
   segmentAfterAnchor,
   type CompositeIdFormat,
 } from '../composite-id.js';
@@ -101,7 +102,13 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import {
+  isPlainImportValue,
+  isQuotableImportValue,
+  normalizeAwsTagsToCfn,
+  quotedRemedyLogicalId,
+  VALUE_NOT_SHOWN,
+} from '../import-helpers.js';
 import {
   planTagDiff,
   refuseMalformedDesiredTags,
@@ -2994,19 +3001,26 @@ export class GlueProvider implements ResourceProvider {
               `manage this resource outside cdkd.`
           );
           break;
-        case 'unpairable':
+        case 'unpairable': {
+          // Ends in a `--resource` remedy, so the logical id and the supplied
+          // id are shown only when plain (a `|` is literal inside cdkd's
+          // `'...'`), and the fragment names the logical id only when plain
+          // (go-to-k/cdkd#4273): inside cdkd's own quotes, a `'` in either
+          // closed them and the rest of a pasted line ran.
+          const supplied = input.knownPhysicalId ?? '';
           this.logger.warn(
-            `AWS::Glue::Table ${input.logicalId}: cannot resolve a database for physical id ` +
-              `'${input.knownPhysicalId}'. ` +
+            `AWS::Glue::Table ${logicalIdShown(input.logicalId)}: cannot resolve a database for physical id ` +
+              `${isQuotableImportValue(supplied) ? `'${supplied}'` : VALUE_NOT_SHOWN}. ` +
               (input.knownPhysicalId === ''
                 ? `The supplied physical id is empty. `
                 : `The template's DatabaseName is absent or is an unresolved intrinsic, so ` +
                   `the bare table name cannot be paired. `) +
               `Pass the composite form instead: ` +
-              `--resource '${input.logicalId}=<databaseName>|<tableName>' ` +
+              `--resource '${quotedRemedyLogicalId(input.logicalId)}=<databaseName>|<tableName>' ` +
               `(quote it — '|' is a shell pipe).`
           );
           break;
+        }
         case 'unidentified':
           // Nothing named the table at all. The caller already prints the
           // `--resource` hint for this case, so a second message would be noise.
@@ -3062,11 +3076,29 @@ export class GlueProvider implements ResourceProvider {
       // The remedies are the two inputs that settle it, NOT a re-spelled id:
       // any id with a `|` is read the same several ways again (the #1651 shape,
       // where the suggested remedy is the thing being refused).
+      //
+      // Ends in a `--resource` remedy, so every value on the line is shown
+      // only when inert and described otherwise (go-to-k/cdkd#4273). The
+      // table name is the supplied id or one of its segments, which in auto
+      // mode is CloudFormation's physical id and so the template's
+      // `TableInput.Name`; the database name is the template's `DatabaseName`.
+      // GetTable only confirmed a table of that spelling exists, and Glue
+      // accepts `'`, `;` and `$(` in a name. Inside cdkd's `'...'` a `|` is
+      // literal, so a genuine separator-bearing table name is still shown; the
+      // database name prints bare and must be plain, and also free of `,`
+      // (`displayIdent`'s `listMember` rule), since this list is
+      // `, `-joined and `a,b` would read as two entries.
       const existing = found
-        .map((pair) => `'${pair.tableName}' in ${pair.databaseName}`)
+        .map(
+          (pair) =>
+            `${isQuotableImportValue(pair.tableName) ? `'${pair.tableName}'` : VALUE_NOT_SHOWN} in ` +
+            (isPlainImportValue(pair.databaseName) && !pair.databaseName.includes(',')
+              ? pair.databaseName
+              : VALUE_NOT_SHOWN)
+        )
         .join(', ');
       this.logger.warn(
-        safeMsg`AWS::Glue::Table ${input.logicalId}: cannot be imported because its physical id names more than one existing table (${existing}). Set the template's TableInput.Name to the table this resource is, which settles it. For a table whose own name starts with '<databaseName>|', you can instead pass --resource '${input.logicalId}=<databaseName>|<databaseName>|<rest of the name>'.`
+        safeMsg`AWS::Glue::Table ${logicalIdShown(input.logicalId)}: cannot be imported because its physical id names more than one existing table (${existing}). Set the template's TableInput.Name to the table this resource is, which settles it. For a table whose own name starts with '<databaseName>|', you can instead pass --resource '${quotedRemedyLogicalId(input.logicalId)}=<databaseName>|<databaseName>|<rest of the name>'.`
       );
       return null;
     }

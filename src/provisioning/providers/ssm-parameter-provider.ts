@@ -26,7 +26,11 @@ import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  normalizeAwsTagsToCfn,
+  remedyLogicalId,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import {
   planTagDiff,
   tagPlanWarning,
@@ -849,9 +853,7 @@ export class SSMParameterProvider implements ResourceProvider {
     // `'a=b'` still reaches Commander as `a=b` and still splits. The
     // placeholder is `commandHole`'s quoted form: bare, `<parameterName>` was
     // two redirections the moment the sentence after it was pasted with it.
-    const resourceArg =
-      `${isPasteableIdent(input.logicalId) ? input.logicalId : commandHole('logicalId')}=` +
-      commandHole('parameterName');
+    const resourceArg = `${remedyLogicalId(input.logicalId)}=` + commandHole('parameterName');
     const remedy =
       input.knownPhysicalId === explicit
         ? `pass the parameter NAME instead: --resource ${resourceArg}`

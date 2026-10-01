@@ -41,6 +41,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LambdaMicrovmImageProvider } from '../../../src/provisioning/providers/lambda-microvm-image-provider.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 const TYPE = 'AWS::Lambda::MicrovmImage';
 const ARN = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:my-image';
@@ -408,6 +414,35 @@ describe('LambdaMicrovmImageProvider', () => {
       await expect(provider.import(importInput('my-image'))).rejects.toThrow(/must be a MicroVM image ARN/);
       expect(mockSend).not.toHaveBeenCalled();
     });
+
+    it('shows no payload logical id or supplied id beside the --resource flag (go-to-k/cdkd#4273)', async () => {
+      // Pre-fix the refusal printed the logical id raw and the supplied id
+      // inside cdkd's own `'...'` on the line naming `--resource`.
+      for (const { value } of PASTE_PAYLOADS) {
+        const messages: string[] = [];
+        for (const input of [
+          { ...importInput('my-image'), logicalId: value },
+          importInput(value),
+        ]) {
+          const err: unknown = await provider.import(input).then(
+            () => undefined,
+            (e: unknown) => e
+          );
+          expect(err, value).toBeInstanceOf(Error);
+          messages.push((err as Error).message);
+        }
+        expect(messages[0], value).toContain(
+          "--resource override for a logical id that is not a plain identifier must be a MicroVM image ARN (got 'my-image')."
+        );
+        expect(messages[1], value).toContain('(got (not shown: it is not a plain identifier)).');
+        withPasteDir((dir) => {
+          for (const message of messages) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
   });
 
   describe('readCurrentState (drift)', () => {
