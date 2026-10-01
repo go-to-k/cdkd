@@ -260,7 +260,7 @@ recreate-via-cc-api	2026-09-30T17:28:22Z	PASS	301	verify.sh	rc ok, orph clean
 recreate-via-sdk-provider	2026-09-30T17:28:22Z	PASS	240	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-30T21:31:10Z	PASS	1343	verify.sh	PR #4274 deploy-engine observed-capture mixin; rc ok, orph clean
+remove-protection	2026-10-01T04:14:37Z	PASS	2165	verify.sh	PR #4235 (#2204 ELBv2 + ASG remove-protection compensation) re-run after merging main (#4242, #4246, #4183) @aaddd57; rc ok, NLB step 4b re-enabled deletion_protection; an earlier run with the ELBv2 fix copy-reverted went RED at the re-enable assertion; no leftovers
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-09-30T17:28:22Z	PASS	80	verify.sh	rc ok, orph clean
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
