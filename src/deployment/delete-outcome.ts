@@ -283,8 +283,9 @@ export const NON_PLAIN_LOGICAL_ID_SKIP_REASON =
  * `X$(touch OWNED)` key runs as shell when such a line is pasted. The gate is
  * at the two delete callers (`deploy-engine-delete.ts`'s DELETE arm and `destroy-runner.ts`), rather
  * than per provider message: a non-plain key is SKIPPED before any provider
- * sees it, so the record is KEPT and `cdkd state orphan` (which calls no
- * provider) still removes it. The predicate is `plainOrDescribed`'s, so a key
+ * sees it, so the record is KEPT; after a destroy, `cdkd state orphan` (which
+ * calls no provider) still removes it, while on a live stack the deploy warning
+ * sends the operator to remove that one record by hand. The predicate is `plainOrDescribed`'s, so a key
  * refused here is exactly one every other line describes.
  */
 export function isDeletableLogicalId(logicalId: string): boolean {
