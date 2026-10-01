@@ -61,6 +61,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [Overview](#overview)
   - [How cdkd Prevents Orphans](#how-cdkd-prevents-orphans)
   - [A warning that a KMS key, Cognito user pool or AppSync API may be an orphan](#a-warning-that-a-kms-key-cognito-user-pool-or-appsync-api-may-be-an-orphan)
+  - [A warning that an API Gateway API, authorizer, integration or deployment may be an orphan](#a-warning-that-an-api-gateway-api-authorizer-integration-or-deployment-may-be-an-orphan)
   - [`DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for](#distributionalreadyexists-on-a-cloudfront-deploy-and-a-distribution-you-did-not-ask-for)
   - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
   - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
@@ -2537,6 +2538,31 @@ call failed" -- means `CreateKey` succeeded and a later call on the key
 (`EnableKeyRotation`, `DisableKey`) did not. The retry reuses that key rather
 than creating another, so leave it alone while the deploy is still running;
 only if the deploy then fails is it left out of cdkd state.
+
+### A warning that an API Gateway API, authorizer, integration or deployment may be an orphan
+
+Like the three creates above, five API Gateway creates carry no idempotency
+token: `CreateAuthorizer` and `CreateDeployment` (REST API), and `CreateApi`,
+`CreateIntegration` and `CreateAuthorizer` (HTTP / WebSocket API). cdkd turns
+off the AWS SDK's own retry of a 5xx for them too, and after one fails with
+HTTP 500 / 502 / 503 / 504, cdkd's retry first lists what the failed attempt
+may have made and warns about each match, with a read command first:
+
+- an API with the same name and protocol, or a deployment of the same REST API
+  with the same description, created during the failed attempt. These carry a
+  creation time, so the warning also gives a delete command, to run only after
+  confirming the candidate is this deploy's orphan;
+- an authorizer with the same name and type, or an integration with the same
+  type and URI, in the same API, that this deploy did not record. API Gateway
+  reports no creation time for these, so a match may also be this stack's own
+  authorizer or integration from an earlier deploy, or another stack's in a
+  shared API; the warning prints no delete command.
+
+cdkd neither adopts nor deletes a candidate, and then creates the resource
+again. An orphaned authorizer, integration or deployment is deleted with its
+API. The lookup needs `apigateway:GET` on the API; without it cdkd warns that
+it could not look, and the deploy proceeds. A reset connection or a timeout
+after the request was sent is not covered, as for the three creates above.
 
 ### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
 

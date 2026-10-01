@@ -1170,7 +1170,10 @@ const API_GATEWAY_V2_WRITE_FLOORS = {
   // 30 -> 40 with the issue #609 `::Integration` backfill: the ten wired
   // properties raised the file's written-member yield from ~60 to 67, and the
   // hygiene band requires the floor to stay at or above half the measurement.
-  minWrittenMembers: 40,
+  // 40 -> 45 with the issue #2080 orphan lookups (`GetApis` /
+  // `GetIntegrations` / `GetAuthorizers` request members), which raised the
+  // yield past 80.
+  minWrittenMembers: 45,
   minWriteScopes: 1,
   minHandoffPoints: 1,
 } as const;

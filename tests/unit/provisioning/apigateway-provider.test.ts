@@ -16,6 +16,19 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     },
   }),
 }));
+// `CreateAuthorizer` / `CreateDeployment` go through a dedicated client the
+// provider builds itself (issue #2080); route it to the same `mockSend`.
+vi.mock('@aws-sdk/client-api-gateway', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-api-gateway')>();
+  return {
+    ...actual,
+    APIGatewayClient: vi.fn().mockImplementation(() => ({
+      send: (command: unknown) => mockSend(command),
+      config: { retryStrategy: () => Promise.resolve(undefined) },
+    })),
+  };
+});
+
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
