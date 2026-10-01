@@ -15,7 +15,7 @@ every site? A residue is `next` only on external input
 loaded) — then file an umbrella naming every site, and say which this lane DID
 close. **NOT external input**: an umbrella already owning the population, "a
 different shape", a scope-creep trip, or a file shared with another code path
-(one ANOTHER session's open PR holds IS (a)) — each is a SEPARATE PR, still `now`.
+(one an open PR this run did not open holds IS (a)) — each is a SEPARATE PR, still `now`.
 
 **Scope creep reaches an unreviewable PR one small, real step at a time**
 (go-to-k/cdkd#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
@@ -87,8 +87,8 @@ gh issue create -t 'fix(provider): ...' \
 condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
 <repo>`), never as a state of the lane ("the files are cold", "the session
 ended"). Check it before writing EITHER value: a fix that must edit a file
-another session's open PR holds (§2's `gh pr list ... files`; a fork PR, its
-hunks) is `next` (a), naming THAT PR's number (#3959). A PR of THIS run is not
+an open PR this run did not open holds (§2's `gh pr list ... files`; a fork PR,
+its hunks) is `next` (a), naming THAT PR's number (#3959). A PR of THIS run is not
 external input: `now`, queued behind that lane — say so in the lane report
 (#4263 / #4264 were both filed `next` on this run's own #4269 / #4271).
 

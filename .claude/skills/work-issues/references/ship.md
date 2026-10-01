@@ -38,9 +38,9 @@ when the harness denies `git reset`, push any unpushed commits plainly and take
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
-# Hand-substituting it (a gate refuses a `git -C` it cannot resolve)? Print
-# `git merge-base` in its OWN call and paste THAT sha: the origin/main TIP
-# staged a revert of 45 of main's files (2026-09-30).
+# From another tree, a gate refuses `git -C "$VAR"`: write the path literally
+# and KEEP the `$(git -C <path> merge-base ...)`. Hand-pasting the origin/main
+# TIP instead staged a revert of 45 of main's files (2026-09-30).
 # Message to a FILE named per BRANCH, never -m: inside -m "..." the shell
 # EVALUATES a backtick and drops the word while still creating the commit.
 # DERIVE, WRITE and COMMIT in ONE call -- shell state dies between tool calls.

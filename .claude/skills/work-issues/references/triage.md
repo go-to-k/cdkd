@@ -66,8 +66,9 @@ the fix needs its lines (#3613). The contested cross-cutting files:
 `src/analyzer/{dag-builder,template-parser}.ts`,
 `src/provisioning/{register-providers,provider-registry}.ts`,
 `src/cli/commands/{deploy,destroy,destroy-runner,export}.ts`,
-`scripts/check-provider-update-context.ts` (its `OMITS_UPDATE_CONTEXT` list
-moves when a provider gains `context?: UpdateContext` — two 2026-09-30 masker
+`scripts/check-provider-update-context.ts` + `tests/unit/scripts/provider-update-context.test.ts`
+(their `OMITS_UPDATE_CONTEXT` lists
+move when a provider gains `context?: UpdateContext` — two 2026-09-30 masker
 lanes both needed it).
 **At most one lane of THIS run per cross-cutting file** — map each candidate to
 its target file first.
