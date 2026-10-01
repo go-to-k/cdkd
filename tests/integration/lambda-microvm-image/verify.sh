@@ -23,6 +23,9 @@
 #      (it does NOT wait for CREATED, unlike the always-polling CC fallback),
 #      then wait for CREATED.
 #   4. Destroy the --no-wait image + assert gone.
+#   5. Issue #4275: deploy with the image Name taken from a Secrets Manager
+#      secret, then a tags-only update: assert it is applied in place (exit 0,
+#      same ARN, new tag) instead of refused as a Name change. Destroy.
 #
 # NOTE: the MicroVM image build runs the user's Dockerfile + boots the app + a
 # Firecracker snapshot, so Phase 1's deploy can take several minutes. If the
@@ -65,13 +68,23 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
+# Phase 5 resolves a Secrets Manager reference, so the stack's state versions
+# are swept and asserted on the success path (issue #2096).
+# shellcheck source=../s3-versions.sh
+. ../s3-versions.sh
 
 STACK="CdkdMicrovmImageExample"
 REGION="${AWS_REGION:-us-east-1}"
+PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 IMAGE_NAME="cdkd-integ-microvm-image"
 ARTIFACT_KEY="cdkd-integ-microvm-artifacts/${STACK}/artifact.zip"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+# Phase 5 (issue #4275): the image Name comes from this secret. A prefix that
+# does not contain IMAGE_NAME, so each name filter below finds only its own.
+SECRET_IMAGE_NAME="cdkd-integ-sdn-microvm-image"
+NAME_SECRET="cdkd-integ-microvm-name-$(date +%s)-$$"
+SEEDED_SECRET=0
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -81,16 +94,31 @@ cleanup() {
   fi
   # GetMicrovmImage / DeleteMicrovmImage require the image ARN (a bare Name is
   # rejected with "Invalid ARN format"); resolve the ARN by name first.
-  local leftover_arn
-  leftover_arn="$(aws lambda-microvms list-microvm-images --name-filter "${IMAGE_NAME}" \
-    --region "${REGION}" --query 'items[0].imageArn' --output text 2>/dev/null)"
-  if [ -n "${leftover_arn}" ] && [ "${leftover_arn}" != "None" ]; then
-    aws lambda-microvms delete-microvm-image --image-identifier "${leftover_arn}" --region "${REGION}" >/dev/null 2>&1 || true
+  local leftover_arn name
+  for name in "${IMAGE_NAME}" "${SECRET_IMAGE_NAME}"; do
+    leftover_arn="$(aws lambda-microvms list-microvm-images --name-filter "${name}" \
+      --region "${REGION}" --query 'items[0].imageArn' --output text 2>/dev/null)"
+    if [ -n "${leftover_arn}" ] && [ "${leftover_arn}" != "None" ]; then
+      aws lambda-microvms delete-microvm-image --image-identifier "${leftover_arn}" --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+  done
+  # Printed, not swallowed, so a surviving secret is visible.
+  if [ "${SEEDED_SECRET}" = "1" ]; then
+    local secret_out
+    if ! secret_out="$(aws secretsmanager delete-secret --secret-id "${NAME_SECRET}" \
+      --force-delete-without-recovery --region "${REGION}" 2>&1)"; then
+      echo "WARNING: could not delete the phase 5 secret ${NAME_SECRET}: ${secret_out}" >&2
+    else
+      # INT/TERM run cleanup and then EXIT runs it again: no second attempt.
+      SEEDED_SECRET=0
+    fi
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${ARTIFACT_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    # Safe on any path: only NON-current versions go.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" noncurrent || true
   fi
   set -eu
 }
@@ -280,7 +308,117 @@ assert_gone "state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    --no-wait image + state removed"
 
+# --- Phase 5: a secret-derived Name is updated in place (#4275) -----------
+# cdkd records a secret-derived value as its `{{resolve:secretsmanager:...}}`
+# expression, while `update()` receives the RESOLVED value. The provider used
+# to compare the two directly and refuse every update of such an image with
+# "Name is create-only and cannot be changed in place". The engine's own diff
+# sees no Name change (template and record spell the same expression), so the
+# tags-only change below reaches `update()`.
+#
+# Pre-fix this arm fails at the update deploy's exit code (the refusal), and
+# the tag assertion would fail with it. Post-fix the deploy exits 0, the ARN
+# and active version are unchanged, and the new tag is on the image.
+echo "==> Phase 5: secret-derived Name, then a tags-only update (issue #4275)"
+# From a file, not argv, so the value never shows in the host's process list.
+SECRET_FILE="$(mktemp -t lambda-microvm-image-secret.XXXXXX)"
+printf '{"name":"%s"}' "${SECRET_IMAGE_NAME}" > "${SECRET_FILE}"
+# Flagged BEFORE the call: a create that succeeds on AWS but reports failure
+# (a client timeout) must still be deleted by the trap.
+SEEDED_SECRET=1
+aws secretsmanager create-secret --region "${REGION}" --name "${NAME_SECRET}" \
+  --secret-string "file://${SECRET_FILE}" >/dev/null || { rm -f "${SECRET_FILE}"; exit 1; }
+rm -f "${SECRET_FILE}"
+echo "    seeded secret ${NAME_SECRET}"
+
+MICROVM_NAME_SECRET="${NAME_SECRET}" MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+STATE_JSON5="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+microvm_state_field() { # usage: microvm_state_field physicalId|<property> <<< "<state json>"
+  python3 -c '
+import json, sys
+for v in json.load(sys.stdin)["resources"].values():
+    if v["resourceType"] == "AWS::Lambda::MicrovmImage":
+        f = sys.argv[1]
+        print(v.get("physicalId", "") if f == "physicalId" else v.get("properties", {}).get(f, ""))
+        break
+' "$1"
+}
+IMAGE_ARN5="$(microvm_state_field physicalId <<< "${STATE_JSON5}")"
+case "${IMAGE_ARN5}" in
+  arn:aws:lambda:*:microvm-image:*) echo "    secret-named image created: ${IMAGE_ARN5}" ;;
+  *) echo "FAIL: physicalId is not a MicroVM image ARN: '${IMAGE_ARN5}'" >&2; exit 1 ;;
+esac
+
+# Non-vacuity: the record must hold the EXPRESSION, or the update below never
+# compares a resolved value against a reference and proves nothing.
+RECORDED_NAME="$(microvm_state_field Name <<< "${STATE_JSON5}")"
+EXPECTED_REF="{{resolve:secretsmanager:${NAME_SECRET}:SecretString:name::}}"
+[ "${RECORDED_NAME}" = "${EXPECTED_REF}" ] || {
+  echo "FAIL: state records Name '${RECORDED_NAME}', expected '${EXPECTED_REF}'; the name is not secret-derived, so the update below would not exercise #4275" >&2
+  exit 1
+}
+LIVE_NAME="$(aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN5}" \
+  --region "${REGION}" --query 'name' --output text)"
+[ "${LIVE_NAME}" = "${SECRET_IMAGE_NAME}" ] || {
+  echo "FAIL: the image is named '${LIVE_NAME}', expected the secret's '${SECRET_IMAGE_NAME}'" >&2
+  exit 1
+}
+echo "    state records the Name as its secret reference; the image carries the resolved name"
+VERSION5_BEFORE="$(aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN5}" \
+  --region "${REGION}" --query 'latestActiveImageVersion' --output text)"
+
+# The update: the same tags-only change as Phase 1b. Exit code kept, stderr
+# kept (it carries the refusal on the pre-fix code).
+p5_rc=0
+MICROVM_NAME_SECRET="${NAME_SECRET}" MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes || p5_rc=$?
+[ "${p5_rc}" -eq 0 ] || {
+  echo "FAIL: the tags-only update of a secret-named image exited ${p5_rc}; a refusal here is #4275's resolved-name-vs-reference comparison" >&2
+  exit 1
+}
+
+IMAGE_ARN5_AFTER="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | microvm_state_field physicalId)"
+[ "${IMAGE_ARN5_AFTER}" = "${IMAGE_ARN5}" ] || {
+  echo "FAIL: the image ARN changed across a tags-only update (${IMAGE_ARN5} -> ${IMAGE_ARN5_AFTER})" >&2
+  exit 1
+}
+TEAM_TAG5="$(aws lambda-microvms list-tags --resource "${IMAGE_ARN5}" --region "${REGION}" \
+  --query 'Tags.team' --output text)"
+[ "${TEAM_TAG5}" = "infra" ] || {
+  echo "FAIL: expected team=infra on ${IMAGE_ARN5} after the update, got '${TEAM_TAG5}' -- the update never reached it" >&2
+  exit 1
+}
+VERSION5_AFTER="$(aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN5}" \
+  --region "${REGION}" --query 'latestActiveImageVersion' --output text)"
+[ "${VERSION5_AFTER}" = "${VERSION5_BEFORE}" ] || {
+  echo "FAIL: the tags-only update rebuilt the secret-named image (version ${VERSION5_BEFORE} -> ${VERSION5_AFTER})" >&2
+  exit 1
+}
+echo "    tags-only update applied in place: same ARN, same version, team=infra"
+
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+assert_gone "MicroVM image ${IMAGE_ARN5} still exists after destroy" \
+  aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN5}" --region "${REGION}"
+assert_gone "state file still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    secret-named image + state removed"
+
 # Remove the code artifact we uploaded in Phase 0 (not a cdkd-managed resource).
 aws s3 rm "s3://${STATE_BUCKET}/${ARTIFACT_KEY}" --region "${REGION}" >/dev/null
 
-echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, tags-only update no-rebuild, tag drift detect/revert, --no-wait returns at CREATING, clean async destroy"
+# Success path: every image and the state are asserted gone above. Delete the
+# secret while the trap is still armed (a failed delete then gets the trap's
+# retry and WARNING), then disarm the trap -- its `state destroy` / `aws s3 rm`
+# would write fresh delete markers under the prefix certified below -- and
+# sweep every object version under the stack's prefix, asserting none
+# survives.
+aws secretsmanager delete-secret --secret-id "${NAME_SECRET}" \
+  --force-delete-without-recovery --region "${REGION}" >/dev/null
+SEEDED_SECRET=0
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
+
+echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, tags-only update no-rebuild, tag drift detect/revert, --no-wait returns at CREATING, clean async destroy, secret-derived Name updated in place (#4275)"

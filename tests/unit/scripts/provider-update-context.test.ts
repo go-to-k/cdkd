@@ -182,6 +182,7 @@ describe('provider UpdateContext fence — the real tree', () => {
     // comment says consuming that field is the remaining half of issue #2245).
     // Calling the guard is remedy 2.
     expect([...report.declaring].sort()).toEqual([
+      'ACMCertificateProvider',
       'ASGProvider',
       'ApiGatewayProvider',
       'ApiGatewayV2Provider',
@@ -217,6 +218,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'LambdaEventInvokeConfigProvider',
       'LambdaEventSourceMappingProvider',
       'LambdaFunctionProvider',
+      'LambdaMicrovmImageProvider',
       'LambdaPermissionProvider',
       'LambdaUrlProvider',
       'LogsLogGroupProvider',

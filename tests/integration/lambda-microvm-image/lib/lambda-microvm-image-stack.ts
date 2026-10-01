@@ -59,10 +59,21 @@ export class LambdaMicrovmImageStack extends cdk.Stack {
         ]
       : [{ Key: 'env', Value: 'dev' }];
 
+    // Phase 5 (go-to-k/cdkd#4275): with MICROVM_NAME_SECRET set, the image
+    // Name comes from that Secrets Manager secret. cdkd records the
+    // `{{resolve:secretsmanager:...}}` expression and hands `update()` the
+    // resolved name, which the provider used to refuse as a Name change on
+    // any update.
+    const nameSecret = process.env['MICROVM_NAME_SECRET'];
+    const name =
+      nameSecret !== undefined && nameSecret !== ''
+        ? cdk.SecretValue.secretsManager(nameSecret, { jsonField: 'name' }).unsafeUnwrap()
+        : 'cdkd-integ-microvm-image';
+
     const image = new cdk.CfnResource(this, 'MicrovmImage', {
       type: 'AWS::Lambda::MicrovmImage',
       properties: {
-        Name: 'cdkd-integ-microvm-image',
+        Name: name,
         BaseImageArn: cdk.Fn.sub(
           'arn:${AWS::Partition}:lambda:${AWS::Region}:aws:microvm-image:al2023-1'
         ),

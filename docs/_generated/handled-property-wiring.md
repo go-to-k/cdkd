@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1143** (**1141** with read evidence)
 - Fully wired classes: **83**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **28**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **27**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -40,7 +40,6 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 
 | Provider class | Blind spot(s) |
 | --- | --- |
-| `ACMCertificateProvider` (acm-certificate-provider.ts) | `computed key in update()` |
 | `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
 | `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()` |

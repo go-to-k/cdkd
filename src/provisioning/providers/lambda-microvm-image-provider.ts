@@ -31,7 +31,10 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 
 /**
  * AWS Lambda MicroVM Image Provider
@@ -229,7 +232,8 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -238,9 +242,24 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     // Name is create-only; cdkd's create-only detection routes a Name change to
     // REPLACEMENT before reaching here. Guard defensively: the SDK
     // UpdateMicrovmImage input has no name field, so a Name change would be
-    // silently dropped if it ever slipped through.
-    if (properties['Name'] !== previousProperties['Name']) {
-      const shownName = (v: unknown): string => (v === undefined ? 'no value' : String(v));
+    // silently dropped if it ever slipped through. A secret-derived Name is
+    // recorded as its `{{resolve:...}}` reference and handed here resolved,
+    // which is no change (go-to-k/cdkd#4275): the masker arm decides, since
+    // the writes below address the image by its ARN and never send the name.
+    if (
+      properties['Name'] !== previousProperties['Name'] &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'Name',
+        desired: properties['Name'],
+        previous: previousProperties['Name'],
+        maskSecrets: context?.maskSecrets,
+      }))
+    ) {
+      // The desired side is resolved, so it can be a secret's value.
+      const mask = maskerOrIdentity(context?.maskSecrets);
+      const shownName = (v: unknown): string =>
+        v === undefined ? 'no value' : mask(typeof v === 'string' ? v : JSON.stringify(v));
       throw new ProvisioningError(
         `MicroVM image ${logicalId} Name is create-only and cannot be changed in place ` +
           `(from ${shownName(previousProperties['Name'])} to ${shownName(properties['Name'])}); this requires replacement.`,

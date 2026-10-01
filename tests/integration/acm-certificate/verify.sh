@@ -19,6 +19,9 @@
 #     reporter waited 10 minutes for happens in seconds. It asserts the account
 #     holds ZERO certificates for this fixture afterwards, and still zero after
 #     a second failing deploy -- the accumulation the issue reports.
+#   - Phase 4 (issue #4275): a certificate whose DomainName comes from a
+#     Secrets Manager secret keeps its ARN across a Tags-only update instead
+#     of being replaced.
 #
 # What this does NOT exercise:
 #   - The poll-until-ISSUED happy path (needs a real DNS zone the test
@@ -37,11 +40,18 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
+# Phase 4 resolves a Secrets Manager reference, so the stack's state versions
+# are swept and asserted on the success path (issue #2096).
+# shellcheck source=../s3-versions.sh
+. ../s3-versions.sh
 
 CDKD="${CDKD:-node ../../../dist/cli.js}"
 REGION="${AWS_REGION:-us-east-1}"
 BUCKET="${STATE_BUCKET:?STATE_BUCKET is required}"
 STACK="CdkdAcmCertificateExample"
+PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+# Set once the success path has destroyed the stack itself.
+DESTROYED=0
 
 echo "=== ACM Certificate integ (CDKD_NO_WAIT=true, synthetic domain) ==="
 echo "Stack: ${STACK}"
@@ -58,6 +68,10 @@ ORIGINAL_ARN=""
 # stranded in turn. Tracked separately and retired the same way -- a fixture
 # that verifies orphan REPORTING must not itself leave orphans behind.
 STRANDED_ARN=""
+# Phase 4's Secrets Manager secret (go-to-k/cdkd#4275). A unique name per run,
+# deleted by the trap once the stack is gone.
+SECRET_NAME="cdkd-integ-acm-domain-$(date +%s)-$$"
+SEEDED_SECRET=0
 
 acm_arns_for_fixture() {
   local stack_lc
@@ -73,8 +87,16 @@ cleanup() {
   # assertion left the run reporting SUCCESS -- observed on this fixture's
   # first partial-outcome run.
   local rc=$?
-  echo "=== Destroying stack ${STACK} ==="
-  $CDKD destroy --region "${REGION}" --state-bucket "${BUCKET}" --force || true
+  # The success path destroys (and sweeps state versions) itself; a second
+  # destroy here would write fresh objects under the prefix it just certified.
+  if [[ "${DESTROYED}" != "1" ]]; then
+    echo "=== Destroying stack ${STACK} ==="
+    $CDKD destroy --region "${REGION}" --state-bucket "${BUCKET}" --force || true
+    # Safe on a failed run: the CURRENT state.json a later `cdkd state destroy`
+    # may need survives; older versions (resolved by phase 4's secret
+    # reference) go.
+    s3_purge_prefix_versions "${BUCKET}" "${PREFIX}" noncurrent || true
+  fi
   if [[ -n "${ORIGINAL_ARN}" ]]; then
     echo "=== Retiring the deliberately-stranded original certificate ==="
     aws acm delete-certificate --certificate-arn "${ORIGINAL_ARN}" --region "${REGION}" \
@@ -84,6 +106,20 @@ cleanup() {
     echo "=== Retiring the certificate phase 3 stranded ==="
     aws acm delete-certificate --certificate-arn "${STRANDED_ARN}" --region "${REGION}" \
       >/dev/null 2>&1 || true
+  fi
+  # After the destroy: the stack no longer needs to resolve it. Its failure is
+  # printed, not swallowed, so a surviving secret is visible.
+  if [[ "${SEEDED_SECRET}" = "1" ]]; then
+    echo "=== Deleting the phase 4 secret ${SECRET_NAME} ==="
+    local secret_out
+    if ! secret_out=$(aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
+      --force-delete-without-recovery --region "${REGION}" 2>&1); then
+      echo "WARNING: could not delete the phase 4 secret: ${secret_out}"
+      echo "Delete it with: aws secretsmanager delete-secret --secret-id ${SECRET_NAME} --force-delete-without-recovery --region ${REGION}"
+    else
+      # INT/TERM run cleanup and then EXIT runs it again: no second attempt.
+      SEEDED_SECRET=0
+    fi
   fi
   # Both hand-retirements above are best-effort (`|| true`), which is right --
   # a cleanup failure must not mask the assertion result -- but silent. With
@@ -586,4 +622,110 @@ if ! echo "${allow_txt}" | grep -q "allow-unaddressed was passed"; then
 fi
 echo "PASS: the survivor warning is still printed under --allow-unaddressed"
 
-# trap will run destroy
+# --- Phase 4: a secret-derived DomainName is updated in place (#4275) ---------
+#
+# cdkd records a secret-derived value as its `{{resolve:secretsmanager:...}}`
+# expression, while `update()` receives the RESOLVED value. The provider used
+# to compare the two directly, read every update of such a certificate as a
+# DomainName change, and REPLACE it: a new RequestCertificate, the old
+# certificate deleted, state re-pointed. The engine's own diff sees no
+# DomainName change (template and record spell the same expression), so the
+# Tags-only change below reaches `update()`.
+#
+# Pre-fix this arm fails at the ARN assertion: the update deploy exits 0, but
+# state names a NEW certificate and the old one is gone. Post-fix the ARN is
+# unchanged and the new tag is on the ORIGINAL certificate.
+echo "=== Phase 4: a secret-derived DomainName is updated in place, not replaced (issue #4275) ==="
+stack_lc=$(printf '%s' "${STACK}" | tr '[:upper:]' '[:lower:]')
+# Contains `cdkd-integ-<stack>`, so the trap's leak sweep covers it too.
+secret_domain="cdkd-integ-${stack_lc}-sdn.example.test"
+# From a file, not argv, so the value never shows in the host's process list.
+secret_file=$(mktemp -t acm-certificate-secret.XXXXXX)
+printf '{"domain":"%s"}' "${secret_domain}" > "${secret_file}"
+# Flagged BEFORE the call: a create that succeeds on AWS but reports failure
+# (a client timeout) must still be deleted by the trap.
+SEEDED_SECRET=1
+aws secretsmanager create-secret --region "${REGION}" --name "${SECRET_NAME}" \
+  --secret-string "file://${secret_file}" >/dev/null || { rm -f "${secret_file}"; exit 1; }
+rm -f "${secret_file}"
+echo "  seeded secret ${SECRET_NAME}"
+
+# Prints SecretCertificate's `physicalId` or one of its recorded properties.
+secret_cert_field() { # usage: secret_cert_field physicalId | <property>
+  aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" \
+    | python3 -c '
+import json, sys
+r = json.load(sys.stdin)["resources"].get("SecretCertificate", {})
+f = sys.argv[1]
+print(r.get("physicalId", "") if f == "physicalId" else r.get("properties", {}).get(f, ""))
+' "$1"
+}
+
+CDKD_NO_WAIT=true CDKD_TEST_SECRET_NAME="${SECRET_NAME}" \
+  $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}"
+
+secret_arn=$(secret_cert_field physicalId)
+if [[ "${secret_arn}" != arn:aws:acm:* ]]; then
+  echo "FAIL: state records no ACM ARN for SecretCertificate (got '${secret_arn}')"
+  exit 1
+fi
+echo "PASS: SecretCertificate created: ${secret_arn}"
+
+# Non-vacuity: the record must hold the EXPRESSION, or the update below never
+# compares a resolved value against a reference and proves nothing.
+recorded_domain=$(secret_cert_field DomainName)
+expected_ref="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:domain::}}"
+if [[ "${recorded_domain}" != "${expected_ref}" ]]; then
+  echo "FAIL: state records DomainName '${recorded_domain}', expected '${expected_ref}';"
+  echo "      the name is not secret-derived, so the update below would not exercise #4275"
+  exit 1
+fi
+echo "PASS: state records the DomainName as its secret reference"
+live_domain=$(aws acm describe-certificate --certificate-arn "${secret_arn}" --region "${REGION}" \
+  --query 'Certificate.DomainName' --output text)
+if [[ "${live_domain}" != "${secret_domain}" ]]; then
+  echo "FAIL: the certificate's DomainName is '${live_domain}', expected the secret's '${secret_domain}'"
+  exit 1
+fi
+echo "PASS: the certificate carries the domain the secret resolves to"
+
+# The update: a Tags-only change on SecretCertificate, nothing else in the
+# template moves.
+set +e
+p4_out=$(CDKD_NO_WAIT=true CDKD_TEST_SECRET_NAME="${SECRET_NAME}" CDKD_TEST_SECRET_CERT_TAG=v2 \
+  $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}" 2>&1)
+p4_rc=$?
+set -e
+echo "${p4_out}"
+if [[ "${p4_rc}" -ne 0 ]]; then
+  echo "FAIL: the Tags-only update deploy exited ${p4_rc}"
+  exit 1
+fi
+
+# LOAD-BEARING: the same certificate, not a replacement.
+secret_arn_after=$(secret_cert_field physicalId)
+if [[ "${secret_arn_after}" != "${secret_arn}" ]]; then
+  echo "FAIL: SecretCertificate was REPLACED by a Tags-only update (${secret_arn} -> ${secret_arn_after});"
+  echo "      the provider read the resolved DomainName as a change from its recorded reference (#4275)"
+  exit 1
+fi
+echo "PASS: SecretCertificate keeps its ARN across the update"
+
+# ...and the update really ran: the new tag is on the ORIGINAL certificate.
+phase_tag=$(aws acm list-tags-for-certificate --certificate-arn "${secret_arn}" --region "${REGION}" \
+  --query "Tags[?Key=='phase'].Value | [0]" --output text)
+if [[ "${phase_tag}" != "v2" ]]; then
+  echo "FAIL: tag phase on ${secret_arn} is '${phase_tag}', expected v2 -- the update never reached it"
+  exit 1
+fi
+echo "PASS: the Tags-only update was applied in place (phase=v2)"
+
+# Destroy on the success path (unpiped, so `set -e` stops the run if it
+# fails), then sweep every object version under the stack's prefix and assert
+# none survives. The trap still retires the stranded certificates, deletes the
+# secret and runs the ACM leak sweep.
+echo "=== Destroying stack ${STACK} ==="
+$CDKD destroy --region "${REGION}" --state-bucket "${BUCKET}" --force
+DESTROYED=1
+s3_purge_prefix_versions "${BUCKET}" "${PREFIX}" all || true
+s3_assert_versions_swept "${BUCKET}" "${PREFIX}" "stack state teardown"
