@@ -39,7 +39,7 @@ describe('ConsoleLogger masks bound resource secrets at the sink (issue #2177)',
   let spies: Record<'debug' | 'info' | 'warn' | 'error', ReturnType<typeof vi.spyOn>>;
   const printed = (): string =>
     Object.values(spies)
-      .flatMap((spy) => spy.mock.calls.map((call) => String(call[0])))
+      .flatMap((spy) => spy.mock.calls.map((call: unknown[]) => String(call[0])))
       .join('\n');
 
   beforeEach(() => {
