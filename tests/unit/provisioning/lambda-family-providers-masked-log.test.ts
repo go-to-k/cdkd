@@ -80,6 +80,9 @@ const ARN_SECRET_NAME = 'arn-secret-fn';
 const ARN_SECRET = `arn:aws:lambda:us-east-1:123456789012:function:${ARN_SECRET_NAME}`;
 
 const maskSecrets = createSecretMasker(bagOf(LONG, TINY, ARN_SECRET));
+/** A secret whose plaintext is a QUALIFIED function ARN (an alias). */
+const QUALIFIED_ARN_SECRET = `${ARN_SECRET}:live`;
+const qualifiedMask = createSecretMasker(bagOf(QUALIFIED_ARN_SECRET));
 
 const fnArn = (name: string, account = '123456789012'): string =>
   `arn:aws:lambda:us-east-1:${account}:function:${name}`;
@@ -496,6 +499,26 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
     expect(routed(spy.seen(), 'Successfully created Lambda permission Perm')).toBe(true);
   });
 
+  it('masks the bare name of a rotated QUALIFIED (alias) recorded function', async () => {
+    const raw = awsAuthored('AccessDeniedException', `Not authorized on function ${ROTATED}`);
+    fakeLambda({
+      RemovePermissionCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaPermissionProvider().update(
+        'Perm',
+        `${fnArn(ROTATED)}:live|PermStatement`,
+        type,
+        props(PUBLIC),
+        props(ROTATED_REF),
+        { maskSecrets }
+      )
+    );
+    expectMaskedFailure(error, raw, ROTATED);
+  });
+
   it('masks a rotated recorded function AWS quotes back when the remove fails', async () => {
     const physicalId = `${fnArn(ROTATED)}|PermStatement`;
     const raw = awsAuthored('AccessDeniedException', `Not authorized on ${fnArn(ROTATED)}`);
@@ -763,6 +786,42 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
       { maskSecrets: spy.mask }
     );
     expect(routed(spy.seen(), 'Successfully updated Lambda EventInvokeConfig Eic')).toBe(true);
+  });
+
+  it('masks the bare name of a QUALIFIED function reference (recorded on update, desired on create)', async () => {
+    const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${ROTATED}`);
+    fakeLambda({
+      PutFunctionEventInvokeConfigCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaEventInvokeConfigProvider().update(
+        'Eic',
+        `${fnArn(ROTATED)}:live|$LATEST`,
+        type,
+        { FunctionName: `${fnArn(ROTATED)}:live`, Qualifier: '$LATEST', MaximumRetryAttempts: 2 },
+        { FunctionName: ROTATED_REF, Qualifier: '$LATEST', MaximumRetryAttempts: 1 },
+        { maskSecrets }
+      )
+    );
+    expectMaskedFailure(error, raw, ROTATED);
+
+    const createRaw = awsAuthored('ResourceNotFoundException', `Function not found: ${ARN_SECRET_NAME}`);
+    fakeLambda({
+      PutFunctionEventInvokeConfigCommand: () => {
+        throw createRaw;
+      },
+    });
+    const createError = await thrown(
+      new LambdaEventInvokeConfigProvider().create(
+        'Eic',
+        type,
+        { FunctionName: QUALIFIED_ARN_SECRET, Qualifier: '$LATEST' },
+        { maskSecrets: qualifiedMask }
+      )
+    );
+    expectMaskedFailure(createError, createRaw, ARN_SECRET_NAME);
   });
 
   it('masks a rotated recorded function on the update line and failure', async () => {
