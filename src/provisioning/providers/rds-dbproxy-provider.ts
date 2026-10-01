@@ -31,9 +31,12 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -247,7 +250,8 @@ export class RDSDBProxyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(
@@ -264,9 +268,22 @@ export class RDSDBProxyProvider implements ResourceProvider {
     // Defensive: reject diffs in immutable fields. Replacement-rules.ts
     // SHOULD have routed those to a CREATE+DELETE replacement upstream, but
     // we double-check here so a missing rule entry doesn't silently corrupt
-    // state (the PR #387 round 1 blocker class).
+    // state (the PR #387 round 1 blocker class). A secret-derived value is
+    // recorded as its `{{resolve:...}}` reference and handed here resolved,
+    // which is no change; the physical id IS the proxy name
+    // (go-to-k/cdkd#4275).
     for (const field of ['DBProxyName', 'EngineFamily', 'VpcSubnetIds']) {
-      if (JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])) {
+      if (
+        JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field]) &&
+        !(await unchangedBehindSecretReference({
+          resourceType,
+          key: field,
+          desired: properties[field],
+          previous: previousProperties[field],
+          physicalName: field === 'DBProxyName' ? physicalId : undefined,
+          maskSecrets: context?.maskSecrets,
+        }))
+      ) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
@@ -295,8 +312,10 @@ export class RDSDBProxyProvider implements ResourceProvider {
     }
 
     if (hasModify) {
+      // The physical id is the proxy name, which can be secret-derived.
+      const mask = maskerOrIdentity(context?.maskSecrets);
       this.logger.debug(
-        `Updating DBProxy ${physicalId}: ${Object.keys(input)
+        `Updating DBProxy ${mask(physicalId)}: ${Object.keys(input)
           .filter((k) => k !== 'DBProxyName')
           .join(', ')}`
       );
@@ -319,7 +338,8 @@ export class RDSDBProxyProvider implements ResourceProvider {
       previousProperties['Tags'],
       properties['Tags'],
       resourceType,
-      logicalId
+      logicalId,
+      context?.maskSecrets
     );
 
     return { physicalId, wasReplaced: false };
@@ -517,7 +537,9 @@ export class RDSDBProxyProvider implements ResourceProvider {
     oldTags: unknown,
     newTags: unknown,
     resourceType: string,
-    logicalId: string
+    logicalId: string,
+    // The physical id is a name that can be secret-derived (go-to-k/cdkd#4275).
+    maskSecrets?: MaskerFn
   ): Promise<void> {
     // Both sides are read through `planTagDiff` (go-to-k/cdkd#3994): an
     // unreadable record untags nothing.
@@ -551,7 +573,9 @@ export class RDSDBProxyProvider implements ResourceProvider {
       } catch (error) {
         // Can't tag without an ARN — log + skip.
         this.logger.debug(
-          `Skipping tag diff for ${physicalId} (no ARN): ${describeAwsFailure(error).detail}`
+          maskerOrIdentity(maskSecrets)(
+            `Skipping tag diff for ${maskerOrIdentity(maskSecrets)(physicalId)} (no ARN): ${describeAwsFailure(error).detail}`
+          )
         );
         return;
       }
