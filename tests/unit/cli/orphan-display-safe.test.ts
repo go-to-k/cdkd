@@ -843,6 +843,24 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       }
     }, 120_000);
 
+    // `~root` survives `displayIdent` unchanged, yet a pasted shell expands it
+    // to a home directory, so it is described. (A leading-`-` name cannot
+    // reach this line: orphan's own argv parser reads `-rf/A` as an option.)
+    it.each(['~root'])('describes stack %s beside --stack-region (go-to-k/cdkd#4295)', async (name) => {
+      errorSpy.mockClear();
+      primeStacks([{ stackName: name, region: undefined, resources: { A: `${name}/A` } }]);
+      mockListStacks.mockResolvedValue([
+        { stackName: name, region: 'us-east-1' },
+        { stackName: name, region: 'eu-west-1' },
+      ]);
+      await expect(runOrphan([`${name}/A`, '--app', 'noop', '--yes'])).rejects.toThrow();
+      const message = reportedError();
+      expect(message).toContain(
+        'Stack a stack name that is not a plain identifier has state in multiple regions'
+      );
+      expect(message).not.toContain(`Stack ${name} `);
+    });
+
     it('describes a printable region a pasted shell would expand (go-to-k/cdkd#4295)', async () => {
       // `~root` survives `displayIdent` unchanged but expands to a home
       // directory when pasted bare, so the --stack-region line describes it.

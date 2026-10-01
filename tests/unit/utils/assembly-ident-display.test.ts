@@ -298,6 +298,16 @@ describe("cdkd local invoke: a Lambda's logical id", () => {
     }
   }, 120_000);
 
+  // `~root` and `-rf` survive `displayIdent` unchanged, yet a pasted shell
+  // expands the one and reads the other as an option, so they are described.
+  it.each(['~root', '-rf'])('describes %s beside --output (go-to-k/cdkd#4295)', (name) => {
+    const message = refuse(name);
+    expect(message).toContain(
+      "Lambda a logical id that is not a plain identifier has no Metadata['aws:asset:path']"
+    );
+    expect(message).not.toContain(`Lambda ${name} `);
+  });
+
   it('renders an ordinary logical id bare', () => {
     expect(refuse('Fn')).toContain("Lambda Fn has no Metadata['aws:asset:path']");
     // The remedy's hole is quoted (go-to-k/cdkd#4295).

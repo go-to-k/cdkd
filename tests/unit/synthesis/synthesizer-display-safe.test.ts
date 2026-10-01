@@ -257,6 +257,22 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
       }
     }, 120_000);
 
+    // `~root` and `-rf` survive `displayIdent` unchanged, yet a pasted shell
+    // expands the one and reads the other as an option, so they are described.
+    it.each(['~root', '-rf'])('describes %s beside --region (go-to-k/cdkd#4295)', async (name) => {
+      const message = await messageOf(() =>
+        new Synthesizer().expandMacrosForStacks(
+          stacksWithNoRegion([name, 'Plain']) as never,
+          { app: 'node app.js' },
+          { region: undefined }
+        )
+      );
+      expect(message).toContain(
+        'Stack(s) [a stack name that is not a plain identifier, Plain] use CloudFormation macros'
+      );
+      expect(message).not.toContain(`[${name}`);
+    });
+
     it('sanitizes each stack name SEPARATELY', async () => {
       const synthesizer = new Synthesizer();
       const message = await messageOf(() =>
@@ -343,6 +359,20 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
         });
       }
     }, 120_000);
+
+    it.each(['~root', '-rf'])('describes %s beside --state-bucket (go-to-k/cdkd#4295)', async (name) => {
+      const message = await messageOf(() =>
+        new Synthesizer().expandMacrosForStacks(
+          oversizeStack(name) as never,
+          { app: 'node app.js' },
+          { region: 'us-east-1' }
+        )
+      );
+      expect(message).toContain(
+        'Stack a stack name that is not a plain identifier uses CloudFormation macros AND'
+      );
+      expect(message).not.toContain(`Stack ${name} `);
+    });
 
     it('leaves an ordinary stack name byte-identical', async () => {
       const synthesizer = new Synthesizer();
