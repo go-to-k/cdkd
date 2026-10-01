@@ -247,7 +247,8 @@ if [ -z "${GUARD_LINE}" ]; then
   # after it, and a REWORD of the marker this fixture parses.
   #
   # `Failed to <op> <LogicalId>` is `deploy-engine.ts`'s per-resource failure
-  # line (`Failed to ${change.changeType.toLowerCase()} ${logicalId}`), so it
+  # line (`Failed to ${change.changeType.toLowerCase()} ${logicalIdShown(logicalId)}`,
+  # the identity on the plain `Vault`), so it
   # appears for a guard refusal AND for any other failure on the vault --
   # including one on the replacement's create or delete, which is why all three
   # verbs are matched rather than `update` alone.

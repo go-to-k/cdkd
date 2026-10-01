@@ -56,13 +56,15 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
     // The fixture's second sentinel matches `Failed to (update|create|delete)
     // Vault`. That line is built from ONE template covering every change type,
     // so a rename of the template — or moving the logical id off the front of
-    // the message — blinds the sentinel.
+    // the message — blinds the sentinel. The id renders through
+    // `logicalIdShown` since go-to-k/cdkd#4308, which is the identity on the
+    // fixture's plain `Vault`, so the sentinel still matches.
     expect(
       DEPLOY_ENGINE,
       'deploy-engine.ts no longer builds the per-resource failure line as ' +
-        '`Failed to ${change.changeType.toLowerCase()} ${logicalId}` — update the ' +
+        '`Failed to ${change.changeType.toLowerCase()} ${logicalIdShown(logicalId)}` — update the ' +
         "sentinel in tests/integration/backup/verify.sh's Phase 1b"
-    ).toContain('`Failed to ${change.changeType.toLowerCase()} ${logicalId}:');
+    ).toContain('`Failed to ${change.changeType.toLowerCase()} ${logicalIdShown(logicalId)}:');
     expect(VERIFY_SH).toContain("grep -qE 'Failed to (update|create|delete) Vault'");
   });
 
