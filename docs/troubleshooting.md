@@ -1167,7 +1167,9 @@ the AWS SDK retries a few times, and cdkd re-polls the same token for up to two
 more minutes on top (ten seconds for the deletion-protection flip a
 `cdkd destroy --remove-protection` does first, which is best-effort and which
 the delete itself reports on) — but an outage longer than that leaves cdkd with no way to
-learn the outcome, and no physical id to record.
+learn the outcome, and no physical id to record. A local-address failure
+(`EADDRNOTAVAIL` in the message, seen on a machine under heavy parallel load)
+is treated the same way: checking the status is a read, so cdkd re-polls it.
 
 **Solution:**
 

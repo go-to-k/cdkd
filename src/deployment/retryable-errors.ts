@@ -1131,11 +1131,18 @@ export function isTransientServerError(error: unknown): boolean {
  * `ECONNREFUSED`, whose connection was never established; its
  * `NODEJS_NETWORK_ERROR_CODES` (`EHOSTUNREACH`, `ENETUNREACH`, `ENOTFOUND`) are
  * left out for the same reason.
+ *
+ * `EADDRNOTAVAIL` is IN, like `ETIMEDOUT`, for the same reason: Node raises it
+ * both for a connect that could not bind a local address (nothing sent) and,
+ * as `read EADDRNOTAVAIL`, on an established socket whose local address went
+ * away -- the shape issue #4331 observed, after the request may have been
+ * written. Neither form says which happened.
  */
 const AMBIGUOUS_SOCKET_ERROR_CODES: ReadonlySet<string> = new Set([
   'ECONNRESET',
   'EPIPE',
   'ETIMEDOUT',
+  'EADDRNOTAVAIL',
 ]);
 
 /**
@@ -1211,10 +1218,16 @@ export function isAmbiguousCcHandlerErrorCode(code: string | undefined): boolean
  * `RequestTimeout` included: the server saying it never received the whole
  * request), 501, or a failure with no status and none of those codes.
  *
- * Errs toward TRUE on purpose. Its one reader is `withRetry`'s latch, and a
- * true verdict only WITHHOLDS the name-collision credit from what that call
- * throws from then on, the arming attempt's own error included: a false positive leaves a genuine collision refused rather
- * than deleted-first, while a false negative deletes a live resource.
+ * Errs toward TRUE on purpose: every reader treats true as "no answer from
+ * the service", the safe direction. In `withRetry`'s latch it WITHHOLDS the
+ * name-collision credit from what that call throws from then on, the arming
+ * attempt's own error included -- a false positive leaves a genuine collision
+ * refused rather than deleted-first, while a false negative deletes a live
+ * resource. The other readers (`AmbiguousCreateLatch`,
+ * `withoutServerErrorRetries` -- 5xx only, the CodeCommit delete-target
+ * check, the DynamoDB stream-member read) look before creating again, refuse
+ * the SDK's silent replay of a tokenless create, rethrow instead of deleting
+ * unconfirmed, or keep the declared value.
  *
  * Never throws: it runs in a retry loop's `catch`, where an out-throw would
  * replace the error being handled; an unreadable link reads as not ambiguous.

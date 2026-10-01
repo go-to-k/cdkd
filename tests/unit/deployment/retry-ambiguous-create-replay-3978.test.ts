@@ -363,6 +363,18 @@ describe('isAmbiguousOutcomeError', () => {
     expect(isAmbiguousOutcomeError(wrap(socketError(code)))).toBe(true);
   });
 
+  it('is true for EADDRNOTAVAIL, by code (#4331)', () => {
+    // The classifier reads `code` only, so it cannot tell the `connect` form
+    // from the observed `read` form (an established socket whose local address
+    // went away, after the request may have been written); the code is
+    // counted for the `read` form, like ETIMEDOUT for its post-send form. The
+    // message carries the observed wording for realism only.
+    const e = socketError('EADDRNOTAVAIL');
+    e.message = 'read EADDRNOTAVAIL';
+    expect(isAmbiguousOutcomeError(e)).toBe(true);
+    expect(isAmbiguousOutcomeError(wrap(e))).toBe(true);
+  });
+
   it('is true for the SDK client-side TimeoutError', () => {
     const e = new Error('Connection timed out after 5000 ms');
     e.name = 'TimeoutError';
