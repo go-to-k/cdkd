@@ -1320,7 +1320,11 @@ fi
 # so a value carrying `'` ran as shell. Keying this on the old inline spelling
 # would pin the defect. Anchored to the line start so a mention inside prose
 # cannot satisfy it.
-if ! printf '%s\n' "${PLAINTEXT_PRODUCER_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?$"; then
+# Since go-to-k/cdkd#4194 every pasteable hint carries the run's typed
+# --profile / --state-bucket / --state-prefix after the target, so the end
+# anchor admits exactly those flags and nothing else.
+RUN_FLAGS_TAIL="( --(profile|state-bucket|state-prefix) [^ ]+)*"
+if ! printf '%s\n' "${PLAINTEXT_PRODUCER_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?${RUN_FLAGS_TAIL}$"; then
   diag "${PLAINTEXT_PRODUCER_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused without a 'Scrub with: cdkd scrub ${PRODUCER}' labelled line"
 fi
@@ -1517,7 +1521,7 @@ if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "at \"Description['Fn::Join']"
   diag "${TAKEN_REFUSE_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused from somewhere other than the Description's Fn::Join — the refusal is not attributable to the taken-branch conditional read this phase seeds for"
 fi
-if ! printf '%s\n' "${TAKEN_REFUSE_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?$"; then
+if ! printf '%s\n' "${TAKEN_REFUSE_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?${RUN_FLAGS_TAIL}$"; then
   diag "${TAKEN_REFUSE_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused without a 'Scrub with: cdkd scrub ${PRODUCER}' labelled line"
 fi
@@ -1817,8 +1821,8 @@ fi
 # order is asserted by comparing the two line numbers rather than by matching a
 # single inline sentence (go-to-k/cdkd#3436). `grep -n` gives the order; a
 # missing line yields an empty capture and fails the numeric compare.
-CHAIN_HEAD_LINE="$(printf '%s\n' "${CHAIN_REFUSE_OUT}" | grep -nE "^Scrub with: cdkd scrub '?${PRODUCER}'?$" | head -1 | cut -d: -f1)"
-CHAIN_NEXT_LINE="$(printf '%s\n' "${CHAIN_REFUSE_OUT}" | grep -nE "^Scrub with: cdkd scrub '?${CONSUMER}'?$" | head -1 | cut -d: -f1)"
+CHAIN_HEAD_LINE="$(printf '%s\n' "${CHAIN_REFUSE_OUT}" | grep -nE "^Scrub with: cdkd scrub '?${PRODUCER}'?${RUN_FLAGS_TAIL}$" | head -1 | cut -d: -f1)"
+CHAIN_NEXT_LINE="$(printf '%s\n' "${CHAIN_REFUSE_OUT}" | grep -nE "^Scrub with: cdkd scrub '?${CONSUMER}'?${RUN_FLAGS_TAIL}$" | head -1 | cut -d: -f1)"
 if [ -z "${CHAIN_HEAD_LINE}" ] || [ -z "${CHAIN_NEXT_LINE}" ] ||
   [ "${CHAIN_HEAD_LINE}" -ge "${CHAIN_NEXT_LINE}" ]; then
   diag "${CHAIN_REFUSE_OUT}"
