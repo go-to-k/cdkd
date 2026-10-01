@@ -115,6 +115,17 @@ describe('collectConstructAttributeTypes', () => {
     expect(types.has('AWS::S3::Bucket')).toBe(false);
   });
 
+  it('reads the mixin FUNCTION the resolver split it into (#4337)', () => {
+    const src = `
+      export async function constructAttribute(this: R, resource, name) {
+        if (resource.resourceType === 'AWS::EC2::Instance') return this.ip();
+      }
+      export function other() { return 'AWS::S3::Bucket'; }
+    `;
+    const types = collectConstructAttributeTypes(src);
+    expect([...types]).toEqual(['AWS::EC2::Instance']);
+  });
+
   it('returns an empty set when there is no constructAttribute method', () => {
     expect(collectConstructAttributeTypes('class X { foo() {} }').size).toBe(0);
   });
@@ -303,7 +314,7 @@ describe('real repo coverage (regression floor)', () => {
       }
     }
     const ctorTypes = collectConstructAttributeTypes(
-      readFileSync(join(repoRoot, 'src/deployment/intrinsic-function-resolver.ts'), 'utf8')
+      readFileSync(join(repoRoot, 'src/deployment/intrinsic-resolver/getatt.ts'), 'utf8')
     );
     const report = buildReport(fixtures, sdkBacked, cached, ctorTypes);
 

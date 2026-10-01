@@ -241,8 +241,8 @@ function formatDuration(ms: number): string {
  * accurate** — an out-of-date one reads as "these are all of them", which is
  * how the #1730 site below went unlisted for three releases, and how the
  * cross-account `Fn::GetStackOutput` site in group 3 went unlisted from the
- * day it shipped. All live in
- * `src/deployment/intrinsic-function-resolver.ts`:
+ * day it shipped. All live in the resolver family
+ * (`src/deployment/intrinsic-function-resolver.ts` and `intrinsic-resolver/*.ts`):
  *
  * 1. Reachable from `Fn::Sub`'s `${LogicalId.Attribute}` form, i.e. the ones
  *    the laundering fix above is actually about: `guardedPhysicalIdFallback`'s

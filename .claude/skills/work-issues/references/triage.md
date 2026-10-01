@@ -64,7 +64,7 @@ comments. A peer SESSION's open PR holds its whole files; a contributor's fork
 PR with no claim holds only its DIFF's hunks, cross-cutting files included:
 edit outside them, put new tests in new files, and stand down (claim.md) when
 the fix needs its lines (#3613). The contested cross-cutting files:
-`src/deployment/{deploy-engine,intrinsic-function-resolver,retry,retryable-errors,rollback-executor}.ts`,
+`src/deployment/{deploy-engine,intrinsic-function-resolver,retry,retryable-errors,rollback-executor}.ts` (and `src/deployment/{deploy-engine,intrinsic-resolver}/*.ts`),
 `src/analyzer/{dag-builder,template-parser}.ts`,
 `src/provisioning/{register-providers,provider-registry}.ts`,
 `src/cli/commands/{deploy,destroy,destroy-runner,export}.ts`,

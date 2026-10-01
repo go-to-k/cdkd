@@ -209,7 +209,7 @@ fixture's `NoEchoConsumer` is that producer. The in-memory record keeps the
 real attribute for same-run reads.
 
 `noteAttributeSecrecy`
-(`intrinsic-function-resolver.ts:5681`) registers a fresh needle in a
+(`intrinsic-resolver/getatt.ts`) registers a fresh needle in a
 CONSUMER's bag only for an attribute listed in `noEchoAttributeResources`
 (`:5684-5697`), which today only custom resources and nested stacks fill. Left
 alone, a consumer of `Fn::GetAtt NoEchoConsumer.Value` would persist the
@@ -237,7 +237,7 @@ deploy the producer is `held` and skipped, so its record holds
 `attributes.Value = '***'`, and the consumer's `Fn::GetAtt` would be refused
 again. The #1852 heal cannot help. It runs only for an attribute the record
 LACKS or holds as a stale placeholder
-(`intrinsic-function-resolver.ts:6017-6024`), and `mergeHealedAttributes`
+(`intrinsic-resolver/getatt.ts`), and `mergeHealedAttributes`
 never overwrites a recorded key (`src/deployment/stale-attribute-heal.ts:169-190`).
 
 So a `held` producer serves the declared attributes through a SIDE map for

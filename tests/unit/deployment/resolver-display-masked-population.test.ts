@@ -233,16 +233,16 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
       150_000
     );
     expect(code, 'the display builder is gone or renamed').toContain(
-      'private displayMasked(value: string, context?: ResolverContext): string'
+      'displayMasked(value: string, context?: ResolverContext): string'
     );
     expect(code, 'the bare masker this rule is about is gone or renamed').toContain(
-      'private maskSecretsRaw(text: string, context?: ResolverContext): string'
+      'maskSecretsRaw(text: string, context?: ResolverContext): string'
     );
     // The name the class was closed by DELETING. Its own comment records why
     // ("for log" read as "log-ready"), and a merge restoring it would restore a
     // masker callable from a render site with nothing structural to stop it.
-    expect(code, 'the pre-go-to-k/cdkd#3426 masker name is back').not.toContain(
-      'private maskSecretsForLog('
+    expect(code, 'the pre-go-to-k/cdkd#3426 masker name is back').not.toMatch(
+      /\bmaskSecretsForLog\(/
     );
 
     // The stripper is the one thing above that can fail QUIETLY in the
@@ -391,14 +391,14 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     // `displaySafe` alone would silently downgrade every site from masked to
     // merely sanitized, and both scanners would stay green.
     expect(code).toMatch(
-      /private displayMasked\([^)]*\): string \{\s*return displaySafe\(this\.maskThenStripThenMask\(value, context\)\);\s*\}/
+      /displayMasked\([^)]*\): string \{\s*return displaySafe\(this\.maskThenStripThenMask\(value, context\)\);\s*\}/
     );
     // ...and its log-twin sibling, which is in `MASKERS` on the strength of
     // DELEGATING to it. Re-pointing this one at `logTextOfLeaf` alone would
     // drop the strip and the `displaySafe` pass from all nine `origin` sites
     // while both scanners stayed green.
     expect(code).toMatch(
-      /private displayLeaf\([^)]*\): string \{\s*return this\.displayMasked\(this\.logTextOfLeaf\(value, context\), context\);\s*\}/
+      /displayLeaf\([^)]*\): string \{\s*return this\.displayMasked\(this\.logTextOfLeaf\(value, context\), context\);\s*\}/
     );
     // The THIRD `MASKERS` entry with a body in this file, and the one a sweep
     // would forget: `maskInherited` masks against the inherited bag alone and
