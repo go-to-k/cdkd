@@ -43,7 +43,8 @@
 # "GraphqlApi.Name is immutable" or "DataSource.Name is immutable"; revert
 # src/provisioning/providers/iam-managed-policy-provider.ts ALONE and the
 # policy is replaced: IAM refuses the create under the same name and path
-# ("EntityAlreadyExists": "A policy called ... already exists"). PlainStage
+# (cdkd prints "A policy called ... already exists", not the
+# EntityAlreadyExists code -- measured by that probe). PlainStage
 # updates either way. Revert src/utils/logger.ts ALONE (go-to-k/cdkd#2177) and
 # step 4 fails "SecretQueue's 'Updating SQS queue' line carries no '***'
 # mask": that provider debug line prints the queue URL, name and all, raw.
@@ -306,7 +307,7 @@ UPDATE_RC=$?
 set -e
 if [ "${UPDATE_RC}" -ne 0 ]; then
   for refusal in "StageName is immutable" "Cannot update ServiceName" \
-    "GraphqlApi.Name is immutable" "DataSource.Name is immutable" "EntityAlreadyExists" \
+    "GraphqlApi.Name is immutable" "DataSource.Name is immutable" \
     "A policy called"; do
     if grep -qF "${refusal}" "${DEPLOY_LOG}"; then
       echo "FAIL: the update failed with '${refusal}': the recorded secret reference was compared with the resolved value (go-to-k/cdkd#4275)" >&2

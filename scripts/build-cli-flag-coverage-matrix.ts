@@ -177,16 +177,22 @@ function listVerifyShFiles(fixtureDir: string): string[] {
  * avoid double-counting, so detection must follow the same axis.
  *
  * A flag is counted as "used" if it appears anywhere in the script
- * body, even inside a quoted string or a comment. False-positive risk
- * is low because shell scripts rarely mention CLI flag names outside
- * of actual invocation contexts.
+ * body outside a FULL-LINE comment, quoted strings included. Fixture
+ * comments record why a fixture is shaped the way it is and name
+ * neighbouring flags it never passes, which credited coverage nothing
+ * exercises (go-to-k/cdkd#1951, again on go-to-k/cdkd#4328). A trailing
+ * `cmd # --flag` comment is still counted: telling it apart from a `#`
+ * inside a string or `${#var}` needs a shell parser.
  */
 export function scanFlagsInShellScript(content: string): Set<string> {
   const out = new Set<string>();
   const re = /(--[a-zA-Z][a-zA-Z0-9-]*)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content)) !== null) {
-    out.add(m[1]);
+  for (const line of content.split('\n')) {
+    if (/^\s*#/.test(line)) continue;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(line)) !== null) {
+      out.add(m[1]);
+    }
   }
   return out;
 }

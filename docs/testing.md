@@ -969,7 +969,7 @@ A new `registry.register('AWS::Foo::Bar', ...)` is expected to arrive with a mat
 
 ### CLI Flag Coverage (visibility report)
 
-The [CLI flag coverage matrix](cli-flag-coverage.md) lists every CLI flag declared in `src/cli/options.ts` and the integ fixtures whose `verify.sh` exercises it. Generated via `vp run cli-flag-coverage`.
+The [CLI flag coverage matrix](cli-flag-coverage.md) lists every CLI flag declared in `src/cli/options.ts` and the integ fixtures whose `verify.sh` exercises it. A flag named only in a full-line `#` comment does not count. Generated via `vp run cli-flag-coverage`.
 
 **The coverage numbers are a visibility report, NOT a CI gate.** Many cdkd flags (`--dry-run`, `--verbose`, `--profile`, etc.) are tested adequately at the unit-test level rather than via an integ shell invocation — surfacing those as "uncovered" would produce >50% false-positive noise. The "no integ verify.sh mention" section is a question for the reviewer ("does THIS flag warrant a real-AWS test?"), not an answer.
 
