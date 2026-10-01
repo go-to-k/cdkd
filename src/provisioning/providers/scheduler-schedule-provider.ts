@@ -25,6 +25,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
@@ -76,9 +77,14 @@ import {
  * recreates the schedule in the new group.
  */
 
-/** A schedule group as the GroupName refusal prints it (go-to-k/cdkd#4239). */
+/**
+ * A schedule group as the GroupName refusal prints it (go-to-k/cdkd#4239):
+ * named when plain, described otherwise. The mask marker passes through as
+ * itself: it is a fixed cdkd literal (pasted, at most a glob that runs
+ * nothing), and it says that the group came from a secret.
+ */
 function groupShown(group: string): string {
-  return plainOrDescribed(group, 'group name');
+  return group === SECRET_MASK ? group : plainOrDescribed(group, 'group name');
 }
 export class SchedulerScheduleProvider implements ResourceProvider {
   private client: SchedulerClient | undefined;
