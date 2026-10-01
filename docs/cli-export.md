@@ -117,9 +117,11 @@ the record does not say which:
   setting `NoEcho` on that response and re-deploy, then export again.
 - **The `Fn::Base64` encoding of a secret** — a `{{resolve:...}}` dynamic
   reference under `Fn::Base64`, as in EC2 `UserData`. cdkd never records that
-  encoding, so no deploy clears it. Stop encoding the secret into the property
-  (have the resource read the secret at run time instead) and re-deploy, then
-  export again.
+  encoding, so re-deploying the same template does not clear it. Stop encoding
+  the secret into the property and re-deploy, then export again. Have the
+  resource read the secret at run time instead; do not write the secret's
+  plaintext into the template, which cdkd would then record in state in the
+  clear.
 - **A mask copied from another record**, by `cdkd orphan --force` or by a
   `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over a masked value. Repair
   the record that holds the mask with a selective `cdkd import --force`, then

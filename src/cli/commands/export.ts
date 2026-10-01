@@ -107,7 +107,11 @@ import {
   type CfnUploadS3ClientOpts,
 } from '../upload-cfn-template.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
-import type { ResourceState, StackState } from '../../types/state.js';
+import {
+  hasUnverifiableParameterRefusal,
+  type ResourceState,
+  type StackState,
+} from '../../types/state.js';
 import {
   parseCfnTemplateWithFormat,
   stringifyCfnTemplate,
@@ -5201,11 +5205,12 @@ export async function buildImportPlan(
     // #3119), and there is nothing to re-derive the real value from — so the
     // exported template would declare the literal mask, which CFn would either
     // refuse at IMPORT (the template must describe the live resource) or WRITE
-    // onto it at the next update. Blocked per resource, like every other unexportable shape here,
-    // so the rest of the stack still reports. The `attributes` twin (issue
-    // #2932) is NOT a whole-bag test beside this one: it sits at the identifier
-    // choke point below, scoped to the one position the export reads —
-    // `maskedIdentifierAttributeReason` says why the whole bag must not be.
+    // onto it at the next update. Blocked per resource, like every other
+    // unexportable shape here, so the rest of the stack still reports. The
+    // `attributes` twin (issue #2932) is NOT a whole-bag test beside this one:
+    // it sits at the identifier choke point below, scoped to the one position
+    // the export reads — `maskedIdentifierAttributeReason` says why the whole
+    // bag must not be.
     if (carriesSecretMask(stateEntry.properties)) {
       blocked.push({
         logicalId,
@@ -5215,8 +5220,9 @@ export async function buildImportPlan(
         // [#2881](https://github.com/go-to-k/cdkd/issues/2881)). ARM (2), the
         // `Fn::Base64` encoding of a secret, is the one `resolveBase64`
         // registers as a mask-only needle (issues #2759 / #3119): no custom
-        // resource is involved, and every deploy masks it again, so neither
-        // the NoEcho remedy nor a re-deploy helps — only changing the template.
+        // resource is involved, and every deploy of the same template masks it
+        // again, so neither the NoEcho remedy nor a re-deploy helps — only
+        // changing the template, and not to the secret's plaintext.
         //
         // ARM (3) was absent, the message naming arm (1) alone, until issue
         // [#2847](https://github.com/go-to-k/cdkd/issues/2847)'s round-2
@@ -5244,9 +5250,11 @@ export async function buildImportPlan(
           'the way into state, so the export still has nothing to declare. Stop setting NoEcho ' +
           'on that response and re-deploy, then export again. (2) The Fn::Base64 encoding of a ' +
           'secret value (a {{resolve:...}} dynamic reference under Fn::Base64, such as EC2 ' +
-          'UserData): cdkd never records that encoding, so no deploy clears this. Stop encoding ' +
-          'the secret into the property (have the resource read the secret at run time instead) ' +
-          'and re-deploy, then export again. (3) The value was SPLICED from a ' +
+          'UserData): cdkd never records that encoding, so re-deploying the same template does ' +
+          'not clear this. Stop encoding the secret into the property (have the resource read ' +
+          "the secret at run time instead — not by writing the secret's plaintext into the " +
+          'template, which cdkd would then record in state in the clear) and re-deploy, then ' +
+          'export again. (3) The value was SPLICED from a ' +
           "masked record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' " +
           'resolving an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. ' +
           // NO backtick wrapper. Pasted WITH its wrapper a backtick span is
@@ -7009,18 +7017,21 @@ export function reportDriftBaselineGaps(
     // "Deploy a change" is the remedy for one refusal class only (issue
     // #3465): an unverifiable-parameter refusal survives every in-place
     // update, and a reason-less one may. `refusedBaselineRemedy` names the
-    // other two, so the list is grouped by remedy — the deploy-clearable group
-    // first — and a group's ids sit under the remedy that is true for them.
-    const groups = new Map<string | undefined, string[]>();
+    // other two, so the list is grouped by class in a FIXED order — the
+    // deploy-clearable group first, then unverifiable-parameter, then
+    // reason-less — and a group's ids sit under the remedy true for them.
+    const byClass: Array<[remedy: string | undefined, ids: string[]]> = [
+      [undefined, []],
+      [undefined, []],
+      [undefined, []],
+    ];
     for (const [logicalId, record] of refused) {
       const remedy = refusedBaselineRemedy(record);
-      const ids = groups.get(remedy) ?? [];
-      ids.push(logicalId);
-      groups.set(remedy, ids);
+      const slot = remedy === undefined ? 0 : hasUnverifiableParameterRefusal(record) ? 1 : 2;
+      byClass[slot]![0] = remedy;
+      byClass[slot]![1].push(logicalId);
     }
-    const ordered = [...groups].sort(
-      ([a], [b]) => Number(a !== undefined) - Number(b !== undefined)
-    );
+    const ordered = byClass.filter(([, ids]) => ids.length > 0);
     const deployRemedy = 'Deploy a change to each one to restore its baseline.';
     const head =
       `${refused.length} of ${entries.length} resource(s) had their baseline REFUSED by a ` +

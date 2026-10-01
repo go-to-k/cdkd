@@ -2669,7 +2669,7 @@ describe('reportDriftBaselineGaps', () => {
     expect(messages).toHaveLength(2);
     expect(messages[0]).toMatch(/REFUSED/);
     expect(messages[0]).not.toMatch(/Deploy a change to each one/);
-    expect(messages[0]).toMatch(/Deploying a change does NOT clear this refusal/);
+    expect(messages[0]).toMatch(/in plaintext\. For each one: Deploying a change does NOT clear this refusal/);
     expect(messages[0]).toMatch(/replaces the resource/);
     expect(messages[1]).toBe('  Held');
   });
@@ -2681,18 +2681,19 @@ describe('reportDriftBaselineGaps', () => {
     expect(messages[0]).toMatch(/unless the resource reads a template parameter/);
   });
 
-  it('groups a MIXED refused list by remedy, each id under its own (issue #3465)', () => {
-    // Record order interleaves the classes, so a group-by that kept record
-    // order, or one remedy for the whole list, misplaces an id.
+  it('groups a MIXED refused list by remedy in a FIXED class order, each id under its own (issue #3465)', () => {
+    // Record order interleaves the classes AND puts the reason-less one before
+    // the unverifiable-parameter one, so neither record order nor a sort on the
+    // remedy text yields the asserted group order, and one remedy for the
+    // whole list misplaces an id.
     const messages = refusedWarnings({
-      Sticky: refusedRecord('unverifiable-parameter'),
-      Clearable: refusedRecord('incomplete-resolution'),
       Legacy: refusedRecord(),
+      Clearable: refusedRecord('incomplete-resolution'),
+      Sticky: refusedRecord('unverifiable-parameter'),
       Clearable2: refusedRecord('incomplete-resolution'),
     });
     expect(messages[0]).toMatch(/^4 of 4 resource\(s\) had their baseline REFUSED/);
     expect(messages[0]).toMatch(/The remedy depends on why each one was refused\.$/);
-    // The deploy-clearable group first, then the others in record order.
     expect(messages.slice(1)).toEqual([
       '2 of them: Deploy a change to each one to restore its baseline.',
       '  Clearable',
@@ -2704,16 +2705,18 @@ describe('reportDriftBaselineGaps', () => {
     ]);
   });
 
-  it('caps the ids per remedy group (issue #3465)', () => {
+  it('caps the ids per remedy group, each group under its OWN cap (issue #3465)', () => {
+    // Both groups exceed the cap, so a cap SHARED across groups (the first
+    // group spending the whole budget) leaves the second short or empty.
     const resources: Record<string, unknown> = {};
-    for (let i = 0; i < 25; i++) resources[`Sticky${i}`] = refusedRecord('unverifiable-parameter');
-    resources['Clearable'] = refusedRecord('incomplete-resolution');
+    for (let i = 0; i < 25; i++) {
+      resources[`Clearable${i}`] = refusedRecord('incomplete-resolution');
+      resources[`Sticky${i}`] = refusedRecord('unverifiable-parameter');
+    }
     const messages = refusedWarnings(resources);
-    const stickyRows = messages.filter((m) => m.startsWith('  Sticky'));
-    expect(stickyRows.length).toBeGreaterThan(0);
-    expect(stickyRows.length).toBeLessThan(25);
-    expect(messages).toContain(`  ... and ${25 - stickyRows.length} more`);
-    expect(messages).toContain('  Clearable');
+    expect(messages.filter((m) => m.startsWith('  Clearable'))).toHaveLength(10);
+    expect(messages.filter((m) => m.startsWith('  Sticky'))).toHaveLength(10);
+    expect(messages.filter((m) => m === '  ... and 15 more')).toHaveLength(2);
   });
 
   /**
@@ -4951,8 +4954,11 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     const reason = result.blocked[0]!.reason;
     expect(reason).toMatch(/three ways a record comes to hold it/);
     expect(reason).toMatch(/\(2\) The Fn::Base64 encoding of a secret value/);
-    expect(reason).toMatch(/no deploy clears this/);
+    expect(reason).toMatch(/re-deploying the same template does not clear this/);
     expect(reason).toMatch(/Stop encoding the secret into the property/);
+    // The remedy must not read as "inline the plaintext", which would clear
+    // the block by persisting the secret in the clear.
+    expect(reason).toMatch(/not by writing the secret's plaintext into the template/);
     // The other two arms are still named, so the Base64 arm was added, not
     // substituted.
     expect(reason).toMatch(/\(1\) A NoEcho custom-resource value/);
