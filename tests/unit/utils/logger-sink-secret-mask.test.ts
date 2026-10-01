@@ -187,9 +187,11 @@ describe('ConsoleLogger masks bound resource secrets at the sink (issue #2177)',
     withCurrentResourceSecrets(bag(SECRET, OTHER), () => {
       expect(() => getLogger().info('payload', circular)).toThrow(TypeError);
       getLogger().info('payload', { [SECRET]: 1, [OTHER]: 2 });
+      getLogger().info('payload', JSON.parse(`{"__proto__":{"x":1},"${SECRET}":2}`));
     });
 
     expect(String(spies.info.mock.calls[0]?.[0])).toBe('payload {"***":1,"***#2":2}');
+    expect(String(spies.info.mock.calls[1]?.[0])).toBe('payload {"__proto__":{"x":1},"***":2}');
   });
 
   it('refuses a second masker source rather than replacing the installed one', () => {

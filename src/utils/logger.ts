@@ -159,7 +159,8 @@ function renderArgs(args: unknown[], mask: LogLineMasker | undefined): string {
     if (seen !== undefined) return seen;
     const entries = Object.entries(value);
     if (entries.every(([k]) => mask(k) === k)) return value;
-    const copy: Record<string, unknown> = {};
+    // Null prototype: an own `__proto__` key stays a key, not the prototype.
+    const copy = Object.create(null) as Record<string, unknown>;
     for (const [k, v] of entries) {
       // Two keys masking to the same text must not collapse into one entry.
       let key = mask(k);
