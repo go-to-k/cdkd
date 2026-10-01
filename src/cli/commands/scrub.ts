@@ -4792,7 +4792,7 @@ function maskedIdent(value: string, secrets: RecordedSecretValues): string {
  */
 function proseName(logged: string, what: string, opts?: { maxCodePoints?: number }): string {
   return proseWithholds(logged)
-    ? `(${what} withheld: it holds whitespace or a non-printable character)`
+    ? `(${what} withheld: it holds whitespace or a character outside printable ASCII)`
     : displayIdent(logged, opts);
 }
 

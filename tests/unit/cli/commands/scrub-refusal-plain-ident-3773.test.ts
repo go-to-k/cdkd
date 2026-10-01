@@ -269,7 +269,7 @@ describe('scrub producer-plaintext refusal: no name in its prose can wrap into a
   }
 
   const withheld = (what: string): string =>
-    `(${what} withheld: it holds whitespace or a non-printable character)`;
+    `(${what} withheld: it holds whitespace or a character outside printable ASCII)`;
 
   it('shows every plain, CDK-generated, bracketed and masked name as before (positive control)', () => {
     const secret = 's3cr3tVALUE';
@@ -363,5 +363,29 @@ describe('scrub producer-plaintext refusal: no name in its prose can wrap into a
       expect(message).not.toContain('shown masked');
       expectNoForgedRow(message);
     });
+
+    it(`withholds a forged CHAIN MEMBER that is ALSO masked ${tag}`, () => {
+      // The clause is built per chain member, so the branch is pinned at a
+      // member as well as at the direct producer.
+      const secret = 's3cr3tVALUE';
+      const message = render({
+        via: [forged.replace('Prod', `Mid-${secret}`), 'Root'],
+        secrets: new Map([[secret, '{{resolve:secretsmanager:db}}']]),
+      });
+      expect(message).toContain(`(through ${withheld('stack name')})`);
+      expect(message).not.toContain(secret);
+      expect(message).toContain(
+        'A producer stack name holds a value recorded as a secret, so it is not shown above and is not named in the command below'
+      );
+      expect(message).not.toContain('shown masked');
+      expectNoForgedRow(message);
+    });
   }
+
+  it('says why a name with printable non-ASCII INSIDE it is withheld, since the sanitizer blanks it to a space', () => {
+    const message = render({ producer: 'Pro名前d' });
+    expect(message).toContain(
+      'the producer stack (stack name withheld: it holds whitespace or a character outside printable ASCII) declares'
+    );
+  });
 });

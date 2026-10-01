@@ -4383,7 +4383,7 @@ describe('the cross-stack pre-pass names every stack, record, path and key insid
     // WITHHELD from its prose rather than bounded: inside its quotes it could
     // still wrap into a counterfeit row (go-to-k/cdkd#3773).
     const withheld = (what: string): string =>
-      `(${what} withheld: it holds whitespace or a non-printable character)`;
+      `(${what} withheld: it holds whitespace or a character outside printable ASCII)`;
     expect(message).toContain(
       `Scrub of ${withheld('stack name')} resolved the Fn::ImportValue in resource ` +
         `${withheld('logical id')} at ${withheld('property path')} to a PLAINTEXT value: ` +
@@ -4422,7 +4422,7 @@ describe('the cross-stack pre-pass names every stack, record, path and key insid
 
     expect(message).toContain(
       'resolved the Fn::ImportValue in output ' +
-        '(output name withheld: it holds whitespace or a non-printable character) to a PLAINTEXT value'
+        '(output name withheld: it holds whitespace or a character outside printable ASCII) to a PLAINTEXT value'
     );
     expect(message).not.toContain('nothing refused');
   });
@@ -4440,7 +4440,7 @@ describe('the cross-stack pre-pass names every stack, record, path and key insid
 
     expect(message).toContain(
       'resolved the Fn::ImportValue in Export.Name of output ' +
-        '(output name withheld: it holds whitespace or a non-printable character) to a PLAINTEXT value'
+        '(output name withheld: it holds whitespace or a character outside printable ASCII) to a PLAINTEXT value'
     );
     expect(message).not.toContain('nothing refused');
   });
