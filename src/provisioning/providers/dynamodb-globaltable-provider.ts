@@ -108,6 +108,7 @@ import {
   pasteableAwsCommand,
   protectedReplacementAdvice,
 } from '../replacement-protection-advice.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1708,10 +1709,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           })
         : `replacement required (deploy with ${replaceFlags}, or destroy + redeploy)`;
     };
+    // A secret-derived `TableName` is recorded as its `{{resolve:...}}`
+    // reference and handed here resolved: the physical id, which IS the table
+    // name, decides instead (go-to-k/cdkd#4275).
     if (
       properties['TableName'] !== undefined &&
       previousProperties['TableName'] !== undefined &&
-      properties['TableName'] !== previousProperties['TableName']
+      properties['TableName'] !== previousProperties['TableName'] &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'TableName',
+        desired: properties['TableName'],
+        previous: previousProperties['TableName'],
+        physicalName: physicalId,
+      }))
     ) {
       throw new ProvisioningError(
         `TableName is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`,
@@ -1903,7 +1914,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           resourceType,
           logicalId,
           extractLocalTags(previousProperties),
-          extractLocalTags(properties)
+          extractLocalTags(properties),
+          maskSecrets
         );
       }
 
@@ -3217,8 +3229,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           updateAction.ProvisionedThroughputOverride !== undefined ||
           updateAction.OnDemandThroughputOverride !== undefined;
         if (!hasUpdateField) {
-          this.logger.debug(
-            `Cross-region replica ${region} of ${physicalId}: only Tags-style ` +
+          debug(
+            `Cross-region replica ${region} of ${maskSecrets(physicalId)}: only Tags-style ` +
               `changes detected; UpdateReplica skipped (AWS rejects empty ` +
               `Update actions). Tags propagation handled above via per-region client.`
           );
@@ -3673,7 +3685,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // the index gets its policy on the deploy that adds it rather than
         // on the next one.
         if (gsiDiff.added.length > 0) {
-          await this.waitForIndexesActive(physicalId, logicalId);
+          await this.waitForIndexesActive(physicalId, logicalId, { maskSecrets });
         }
         await this.reconcileAutoScalingTargets(
           physicalId,
@@ -3789,7 +3801,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    maskSecrets: SecretMasker
   ): Promise<void> {
     await this.applyTagDiffOnClient(
       this.dynamoDBClient,
@@ -3797,7 +3810,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       resourceType,
       logicalId,
       oldTagsRaw,
-      newTagsRaw
+      newTagsRaw,
+      maskSecrets
     );
   }
 
@@ -3897,14 +3911,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     if (tagsToRemove.length > 0) {
       await client.send(new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove }));
+      // Masked: the table ARN carries the table name, which can be
+      // secret-derived.
       this.logger.debug(
-        `Removed ${tagsToRemove.length} tag(s) from DynamoDB GlobalTable ${tableArn}`
+        maskSecrets(`Removed ${tagsToRemove.length} tag(s) from DynamoDB GlobalTable ${tableArn}`)
       );
     }
     if (tagsToAdd.length > 0) {
       await client.send(new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd }));
       this.logger.debug(
-        `Added/updated ${tagsToAdd.length} tag(s) on DynamoDB GlobalTable ${tableArn}`
+        maskSecrets(`Added/updated ${tagsToAdd.length} tag(s) on DynamoDB GlobalTable ${tableArn}`)
       );
     }
   }
@@ -6389,8 +6405,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async waitForIndexesActive(
     tableName: string,
     logicalId: string,
-    opts?: { maxAttempts?: number; proceedNote?: string; budget?: ElapsedBudget }
+    opts?: {
+      maxAttempts?: number;
+      proceedNote?: string;
+      budget?: ElapsedBudget;
+      // The update caller's masker: the table name can be secret-derived, and
+      // the wait's WARN lines name it (go-to-k/cdkd#4275). The delete callers
+      // pass none, as every delete path does (issue #2007).
+      maskSecrets?: SecretMasker;
+    }
   ): Promise<void> {
+    const base = opts?.maskSecrets ?? ((text: string) => text);
+    // The name masked as a VALUE first, so one below the masker's substring
+    // floor is caught too, then the whole line (AWS text can quote it).
+    const maskedName = base(tableName);
+    const mask = (text: string): string =>
+      base(maskedName === tableName ? text : text.split(tableName).join(maskedName));
     // The LOOP lives in `../dynamodb-index-busy-delete.ts` because the sibling
     // `AWS::DynamoDB::Table` provider needs the identical wait to re-arm its
     // own index-busy delete retry (issue #1931), and the tolerances it encodes
@@ -6403,7 +6433,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     await waitForIndexesSettled({
       tableName,
       logicalId,
-      logger: this.logger,
+      logger: {
+        debug: (message: string) => this.logger.debug(mask(message)),
+        info: (message: string) => this.logger.info(mask(message)),
+        warn: (message: string) => this.logger.warn(mask(message)),
+        error: (message: string) => this.logger.error(mask(message)),
+      },
       describeTable: () =>
         this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName })),
       // The cap is the SMALLER of this caller's own constant and what the

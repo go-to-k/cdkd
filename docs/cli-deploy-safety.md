@@ -530,7 +530,9 @@ cdkd's SDK provider, so a resource currently sticky on
 `provisionedBy: 'cc-api'` flips back to `provisionedBy: 'sdk'`.
 
 It is symmetric to `--recreate-via-cc-api`: same per-resource explicit naming,
-same destroy-then-create ordering, same
+same destroy-then-create ordering (create first when the template also renames
+the resource — see
+[When the new name belongs to another resource](#when-the-new-name-belongs-to-another-resource)), same
 [stateful-resource guard](#stateful-resource-guard), same multi-region
 refusal, and the same shared `Continue? (y/N)` prompt with `**DATA LOSS**` on
 stateful rows. The two flags are mutually exclusive per resource — naming the
@@ -736,7 +738,7 @@ shapes hit this, and both name `--replace` in their error text:
 | Failure | What happened | Without `--replace` | With `--replace` |
 | --- | --- | --- | --- |
 | `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name — only once cdkd [shows the old resource holds that name](#when-cdkd-cannot-show-the-old-resource-holds-the-name) |
-| `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The Create API is name-idempotent, so the create returned the OLD resource's physical id instead of a new one — for example `CreateQueue` with an unchanged `QueueName` | Deploy fails rather than deleting the resource it just reported as created | Same delete-first path |
+| `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The Create API is name-idempotent, so the create returned the OLD resource's physical id instead of a new one — for example `CreateQueue` with an unchanged `QueueName` | Deploy fails rather than deleting the resource it just reported as created | Same delete-first path — except after a rename, where the update-failure fallback and `--recreate-via-*` create first: there nothing is deleted, and you delete the old resource by hand if it is yours |
 
 `cdkd rollback` raises `NAMED_REPLACEMENT_COLLISION` too, and neither column
 above applies there — `--replace` is a deploy flag. A rollback reversing a
@@ -765,6 +767,24 @@ cannot free that name, so cdkd does not offer `--replace` there:
   the name is held by another resource. **Even with `--replace`, nothing is
   deleted.**
 - Pick a free name, or delete the resource holding it if it is yours.
+
+The two replacements that otherwise delete first — the
+[update-failure fallback](#the-stateful-guard-on-this-path) and the
+`--recreate-via-*` flags — create first when the names differ, since the old
+resource does not hold the new name. A collision then fails the same way with
+nothing deleted, and the old resource is deleted only once the new one exists.
+
+Some create APIs do not collide at all: SQS `CreateQueue`, SNS `CreateTopic`,
+Step Functions `CreateStateMachine` and ECS `CreateCluster` return the resource
+already holding the name, EventBridge `PutRule` and CloudWatch `PutMetricAlarm` overwrite it, and
+cdkd's S3 provider reads `BucketAlreadyOwnedByYou` as success. For those types
+on cdkd's SDK providers, a replacement that changes the name — or moves an
+EventBridge rule to another bus, or changes `Type` onto one of these types —
+first looks the new name up. When another resource holds it, the deploy fails
+with `NAMED_REPLACEMENT_COLLISION` and nothing is created or deleted — the
+create would otherwise take that resource over and record it as the stack's,
+for a later `cdkd destroy` to delete. A lookup that cannot run fails the same
+way.
 
 #### When cdkd cannot show the old resource holds the name
 
@@ -938,6 +958,12 @@ its own:
   does not, and `UpdateReplacePolicy: Snapshot`.
 - The **new resource** is created through the provider of the type the
   **template** declares, with a fresh routing decision.
+
+A `Type` change onto a type whose create adopts a taken name (see
+[When the new name belongs to another resource](#when-the-new-name-belongs-to-another-resource))
+looks the name up first even when it is unchanged: the old resource holds it
+in another type's name space. Any resource found there fails the deploy with
+nothing created or deleted.
 
 Two physical ids that happen to be equal across the two types — an SSM parameter
 and a log group can share a bare name — are treated as two resources. The
@@ -1279,8 +1305,9 @@ that re-applies it with the replace flags.
 Six types name this dead end explicitly in their own refusals, each reading its
 own protection property and naming the command that turns it off, or pointing
 at the console when the resource's id cannot be printed safely on a command
-line (it would be changed by sanitizing, or it holds whitespace or a character
-a shell acts on, such as a quote or a backtick):
+line (it would be changed by sanitizing, it holds whitespace or a character a
+shell acts on, such as a quote or a backtick, or it holds something the AWS CLI
+itself acts on, such as a leading `file://` or `-`):
 `AWS::Logs::LogGroup`, `AWS::ElasticLoadBalancingV2::LoadBalancer`,
 `AWS::EMR::Cluster`, `AWS::Cognito::UserPool`, `AWS::DynamoDB::GlobalTable` and
 `AWS::AutoScaling::AutoScalingGroup`. Every one of them knows only what cdkd
@@ -1426,7 +1453,9 @@ namespace first; if the old one still holds tables, its delete is refused and
 cdkd warns `Failed to delete old resource` and carries on. The old namespace
 and its tables stay in AWS, no longer tracked in state, for you to move or
 delete by hand. A delete-first replacement (`--recreate-via-*`, or `--replace`
-when the create collides) fails at that delete instead.
+when the create collides) fails at that delete instead — unless the template
+also renames the resource, which makes `--recreate-via-*` create first and warn
+the same way.
 
 Replacing a type in the table above asks for `--force-stateful-recreation`.
 The guard list widens over time and always in that direction; see

@@ -74,13 +74,16 @@ describe('ElastiCacheProvider cache-cluster delete (issue #4029)', () => {
   it('waits the Cloud Control DELETE floor, not ten minutes', async () => {
     script(undefined, []);
     const wait = vi.spyOn(
-      provider as unknown as { waitForClusterDeleted: (id: string, ms?: number) => Promise<void> },
+      provider as unknown as {
+        waitForClusterDeleted: (logicalId: string, id: string, ms?: number) => Promise<void>;
+      },
       'waitForClusterDeleted'
     );
 
     await provider.delete('Cache', 'c-1', TYPE);
 
     expect(wait).toHaveBeenCalledWith(
+      'Cache',
       'c-1',
       Math.max(600_000, slowCcOperationTimeoutMs(TYPE, 'DELETE'))
     );

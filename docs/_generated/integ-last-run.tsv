@@ -10,10 +10,10 @@ agentcore-tools	2026-09-14T14:50:12Z	PASS	113	verify.sh	#3103 gating: 3 phases o
 alb	2026-09-29T04:11:48Z	FAIL	220	verify.sh	PR #4032 merge-gate run; pre-existing listener routing.http.response.server.enabled removal assertion (#2085, tooling backlog); Targets update phases pass; destroy clean, 0 orphans
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
-apigateway	2026-09-29T11:19:02Z	PASS	80	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-apigatewayv2-update-removal	2026-09-25T15:16:49Z	PASS	195	verify.sh	rc ok, orph clean; #3515 mapWithRemovals own-key, tree c067e96b0
+apigateway	2026-09-30T18:21:59Z	PASS	76	verify.sh	PR #4251 (#2177 API Gateway v1 masker threading) @e9175322e; rc ok, destroy 0 errors, no state/IAM/Lambda leftovers
+apigatewayv2-update-removal	2026-09-30T20:39:31Z	PASS	195	verify.sh	PR #4271 (#2177 ApiGatewayV2 masker threading) @a3db05a83; rc ok, destroy 0 errors, no state/IAM/Lambda/API leftovers
 apigw-gateway-response	2026-07-31T06:27:45Z	PASS	66	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
-apigw-stage-props	2026-08-11T06:41:16Z	PASS	300	verify.sh	final post-rebase run (Route batch on main); 0 orphans
+apigw-stage-props	2026-09-30T18:24:03Z	PASS	107	verify.sh	PR #4251 (#2177 API Gateway v1 masker threading, Stage tag/ARN path) @e9175322e; rc ok, destroy 0 errors, no leftovers
 apigw-stage-throttling	2026-08-11T04:51:55Z	PASS	420	verify.sh	SDK-routed Stage assertions updated (#609); :* ARN normalization fix live-verified
 apigw-usage-plan-key	2026-07-26T19:16:39Z	PASS	84	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -35,7 +35,7 @@ budgets	2026-09-30T11:59:39Z	PASS	70	verify.sh	rc ok, orph clean (#4228)
 cache-streaming	2026-09-29T15:04:16Z	PASS	652	verify.sh	rc ok, orph clean (#4029 PR #4080: ElastiCache delete wait)
 cc-api-fallback	2026-09-29T03:32:02Z	PASS	60	verify.sh	rc ok, orph clean (#3993 PR #4031)
 cc-api-fallback-transitions	2026-09-29T03:32:02Z	PASS	126	verify.sh	rc ok, orph clean (#3993 PR #4031)
-cc-final-snapshot-handlers	2026-09-29T17:01:10Z	PASS	1263	verify.sh	rc ok, orph clean, 0 state versions (#4029 PR #4080, final head after #4128)
+cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
 cc-getatt-readback	2026-09-19T20:26:58Z	PASS	110	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, CC protection flip over 5 types, 5 deleted 0 errors; orphan scan clean (state/RDS+DocDB global/NeptuneGraph/VerifiedPermissions)
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
@@ -81,11 +81,11 @@ destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded
 destroy-interrupt	2026-09-29T03:31:30Z	PASS	397	verify.sh	rc ok, orph clean (pre-existing HandlerFn log group swept); No state found for stack(s) remedy on own line (PR #4004)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-30T12:03:08Z	PASS	110	verify.sh	rc ok, orph clean (#4228)
-docdb-neptune	2026-09-29T15:04:16Z	PASS	5194	verify.sh	rc ok, orph clean (#4029 PR #4080)
+docdb-neptune	2026-09-30T17:44:01Z	PASS	5476	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-09-30T16:20:25Z	PASS	230	verify.sh	PR #4224 deploy-engine outputs mixin, rebased onto #4216; rc ok, orph clean
+drift-revert	2026-09-30T21:31:10Z	PASS	235	verify.sh	PR #4274 deploy-engine observed-capture mixin; rc ok, orph clean
 drift-revert-arrays	2026-09-29T23:22:50Z	PASS	185	verify.sh	PR #4053 (#4042 + #4051 codecommit rename adopted by recorded RepositoryId; UpdateContext.recordedAttributes from every update() caller) @a46f094/a7ca35d; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-drift-revert-vpc	2026-09-30T16:20:25Z	PASS	361	verify.sh	PR #4224 deploy-engine outputs mixin, rebased onto #4216; rc ok, orph clean
+drift-revert-vpc	2026-09-30T21:31:10Z	PASS	345	verify.sh	PR #4274 deploy-engine observed-capture mixin; rc ok, orph clean
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
@@ -97,34 +97,34 @@ dynamodb-stream-filter	2026-09-27T21:07:59Z	PASS	71	verify.sh	PR #3901 merge-gat
 dynamodb-streams	2026-09-29T18:12:56Z	PASS	280	verify.sh	PR #4136 (#4112 stream member post-write capture) @20bf50a; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 dynamodb-tableclass-switch	2026-09-27T21:05:43Z	PASS	70	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-ttl-attr-change	2026-09-27T21:06:48Z	PASS	65	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-ec2-instance	2026-09-25T19:22:55Z	PASS	110	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
-ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
+ec2-instance	2026-09-30T18:16:33Z	PASS	121	verify.sh	rc ok, orph clean (#4242)
+ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
 ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-29T11:14:03Z	PASS	60	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24, destroy 24/0, orphans clean
-ecs-fargate	2026-09-25T19:22:55Z	PASS	386	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
-ecs-schedule-targets	2026-09-30T15:56:55Z	PASS	651	verify.sh	rc ok, destroy 0 errors, orph clean (#4240); the tagging API still listed one STOPPED Fargate task on the INACTIVE cluster, an ECS record that expires, not a resource
-ecs-service-update-props	2026-09-29T14:07:55Z	PASS	116	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers; fixture now declares EnableForceNewDeployment: false (the #3567 pre-flight refused the nonce-only block)
+ecs-bluegreen	2026-09-30T21:08:17Z	PASS	205	verify.sh	rc ok, orph clean
+ecs-fargate	2026-09-30T22:18:34Z	PASS	401	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
+ecs-schedule-targets	2026-09-30T21:08:17Z	PASS	70	verify.sh	rc ok, orph clean
+ecs-service-update-props	2026-09-30T22:20:55Z	PASS	141	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
 efs-immutable-replacement	2026-09-30T08:37:29Z	PASS	75	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-09-30T08:37:29Z	PASS	161	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
 elasticache-replicationgroup-getatt	2026-09-29T14:00:50Z	PASS	776	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 elbv2-same-name-replacement	2026-09-29T02:36:21Z	PASS	75	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, same-name --replace still delete-first, 12 deleted 0 errors, orph clean
-emr-cluster	2026-09-30T06:28:26Z	PASS	831	verify.sh	PR #4189 (#4186 orphan GetAtt takes the recorded attribute over a live answer) @09cebd2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+emr-cluster	2026-09-30T17:19:24Z	PASS	715	verify.sh	PR #4246 (#2204 EMR --remove-protection compensation wraps delete) @ceb272363; rc ok, destroy 0 errors, no state/IAM/VPC/cluster leftovers
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-eventbridge	2026-09-30T15:59:08Z	PASS	91	verify.sh	rc ok, orph clean (#4240)
+eventbridge	2026-09-30T18:16:33Z	PASS	125	verify.sh	rc ok, orph clean (#4242)
 eventbridge-api-destination	2026-08-10T04:16:05Z	PASS	66	verify.sh	0810 staleness sweep b1; Connection/ApiDestination GetAtt, 5 del 0 err, 0 orph
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 staleness sweep b1; post-#1396 ECS target sub-shape, 0 err, 0 orph
 eventbridge-pipes	2026-09-29T02:38:06Z	PASS	180	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, named-pipe --replace delete-first, 6 deleted 0 errors, orph clean
-eventbridge-scheduler	2026-09-30T15:45:50Z	PASS	60	verify.sh	rc ok, orph clean (#4240)
+eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
-export	2026-09-30T16:20:25Z	PASS	236	verify.sh	PR #4224 deploy-engine outputs mixin, rebased onto #4216; rc ok, orph clean
+export	2026-09-30T21:31:10Z	PASS	235	verify.sh	PR #4274 deploy-engine observed-capture mixin; rc ok, orph clean
 export-nested-stack	2026-09-30T04:31:44Z	PASS	256	verify.sh	PR #4179 (#3188 malformed resources-bag refusal at root and every nested node) @1aeac5a; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 fifo-sqs-event-source	2026-09-27T12:27:25Z	PASS	105	verify.sh	rc ok, orph clean (#3861)
 fsx-lustre	2026-09-29T11:59:09Z	PASS	872	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
@@ -137,7 +137,7 @@ getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean;
 getstackoutput-crossregion	2026-09-29T06:29:54Z	PASS	76	verify.sh	rc ok, orph clean (#3950 lane A, #4052)
 glue-securityconfig-replace	2026-09-29T12:06:55Z	PASS	105	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
 glue-update-hardening	2026-09-29T15:34:01Z	PASS	226	verify.sh	PR #4121 (#4073 log group + Glue Tags through the shared reader) @bf15c97; rc ok, destroy 0 errors, no state/lock/CFn leftovers; Assertion 13 exact tag sets on create and update for Workflow, Job and log group
-healthimaging-stateful-update-fallback	2026-09-27T20:36:35Z	PASS	296	verify.sh	rc ok, orph clean (#2515)
+healthimaging-stateful-update-fallback	2026-09-30T17:28:22Z	PASS	566	verify.sh	rc ok, orph clean
 iam-access-key	2026-09-30T12:04:46Z	PASS	81	verify.sh	rc ok, orph clean (#4228)
 iam-managed-policy	2026-09-29T12:19:54Z	PASS	115	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
@@ -169,7 +169,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
 kinesis-stream-mode-switch	2026-09-27T18:06:09Z	PASS	110	verify.sh	rc ok, orph clean; #3881 follow-up
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-30T16:20:25Z	PASS	121	verify.sh	PR #4224 deploy-engine outputs mixin, rebased onto #4216; rc ok, orph clean
+lambda	2026-10-01T01:25:47Z	PASS	137	verify.sh	go-to-k/cdkd#4258 review round 1, broad set; rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -251,20 +251,21 @@ outputs-only-export	2026-09-28T07:22:06Z	PASS	115	verify.sh	#3885 log-group swee
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-09-29T22:48:22Z	PASS	4806	verify.sh	rc ok, orph clean; #4122 final head (region lookup gated), all #4087/#3945 arms
-rds-dbinstance-backfill	2026-09-29T06:54:20Z	PASS	801	verify.sh	rc ok, orph clean (#4030 PR #4040: policy-less L1 instance took its final snapshot, deleted; fix-reverted run RED at the assertion)
+rds-aurora	2026-09-30T17:44:01Z	PASS	4949	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, new INFO line seen live, final snapshot cleaned, no leftovers
+rds-dbinstance-backfill	2026-09-30T17:44:01Z	PASS	777	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, new INFO line seen live, final snapshot cleaned
 rds-full-stack	2026-09-29T16:14:14Z	PASS	1047	verify.sh	rc ok, orph clean (#4029 PR #4080, final rebased head)
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc ok, orph clean; PR #3668 head
-recreate-via-cc-api	2026-09-29T03:32:02Z	PASS	120	verify.sh	rc ok, orph clean (#3993 PR #4031)
-recreate-via-sdk-provider	2026-09-25T09:51:57Z	PASS	95	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
+recreate-via-cc-api	2026-09-30T17:28:22Z	PASS	301	verify.sh	rc ok, orph clean
+recreate-via-sdk-provider	2026-09-30T17:28:22Z	PASS	240	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-30T18:55:50Z	PASS	2089	verify.sh	PR #4235 (#2204 ELBv2 + ASG remove-protection compensation) @0a3e0d1; rc ok, NLB step 4b re-enabled deletion_protection; with the ELBv2 fix copy-reverted the same arm went RED at its re-enable assertion; no leftovers
+remove-protection	2026-09-30T21:31:10Z	PASS	1343	verify.sh	PR #4274 deploy-engine observed-capture mixin; rc ok, orph clean
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
-replace-squatter-refusal	2026-09-29T02:36:16Z	PASS	70	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, phase C refused naming the sent name (N + squatter untouched), phase D same-name delete-first ok, orph clean
+replace-squatter-refusal	2026-09-30T17:28:22Z	PASS	80	verify.sh	rc ok, orph clean
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 replacement-immutable-name	2026-09-30T08:16:22Z	PASS	145	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, orph clean
+replacement-rename-onto-holder	2026-09-30T22:24:02Z	PASS	185	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-09-30T10:32:09Z	PASS	150	verify.sh	PR #4208 (#4157) re-run on the head rebased over #4217 (DeployEngine mixin move); rc ok, destroy 0 errors, no state/lock/CFn leftovers
@@ -290,7 +291,7 @@ s3-subconfig-removal	2026-09-28T08:48:59Z	PASS	85	verify.sh	rc ok, orph clean (#
 s3-tables	2026-09-29T11:14:58Z	PASS	50	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 s3-vectors	2026-09-29T11:15:53Z	PASS	50	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-scheduler-custom-group	2026-09-30T15:44:39Z	PASS	115	verify.sh	rc ok, orph clean (#4240)
+scheduler-custom-group	2026-09-30T18:16:33Z	PASS	216	verify.sh	rc ok, orph clean (#4242)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
@@ -299,11 +300,12 @@ schema-v9-to-v10-migration	2026-09-29T06:42:58Z	PASS	215	verify.sh	rc ok, orph c
 scrub-nested-child	2026-09-30T04:58:05Z	PASS	146	verify.sh	rc ok, orph clean (PR #4167 scrub drops unnamed output)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
-secrets-array-nested	2026-09-27T14:43:09Z	PASS	386	verify.sh	rc ok, orph clean (#3866)
-secrets-dynamic-ref	2026-09-30T09:35:14Z	PASS	646	verify.sh	PR #4184 (#2177 Secrets Manager masker) re-run after merging main (#4182, #4201, #4206) @8cf6460; rc ok, 0 surviving state versions
+secret-derived-immutable-names	2026-10-01T01:09:18Z	PASS	70	verify.sh	PR #4277 (#4275 secret-derived immutable names) @a806dc99b; rc ok, destroy 0 errors, 0 orphans; real-AWS probe: reverting apigatewayv2-provider.ts alone -> Step 4 'StageName is immutable', ecs-provider.ts alone -> 'Cannot update ServiceName'
+secrets-array-nested	2026-09-30T21:26:17Z	PASS	421	verify.sh	PR #4269 (#2177 ECS masker threading) @9e0e25c69; rc ok, destroy 0 errors, no state/IAM/VPC/ECS/log leftovers
+secrets-dynamic-ref	2026-10-01T01:23:14Z	PASS	684	verify.sh	go-to-k/cdkd#4258 review round 1 (M0 inherited-only needle); Phase 1b3b refused masked, 0 surviving state versions
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-09-30T09:35:14Z	PASS	85	verify.sh	PR #4184 (#2177 Secrets Manager masker) re-run after merging main (#4182, #4201, #4206) @8cf6460; rc ok, 0 surviving state versions (an earlier attempt failed on a host-sleep signature expiry and was discarded)
-serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
+serverless-api	2026-09-30T20:40:33Z	PASS	60	verify.sh	PR #4271 (#2177 ApiGatewayV2 masker threading) @a3db05a83; rc ok, destroy 0 errors, no state/IAM/Lambda/API leftovers
 servicediscovery	2026-09-25T20:09:32Z	PASS	116	verify.sh	rc ok, orph clean (#3136 PR #3793)
 servicediscovery-namespaces	2026-09-25T20:09:32Z	PASS	130	verify.sh	rc ok, orph clean (#3136 PR #3793)
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)

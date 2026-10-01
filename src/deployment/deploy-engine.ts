@@ -1,16 +1,7 @@
 import { getLogger } from '../utils/logger.js';
-import {
-  commandHole,
-  pasteableCommand,
-  quotedOrDescribed,
-  shellQuote,
-} from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand, shellQuote } from '../utils/pasteable-command.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
-import {
-  inheritProducerRegions,
-  withProducerRegions,
-  type ProducerRegionEvidence,
-} from './producer-regions-scope.js';
+import { withProducerRegions } from './producer-regions-scope.js';
 import {
   equalIdNamesDifferentResources,
   equalIdNamesSameResource,
@@ -50,8 +41,8 @@ import {
   withStackName,
   applyDefaultNameForFallback,
   withoutGeneratedFallbackName,
-  getCurrentSkipPrefix,
 } from '../provisioning/resource-name.js';
+import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import {
   IntrinsicFunctionResolver,
@@ -69,7 +60,6 @@ import {
   redactSecretsForState,
   mergeResolvedPairs,
   scrubResourceRecord,
-  STATE_SOURCED_READBACK_RULES,
   maskSecretsInText,
   maskSecretsInError,
   createSecretMasker,
@@ -87,16 +77,11 @@ import {
   recordLogOnlyParameterValue,
   literalSplitDelimitersOf,
   createUnionSecretMasker,
+  SECRET_MASK,
   type RecordedSecretValues,
   type SecretMasker,
 } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
-import {
-  isMaskedBaselineRecaptureCandidate,
-  persistedTokenResolverContext,
-  recaptureMaskedBaseline,
-  resolveRecordSecrets,
-} from './masked-baseline-recapture.js';
 import {
   isInlinePolicyClaimedByCompletedWriter,
   type InlinePolicyWrite,
@@ -112,15 +97,17 @@ import type {
   ResourceUpdateResult,
 } from '../types/resource.js';
 import {
-  planOrphanAdoption,
-  type OrphanAdoptionOutcome,
-  makeSiblingClaimReader,
-} from './orphan-adoption.js';
-import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
-import {
   renderNameHeldElsewhere,
+  probeErrorMeansNameHeld,
+  probeFoundSameId,
+  renderReplacementNameChange,
+  replacementCreateAdoptsName,
+  replacementMovesEventBus,
+  replacementNameProbe,
+  replacementOrderIsCaseSensitive,
   replacementOldHoldsSentName,
   replacementRequestsDifferentName,
+  type ReplacementNameChange,
 } from './replacement-name-holder.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -132,7 +119,6 @@ import {
   type StackOrphanRecord,
   importableOutputKeys,
   importableOutputs,
-  hasReasonlessBaselineRefusal,
   hasUnverifiableParameterRefusal,
   type StackState,
   type StateImportEntry,
@@ -154,6 +140,7 @@ import {
   ProviderRegistry,
   STICKY_CC_MIGRATION_EXEMPT,
   ccBrokenReason,
+  type ProvisionedBy,
 } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
 import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
@@ -185,10 +172,6 @@ import {
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { withUnchangedSecretPrincipalLists } from '../provisioning/iam-policy-targets.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
-import {
-  resourcesNamingDeclaredParameter,
-  type ParameterNamingVerdict,
-} from '../analyzer/parameter-dependence.js';
 import { skippedOutputsEqual } from '../analyzer/skipped-outputs.js';
 import {
   bagHoldsSecretExpression,
@@ -213,23 +196,8 @@ import { withResourceDeadline } from './resource-deadline.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { findUnrewrittenAssetReferences } from '../assets/asset-redirect.js';
-import {
-  replayRollback,
-  producerRegionsFromState,
-  type CompletedOperation,
-  type FailedOperation,
-  type RollbackExecutorContext,
-} from './rollback-executor.js';
-import { getCdkdVersion } from '../state/deployment-events-store.js';
-import type { RollbackJournalSegment } from '../types/rollback-journal.js';
-import {
-  NESTED_PENDING_PARENT_REASON,
-  dropNestedChildJournals,
-  dropSettledNestedJournals,
-  nestedPendingSnapshot,
-  withNestedRevertRun,
-  type SettledNestedRows,
-} from './nested-child-journal.js';
+import { type CompletedOperation, type FailedOperation } from './rollback-executor.js';
+import { NESTED_PENDING_PARENT_REASON, type SettledNestedRows } from './nested-child-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
 import {
@@ -249,6 +217,8 @@ import {
 } from './deploy-value-equality.js';
 import * as nameCollisionMixin from './deploy-engine-name-collision.js';
 import * as outputsMixin from './deploy-engine-outputs.js';
+import * as rollbackMixin from './deploy-engine-rollback.js';
+import * as observedCaptureMixin from './deploy-engine-observed-capture.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -1184,10 +1154,9 @@ export class DeployEngine {
    * inherited bag's fresh marks. `undefined` outside a nested child, or when
    * none does.
    *
-   * WHOLE values only. A mask-only needle replaces a leaf only whole, so a
-   * parameter that EMBEDS such a value (`prefix-<token>`) is not redacted for
-   * the diff at all: its readers already diff as UPDATE on the plaintext, and
-   * need no promotion from here.
+   * A parameter that EMBEDS such a value (`prefix-<token>`) counts too: the
+   * containment arm masks that leaf whole (go-to-k/cdkd#2453), and
+   * `carriesFreshNoEchoValue` shares its predicate.
    */
   private freshNoEchoParameters(
     parameterValues: Record<string, unknown>
@@ -1938,63 +1907,6 @@ export class DeployEngine {
     );
   }
 
-  private redactOperationsForJournal<T extends CompletedOperation | FailedOperation>(
-    operations: T[]
-  ): T[] {
-    return operations.map((op) => {
-      const secrets = this.perResourceSecrets.get(op.logicalId);
-      const templateProps = this.perResourceTemplateProps.get(op.logicalId);
-      // `previousState` is redactable with NO secrets map at all (#1900), so the
-      // early return has to let that case through or the whole state-sourced
-      // half is dead code.
-      if ((!secrets || secrets.size === 0) && !op.previousState) return op;
-      const ownSecrets = secrets ?? new Map<string, string>();
-      const next = { ...op } as CompletedOperation & FailedOperation;
-      if (next.properties) {
-        next.properties = redactSecretsForState(next.properties, ownSecrets, templateProps);
-      }
-      if (next.attemptedProperties) {
-        // Issue #2516: a FAILED op's attempted bag is the resolver's own
-        // output of today's template — the provider threw, so
-        // `propertiesToRecord` never marked it — and this journal is a
-        // persisted S3 artifact of its own. Marked as a COPY, the no-change
-        // re-check's pattern. Nothing reads the original after this journal
-        // is written (a `--revert-failed` replay re-resolves the journaled
-        // bag into a new object), so the copy guards a future reader rather
-        // than a present one — stated so the choice is not mistaken for a
-        // pinned behaviour.
-        next.attemptedProperties = redactSecretsForState(
-          markSameGenerationBag({ ...next.attemptedProperties }),
-          ownSecrets,
-          templateProps
-        );
-      }
-      if (next.previousState) {
-        // No `sourceProperties`: the previous record positions itself.
-        //
-        // `STATE_SOURCED_READBACK_RULES` is passed EXPLICITLY (issue #2886):
-        // left to `scrubResourceRecord`'s derivation, an op whose resource
-        // resolved nothing this deploy — a DELETE, an UPDATE with no reference
-        // of its own — arrives here with an EMPTY map (the guard above admits
-        // it whenever `previousState` exists) and would take the FAIL-CLOSED
-        // baseline constant, masking every position the walk cannot certify in
-        // this journal snapshot. `replayRollback` restores that record, so the
-        // masks would land in `state.json` as permanent phantom drift on a
-        // baseline that was intact before the deploy. The journal is a
-        // REPLAYED baseline, not a fresh readback: its bag already sits in
-        // `state.json`, so a mask here protects nothing a reader could still
-        // be protected from and poisons the record a rollback rebuilds.
-        next.previousState = scrubResourceRecord(
-          next.previousState,
-          ownSecrets,
-          undefined,
-          STATE_SOURCED_READBACK_RULES
-        );
-      }
-      return next as unknown as T;
-    });
-  }
-
   /**
    * Re-read a STALE record's attributes from AWS (issue
    * [#1852](https://github.com/go-to-k/cdkd/issues/1852)) — the resolver calls
@@ -2334,7 +2246,8 @@ export class DeployEngine {
    * Returns identity when this deploy resolved no secret, which keeps the key
    * byte-identical to the pre-#3289 one for every stack that has none.
    */
-  private crossStackReadKeyNormalizer(): (name: string) => string {
+  /** @internal */
+  crossStackReadKeyNormalizer(): (name: string) => string {
     // ABSORB FIRST, the same reason `redactOutputs` does and the same reason
     // the persist order was corrected: `outputSecrets` is written only by
     // `absorbOutputsPassSecrets`, and every caller of THIS method evaluates it
@@ -2488,157 +2401,6 @@ export class DeployEngine {
   }
 
   /**
-   * Kick off `provider.readCurrentState` for a freshly-created/updated
-   * resource without blocking the deploy critical path. The promise
-   * lands in `observedCaptureTasks` keyed by `logicalId`; the deploy's
-   * success-path drain (`drainObservedCaptures`) awaits the full set
-   * and merges the resolved values into `ResourceState.observedProperties`
-   * before the final state save.
-   *
-   * Errors are swallowed at the Promise level — readCurrentState
-   * failing must not fail the deploy. The map entry resolves to
-   * `undefined` for failures and for providers without
-   * `readCurrentState`; both translate to "no observedProperties" at
-   * the merge step, which is fine: drift falls back to comparing
-   * against `properties`.
-   */
-  private kickOffObservedCapture(
-    provider: ResourceProvider,
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    resolvedProps: Record<string, unknown>,
-    context?: import('../types/resource.js').ReadCurrentStateContext
-  ): void {
-    if (this.options.captureObservedState !== true) return;
-    // A capture that cannot run still SUPERSEDES the deploy-start refresh task
-    // for this id (issue #3595 review): the record was just rebuilt, and a
-    // readback of what it replaced must not be installed over it.
-    this.observedCaptureTasks.delete(logicalId);
-    if (!provider.readCurrentState) return;
-
-    const promise = provider
-      .readCurrentState(physicalId, logicalId, resourceType, resolvedProps, context)
-      .catch((err: unknown) => {
-        this.logger.debug(
-          `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
-        );
-        return undefined;
-      });
-    this.observedCaptureTasks.set(logicalId, promise);
-  }
-
-  /**
-   * Wait for every in-flight `readCurrentState` promise from the
-   * deploy's success path, then merge each resolved snapshot into the
-   * matching `ResourceState.observedProperties`. After this runs the
-   * map is drained so a subsequent deploy starts fresh.
-   *
-   * Called from `doDeploy` immediately before the final `saveState`.
-   * The rollback / failure paths intentionally do NOT call this — a
-   * failed deploy's partial state is already inconsistent, and waiting
-   * on potentially many in-flight reads would slow down the rollback
-   * itself.
-   *
-   * Returns how many baselines it installed, so the no-change path saves only
-   * when one landed: a masked-baseline re-capture (issue #3595) that refuses
-   * resolves to `undefined` on every deploy for a position that stays
-   * uncertifiable, and must not rewrite an unchanged `state.json` each time.
-   */
-  private async drainObservedCaptures(
-    stateResources: Record<string, ResourceState>
-  ): Promise<number> {
-    if (this.observedCaptureTasks.size === 0) return 0;
-    const entries = Array.from(this.observedCaptureTasks.entries());
-    this.observedCaptureTasks.clear();
-    const resolved = await Promise.all(entries.map(([, p]) => p));
-    let installed = 0;
-    for (let i = 0; i < entries.length; i++) {
-      const logicalId = entries[i]![0];
-      const observed = resolved[i];
-      const target = stateResources[logicalId];
-      const recapturedFrom =
-        observed === undefined ? undefined : this.recapturedBaselines.get(observed);
-      if (recapturedFrom !== undefined && target?.observedProperties !== recapturedFrom) continue;
-      if (target && observed !== undefined) {
-        installed++;
-        // Issue #2516: the readback is THIS pass's own, taken from the
-        // resource it just wrote, so the object is marked same-generation
-        // before it is installed — the persist choke point walks this bag
-        // separately from `properties`, against today's template, and a mark
-        // on `properties` alone would leave the readback of an embedded 1-3
-        // character secret in plaintext. The mark is one half of the
-        // evidence: the arm also needs a resolved pair for the source token
-        // AND the readback's middle to EQUAL what that pair recorded. An
-        // UNCHANGED resource's auto-refresh has an empty map and no pair. A
-        // resource the diff called UPDATE and the re-check then skipped is
-        // refreshed with today's pair in its map — and there the re-check has
-        // just proven the stored record already holds the token at that leaf,
-        // so a readback carrying today's plaintext converges on the same
-        // answer rather than fabricating one.
-        //
-        // A COPY, like the two never-installed sites -- the journal's
-        // `attemptedProperties` above and the no-change re-check below: `observed` is
-        // whatever `provider.readCurrentState` returned, and the
-        // schema-upgrade auto-refresh hands that method the PREVIOUS
-        // generation's `resource.properties` as its 4th argument -- so a
-        // provider returning that argument BY IDENTITY would put a permanent
-        // same-generation mark on a previous-generation object still
-        // installed on the record, which is the fabrication this mark's own
-        // contract forbids. No provider under `src/provisioning/` does that
-        // today (grepped at PR 2753 review), but the contract is delegated to
-        // ~100 implementations with no guard, and the copy costs one spread.
-        //
-        // Pinned from outside by walking the object the provider handed back
-        // through `redactSecretsForState` AFTER the deploy, under the DEFAULT
-        // rules: those make no generation claim of their own, so the mark on
-        // the object is what decides whether a sub-floor middle becomes the
-        // token. Under `STATE_SOURCED_READBACK_RULES` it would not decide --
-        // that constant claims the generation itself -- which is why the
-        // test does not reuse the persist path's own rules.
-        // A masked-baseline re-capture (issue #3595) is installed UNMARKED: it
-        // is the previous baseline with some masks replaced by the record's own
-        // expressions, not a readback this pass took, so it must not claim the
-        // generation. The persist choke point then re-scrubs it with the
-        // readback rules, which add no mask to a bag holding no plaintext.
-        // NO TEST FENCES THIS, and the reason is structural: marked, the bag
-        // would take the fail-closed rules instead, and those only mask a
-        // string at a position they cannot pair that is neither a reference
-        // nor a literal the record spells. The re-capture's own precondition
-        // already refused any such baseline, so the two answers agree on every
-        // bag that reaches here.
-        target.observedProperties =
-          recapturedFrom !== undefined ? observed : markSameGenerationBag({ ...observed });
-        // NOTHING CLEARS `observedBaselineRefused` HERE, and that is a finding
-        // rather than an omission (issue #2944). An explicit `delete` was
-        // written at this line first and is UNREACHABLE: the only two ways a
-        // bag reaches it are the deploy-start auto-refresh, which never
-        // enqueues a MARKED record (`kickOffAutoRefreshObservedProperties`
-        // skips them, and its masked-baseline re-capture takes only a record
-        // that HAS a baseline, which a marked one never does), and a
-        // post-CREATE / post-UPDATE / post-replacement
-        // capture, whose record `provisionResource` has already REBUILT from
-        // the template — dropping the field with it. So the clearing mechanism
-        // is the rebuild, and the contract a test can hold is "a real CREATE /
-        // UPDATE clears the refusal", not "this line does".
-        //
-        // ONE REFUSAL CLASS IS NOT CLEARED BY THE REBUILD (issue #3462): an
-        // unverifiable-parameter refusal survives every IN-PLACE update, and
-        // that arm of `provisionResource` kicks off no capture at all, so such
-        // a record never reaches this loop either. Only a replacement / CREATE
-        // (or a proving re-import) discharges it — the type doc of
-        // `ResourceState.observedBaselineRefusalReason` carries the argument.
-        //
-        // The other arm that deliberately KEEPS a marked record marked is the
-        // metadata-only update (`{ ...currentResource, ...templateAttributes }`
-        // in `provisionResource`): it issues no provider call and takes no
-        // readback, so nothing there earns a baseline the import declined.
-      }
-    }
-    return installed;
-  }
-
-  /**
    * go-to-k/cdkd#4156: the live predicate handed to an `AWS::IAM::Policy`
    * update or delete, so it does not remove a name another resource of this
    * deploy has ALREADY written onto a principal
@@ -2667,445 +2429,6 @@ export class DeployEngine {
    */
   private recordInlinePolicyWrite(logicalId: string, write: InlinePolicyWrite): void {
     this.inlinePolicyWriters.set(logicalId, write);
-  }
-
-  /**
-   * Build a sibling context for the deploy-time `observedProperties`
-   * capture of an IAM principal (`AWS::IAM::Role` / `::User` / `::Group`)
-   * so that inline policies managed by a SEPARATE `AWS::IAM::Policy`
-   * resource are filtered OUT of the captured `Policies` baseline —
-   * exactly as the `cdkd drift` read path already does via
-   * `buildReadCurrentStateContext`.
-   *
-   * Without this, the post-CREATE / post-UPDATE capture passes no
-   * context, so `collectInlinePolicyNamesManagedBySiblings` no-ops. The
-   * capture's `ListRolePolicies` then RACES the sibling
-   * `AWS::IAM::Policy`'s `PutRolePolicy`: when the read lands after the
-   * write, the sibling-managed `DefaultPolicy*` leaks into
-   * `observedProperties.Policies`. A later `cdkd drift` (whose AWS-current
-   * side filters it correctly) then reports phantom drift
-   * `- Policies:[DefaultPolicy] / + Policies:[]` — a systemic false
-   * positive that fires for essentially every Lambda / L2 construct whose
-   * grant emits a `Default Policy`.
-   *
-   * The sibling relationship is fully determined by the TEMPLATE (which
-   * `AWS::IAM::Policy` lists this principal in its `Roles`/`Users`/
-   * `Groups`), so this is built from the template — deploy-order-
-   * independent, immune to the race. Each matched sibling is synthesized
-   * into the resolved-property shape
-   * `collectInlinePolicyNamesManagedBySiblings` expects
-   * (`{ [attachmentField]: [thisPrincipalPhysicalId], PolicyName }`).
-   *
-   * Returns `undefined` (no context) for non-IAM-principal types and when
-   * no sibling policy attaches to the captured principal — both leave the
-   * capture behaving exactly as before.
-   */
-  private async buildObservedCaptureSiblings(
-    resourceType: string,
-    capturedLogicalId: string,
-    capturedPhysicalId: string,
-    template: CloudFormationTemplate | undefined,
-    stateResources: Record<string, ResourceState>,
-    stackName: string,
-    parameterValues?: Record<string, unknown>,
-    conditions?: Record<string, boolean>
-  ): Promise<import('../types/resource.js').ReadCurrentStateContext | undefined> {
-    // Capture disabled (kickOffObservedCapture would ignore the context) —
-    // skip the template walk / resolver work entirely.
-    if (this.options.captureObservedState !== true) return undefined;
-    const attachmentField =
-      resourceType === 'AWS::IAM::Role'
-        ? 'Roles'
-        : resourceType === 'AWS::IAM::User'
-          ? 'Users'
-          : resourceType === 'AWS::IAM::Group'
-            ? 'Groups'
-            : undefined;
-    if (!attachmentField) return undefined;
-    const resources = template?.Resources;
-    if (!resources) return undefined;
-
-    // Built lazily — only a non-literal `PolicyName` (rare; e.g. an
-    // Fn::Sub) needs the resolver, and the overwhelmingly common case
-    // (a literal Default-Policy name) never touches it.
-    let resolverContext: import('./intrinsic-function-resolver.js').ResolverContext | undefined;
-
-    const isRefTo = (value: unknown, logicalId: string): boolean =>
-      typeof value === 'object' &&
-      value !== null &&
-      !Array.isArray(value) &&
-      (value as Record<string, unknown>)['Ref'] === logicalId;
-
-    const siblings: NonNullable<
-      import('../types/resource.js').ReadCurrentStateContext['siblings']
-    > = {};
-    for (const [lid, res] of Object.entries(resources)) {
-      if (lid === capturedLogicalId) continue;
-      if (res.Type !== 'AWS::IAM::Policy') continue;
-      const props = (res.Properties ?? {}) as Record<string, unknown>;
-      const attachments = props[attachmentField];
-      if (!Array.isArray(attachments)) continue;
-      // CDK emits `Roles: [{Ref: <principalLogicalId>}]`; hand-written
-      // templates may use the literal physical name. Match either.
-      const attachesToCaptured = attachments.some(
-        (a) => isRefTo(a, capturedLogicalId) || a === capturedPhysicalId
-      );
-      if (!attachesToCaptured) continue;
-      // PolicyName is almost always a literal string; resolve only when
-      // it carries an intrinsic (e.g. Fn::Sub with a pseudo-parameter).
-      // Best-effort: an unresolvable name just won't be added to the
-      // exclude set (no worse than the pre-fix behavior).
-      let policyName: unknown = props['PolicyName'];
-      if (policyName !== undefined && typeof policyName !== 'string') {
-        resolverContext ??= this.buildResolverContext(
-          {
-            template: template!,
-            resources: stateResources,
-            ...(parameterValues && { parameters: parameterValues }),
-            ...(conditions && { conditions }),
-          },
-          stackName
-        );
-        try {
-          policyName = await this.resolver.resolve(policyName, resolverContext);
-        } catch {
-          continue;
-        }
-      }
-      if (typeof policyName !== 'string') continue;
-      siblings[lid] = {
-        resourceType: 'AWS::IAM::Policy',
-        properties: { [attachmentField]: [capturedPhysicalId], PolicyName: policyName },
-      };
-    }
-    return Object.keys(siblings).length > 0 ? { siblings } : undefined;
-  }
-
-  /**
-   * Issue [#3468](https://github.com/go-to-k/cdkd/issues/3468) — the
-   * fail-closed reading of a REASON-LESS `observedBaselineRefused` marker.
-   *
-   * cdkd 0.290.35 wrote unverifiable-parameter refusals with no reason, so an
-   * absent reason cannot be read as "an UPDATE may clear it". A reason-less
-   * marker on a resource whose TEMPLATE definition names a declared parameter
-   * is stamped `'unverifiable-parameter'` here, IN MEMORY, once, before the
-   * diff: every later arm (the in-place rebuild, the metadata-only spread, the
-   * NO_CHANGE carry, the auto-refresh) then sees the explicit form and needs
-   * no rule of its own, and whatever this deploy saves holds it — the record
-   * heals into the form later binaries read directly. Nothing is saved FOR the
-   * stamp: a deploy that writes no state (`--dry-run`, no changes) re-derives
-   * it next time.
-   *
-   * The template is the RAW one `deploy()` was handed (a nested child engine
-   * gets its own), which is what the dependence walk needs. A template that
-   * cannot be read, or a walk that throws, stamps every reason-less marker
-   * (`resourcesNamingDeclaredParameter` fails closed). A record whose logical
-   * id the template no longer defines is being DELETED and is left alone.
-   *
-   * The RECORD object is replaced, not mutated (a per-record alias taken
-   * before this line keeps what was loaded); the container is updated in
-   * place, which is what lets every later reader of it see the stamp.
-   */
-  private stampReasonlessParameterRefusals(
-    stateResources: Record<string, ResourceState>,
-    template: CloudFormationTemplate | undefined
-  ): void {
-    let namesParameter: ParameterNamingVerdict | undefined;
-    let stamped = 0;
-    for (const [logicalId, resource] of Object.entries(stateResources)) {
-      if (!hasReasonlessBaselineRefusal(resource)) continue;
-      namesParameter ??= resourcesNamingDeclaredParameter(template);
-      if (!namesParameter(logicalId)) continue;
-      stateResources[logicalId] = {
-        ...resource,
-        observedBaselineRefusalReason: 'unverifiable-parameter',
-      };
-      stamped++;
-    }
-    if (namesParameter?.failedClosed !== undefined) {
-      // The cause CLASS only: never a template value or an error's text.
-      this.logger.debug(
-        `The template's parameter dependence could not be judged (${namesParameter.failedClosed}): every observed-baseline refusal recorded without a reason is treated as an unverifiable-parameter refusal (${stamped} stamped).`
-      );
-    }
-    if (stamped > 0) {
-      this.logger.debug(
-        `${stamped} resource(s) carry an observed-baseline refusal recorded without a reason by an older cdkd, and their template definition reads a template parameter: treated as an unverifiable-parameter refusal (kept until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter).`
-      );
-    }
-  }
-  /**
-   * Kick off `provider.readCurrentState` for every resource in the
-   * loaded state that lacks `observedProperties` (e.g. state written
-   * by a pre-v3 binary, or a v3 record where a NO_CHANGE-skipped
-   * resource's baseline never landed). Calls go through
-   * `kickOffObservedCapture`, so they share the same fire-and-forget
-   * pipeline, error swallowing, and final-drain wiring that the
-   * post-CREATE / post-UPDATE captures use.
-   *
-   * The deploy critical path does NOT wait on these; the cost is
-   * bounded by `max(per-resource readCurrentState latency)` (typically
-   * ~200-300ms in practice) once at the end-of-deploy drain. Any
-   * resource that subsequently goes through CREATE / UPDATE in the
-   * same deploy will overwrite this entry via the `Map.set` keyed by
-   * `logicalId` (latest-wins) — so there's no double-write to state,
-   * just a wasted SDK call for the (rare) UPDATE / DELETE intersection.
-   *
-   * Resources whose provider lookup throws (e.g. unsupported type) or
-   * lacks `readCurrentState` are silently skipped — same policy as the
-   * manual `cdkd state refresh-observed` command.
-   */
-  private kickOffAutoRefreshObservedProperties(
-    stateResources: Record<string, ResourceState>,
-    crossStackReads: Pick<StackState, 'imports' | 'outputReads'>
-  ): void {
-    if (this.options.captureObservedState !== true) return;
-    // Dry run does not fire this observed-state read (no AWS side-effect runs
-    // under it). The #1852 attribute heal is the one read a dry run CAN issue:
-    // it is read-only, fires only on a `Fn::GetAtt` miss, and persists nothing.
-    if (this.options.dryRun === true) return;
-    let toRefresh = 0;
-    let refused = 0;
-    const candidates: Array<{
-      logicalId: string;
-      resource: ResourceState;
-    }> = [];
-    // Issue #3595: records whose baseline holds a #2852 fail-closed mask. See
-    // `masked-baseline-recapture.ts` for what may change and what may not.
-    const masked: Array<{ logicalId: string; resource: ResourceState }> = [];
-    for (const [logicalId, resource] of Object.entries(stateResources)) {
-      if (resource.observedProperties !== undefined) {
-        if (isMaskedBaselineRecaptureCandidate(resource)) masked.push({ logicalId, resource });
-        continue;
-      }
-      // Schema v10+ (issue #2944). `observedProperties === undefined` is
-      // OVERLOADED: it means "never captured" for a pre-v3 record or a provider
-      // with no `readCurrentState` — where refilling is exactly this method's
-      // job — and it ALSO means "a `cdkd import` run REFUSED to capture one",
-      // where refilling is the leak. The two are indistinguishable from the
-      // field alone, which is why the refusal is recorded on the record; see
-      // `ResourceState.observedBaselineRefused`'s doc for why nothing else can
-      // carry it here.
-      //
-      // What makes the refill a leak rather than a wasted call: this site
-      // positions the readback against `resource.properties` (the 5th argument
-      // below), and after a refusal those can hold the WRONG-BRANCH LITERAL the
-      // import distrusted. A literal source leaf against a string readback
-      // PAIRS as an ordinary drifted literal, so `redactSecretsForState` has
-      // nothing to refuse on and the decrypted value is persisted.
-      //
-      // NOT cleared here. The clearing writer is a real CREATE / UPDATE, which
-      // resolved the resource from the template and whose own
-      // `kickOffObservedCapture` overwrites the baseline anyway (latest-wins on
-      // the `observedCaptureTasks` key) — so a deploy that actually changes the
-      // resource heals it, while a deploy that leaves it NO_CHANGE holds no
-      // more evidence than this site does.
-      if (resource.observedBaselineRefused === true) {
-        refused++;
-        continue;
-      }
-      candidates.push({ logicalId, resource });
-    }
-    if (refused > 0) {
-      this.logger.debug(
-        `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused (issue #2944): their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
-      );
-    }
-    if (candidates.length === 0 && masked.length === 0) return;
-
-    // Issue #323: at the v2→v3 schema-upgrade refresh path, state is
-    // fully loaded from the previous deploy — sibling AWS::IAM::Policy
-    // resources are all present. Pass a cross-resource context so IAM
-    // providers can filter inline policies managed via sibling
-    // resources, otherwise observed.Policies would record the
-    // sibling-managed entries and the next `cdkd drift` would fire
-    // false drift (filtered AWS-current = []) until `cdkd drift
-    // --accept` runs. Build the siblings map once and clone-minus-self
-    // per resource to avoid an O(N²) walk.
-    const allSiblings: Record<
-      string,
-      { resourceType: string; properties: Record<string, unknown> }
-    > = {};
-    for (const [lid, res] of Object.entries(stateResources)) {
-      allSiblings[lid] = {
-        resourceType: res.resourceType,
-        properties: res.properties ?? {},
-      };
-    }
-
-    for (const { logicalId, resource } of candidates) {
-      // Skip-list / unsupported types: the routing lookup throws — silently
-      // skip (mirrors `cdkd state refresh-observed`'s policy: best-effort,
-      // no failure on a state record we cannot resolve).
-      //
-      // Routed on the RECORD's `provisionedBy`, not by type alone (issue
-      // #2608's sibling site, found by that fix's sweep). Unlike the UPDATE
-      // capture, this site has no routing DECISION to bind to — the record is
-      // all there is — so it re-derives, and that is not an identity for a
-      // `STICKY_CC_MIGRATION_EXEMPT` type: one stamped `cc-api` can
-      // deliberately land on its SDK provider. Accepted here rather than
-      // papered over, and the reason is now per MODE (issue #2719):
-      //   - `'cc-broken'` (`AWS::Scheduler::Schedule`): the SDK provider IS the
-      //     correct reader — the exemption exists because CC cannot address the
-      //     resource — and both layers store the same physicalId.
-      //   - `'sdk-coverage'` (`AWS::SNS::Topic`): this site passes NO property
-      //     bags, so the flip predicate's no-properties gate refuses, and the
-      //     re-derivation stays on Cloud Control. That is load-bearing rather
-      //     than incidental: the capture must read through the layer that
-      //     WROTE the resource, and this deploy has not flipped it yet.
-      // Either way the re-derivation lands on the right provider.
-      //
-      // One more consequence, audited rather than accidental: the sticky arm
-      // returns BEFORE `isSupportedResourceType`, so a `cc-api`-stamped record
-      // of a type Cloud Control no longer supports now resolves to the CC
-      // provider instead of falling into the `catch { continue }` below. It
-      // gets a fire-and-forget read that fails and is swallowed, which is the
-      // same no-baseline outcome skipping produced -- one wasted call on a
-      // record that has no observed bag either way. The legacy
-      // `getProvider` entry point passes no recorded layer, so a record
-      // stamped `provisionedBy: 'cc-api'` — because a silent-drop property
-      // auto-routed it (issue #614) — had its baseline read back through the
-      // SDK provider instead. The bag then describes a layer state does not
-      // name, and this bag IS the drift baseline, so the very next
-      // `cdkd drift` reports the shape difference as drift (the phantom-drift
-      // class of issue #1591). Absent on a pre-v7 record, which reads as
-      // "no recorded layer" and lands on the same type-only decision as
-      // before.
-      let provider: ResourceProvider;
-      try {
-        provider = this.providerRegistry.getProviderFor({
-          resourceType: resource.resourceType,
-          provisionedBy: resource.provisionedBy,
-        }).provider;
-      } catch {
-        continue;
-      }
-      if (!provider.readCurrentState) continue;
-      const siblings = { ...allSiblings };
-      delete siblings[logicalId];
-      this.kickOffObservedCapture(
-        provider,
-        logicalId,
-        resource.physicalId,
-        resource.resourceType,
-        resource.properties ?? {},
-        { siblings }
-      );
-      toRefresh++;
-    }
-
-    if (toRefresh > 0) {
-      this.logger.warn(
-        `cdkd state schema upgrade detected — refreshing observed-properties baseline for ${toRefresh} resource(s) (one-time, runs in parallel with deploy)`
-      );
-    }
-
-    // The CONSUMER's cross-region evidence for the re-capture's resolution. Read
-    // only when a masked record needs it, and a record list that cannot be read
-    // (a hand-edited `imports` element) skips the re-capture rather than
-    // resolving without the evidence: an absent list would verdict every
-    // region-less reference `local`.
-    let producerRegions: readonly string[] = [];
-    if (masked.length > 0) {
-      try {
-        producerRegions = producerRegionsFromState(crossStackReads);
-      } catch {
-        this.logger.debug(
-          safeMsg`Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read (issue #3595).`
-        );
-        masked.length = 0;
-      }
-    }
-    for (const { logicalId, resource } of masked) {
-      let provider: ResourceProvider;
-      try {
-        // Routed on the record's `provisionedBy`, as the loop above is.
-        provider = this.providerRegistry.getProviderFor({
-          resourceType: resource.resourceType,
-          provisionedBy: resource.provisionedBy,
-        }).provider;
-      } catch {
-        continue;
-      }
-      if (!provider.readCurrentState) continue;
-      const siblings = { ...allSiblings };
-      delete siblings[logicalId];
-      this.kickOffMaskedBaselineRecapture(provider, logicalId, resource, producerRegions, {
-        siblings,
-      });
-    }
-  }
-
-  /**
-   * Re-capture ONE record's fail-closed-masked baseline (issue #3595).
-   *
-   * Resolves the record's own `properties` references into a map of its own —
-   * never into `perResourceSecrets`: a populated entry there would move the
-   * persist choke point's observed walk off the fail-closed rules for this
-   * record. Then reads the resource back and hands both to
-   * `recaptureMaskedBaseline`, which changes masked positions only. Every
-   * refusal (a reference that does not resolve, a readback that fails, a
-   * baseline the fresh readback does not reproduce) resolves the task to
-   * `undefined`, which leaves the old baseline in place.
-   *
-   * Fire-and-forget like every other capture: drained before the final save,
-   * latest-wins against a later CREATE / UPDATE capture of the same id.
-   */
-  private kickOffMaskedBaselineRecapture(
-    provider: ResourceProvider,
-    logicalId: string,
-    resource: ResourceState,
-    producerRegions: readonly string[],
-    context: import('../types/resource.js').ReadCurrentStateContext
-  ): void {
-    const previous = resource.observedProperties;
-    const readCurrentState = provider.readCurrentState?.bind(provider);
-    if (previous === undefined || readCurrentState === undefined) return;
-    const properties = resource.properties ?? {};
-    const task = (async (): Promise<Record<string, unknown> | undefined> => {
-      const secrets = await resolveRecordSecrets(properties, (token, own) =>
-        this.resolver.resolveDynamicReferences(
-          token,
-          // The CONSUMER's cross-region evidence rides it, so a region-less
-          // reference this stack may have read from another region refuses
-          // (`ambiguous`) instead of resolving against a same-named secret here.
-          persistedTokenResolverContext(own, producerRegions)
-        )
-      );
-      if (secrets === undefined || secrets.size === 0) {
-        // The CLASS only: never a reference, a value or an error's text.
-        this.logger.debug(
-          safeMsg`Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values (issue #3595).`
-        );
-        return undefined;
-      }
-      const readback = await readCurrentState(
-        resource.physicalId,
-        logicalId,
-        resource.resourceType,
-        properties,
-        context
-      );
-      if (readback === undefined) return undefined;
-      const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
-      if (recaptured === undefined) {
-        this.logger.debug(
-          safeMsg`Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records (issue #3595).`
-        );
-        return undefined;
-      }
-      this.recapturedBaselines.set(recaptured, previous);
-      this.logger.debug(
-        safeMsg`Re-captured the masked observed baseline of ${logicalId} (issue #3595).`
-      );
-      return recaptured;
-    })().catch(() => {
-      this.logger.debug(
-        safeMsg`Masked observed baseline of ${logicalId} kept: the re-capture failed (issue #3595).`
-      );
-      return undefined;
-    });
-    this.observedCaptureTasks.set(logicalId, task);
   }
 
   private async doDeploy(
@@ -5003,432 +4326,6 @@ export class DeployEngine {
   }
 
   /**
-   * Perform best-effort rollback of completed operations (issue #1183:
-   * extracted into `rollback-executor.ts` so the standalone `cdkd rollback`
-   * command drives identical semantics). Thin wrapper that builds the
-   * executor context from the engine's collaborators and delegates.
-   */
-  /**
-   * Re-adopt what a previous rollback left in AWS, before the diff runs
-   * (issue #2934).
-   *
-   * MUTATES `currentState`: adopted records go into `resources` so the diff
-   * sees them, and `orphans` is replaced by the surviving set so every save
-   * on every path below persists the same object. Mutation rather than a
-   * returned copy because `currentState` is read by ~a dozen later sites and
-   * threading a second binding through all of them is how one gets missed.
-   *
-   * Refusals THROW. A record whose name this deploy is about to request, that
-   * cdkd cannot vouch for, is exactly the go-to-k/cdkd#2916 situation: letting
-   * the deploy run would collide and roll back anyway, adding another orphan
-   * on the way.
-   */
-  private async adoptRollbackOrphans(
-    currentState: StackState,
-    effectiveTemplate: CloudFormationTemplate
-  ): Promise<OrphanAdoptionOutcome> {
-    const records = currentState.orphans ?? [];
-    const plan = await planOrphanAdoption({
-      records,
-      // Read BEFORE the splice below, so a record whose resource this same
-      // pass adopts is not also read as "already managed".
-      managedLogicalIds: new Set(Object.keys(currentState.resources)),
-      template: effectiveTemplate,
-      stackName: currentState.stackName,
-      region: this.stackRegion,
-      getProvider: (type, provisionedBy) =>
-        this.providerRegistry.getProviderFor({
-          resourceType: type,
-          ...(provisionedBy !== undefined && { provisionedBy }),
-        }).provider,
-      nameProperties: (type) => {
-        const property = explicitNamePropertyFor(type);
-        return property === undefined ? [] : [property];
-      },
-      readSiblingClaims: makeSiblingClaimReader({
-        stateBackend: this.stateBackend,
-        selfStackName: currentState.stackName,
-        selfRegion: this.stackRegion,
-        logger: this.logger,
-      }),
-      logger: { debug: (m) => this.logger.debug(m) },
-    });
-
-    // `notices` and `refusals` arrive already rendered through `displaySafe` /
-    // `displayIdent`: `planOrphanAdoption` sanitizes each state-chosen field
-    // where it builds the string, because `cdkd diff` consumes the same lines
-    // (go-to-k/cdkd#3642). Only the `Adopting` line below is built HERE, so it
-    // is the one this method sanitizes.
-    for (const notice of plan.notices) this.logger.info(notice);
-
-    if (plan.refusals.length > 0) {
-      throw new Error(
-        `Deploy refused — cdkd left ${plan.refusals.length} resource(s) in AWS that it cannot ` +
-          `safely re-adopt:\n  ${plan.refusals.join('\n  ')}`
-      );
-    }
-
-    for (const [logicalId, record] of Object.entries(plan.adopted)) {
-      currentState.resources[logicalId] = record;
-      this.logger.info(
-        `Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +
-          `by an earlier rollback as ${displaySafe(record.physicalId)}`
-      );
-    }
-    // Assigned unconditionally when there WERE records, so an adopted or
-    // vanished one actually leaves the set. Left untouched when there were
-    // none, so a stack that never orphaned keeps a byte-identical state.json.
-    if (records.length > 0) currentState.orphans = plan.remaining;
-
-    return plan;
-  }
-
-  private async performRollback(
-    completedOperations: CompletedOperation[],
-    stateResources: Record<string, ResourceState>,
-    stackName: string,
-    /**
-     * The PRE-deploy state record, threaded in for issue #2057's
-     * `importedProducerRegions`. Taken as a parameter rather than read off a
-     * field because `currentState` is a local of `executeDeployment`, whose
-     * automatic-rollback arm is this method's only caller.
-     */
-    previousState: StackState
-  ): Promise<{
-    failures: number;
-    warnings: number;
-    orphaned: StackOrphanRecord[];
-    /**
-     * Issue #3754: the nested-stack rows whose child replay COMPLETED (no
-     * failure, no skip), with the grandchildren each completed. A row the
-     * replay skipped never reached the provider, so it is not among them.
-     */
-    settledNested: SettledNestedRows;
-  }> {
-    // Issue #3754: a nested-stack row reverted here replays its child's
-    // journal segments for THIS run, which `NestedStackProvider` reads from
-    // the scope, and reports back into it.
-    const runId = this.options.eventRecorder?.runId;
-    const { result, run } = await withNestedRevertRun(runId, async (scope) => ({
-      result: await replayRollback(
-        completedOperations,
-        stateResources,
-        stackName,
-        this.rollbackExecutorContext(previousState, stackName)
-      ),
-      run: scope,
-    }));
-
-    // `orphaned` is relayed rather than persisted here: this method holds no
-    // state save. Its caller merges it into the post-rollback record (issue
-    // #2934), which is the ONLY save on this path — dropping it there makes a
-    // live, billing AWS resource untrackable and re-opens the deploy loop the
-    // record closes.
-    return {
-      failures: result.failures,
-      // A child replay's skips surface on its row as a `partial` outcome,
-      // which the executor does not count; the scope does.
-      warnings: result.warnings + run.warnings,
-      orphaned: result.orphaned,
-      settledNested: run.settled,
-    };
-  }
-
-  /**
-   * The journal on a SUCCESSFUL deploy (issue #3754 split the one answer in
-   * two).
-   *
-   * - A NESTED engine keeps its journal and appends a `nested-pending-parent`
-   *   segment: its parent's deploy is still running, and if it fails, the
-   *   revert of this child's row replays exactly these ops. The previous
-   *   outputs ride along because the ops do not restore them. Older segments
-   *   are kept too, since an older parent segment may still name them.
-   * - The ROOT engine deletes its own journal (issue #1183: the baseline
-   *   moved) and every descendant's, which is the same statement made for the
-   *   whole tree — and it sweeps anything a crashed run left behind.
-   */
-  private async settleJournalAfterSuccess(
-    stackName: string,
-    completedOperations: CompletedOperation[],
-    previousState: StackState,
-    finalResources: Record<string, ResourceState>,
-    initialDeploy: boolean
-  ): Promise<void> {
-    if (this.options.parentStackInfo) {
-      await this.writeRollbackJournalSegment(
-        stackName,
-        completedOperations,
-        [],
-        NESTED_PENDING_PARENT_REASON,
-        initialDeploy,
-        nestedPendingSnapshot(previousState)
-      );
-      return;
-    }
-    await Promise.all([
-      this.deleteRollbackJournalBestEffort(stackName),
-      dropNestedChildJournals({
-        stateBackend: this.stateBackend,
-        lockManager: this.lockManager,
-        parentStackName: stackName,
-        region: this.stackRegion,
-        resources: finalResources,
-        logger: this.logger,
-      }),
-    ]);
-  }
-
-  /**
-   * Best-effort rollback-journal deletion (issue #1183) used on the deploy
-   * success path and after a clean automatic rollback. Never throws — a
-   * failed delete only warns (the journal is advisory; the worst case is a
-   * spurious "previous deploy failed" note on the next deploy).
-   */
-  private async deleteRollbackJournalBestEffort(stackName: string): Promise<void> {
-    try {
-      await this.stateBackend.deleteRollbackJournal(stackName, this.stackRegion);
-    } catch (err) {
-      this.logger.debug(
-        `Failed to delete rollback journal for ${stackName}: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  }
-
-  /**
-   * Settle the rollback journal after a CLEAN automatic rollback (issue
-   * #1208). The completed ops are reverted, but the op that FAILED mid-deploy
-   * may have left its resource half-applied — and its journaled record is the
-   * ONLY input `cdkd rollback --revert-failed` has. So instead of deleting the
-   * journal outright (which made --revert-failed unusable in the DEFAULT
-   * deploy flow), pop this attempt's segment and re-record a failed-only one
-   * (`operations: []` + the failed ops). Older segments from prior
-   * un-reverted attempts are preserved by the pop. The next successful deploy
-   * still deletes the whole journal, bounding the lingering window. With no
-   * failed ops there is nothing left to revert from THIS attempt — but only
-   * this attempt's segment is popped, NOT the whole journal (issue #1215):
-   * the clean rollback reverted only this attempt's ops, so older segments'
-   * completed ops are still live in AWS/state and must keep their revert
-   * records; pop deletes the object itself when the last segment goes, so
-   * the common single-segment case still ends with no journal.
-   *
-   * Best-effort like every journal write: a pop failure warns and leaves the
-   * full segment in place (the pre-#1208 partial-rollback shape — replay is
-   * idempotent, so a later `cdkd rollback` is still safe).
-   *
-   * Returns whether this attempt's segment was popped, i.e. whether a later
-   * `cdkd rollback` can still re-run it (issue #3754 gates dropping the
-   * reverted children's segments on this).
-   */
-  private async settleJournalAfterCleanRollback(
-    stackName: string,
-    failedOperations: FailedOperation[],
-    initialDeploy: boolean
-  ): Promise<boolean> {
-    if (failedOperations.length === 0) {
-      try {
-        await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
-      } catch (err) {
-        this.logger.debug(
-          `Failed to pop the rollback journal segment after the clean rollback: ${err instanceof Error ? err.message : String(err)}`
-        );
-        return false;
-      }
-      return true;
-    }
-    try {
-      await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
-    } catch (err) {
-      this.logger.warn(
-        safeMsg`Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
-          // No command named: a nested child's stack-less `cdkd rollback` would
-          // resolve to the top-level stack (go-to-k/cdkd#3864).
-          `The journal keeps the full segment; a later rollback replay is idempotent.`
-      );
-      return false;
-    }
-    await this.writeRollbackJournalSegment(
-      stackName,
-      [],
-      failedOperations,
-      'auto-rollback-clean',
-      initialDeploy
-    );
-    this.logger.info(
-      `The automatic rollback restored the pre-deploy state. The failed resource's pre-failure ` +
-        `record was kept — if it was left partially applied, revert it.` +
-        `\nRevert it with: ${
-          pasteableCommand('cdkd rollback', [
-            { value: stackName, hole: 'stack' },
-            { literal: '--revert-failed' },
-          ]).command
-        }`
-    );
-    return true;
-  }
-
-  /**
-   * Issue #3754: once a clean automatic rollback is SETTLED — its state saved
-   * and its segment popped — the nested children it reverted no longer need
-   * their pending segments for this run. Gated on `settled` because a rollback
-   * whose save or pop failed is re-run by `cdkd rollback`, which replays the
-   * same rows and must find them.
-   */
-  private async settleNestedChildrenAfterCleanRollback(
-    stackName: string,
-    settledNested: SettledNestedRows,
-    settled: boolean
-  ): Promise<void> {
-    if (!settled) return;
-    await dropSettledNestedJournals({
-      stateBackend: this.stateBackend,
-      lockManager: this.lockManager,
-      parentStackName: stackName,
-      region: this.stackRegion,
-      settled: settledNested,
-      runId: this.options.eventRecorder?.runId,
-      logger: this.logger,
-    });
-  }
-
-  /**
-   * The recovery sentence a `--no-rollback` failure ends on. A NESTED child
-   * engine does not name a command: a stack-less `cdkd rollback` resolves to
-   * the top-level stack, and the child's failure fails the parent's row, whose
-   * engine (sharing `noRollback` through the option spread) prints its own
-   * `--no-rollback` message right after (go-to-k/cdkd#3864). NOT used on the
-   * interrupted path: a child's poll `InterruptedError` reaches the parent
-   * wrapped and is not recognised as an interrupt there (go-to-k/cdkd#3875),
-   * so no message of the parent's can be promised to follow.
-   */
-  private recoveryHint(topLevel: string): string {
-    const parent = this.options.parentStackInfo;
-    if (parent === undefined) return topLevel;
-    return (
-      `This is a nested stack: recover it through its top-level stack ` +
-      `${quotedOrDescribed(parent.parentStack.split('~')[0]!, 'stack name')}, whose own message follows.`
-    );
-  }
-
-  /** Build the {@link RollbackExecutorContext} from the engine's fields. */
-  private rollbackExecutorContext(
-    previousState: StackState,
-    stackName: string
-  ): RollbackExecutorContext {
-    const producerRegions = this.producerRegionEvidence(previousState);
-    return {
-      providerRegistry: this.providerRegistry,
-      region: this.stackRegion,
-      logger: this.logger,
-      recordEvent: (event) => this.recordEvent(event),
-      // `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) —
-      // the executor needs the same region-pinned clients + data-loss
-      // opt-out the engine's own delete sites use.
-      finalSnapshotClients: this.options.finalSnapshotClients,
-      skipFinalSnapshot: this.options.skipFinalSnapshot,
-      // A nested child's own rollback: its segment is replayed only by a
-      // rollback of the CHILD, so the refusals' `--orphan` command names it
-      // (go-to-k/cdkd#3859).
-      ...(this.options.parentStackInfo && { nestedChildStack: stackName }),
-      // go-to-k/cdkd#1998: the LOG-ONLY needles (a `NoEcho` parameter's
-      // value) this deploy recorded per resource, which the replay's own
-      // re-resolution of the journal cannot re-derive.
-      logOnlyNeedlesFor: (logicalId) => this.perResourceSecrets.get(logicalId),
-      // See `producerRegionEvidence`.
-      importedProducerRegions: producerRegions.regions,
-      producerRegionsIncomplete: !producerRegions.complete,
-    };
-  }
-
-  /**
-   * The producer regions this stack reads across (issue #2057), so a replay
-   * refuses a region-LESS `{{resolve:...}}` expression rather than
-   * re-resolving it here and writing a same-named foreign secret to a live
-   * resource. The UNION is what makes this reachable at all — a rollback runs
-   * only after a FAILED deploy, and the read this deploy INTRODUCED is in
-   * `recordedImports` / `recordedOutputReads`, never yet in the persisted
-   * snapshot. Strictly more evidence than `cdkd rollback` can derive on its
-   * own, which sees only what a save persisted.
-   *
-   * A nested child adds its parent's (go-to-k/cdkd#4174), and is complete
-   * only when those are.
-   */
-  private producerRegionEvidence(previousState: StackState): ProducerRegionEvidence {
-    const own = producerRegionsFromState(
-      crossStackReadsForPartialSave(
-        previousState,
-        this.recordedImports,
-        this.recordedOutputReads,
-        this.crossStackReadKeyNormalizer()
-      )
-    );
-    if (!this.options.parentStackInfo) return { regions: own, complete: true };
-    return inheritProducerRegions(own, this.options.inheritedProducerRegions?.());
-  }
-
-  /**
-   * Record one rollback-journal segment (issue #1183) so the failed /
-   * interrupted / about-to-auto-rollback deploy can be reverted later by
-   * `cdkd rollback`. Best-effort like the partial-state save, but warns
-   * LOUDLY on failure — the user just lost the ability to `cdkd rollback`.
-   */
-  private async writeRollbackJournalSegment(
-    stackName: string,
-    completedOperations: CompletedOperation[],
-    failedOperations: FailedOperation[],
-    reason: RollbackJournalSegment['reason'],
-    initialDeploy: boolean,
-    /**
-     * Issue #3754: a nested child's success segment is written even when EMPTY
-     * — its presence is what tells the parent's revert that the child had
-     * nothing to undo, as opposed to having no record at all — and carries the
-     * child's pre-deploy outputs.
-     */
-    nestedPending?: Pick<RollbackJournalSegment, 'previousOutputs' | 'previousCrossStackReads'>
-  ): Promise<void> {
-    // A segment with no operations carries nothing to revert — skip it so a
-    // failure before any resource completed does not create an empty journal.
-    // A failed op alone (#1198) IS worth journaling: `cdkd rollback
-    // --revert-failed` can act on it even with zero completed ops.
-    if (!nestedPending && completedOperations.length === 0 && failedOperations.length === 0) {
-      return;
-    }
-    // Redact resolved secret plaintext out of the journal (GHSA fix): the ops
-    // carry resolved / attempted properties and previous-state snapshots read
-    // from the in-memory working map, which is NOT run through the state save
-    // choke point, so plaintext would otherwise land in rollback-journal.json.
-    const redactedCompleted = this.redactOperationsForJournal(completedOperations);
-    const redactedFailed = this.redactOperationsForJournal(failedOperations);
-    try {
-      const segment: RollbackJournalSegment = {
-        ...(this.options.eventRecorder?.runId !== undefined && {
-          runId: this.options.eventRecorder.runId,
-        }),
-        timestamp: Date.now(),
-        reason,
-        initialDeploy,
-        ...(this.options.roleArn && { roleArn: this.options.roleArn }),
-        cdkdVersion: getCdkdVersion(),
-        // Issue #4018: the prefix flag this deploy's providers derived names
-        // under, so `cdkd rollback` replays the segment in the same scope.
-        skipPrefix: getCurrentSkipPrefix(),
-        operations: redactedCompleted,
-        ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
-        ...(nestedPending?.previousOutputs && { previousOutputs: nestedPending.previousOutputs }),
-        ...(nestedPending?.previousCrossStackReads && {
-          previousCrossStackReads: nestedPending.previousCrossStackReads,
-        }),
-      };
-      await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
-      this.logger.debug(`Rollback journal segment written (${reason})`);
-    } catch (journalError) {
-      this.logger.warn(
-        `Failed to write rollback journal: ${journalError instanceof Error ? journalError.message : String(journalError)}. ` +
-          `'cdkd rollback' will NOT be able to revert this deploy — use 'cdkd deploy' to resume or 'cdkd destroy' to clean up.`
-      );
-    }
-  }
-
-  /**
    * Provision a single resource (CREATE/UPDATE/DELETE)
    */
   private async provisionResource(
@@ -5865,7 +4762,8 @@ export class DeployEngine {
    * contractually synchronous and never-throwing, but we still guard
    * with a try/catch so an event emission can NEVER abort a deploy.
    */
-  private recordEvent(
+  /** @internal */
+  recordEvent(
     event: Omit<import('../types/deployment-events.js').DeploymentEvent, 'timestamp'>
   ): void {
     if (!this.options.eventRecorder) return;
@@ -6197,6 +5095,382 @@ export class DeployEngine {
         ),
         { cause: recreateError instanceof Error ? recreateError : undefined }
       );
+    }
+  }
+
+  /**
+   * The name a Type-changed replacement asks for, as a change to probe
+   * (go-to-k/cdkd#3937): across two types the "same" name is not one the old
+   * resource holds in the new type's name space. `undefined` without an
+   * explicit, plain name (a generated one is not compared).
+   */
+  private typeChangeNameQuestion(
+    resourceType: string,
+    input: { desiredProperties: Record<string, unknown>; currentResource: ResourceState }
+  ): ReplacementNameChange | undefined {
+    const property = explicitNamePropertyFor(resourceType);
+    if (property === undefined) return undefined;
+    const desired = input.desiredProperties[property];
+    if (typeof desired !== 'string' || desired === '' || desired === SECRET_MASK) return undefined;
+    if (desired.includes('{{resolve:')) return undefined;
+    return {
+      property,
+      desiredName: desired,
+      heldName: undefined,
+      heldProperty: undefined,
+      physicalId: input.currentResource.physicalId,
+    };
+  }
+
+  /**
+   * The name a replacement moves to when it is KNOWN to differ from the one
+   * the old resource holds ({@link replacementRequestsDifferentName}), checked
+   * against AWS where the create would not refuse a taken name
+   * (go-to-k/cdkd#3937, {@link replacementNameProbe}).
+   *
+   * - The probe finds ANOTHER resource under the name: refuses, with nothing
+   *   created or deleted — the create would hand that resource back (or
+   *   overwrite it) and the deploy would record it as its own.
+   * - It finds the OLD resource: the difference was not real, so `undefined`
+   *   and the caller keeps its pre-existing order.
+   * - It cannot be asked, or fails: refuses, since a guess either way can
+   *   adopt a stranger's resource.
+   *
+   * The answer also picks the ORDER of the fallback and `--recreate-via-*`
+   * arms, so it compares names exactly unless the type's name space is known
+   * to fold case (go-to-k/cdkd#3931, {@link replacementOrderIsCaseSensitive});
+   * an EventBridge rule moving bus counts as a name change
+   * ({@link replacementMovesEventBus}). A Type change onto a name-adopting
+   * type always asks, and a holder found under the id the old resource of
+   * ANOTHER type has is still refused: two namespaces, two resources.
+   */
+  private async checkedReplacementNameChange(input: {
+    logicalId: string;
+    resourceType: string;
+    oldResourceType: string;
+    stackName: string;
+    currentResource: ResourceState;
+    desiredProperties: Record<string, unknown>;
+    createProvider: ResourceProvider;
+    createdVia: ProvisionedBy | undefined;
+    createProps: Record<string, unknown>;
+    secrets: RecordedSecretValues;
+  }): Promise<ReplacementNameChange | undefined> {
+    const { logicalId, resourceType, currentResource, secrets } = input;
+    const question = {
+      oldResourceType: input.oldResourceType,
+      newResourceType: resourceType,
+      desiredProperties: input.desiredProperties,
+      recorded: currentResource.properties,
+      observed: currentResource.observedProperties,
+      physicalId: currentResource.physicalId,
+    };
+    // The #3808 comparison folds case, which is the safe direction for a
+    // refusal. Here it decides whether deleting first frees the name, and
+    // whether an adopting create is asked first, so a case-only rename is a
+    // different name unless the type folds case.
+    const adopts = replacementCreateAdoptsName(resourceType, input.createdVia);
+    const typeChanged = input.oldResourceType !== resourceType;
+    const change =
+      replacementRequestsDifferentName(question) ??
+      (adopts || replacementOrderIsCaseSensitive(resourceType)
+        ? replacementRequestsDifferentName({ ...question, caseSensitive: true })
+        : undefined) ??
+      replacementMovesEventBus(question) ??
+      (adopts && typeChanged ? this.typeChangeNameQuestion(resourceType, input) : undefined);
+    if (change === undefined) return undefined;
+    const probe = replacementNameProbe({
+      resourceType,
+      createdVia: input.createdVia,
+      change,
+      region: this.stackRegion,
+    });
+    if (probe === undefined) return change;
+    const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
+    const adoptsText =
+      `its create API hands back or overwrites an existing resource of that name instead of ` +
+      `refusing it`;
+    if (probe === null) {
+      throw markNonRetryable(
+        new CdkdError(
+          maskSecretsInText(
+            `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd cannot ` +
+              `check whether another resource already holds it. Nothing was created or deleted.`,
+            secrets
+          ),
+          'NAMED_REPLACEMENT_COLLISION'
+        )
+      );
+    }
+    // Every SDK provider of a name-adopting type implements `import()`
+    // (pinned in `replacement-name-holder.test.ts`). One without it is a test
+    // double or a wrapper; refusing there would turn every mocked renamed
+    // queue, topic, rule or alarm in the suite into a probe test.
+    const lookup = input.createProvider.import?.bind(input.createProvider);
+    if (lookup === undefined) return change;
+    let found: Awaited<ReturnType<NonNullable<ResourceProvider['import']>>>;
+    try {
+      found = await this.withRetry(
+        () =>
+          lookup({
+            logicalId,
+            resourceType,
+            stackName: input.stackName,
+            region: this.stackRegion,
+            properties: input.createProps,
+            ...probe,
+          }),
+        logicalId,
+        undefined,
+        undefined,
+        input.createProvider
+      );
+    } catch (probeError) {
+      if (probeErrorMeansNameHeld(resourceType, probeError)) {
+        throw markNonRetryable(
+          new CdkdError(
+            maskSecretsInText(
+              `${subject} requires replacement, and S3 answered 403 Forbidden for bucket ` +
+                `${displaySafe(change.desiredName)}: another account owns that name, or a bucket ` +
+                `of this account denies this identity \`s3:ListBucket\`, or the request's ` +
+                `credentials were rejected. Nothing was created or deleted. Choose another name, ` +
+                `or if the bucket is yours grant \`s3:ListBucket\` on it (or delete it) and ` +
+                `re-run.`,
+              secrets
+            ),
+            'NAMED_REPLACEMENT_COLLISION',
+            probeError instanceof Error ? probeError : undefined
+          )
+        );
+      }
+      throw markNonRetryable(
+        new CdkdError(
+          maskSecretsInText(
+            `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd could ` +
+              `not check whether another resource already holds it: ` +
+              `${displayAwsMessage(maskSecretsInText(probeError instanceof Error ? probeError.message : String(probeError), secrets))}. ` +
+              `Nothing was created or deleted. Re-run the deploy once the check can succeed.`,
+            secrets
+          ),
+          'NAMED_REPLACEMENT_COLLISION',
+          probeError instanceof Error ? probeError : undefined
+        )
+      );
+    }
+    if (found === null) return change;
+    if (
+      !typeChanged &&
+      probeFoundSameId(resourceType, found.physicalId, currentResource.physicalId)
+    ) {
+      return undefined;
+    }
+    throw markNonRetryable(
+      new CdkdError(
+        maskSecretsInText(
+          `${subject} requires replacement, and another existing resource ` +
+            `(${displaySafe(found.physicalId)}) already holds the name it asks for. ` +
+            `${renderReplacementNameChange(change, input.createProps)}. Since ${adoptsText}, creating the replacement ` +
+            `would take that resource over and record it as this stack's. Nothing was ` +
+            `created or deleted. Choose a name no other resource holds, or delete the ` +
+            `resource holding it if it is yours.`,
+          secrets
+        ),
+        'NAMED_REPLACEMENT_COLLISION'
+      )
+    );
+  }
+
+  /**
+   * The create-first order for a replacement whose name is KNOWN to move off
+   * the one the old resource holds (go-to-k/cdkd#3931): the `--recreate-via-*`
+   * destroy-then-create and the UPDATE-not-supported fallback's DELETE →
+   * CREATE delete first only to free a name the old resource holds, and here
+   * it holds another. Deleting first freed nothing, so when another resource
+   * held the new name the create collided with the managed resource already
+   * gone. Now the old resource is deleted only once its replacement exists,
+   * and a collision refuses with nothing deleted.
+   *
+   * The final-snapshot gate runs BEFORE the create, so its refusals still
+   * change nothing; the delete after it is the property-driven cleanup's
+   * ({@link deleteReplacedAfterCreate}).
+   */
+  private async createFirstThenDeleteOld(input: {
+    logicalId: string;
+    resourceType: string;
+    oldResourceType: string;
+    currentResource: ResourceState;
+    createProvider: ResourceProvider;
+    createProps: Record<string, unknown>;
+    deleteProvider: ResourceProvider;
+    deleteProperties: Record<string, unknown>;
+    secrets: RecordedSecretValues;
+    change: ReplacementNameChange;
+    /** An equal physical id on the two halves names the SAME resource. */
+    equalIdIsSameResource: boolean;
+    snapshotPolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+    deletePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+    /** What forced the replacement, for the refusals. */
+    trigger: string;
+    /** `UpdateReplacePolicy: Retain`: create only, the old resource stays. */
+    retainOld?: boolean;
+  }): Promise<ResourceCreateResult> {
+    const { logicalId, resourceType, currentResource, secrets } = input;
+    const retainOld = input.retainOld === true;
+    // Before the create, so a refusal changes nothing. A PRE_DELETE_SNAPSHOT
+    // type would take its snapshot here, before the create window; none of
+    // them has a name `replacementRequestsDifferentName` reads, so none
+    // reaches this method.
+    const finalSnapshotIdentifier = retainOld
+      ? undefined
+      : await this.prepareFinalSnapshotForDelete(
+          logicalId,
+          input.oldResourceType,
+          currentResource,
+          input.snapshotPolicy
+        );
+    this.logger.info(
+      retainOld
+        ? safeMsg`  ${logicalId}'s new name differs from the one the old resource holds — creating the new resource (the old one is retained)...`
+        : safeMsg`  ${logicalId}'s new name differs from the one the old resource holds — creating the new resource before deleting the old one...`
+    );
+    let createResult: ResourceCreateResult;
+    try {
+      createResult = await this.withRetry(
+        () =>
+          withCurrentResourceSecrets(secrets, () =>
+            input.createProvider.create(logicalId, resourceType, input.createProps, {
+              maskSecrets: createSecretMasker(secrets),
+            })
+          ),
+        logicalId,
+        undefined,
+        undefined,
+        input.createProvider
+      );
+    } catch (createError) {
+      // The old resource is untouched: a raw failure is the whole story.
+      if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
+      const createMsg = displayAwsMessage(
+        maskSecretsInText(
+          createError instanceof Error ? createError.message : String(createError),
+          secrets
+        )
+      );
+      // Marked: the message quotes the collision text, which the recreate
+      // retry classifier would otherwise retry for minutes.
+      throw markNonRetryable(
+        new CdkdError(
+          maskSecretsInText(
+            `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires replacement ` +
+              `(${input.trigger}), and cdkd created the new resource first because its name ` +
+              `differs, but the create collided: ${createMsg}. If the collision is on the ` +
+              `requested name: ${renderReplacementNameChange(input.change, input.createProps)}. Nothing was deleted` +
+              (retainOld ? ` (UpdateReplacePolicy: Retain keeps the old resource in place)` : '') +
+              `. Choose a name no other resource holds, or delete the resource holding it if it ` +
+              `is yours.`,
+            secrets
+          ),
+          'NAMED_REPLACEMENT_COLLISION',
+          createError instanceof Error ? createError : undefined
+        )
+      );
+    }
+    if (input.equalIdIsSameResource && createResult.physicalId === currentResource.physicalId) {
+      // A name-idempotent create handed the old resource back, so it holds the
+      // requested name after all and deleting it would delete the "new" one.
+      throw markNonRetryable(
+        new CdkdError(
+          maskSecretsInText(
+            `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires replacement ` +
+              `(${input.trigger}) under a new name, but the create returned the resource being ` +
+              `replaced (${displaySafe(currentResource.physicalId)}) instead of a new one, so ` +
+              `cdkd cannot tell which name it holds. Nothing was deleted. Delete that resource ` +
+              `by hand if it is yours, then re-run the deploy.`,
+            secrets
+          ),
+          'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
+        )
+      );
+    }
+    if (retainOld) return createResult;
+    this.logger.info(safeMsg`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+    await this.deleteReplacedAfterCreate(
+      logicalId,
+      input.oldResourceType,
+      currentResource,
+      input.deleteProvider,
+      input.deleteProperties,
+      finalSnapshotIdentifier,
+      input.deletePolicy,
+      secrets
+    );
+    return createResult;
+  }
+
+  /**
+   * The delete of a replaced resource once its replacement EXISTS. A failure
+   * or a skip warns rather than fails the resource (issue #1762): the new
+   * resource is created and about to be recorded, so the old one is untracked
+   * either way, and failing here would roll back a replacement that
+   * succeeded. Neither is recorded as a retention (issue #2631). The delete
+   * error is masked with `secrets` BEFORE it is rendered: a provider can echo
+   * a resolved value.
+   */
+  private async deleteReplacedAfterCreate(
+    logicalId: string,
+    oldResourceType: string,
+    currentResource: ResourceState,
+    deleteProvider: ResourceProvider,
+    deleteProperties: Record<string, unknown>,
+    finalSnapshotIdentifier: string | undefined,
+    updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
+    secrets: RecordedSecretValues
+  ): Promise<void> {
+    // Initialized because the catch below can leave it unassigned.
+    let deleteResult: void | ResourceDeleteResult = undefined;
+    let deleteFailed = false;
+    try {
+      deleteResult = await deleteProvider.delete(
+        logicalId,
+        currentResource.physicalId,
+        oldResourceType,
+        deleteProperties,
+        {
+          expectedRegion: this.stackRegion,
+          forceDataDelete: this.options.forceStatefulRecreation === true,
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          ...this.replacementDeleteContext(updateReplacePolicy),
+          // Issue #4157: the identity evidence of the record deleted.
+          recordedAttributes: currentResource.attributes,
+        }
+      );
+    } catch (deleteError) {
+      const deleteMsg = maskSecretsInText(
+        deleteError instanceof Error ? deleteError.message : String(deleteError),
+        secrets
+      );
+      deleteFailed = true;
+      // Always a warning, a not-found included: an "already gone" read off the
+      // MESSAGE cannot be made safe (go-to-k/cdkd#3236) — a logical id like
+      // `PageNotFound`, or a delete failing on a KMS key or role "not found"
+      // while the old resource is alive, would silence the one line telling
+      // the user an untracked resource may be left.
+      this.logger.warn(
+        safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
+      );
+    }
+    const skipReason = deleteSkipReason(deleteResult);
+    if (skipReason !== undefined) {
+      this.logger.warn(
+        `  ⚠ ${deleteSkippedMessage(
+          logicalId,
+          currentResource.physicalId,
+          skipReason,
+          'while cleaning up the replaced resource'
+        )}. Delete it manually — it is no longer tracked in state.`
+      );
+    } else if (!deleteFailed) {
+      this.logger.info(`  ${green('✓')} Old resource deleted`);
     }
   }
 
@@ -7086,8 +6360,11 @@ export class DeployEngine {
           // explicit cost of opting into recreate; the design doc § 2
           // calls this out as "Old physical resource: destroyed via SDK
           // Provider ... New physical resource: created via CC API",
-          // i.e. destroy-then-create. (`updateReplacePolicy` is read once
-          // above, before the stateful guard, and reused here.)
+          // i.e. destroy-then-create — except when the template also renames
+          // the target (go-to-k/cdkd#3931): the old resource then does not
+          // hold the new name, so `createFirstThenDeleteOld` creates first.
+          // (`updateReplacePolicy` is read once above, before the stateful
+          // guard, and reused here.)
           //
           // Issue #2668: BOTH inputs come from the state record. The layer
           // always did; the TYPE used to be the template's, so on a Type change
@@ -7115,9 +6392,59 @@ export class DeployEngine {
             physicalId: currentResource.physicalId,
           });
 
+          // go-to-k/cdkd#3937 / #3931: a name KNOWN to move off the one the old
+          // resource holds, probed where the create would adopt a taken one.
+          // Before any arm below creates or deletes anything.
+          const nameChange = await this.checkedReplacementNameChange({
+            logicalId,
+            resourceType,
+            oldResourceType,
+            stackName,
+            currentResource,
+            desiredProperties: resolvedProps,
+            createProvider: replaceProvider,
+            createdVia: replaceDecision.provisionedBy,
+            createProps: replaceProps,
+            secrets: updateSecrets,
+          });
+
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
           let createResult: any;
-          if (recreateFlagged) {
+          if (recreateFlagged && nameChange !== undefined) {
+            // go-to-k/cdkd#3931: the destroy-then-create below exists to free
+            // a name the old resource holds; this one moves to another, so the
+            // old resource is deleted only once its replacement exists — and,
+            // under Retain, a collision is refused at once rather than retried
+            // as a late name release.
+            const retainOld = updateReplacePolicy === 'Retain';
+            const recreateFlagName = recreateViaCcApi
+              ? '--recreate-via-cc-api'
+              : '--recreate-via-sdk-provider';
+            if (retainOld) {
+              // Issue #2603, as on the destroy-then-create arm.
+              this.retainedOldOnReplacement.add(logicalId);
+              this.logger.warn(
+                safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} leaves the old physical resource (${currentResource.physicalId}) in place, no longer tracked by cdkd.`
+              );
+            }
+            createResult = await this.createFirstThenDeleteOld({
+              retainOld,
+              logicalId,
+              resourceType,
+              oldResourceType,
+              currentResource,
+              createProvider: replaceProvider,
+              createProps: replaceProps,
+              deleteProvider: oldDeleteProvider,
+              deleteProperties: currentResource.properties,
+              secrets: updateSecrets,
+              change: nameChange,
+              equalIdIsSameResource,
+              snapshotPolicy: updateReplacePolicy,
+              deletePolicy: updateReplacePolicy,
+              trigger: recreateFlagName,
+            });
+          } else if (recreateFlagged) {
             // Destroy-then-create path. Same `UpdateReplacePolicy:
             // Retain` semantics — retained old resources leak (named the
             // same as the new); document via warning. CFn would refuse a
@@ -7622,50 +6949,16 @@ export class DeployEngine {
                 );
               }
               if (!snapshotBlockedDelete) {
-                // Initialized because the catch below can leave it unassigned.
-                let cleanupDeleteResult: void | ResourceDeleteResult = undefined;
-                let cleanupDeleteFailed = false;
-                try {
-                  cleanupDeleteResult = await oldDeleteProvider.delete(
-                    logicalId,
-                    currentResource.physicalId,
-                    oldResourceType,
-                    currentResource.properties,
-                    {
-                      expectedRegion: this.stackRegion,
-                      forceDataDelete: this.options.forceStatefulRecreation === true,
-                      ...(cleanupFinalSnapshotId !== undefined && {
-                        finalSnapshotIdentifier: cleanupFinalSnapshotId,
-                      }),
-                      ...this.replacementDeleteContext(updateReplacePolicy),
-                      recordedAttributes: currentResource.attributes,
-                    }
-                  );
-                } catch (deleteError) {
-                  this.logger.warn(
-                    `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
-                  );
-                  cleanupDeleteFailed = true;
-                }
-                // Issue #1762: this is the ONE replacement site where a skip
-                // is a warning rather than a failure, and it takes that from
-                // the site's existing policy for a delete FAILURE right above:
-                // the new resource is already created and recorded, so the old
-                // one is untracked either way — failing the resource here
-                // would roll back a replacement that actually succeeded.
-                const cleanupSkipReason = deleteSkipReason(cleanupDeleteResult);
-                if (cleanupSkipReason !== undefined) {
-                  this.logger.warn(
-                    `  ⚠ ${deleteSkippedMessage(
-                      logicalId,
-                      currentResource.physicalId,
-                      cleanupSkipReason,
-                      'while cleaning up the replaced resource'
-                    )}. Delete it manually — it is no longer tracked in state.`
-                  );
-                } else if (!cleanupDeleteFailed) {
-                  this.logger.info(`  ${green('✓')} Old resource deleted`);
-                }
+                await this.deleteReplacedAfterCreate(
+                  logicalId,
+                  oldResourceType,
+                  currentResource,
+                  oldDeleteProvider,
+                  currentResource.properties,
+                  cleanupFinalSnapshotId,
+                  updateReplacePolicy,
+                  updateSecrets
+                );
               }
             }
           }
@@ -8112,13 +7405,45 @@ export class DeployEngine {
                   )
                 );
               }
+              // The replacement create gets a fresh routing decision, against
+              // the record as its unrecognized-property baseline (issue #3713,
+              // same reason as `replaceDecision`). Taken before anything is
+              // deleted, since the name check below needs its route.
+              const replDecision = this.providerRegistry.getProviderFor({
+                resourceType,
+                properties: resolvedProps,
+                previousProperties: currentResource.properties,
+              });
+              const replProvider = replDecision.provider;
+              const replProps =
+                replDecision.provisionedBy === 'cc-api'
+                  ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+                  : resolvedProps;
+              // go-to-k/cdkd#3937 / #3931, as on the property-driven path: a
+              // name known to move off the old resource's, probed where the
+              // create would adopt a taken one. Under Retain it only probes.
+              const fallbackNameChange = await this.checkedReplacementNameChange({
+                logicalId,
+                resourceType,
+                oldResourceType: resourceType,
+                stackName,
+                currentResource,
+                desiredProperties: resolvedProps,
+                createProvider: replProvider,
+                createdVia: replDecision.provisionedBy,
+                createProps: replProps,
+                secrets: updateSecrets,
+              });
+              const createFirst = !retainOldOnReplace && fallbackNameChange !== undefined;
               this.logger.info(
                 retainOldOnReplace
                   ? `UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
                       `(CREATE only — UpdateReplacePolicy: Retain keeps the old resource)`
-                  : `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
+                  : createFirst
+                    ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (CREATE → DELETE — the new name differs from the old resource's)`
+                    : `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
               );
-              if (!retainOldOnReplace) {
+              if (!retainOldOnReplace && !createFirst) {
                 // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
                 // old resource before the fallback replacement's delete. The
                 // TEMPLATE is authoritative here — unlike a destroy, an update
@@ -8219,36 +7544,55 @@ export class DeployEngine {
                   );
                 }
               }
-              // The replacement create gets a fresh routing decision, against
-              // the record as its unrecognized-property baseline (issue #3713,
-              // same reason as `replaceDecision`).
-              const replDecision = this.providerRegistry.getProviderFor({
-                resourceType,
-                properties: resolvedProps,
-                previousProperties: currentResource.properties,
-              });
-              const replProvider = replDecision.provider;
-              const replProps =
-                replDecision.provisionedBy === 'cc-api'
-                  ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
-                  : resolvedProps;
               // Set only on the retain arm; drives the `partial` outcome below.
               let retainedSurvivorReason: string | undefined;
               let createResult: ResourceCreateResult;
               try {
-                createResult = await this.withRetry(
-                  () =>
-                    withCurrentResourceSecrets(updateSecrets, () =>
-                      replProvider.create(logicalId, resourceType, replProps, {
-                        maskSecrets: createSecretMasker(updateSecrets),
+                createResult =
+                  createFirst && fallbackNameChange !== undefined
+                    ? await this.createFirstThenDeleteOld({
+                        logicalId,
+                        resourceType,
+                        oldResourceType: resourceType,
+                        currentResource,
+                        createProvider: replProvider,
+                        createProps: replProps,
+                        deleteProvider: updateProvider,
+                        deleteProperties: currentProps,
+                        secrets: updateSecrets,
+                        change: fallbackNameChange,
+                        equalIdIsSameResource: !equalIdNamesDifferentResources({
+                          resourceType,
+                          physicalId: currentResource.physicalId,
+                          oldProperties: currentResource.properties,
+                          newProperties: resolvedProps,
+                        }),
+                        // The same state fallback as the DELETE → CREATE arm's
+                        // snapshot read, for the same reason.
+                        snapshotPolicy:
+                          template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                          currentResource.updateReplacePolicy,
+                        deletePolicy:
+                          template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                          currentResource.updateReplacePolicy,
+                        trigger: 'the provisioning layer cannot update it in place',
                       })
-                    ),
-                  logicalId,
-                  undefined,
-                  undefined,
-                  replProvider
-                );
+                    : await this.withRetry(
+                        () =>
+                          withCurrentResourceSecrets(updateSecrets, () =>
+                            replProvider.create(logicalId, resourceType, replProps, {
+                              maskSecrets: createSecretMasker(updateSecrets),
+                            })
+                          ),
+                        logicalId,
+                        undefined,
+                        undefined,
+                        replProvider
+                      );
               } catch (createError) {
+                // The create-first arm's errors are already its own, and the
+                // old resource is untouched there.
+                if (createFirst) throw createError;
                 // Only `Retain` turned this into a create-FIRST path, so only
                 // `Retain` owes the name-collision translation (issue #2518).
                 // Without it the user reads a raw `AlreadyExists` and has no
@@ -9292,6 +8636,32 @@ export class DeployEngine {
     return maskingRetryLogger(this.logger, secrets);
   }
 }
+
+DeployEngine.prototype.kickOffObservedCapture = observedCaptureMixin.kickOffObservedCapture;
+DeployEngine.prototype.drainObservedCaptures = observedCaptureMixin.drainObservedCaptures;
+DeployEngine.prototype.buildObservedCaptureSiblings =
+  observedCaptureMixin.buildObservedCaptureSiblings;
+DeployEngine.prototype.stampReasonlessParameterRefusals =
+  observedCaptureMixin.stampReasonlessParameterRefusals;
+DeployEngine.prototype.kickOffAutoRefreshObservedProperties =
+  observedCaptureMixin.kickOffAutoRefreshObservedProperties;
+DeployEngine.prototype.kickOffMaskedBaselineRecapture =
+  observedCaptureMixin.kickOffMaskedBaselineRecapture;
+
+DeployEngine.prototype.adoptRollbackOrphans = rollbackMixin.adoptRollbackOrphans;
+DeployEngine.prototype.performRollback = rollbackMixin.performRollback;
+DeployEngine.prototype.settleJournalAfterSuccess = rollbackMixin.settleJournalAfterSuccess;
+DeployEngine.prototype.deleteRollbackJournalBestEffort =
+  rollbackMixin.deleteRollbackJournalBestEffort;
+DeployEngine.prototype.settleJournalAfterCleanRollback =
+  rollbackMixin.settleJournalAfterCleanRollback;
+DeployEngine.prototype.settleNestedChildrenAfterCleanRollback =
+  rollbackMixin.settleNestedChildrenAfterCleanRollback;
+DeployEngine.prototype.recoveryHint = rollbackMixin.recoveryHint;
+DeployEngine.prototype.rollbackExecutorContext = rollbackMixin.rollbackExecutorContext;
+DeployEngine.prototype.producerRegionEvidence = rollbackMixin.producerRegionEvidence;
+DeployEngine.prototype.writeRollbackJournalSegment = rollbackMixin.writeRollbackJournalSegment;
+DeployEngine.prototype.redactOperationsForJournal = rollbackMixin.redactOperationsForJournal;
 
 DeployEngine.prototype.handleOutputResolutionFailure = outputsMixin.handleOutputResolutionFailure;
 DeployEngine.prototype.resolveOutputs = outputsMixin.resolveOutputs;

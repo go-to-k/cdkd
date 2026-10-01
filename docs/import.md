@@ -341,7 +341,7 @@ worth knowing before you read a report:
   `2`) while the mask is the only difference there, and as drift that
   `--accept` refuses if anything else there changed. The shapes that reach it
   are listed under
-  [Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
+  [Redacted baselines](cli-drift.md#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 - **Some resources get no baseline at all.** Where the recorded properties no
   longer spell the template's dynamic reference — or the resolution had to
   discard part of the template it could not vouch for, such as the untaken
@@ -485,7 +485,7 @@ runs at the start of a deploy passes over a refused record, and a create or
 update rewrites the baseline unconditionally. A masked position also clears on
 a deploy that changes nothing, where the resource's own secret references can
 certify it; see
-[Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
+[Redacted baselines](cli-drift.md#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 
 **Neither mechanism makes an imported `state.json` safe to treat as
 non-sensitive**, and the same caveat the

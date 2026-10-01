@@ -388,6 +388,23 @@ export class SecretsDynamicRefStack extends cdk.Stack {
       });
     }
 
+    // Issue #4166: a resolved secret landing in the NAME of a reference cdkd
+    // DOES resolve. The `Pw` variable resolves the password, so the body
+    // assembles `{{resolve:ssm:cdkd-test-dynref-named-<account>-<password>}}`,
+    // a SecureString verify.sh creates out of band under that name. The
+    // resolver used to resolve it and record the assembled token as the
+    // expression of its result, so state persisted the password inside the
+    // reference. The secret result is now refused. An OUTPUT, declared for ONE
+    // probe deploy only, for the reason `OutputFailureLeak` states.
+    if (process.env.CDKD_TEST_SECRET_NAMED_REF === 'output') {
+      new cdk.CfnOutput(this, 'SecretNamedRef', {
+        value: cdk.Fn.sub(
+          `{{resolve:ssm:cdkd-test-dynref-named-${process.env['CDK_DEFAULT_ACCOUNT'] ?? account}-\${Pw}}}`,
+          { Pw: `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}` }
+        ),
+      });
+    }
+
     // Issue #2759: `Fn::Base64` over a dynamic reference. The resolver returns
     // the ENCODED value, and every redaction needle matches the plaintext
     // LITERALLY — so before the derived needle the encoded secret was

@@ -22,10 +22,13 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 
 /**
  * SDK Provider for AWS S3 Vectors resources
@@ -82,7 +85,8 @@ export class S3VectorsProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::S3Vectors::VectorBucket':
@@ -91,7 +95,8 @@ export class S3VectorsProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       default:
         throw new ProvisioningError(
@@ -125,17 +130,29 @@ export class S3VectorsProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
     // (read as empty, it would untag every recorded key).
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     // Guard: a create-only property reaching update() means the engine did not
-    // replace — fail loudly rather than silently leaving AWS unchanged.
+    // replace — fail loudly rather than silently leaving AWS unchanged. A
+    // secret-derived value is recorded as its `{{resolve:...}}` reference and
+    // handed here resolved, which is no change; the physical id IS the bucket
+    // name (go-to-k/cdkd#4275).
     for (const createOnly of ['VectorBucketName', 'EncryptionConfiguration']) {
       if (
-        JSON.stringify(properties[createOnly]) !== JSON.stringify(previousProperties[createOnly])
+        JSON.stringify(properties[createOnly]) !== JSON.stringify(previousProperties[createOnly]) &&
+        !(await unchangedBehindSecretReference({
+          resourceType,
+          key: createOnly,
+          desired: properties[createOnly],
+          previous: previousProperties[createOnly],
+          physicalName: createOnly === 'VectorBucketName' ? physicalId : undefined,
+          maskSecrets: context?.maskSecrets,
+        }))
       ) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
@@ -207,8 +224,9 @@ export class S3VectorsProvider implements ResourceProvider {
       );
     }
 
+    // The physical id is the bucket name, which can be secret-derived.
     this.logger.debug(
-      `Updated tags for S3 VectorBucket ${logicalId} (${physicalId}): set ${Object.keys(toSet).length}, removed ${toRemove.length}`
+      `Updated tags for S3 VectorBucket ${logicalId} (${maskerOrIdentity(context?.maskSecrets)(physicalId)}): set ${Object.keys(toSet).length}, removed ${toRemove.length}`
     );
     return { physicalId, wasReplaced: false };
   }

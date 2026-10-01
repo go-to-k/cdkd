@@ -169,11 +169,12 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       '`scrubResourceRecord` — the redactor itself, shared by the deploy persist ' +
       'choke point and `cdkd scrub`. Redacts by construction.',
   },
-  'src/deployment/deploy-engine.ts': {
+  'src/deployment/deploy-engine-observed-capture.ts': {
     sites: 1,
     why:
-      '`drainObservedCaptures` — the one ASSIGNMENT site that legitimately does NOT ' +
-      'redact at the call site; see UNREDACTED_AT_SITE below.',
+      '`drainObservedCaptures`, a `DeployEngine` method in its observed-capture mixin ' +
+      '(#4200) — the one ASSIGNMENT site that legitimately does NOT redact at the call ' +
+      'site; see UNREDACTED_AT_SITE below.',
   },
   'src/cli/commands/drift.ts': {
     sites: 3,
@@ -218,7 +219,9 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
  * hard to make without noticing.
  */
 const UNREDACTED_AT_SITE: Readonly<Record<string, string>> = {
-  'src/deployment/deploy-engine.ts':
+  // A `DeployEngine` method living in the engine's observed-capture mixin
+  // (#4200); the choke point it relies on is the engine's, asserted below.
+  'src/deployment/deploy-engine-observed-capture.ts':
     'The deploy path redacts at its single persist CHOKE POINT — every ' +
     '`stateBackend.saveState` in the engine goes through `withParentInfo` -> ' +
     '`redactStateForPersist` -> `scrubResourceRecord`, which covers `properties` / ' +
@@ -328,7 +331,9 @@ describe('observedProperties write population (issue #2828)', () => {
     // The allow-list is the fence's own escape hatch, so it gets a cap. Growing
     // it is the edit that reopens the class, and a cap makes that edit red here
     // rather than silent.
-    expect(Object.keys(UNREDACTED_AT_SITE)).toEqual(['src/deployment/deploy-engine.ts']);
+    expect(Object.keys(UNREDACTED_AT_SITE)).toEqual([
+      'src/deployment/deploy-engine-observed-capture.ts',
+    ]);
     // ...and the reason it gives must still be TRUE: the engine's persist choke
     // point is what makes the bare assignment safe, so assert the choke point
     // is still wired rather than trusting the paragraph.

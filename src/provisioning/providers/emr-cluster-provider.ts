@@ -32,7 +32,18 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
+import {
+  pasteableAwsCommand,
+  protectedReplacementAdvice,
+} from '../replacement-protection-advice.js';
+import {
+  ProtectionFlipRegistry,
+  deleteWithProtectionCompensation,
+  observeThenDisableProtection,
+  protectionFlipKey,
+  type ProtectionFlipRecord,
+  type ProtectionGuardSite,
+} from './deletion-protection-compensation.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
@@ -40,12 +51,14 @@ import {
   toSdkInstanceTypeConfigs,
   toSdkStepConfigs,
 } from '../emr-configuration.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -109,6 +122,48 @@ const toBoolean = (v: unknown): boolean | undefined => {
 const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /**
+ * The {@link ProtectionGuardSite} for an `AWS::EMR::Cluster`, whose guard is
+ * `TerminationProtected` (issue #2204).
+ *
+ * EMR has no dedicated not-found error. `isNotFound` judges the error of the
+ * RE-ENABLE (`SetTerminationProtection`), and which error that JobFlow-era API
+ * returns for an unknown cluster id is NOT measured: its SDK model declares
+ * only `InternalServerError`. It is keyed on `InvalidRequestException`, the
+ * answer `DescribeCluster` gives for an unknown id (the pre-check in
+ * `deleteOnce` relies on that), which also covers other invalid requests, so
+ * the not-found wording claims nothing about what the answer means. Any other
+ * error takes the ERROR arm, the loud direction, which still names the restore
+ * command.
+ */
+export function emrClusterProtectionSite(
+  physicalId: string,
+  region: string | undefined
+): ProtectionGuardSite {
+  return {
+    subject: 'EMR Cluster',
+    guardName: 'TerminationProtected',
+    noun: 'cluster',
+    isNotFound: (error) =>
+      typeof error === 'object' &&
+      error !== null &&
+      (error as { name?: unknown }).name === 'InvalidRequestException',
+    notFoundMeaning:
+      'EMR answered InvalidRequestException. That can mean the cluster is gone, that it is not ' +
+      'in this region or account, or that EMR refused the request for another reason.',
+    commands: () => {
+      const aws = pasteableAwsCommand();
+      const regionArg = region ? aws` --region ${region}` : aws``;
+      const restore = aws`aws emr modify-cluster-attributes --cluster-id ${physicalId}${regionArg} --termination-protected`;
+      return {
+        check: aws`aws emr describe-cluster --cluster-id ${physicalId}${regionArg}`.render(),
+        restoreAfterNotFound: restore.render(),
+        restoreLive: restore.render(),
+      };
+    },
+  };
+}
+
+/**
  * SDK Provider for `AWS::EMR::Cluster` (EMR on EC2).
  *
  * The type is `ProvisioningType: NON_PROVISIONABLE` in the CFn registry, so
@@ -131,7 +186,8 @@ const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSO
  *  - `delete` → `TerminateJobFlows` + poll until `TERMINATED`. Idempotent on
  *    an already-gone cluster (`assertRegionMatch` guards the region). Honors
  *    termination protection: under `--remove-protection` it flips
- *    `SetTerminationProtection(false)` first (mirroring the EC2/ASG pattern).
+ *    `SetTerminationProtection(false)` first (mirroring the EC2/ASG pattern),
+ *    and turns it back on if the terminate then fails terminally (#2204).
  *
  * `getMinResourceTimeoutMs()` lifts the deploy engine's per-resource deadline
  * to the polling ceiling (mirrors `CustomResourceProvider` / `FSxFileSystem
@@ -151,6 +207,8 @@ export class EMRClusterProvider implements ResourceProvider {
   private client: EMRClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('EMRClusterProvider');
+  /** `--remove-protection` flips, keyed so a re-entered delete keeps them (#2204). */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
 
   private readonly pollIntervalMs: number;
   private readonly maxWaitMs: number;
@@ -499,7 +557,8 @@ export class EMRClusterProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -575,11 +634,23 @@ export class EMRClusterProvider implements ResourceProvider {
 
     // Any changed top-level property that is neither registry-createOnly
     // (which never reaches here) nor a known mutable one is refused. This
-    // guard fires only if the replacement layer is bypassed.
+    // guard fires only if the replacement layer is bypassed. A secret-derived
+    // value (a `Name`, a `KerberosAttributes` password) is recorded as its
+    // `{{resolve:...}}` reference and handed here resolved, which is no change
+    // (go-to-k/cdkd#4275).
     for (const key of Object.keys({ ...properties, ...previousProperties })) {
       if (key === 'Instances') continue;
       if (!changed(key)) continue;
-      if (!MUTABLE_TOP_LEVEL_PROPS.has(key)) {
+      if (
+        !MUTABLE_TOP_LEVEL_PROPS.has(key) &&
+        !(await unchangedBehindSecretReference({
+          resourceType,
+          key,
+          desired: properties[key],
+          previous: previousProperties[key],
+          maskSecrets: context?.maskSecrets,
+        }))
+      ) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
@@ -755,12 +826,48 @@ export class EMRClusterProvider implements ResourceProvider {
 
   // ─── DELETE ────────────────────────────────────────────────────────
 
+  /**
+   * Terminate an EMR cluster.
+   *
+   * The compensation boundary (issue #2204): a `--remove-protection` flip of
+   * `TerminationProtected` whose `TerminateJobFlows` then fails terminally is
+   * undone here, so a destroy that did not happen does not leave a live cluster
+   * with its guard stripped.
+   */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
+  ): Promise<void> {
+    await deleteWithProtectionCompensation({
+      registry: this.protectionFlips,
+      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
+      run: (flip) => this.deleteOnce(logicalId, physicalId, resourceType, context, flip),
+      compensation: {
+        logicalId,
+        physicalId,
+        logger: this.logger,
+        site: emrClusterProtectionSite(physicalId, context?.expectedRegion),
+        reEnable: async () => {
+          await this.getClient().send(
+            new SetTerminationProtectionCommand({
+              JobFlowIds: [physicalId],
+              TerminationProtected: true,
+            })
+          );
+        },
+      },
+    });
+  }
+
+  private async deleteOnce(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    flip: ProtectionFlipRecord
   ): Promise<void> {
     this.logger.debug(`Deleting EMR Cluster ${logicalId}: ${physicalId}`);
 
@@ -810,19 +917,37 @@ export class EMRClusterProvider implements ResourceProvider {
       // first (idempotent — EMR accepts the call when already false); a
       // TerminateJobFlows against a protected cluster otherwise fails with a
       // ValidationException. Mirrors the EC2/ASG --remove-protection pattern.
+      //
+      // The pre-check `DescribeCluster` above is this attempt's readback of the
+      // guard, so a terminal failure below restores ONLY a guard this run
+      // turned off. A rejected flip still fails the delete, as before: it is
+      // wrapped by the `catch` below, and nothing is recorded for it.
       if (context?.removeProtection) {
-        await this.getClient().send(
-          new SetTerminationProtectionCommand({
-            JobFlowIds: [physicalId],
-            TerminationProtected: false,
-          })
-        );
+        await observeThenDisableProtection({
+          flip,
+          logger: this.logger,
+          physicalId,
+          guardName: 'TerminationProtected',
+          observe: () => Promise.resolve(current?.TerminationProtected === true),
+          disable: async () => {
+            await this.getClient().send(
+              new SetTerminationProtectionCommand({
+                JobFlowIds: [physicalId],
+                TerminationProtected: false,
+              })
+            );
+          },
+        });
         this.logger.debug(
           `Disabled termination protection on EMR Cluster ${physicalId} before deletion`
         );
       }
 
       await this.getClient().send(new TerminateJobFlowsCommand({ JobFlowIds: [physicalId] }));
+      // AWS took the terminate. What can still throw after this is the
+      // termination WAIT (a poll failure or its timeout), against a cluster
+      // that is already shutting down, so it must not re-enable the guard.
+      flip.deleteAccepted = true;
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(

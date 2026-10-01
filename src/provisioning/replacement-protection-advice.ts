@@ -118,8 +118,42 @@ export const DELETION_PROTECTION_DOC_POINTER =
 export const UNNAMEABLE_ID_CLAUSE =
   'Then disable protection out of band, via the console: the physical id cdkd recorded for this ' +
   'resource cannot be reproduced safely on a command line (sanitizing would change it, so a ' +
-  'command would act on a different resource, or it holds a character a pasted shell line would ' +
-  'act on).';
+  'command would act on a different resource, or it holds a character or prefix a pasted shell ' +
+  'line, or the AWS CLI itself, would act on).';
+
+/**
+ * A value the aws CLI ITSELF acts on, however the shell passed it
+ * (go-to-k/cdkd#4199) — so quoting and {@link isInertUnquoted} cannot help:
+ *
+ *  - a `file://` / `fileb://` prefix: the CLI replaces the value with the
+ *    contents of that LOCAL file, so a pasted command sends, e.g., the
+ *    operator's credentials file to AWS as the parameter (measured with
+ *    aws-cli 2.35.13); `http://` / `https://` make aws-cli v1 FETCH the URL
+ *    (its default, `cli_follow_urlparam`). The CLI matches these
+ *    case-sensitively; the gate refuses any case, since no AWS id needs one;
+ *  - `@=` ANYWHERE: in a structure-typed argument's shorthand
+ *    (`Arn=${value}`, the EC2 instance-profile hint) `Key@=file://path` loads
+ *    that key's value from a local file, mid-word (measured). The gate cannot
+ *    know whether its value lands inside shorthand, so it refuses every `@=`;
+ *  - a leading `-`: after a LIST-valued flag the CLI parses the word as an
+ *    option, so a second id `--endpoint-url=http://...` sent the request to
+ *    that endpoint (measured). After a single-value flag it fails with
+ *    `expected one argument`, but the gate does not know the flag's arity,
+ *    so every leading `-` is refused.
+ *
+ * A mid-word `,` is NOT refused here: real IAM names carry one. A caller
+ * splicing a value INTO shorthand, where `,` starts another key, refuses it at
+ * its own site (`ec2-provider.ts`).
+ *
+ * Exported for a HAND-BUILT `aws ...` command, which holds each value it
+ * names to {@link isAwsCliLiteral} as {@link pasteableArg} does.
+ */
+export const AWS_CLI_ACTIVE_ARG = /^-|^(?:fileb?|https?):\/\/|@=/i;
+
+/** True when the aws CLI takes `value` as the literal it spells; see {@link AWS_CLI_ACTIVE_ARG}. */
+export function isAwsCliLiteral(value: string): boolean {
+  return !AWS_CLI_ACTIVE_ARG.test(value);
+}
 
 /**
  * A string the COMPILER can prove is a literal.
@@ -283,6 +317,9 @@ export interface ProtectedReplacementAdviceArgs<
  *    (`PASTE_ARG_UNSAFE`, go-to-k/cdkd#3950): the command
  *    sits inside backticks and after `cdkd's`, where a pasted line can end the
  *    substitution or flip the quote parity, so quoting is not enough;
+ *  - WITHHOLD a value the aws CLI itself acts on, a `file://`-style prefix,
+ *    a shorthand `@=` or a leading `-` ({@link AWS_CLI_ACTIVE_ARG},
+ *    go-to-k/cdkd#4199);
  *  - then `shellQuote`, which leaves a plain value bare and quotes one holding
  *    an admitted mid-word `#`, `=` or `,` (inert either way);
  *  - and SUPPRESS the whole command when sanitizing CHANGED the value, because
@@ -322,7 +359,8 @@ export function renderDisableCommand<
  * DIFFERENT resource. A value the caller's masker would change is refused too
  * (see {@link ProtectedReplacementDisableCommand.maskSecrets}), and so is a
  * value that would change the command once unquoted (`PASTE_ARG_UNSAFE`,
- * go-to-k/cdkd#3950). Everything else is `shellQuote`d: bare when plain, quoted
+ * go-to-k/cdkd#3950), and one the aws CLI itself acts on
+ * ({@link AWS_CLI_ACTIVE_ARG}, go-to-k/cdkd#4199). Everything else is `shellQuote`d: bare when plain, quoted
  * when it holds an admitted `#`, `=` or `,`, and inert either way.
  */
 function pasteableArg(
@@ -344,6 +382,10 @@ function pasteableArg(
   // `PASTE_ARG_UNSAFE` in `utils/pasteable-command.ts` for `EXTENDED_GLOB`;
   // the same predicate gates `pasteableCommand`, go-to-k/cdkd#4205).
   if (!isInertUnquoted(safe)) return undefined;
+  // Inert to the SHELL is not inert to the aws CLI: a `file://` prefix, a
+  // shorthand `@=` or a leading `-` is acted on by the CLI itself
+  // (go-to-k/cdkd#4199).
+  if (!isAwsCliLiteral(safe)) return undefined;
   return shellQuote(safe);
 }
 
@@ -387,7 +429,7 @@ export type { PasteableAwsCommand };
 export const WITHHELD_AWS_COMMAND =
   '[command withheld: a name or id it would carry cannot be printed safely on a command ' +
   'line (inexact, so a pasted copy could act on a different resource, or holding a character ' +
-  'a pasted shell line would act on); use the console]';
+  'or prefix a pasted shell line, or the AWS CLI itself, would act on); use the console]';
 
 /**
  * Build a pasteable `aws ...` command as a TAGGED TEMPLATE (issue

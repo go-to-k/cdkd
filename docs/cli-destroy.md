@@ -214,9 +214,34 @@ cost and latency are unwanted, and the escape hatch for the refusal below.
 | `AWS::Redshift::Cluster` | Pre-delete `CreateClusterSnapshot`, waited to `available`, then the delete. |
 | `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the delete. Redis only. |
 
-Generated snapshot identifiers are deterministic and logged:
-`<physicalId>-final-<utcTimestamp>` (sanitized to the snapshot-identifier
-character rules).
+Generated snapshot identifiers are deterministic:
+`<base>-final-<utcTimestamp>`, where the timestamp is `yyyymmdd-hhmmss` in UTC
+and `<base>` is the physical id with these rules applied:
+
+| Step | Rule |
+| --- | --- |
+| Case | Lowercased. |
+| Characters | Every character outside `a-z`, `0-9` and `-` becomes `-`; runs of `-` collapse to one; leading and trailing `-` are dropped. |
+| First character | `r` is prepended when it does not start with a letter. |
+| Length | ElastiCache only: cut to the first 28 characters, then any trailing `-` is dropped. |
+
+The three pre-delete types log the identifier as they create it. The five
+atomic-parameter types log only that the delete takes a final snapshot, under
+the resource's logical id: the identifier spells the physical id, which may
+come from a secret. Find that snapshot among the service's manual snapshots by
+its `<base>-final-` prefix:
+
+```bash
+# RDS DBCluster (for DocDB and Neptune, run the same command as `aws docdb` / `aws neptune`)
+aws rds describe-db-cluster-snapshots --snapshot-type manual \
+  --query "DBClusterSnapshots[?starts_with(DBClusterSnapshotIdentifier, 'my-cluster-final-')].DBClusterSnapshotIdentifier"
+# RDS DBInstance
+aws rds describe-db-snapshots --snapshot-type manual \
+  --query "DBSnapshots[?starts_with(DBSnapshotIdentifier, 'my-instance-final-')].DBSnapshotIdentifier"
+# ElastiCache CacheCluster
+aws elasticache describe-snapshots \
+  --query "Snapshots[?starts_with(SnapshotName, 'my-cache-final-')].SnapshotName"
+```
 
 Three of those rows carry behaviour worth knowing before you rely on them:
 
@@ -312,7 +337,7 @@ replacement is data-losing.
 | --- | --- |
 | `cdkd destroy` / `cdkd state destroy` | Snapshot, then delete. |
 | `cdkd deploy`'s DELETE of a resource removed from the template | Snapshot, then delete. |
-| Replacement: the delete-first / recreate delete of the OLD resource | Snapshot, then delete. A snapshot failure fails the resource — that delete is load-bearing for the re-create. |
+| Replacement: the delete-first / recreate delete of the OLD resource | Snapshot, then delete. A snapshot failure fails the resource — that delete is load-bearing for the re-create. When the template also renames the resource, `--recreate-via-*` and the update-failure fallback create first instead: a snapshot cdkd must take BEFORE the delete is still refused before anything is created, but a snapshot the delete itself takes (RDS instances and clusters, DocumentDB and Neptune clusters, ElastiCache cache clusters) belongs to that delete, which is then the cleanup's — its failure warns, as in the row below. |
 | Replacement: the post-replacement CLEANUP delete of the OLD resource | A TRANSIENT snapshot failure warns and skips the delete, leaking the old resource rather than deleting it un-snapshotted. |
 | Rollback of a COMPLETED CREATE (automatic after a failed deploy, or `cdkd rollback`) | Snapshot, then delete; a refusal is a rollback failure, so the journal is kept. `Retain` orphans instead. |
 | `cdkd rollback --revert-failed`'s delete of a CREATE that FAILED mid-flight | Same policy matrix — see below. |

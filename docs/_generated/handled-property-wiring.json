@@ -991,7 +991,8 @@
           ],
           "seededBy": [
             "create",
-            "createStage"
+            "createStage",
+            "update"
           ]
         },
         {
@@ -7801,7 +7802,8 @@
           ],
           "seededBy": [
             "create",
-            "createCluster"
+            "createCluster",
+            "update"
           ]
         },
         {
@@ -15449,10 +15451,12 @@
             "AWS::RDS::DBProxyEndpoint"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -15462,10 +15466,12 @@
             "AWS::RDS::DBProxyEndpoint"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -15489,10 +15495,12 @@
             "AWS::RDS::DBProxyEndpoint"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -15516,10 +15524,12 @@
             "AWS::RDS::DBProxyEndpoint"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         }
       ],
@@ -15554,10 +15564,12 @@
             "AWS::RDS::DBProxy"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -15582,10 +15594,12 @@
             "AWS::RDS::DBProxy"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -15669,10 +15683,12 @@
             "AWS::RDS::DBProxy"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         }
       ],
@@ -17342,11 +17358,14 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
-            "createVectorBucket"
+            "createVectorBucket",
+            "update",
+            "updateVectorBucket"
           ]
         },
         {
@@ -17374,11 +17393,14 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
-            "createVectorBucket"
+            "createVectorBucket",
+            "update",
+            "updateVectorBucket"
           ]
         }
       ],

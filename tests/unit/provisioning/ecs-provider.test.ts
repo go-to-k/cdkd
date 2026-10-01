@@ -71,6 +71,35 @@ describe('ECSProvider', () => {
         expect(createCall.input.clusterName).toBe('my-cluster');
       });
 
+      it('records the cluster name AWS answers with, not the requested spelling', async () => {
+        // Illustrative: ECS cluster names are not known to fold case. The case
+        // pins "record what AWS answers", whatever spelling it answers with.
+        mockSend.mockResolvedValueOnce({
+          cluster: {
+            clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            clusterName: 'my-cluster',
+          },
+        });
+
+        const result = await provider.create('MyCluster', 'AWS::ECS::Cluster', {
+          ClusterName: 'My-Cluster',
+        });
+
+        expect(result.physicalId).toBe('my-cluster');
+      });
+
+      it('falls back to the requested name when the response names no cluster', async () => {
+        mockSend.mockResolvedValueOnce({
+          cluster: { clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster' },
+        });
+
+        const result = await provider.create('MyCluster', 'AWS::ECS::Cluster', {
+          ClusterName: 'my-cluster',
+        });
+
+        expect(result.physicalId).toBe('my-cluster');
+      });
+
       it('should use logicalId as cluster name when ClusterName is not provided', async () => {
         mockSend.mockResolvedValueOnce({
           cluster: {

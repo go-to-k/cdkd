@@ -18,7 +18,11 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
-  integ AFTER the flatten/rebase below (`references/verify.md` §8-b).
+  integ AFTER the flatten/rebase below (`references/verify.md` §8-b says which
+  rebases stale it). While a scoped file this branch changes is busy on `main`
+  (go-to-k/cdkd#4183), run the set as ONE parallel batch (building fixtures per
+  `/run-integ` step 1), then set the marker, record, push and merge without
+  starting other work between them (the Merge bullets below still apply).
 - **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
   a lane stopped at merge-ready drains no queue: re-send, confirm in the TREE.
 
@@ -34,6 +38,10 @@ when the harness denies `git reset`, push any unpushed commits plainly and take
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
+# From another tree, `.claude/hooks/bughunt-clean-gate.sh` refuses `-C "$VAR"`
+# on a `git commit` / `gh pr create|merge` segment, so every gated line takes
+# the LITERAL path; keep `$(git -C <literal path> merge-base origin/main HEAD)`.
+# Hand-pasting the origin/main TIP staged a revert of 45 of main's files (2026-09-30).
 # Message to a FILE named per BRANCH, never -m: inside -m "..." the shell
 # EVALUATES a backtick and drops the word while still creating the commit.
 # DERIVE, WRITE and COMMIT in ONE call -- shell state dies between tool calls.
@@ -52,14 +60,16 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 - **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
   commit ITS output. Take upstream whole when it derives the file from the tree.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
-  upstream-whole drops this lane's row. Keep both, then run
-  `vp run integ-ledger-normalize` before `git rebase --continue` and commit it —
-  after a CLEAN rebase touching the ledger too, before the push.
+  upstream-whole drops this lane's row. Its `merge=union` keeps both LOCALLY,
+  but GitHub ignores that driver: a `main` commit adding ledger rows next to
+  this PR's turns it CONFLICTING, and CI never fires. Rebase locally, then run
+  `vp run integ-ledger-normalize` and commit it before the push.
 
 ### Merge
 
 ```bash
 gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
+# -R on every gh call below too: "Could not resolve to a PullRequest" is no permissions error
 ```
 
 - **Read the merge state before you watch CI**: at `mergeable=CONFLICTING` CI
@@ -72,8 +82,6 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
   as it blocks even after re-runs pass (#3664).
-- **`-R` is not optional in a multi-repo run**: `gh` infers it from the CWD,
-  and `Could not resolve to a PullRequest` reads as a permissions problem.
 - **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
   = `MERGED` is**, read in its OWN call before anything presuming the merge (the
   thank-you, the claim release, the pull). It lies both ways: from the PR's own

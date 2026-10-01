@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+# verify.sh - secret-derived-immutable-names: an in-place update of resources
+# whose immutable NAMES come from a Secrets Manager secret
+# (go-to-k/cdkd#4264, go-to-k/cdkd#4275).
+#
+# cdkd records a secret-derived value as its `{{resolve:secretsmanager:...}}`
+# expression, while a provider's update() receives the resolved value. The
+# ApiGatewayV2 Stage and ECS Service providers compared the two, saw a rename
+# that never happened, and refused every in-place update (the ECS row is
+# go-to-k/cdkd#4263). A Scheduler Schedule's GroupName stays refused on
+# purpose (go-to-k/cdkd#4275), so it is not deployed here.
+#
+# Steps (each echoed as `Step N`):
+#   1. Seed the secret naming the stage and the service.
+#   2. Deploy.
+#   3. PREMISE: state records the Stage's StageName and the Service's
+#      ServiceName as the {{resolve:secretsmanager: expression, and each
+#      resource lives under the name the secret holds.
+#   4. LOAD-BEARING: the update (CDKD_TEST_UPDATE=true: only the Stages'
+#      Description and the Service's EnableECSManagedTags change) EXITS 0. This
+#      is what discriminates the fix; the refusals it replaced are named in the
+#      failure message. Neither name appears in its --verbose log.
+#   5. LOAD-BEARING: the update was IN PLACE: each resource's AWS creation time
+#      is unchanged and the new value reached AWS. The literal-named PlainStage
+#      is the positive control: the same update on a name no secret feeds,
+#      which passes with or without the fix and shows the update path is sound.
+#   6. Destroy.
+#   7. Remove the secret; assert 0 orphans.
+#   8. Sweep every object version under the stack's state prefix.
+#
+# Discrimination (for a mutation probe on real AWS): revert
+# src/provisioning/providers/apigatewayv2-provider.ts ALONE and step 4 fails
+# naming "StageName is immutable"; revert src/provisioning/providers/ecs-provider.ts
+# ALONE and it fails naming "Cannot update ServiceName". PlainStage updates
+# either way.
+#
+# BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
+
+set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+cd "$(dirname "$0")"
+# shellcheck source=../s3-versions.sh
+. ../s3-versions.sh
+
+STACK="CdkdSecretDerivedImmutableNames"
+REGION="${AWS_REGION:-us-east-1}"
+STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
+DEPLOY_LOG="$(mktemp -t secret-derived-immutable-names.XXXXXX)"
+API_NAME="CdkdSecretDerivedImmutableNamesApi"
+
+# One run's names: unique, so a leftover from a failed run cannot be mistaken
+# for this one's, and DISJOINT: neither name occurs inside the secret's id or
+# the other name, so the recorded reference cannot carry a name's plaintext and
+# a plaintext grep over the logs means what it says.
+SUFFIX="$(date +%s)-$$"
+STAGE_NAME="sdin-stg-${SUFFIX}"
+SERVICE_NAME="sdin-svc-${SUFFIX}"
+export SDIN_SECRET_NAME="cdkd-integ-sdin-secret-${SUFFIX}"
+SEEDED_SECRET=0
+# Set just before the first deploy: the stack name is fixed, so a run refused by
+# the pre-flight must not destroy (or sweep the state history of) a stack an
+# earlier or concurrent run left behind.
+DEPLOYED=0
+
+log_tail() {
+  tail -60 "${DEPLOY_LOG}" >&2
+}
+
+# Cleanup order: the STACK, then the secret, then the non-current state
+# versions (safe on any path: a live state.json a later `cdkd state destroy`
+# needs survives).
+cleanup() {
+  local rc=$?
+  echo "==> Cleanup (errors tolerated)"
+  set +eu
+  if [ "${DEPLOYED}" = "1" ] && [ -f "${LOCAL_DIST}" ]; then
+    CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
+      --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+  fi
+  if [ "${SEEDED_SECRET}" = "1" ]; then
+    aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
+      --force-delete-without-recovery >/dev/null 2>&1
+  fi
+  if [ "${DEPLOYED}" = "1" ]; then
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${PREFIX}" noncurrent || true
+  fi
+  rm -f "${DEPLOY_LOG}" "${SECRET_FILE:-}" 2>/dev/null || true
+  set -e
+  exit "${rc}"
+}
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
+
+if [ -z "${STATE_BUCKET:-}" ]; then echo "FAIL: STATE_BUCKET required" >&2; exit 1; fi
+if [ ! -f "${LOCAL_DIST}" ]; then echo "FAIL: build dist first (vp run build)" >&2; exit 1; fi
+
+echo "==> Installing fixture deps"
+[ -d node_modules ] || pnpm install --ignore-workspace --prefer-offline
+
+echo "==> Pre-flight orphan scan"
+if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
+  echo "FAIL: state already exists at ${STATE_KEY} - clean up first." >&2
+  exit 1
+fi
+LEFTOVER_APIS="$(aws apigatewayv2 get-apis --region "${REGION}" \
+  --query "Items[?Name=='${API_NAME}'].ApiId" --output text)"
+if [ -n "${LEFTOVER_APIS}" ] && [ "${LEFTOVER_APIS}" != "None" ]; then
+  echo "FAIL: an API named ${API_NAME} already exists (${LEFTOVER_APIS}) - clean up first." >&2
+  exit 1
+fi
+
+echo "==> Step 1: seed the secret naming the stage and the service"
+# From a file, not argv, so the value never shows in the host's process list.
+SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
+printf '{"stage":"%s","service":"%s"}' "${STAGE_NAME}" "${SERVICE_NAME}" > "${SECRET_FILE}"
+aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
+  --secret-string "file://${SECRET_FILE}" >/dev/null
+SEEDED_SECRET=1
+rm -f "${SECRET_FILE}"
+echo "    OK: seeded"
+
+state_holds() { # usage: state_holds <literal> -> 0 when the current state.json contains it
+  local body
+  body="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1)" || {
+    echo "FAIL: could not read ${STATE_KEY}" >&2
+    exit 1
+  }
+  # A here-string, not `printf | grep -q`: grep exits at the first match, so a
+  # body larger than the pipe buffer takes SIGPIPE in printf and pipefail turns
+  # a MATCH into "no match" -- a vacuous pass for every absence check.
+  grep -qF -- "$1" <<< "${body}"
+}
+state_property() { # usage: state_property <logical-id> <property> -> the recorded value
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r --arg id "$1" --arg p "$2" '.resources[$id].properties[$p] // empty'
+}
+state_physical_id() { # usage: state_physical_id <logical-id>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r --arg id "$1" '.resources[$id].physicalId // empty'
+}
+stage_field() { # usage: stage_field <stage-name> <field>
+  aws apigatewayv2 get-stage --region "${REGION}" --api-id "${API_ID}" --stage-name "$1" \
+    --query "$2" --output text
+}
+service_field() { # usage: service_field <field> (a strict capture: a failed read aborts)
+  aws ecs describe-services --region "${REGION}" --cluster "${CLUSTER_ID}" \
+    --services "${SERVICE_ARN}" --query "services[0].$1" --output text
+}
+expect_eq() { # usage: expect_eq <what> <want> <got>
+  if [ "$3" != "$2" ]; then
+    echo "FAIL: $1: want '$2', got '$3'" >&2
+    exit 1
+  fi
+  echo "    OK: $1"
+}
+
+echo "==> Step 2: deploy"
+DEPLOYED=1
+set +e
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+DEPLOY_RC=$?
+set -e
+if [ "${DEPLOY_RC}" -ne 0 ]; then
+  echo "FAIL: deploy exited ${DEPLOY_RC}" >&2
+  log_tail
+  exit 1
+fi
+echo "    OK: deploy exited 0"
+
+API_ID="$(state_physical_id Api)"
+# A Cluster's physical id is its NAME, which --cluster / --clusters accept.
+CLUSTER_ID="$(state_physical_id Cluster)"
+SERVICE_ARN="$(state_physical_id SecretService)"
+TASK_DEF_ARN="$(state_physical_id TaskDef)"
+for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN; do
+  if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
+done
+
+echo "==> Step 3 (PREMISE): state records the names as the redacted expression"
+for field in stage service; do
+  if ! state_holds "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:${field}::}}"; then
+    echo "FAIL: state does not record the {{resolve:secretsmanager: expression for the ${field}; the name is not secret-derived, so the update below would not exercise the guard" >&2
+    exit 1
+  fi
+done
+expect_eq "SecretStage's recorded StageName" \
+  "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:stage::}}" "$(state_property SecretStage StageName)"
+expect_eq "SecretStage lives under the secret's stage name" "${STAGE_NAME}" "$(state_physical_id SecretStage)"
+expect_eq "SecretService's recorded ServiceName" \
+  "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:service::}}" "$(state_property SecretService ServiceName)"
+expect_eq "SecretService's ARN ends with the secret's service name" "${SERVICE_NAME}" "${SERVICE_ARN##*/}"
+expect_eq "SecretService's EnableECSManagedTags after deploy" "False" "$(service_field enableECSManagedTags)"
+expect_eq "SecretStage's Description after deploy" "cdkd integ: initial" "$(stage_field "${STAGE_NAME}" Description)"
+SECRET_STAGE_CREATED="$(stage_field "${STAGE_NAME}" CreatedDate)"
+PLAIN_STAGE_CREATED="$(stage_field plain CreatedDate)"
+SERVICE_CREATED="$(service_field createdAt)"
+for v in SECRET_STAGE_CREATED PLAIN_STAGE_CREATED SERVICE_CREATED; do
+  if [ -z "${!v}" ] || [ "${!v}" = "None" ]; then echo "FAIL: ${v} unreadable" >&2; exit 1; fi
+done
+
+echo "==> Step 4 (LOAD-BEARING): update - only the Stages' Description and the Service's EnableECSManagedTags change"
+set +e
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+UPDATE_RC=$?
+set -e
+if [ "${UPDATE_RC}" -ne 0 ]; then
+  for refusal in "StageName is immutable" "Cannot update ServiceName"; do
+    if grep -qF "${refusal}" "${DEPLOY_LOG}"; then
+      echo "FAIL: the update was refused with '${refusal}': the recorded secret reference was compared with the resolved name (go-to-k/cdkd#4275)" >&2
+    fi
+  done
+  echo "FAIL: update deploy exited ${UPDATE_RC}" >&2
+  log_tail
+  exit 1
+fi
+echo "    OK: update deploy exited 0"
+# The log must not be empty, or the absence checks below certify nothing; the
+# Service's updating line is one this fix made reachable.
+if [ ! -s "${DEPLOY_LOG}" ] || ! grep -qF "Updating ECS service" "${DEPLOY_LOG}"; then
+  echo "FAIL: the update log is empty or has no 'Updating ECS service' line (the --verbose debug stream is missing, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+UPDATE_LOG_BODY="$(cat "${DEPLOY_LOG}")"
+# Over the WHOLE log, engine progress lines included: a hit there is a loud
+# FAIL, never a vacuous pass, but look at the engine's lines before the
+# providers' when it fires (a Stage's physical id IS its name).
+for needle in "${STAGE_NAME}" "${SERVICE_NAME}"; do
+  # A here-string, not a pipe: see state_holds.
+  if grep -qF -- "${needle}" <<< "${UPDATE_LOG_BODY}"; then
+    echo "FAIL: the update log carries a secret-derived name in plaintext" >&2
+    exit 1
+  fi
+done
+echo "    OK: the update log carries neither name"
+
+echo "==> Step 5 (LOAD-BEARING): the update landed IN PLACE"
+expect_eq "SecretStage's Description after the update" "cdkd integ: updated" "$(stage_field "${STAGE_NAME}" Description)"
+expect_eq "SecretStage's creation time (not replaced)" "${SECRET_STAGE_CREATED}" "$(stage_field "${STAGE_NAME}" CreatedDate)"
+expect_eq "PlainStage's Description after the update (positive control)" "cdkd integ: updated" "$(stage_field plain Description)"
+expect_eq "PlainStage's creation time (positive control)" "${PLAIN_STAGE_CREATED}" "$(stage_field plain CreatedDate)"
+expect_eq "SecretService's EnableECSManagedTags after the update" "True" "$(service_field enableECSManagedTags)"
+expect_eq "SecretService's creation time (not replaced)" "${SERVICE_CREATED}" "$(service_field createdAt)"
+expect_eq "SecretService's physical id" "${SERVICE_ARN}" "$(state_physical_id SecretService)"
+expect_eq "SecretStage's recorded StageName after the update" \
+  "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:stage::}}" "$(state_property SecretStage StageName)"
+
+echo "==> Step 6: destroy"
+set +e
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose > "${DEPLOY_LOG}" 2>&1
+DESTROY_RC=$?
+set -e
+if [ "${DESTROY_RC}" -ne 0 ]; then
+  echo "FAIL: destroy exited ${DESTROY_RC}" >&2
+  log_tail
+  exit 1
+fi
+echo "    OK: destroy exited 0"
+
+echo "==> Step 7: remove the secret; assert 0 orphans"
+aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
+  --force-delete-without-recovery >/dev/null
+SEEDED_SECRET=0
+
+assert_gone "state file still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+assert_gone "API ${API_ID} still exists after destroy" \
+  aws apigatewayv2 get-api --region "${REGION}" --api-id "${API_ID}"
+# `describe-services` / `describe-clusters` do not error for a deleted one:
+# they report it INACTIVE (or not at all), so a gone_probe cannot apply. A
+# STRICT capture of the status is the probe (a throttle aborts under set -e).
+SERVICE_STATUS="$(aws ecs describe-services --region "${REGION}" --cluster "${CLUSTER_ID}" \
+  --services "${SERVICE_ARN}" --query 'services[0].status' --output text)"
+if [ "${SERVICE_STATUS}" != "None" ] && [ "${SERVICE_STATUS}" != "INACTIVE" ] && [ "${SERVICE_STATUS}" != "DRAINING" ]; then
+  echo "FAIL: service status after destroy is '${SERVICE_STATUS}', expected gone/DRAINING/INACTIVE" >&2
+  exit 1
+fi
+CLUSTER_STATUS="$(aws ecs describe-clusters --region "${REGION}" --clusters "${CLUSTER_ID}" \
+  --query 'clusters[0].status' --output text)"
+if [ "${CLUSTER_STATUS}" != "None" ] && [ "${CLUSTER_STATUS}" != "INACTIVE" ]; then
+  echo "FAIL: cluster status after destroy is '${CLUSTER_STATUS}', expected gone/INACTIVE" >&2
+  exit 1
+fi
+# A deregistered task definition stays describable; its status is the probe.
+TASK_DEF_STATUS="$(aws ecs describe-task-definition --region "${REGION}" \
+  --task-definition "${TASK_DEF_ARN}" --query 'taskDefinition.status' --output text)"
+if [ "${TASK_DEF_STATUS}" = "ACTIVE" ]; then
+  echo "FAIL: task definition ${TASK_DEF_ARN} is still ACTIVE after destroy" >&2
+  exit 1
+fi
+echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition)"
+
+trap - EXIT INT TERM
+rm -f "${DEPLOY_LOG}" 2>/dev/null || true
+
+echo "==> Step 8: sweep every object version under the stack's state prefix"
+# On the SUCCESS path, after the disarm: a sweep living only in `cleanup` never
+# runs here, and `noncurrent` would leave the delete marker behind.
+s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
+echo ""
+echo "[verify] PASS - an in-place update of a Stage and an ECS Service whose names come from a secret succeeded, in place, and destroy was clean"

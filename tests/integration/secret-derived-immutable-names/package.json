@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-secret-derived-immutable-names",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd integration fixture: an immutable name taken from a Secrets Manager secret survives an in-place update",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

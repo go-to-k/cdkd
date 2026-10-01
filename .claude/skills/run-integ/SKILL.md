@@ -24,7 +24,15 @@ verify, clean up.
 1. **Rebase, then build**: `git fetch origin` and rebase onto current
    `origin/main` (merge it when a force push is denied) BEFORE the run — a
    stale base verifies code that is not what will merge, and nothing warns you.
-   Then `vp run build` so `dist/` is current.
+   Then `vp run build` so `dist/` is current. **Never build beside a live
+   fixture in this tree**: any build (`/check`, `/verify-pr`, `vp run verify`,
+   `vp run runtime:smoke`, a building `verify.sh`, …) rewrites `dist/`, and the
+   fixture's next `node dist/cli.js` (its cleanup trap's too) dies
+   `ERR_MODULE_NOT_FOUND`. In a set, run each building `verify.sh`
+   (`grep -lE '^\s*\(cd [^)]*&& vp run build\)' <dir>/verify.sh`; a bare
+   `vp run build` also matches error text) alone, BEFORE the others. After a
+   build beside a live run, re-scan per steps 6-7, record that fixture `FAIL`,
+   and re-run it.
 
 2. **List available tests**: `ls tests/integration/` — never a hardcoded list.
 
@@ -210,12 +218,16 @@ verify, clean up.
    the other direction: `mise` writes to stderr and the rc can still read as
    success, so only `markgate status` says whether a marker exists. Run from the
    PR's own worktree on the PR branch, and if any success condition failed, do
-   NOT set the marker. The auto-mode classifier can refuse `markgate set` for
-   the parent agent too: never retry it — hand the user this ONE line (the same
-   hand-off for `integ-schema-migration` below):
+   NOT set the marker. The auto-mode classifier can refuse the parent's
+   `markgate set`, and step 11's ledger commit and push, even after a yes in
+   chat: never retry — hand them to the user as a short-path script
+   (`/tmp/<n>.sh`) holding the steps, for them to TYPE `!` and then paste
+   `bash /tmp/<n>.sh` (a long line wraps on paste, and a pasted `!` does not
+   enter bash mode). For the marker (the same for `integ-schema-migration`
+   below) the script holds:
 
    ```text
-   ! cd <tree> && mise trust && mise exec -- markgate set integ-destroy && mise exec -- markgate status | grep integ-destroy
+   cd <tree> && mise trust && mise exec -- markgate set integ-destroy && mise exec -- markgate status | grep integ-destroy
    ```
 
    **Also set `integ-schema-migration`, and ONLY for a test named
@@ -387,5 +399,3 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   invoke prints `[verify] command exited N` plus the stderr tail. A log that ends
   at an arm header with no error text means a fixture outside the fence — re-run
   that command with stderr attached BEFORE concluding anything.
-- **Never bypass this skill** with direct `cdkd deploy` / `cdkd destroy` — the
-  orphan-cleanup contract is part of the test, not optional.

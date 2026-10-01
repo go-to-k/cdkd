@@ -674,6 +674,27 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
       expect(indexRegisterOrder.length).toBeGreaterThan(0);
       expect(gsiCreateOrder[0]).toBeLessThan(indexRegisterOrder[0]!);
     });
+
+    it("hands the update's masker to the index wait, whose lines name the table (go-to-k/cdkd#4275)", async () => {
+      const previous = structuredClone(AUTOSCALED_PROPS) as Record<string, unknown>;
+      previous['GlobalSecondaryIndexes'] = [];
+      (previous['Replicas'] as Array<Record<string, unknown>>)[0]!['GlobalSecondaryIndexes'] = [];
+      const wait = vi.spyOn(
+        DynamoDBGlobalTableProvider.prototype as unknown as {
+          waitForIndexesActive: (...args: unknown[]) => Promise<void>;
+        },
+        'waitForIndexesActive'
+      );
+      const maskSecrets = (text: string): string => text;
+      try {
+        await provider.update('Prov', TABLE_NAME, RESOURCE_TYPE, AUTOSCALED_PROPS, previous, {
+          maskSecrets,
+        });
+        expect(wait).toHaveBeenCalledWith(TABLE_NAME, 'Prov', { maskSecrets });
+      } finally {
+        wait.mockRestore();
+      }
+    });
   });
 
   describe('throttle retry', () => {

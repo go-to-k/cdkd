@@ -661,7 +661,7 @@ export class ElastiCacheProvider implements ResourceProvider {
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting CacheCluster ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting CacheCluster ${logicalId}`);
 
     try {
       // `DeletionPolicy: Snapshot` (issue #1352): pass the atomic
@@ -695,16 +695,18 @@ export class ElastiCacheProvider implements ResourceProvider {
         }
         this.logger.debug(safeMsg`CacheCluster ${logicalId} is already deleting; waiting for it`);
       }
+      // Not the identifier: it embeds the physical id, which may be secret-derived
+      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
-          `Deleting CacheCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+          `Deleting CacheCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`
         );
       }
 
       this.logger.debug(`Successfully initiated deletion of CacheCluster ${logicalId}`);
 
       // Wait for cluster to be fully deleted
-      await this.waitForClusterDeleted(physicalId, CACHE_DELETE_WAIT_MS);
+      await this.waitForClusterDeleted(logicalId, physicalId, CACHE_DELETE_WAIT_MS);
     } catch (error) {
       if (this.isNotFoundError(error, 'CacheClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
@@ -715,7 +717,7 @@ export class ElastiCacheProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`CacheCluster ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(`CacheCluster ${logicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -881,7 +883,11 @@ export class ElastiCacheProvider implements ResourceProvider {
   /**
    * Wait for a CacheCluster to be deleted
    */
-  private async waitForClusterDeleted(cacheClusterId: string, maxWaitMs = 600_000): Promise<void> {
+  private async waitForClusterDeleted(
+    logicalId: string,
+    cacheClusterId: string,
+    maxWaitMs = 600_000
+  ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
 
@@ -890,7 +896,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         const cluster = await this.describeCacheCluster(cacheClusterId);
         const status = cluster?.CacheClusterStatus;
 
-        this.logger.debug(`CacheCluster ${cacheClusterId} status: ${status}`);
+        this.logger.debug(`CacheCluster ${logicalId} status: ${status}`);
 
         if (!cluster) return;
       } catch (error) {
@@ -904,7 +910,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for CacheCluster ${cacheClusterId} to be deleted`);
+    throw new Error(`Timed out waiting for CacheCluster ${logicalId} to be deleted`);
   }
 
   private sleep(ms: number): Promise<void> {

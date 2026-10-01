@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vite-plus/test';
 import {
   printAcceptPlan,
   printRevertPlan,
+  reportPlanValue,
   type DriftOutcome,
   type HumanTextSink,
 } from '../../../src/cli/commands/drift.js';
@@ -311,7 +312,7 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     }
   }
 
-  it('renders an ordinary accept plan byte-for-byte as before', () => {
+  it('renders an ordinary accept plan byte-for-byte', () => {
     const { joined } = render(
       printAcceptPlan,
       report({
@@ -326,12 +327,12 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     expect(joined).toBe(
       '\nPlan (--accept): update cdkd state for Prod (us-east-1):\n' +
         '  ~ Bucket1 (AWS::S3::Bucket)\n' +
-        '    VersioningConfiguration.Status: Enabled -> Suspended\n' +
-        '    Tags: [{"Key":"a","Value":"b"}] -> null\n'
+        '    VersioningConfiguration.Status: Enabled → Suspended\n' +
+        '    Tags: [{"Key":"a","Value":"b"}] → null\n'
     );
   });
 
-  it('renders an ordinary revert plan byte-for-byte as before', () => {
+  it('renders an ordinary revert plan byte-for-byte', () => {
     const { joined } = render(
       printRevertPlan,
       report({
@@ -345,7 +346,7 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     expect(joined).toBe(
       '\nPlan (--revert): push cdkd state values back into AWS for Prod (us-east-1):\n' +
         '  → provider.update on Bucket1 (AWS::S3::Bucket): revert 1 property path\n' +
-        '    VersioningConfiguration.Status: Suspended -> Enabled\n'
+        '    VersioningConfiguration.Status: Suspended → Enabled\n'
     );
   });
 
@@ -356,41 +357,104 @@ describe('the --accept / --revert plans treat record- and readback-derived value
       { path: 'Padded', stateValue: 'value', awsValue: ' value ' },
     ];
     const accept = render(printAcceptPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
-    expect(accept.lines).toContain(`    TrailingNewline: "abc${NL_JSON}" -> abc`);
-    expect(accept.lines).toContain('    Padded: value -> " value "');
+    expect(accept.lines).toContain(`    TrailingNewline: "abc${NL_JSON}" → abc`);
+    expect(accept.lines).toContain('    Padded: value → " value "');
     const revert = render(printRevertPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
-    expect(revert.lines).toContain(`    TrailingNewline: abc -> "abc${NL_JSON}"`);
-    expect(revert.lines).toContain('    Padded: " value " -> value');
+    expect(revert.lines).toContain(`    TrailingNewline: abc → "abc${NL_JSON}"`);
+    expect(revert.lines).toContain('    Padded: " value " → value');
   });
 
   it("quotes a plan value containing the separator's arrow, on either side, so each line splits one way", () => {
-    // Unquoted, `Env: prod -> prod -> staging` would not say which value the
-    // revert pushes. The ARROW is matched, not ` -> `: `a ->` / `b` and `a` /
-    // `-> b` would otherwise both print `a -> -> b`, and a no-break space
-    // around the arrow would pass. Only on a plan line: the report's `-` / `+`
-    // rows carry no separator, so it stays unquoted there.
+    // Unquoted, `Env: prod → prod → staging` would not say which value the
+    // revert pushes. The ARROW is matched, not ` → `: `a →` / `b` and `a` /
+    // `→ b` would otherwise both print `a → → b`, and a no-break space around
+    // the arrow would pass. Only on a plan line: the report's `-` / `+` rows
+    // carry no separator, so it stays unquoted there.
     const changes: Change[] = [
-      { path: 'Env', stateValue: 'staging', awsValue: 'prod -> prod' },
-      { path: 'Rev', stateValue: 'a -> b', awsValue: 'c' },
-      { path: 'Tight', stateValue: 'a->b', awsValue: 'c' },
-      { path: 'TrailingArrow', stateValue: 'b', awsValue: 'a ->' },
-      { path: 'LeadingArrow', stateValue: '-> b', awsValue: 'a' },
-      { path: 'Nbsp', stateValue: 'staging', awsValue: 'prod\u00a0->\u00a0prod' },
+      { path: 'Env', stateValue: 'staging', awsValue: 'prod → prod' },
+      { path: 'Rev', stateValue: 'a → b', awsValue: 'c' },
+      { path: 'Tight', stateValue: 'a→b', awsValue: 'c' },
+      { path: 'TrailingArrow', stateValue: 'b', awsValue: 'a →' },
+      { path: 'LeadingArrow', stateValue: '→ b', awsValue: 'a' },
+      { path: 'Nbsp', stateValue: 'staging', awsValue: 'prod\u00a0→\u00a0prod' },
       { path: 'Plain', stateValue: 'a-b', awsValue: 'c>d' },
     ];
     const revert = render(printRevertPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
-    expect(revert.lines).toContain('    Env: "prod -> prod" -> staging');
-    expect(revert.lines).toContain('    Rev: c -> "a -> b"');
-    expect(revert.lines).toContain('    Tight: c -> "a->b"');
-    expect(revert.lines).toContain('    TrailingArrow: "a ->" -> b');
-    expect(revert.lines).toContain('    LeadingArrow: a -> "-> b"');
-    expect(revert.lines).toContain('    Nbsp: "prod\u00a0->\u00a0prod" -> staging');
-    expect(revert.lines).toContain('    Plain: c>d -> a-b');
+    expect(revert.lines).toContain('    Env: "prod → prod" → staging');
+    expect(revert.lines).toContain('    Rev: c → "a → b"');
+    expect(revert.lines).toContain('    Tight: c → "a→b"');
+    expect(revert.lines).toContain('    TrailingArrow: "a →" → b');
+    expect(revert.lines).toContain('    LeadingArrow: a → "→ b"');
+    expect(revert.lines).toContain('    Nbsp: "prod\u00a0→\u00a0prod" → staging');
+    expect(revert.lines).toContain('    Plain: c>d → a-b');
     const accept = render(printAcceptPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
-    expect(accept.lines).toContain('    Env: staging -> "prod -> prod"');
-    expect(accept.lines).toContain('    Rev: "a -> b" -> c');
-    expect(accept.lines).toContain('    TrailingArrow: b -> "a ->"');
-    expect(accept.lines).toContain('    LeadingArrow: "-> b" -> a');
+    expect(accept.lines).toContain('    Env: staging → "prod → prod"');
+    expect(accept.lines).toContain('    Rev: "a → b" → c');
+    expect(accept.lines).toContain('    TrailingArrow: b → "a →"');
+    expect(accept.lines).toContain('    LeadingArrow: "→ b" → a');
+  });
+
+  it('quotes a plan value carrying an ASCII `->`, on either side (go-to-k/cdkd#4239)', () => {
+    // Bare, a value's `->` is the redirect the separator change removed.
+    const changes: Change[] = [
+      { path: 'Env', stateValue: 'staging', awsValue: 'prod -> prod' },
+      { path: 'Tight', stateValue: 'a->bucket', awsValue: 'c' },
+    ];
+    const revert = render(printRevertPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
+    expect(revert.lines).toContain('    Env: "prod -> prod" → staging');
+    expect(revert.lines).toContain('    Tight: c → "a->bucket"');
+    const accept = render(printAcceptPlan, report({ outcomes: [drifted('R', 'T', changes)] }));
+    expect(accept.lines).toContain('    Env: staging → "prod -> prod"');
+    expect(accept.lines).toContain('    Tight: "a->bucket" → c');
+  });
+
+  it('reportPlanValue quotes ASCII `->` and every Unicode arrow block, and nothing else', () => {
+    const quoted = [
+      'a->b',
+      'a\u2190b', // ← first of Arrows
+      'a\u2192b', // → the separator itself
+      'a\u21FFb', // last of Arrows
+      'a\u2794b', // ➔ first dingbat arrow
+      'a\u27BFb', // last of the dingbat range
+      'a\u27F0b', // first of Supplemental Arrows-A
+      'a\u27F6b', // ⟶
+      'a\u27FFb',
+      'a\u2900b', // first of Supplemental Arrows-B
+      'a\u297Fb',
+      'a\u2B00b', // first of Miscellaneous Symbols and Arrows
+      'a\u2B62b', // ⭢
+      'a\u2B95b', // ⮕
+      'a\u2BFFb',
+      'a\u{1F800}b', // first of Supplemental Arrows-C
+      'a\u{1F812}b', // 🠒
+      'a\u{1F8FF}b',
+      'a\uFFE9b', // first halfwidth arrow
+      'a\uFFEBb', // ￫
+      'a\uFFECb',
+    ];
+    for (const v of quoted) expect(reportPlanValue(v), v).toBe(JSON.stringify(v));
+    // Just outside each block, and the ASCII neighbours of `->`.
+    const bare = [
+      'a\u218Fb',
+      'a\u2200b',
+      'a\u2793b',
+      'a\u27C0b',
+      'a\u28FFb',
+      'a\u2980b',
+      'a\u2AFFb',
+      'a\u2C00b',
+      'a\u{1F7FF}b',
+      'a\u{1F900}b',
+      'a\uFFE8b',
+      'a\uFFEDb',
+      'a-b',
+      // Other redirect spellings are the #3950 value-display class, not arrows.
+      'a>b',
+      'a- >b',
+      'a\u2212>b',
+      'a=>b',
+    ];
+    for (const v of bare) expect(reportPlanValue(v), v).toBe(v);
   });
 
   it('caps a plan path, never a plan value', () => {
@@ -402,7 +466,7 @@ describe('the --accept / --revert plans treat record- and readback-derived value
         outcomes: [drifted('R', 'T', [{ path: longPath, stateValue: 1, awsValue: longValue }])],
       })
     );
-    expect(lines).toContain(`    ${'p'.repeat(IDENT_MAX_CODE_POINTS)}...: 1 -> ${longValue}`);
+    expect(lines).toContain(`    ${'p'.repeat(IDENT_MAX_CODE_POINTS)}...: 1 → ${longValue}`);
   });
 
   it('caps a path on a SKIPPED row and on a readback-key list', () => {

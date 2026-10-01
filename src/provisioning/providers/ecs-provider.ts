@@ -15,6 +15,7 @@ import {
   waitUntilServicesStable,
   TagResourceCommand,
   UntagResourceCommand,
+  type DescribeClustersCommandOutput,
   type Tag,
   type KeyValuePair,
   type PortMapping,
@@ -84,6 +85,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -101,12 +103,21 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+} from '../masked-retry-logger.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 
@@ -242,13 +253,74 @@ function isPlainCfnObject(value: unknown): value is Record<string, unknown> {
  * cluster, matching what the short-format ARN implies.
  */
 function clusterNameFromServiceArn(arn: string): string | undefined {
-  // ARN = arn:<partition>:<service>:<region>:<account>:<resource>
-  const resource = arn.split(':')[5];
-  if (!resource) return undefined;
-  // resource = service/<clusterName>/<serviceName> (long) OR service/<serviceName> (short)
-  const segments = resource.split('/');
-  if (segments[0] !== 'service') return undefined;
+  const segments = serviceArnResourceSegments(arn);
+  if (segments === undefined) return undefined;
   return segments.length >= 3 ? segments[1] : undefined;
+}
+
+/**
+ * The service name a Service ARN ends with, in either the long
+ * (`service/<clusterName>/<serviceName>`) or the legacy short
+ * (`service/<serviceName>`) format; `undefined` for anything else.
+ */
+function serviceNameFromServiceArn(arn: string): string | undefined {
+  const segments = serviceArnResourceSegments(arn);
+  if (segments === undefined || segments.length < 2) return undefined;
+  return segments[segments.length - 1] || undefined;
+}
+
+/**
+ * The `/`-separated segments of a Service ARN's resource part
+ * (`arn:<partition>:ecs:<region>:<account>:<resource>`), starting with
+ * `service`; `undefined` when the input has no `service/...` resource. The one
+ * ARN split both {@link clusterNameFromServiceArn} and
+ * {@link serviceNameFromServiceArn} read, so they agree on every input.
+ */
+function serviceArnResourceSegments(arn: string): string[] | undefined {
+  const resource = arn.split(':').slice(5).join(':');
+  if (!resource) return undefined;
+  const segments = resource.split('/');
+  return segments[0] === 'service' ? segments : undefined;
+}
+
+/**
+ * The cluster NAME a Service's `Cluster` value addresses: the segment after
+ * `:cluster/` of a cluster ARN, otherwise the value itself (a bare name, or an
+ * ARN of another shape, whose whole value then becomes the needle: it can only
+ * over-mask). `undefined` for a non-string. A long-format Service ARN embeds
+ * this name.
+ */
+function clusterNameOfRef(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const marker = ':cluster/';
+  const at = value.startsWith('arn:') ? value.indexOf(marker) : -1;
+  return at >= 0 ? value.slice(at + marker.length) || undefined : value;
+}
+
+/**
+ * The service and cluster names a recorded Service physical id carries. The
+ * id is the service ARN `createService` stores, the composite
+ * `<clusterArn>|<serviceName>` form `readCurrentState` also accepts, or a bare
+ * service name (an import's explicit physical id), which is the name itself.
+ */
+function recordedServiceNames(physicalId: string): {
+  service: string | undefined;
+  cluster: string | undefined;
+} {
+  const sep = physicalId.indexOf('|');
+  if (sep >= 0) {
+    return {
+      service: physicalId.substring(sep + 1) || undefined,
+      cluster: clusterNameOfRef(physicalId.substring(0, sep)),
+    };
+  }
+  if (!physicalId.startsWith('arn:')) {
+    return { service: physicalId || undefined, cluster: undefined };
+  }
+  return {
+    service: serviceNameFromServiceArn(physicalId),
+    cluster: clusterNameFromServiceArn(physicalId),
+  };
 }
 
 /**
@@ -369,20 +441,106 @@ export class ECSProvider implements ResourceProvider {
     return this.ecsClient;
   }
 
+  /**
+   * The `ProvisioningError` a `create()` / `update()` catch throws, its caught
+   * error's text masked BEFORE it joins the message (issue #2177). Mostly AWS
+   * text, which quotes a rejected request value back (a cluster, family or
+   * service name, a role ARN) off the RESOLVED `properties` bag; also a cdkd
+   * refusal describing a bag value (`readConfigString`). Masking the raw text
+   * reaches the masker's whole-value arm and the operation's derived-name
+   * needles, which the deploy engine's mask of the assembled message cannot.
+   *
+   * The `cause` stays unmasked, and a message the mask CHANGED is stamped
+   * `markRedactedCause`, so the retry classifiers read that chain rather than a
+   * masked text a secret or a needle cut retry wording out of (the issue #4244
+   * class); an unchanged message is not stamped. A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap. Same
+   * logic as `wrapMaskedAwsError` (`src/deployment/retryable-errors.ts`, added
+   * by PR #4257): delegate to it once that is on `main`.
+   */
+  private wrapMaskedError(
+    log: MaskedLogSinks,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const raw = error instanceof Error ? error.message : String(error);
+    const masked = log.mask(raw);
+    const wrapped = build(masked);
+    return masked === raw ? wrapped : markRedactedCause(wrapped);
+  }
+
   // ─── Dispatch ─────────────────────────────────────────────────────
 
+  /**
+   * The masked sinks ONE `create()` / `update()` logs through (issue #2177,
+   * `.claude/rules/provider-masking.md`): `createMaskedLogSinks` over the
+   * context's masker, extended by `withDerivedNameMasks` with `pairs` — each
+   * `[template value, name derived from it]`. An ECS physical id or ARN
+   * embeds the cluster name, task-definition family or service name the
+   * template chose, any of which can be secret-derived; the needle masks it
+   * wherever it occurs (an ARN on a success line, an AWS echo, a pasteable
+   * command, which it then withholds). Built per call; never cached on the
+   * provider, which serves concurrent resources.
+   */
+  private operationSinks(
+    context: CreateContext | UpdateContext | undefined,
+    pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
+  ): MaskedLogSinks {
+    return withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      pairs
+    );
+  }
+
+  /**
+   * Create a resource.
+   *
+   * Each `create()` / `update()` builds ONE masked sink set from its own
+   * context (issue #2177) and routes every log line and wrapped AWS error text
+   * through it; a bag value a cdkd line interpolates is also masked RAW
+   * (`log.value`), so a secret below the masker's substring floor is caught
+   * too. Absent context means identity.
+   */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // `withDerivedNameMasks` drops a non-string name at runtime, so each cast
+    // below only narrows the type.
     switch (resourceType) {
       case 'AWS::ECS::Cluster':
-        return this.createCluster(logicalId, resourceType, properties);
+        return this.createCluster(
+          logicalId,
+          resourceType,
+          properties,
+          this.operationSinks(context, [
+            [properties['ClusterName'], properties['ClusterName'] as string | undefined],
+          ])
+        );
       case 'AWS::ECS::TaskDefinition':
-        return this.createTaskDefinition(logicalId, resourceType, properties);
+        return this.createTaskDefinition(
+          logicalId,
+          resourceType,
+          properties,
+          this.operationSinks(context, [
+            [properties['Family'], properties['Family'] as string | undefined],
+          ])
+        );
       case 'AWS::ECS::Service':
-        return this.createService(logicalId, resourceType, properties);
+        return this.createService(
+          logicalId,
+          resourceType,
+          properties,
+          this.operationSinks(context, [
+            [properties['ServiceName'], properties['ServiceName'] as string | undefined],
+            // The cluster name the long-format service ARN embeds (the value
+            // itself when it is a bare name).
+            [properties['Cluster'], clusterNameOfRef(properties['Cluster'])],
+          ])
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -392,32 +550,62 @@ export class ECSProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Update a resource. `context` is read for its masker only (issue #2177);
+   * see `create()`.
+   *
+   * The recorded name is what the physical id carries, and either side's
+   * template value being secret-derived makes it a needle. The desired side
+   * covers the threaded callers (a rotated secret resolves to a NEW plaintext
+   * the masker knows, and the needle then removes the OLD one); the previous
+   * side is a backstop for a name state recorded as a `{{resolve:` reference
+   * or `***`. Both can only over-mask.
+   */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ECS::Cluster':
+        // A Cluster's physical id IS its name.
         return this.updateCluster(
           logicalId,
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          this.operationSinks(context, [
+            [properties['ClusterName'], physicalId],
+            [previousProperties['ClusterName'], physicalId],
+          ])
         );
       case 'AWS::ECS::TaskDefinition':
+        // Refuses before any AWS call or log line, interpolating no bag value.
         return this.updateTaskDefinition(logicalId, physicalId, resourceType, properties);
-      case 'AWS::ECS::Service':
+      case 'AWS::ECS::Service': {
+        // A Service's physical id is its ARN, which embeds the service name
+        // and (long format) the cluster name.
+        const { service: recordedService, cluster: recordedCluster } =
+          recordedServiceNames(physicalId);
         return this.updateService(
           logicalId,
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          this.operationSinks(context, [
+            [properties['ServiceName'], recordedService],
+            [previousProperties['ServiceName'], recordedService],
+            [properties['Cluster'], recordedCluster],
+            [previousProperties['Cluster'], recordedCluster],
+            [properties['Cluster'], clusterNameOfRef(properties['Cluster'])],
+          ])
         );
+      }
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -474,9 +662,10 @@ export class ECSProvider implements ResourceProvider {
   private async createCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating ECS cluster ${logicalId}`);
+    log.debug(`Creating ECS cluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
@@ -520,22 +709,30 @@ export class ECSProvider implements ResourceProvider {
         throw new Error('CreateCluster did not return cluster ARN');
       }
 
-      this.logger.debug(`Successfully created ECS cluster ${logicalId}: ${cluster.clusterArn}`);
+      log.debug(`Successfully created ECS cluster ${logicalId}: ${cluster.clusterArn}`);
 
+      // The name AWS answers with, not the one requested: were ECS to fold a
+      // spelling, a record of the requested one would name a cluster that
+      // does not exist under it (go-to-k/cdkd#3937 review).
       return {
-        physicalId: clusterName,
+        physicalId: cluster.clusterName ?? clusterName,
         attributes: {
           Arn: cluster.clusterArn,
         },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create ECS cluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        clusterName,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create ECS cluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            clusterName,
+            cause
+          )
       );
     }
   }
@@ -545,9 +742,12 @@ export class ECSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating ECS cluster ${logicalId}: ${physicalId}`);
+    // The physical id is the cluster NAME, a template value: masked RAW.
+    const shownCluster = log.value(physicalId);
+    log.debug(`Updating ECS cluster ${logicalId}: ${shownCluster}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
@@ -567,7 +767,7 @@ export class ECSProvider implements ResourceProvider {
               ) || [],
           })
         );
-        this.logger.debug(`Updated capacity providers for ECS cluster ${physicalId}`);
+        log.debug(`Updated capacity providers for ECS cluster ${shownCluster}`);
       }
 
       // Apply ClusterSettings / Configuration / ServiceConnectDefaults via
@@ -622,8 +822,8 @@ export class ECSProvider implements ResourceProvider {
             ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
           })
         );
-        this.logger.debug(
-          `Updated ECS cluster ${physicalId} (settings=${settingsChanged}, config=${configChanged}, svcConnect=${svcConnectChanged})`
+        log.debug(
+          `Updated ECS cluster ${shownCluster} (settings=${settingsChanged}, config=${configChanged}, svcConnect=${svcConnectChanged})`
         );
       }
 
@@ -640,7 +840,8 @@ export class ECSProvider implements ResourceProvider {
           resourceType,
           logicalId,
           previousProperties['Tags'],
-          properties['Tags']
+          properties['Tags'],
+          log
         );
       }
 
@@ -653,12 +854,17 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update ECS cluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update ECS cluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -719,9 +925,10 @@ export class ECSProvider implements ResourceProvider {
   private async createTaskDefinition(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating ECS task definition ${logicalId}`);
+    log.debug(`Creating ECS task definition ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
@@ -770,7 +977,7 @@ export class ECSProvider implements ResourceProvider {
         throw new Error('RegisterTaskDefinition did not return task definition ARN');
       }
 
-      this.logger.debug(
+      log.debug(
         `Successfully created ECS task definition ${logicalId}: ${taskDef.taskDefinitionArn}`
       );
 
@@ -782,12 +989,17 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create ECS task definition ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create ECS task definition ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -876,9 +1088,10 @@ export class ECSProvider implements ResourceProvider {
   private async createService(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating ECS service ${logicalId}`);
+    log.debug(`Creating ECS service ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
@@ -963,7 +1176,7 @@ export class ECSProvider implements ResourceProvider {
         throw new Error('CreateService did not return service ARN');
       }
 
-      this.logger.debug(`Successfully created ECS service ${logicalId}: ${service.serviceArn}`);
+      log.debug(`Successfully created ECS service ${logicalId}: ${service.serviceArn}`);
 
       // Under --full-wait a steady-state timeout has to fail the resource,
       // which means throwing AFTER AWS has already created the service. The
@@ -1001,7 +1214,8 @@ export class ECSProvider implements ResourceProvider {
         await this.settleService(
           logicalId,
           service.serviceName ?? service.serviceArn,
-          properties['Cluster'] as string | undefined
+          properties['Cluster'] as string | undefined,
+          log
         );
       } catch (waitError) {
         // Include --cluster: a service in a non-default cluster cannot be
@@ -1012,8 +1226,9 @@ export class ECSProvider implements ResourceProvider {
         // #3136): the cluster is a TEMPLATE value, so it is sanitized and
         // shell-quoted, and one that cannot be printed exactly withholds the
         // command. The service ARN is AWS-minted but embeds the
-        // template-chosen service name, so it takes the same gate.
-        const aws = pasteableAwsCommand();
+        // template-chosen service name, so it takes the same gate. The
+        // operation's masker withholds a command naming a secret (issue #2177).
+        const aws = pasteableAwsCommand(log.mask);
         // A truthy NON-string reaches the tag and withholds the command:
         // dropping `--cluster` would address the default cluster instead.
         const cleanupCluster = properties['Cluster'] as string | undefined;
@@ -1031,11 +1246,11 @@ export class ECSProvider implements ResourceProvider {
           // container, and this delete removes the service the user would
           // reach for first when asking "why". Say where the evidence
           // still lives (issue #1291 item 2).
-          this.logger.warn(
+          log.warn(
             `Deleted partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed, so the next deploy's CreateService does not collide on the name. Its stopped tasks remain inspectable for about an hour: ${listStopped.render()}`
           );
         } catch (cleanupError) {
-          this.logger.warn(
+          log.warn(
             `Failed to clean up partially-created ECS service ${logicalId} (${service.serviceArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${aws`aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`.render()}`
           );
         }
@@ -1059,12 +1274,17 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create ECS service ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        serviceName,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create ECS service ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            serviceName,
+            cause
+          )
       );
     }
   }
@@ -1091,10 +1311,11 @@ export class ECSProvider implements ResourceProvider {
   private async settleService(
     logicalId: string,
     serviceRef: string,
-    cluster: string | undefined
+    cluster: string | undefined,
+    log: MaskedLogSinks
   ): Promise<void> {
     if (process.env['CDKD_FULL_WAIT'] === 'true') {
-      this.logger.debug(`Waiting for ECS service ${logicalId} to reach steady state...`);
+      log.debug(`Waiting for ECS service ${logicalId} to reach steady state...`);
       // 600s matches Terraform's `aws_ecs_service` default create timeout. An
       // explicit `--resource-timeout` (per-type or global) lifts the cap so
       // the inner waiter can never undercut the outer per-resource deadline
@@ -1132,20 +1353,21 @@ export class ECSProvider implements ResourceProvider {
           deployments && deployments.length === 1 ? deployments[0]?.rolloutState : undefined;
         if (rolloutState === undefined || rolloutState === 'COMPLETED') break;
         if (Date.now() >= rolloutDeadline) {
-          this.logger.warn(
+          log.warn(
             `ECS service ${logicalId} is steady but its rollout is still ${rolloutState} after the post-stability grace window; continuing`
           );
           break;
         }
         await settleRolloutDelays.sleep(3_000);
       }
-      this.logger.debug(`ECS service ${logicalId} reached steady state`);
+      log.debug(`ECS service ${logicalId} reached steady state`);
       return;
     }
 
     // Rendered through `pasteableAwsCommand` (issue #3136): the cluster and
-    // the service name are TEMPLATE values.
-    const aws = pasteableAwsCommand();
+    // the service name are TEMPLATE values, and the operation's masker
+    // withholds a command naming a secret (issue #2177).
+    const aws = pasteableAwsCommand(log.mask);
     const clusterArg = cluster ? aws` --cluster ${cluster}` : aws``;
     // Mention --full-wait only when the invoking COMMAND actually declares
     // it (cdkd deploy sets CDKD_WAIT_FLAGS_AVAILABLE; `cdkd drift --revert`
@@ -1154,9 +1376,12 @@ export class ECSProvider implements ResourceProvider {
     // pass an option the command rejects (issue #1291 item 1).
     const fullWaitHint =
       process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true' ? '; pass --full-wait to wait' : '';
+    // INFO has no masked sink; the finished line goes through the same mask.
     this.logger.info(
-      `ECS service ${logicalId} accepted (not waiting for steady state${fullWaitHint}). ` +
-        `To wait manually: ${aws`aws ecs wait services-stable${clusterArg} --services ${serviceRef}`.render()}`
+      log.mask(
+        `ECS service ${logicalId} accepted (not waiting for steady state${fullWaitHint}). ` +
+          `To wait manually: ${aws`aws ecs wait services-stable${clusterArg} --services ${serviceRef}`.render()}`
+      )
     );
   }
 
@@ -1165,17 +1390,32 @@ export class ECSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating ECS service ${logicalId}: ${physicalId}`);
+    log.debug(`Updating ECS service ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
-    // ServiceName is immutable - if changed, requires replacement
+    // ServiceName is immutable - if changed, requires replacement. A
+    // secret-derived name is recorded as its `{{resolve:...}}` reference and
+    // handed here resolved: the name the physical id carries decides instead
+    // (go-to-k/cdkd#4263).
     const newServiceName = properties['ServiceName'] as string | undefined;
     const oldServiceName = previousProperties['ServiceName'] as string | undefined;
-    if (newServiceName && oldServiceName && newServiceName !== oldServiceName) {
+    if (
+      newServiceName &&
+      oldServiceName &&
+      newServiceName !== oldServiceName &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'ServiceName',
+        desired: newServiceName,
+        previous: oldServiceName,
+        physicalName: recordedServiceNames(physicalId).service,
+      }))
+    ) {
       throw new ProvisioningError(
         `Cannot update ServiceName for ECS service ${logicalId} (immutable property, requires replacement)`,
         resourceType,
@@ -1204,12 +1444,18 @@ export class ECSProvider implements ResourceProvider {
         'AWS::ECS::Service DeploymentController'
       );
     } catch (error) {
-      throw new ProvisioningError(
-        error instanceof Error ? error.message : String(error),
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
+      // The refusal can describe the bag value it read (issue #2177).
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            text,
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          )
       );
     }
     const isEcsController = deploymentControllerType === 'ECS';
@@ -1233,9 +1479,10 @@ export class ECSProvider implements ResourceProvider {
     // (which would report success, poison state with the new value, and leave
     // AWS on the old config — the exact silent-drop class #975 fixes).
     if (!isEcsController && (loadBalancersChanged || serviceRegistriesChanged)) {
+      // The controller type is a bag value, masked RAW (issue #2177).
       throw new ProvisioningError(
         `AWS::ECS::Service '${logicalId}' changes LoadBalancers/ServiceRegistries under the ` +
-          `'${deploymentControllerType}' deployment controller, which applies them via a new ` +
+          `'${log.value(deploymentControllerType)}' deployment controller, which applies them via a new ` +
           `CodeDeploy deployment / task set rather than UpdateService. cdkd does not support ` +
           `updating these under a non-ECS controller; recreate the service or manage the ` +
           `blue/green deployment out-of-band.`,
@@ -1654,7 +1901,11 @@ export class ECSProvider implements ResourceProvider {
     // CFn ForceNewDeployment `{EnableForceNewDeployment, ForceNewDeploymentNonce}`
     // -> the SDK's plain `forceNewDeployment` boolean (only send `true`; the
     // field is a one-shot trigger, never persisted state).
-    const forceNewDeploymentInput = this.resolveForceNewDeployment(properties, previousProperties);
+    const forceNewDeploymentInput = this.resolveForceNewDeployment(
+      properties,
+      previousProperties,
+      log
+    );
 
     // Verbatim PascalCase->camelCase conversion PLUS the member-level removal
     // reset inside `DeploymentCircuitBreaker` (issue #1861 — the last bullet
@@ -1713,7 +1964,8 @@ export class ECSProvider implements ResourceProvider {
           resourceType,
           logicalId,
           previousProperties['Tags'],
-          properties['Tags']
+          properties['Tags'],
+          log
         );
       }
 
@@ -1722,7 +1974,8 @@ export class ECSProvider implements ResourceProvider {
       await this.settleService(
         logicalId,
         service?.serviceName ?? physicalId,
-        properties['Cluster'] as string | undefined
+        properties['Cluster'] as string | undefined,
+        log
       );
 
       return {
@@ -1735,12 +1988,17 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update ECS service ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update ECS service ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1868,29 +2126,33 @@ export class ECSProvider implements ResourceProvider {
    * (`{ key, value }`) for tags. Resource ARN identifies the cluster /
    * service / task definition. Both sides are read through `planTagDiff`
    * (go-to-k/cdkd#3994): an unreadable record untags nothing.
+   *
+   * `log` is the calling update's masked sink (issue #2177): the ARN embeds
+   * the cluster or service name, which can be secret-derived.
    */
   private async applyTagDiff(
     resourceArn: string,
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    log: MaskedLogSinks
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
+      log.warn(tagWarning);
     }
     const tagsToAdd: Tag[] = [...plan.set].map(([key, value]) => ({ key, value }));
     const tagsToRemove = plan.remove;
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(new UntagResourceCommand({ resourceArn, tagKeys: tagsToRemove }));
-      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ECS resource ${resourceArn}`);
+      log.debug(`Removed ${tagsToRemove.length} tag(s) from ECS resource ${resourceArn}`);
     }
     if (tagsToAdd.length > 0) {
       await this.getClient().send(new TagResourceCommand({ resourceArn, tags: tagsToAdd }));
-      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ECS resource ${resourceArn}`);
+      log.debug(`Added/updated ${tagsToAdd.length} tag(s) on ECS resource ${resourceArn}`);
     }
   }
 
@@ -2961,12 +3223,13 @@ export class ECSProvider implements ResourceProvider {
    */
   private resolveForceNewDeployment(
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): boolean | undefined {
     const desired = properties['ForceNewDeployment'];
     if (desired == null) return undefined;
     if (typeof desired !== 'object' || Array.isArray(desired)) {
-      this.logger.warn(
+      log.warn(
         `AWS::ECS::Service ForceNewDeployment is not an object (got ${Array.isArray(desired) ? 'array' : typeof desired}); skipping the forced-rollout translation`
       );
       return undefined;
@@ -3538,19 +3801,44 @@ export class ECSProvider implements ResourceProvider {
   private async importCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'ClusterName');
     if (explicit) {
+      let resp: DescribeClustersCommandOutput;
       try {
-        const resp = await this.getClient().send(
-          new DescribeClustersCommand({ clusters: [explicit] })
-        );
-        return resp.clusters?.[0]?.clusterName
-          ? { physicalId: resp.clusters[0].clusterName, attributes: {} }
-          : null;
+        resp = await this.getClient().send(new DescribeClustersCommand({ clusters: [explicit] }));
       } catch (err) {
         if (this.isClusterNotFoundException(err) || this.isServiceNotFoundException(err)) {
           return null;
         }
         throw err;
       }
+      // Read OUTSIDE the `try`: its not-found arm matches message substrings,
+      // so an error this code throws from the answer must never reach it.
+      //
+      // `DescribeClusters` keeps listing a DELETED cluster, as `INACTIVE`,
+      // for a while after its delete, and its name is free to create again,
+      // so that one is absent — for every caller: `cdkd import` (an explicit
+      // `--resource` included) and orphan adoption no longer adopt a dead
+      // cluster, and the stale-attribute heal reads it as not found. Any
+      // other status (ACTIVE, PROVISIONING, an unknown one) holds the name:
+      // the replacement name probe reads a found cluster as its holder
+      // (go-to-k/cdkd#3937), and refusing is the safe direction there.
+      const cluster = resp.clusters?.[0];
+      if (cluster?.clusterName) {
+        return cluster.status !== 'INACTIVE'
+          ? { physicalId: cluster.clusterName, attributes: {} }
+          : null;
+      }
+      // No cluster listed: only a `MISSING` failure says the name is free.
+      // Any other reason is a lookup that did not answer, and reading it as
+      // free would let the probe hand the name to a create that adopts.
+      const unanswered = (resp.failures ?? []).find((f) => f.reason !== 'MISSING');
+      if (unanswered !== undefined) {
+        throw new Error(
+          `DescribeClusters did not answer for cluster ${displaySafe(explicit)}: ` +
+            `${displaySafe(unanswered.reason ?? 'no reason given')}` +
+            (unanswered.detail !== undefined ? ` (${displaySafe(unanswered.detail)})` : '')
+        );
+      }
+      return null;
     }
     // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
     // that tag never exists on a real resource and the walk could not match

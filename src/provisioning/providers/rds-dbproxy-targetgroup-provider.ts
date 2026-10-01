@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import type { CreateContext, UpdateContext } from '../../types/resource.js';
@@ -45,6 +46,7 @@ import {
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 
 /**
  * A SUPERSET of an RDS DB cluster or DB instance identifier: a letter, then up
@@ -456,6 +458,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     // Defensive: reject diffs in immutable identity fields. Replacement-rules.ts
     // SHOULD have routed those to a CREATE+DELETE replacement upstream; we
     // double-check here so a missing rule entry doesn't silently corrupt state.
+    // The fields let through below because their recorded side is a secret
+    // reference: confirmed against AWS before any write (see the probe).
+    const exemptedBySecretReference: string[] = [];
     for (const field of ['DBProxyName', 'TargetGroupName']) {
       const oldVal = previousProperties[field];
       // Compare the GUARDED value for TargetGroupName, not the raw one. The
@@ -468,7 +473,21 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       // 'default' as equivalent on either side to avoid false-positive diff.
       const normalize = (v: unknown) =>
         field === 'TargetGroupName' && (v === undefined || v === 'default') ? 'default' : v;
-      if (JSON.stringify(normalize(oldVal)) !== JSON.stringify(normalize(newVal))) {
+      // A secret-derived name is recorded as its `{{resolve:...}}` reference
+      // and handed here resolved, which is no change (go-to-k/cdkd#4275). The
+      // physical id is the target group ARN, which names neither field.
+      if (JSON.stringify(normalize(oldVal)) === JSON.stringify(normalize(newVal))) continue;
+      if (
+        await unchangedBehindSecretReference({
+          resourceType,
+          key: field,
+          desired: newVal,
+          previous: oldVal,
+          maskSecrets: context?.maskSecrets,
+        })
+      ) {
+        exemptedBySecretReference.push(field);
+      } else {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
@@ -505,6 +524,90 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         physicalId,
         'pre-update'
       );
+    }
+
+    // go-to-k/cdkd#4275: every write below is addressed by the DESIRED proxy
+    // and target group names, not by the physical id. A field exempted above
+    // proves only that its desired value is still secret-derived, and a secret
+    // ROTATED under an unchanged reference resolves to another proxy's name:
+    // AWS must confirm the desired names still address the recorded target
+    // group (its ARN is the physical id) before anything is written. Any
+    // failure to confirm keeps the refusal.
+    if (exemptedBySecretReference.length > 0) {
+      const fields = exemptedBySecretReference.join(' / ');
+      // Each resolved name masked as a VALUE first, so one below the masker's
+      // substring floor is caught where AWS quotes it, then the whole line.
+      const base = context?.maskSecrets ?? ((t: string) => t);
+      const maskNames = (text: string): string => {
+        let out = text;
+        // Longest first: a name inside the other must not break its match.
+        for (const name of [dbProxyName, targetGroupName].sort((a, b) => b.length - a.length)) {
+          const masked = base(name);
+          if (name !== '' && masked !== name) out = out.split(name).join(masked);
+        }
+        return base(out);
+      };
+      let liveArn: string | undefined;
+      let lookupFailure: unknown;
+      try {
+        const response = await this.getClient().send(
+          new DescribeDBProxyTargetGroupsCommand({
+            DBProxyName: dbProxyName,
+            TargetGroupName: targetGroupName,
+          })
+        );
+        liveArn = response.TargetGroups?.[0]?.TargetGroupArn;
+      } catch (error) {
+        // A NOT-FOUND answer is an answer, not a failure: the resolved names
+        // address nothing, which is the usual shape of a rotated proxy name
+        // (AWS throws rather than returning an empty list). It falls through
+        // to the typed refusal below; re-running would never help it.
+        const notFound =
+          error instanceof Error &&
+          (error.name === 'DBProxyNotFoundFault' ||
+            error.name === 'DBProxyTargetGroupNotFoundFault');
+        if (!notFound) lookupFailure = error ?? new Error('an empty rejection');
+        this.logger.debug(
+          maskNames(
+            `Could not confirm that the resolved names address ${logicalId}'s target group: ` +
+              describeAwsFailure(error).detail
+          )
+        );
+      }
+      if (lookupFailure !== undefined) {
+        // The refusal names the failure's CLASS only (the wire code, e.g.
+        // `ThrottlingException`, `AccessDenied`): it
+        // is not a rotation, and the operator's next step depends on which.
+        // A `ProvisioningError`, NOT `ResourceUpdateNotSupportedError`: the
+        // engine turns the latter into a replacement under `--replace`, and an
+        // unconfirmed lookup is no evidence of a rename. The AWS text stays on
+        // the cause (masked by the engine's error path), stamped so the retry
+        // classifiers read it: a throttle stays retryable.
+        const failureClass =
+          lookupFailure instanceof Error && lookupFailure.name !== ''
+            ? lookupFailure.name
+            : 'an unreadable failure';
+        const refusal = new ProvisioningError(
+          `${fields} of AWS::RDS::DBProxyTargetGroup ${logicalId} is secret-derived, and whether ` +
+            `the value its secret resolves to still addresses the recorded target group could ` +
+            `not be confirmed (${maskNames(failureClass)}) — re-run once the lookup can succeed`,
+          resourceType,
+          logicalId,
+          physicalId,
+          lookupFailure instanceof Error ? lookupFailure : undefined
+        );
+        markRedactedCause(refusal);
+        throw refusal;
+      }
+      if (liveArn !== physicalId) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `${fields} is immutable on AWS::RDS::DBProxyTargetGroup, and the value its secret now ` +
+            `resolves to ${liveArn === undefined ? 'addresses no target group' : 'addresses a different target group'} ` +
+            `(the secret may have been rotated) — destroy + redeploy to change it`
+        );
+      }
     }
 
     // go-to-k/cdkd#3945: both sides are read as target lists before ANY call,

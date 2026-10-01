@@ -2854,10 +2854,9 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * {@link substitutedSpellingOf}) -- each keeps the plaintext in the child, and
  * for the outside-the-token frame in the parent's record; so does an
  * outside-the-token frame sharing its value with a leaf of another token,
- * which (iv) refuses. The last refusal covers the carry only: the PARENT's own
- * row, like any resource, still persists a token assembled from another
- * secret through the position pass's arms, which write the expression the
- * resolver recorded for it (go-to-k/cdkd#4166). A rollback replay records
+ * which (iv) refuses. For a template's secret-assembled token the resolver
+ * refuses first (go-to-k/cdkd#4166), recording nothing, so the carry's
+ * refusal backs that one up. A rollback replay records
  * nothing here (`resolveReplayProps` resolves strings, not intrinsic objects):
  * a journal a
  * deploy wrote holds a carried frame's persisted spelling as a STRING, which

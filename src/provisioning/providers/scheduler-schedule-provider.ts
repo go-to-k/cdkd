@@ -22,12 +22,15 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
 import { hasClauseBreak, isInertUnquoted } from '../../utils/pasteable-command.js';
+import { isAwsCliLiteral } from '../replacement-protection-advice.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import {
   redactedDeleteAddressFields,
@@ -297,15 +300,26 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const groupName = this.groupNameOf(properties);
     const previousGroupName = this.groupNameOf(previousProperties);
+    const mask = maskerOrIdentity(context?.maskSecrets);
 
     if (groupName !== previousGroupName) {
       // GroupName is how the API ADDRESSES the schedule — there is no
       // in-place move between groups. The engine's --replace fallback
       // recreates the schedule in the new group.
+      //
+      // Deliberately refused for a secret-derived group too
+      // (go-to-k/cdkd#4275): the record keeps it as its `{{resolve:...}}`
+      // reference, so this refuses every in-place update of such a schedule,
+      // and nothing non-secret in the record identifies the group (the
+      // recorded Arn embeds it). A probe of the resolved group cannot tell a
+      // rotated secret from an unchanged one: two environments whose groups
+      // both hold a schedule of this name would have the other one's
+      // schedule overwritten.
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
@@ -321,8 +335,12 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       );
     }
 
+    // Masked: a rollback replay hands both sides RESOLVED, so a secret-derived
+    // group reaches this line (go-to-k/cdkd#4275).
     this.logger.debug(
-      `Updating Schedule ${logicalId}: ${physicalId}${groupName ? ` (group: ${groupName})` : ''}`
+      mask(
+        `Updating Schedule ${logicalId}: ${mask(physicalId)}${groupName ? ` (group: ${mask(groupName)})` : ''}`
+      )
     );
 
     try {
@@ -387,8 +405,14 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       // command or in the prose (go-to-k/cdkd#3950). Nor is one that is not
       // inert with its quotes stripped (go-to-k/cdkd#4205): an apostrophe in
       // whatever the operator pastes with the hint flips the quote parity.
+      // Nor is one the aws CLI itself acts on, e.g. a `file://` prefix or a
+      // leading `-` (go-to-k/cdkd#4199).
       const nameShowable =
-        !!safeId && safeId === physicalId && !hasClauseBreak(safeId) && isInertUnquoted(safeId);
+        !!safeId &&
+        safeId === physicalId &&
+        !hasClauseBreak(safeId) &&
+        isInertUnquoted(safeId) &&
+        isAwsCliLiteral(safeId);
       const manualHint = nameShowable
         ? `If the schedule lives in a custom group, delete it manually: ` +
           `${withPasteableAwsProfile('aws scheduler delete-schedule')} --name ${shellQuote(safeId)} --group-name '<group>'`
