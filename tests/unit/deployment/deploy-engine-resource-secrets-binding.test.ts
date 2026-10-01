@@ -474,6 +474,11 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
 
     expect(mockProvider.create).toHaveBeenCalledOnce();
     expect(mockProvider.delete).toHaveBeenCalled();
+    // CREATE before DELETE is what tells this arm from site 5's
+    // destroy-then-create, which binds the same scope with the same counts.
+    expect(mockProvider.create!.mock.invocationCallOrder[0]).toBeLessThan(
+      mockProvider.delete!.mock.invocationCallOrder[0]!
+    );
     expect(seenCreate).toEqual([EXPECTED_BAG]);
     expectBoundBagsAreResolverBags();
   });

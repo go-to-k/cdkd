@@ -454,77 +454,82 @@ describe('UpdateReplacePolicy: Snapshot on the create-first cleanup delete (#135
 });
 
 describe('UpdateReplacePolicy: Snapshot on the --replace delete-first (#4292)', () => {
-    // `--replace` turns a create-first that could not take the name into
-    // delete-OLD-first, then re-create. That delete is the old resource's last
-    // moment, so a Snapshot policy must reach it exactly as it reaches the
-    // create-first cleanup delete above. Driven through the name-idempotent
-    // arm: the create-first returns the OLD physical id, which is the
-    // provider saying the name is held by the resource we are replacing.
-    async function invokeDeleteFirst(updateReplacePolicy: string | undefined): Promise<void> {
-      const engine = makeEngine({ replace: true, forceStatefulRecreation: true });
-      (deleteProvider.create as ReturnType<typeof vi.fn>).mockResolvedValue({
+  // `--replace` turns a create-first that could not take the name into
+  // delete-OLD-first, then re-create. That delete is the old resource's last
+  // moment, so a Snapshot policy must reach it exactly as it reaches the
+  // create-first cleanup delete above. Driven through the name-idempotent
+  // arm: the create-first returns the OLD physical id, which is the
+  // provider saying the name is held by the resource we are replacing.
+  async function invokeDeleteFirst(updateReplacePolicy: string | undefined): Promise<void> {
+    const engine = makeEngine({ replace: true, forceStatefulRecreation: true });
+    (deleteProvider.create as ReturnType<typeof vi.fn>).mockResolvedValue({
+      physicalId: 'phys-target',
+      attributes: {},
+    });
+    const change: ResourceChange = {
+      logicalId: 'Target',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::RDS::DBInstance',
+      currentProperties: { Immutable: 'a' },
+      desiredProperties: { Immutable: 'b' },
+      propertyChanges: [
+        { path: 'Immutable', oldValue: 'a', newValue: 'b', requiresReplacement: true },
+      ],
+    };
+    const stateResources: Record<string, unknown> = {
+      Target: {
         physicalId: 'phys-target',
-        attributes: {},
-      });
-      const change: ResourceChange = {
-        logicalId: 'Target',
-        changeType: 'UPDATE',
         resourceType: 'AWS::RDS::DBInstance',
-        currentProperties: { Immutable: 'a' },
-        desiredProperties: { Immutable: 'b' },
-        propertyChanges: [
-          { path: 'Immutable', oldValue: 'a', newValue: 'b', requiresReplacement: true },
-        ],
-      };
-      const stateResources: Record<string, unknown> = {
+        properties: { Immutable: 'a' },
+        attributes: {},
+        dependencies: [],
+      },
+    };
+    const template = {
+      Resources: {
         Target: {
-          physicalId: 'phys-target',
-          resourceType: 'AWS::RDS::DBInstance',
-          properties: { Immutable: 'a' },
-          attributes: {},
-          dependencies: [],
+          Type: 'AWS::RDS::DBInstance',
+          Properties: { Immutable: 'b' },
+          ...(updateReplacePolicy !== undefined && { UpdateReplacePolicy: updateReplacePolicy }),
         },
-      };
-      const template = {
-        Resources: {
-          Target: {
-            Type: 'AWS::RDS::DBInstance',
-            Properties: { Immutable: 'b' },
-            ...(updateReplacePolicy !== undefined && { UpdateReplacePolicy: updateReplacePolicy }),
-          },
-        },
-      } as unknown as CloudFormationTemplate;
-      type ProvisionResourceFn = (
-        logicalId: string,
-        change: ResourceChange,
-        stateResources: Record<string, unknown>,
-        stackName: string,
-        template: CloudFormationTemplate
-      ) => Promise<void>;
-      const provisionResource = (
-        engine as unknown as { provisionResource: ProvisionResourceFn }
-      ).provisionResource.bind(engine);
-      await provisionResource('Target', change, stateResources, 'MyStack', template);
-    }
+      },
+    } as unknown as CloudFormationTemplate;
+    type ProvisionResourceFn = (
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, unknown>,
+      stackName: string,
+      template: CloudFormationTemplate
+    ) => Promise<void>;
+    const provisionResource = (
+      engine as unknown as { provisionResource: ProvisionResourceFn }
+    ).provisionResource.bind(engine);
+    await provisionResource('Target', change, stateResources, 'MyStack', template);
+  }
 
-    it('threads a generated identifier into the delete-first of the old resource', async () => {
-      await invokeDeleteFirst('Snapshot');
-      // Delete-first ran: the old id was deleted BEFORE the re-create.
-      expect(deleteProvider.create).toHaveBeenCalledTimes(2);
-      expect(deleteContextArg()['finalSnapshotIdentifier']).toMatch(
-        /^phys-target-final-\d{8}-\d{6}$/
-      );
-      expect(deleteContextArg()['deletionPolicy']).toBe('Snapshot');
-    });
-
-    it('policy absent — the delete-first carries no identifier', async () => {
-      await invokeDeleteFirst(undefined);
-      expect(deleteProvider.create).toHaveBeenCalledTimes(2);
-      expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
-    });
+  it('threads a generated identifier into the delete-first of the old resource', async () => {
+    await invokeDeleteFirst('Snapshot');
+    // Delete-first ran: the old id was deleted BEFORE the re-create.
+    expect(deleteProvider.create).toHaveBeenCalledTimes(2);
+    const createOrder = (deleteProvider.create as ReturnType<typeof vi.fn>).mock.invocationCallOrder;
+    const deleteOrder = (deleteProvider.delete as ReturnType<typeof vi.fn>).mock.invocationCallOrder;
+    expect(deleteOrder[0]).toBeLessThan(createOrder[1]!);
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toMatch(
+      /^phys-target-final-\d{8}-\d{6}$/
+    );
+    expect(deleteContextArg()['deletionPolicy']).toBe('Snapshot');
   });
 
-  describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement fallback (#1354)', () => {
+  it('policy absent — the delete-first carries no identifier', async () => {
+    await invokeDeleteFirst(undefined);
+    expect(deleteProvider.create).toHaveBeenCalledTimes(2);
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+    // CloudFormation's UpdateReplacePolicy default, as on the #1354 sibling.
+    expect(deleteContextArg()['deletionPolicy']).toBe('Delete');
+  });
+});
+
+describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement fallback (#1354)', () => {
   async function invokeUpdateFallback(
     engineOptions: Record<string, unknown>,
     stateExtra: Record<string, unknown>

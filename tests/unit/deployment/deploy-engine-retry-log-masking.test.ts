@@ -515,7 +515,9 @@ describe('DeployEngine - the retry give-up summary is masked (issue #2038)', () 
         thrown.push(e);
       });
 
-    // Non-vacuity: delete-first ran, and the re-create was retried once.
+    // Non-vacuity: delete-first ran, the re-create was retried once, and the
+    // deploy completed.
+    expect(thrown).toEqual([]);
     expect(mockProvider.delete).toHaveBeenCalledTimes(1);
     expect(creates).toBe(3);
     const attemptLine = debugs.find((m) => m.includes('Retrying Pool in'));
