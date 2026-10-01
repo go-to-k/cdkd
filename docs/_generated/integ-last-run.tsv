@@ -109,7 +109,7 @@ ecs-schedule-targets	2026-09-30T21:08:17Z	PASS	70	verify.sh	rc ok, orph clean
 ecs-service-update-props	2026-09-30T22:20:55Z	PASS	141	verify.sh	PR #4269 (#2177 ECS masker threading, rebased onto #4262) @1279dda57; rc ok, destroy 0 errors, no leftovers
 efs-immutable-replacement	2026-09-30T08:37:29Z	PASS	75	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
-efs-standalone	2026-09-30T08:37:29Z	PASS	161	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
+efs-standalone	2026-10-01T03:22:05Z	PASS	160	verify.sh	rc ok, orph clean (#4257)
 elasticache-replicationgroup-getatt	2026-09-29T14:00:50Z	PASS	776	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 elbv2-same-name-replacement	2026-09-29T02:36:21Z	PASS	75	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, same-name --replace still delete-first, 12 deleted 0 errors, orph clean
 emr-cluster	2026-09-30T17:19:24Z	PASS	715	verify.sh	PR #4246 (#2204 EMR --remove-protection compensation wraps delete) @ceb272363; rc ok, destroy 0 errors, no state/IAM/VPC/cluster leftovers
@@ -135,23 +135,23 @@ full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness r
 gc-custom-asset-names	2026-09-29T16:32:35Z	PASS	280	verify.sh	rc ok, orph clean; eu-west-1, custom names round-trip through the #4114 marker validation
 getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 getstackoutput-crossregion	2026-09-29T06:29:54Z	PASS	76	verify.sh	rc ok, orph clean (#3950 lane A, #4052)
-glue-securityconfig-replace	2026-09-29T12:06:55Z	PASS	105	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
-glue-update-hardening	2026-09-29T15:34:01Z	PASS	226	verify.sh	PR #4121 (#4073 log group + Glue Tags through the shared reader) @bf15c97; rc ok, destroy 0 errors, no state/lock/CFn leftovers; Assertion 13 exact tag sets on create and update for Workflow, Job and log group
+glue-securityconfig-replace	2026-10-01T03:22:05Z	PASS	60	verify.sh	rc ok, orph clean (#4257)
+glue-update-hardening	2026-10-01T03:22:05Z	PASS	391	verify.sh	rc ok, orph clean (#4257)
 healthimaging-stateful-update-fallback	2026-09-30T17:28:22Z	PASS	566	verify.sh	rc ok, orph clean
-iam-access-key	2026-09-30T12:04:46Z	PASS	81	verify.sh	rc ok, orph clean (#4228)
-iam-managed-policy	2026-09-29T12:19:54Z	PASS	115	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
+iam-access-key	2026-10-01T03:22:05Z	PASS	85	verify.sh	rc ok, orph clean (#4257)
+iam-managed-policy	2026-10-01T03:22:05Z	PASS	85	verify.sh	rc ok, orph clean (#4257)
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-propagation-stress	2026-09-29T09:52:03Z	PASS	116	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean; swept the runtime-created WorkerFn log group
 iam-role-policies-drift-clean	2026-09-30T14:27:46Z	PASS	160	verify.sh	PR #4216 (#4156) re-run on the rebase over #4218: rc ok, Phase 2c hand-off (swap, delete beside create, to-role) kept every name with its new owner; pre-fix revert (earlier run) went RED at Phase 2c; 11 deleted 0 errors, orph clean
-iam-role-prefixed-name-update	2026-09-29T12:17:37Z	PASS	105	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
-iam-secret-derived-principals	2026-09-30T07:07:45Z	PASS	201	verify.sh	rc ok, orph clean; #4150 destroy deleted both secret-derived records itself
+iam-role-prefixed-name-update	2026-10-01T03:22:05Z	PASS	100	verify.sh	rc ok, orph clean (#4257)
+iam-secret-derived-principals	2026-10-01T03:22:05Z	PASS	256	verify.sh	rc ok, orph clean (#4257)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 import-attribute-readback-network	2026-09-24T14:52:27Z	PASS	327	verify.sh	rc ok, orph clean; CFn-written SSM values as oracle
 import-attributes	2026-09-28T18:32:16Z	PASS	60	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
 import-auto-mode	2026-09-30T02:41:42Z	PASS	90	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
-import-deployed-parameter-secret	2026-09-24T08:06:51Z	PASS	311	verify.sh	rc ok, orph clean; #2872 stale-baseline arm (pre-fix probe red at 6c RootPwParam marked)
+import-deployed-parameter-secret	2026-10-01T03:22:05Z	PASS	346	verify.sh	rc ok, orph clean (#4257)
 import-heal-prefix-record	2026-09-25T10:36:04Z	PASS	165	verify.sh	rc ok, orph clean; resolver at origin/main leaves all 4 rows wrong
 import-lambda-url-attributes	2026-09-24T09:53:01Z	PASS	115	verify.sh	rc ok, orph clean; pre-fix mutant FAILs at step 4
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
@@ -304,7 +304,7 @@ secret-derived-immutable-names	2026-10-01T01:09:18Z	PASS	70	verify.sh	PR #4277 (
 secrets-array-nested	2026-09-30T21:26:17Z	PASS	421	verify.sh	PR #4269 (#2177 ECS masker threading) @9e0e25c69; rc ok, destroy 0 errors, no state/IAM/VPC/ECS/log leftovers
 secrets-dynamic-ref	2026-09-30T09:35:14Z	PASS	646	verify.sh	PR #4184 (#2177 Secrets Manager masker) re-run after merging main (#4182, #4201, #4206) @8cf6460; rc ok, 0 surviving state versions
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
-secretsmanager-update-value-source	2026-09-30T09:35:14Z	PASS	85	verify.sh	PR #4184 (#2177 Secrets Manager masker) re-run after merging main (#4182, #4201, #4206) @8cf6460; rc ok, 0 surviving state versions (an earlier attempt failed on a host-sleep signature expiry and was discarded)
+secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-09-30T20:40:33Z	PASS	60	verify.sh	PR #4271 (#2177 ApiGatewayV2 masker threading) @a3db05a83; rc ok, destroy 0 errors, no state/IAM/Lambda/API leftovers
 servicediscovery	2026-09-25T20:09:32Z	PASS	116	verify.sh	rc ok, orph clean (#3136 PR #3793)
 servicediscovery-namespaces	2026-09-25T20:09:32Z	PASS	130	verify.sh	rc ok, orph clean (#3136 PR #3793)
