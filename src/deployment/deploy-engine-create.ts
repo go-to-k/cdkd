@@ -11,8 +11,8 @@ import { getAccountInfo } from './intrinsic-function-resolver.js';
 import {
   createNameQuestion,
   probeErrorMeansNameHeld,
+  createLookupArn,
   probeFoundSameId,
-  stateMachineArnForName,
 } from './replacement-name-holder.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { markNonRetryable } from './retryable-errors.js';
@@ -289,21 +289,23 @@ async function refuseTakenCreateName(
     );
   };
 
+  // Step Functions and SNS are looked up by the ARN the name would take.
   let knownPhysicalId: string | undefined;
-  if (resourceType === 'AWS::StepFunctions::StateMachine') {
-    const arn = stateMachineArnForName(
-      question.desiredName,
-      await getAccountInfo(this.stackRegion)
+  const byArn = ['AWS::SNS::Topic', 'AWS::StepFunctions::StateMachine'].includes(resourceType)
+    ? createLookupArn(resourceType, question.desiredName, await getAccountInfo(this.stackRegion))
+    : undefined;
+  if (byArn !== undefined && 'unbuildable' in byArn) {
+    return refuse(
+      byArn.unbuildable === 'name'
+        ? `${subject} is created with ${named}, and ${adoptsText}, but cdkd cannot build the ` +
+            `ARN that name would take to check whether another resource already holds it: ` +
+            `the name contains ":". Nothing was created. Choose a name without ":".`
+        : `${subject} is created with ${named}, and ${adoptsText}, but cdkd cannot check ` +
+            `whether another resource already holds it: STS did not report this deploy's ` +
+            `account. Nothing was created. Re-run the deploy once STS can report the account.`
     );
-    if (arn === null) {
-      return refuse(
-        `${subject} is created with ${named}, and ${adoptsText}, but cdkd cannot check whether ` +
-          `another resource already holds it (the account is unknown, or the name is not a ` +
-          `plain name). Nothing was created. Re-run the deploy once STS can report the account.`
-      );
-    }
-    knownPhysicalId = arn;
   }
+  if (byArn !== undefined) knownPhysicalId = byArn.arn;
 
   let found: Awaited<ReturnType<NonNullable<ResourceProvider['import']>>>;
   try {
@@ -370,12 +372,19 @@ async function refuseTakenCreateName(
         `already this stack's.`
     );
   }
+  // A nested-stack child (`<parent>~<logicalId>`) cannot be a `cdkd import`
+  // target: import resolves top-level stacks from the assembly only, the
+  // reason `orphanedNameCollisionAdvice` withholds the command there too.
+  const ownRemedy = input.stackName.includes('~')
+    ? `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +
+      `and re-run.`
+    : `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +
+      `or adopt it with \`cdkd import\` and re-run.`;
   return refuse(
     `${subject} is created with ${named}, and an existing resource ` +
       `(${shown(holderId)}) already holds that name. Since ${adoptsText}, ` +
       `creating it would take that resource over and record it as this stack's, for a later ` +
       `\`cdkd destroy\` to delete. Nothing was created. Choose a name no other resource holds; ` +
-      `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +
-      `or adopt it with \`cdkd import\` and re-run.`
+      ownRemedy
   );
 }

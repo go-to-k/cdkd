@@ -9,8 +9,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
+  createLookupArn,
   createNameQuestion,
-  stateMachineArnForName,
 } from '../../../src/deployment/replacement-name-holder.js';
 import { getAccountInfo } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
@@ -129,7 +129,8 @@ async function create(
   engine: InstanceType<typeof DeployEngine>,
   type: string,
   props: Record<string, unknown>,
-  stateResources: Record<string, unknown> = {}
+  stateResources: Record<string, unknown> = {},
+  stackName = 'MyStack'
 ): Promise<Inner | null> {
   const change: ResourceChange = {
     logicalId: 'Res',
@@ -151,7 +152,7 @@ async function create(
       ) => Promise<void>;
     }
   ).provisionResource.bind(engine);
-  return run('Res', change, stateResources, 'MyStack', template).then(
+  return run('Res', change, stateResources, stackName, template).then(
     () => null,
     (e) => (e as { cause?: unknown }).cause as Inner
   );
@@ -306,6 +307,87 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(h.callOrder).toEqual(['import']);
   });
 
+  it('looks an SNS topic up by the ARN the name would take, not a ListTopics walk', async () => {
+    accountInfo.mockResolvedValue({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+    });
+    const arn = 'arn:aws:sns:us-east-1:123456789012:their-topic';
+    h.importResult = { physicalId: arn };
+
+    const err = await create(makeEngine(h), 'AWS::SNS::Topic', { TopicName: 'their-topic' });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(h.provider.import).toHaveBeenCalledWith(
+      expect.objectContaining({ knownPhysicalId: arn })
+    );
+  });
+
+  it('refuses an SNS topic when STS could not report the account', async () => {
+    accountInfo.mockResolvedValue({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+      fabricated: true,
+    });
+
+    const err = await create(makeEngine(h), 'AWS::SNS::Topic', { TopicName: 'my-topic' });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain('STS did not report');
+    expect(h.callOrder).toEqual([]);
+  });
+
+  it('refuses a ":" in a state machine name with its own remedy, not the STS one', async () => {
+    accountInfo.mockResolvedValue({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+    });
+
+    const err = await create(makeEngine(h), 'AWS::StepFunctions::StateMachine', {
+      StateMachineName: 'a:b',
+    });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain('the name contains ":"');
+    expect(err!.message).not.toContain('STS');
+    expect(h.callOrder).toEqual([]);
+  });
+
+  it('refuses a log group the provider would read ResourceAlreadyExists as success for', async () => {
+    h.importResult = { physicalId: '/app/theirs' };
+
+    const err = await create(makeEngine(h), 'AWS::Logs::LogGroup', {
+      LogGroupName: '/app/theirs',
+    });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(h.callOrder).toEqual(['import']);
+  });
+
+  it('looks up a NUMERIC explicit name, which the create sends too', async () => {
+    h.importResult = { physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/42' };
+
+    const err = await create(makeEngine(h), QUEUE, { QueueName: 42 });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(h.provider.import).toHaveBeenCalledWith(
+      expect.objectContaining({ properties: expect.objectContaining({ QueueName: 42 }) })
+    );
+  });
+
+  it('withholds the `cdkd import` remedy from a nested-stack child, which import cannot target', async () => {
+    h.importResult = { physicalId: THEIRS };
+
+    const err = await create(makeEngine(h), QUEUE, { QueueName: 'their-queue' }, {}, 'Parent~Child');
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain('delete it and re-run');
+    expect(err!.message).not.toContain('cdkd import');
+  });
+
   it('refuses a state machine when STS could not report the account', async () => {
     accountInfo.mockResolvedValue({
       accountId: '123456789012',
@@ -319,7 +401,7 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     });
 
     expect(err!.code).toBe('NAMED_CREATE_COLLISION');
-    expect(err!.message).toContain('cannot check whether another resource already holds it');
+    expect(err!.message).toContain('STS did not report');
     expect(err!.message).toContain('Nothing was created');
     expect(h.callOrder).toEqual([]);
   });
@@ -430,6 +512,7 @@ describe('createNameQuestion (#4180)', () => {
       ['AWS::CloudWatch::Alarm', 'AlarmName'],
       ['AWS::ECS::Cluster', 'ClusterName'],
       ['AWS::Events::Rule', 'Name'],
+      ['AWS::Logs::LogGroup', 'LogGroupName'],
       ['AWS::S3::Bucket', 'BucketName'],
       ['AWS::SNS::Topic', 'TopicName'],
       ['AWS::SQS::Queue', 'QueueName'],
@@ -463,18 +546,30 @@ describe('createNameQuestion (#4180)', () => {
   });
 });
 
-describe('stateMachineArnForName (#4180)', () => {
+describe('createLookupArn (#4180)', () => {
   const account = { accountId: '123456789012', region: 'eu-west-1', partition: 'aws-cn' };
 
-  it('builds the ARN from the account, region and partition', () => {
-    expect(stateMachineArnForName('sm', account)).toBe(
-      'arn:aws-cn:states:eu-west-1:123456789012:stateMachine:sm'
-    );
+  it('builds the state machine and topic ARNs from the account, region and partition', () => {
+    expect(createLookupArn('AWS::StepFunctions::StateMachine', 'sm', account)).toEqual({
+      arn: 'arn:aws-cn:states:eu-west-1:123456789012:stateMachine:sm',
+    });
+    expect(createLookupArn('AWS::SNS::Topic', 't', account)).toEqual({
+      arn: 'arn:aws-cn:sns:eu-west-1:123456789012:t',
+    });
   });
 
-  it('refuses a fabricated account, a malformed one, and a name carrying ":"', () => {
-    expect(stateMachineArnForName('sm', { ...account, fabricated: true })).toBeNull();
-    expect(stateMachineArnForName('sm', { ...account, accountId: 'unknown' })).toBeNull();
-    expect(stateMachineArnForName('a:b', account)).toBeNull();
+  it('answers nothing for a type that looks the name up itself', () => {
+    expect(createLookupArn(QUEUE, 'q', account)).toBeUndefined();
+  });
+
+  it('names why it cannot build one: a fabricated or malformed account, or a ":" in the name', () => {
+    const sm = 'AWS::StepFunctions::StateMachine';
+    expect(createLookupArn(sm, 'sm', { ...account, fabricated: true })).toEqual({
+      unbuildable: 'account',
+    });
+    expect(createLookupArn(sm, 'sm', { ...account, accountId: 'unknown' })).toEqual({
+      unbuildable: 'account',
+    });
+    expect(createLookupArn(sm, 'a:b', account)).toEqual({ unbuildable: 'name' });
   });
 });

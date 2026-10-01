@@ -761,6 +761,7 @@ describe('replacementNameProbe (go-to-k/cdkd#3937)', () => {
       'AWS::CloudWatch::Alarm',
       'AWS::ECS::Cluster',
       'AWS::Events::Rule',
+      'AWS::Logs::LogGroup',
       'AWS::S3::Bucket',
       'AWS::SNS::Topic',
       'AWS::SQS::Queue',

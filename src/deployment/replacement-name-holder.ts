@@ -136,10 +136,10 @@ export function replacementRequestsDifferentName(input: {
  * holds: it RETURNS that resource (SQS `CreateQueue` with matching attributes,
  * SNS `CreateTopic`, Step Functions `CreateStateMachine` with an identical
  * definition, ECS `CreateCluster` for an ACTIVE cluster — measured) or
- * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or —
- * S3 — the provider reads `BucketAlreadyOwnedByYou`
- * (and the `us-east-1` legacy 200) as success and configures the existing
- * bucket. A replacement renamed onto such a name "succeeds" with
+ * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or the
+ * provider reads the refusal as success and configures the existing resource
+ * (S3's `BucketAlreadyOwnedByYou` and the `us-east-1` legacy 200; CloudWatch
+ * Logs' `ResourceAlreadyExistsException`). A replacement renamed onto such a name "succeeds" with
  * someone else's resource, which the deploy then records as its own and a
  * later destroy deletes (go-to-k/cdkd#3937); a plain CREATE under such a name
  * does the same (go-to-k/cdkd#4180). The create cannot tell a fresh
@@ -160,6 +160,7 @@ const NAME_ADOPTING_SDK_CREATE_TYPES: ReadonlySet<string> = new Set([
   'AWS::CloudWatch::Alarm',
   'AWS::ECS::Cluster',
   'AWS::Events::Rule',
+  'AWS::Logs::LogGroup',
   'AWS::S3::Bucket',
   'AWS::SNS::Topic',
   'AWS::SQS::Queue',
@@ -233,7 +234,8 @@ export interface CreateNameQuestion {
  * belong to anyone — the reason the orphan-adoption pre-pass never adopts an
  * explicitly named resource either. A cdkd-generated name is not asked: it is
  * derived from the stack and logical id, so its holder is presumed this
- * stack's own, the premise that pre-pass is built on.
+ * stack's own, the premise that pre-pass is built on (a maintainer decision,
+ * go-to-k/cdkd#4345).
  */
 export function createNameQuestion(input: {
   resourceType: string;
@@ -243,25 +245,46 @@ export function createNameQuestion(input: {
   if (!replacementCreateAdoptsName(input.resourceType, input.createdVia)) return undefined;
   const property = explicitNamePropertyFor(input.resourceType);
   if (property === undefined) return undefined;
-  const desiredName = nameValue(input.properties, property);
+  // A number reaches the create as one, which AWS takes as its decimal
+  // spelling, so it is a name to look up too.
+  const raw = input.properties[property];
+  const desiredName =
+    typeof raw === 'number' && Number.isFinite(raw)
+      ? String(raw)
+      : nameValue(input.properties, property);
   return desiredName === undefined ? undefined : { property, desiredName };
 }
 
 /**
- * The ARN a NEW state machine named `name` would take, for
- * {@link createNameQuestion}'s lookup (Step Functions' `import()` has no name
- * lookup). `null` when it cannot be built honestly: a name carrying `:`, or an
- * account `getAccountInfo` FABRICATED because STS was unreachable — a lookup
- * of a made-up ARN answers "free".
+ * The ARN a NEW resource named `name` would take, for the types whose
+ * {@link createNameQuestion} lookup goes by ARN: Step Functions (its
+ * `import()` has no name lookup) and SNS (whose name lookup pages `ListTopics`
+ * region-wide). `undefined` for any other type, which looks the name up
+ * itself. Otherwise the ARN, or why it cannot be built honestly:
+ * `'name'` for a name carrying `:`, `'account'` for an account
+ * `getAccountInfo` FABRICATED because STS was unreachable (or a malformed
+ * one) — a lookup of a made-up ARN answers "free".
  */
-export function stateMachineArnForName(
+export function createLookupArn(
+  resourceType: string,
   name: string,
   account: { partition: string; region: string; accountId: string; fabricated?: boolean }
-): string | null {
-  if (name.includes(':') || account.fabricated === true) return null;
-  if (!/^\d{12}$/.test(account.accountId) || account.region === '') return null;
-  return `arn:${account.partition}:states:${account.region}:${account.accountId}:stateMachine:${name}`;
+): { arn: string } | { unbuildable: 'name' | 'account' } | undefined {
+  const shape = CREATE_LOOKUP_ARN[resourceType];
+  if (shape === undefined) return undefined;
+  if (name.includes(':')) return { unbuildable: 'name' };
+  if (account.fabricated === true || !/^\d{12}$/.test(account.accountId) || account.region === '') {
+    return { unbuildable: 'account' };
+  }
+  return {
+    arn: `arn:${account.partition}:${shape.service}:${account.region}:${account.accountId}:${shape.prefix}${name}`,
+  };
 }
+
+const CREATE_LOOKUP_ARN: Readonly<Record<string, { service: string; prefix: string }>> = {
+  'AWS::SNS::Topic': { service: 'sns', prefix: '' },
+  'AWS::StepFunctions::StateMachine': { service: 'states', prefix: 'stateMachine:' },
+};
 
 /** Any ARN carrying a region and a 12-digit account: partition, region, account. */
 const ANY_ARN = /^arn:([^:]+):[^:]+:([a-z0-9-]+):(\d{12}):/;
