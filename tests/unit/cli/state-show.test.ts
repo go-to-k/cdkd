@@ -107,6 +107,9 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
     ...(overrides.observedBaselineRefused && {
       observedBaselineRefused: overrides.observedBaselineRefused,
     }),
+    ...(overrides.observedBaselineRefusalReason && {
+      observedBaselineRefusalReason: overrides.observedBaselineRefusalReason,
+    }),
   };
 }
 
@@ -2020,6 +2023,9 @@ describe('cdkd state show', () => {
               resourceType: 'AWS::SSM::Parameter',
               physicalId: 'refused-param',
               observedBaselineRefused: true,
+              // The class a deploy DOES clear, so the deploy remedy below is
+              // the true one (issue #3465 cases the other two classes).
+              observedBaselineRefusalReason: 'incomplete-resolution',
             }),
             Ordinary: makeResource({
               resourceType: 'AWS::S3::Bucket',
@@ -2060,6 +2066,67 @@ describe('cdkd state show', () => {
         // Both resources really did render — otherwise "the row's owner is the
         // refused one" is satisfied by a report that dropped the other.
         expect(out).toContain('ordinary-bucket');
+      });
+    });
+
+    it('names the remedy each refusal class really has (issue #3465)', () => {
+      // An unverifiable-parameter refusal survives every in-place UPDATE, so
+      // "deploy a change" is false for it; a reason-less one (an older cdkd's)
+      // survives it when the resource reads a template parameter, which this
+      // template-less command cannot tell, so it is hedged. Each row is read
+      // under its OWN resource: a remedy keyed off the wrong record would
+      // still put all three texts in the output.
+      mockListStacks.mockResolvedValue(defaultListResponse('MyStack'));
+      mockGetState.mockResolvedValue(
+        makeState({
+          stackName: 'MyStack',
+          resources: {
+            Param: makeResource({
+              physicalId: 'param-phys',
+              observedBaselineRefused: true,
+              observedBaselineRefusalReason: 'unverifiable-parameter',
+            }),
+            Reasonless: makeResource({
+              physicalId: 'reasonless-phys',
+              observedBaselineRefused: true,
+            }),
+            Incomplete: makeResource({
+              physicalId: 'incomplete-phys',
+              observedBaselineRefused: true,
+              observedBaselineRefusalReason: 'incomplete-resolution',
+            }),
+          },
+        })
+      );
+      mockGetLockInfo.mockResolvedValue(null);
+
+      return runStateShow(['show', 'MyStack']).then((out) => {
+        const lines = out.split('\n');
+        const rowFor = (phys: string): string => {
+          const at = lines.findIndex((l) => l.includes(`PhysicalID: ${phys}`));
+          expect(at).toBeGreaterThanOrEqual(0);
+          const row = lines.slice(at).find((l) => l.includes('ObservedBaseline:'));
+          expect(row).toBeDefined();
+          // The row found is this resource's: no other PhysicalID line between.
+          const between = lines.slice(at + 1, lines.indexOf(row!));
+          expect(between.some((l) => l.includes('PhysicalID:'))).toBe(false);
+          return row!;
+        };
+
+        const param = rowFor('param-phys');
+        expect(param).toContain('Deploying a change does NOT clear this refusal');
+        expect(param).toContain('only a deploy that replaces the resource');
+        expect(param).not.toMatch(/deploy a change to this resource/i);
+
+        const reasonless = rowFor('reasonless-phys');
+        expect(reasonless).toContain('unless the resource reads a template parameter');
+        expect(reasonless).not.toMatch(/deploy a change to this resource/i);
+
+        const incomplete = rowFor('incomplete-phys');
+        expect(incomplete).toContain(
+          'no baseline will be captured (deploy a change to this resource to restore one)'
+        );
+        expect(incomplete).not.toContain('template parameter');
       });
     });
   });

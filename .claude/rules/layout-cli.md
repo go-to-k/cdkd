@@ -127,6 +127,8 @@ Index of every area: [code-layout.md](code-layout.md).
   drops the child segments of its run
   ([#3754](https://github.com/go-to-k/cdkd/issues/3754)); run without a stack,
   a child journal its parent's covers is not offered.
+- **src/cli/commands/refused-baseline-remedy.ts** - a refused import baseline's
+  remedy text; see [state-schema.md](state-schema.md).
 - **src/cli/commands/gc.ts** - `cdkd gc` garbage-collects unreferenced objects /
   images from ONE region's cdkd-owned asset storage, with names read from the
   bootstrap marker rather than the naming convention (CDK bootstrap storage is

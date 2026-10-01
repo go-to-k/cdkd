@@ -67,7 +67,11 @@ function drifted(
 }
 
 const CHANGE: Change = { path: 'P', stateValue: 1, awsValue: 2 };
-const REFUSED = { R: { observedBaselineRefused: true } };
+// The deploy-clearable class, so the plan rows keep their ordinary
+// "Deploy a change" remedy; the other two classes are cased below (#3465).
+const REFUSED = {
+  R: { observedBaselineRefused: true, observedBaselineRefusalReason: 'incomplete-resolution' },
+};
 
 function render(
   print: typeof printAcceptPlan,
@@ -531,6 +535,27 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     });
   }
 
+  it.each([
+    ['unverifiable-parameter', { observedBaselineRefusalReason: 'unverifiable-parameter' }, 'Deploying a change does NOT clear this refusal'],
+    ['reason-less', {}, 'unless the resource reads a template parameter'],
+  ] as const)(
+    'names the %s refusal remedy on both plans instead of "Deploy a change" (issue #3465)',
+    (_name, reason, remedy) => {
+      const resources = { R: { observedBaselineRefused: true, ...reason } };
+      const accept = render(printAcceptPlan, report({ resources, outcomes: [drifted('R', 'T', [CHANGE])] }));
+      const skipped = accept.lines.filter((l) => l.startsWith("    SKIPPED — a 'cdkd import' run refused"));
+      expect(skipped).toHaveLength(1);
+      expect(skipped[0]).toContain(remedy);
+      expect(skipped[0]).not.toContain('Deploy a change to this resource first.');
+
+      const revert = render(printRevertPlan, report({ resources, outcomes: [drifted('R', 'T', [CHANGE])] }));
+      const refused = revert.lines.filter((l) => l.startsWith("  ! R (T): NOT reverted — a 'cdkd import' run"));
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toContain(remedy);
+      expect(refused[0]).not.toContain('Deploy a change to this resource first.');
+    }
+  );
+
   it('renders the ordinary nothing-accepted plan byte-for-byte, and the ordinary SKIPPED, ! and readback-list rows unchanged', () => {
     const accept = render(
       printAcceptPlan,
@@ -560,6 +585,7 @@ describe('the --accept / --revert plans treat record- and readback-derived value
     expect(skipped.lines.filter((l) => l.startsWith('    Cfg.k: SKIPPED — AWS no longer reports it'))).toHaveLength(1);
     const refused = render(printRevertPlan, report({ resources: REFUSED, outcomes: [drifted('R', 'T', [CHANGE])] }));
     expect(refused.lines.filter((l) => l.startsWith("  ! R (T): NOT reverted — a 'cdkd import' run"))).toHaveLength(1);
+    expect(refused.joined).toContain('found untrustworthy. Deploy a change to this resource first.\n');
     const listed = render(
       printRevertPlan,
       report({

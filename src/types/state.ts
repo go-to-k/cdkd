@@ -714,8 +714,10 @@ export interface ResourceState {
    *
    * INVARIANT: never present without `observedBaselineRefused: true`. Every
    * reader that only asks "is a baseline refused?" keeps testing the marker;
-   * only the two commands that may clear or stamp it (`cdkd deploy`, `cdkd
-   * import`) read this field, through the two helpers below.
+   * the two commands that may clear or stamp it (`cdkd deploy`, `cdkd
+   * import`) read this field through the two helpers below, and the
+   * template-less commands read it only to word the remedy
+   * (`refusedBaselineRemedy`, issue #3465).
    */
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' | undefined;
 }

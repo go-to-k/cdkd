@@ -25,6 +25,7 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
+import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -1955,9 +1956,14 @@ function renderStateBlock(
     // refresh-observed` starts declining a resource — `--json` carries the
     // field for free, but the human view is where they will look first.
     if (resource.observedBaselineRefused === true) {
+      // The remedy depends on WHY it was refused (issue #3465): a deploy does
+      // not clear an unverifiable-parameter refusal.
+      const remedy = refusedBaselineRemedy(resource);
       lines.push(
-        `  ObservedBaseline: REFUSED by 'cdkd import' — no baseline will be captured ` +
-          `(deploy a change to this resource to restore one)`
+        `  ObservedBaseline: REFUSED by 'cdkd import' — no baseline will be captured` +
+          (remedy === undefined
+            ? ` (deploy a change to this resource to restore one)`
+            : `. ${remedy}`)
       );
     }
     lines.push(`  Dependencies: ${formatDependencyList(resource.dependencies)}`);
@@ -3532,6 +3538,7 @@ async function stateRefreshObservedCommand(
     let totalUnsupported = 0;
     let totalFailed = 0;
     let totalRefusedBaseline = 0;
+    let totalRefusedSticky = 0;
 
     for (const target of regionScoped) {
       const counts = await refreshObservedForStack(
@@ -3550,6 +3557,7 @@ async function stateRefreshObservedCommand(
       totalUnsupported += counts.unsupported;
       totalFailed += counts.failed;
       totalRefusedBaseline += counts.refusedBaseline;
+      totalRefusedSticky += counts.refusedSticky;
     }
 
     const summary = options.dryRun
@@ -3560,19 +3568,36 @@ async function stateRefreshObservedCommand(
     // Issue #2944. Its OWN line rather than a fourth count in the summary, and
     // at `warn`: a refused resource is one the user asked to refresh and cdkd
     // declined to, for a security reason they cannot see from the record, and
-    // it stays refused until that resource is deployed or updated. Folding it
-    // into the counts above would render it as routine attrition next to
-    // `unsupported`. Printed only when it happened, so an ordinary run's output
-    // is unchanged.
+    // it stays refused until that resource is deployed or updated — or, for an
+    // unverifiable-parameter refusal, replaced or re-imported (issue #3465).
+    // Folding it into the counts above would render it as routine attrition
+    // next to `unsupported`. Printed only when it happened, so an ordinary
+    // run's output is unchanged.
     if (totalRefusedBaseline > 0) {
-      logger.warn(
+      const head =
         safeMsg`${totalRefusedBaseline} resource(s) ${options.dryRun ? 'would NOT be refreshed' : 'were NOT refreshed'}: ` +
-          `a 'cdkd import' run refused to capture their ` +
-          `observed-properties baseline, because their recorded properties can no longer position the secret ` +
-          `redaction — refreshing against those properties could persist a resolved secret into state.json in ` +
-          `plaintext. A deploy that actually CHANGES one of them restores its baseline — a NO_CHANGE deploy ` +
-          `does not, and re-running this command will refuse them again. Drift compares against their ` +
-          `recorded properties until then.`
+        `a 'cdkd import' run refused to capture their ` +
+        `observed-properties baseline, because their recorded properties can no longer position the secret ` +
+        `redaction — refreshing against those properties could persist a resolved secret into state.json in ` +
+        `plaintext. `;
+      // One tally covers resources whose remedies differ, so the
+      // deploy-clearable wording is kept only when it is true of every one;
+      // otherwise the count it is not true of is named, and `state show`
+      // carries each resource's own remedy.
+      const remedy =
+        totalRefusedSticky === 0
+          ? `A deploy that actually CHANGES one of them restores its baseline — a NO_CHANGE deploy ` +
+            `does not, and re-running this command will refuse them again. `
+          : `Re-running this command will refuse them again, and a NO_CHANGE deploy does not clear them. ` +
+            safeMsg`${totalRefusedSticky} of them may keep the refusal even through a deploy that changes ` +
+            `them, because it was recorded over a template parameter whose deployed value cdkd could not ` +
+            `prove, or with no reason this cdkd recognizes — 'cdkd state show' names each one's ` +
+            `remedy. ` +
+            (totalRefusedSticky < totalRefusedBaseline
+              ? `For the rest, a deploy that actually CHANGES one restores its baseline. `
+              : '');
+      logger.warn(
+        safeMsg`${head}${remedy}Drift compares against their recorded properties until then.`
       );
     }
 
@@ -3664,6 +3689,20 @@ async function warnOnLiveForeignLock(
   }
 }
 
+/** Per-stack tallies of `cdkd state refresh-observed`. */
+interface RefreshObservedCounts {
+  refreshed: number;
+  unsupported: number;
+  failed: number;
+  /** Declined over an `observedBaselineRefused` marker (issue #2944). */
+  refusedBaseline: number;
+  /**
+   * The subset of `refusedBaseline` an in-place deploy may NOT clear
+   * (`refusedBaselineRemedy` names one), issue #3465.
+   */
+  refusedSticky: number;
+}
+
 /**
  * Refresh the `observedProperties` of every resource in one stack
  * record. Returns counts so the caller can aggregate across `--all`.
@@ -3687,7 +3726,7 @@ async function refreshObservedForStack(
     // from the ambient profile (issue #2170).
     lockRecovery?: LockRecoveryContext;
   }
-): Promise<{ refreshed: number; unsupported: number; failed: number; refusedBaseline: number }> {
+): Promise<RefreshObservedCounts> {
   const { logger, lockRecovery } = opts;
   // `stackName` is an S3 key segment under `--all` and `region` always is, so
   // every line naming this record takes `formatStackRefSafe`'s boundary rather
@@ -3742,13 +3781,14 @@ async function refreshObservedForStack(
 
   if (entries.length === 0) {
     logger.info(safeMsg`✓ ${ref}: no resources in state, skipping`);
-    return { refreshed: 0, unsupported: 0, failed: 0, refusedBaseline: 0 };
+    return { refreshed: 0, unsupported: 0, failed: 0, refusedBaseline: 0, refusedSticky: 0 };
   }
 
   if (opts.dryRun) {
     let wouldRefresh = 0;
     let wouldUnsupported = 0;
     let wouldRefuse = 0;
+    let wouldRefuseSticky = 0;
     for (const [, resource] of entries) {
       // Issue #2944, and this arm is the reason the dry run has its own loop
       // rather than sharing the real one: it must apply the SAME gate in the
@@ -3757,6 +3797,7 @@ async function refreshObservedForStack(
       // is supported and would otherwise be counted as one that WOULD refresh.
       if (resource.observedBaselineRefused === true) {
         wouldRefuse++;
+        if (refusedBaselineRemedy(resource) !== undefined) wouldRefuseSticky++;
         continue;
       }
       let provider;
@@ -3781,6 +3822,7 @@ async function refreshObservedForStack(
       unsupported: wouldUnsupported,
       failed: 0,
       refusedBaseline: wouldRefuse,
+      refusedSticky: wouldRefuseSticky,
     };
   }
 
@@ -3810,6 +3852,7 @@ async function refreshObservedForStack(
     let unsupported = 0;
     let failed = 0;
     let refusedBaseline = 0;
+    let refusedSticky = 0;
 
     // Refresh in parallel under withStackName so any provider-internal
     // resource-name resolution sees the right stack (mirrors the deploy
@@ -3837,6 +3880,7 @@ async function refreshObservedForStack(
         // a security refusal as missing provider coverage.
         if (resource.observedBaselineRefused === true) {
           refusedBaseline++;
+          if (refusedBaselineRemedy(resource) !== undefined) refusedSticky++;
           return;
         }
         if (providerRegistry.shouldSkipResource(resource.resourceType)) {
@@ -4006,7 +4050,7 @@ async function refreshObservedForStack(
         (refusedBaseline > 0 ? safeMsg`, ${refusedBaseline} refused (import baseline refusal)` : '')
     );
 
-    return { refreshed, unsupported, failed, refusedBaseline };
+    return { refreshed, unsupported, failed, refusedBaseline, refusedSticky };
   } finally {
     await lockManager.releaseLock(stackName, region).catch((err) => {
       logger.warn(

@@ -91,6 +91,7 @@ import {
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
   classifyReplaySecretRegion,
@@ -1690,7 +1691,10 @@ function isDriftSecretRefusal(err: unknown): boolean {
  * variant level, applied to the cause level -- and it is the level that
  * defaulted quietly when issues #2151 / #1945 added `readFailed`.
  */
-function notComparedReason(cause: NotComparedCause): string {
+function notComparedReason(cause: NotComparedCause, record?: ResourceState): string {
+  // Issue #3465: "deploy a change" does not clear every refusal class, and
+  // which one this is lives on the record, not in the cause.
+  const refusedRemedy = cause === 'baselineRefused' ? refusedBaselineRemedy(record) : undefined;
   const REASONS: Record<NotComparedCause, string> = {
     refused:
       'cdkd refused to resolve a dynamic reference its state records ' +
@@ -1709,7 +1713,10 @@ function notComparedReason(cause: NotComparedCause): string {
     baselineRefused:
       'a `cdkd import` run refused to capture its observed baseline, so the only ' +
       'baseline available is the recorded properties that refusal already found ' +
-      'untrustworthy (deploy a change to this resource to restore one)',
+      'untrustworthy' +
+      (refusedRemedy === undefined
+        ? ' (deploy a change to this resource to restore one)'
+        : `. ${refusedRemedy}`),
     uncertifiedBaseline:
       'its recorded baseline holds the redaction mask at a position cdkd could not pair ' +
       'with the secret reference there, so that position was not compared — every other ' +
@@ -2935,7 +2942,10 @@ async function runDriftForStack(
       // compared, and a silent `clean` is the "report a resource cdkd never
       // compared as a pass" failure the cause enumeration exists to prevent. The
       // cause is CLEARABLE — deploying a change to the resource rebuilds its
-      // record from the template and captures a real baseline — so it inherits
+      // record from the template and captures a real baseline, or for an
+      // unverifiable-parameter refusal (or a reason-less one on a resource
+      // that reads a template parameter) a replacement or proving re-import
+      // does (issue #3465) — so it inherits
       // `outcomeExitSignal`'s non-zero side, which that switch already defaults
       // a new cause to.
       //
@@ -3670,7 +3680,9 @@ export function warnIfPreV10BaselineGap(
     `  Note: ANY write to this stack's state — including this run's --accept / --revert, ` +
     `or a deploy that changes nothing about the resources above — re-stamps it at the ` +
     `current schema version and SILENCES this warning without fixing those records. ` +
-    `Only a re-import, or a deploy that actually CHANGES a listed resource, repairs one.`;
+    `Only a re-import, or a deploy that actually CHANGES a listed resource, repairs one — ` +
+    `and the deploy only when that resource reads no template parameter, since a deploy ` +
+    `binds the same parameter Default the import did.`;
   logger.warn(finding);
   logger.warn(note);
   return [finding, note];
@@ -3986,7 +3998,8 @@ async function runAccept(
         // the record is left untouched rather than partially accepted. The
         // remedy is the same one the other two sites name: a deploy that
         // actually CHANGES the resource rebuilds its record from the template
-        // and discharges the refusal.
+        // and discharges the refusal — except an unverifiable-parameter one,
+        // which `refusedBaselineRemedy` words (issue #3465).
         if (existing.observedBaselineRefused === true) {
           logger.warn(
             `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
@@ -3994,7 +4007,11 @@ async function runAccept(
               `observed-properties baseline, because its recorded properties can no longer ` +
               `position the secret redaction. Accepting would write the AWS readback into ` +
               `those properties, which can persist a resolved secret into state.json in ` +
-              `plaintext. Deploy a change to this resource to restore a baseline first.`
+              `plaintext. ` +
+              safeMsg`${
+                refusedBaselineRemedy(existing) ??
+                'Deploy a change to this resource to restore a baseline first.'
+              }`
           );
           continue;
         }
@@ -5967,8 +5984,11 @@ async function runRevert(
               `observed-properties baseline, so the only baseline available is its recorded ` +
               `properties, which the refusal already found untrustworthy. Reverting from them ` +
               `could overwrite a live value (a resolved secret among them) with a placeholder ` +
-              `the deployed stack never used. Deploy a change to this resource to restore a ` +
-              `baseline first.`
+              `the deployed stack never used. ` +
+              safeMsg`${
+                refusedBaselineRemedy(stateResource) ??
+                'Deploy a change to this resource to restore a baseline first.'
+              }`
           );
           return;
         }
@@ -6907,7 +6927,10 @@ export function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink)
           `  ~ ${reportResource(o)}\n` +
             `    SKIPPED — a 'cdkd import' run refused this resource's observed-properties ` +
             `baseline; accepting would write the AWS readback into properties it already ` +
-            `found untrustworthy. Deploy a change to this resource first.\n`
+            `found untrustworthy. ` +
+            (refusedBaselineRemedy(report.state.resources[o.logicalId]) ??
+              `Deploy a change to this resource first.`) +
+            `\n`
         );
         continue;
       }
@@ -7033,8 +7056,10 @@ export function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink)
         out.write(
           `  ! ${reportResource(o)}: NOT reverted — a 'cdkd import' run refused ` +
             `this resource's observed-properties baseline, so the only baseline available is ` +
-            `the one that refusal already found untrustworthy. Deploy a change to this ` +
-            `resource first.\n`
+            `the one that refusal already found untrustworthy. ` +
+            (refusedBaselineRemedy(report.state.resources[o.logicalId]) ??
+              `Deploy a change to this resource first.`) +
+            `\n`
         );
         continue;
       }
@@ -7891,7 +7916,9 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
               `:\n`
       );
       for (const { outcome, cause } of notCompared) {
-        process.stdout.write(`    ! ${reportResource(outcome)} — ${notComparedReason(cause)}\n`);
+        process.stdout.write(
+          `    ! ${reportResource(outcome)} — ${notComparedReason(cause, report.state.resources?.[outcome.logicalId])}\n`
+        );
       }
     }
 
