@@ -35,12 +35,14 @@ const REPO_ROOT = join(import.meta.dirname, '../../..');
 // the files that augment it, where the provisioning arms now live. Joined, so
 // a phrase counted once is counted once across the whole engine.
 const DEPLOY_ENGINE = (() => {
-  const dir = join(REPO_ROOT, 'src/deployment');
-  const files = ['deploy-engine.ts', ...readdirSync(dir).filter((f) => f.endsWith('.ts')).sort()]
-    .filter((f, i, all) => all.indexOf(f) === i)
-    .map((f) => readFileSync(join(dir, f), 'utf8'));
-  const [engine, ...rest] = files;
-  return [engine, ...rest.filter((src) => src.includes("declare module './deploy-engine.js'"))].join('\n');
+  const engine = readFileSync(join(REPO_ROOT, 'src/deployment/deploy-engine.ts'), 'utf8');
+  const dir = join(REPO_ROOT, 'src/deployment/deploy-engine');
+  const mixins = readdirSync(dir)
+    .filter((f) => f.endsWith('.ts'))
+    .sort()
+    .map((f) => readFileSync(join(dir, f), 'utf8'))
+    .filter((src) => src.includes("declare module '../deploy-engine.js'"));
+  return [engine, ...mixins].join('\n');
 })();
 const STATEFUL_TYPES_SRC = readFileSync(
   join(REPO_ROOT, 'src/provisioning/stateful-types.ts'),

@@ -1,29 +1,28 @@
-import type { DeployEngine } from './deploy-engine.js';
-import type { ProvisionCounts, ResourceOutcomeSignal } from './deploy-engine.js';
-import type { ProvisionedBy } from '../provisioning/provider-registry.js';
-import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
-import type { ResourceChange, ResourceState } from '../types/state.js';
-import { displayAwsMessage, displaySafe } from '../utils/display-safe.js';
-import { CdkdError } from '../utils/error-handler.js';
-import { getLiveRenderer } from '../utils/live-renderer.js';
-import { formatResourceLine } from '../utils/resource-line.js';
-import { getAccountInfo } from './intrinsic-function-resolver.js';
+import type { DeployEngine } from '../deploy-engine.js';
+import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
+import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
+import type { ResourceChange, ResourceState } from '../../types/state.js';
+import { displayAwsMessage, displaySafe } from '../../utils/display-safe.js';
+import { CdkdError } from '../../utils/error-handler.js';
+import { getLiveRenderer } from '../../utils/live-renderer.js';
+import { formatResourceLine } from '../../utils/resource-line.js';
+import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import {
   createNameQuestion,
   probeErrorMeansNameHeld,
   createLookupArn,
   probeFoundSameId,
-} from './replacement-name-holder.js';
-import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
-import { markNonRetryable } from './retryable-errors.js';
+} from '../replacement-name-holder.js';
+import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { markNonRetryable } from '../retryable-errors.js';
 import {
   type RecordedSecretValues,
   createSecretMasker,
   maskSecretsInText,
   recordNestedStackParameterExpressions,
-} from './secret-redaction.js';
-
-declare module './deploy-engine.js' {
+} from '../secret-redaction.js';
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     provisionCreate: OmitThisParameter<typeof provisionCreate>;

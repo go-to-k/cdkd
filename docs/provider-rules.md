@@ -1624,7 +1624,7 @@ Two placement rules go with it:
   leaving the payload-building code outside the `try` as well turns a
   malformed-template crash into a raw `TypeError` with no resource context.
 - **Check that every `provider.update()` call site retries.** Adding a read to
-  `update()` makes it newly sensitive to throttling. `deploy-engine-update.ts`
+  `update()` makes it newly sensitive to throttling. `deploy-engine/update.ts`
   and `drift.ts` wrap their calls in `withRetry`; `rollback-executor.ts` did not
   until issue #1461, so the new read would have failed a rollback op that
   previously issued no read at all — and the best-effort catch there counts
@@ -1761,8 +1761,8 @@ Two placement rules go with it:
   paths decide a resource is already gone by SUBSTRING-matching the error
   message, and an interrupt's message embeds a name the user chose — so a
   logical id containing `NotFoundException` used to drop a live resource's state
-  row. `destroy-runner.ts` and the deploy engine's delete arms (`deploy-engine-update.ts`,
-  `deploy-engine-delete.ts`) all check
+  row. `destroy-runner.ts` and the deploy engine's delete arms (`deploy-engine/update.ts`,
+  `deploy-engine/delete.ts`) all check
   `isInterruptedWaitError` ahead of that match; any new message-based classifier
   on a delete path needs the same guard.
 

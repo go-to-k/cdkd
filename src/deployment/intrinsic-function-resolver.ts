@@ -163,7 +163,7 @@ import {
   isLogInertJson,
   isStructured,
   quotedRender,
-} from './intrinsic-resolver-support.js';
+} from './intrinsic-resolver/support.js';
 export {
   AWS_NO_VALUE,
   isStalePlaceholderArnAttribute,
@@ -193,7 +193,7 @@ export {
   isUnboundTemplateParameter,
   parameterTypeMayLoseSecretIdentity,
   coerceParameterTypedValue,
-} from './intrinsic-resolver-support.js';
+} from './intrinsic-resolver/support.js';
 
 /**
  * Behavior knobs for {@link IntrinsicFunctionResolver}.

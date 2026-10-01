@@ -5,7 +5,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
 /**
  * `DeployEngine` method groups live in mixin modules (issue #4200): a
- * `declare module './deploy-engine.js'` augmentation tells the type checker the
+ * `declare module '../deploy-engine.js'` augmentation tells the type checker the
  * method exists, and `deploy-engine.ts` assigns the module's function onto
  * `DeployEngine.prototype`. A MISSING assignment therefore typechecks clean and
  * fails only when the method is first called at runtime, which for a rare
@@ -40,16 +40,16 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
     const modules = mixinModules();
     expect(modules.map((m) => m.file)).toEqual(
       expect.arrayContaining([
-        'deploy-engine-create.ts',
-        'deploy-engine-delete.ts',
-        'deploy-engine-heal.ts',
-        'deploy-engine-masking.ts',
-        'deploy-engine-name-collision.ts',
-        'deploy-engine-observed-capture.ts',
-        'deploy-engine-outputs.ts',
-        'deploy-engine-replacement.ts',
-        'deploy-engine-rollback.ts',
-        'deploy-engine-update.ts',
+        'deploy-engine/create.ts',
+        'deploy-engine/delete.ts',
+        'deploy-engine/heal.ts',
+        'deploy-engine/masking.ts',
+        'deploy-engine/name-collision.ts',
+        'deploy-engine/observed-capture.ts',
+        'deploy-engine/outputs.ts',
+        'deploy-engine/replacement.ts',
+        'deploy-engine/rollback.ts',
+        'deploy-engine/update.ts',
       ])
     );
     for (const { file, names } of modules) {

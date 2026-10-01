@@ -1,60 +1,63 @@
-import { type DeployEngine, InterruptedError } from './deploy-engine.js';
-import type { ProvisionCounts, ResourceOutcomeSignal } from './deploy-engine.js';
-import { withUnchangedSecretPrincipalLists } from '../provisioning/iam-policy-targets.js';
-import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
+import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
+import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
+import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
+import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import {
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
-} from '../provisioning/property-coverage.js';
-import { STICKY_CC_MIGRATION_EXEMPT, ccBrokenReason } from '../provisioning/provider-registry.js';
+} from '../../provisioning/property-coverage.js';
+import {
+  STICKY_CC_MIGRATION_EXEMPT,
+  ccBrokenReason,
+} from '../../provisioning/provider-registry.js';
 import {
   applyDefaultNameForFallback,
   withoutGeneratedFallbackName,
-} from '../provisioning/resource-name.js';
+} from '../../provisioning/resource-name.js';
 import {
   isStatefulRecreateTargetForReplace,
   renderStatefulReason,
-} from '../provisioning/stateful-types.js';
-import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
+} from '../../provisioning/stateful-types.js';
+import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
 import type {
   CloudFormationTemplate,
   ResourceCreateResult,
   ResourceDeleteResult,
   ResourceUpdateResult,
-} from '../types/resource.js';
+} from '../../types/resource.js';
 import {
   type PropertyChange,
   type ResourceChange,
   type ResourceState,
   hasUnverifiableParameterRefusal,
-} from '../types/state.js';
-import { bold, gray, green, yellow } from '../utils/colors.js';
-import { displayAwsMessage, displaySafe, safeMsg } from '../utils/display-safe.js';
-import { CdkdError, ResourceUpdateNotSupportedError } from '../utils/error-handler.js';
-import { getLiveRenderer } from '../utils/live-renderer.js';
-import { formatResourceLine } from '../utils/resource-line.js';
-import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
+} from '../../types/state.js';
+import { bold, gray, green, yellow } from '../../utils/colors.js';
+import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { getLiveRenderer } from '../../utils/live-renderer.js';
+import { formatResourceLine } from '../../utils/resource-line.js';
+import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import {
   type FreshNoEchoCeilingVerdict,
   type FreshNoEchoReadback,
   isReplacementCeiling,
   keyOrderFreeJson,
   liveHoldsFreshLeaves,
-} from './deploy-value-equality.js';
+} from '../deploy-value-equality.js';
 import {
   renderNameHeldElsewhere,
   replacementOldHoldsSentName,
   replacementRequestsDifferentName,
-} from './replacement-name-holder.js';
-import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
-import { withRetry } from './retry.js';
+} from '../replacement-name-holder.js';
+import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { withRetry } from '../retry.js';
 import {
   isMarkedNonRetryable,
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
   isUpdateUnsupportedError,
   markNonRetryable,
-} from './retryable-errors.js';
+} from '../retryable-errors.js';
 import {
   carriesFreshNoEchoValue,
   createSecretMasker,
@@ -63,11 +66,11 @@ import {
   maskSecretsInText,
   recordNestedStackParameterExpressions,
   redactSecretsForState,
-} from './secret-redaction.js';
-import { equalIdNamesDifferentResources, equalIdNamesSameResource } from './type-change-guard.js';
-import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
+} from '../secret-redaction.js';
+import { equalIdNamesDifferentResources, equalIdNamesSameResource } from '../type-change-guard.js';
+import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     provisionUpdate: OmitThisParameter<typeof provisionUpdate>;

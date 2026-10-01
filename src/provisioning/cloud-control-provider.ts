@@ -244,8 +244,8 @@ export class CloudControlWaitAbandonedError extends ProvisioningError {
     Object.setPrototypeOf(this, CloudControlWaitAbandonedError.prototype);
     // Marked in the CONSTRUCTOR, not at the throw sites: every instance of this
     // class is an abandoned wait, and the marker is what the THREE foreign
-    // already-deleted classifiers read (`deploy-engine-update.ts`,
-    // `deploy-engine-delete.ts`, `destroy-runner.ts`) — they cannot see this
+    // already-deleted classifiers read (`deploy-engine/update.ts`,
+    // `deploy-engine/delete.ts`, `destroy-runner.ts`) — they cannot see this
     // class. Marking per-throw is
     // one forgotten call from re-opening the state-drop, which is the reason
     // `ResourceUpdateNotSupportedError` marks in its constructor too.

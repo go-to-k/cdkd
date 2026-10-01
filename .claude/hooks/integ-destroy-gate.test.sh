@@ -957,6 +957,14 @@ stage_filter_hunk "src/deployment/deploy-engine.ts" \
 run_case "hunk filter: deploy-engine.ts delete symbol arms the gate" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+# The split-out mixins are in scope by the `deploy-engine/.*\.ts` arm (#4350);
+# the scope pin normalizes everything after `**`, so only a real path here
+# catches a broken suffix in that arm.
+stage_filter_hunk "src/deployment/deploy-engine/delete.ts" \
+  "  await deleteProvider.delete(logicalId, physicalId, resourceType);"
+run_case "hunk filter: deploy-engine/ mixin delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 stage_filter_hunk "src/provisioning/cloud-control-provider.ts" \
   "  private async deleteRemnant(id: string) { return this.cc.send(cmd); }"
 run_case "hunk filter: cloud-control-provider.ts delete symbol arms the gate" 2 stale "$filter_repo" \

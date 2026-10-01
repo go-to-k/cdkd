@@ -93,7 +93,7 @@ const RAW_MASKERS = [
  * population floor that proves the builder is still the file's render route.
  */
 
-// The whole split resolver (#4337): host plus `intrinsic-resolver-*.ts`.
+// The whole split resolver (#4337): host plus `intrinsic-resolver/*.ts`.
 const SUBJECT = 'intrinsic-function-resolver-family.ts';
 
 /**

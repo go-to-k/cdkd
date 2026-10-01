@@ -1,12 +1,15 @@
-import { isInertUnquoted, pasteableCommand } from '../utils/pasteable-command.js';
-import { getCurrentStackName, looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';
-import type { ChangeType } from '../types/state.js';
-import { displaySafe } from '../utils/display-safe.js';
-import { ProvisioningError } from '../utils/error-handler.js';
-import type { DeployEngine } from './deploy-engine.js';
-import { isNameCollisionErrorFrom } from './retryable-errors.js';
+import { isInertUnquoted, pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  getCurrentStackName,
+  looksLikeCdkdGeneratedName,
+} from '../../provisioning/resource-name.js';
+import type { ChangeType } from '../../types/state.js';
+import { displaySafe } from '../../utils/display-safe.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { DeployEngine } from '../deploy-engine.js';
+import { isNameCollisionErrorFrom } from '../retryable-errors.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     replacementNameOrigin: OmitThisParameter<typeof replacementNameOrigin>;

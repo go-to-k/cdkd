@@ -105,7 +105,7 @@ const GRACE_MS = 2 * 60 * 1000;
  * DELETE failure means "already gone" — at which point they DROP the state row.
  *
  * The union of all four, not three: `destroy-runner.ts:1676` and
- * `deploy-engine-delete.ts` also match `No policy found`; `deploy-engine-update.ts`
+ * `deploy-engine/delete.ts` also match `No policy found`; `deploy-engine/update.ts`
  * matches a BARE `NotFound`, strictly wider than `NotFoundException`; and the
  * fourth consumer is `delete()`'s OWN catch in
  * `src/provisioning/cloud-control-provider.ts`, which the first cut of this

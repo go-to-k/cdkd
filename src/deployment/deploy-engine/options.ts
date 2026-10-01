@@ -1,9 +1,9 @@
-import type { AssetRedirectMap } from '../assets/asset-redirect.js';
-import type { PreDeleteSnapshotClients } from '../provisioning/final-snapshot.js';
-import type { DeploymentEventRecorder } from '../types/deployment-events.js';
-import type { StackState } from '../types/state.js';
-import type { RecordedSecretValues } from './secret-redaction.js';
-import type { ProducerRegionEvidence } from './producer-regions-scope.js';
+import type { AssetRedirectMap } from '../../assets/asset-redirect.js';
+import type { PreDeleteSnapshotClients } from '../../provisioning/final-snapshot.js';
+import type { DeploymentEventRecorder } from '../../types/deployment-events.js';
+import type { StackState } from '../../types/state.js';
+import type { RecordedSecretValues } from '../secret-redaction.js';
+import type { ProducerRegionEvidence } from '../producer-regions-scope.js';
 
 /**
  * Default per-resource warn threshold: warn the user when a single

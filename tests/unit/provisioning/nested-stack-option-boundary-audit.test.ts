@@ -29,7 +29,7 @@ import { describe, it, expect } from 'vite-plus/test';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const DEPLOY_ENGINE_OPTIONS = readFileSync(
-  join(REPO_ROOT, 'src/deployment/deploy-engine-options.ts'),
+  join(REPO_ROOT, 'src/deployment/deploy-engine/options.ts'),
   'utf8'
 );
 const NESTED_STACK_PROVIDER = readFileSync(
