@@ -6,8 +6,8 @@
 
 - **After round two, name what the rounds have in common**, then take the narrow
   fix and FILE the structural one — across PRs too: narrowing a DELETE's
-  classifier met a deeper feeder each review (#3826 → #3972 → #3978); the bound
-  was an ownership proof at the deleting consumer (#3979). Ask for it first.
+  classifier met a deeper feeder each review; the bound was an ownership proof
+  at the deleting consumer (#3979). Ask for it first.
 - **A cascade stops when the artifact CLAIMS LESS** — tally the blockers by
   PART of the diff and offer that part's DELETION; stop reviewing the patch and
   question its SHAPE.
@@ -17,7 +17,7 @@
 **Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
 Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase →
 integ → marker. A lane REPORTS `markgate status integ-destroy --explain`'s
-line, never "integ not needed": comment-only edits count (#3873, #3933). The
+line, never "integ not needed": comment-only edits count (#3873). The
 gate's `hash: diff` stales on a rebase only when main changed a scoped file
 THIS branch changes too, so a set marker on a MERGEABLE PR needs no rebase
 (`markgate status`) — unless main changed code the fixture EXERCISES: re-run
@@ -27,7 +27,7 @@ it on the rebased head (#3726).
   scoped touch buys another real-AWS run, comment-only deltas included. The one
   exception to §8-h's "nits included": a COMMENT-ONLY nit found after the integ
   may ride this run's next lane on that file, whose integ re-runs anyway, named
-  in that lane's PR body (#3963 → #3977); with no such lane, fix it here and
+  in that lane's PR body (#3977); with no such lane, fix it here and
   re-run. Scope the reviewers to the delta and paste its COMMIT MESSAGE into the
   brief: they read `gh pr diff`, not `git log`.
 
@@ -45,7 +45,9 @@ tests passing is necessary but NOT sufficient:
   multi-resource VPC / Lambda / Custom-Resource paths. Run one via
   **`/run-integ <name>`** — never raw `cdkd deploy` / `cdkd destroy`, the
   bypass being not those NAMES but **any real-AWS work outside a fixture**.
-  `/pick-integ` picks the fixture(s); never one it marks maintainer-only.
+  `/pick-integ` picks the fixture(s); never one it marks maintainer-only (no
+  `verify.sh` or `run.sh`, so no agent can run it) — run its check on EVERY
+  name you report, picked there or not.
 - **Non-deletion source change** → still live-test the fixed path end to end
   (deploy → the redeploy that reproduced the bug → destroy). A lane barred from
   real-AWS RUNS still WRITES the arm; the parent runs it.
