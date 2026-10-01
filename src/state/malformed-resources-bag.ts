@@ -10,6 +10,7 @@ import {
   truncateCodePoints,
 } from '../utils/display-safe.js';
 import {
+  ASSIGNMENT_WORD,
   isInertUnquoted,
   pasteableCommand,
   type CommandArg,
@@ -273,10 +274,12 @@ export function displayLogicalId(value: string): string {
 const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
 
 /**
- * A logical id in the `', '`-joined list of a message in this module. Every
- * such message ends on a pasteable command (a `cdkd state show`, or a
- * `cdkd state orphan` template), and the id is a key the state record's writer
- * chose, so it is NAMED only when both hold, and DESCRIBED as
+ * A logical id in the `', '`-joined list of a message in this module. Each
+ * such message but one ends on a pasteable command (a `cdkd state show`, or a
+ * `cdkd state orphan` template; the exception, `cdkd diff`'s exit-3 orphan-rows
+ * reason, takes the same rule so the lists agree), and the id is a key the
+ * state record's writer chose, so it is NAMED only when all three of the
+ * following hold, and DESCRIBED as
  * {@link UNSAFE_ID_DESCRIPTION} otherwise — the maintainer's decision on
  * go-to-k/cdkd#4229, applied to every list here by go-to-k/cdkd#4253:
  *
@@ -291,12 +294,24 @@ const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
  *    is needed at all. That predicate also refuses whitespace and the `~` a
  *    tilde expansion reads, neither of which `displayIdent` quotes.
  *
- * So a hostile, padded, cut or unrenderable id prints one placeholder, and the
- * operator finds it with the command the message ends on. A plain id at the
- * logical-id cap is still named in full.
+ * 3. **Not an ASSIGNMENT word** ({@link ASSIGNMENT_WORD}). Every list sits
+ *    between ` — ` clause breaks, so a named id is where a selection STARTS:
+ *    `PATH=.` or `HISTFILE=victim` pasted alone runs nothing a sentinel sees
+ *    but persists in the operator's shell.
+ *
+ * So a hostile, padded, cut, unrenderable or missing (`''`) id prints one
+ * placeholder, and the operator finds it with the command the message ends
+ * on. A plain id at the logical-id cap is still named in full.
+ *
+ * Known residuals, NOT closed here: a plain id holding `,` is named bare and
+ * reads as two entries in the `', '`-joined list (go-to-k/cdkd#3179); and a
+ * plain id that is a command WORD (`touch`, `reboot`) starts a pasted clause
+ * as that command (go-to-k/cdkd#4249).
  */
 function namedLogicalId(id: string): string {
-  return displayLogicalId(id) === id && isInertUnquoted(id) ? id : UNSAFE_ID_DESCRIPTION;
+  return displayLogicalId(id) === id && isInertUnquoted(id) && !ASSIGNMENT_WORD.test(id)
+    ? id
+    : UNSAFE_ID_DESCRIPTION;
 }
 
 /**

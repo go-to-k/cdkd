@@ -3,6 +3,7 @@ import {
   CLAUSE_BREAK_PAYLOAD,
   PASTE_PAYLOADS,
   filesTouchedBy,
+  segmentsOf,
   spansThatRun,
   withPasteDir,
 } from '../utils/paste-harness.js';
@@ -5457,6 +5458,26 @@ function spansThatRunUnderEitherFlip(message: string, dir: string): string[] {
   ];
 }
 
+/** Ids that are plain and inert, but a shell ASSIGNMENT where a pasted clause starts. */
+const ASSIGNMENTS = ['PATH=.', 'PATH+=:.', 'HISTFILE=victim'] as const;
+
+/**
+ * Every span of `message` (`segmentsOf`: lines, sentences, clauses, runs of
+ * lines, the `'` flip) after which `PATH` or `HISTFILE` differs from what it
+ * was before the span. The harness's sentinel sees only FILES, and an
+ * assignment touches none, so the check line turns a moved variable into one.
+ */
+function envChangingSpans(message: string, dir: string): string[] {
+  return [...segmentsOf(message)].filter(
+    (span) =>
+      filesTouchedBy(
+        `__p="$PATH"; __h="\${HISTFILE-}"\n${span}\n` +
+          `[ "$PATH" = "$__p" ] && [ "\${HISTFILE-}" = "$__h" ] || : > ENV_CHANGED`,
+        dir
+      ).includes('ENV_CHANGED')
+  );
+}
+
 describe('every id list in the module describes a non-plain logical id (go-to-k/cdkd#4253)', () => {
   // Each text ends on a pasteable command (`cdkd state show`, or the
   // `cdkd state orphan` template), and each id is a key the state record's
@@ -5499,11 +5520,18 @@ describe('every id list in the module describes a non-plain logical id (go-to-k/
         // them, so only the `isInertUnquoted` half describes them.
         '~root',
         'a=~b',
+        // Inert and plain, but an ASSIGNMENT where a pasted clause starts:
+        // only the `ASSIGNMENT_WORD` half describes them.
+        ...ASSIGNMENTS,
+        // Not what `displayLogicalId` renders: only the identity half
+        // describes these — a missing id, and a plain id one past the cap.
+        '',
+        'z'.repeat(IDENT_MAX_CODE_POINTS + 1),
       ];
       for (const value of values) {
         const text = build([value]);
         expect(text, value).toContain(`— ${NOT_SHOWN} —`);
-        expect(text, value).not.toContain(value);
+        if (value !== '') expect(text, value).not.toContain(value);
         // Per id, not per list: a plain sibling is still named beside it.
         expect(build(['A', value]), value).toContain(`— A, ${NOT_SHOWN} —`);
       }
@@ -5521,13 +5549,31 @@ describe('every id list in the module describes a non-plain logical id (go-to-k/
       withPasteDir((dir) => {
         // Non-vacuity, per text: the JSON-quoted render this text printed
         // before go-to-k/cdkd#4253, put back into THIS text's own shape, runs.
-        const before = messages.flatMap(({ value, message }) =>
-          spansThatRunUnderEitherFlip(message.replace(NOT_SHOWN, JSON.stringify(value)), dir)
+        const olds = messages.map(({ value, message }) =>
+          message.replace(NOT_SHOWN, JSON.stringify(value))
         );
+        const before = olds.flatMap((old) => spansThatRunUnderEitherFlip(old, dir));
         expect(before.length, label).toBeGreaterThan(0);
+        // ...and the `"` arm on its OWN: it is the only arm that runs the
+        // separator payload, so an arm returning no spans must red here.
+        const beforeDoubleFlip = olds.flatMap((old) =>
+          doubleQuoteFlipSpans(old).filter((span) => filesTouchedBy(span, dir).length > 0)
+        );
+        expect(beforeDoubleFlip.length, label).toBeGreaterThan(0);
         for (const { value, message } of messages) {
           expect(spansThatRunUnderEitherFlip(message, dir), `${value}: ${message}`).toEqual([]);
           expect(message, value).toContain(NOT_SHOWN);
+        }
+        // An ASSIGNMENT runs nothing the `touch` sentinel sees, so this arm
+        // observes the ENVIRONMENT: each span, then a line that touches
+        // `ENV_CHANGED` when `PATH` or `HISTFILE` moved. The pre-fix render
+        // named these ids bare, so it must red here.
+        const envBefore = ASSIGNMENTS.flatMap((id) =>
+          envChangingSpans(build([id]).replace(NOT_SHOWN, id), dir)
+        );
+        expect(envBefore.length, label).toBeGreaterThan(0);
+        for (const id of ASSIGNMENTS) {
+          expect(envChangingSpans(build([id]), dir), id).toEqual([]);
         }
       });
     }, 120_000);

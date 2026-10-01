@@ -497,6 +497,20 @@ export function isInertUnquoted(value: string): boolean {
 }
 
 /**
+ * A value that would be a shell ASSIGNMENT word where it starts a pasted
+ * clause (`HISTFILE=~/victim`, `PATH=.`): it runs nothing the paste harness's
+ * `touch` sentinel sees, yet an interactive bash then truncates `~/victim` at
+ * exit, and `PATH=.` hijacks every later command (go-to-k/cdkd#4243 review).
+ * The APPEND form counts too: `PATH+=:.` appends the working directory to the
+ * search path. {@link isInertUnquoted} admits a mid-word `=`, which is right
+ * for a value a command NAMES as an argument and wrong for one printed where
+ * a selection can START, so a caller printing such a value tests this too.
+ * `intrinsic-function-resolver.ts` still spells its own copy (go-to-k/cdkd#4253
+ * left it while another PR held that file).
+ */
+export const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+
+/**
  * WHY a value must become a hole, or `undefined` when it may be NAMED.
  *
  * FIRST MATCH WINS, in the order written: `empty`, `altered`, `too-long`,
