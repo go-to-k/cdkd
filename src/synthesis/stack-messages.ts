@@ -175,7 +175,9 @@ export function collectStackMessages(
  * same line forges just as well.
  */
 function annotationLine(label: 'Warning' | 'Info' | 'Error', msg: StackMessage): string {
-  return safeMsg`[${label} at ${displaySafeMultiline(msg.path)}] ` + displaySafeMultiline(msg.message);
+  return (
+    safeMsg`[${label} at ${displaySafeMultiline(msg.path)}] ` + displaySafeMultiline(msg.message)
+  );
 }
 
 /**
