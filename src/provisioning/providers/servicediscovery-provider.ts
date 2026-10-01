@@ -1574,13 +1574,22 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
 
       if (status === 'FAIL') {
-        const errorMessage = maskerOrIdentity(maskSecrets)(
-          result.Operation?.ErrorMessage || 'Unknown error'
-        );
-        throw new ProvisioningError(
-          `Operation failed for ${logicalId}: ${errorMessage}`,
-          resourceType,
-          logicalId
+        // The raw `ErrorMessage` rides as the unmasked `cause`, so a message
+        // the mask changed keeps the classification the unmasked text gets
+        // (issue #4299). Without a cause there is no chain for the stamp to
+        // point the classifiers at.
+        const raw = new Error(result.Operation?.ErrorMessage || 'Unknown error');
+        throw this.wrapMaskedError(
+          maskerOrIdentity(maskSecrets),
+          raw,
+          (errorMessage) =>
+            new ProvisioningError(
+              `Operation failed for ${logicalId}: ${errorMessage}`,
+              resourceType,
+              logicalId,
+              undefined,
+              raw
+            )
         );
       }
 
