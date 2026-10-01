@@ -158,6 +158,9 @@ describe('start-cloudfront refuses the state-source flags it cannot honor (#2528
     const error = refusalFor(argv as string[]);
     expect(error.code).toBe('cdkd.startCloudFrontStateFlagUnsupported');
     expect(error.message).toContain(flag as string);
+    // The remedy's holes are quoted (go-to-k/cdkd#4295).
+    expect(error.message).toContain("--from-cfn-stack '<name>' for a CloudFormation-deployed stack");
+    expect(error.message).toContain("--origin '<originId>'='<dir>' to serve");
     // The message must point somewhere: a refusal with no remedy just moves the
     // dead end earlier.
     expect(error.message).toContain('--from-cfn-stack');

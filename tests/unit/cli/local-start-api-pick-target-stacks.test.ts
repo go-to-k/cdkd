@@ -6,6 +6,12 @@ import {
   tryEmitFromCfnRedundancyTipOnce,
 } from '../../../src/cli/commands/local-start-api.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 function stack(name: string): StackInfo {
   return {
@@ -77,9 +83,27 @@ describe('pickTargetStacks', () => {
   });
 
   describe('error message', () => {
+    it('names no payload stack beside --stack / --from-cfn-stack (go-to-k/cdkd#4295)', () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        let message = '';
+        try {
+          pickTargetStacks([stack(value), B], undefined);
+        } catch (e) {
+          message = (e as Error).message;
+        }
+        expect(message, value).toContain(
+          'Available stacks: a stack name that is not a plain identifier, B.'
+        );
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+        });
+      }
+    }, 120_000);
+
     it('lists every available stack name and mentions all three selection routes', () => {
       expect(() => pickTargetStacks([A, B], undefined)).toThrowError(
-        /Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, or a stack-qualified target like "<StackName>\/<construct>" to pick a target\. Available stacks: A, B\./
+        /Multi-stack app: pass --stack '<name>', --from-cfn-stack '<name>', or a stack-qualified target like "<StackName>\/<construct>" to pick a target\. Available stacks: A, B\./
       );
     });
   });

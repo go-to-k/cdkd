@@ -435,3 +435,12 @@ describe('the drift-baseline report receives the LOADED identity (go-to-k/cdkd#3
     expect(warned).not.toContain('eu-west-1');
   });
 });
+
+describe('the no-app refusal quotes its --template hole (go-to-k/cdkd#4295)', () => {
+  it("names --template '<path>'", async () => {
+    // `resolveApp` is mocked to answer nothing and no --app or --template is
+    // passed, so the first refusal is the no-app one.
+    const logged = await runExport(['MyStack', '--yes']);
+    expect(logged).toContain("OR a pre-rendered CFn template (--template '<path>').");
+  });
+});

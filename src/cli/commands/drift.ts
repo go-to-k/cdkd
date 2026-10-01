@@ -88,9 +88,10 @@ import { shellQuote } from '../../state/lock-contention-message.js';
 import {
   commandHole,
   pasteableCommand,
+  quotedOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import { foldRegionOption, namedCliRegion, regionShown } from '../region-options.js';
 import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -1292,10 +1293,14 @@ function resolveTargetRefs(
       out.push(matches[0]!);
       continue;
     }
-    const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
+    // Names `--stack-region`, so the stack name and every region are shown
+    // only when plain and the hole is quoted (go-to-k/cdkd#4295).
+    const regions = matches
+      .map((r) => (r.region === undefined ? '(legacy)' : regionShown(r.region)))
+      .join(', ');
     throw new Error(
-      `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
-        `Re-run with --stack-region <region> to disambiguate.`
+      `Stack ${quotedOrDescribed(stackName, 'stack name')} has state in multiple regions: ${regions}. ` +
+        `Re-run with --stack-region ${commandHole('region')} to disambiguate.`
     );
   }
   return out;

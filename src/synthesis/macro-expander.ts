@@ -413,9 +413,9 @@ async function expandMacrosAttempt(
         throw new MacroExpansionError(
           `Template is ${serialized.length} bytes (over ${CFN_TEMPLATE_BODY_LIMIT} ` +
             `inline limit) — cdkd needs a state bucket to upload the transient ` +
-            `template for CloudFormation's TemplateURL parameter. Pass --state-bucket <name> ` +
+            `template for CloudFormation's TemplateURL parameter. Pass --state-bucket '<name>' ` +
             `or ensure STS GetCallerIdentity can resolve a default bucket ` +
-            `(cdkd-state-<accountId>).`
+            `('cdkd-state-<accountId>').`
           // No `cause` — pre-flight rejection, not a wrapped failure.
         );
       }

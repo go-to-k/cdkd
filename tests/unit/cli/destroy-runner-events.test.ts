@@ -299,31 +299,31 @@ describe('runDestroyForStack - #808 deployment events', () => {
       expect(body).not.toContain('Drop the record with:');
       expect(body).toContain('Resource Topic (a resource type that is not printable as typed)');
       // The per-type remedy cannot name it, so the global form is offered.
-      expect(body).toContain('Re-run with a larger --resource-timeout <DURATION>');
+      expect(body).toContain("Re-run with a larger --resource-timeout '<DURATION>'");
     }
   });
 
   it('names a plain id and type, and the per-type remedy only for a three-segment type (positive control)', () => {
     const plain = new ResourceTimeoutError('Topic', 'AWS::SNS::Topic', 'us-east-1', 5, 'DELETE', 5).message;
     expect(plain).toContain('Resource Topic (AWS::SNS::Topic) in us-east-1 timed out');
-    expect(plain).toContain('Re-run with --resource-timeout AWS::SNS::Topic=<DURATION>');
+    expect(plain).toContain("Re-run with --resource-timeout AWS::SNS::Topic='<DURATION>'");
     expect(plain.split('\n')).toHaveLength(5);
     const custom = new ResourceTimeoutError('Cr', 'Custom::Seeder', 'us-east-1', 5, 'CREATE', 5).message;
     expect(custom).toContain('Resource Cr (Custom::Seeder)');
-    expect(custom).toContain('Re-run with a larger --resource-timeout <DURATION>');
+    expect(custom).toContain("Re-run with a larger --resource-timeout '<DURATION>'");
     expect(custom.split('\n')).toHaveLength(5);
     // CloudFormation admits `-`, `_` and `@` after `Custom::`, so such a type
     // is named rather than described.
     const hyphenated = new ResourceTimeoutError('Cr', 'Custom::my-resource_v@2', 'us-east-1', 5, 'CREATE', 5).message;
     expect(hyphenated).toContain('Resource Cr (Custom::my-resource_v@2)');
-    expect(hyphenated).toContain('Re-run with a larger --resource-timeout <DURATION>');
+    expect(hyphenated).toContain("Re-run with a larger --resource-timeout '<DURATION>'");
     expect(hyphenated.split('\n')).toHaveLength(5);
     // Past the CloudFormation `TypeName` limit a well-shaped type is described.
     const long = `AWS::S3::B${'b'.repeat(RESOURCE_TYPE_MAX_LENGTH)}`;
     const overCap = new ResourceTimeoutError('Cr', long, 'us-east-1', 5, 'CREATE', 5).message;
     expect(overCap).not.toContain(long);
     expect(overCap).toContain('Resource Cr (a resource type that is not printable as typed)');
-    expect(overCap).toContain('Re-run with a larger --resource-timeout <DURATION>');
+    expect(overCap).toContain("Re-run with a larger --resource-timeout '<DURATION>'");
     expect(overCap.split('\n')).toHaveLength(5);
     const atCap = `AWS::S3::B${'b'.repeat(RESOURCE_TYPE_MAX_LENGTH - 'AWS::S3::B'.length)}`;
     expect(new ResourceTimeoutError('Cr', atCap, 'us-east-1', 5, 'CREATE', 5).message).toContain(`(${atCap})`);

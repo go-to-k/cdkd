@@ -3,7 +3,11 @@ import {
   createDestroyCommand,
   purgeEventsAfterDestroy,
 } from '../../../src/cli/commands/destroy.js';
-import type { DeploymentEventsPruneResult } from '../../../src/state/deployment-events-store.js';
+import {
+  DeploymentEventsReader,
+  type DeploymentEventsPruneResult,
+} from '../../../src/state/deployment-events-store.js';
+import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { expectNoCommandBesideDisplay } from '../utils/paste-harness.js';
 
 /**
@@ -134,6 +138,34 @@ describe('purgeEventsAfterDestroy', () => {
     // THE OTHER POLARITY of the versioning note asserted above (issue #2624):
     // nothing was deleted here, so nothing is printed at all — and therefore
     // no caveat about a delete that did not happen either.
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it('prints nothing for a stack with no event history, through the REAL reader (issue #2624)', async () => {
+    // The case above feeds the gate a hand-built all-false result, so it
+    // cannot see what `pruneRuns({ all: true })` actually returns. Over an
+    // empty prefix its `DeleteObjects` still succeeds (S3 deletes are
+    // idempotent); a reader that reported that success as `indexDeleted`
+    // made this line announce a purge of history that never existed.
+    const deleteRawObjects = vi.fn(async () => {});
+    const backend = {
+      prefix: 'cdkd',
+      listRawKeys: vi.fn(async () => []),
+      getRawObject: vi.fn(async () => null),
+      putRawObject: vi.fn(async () => {}),
+      deleteRawObjects,
+    } as unknown as S3StateBackend;
+    const { logger, info } = fakeLogger();
+    const res = await purgeEventsAfterDestroy(
+      new DeploymentEventsReader(backend),
+      'MyStack',
+      'us-east-1',
+      { purgeEvents: true, runResult: 'SUCCEEDED', interrupted: false },
+      logger
+    );
+    // Positive control: the purge DID run its delete — only the claim is gone.
+    expect(deleteRawObjects).toHaveBeenCalledOnce();
+    expect(res).toEqual({ deletedRunIds: [], remainingRunIds: [], indexDeleted: false });
     expect(info).not.toHaveBeenCalled();
   });
 

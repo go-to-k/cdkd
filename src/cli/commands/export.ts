@@ -2799,7 +2799,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       if (!appCmd) {
         throw new Error(
           "'cdkd export' requires a CDK app (pass --app or set it in cdk.json) " +
-            'OR a pre-rendered CFn template (--template <path>).'
+            "OR a pre-rendered CFn template (--template '<path>')."
         );
       }
       logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app to read template...'));

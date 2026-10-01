@@ -20,7 +20,7 @@ import { buildLockContentionMessage } from '../../state/lock-contention-message.
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import { foldRegionOption, namedCliRegion, regionShown } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
@@ -50,6 +50,7 @@ import {
   displayStackName,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
+import { plainOrDescribed } from '../../utils/pasteable-command.js';
 
 /**
  * `cdkd orphan` renders assembly-derived values — a stack's `stackName` /
@@ -691,10 +692,15 @@ async function pickStackRegion(
     const recordRegion = refs[0]!.region;
     return { region: recordRegion ?? synthRegion ?? '', recordRegion };
   }
-  const regions = displayRegionList(refs);
+  // Names `--stack-region`, so the stack name and every region are shown only
+  // when plain and described otherwise (go-to-k/cdkd#4295): JSON-quoted, a
+  // `$( )` still ran when the line was pasted.
+  const regions = refs
+    .map((ref) => (ref.region === undefined ? '(legacy)' : regionShown(ref.region)))
+    .join(', ');
   throw new Error(
-    `Stack ${displayStackName(stackName)} has state in multiple regions: ${regions}. ` +
-      `Re-run with --stack-region <region> to disambiguate.`
+    `Stack ${plainOrDescribed(stackName, 'stack name')} has state in multiple regions: ${regions}. ` +
+      `Re-run with --stack-region '<region>' to disambiguate.`
   );
 }
 

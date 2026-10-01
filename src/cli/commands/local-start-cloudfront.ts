@@ -160,8 +160,8 @@ function refuseUnwiredCdkdStateFlags(cmd: Command): void {
         '`cdkd local start-cloudfront`. The CloudFront emulator resolves its deployed-S3 origins, ' +
         "its cf.kvs() bindings and its Function URL / Lambda@Edge containers' environment through " +
         'cdk-local, which consults a state source only under --from-cfn-stack. DROP the flag(s) above, ' +
-        'then use --from-cfn-stack <name> for a CloudFormation-deployed stack, or --origin ' +
-        '<originId>=<dir> to serve an origin from a local directory. Adding --from-cfn-stack while ' +
+        "then use --from-cfn-stack '<name>' for a CloudFormation-deployed stack, or --origin " +
+        "'<originId>'='<dir>' to serve an origin from a local directory. Adding --from-cfn-stack while " +
         'leaving these on hits this same refusal. Tracked as go-to-k/cdkd#2528 (upstream ' +
         'go-to-k/cdk-local#699).',
       { code: 'cdkd.startCloudFrontStateFlagUnsupported' }

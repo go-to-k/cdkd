@@ -43,6 +43,7 @@ import {
   type ResolvedEcsTask,
   type ResolvedEcsVolume,
 } from './ecs-task-resolver.js';
+import { quotedOrDescribed } from '../utils/pasteable-command.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -813,8 +814,8 @@ async function prepareOneImage(
         : undefined;
       if (!cdkOutDir) {
         throw new EcsTaskRunnerError(
-          `Container '${container.name}' uses a CDK asset image but the stack has no asset manifest. ` +
-            'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
+          `Container ${quotedOrDescribed(container.name, 'container name')} uses a CDK asset image but the stack has no asset manifest. ` +
+            "Re-synthesize the app (without `--output '<stale-dir>'`) and retry."
         );
       }
       const loader = new AssetManifestLoader();
