@@ -1,17 +1,20 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
-import { getLogger } from '../utils/logger.js';
-import { getAwsClients } from '../utils/aws-clients.js';
-import { stringifyValue } from '../utils/stringify.js';
-import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
-import { displayIdent, UNRENDERABLE } from '../utils/display-safe.js';
-import { isInertUnquoted } from '../utils/pasteable-command.js';
-import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
-import { drainDeadlines } from './drain-budget.js';
-import { markNonRetryable } from './retryable-errors.js';
-import { isListParameterType } from '../utils/parameter-types.js';
-import { type RetryLogger } from './retry.js';
-import { type StaleAttributeHealPhase, type StaleAttributeHealer } from './stale-attribute-heal.js';
+import { getLogger } from '../../utils/logger.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
+import { stringifyValue } from '../../utils/stringify.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
+import { displayIdent, UNRENDERABLE } from '../../utils/display-safe.js';
+import { isInertUnquoted } from '../../utils/pasteable-command.js';
+import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
+import { drainDeadlines } from '../drain-budget.js';
+import { markNonRetryable } from '../retryable-errors.js';
+import { isListParameterType } from '../../utils/parameter-types.js';
+import { type RetryLogger } from '../retry.js';
+import {
+  type StaleAttributeHealPhase,
+  type StaleAttributeHealer,
+} from '../stale-attribute-heal.js';
 import {
   dynamicReferenceTokens,
   recordSecretExpression,
@@ -25,24 +28,24 @@ import {
   SECRET_MASK,
   type DynamicReferenceSubstitution,
   type RecordedSecretValues,
-} from './secret-redaction.js';
-import type { CloudFormationTemplate } from '../types/resource.js';
+} from '../secret-redaction.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
 import {
   type ResourceState,
   type StateImportEntry,
   type StateOutputReadEntry,
-} from '../types/state.js';
-import { S3StateBackend } from '../state/s3-state-backend.js';
-import type { ExportIndexStore } from '../state/export-index-store.js';
-import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
-import { COMPOSITE_ID_SEPARATOR, segmentAfterAnchor } from '../provisioning/composite-id.js';
-import { TemplateParser } from '../analyzer/template-parser.js';
+} from '../../types/state.js';
+import { S3StateBackend } from '../../state/s3-state-backend.js';
+import type { ExportIndexStore } from '../../state/export-index-store.js';
+import { parseWebACLArn } from '../../provisioning/providers/wafv2-provider.js';
+import { COMPOSITE_ID_SEPARATOR, segmentAfterAnchor } from '../../provisioning/composite-id.js';
+import { TemplateParser } from '../../analyzer/template-parser.js';
 import {
   ambientCredentialConfig,
   credentialFingerprint,
   type CredentialConfig,
-} from '../utils/ambient-client-defaults.js';
-import { injectiveKey } from '../state/record-keys.js';
+} from '../../utils/ambient-client-defaults.js';
+import { injectiveKey } from '../../state/record-keys.js';
 
 /**
  * Special symbol to represent AWS::NoValue

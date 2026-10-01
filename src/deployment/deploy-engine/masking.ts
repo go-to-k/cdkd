@@ -1,17 +1,17 @@
-import { DeployEngine, EMPTY_SECRETS } from './deploy-engine.js';
+import { DeployEngine, EMPTY_SECRETS } from '../deploy-engine.js';
 
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
-type RedactedAttributeRead = import('./intrinsic-function-resolver.js').RedactedAttributeRead;
-import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
-import type { ResourceState } from '../types/state.js';
+type RedactedAttributeRead = import('../intrinsic-function-resolver.js').RedactedAttributeRead;
+import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
+import type { ResourceState } from '../../types/state.js';
 import {
   ambientCredentialConfig,
   credentialFingerprint,
-} from '../utils/ambient-client-defaults.js';
-import { displayIdent, isPasteableIdent, safeMsg } from '../utils/display-safe.js';
-import { commandHole, pasteableCommand, shellQuote } from '../utils/pasteable-command.js';
-import { ProvisioningError } from '../utils/error-handler.js';
-import type { FreshNoEchoReadback } from './deploy-value-equality.js';
+} from '../../utils/ambient-client-defaults.js';
+import { displayIdent, isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
+import { commandHole, pasteableCommand, shellQuote } from '../../utils/pasteable-command.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { FreshNoEchoReadback } from '../deploy-value-equality.js';
 import {
   type RecordedSecretValues,
   type SecretMasker,
@@ -29,9 +29,9 @@ import {
   recordRecoverableMaskedOutput,
   redactSecretsForState,
   wholeStringLeavesOf,
-} from './secret-redaction.js';
+} from '../secret-redaction.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     diffLogMasker: OmitThisParameter<typeof diffLogMasker>;
@@ -468,7 +468,7 @@ export function refuseRedactedAttributeReads(
   this: DeployEngine,
   logicalId: string,
   resourceType: string,
-  context: import('./intrinsic-function-resolver.js').ResolverContext
+  context: import('../intrinsic-function-resolver.js').ResolverContext
 ): void {
   const reads = context.redactedAttributeReads;
   if (reads === undefined || reads.length === 0) return;

@@ -103,25 +103,25 @@ import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   type DeployEngineOptions,
   type DeployResult,
-} from './deploy-engine-options.js';
+} from './deploy-engine/options.js';
 import { deriveLabelRouting } from './label-routing.js';
 import { isReplacementCeiling, outputMapsEqual } from './deploy-value-equality.js';
-import * as nameCollisionMixin from './deploy-engine-name-collision.js';
-import * as outputsMixin from './deploy-engine-outputs.js';
-import * as rollbackMixin from './deploy-engine-rollback.js';
-import * as observedCaptureMixin from './deploy-engine-observed-capture.js';
-import * as maskingMixin from './deploy-engine-masking.js';
-import * as replacementMixin from './deploy-engine-replacement.js';
-import * as healMixin from './deploy-engine-heal.js';
-import * as createMixin from './deploy-engine-create.js';
-import * as updateMixin from './deploy-engine-update.js';
-import * as deleteMixin from './deploy-engine-delete.js';
+import * as nameCollisionMixin from './deploy-engine/name-collision.js';
+import * as outputsMixin from './deploy-engine/outputs.js';
+import * as rollbackMixin from './deploy-engine/rollback.js';
+import * as observedCaptureMixin from './deploy-engine/observed-capture.js';
+import * as maskingMixin from './deploy-engine/masking.js';
+import * as replacementMixin from './deploy-engine/replacement.js';
+import * as healMixin from './deploy-engine/heal.js';
+import * as createMixin from './deploy-engine/create.js';
+import * as updateMixin from './deploy-engine/update.js';
+import * as deleteMixin from './deploy-engine/delete.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   type DeployEngineOptions,
   type DeployResult,
-} from './deploy-engine-options.js';
+} from './deploy-engine/options.js';
 export { deriveLabelRouting, type LabelRoutingState } from './label-routing.js';
 
 /**
@@ -1005,7 +1005,7 @@ export class DeployEngine {
     };
   }
 
-  /** @internal Body in `deploy-engine-masking.ts` (#4200). */
+  /** @internal Body in `deploy-engine/masking.ts` (#4200). */
   static maskedRecordRemedyFor = maskingMixin.maskedRecordRemedyFor;
 
   private redactStateForPersist(state: StackState): StackState {

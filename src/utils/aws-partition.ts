@@ -11,7 +11,7 @@
  * provider importing from `src/local/**` would invert the layering.
  *
  * NOTE `getAccountInfo().partition`
- * (`src/deployment/intrinsic-resolver-support.ts`) was hardcoded to `'aws'`
+ * (`src/deployment/intrinsic-resolver/support.ts`) was hardcoded to `'aws'`
  * until issue #1730, which made it derive through THIS helper — so the two now
  * agree and either spelling is correct. Prefer this one where a region is
  * already in hand, since it needs no STS round trip.

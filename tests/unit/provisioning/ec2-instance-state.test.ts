@@ -81,7 +81,7 @@ describe('isSettledInstanceState', () => {
 
   it('is the ONLY spelling: both readers assign from a call, and neither compares `stateName` against `pending` in code', () => {
     // The resolver is read as its whole split family (#4337), so a reader
-    // moved into an `intrinsic-resolver-*.ts` module stays in the scan.
+    // moved into an `intrinsic-resolver/*.ts` module stays in the scan.
     const readers: Array<[string, string]> = [
       ['the resolver family', readResolverFamily()],
       [

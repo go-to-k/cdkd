@@ -1,16 +1,16 @@
-import type { DeployEngine } from './deploy-engine.js';
-import { injectiveKey } from '../state/record-keys.js';
-import type { ResourceState } from '../types/state.js';
-import { displaySafe } from '../utils/display-safe.js';
-import { isStalePlaceholderArnAttribute } from './intrinsic-function-resolver.js';
-import { readRecordAttributes } from './read-only-attribute-healer.js';
+import type { DeployEngine } from '../deploy-engine.js';
+import { injectiveKey } from '../../state/record-keys.js';
+import type { ResourceState } from '../../types/state.js';
+import { displaySafe } from '../../utils/display-safe.js';
+import { isStalePlaceholderArnAttribute } from '../intrinsic-function-resolver.js';
+import { readRecordAttributes } from '../read-only-attribute-healer.js';
 import {
   type StaleAttributeHealOutcome,
   isHealExcludedType,
   mergeHealedAttributes,
-} from './stale-attribute-heal.js';
+} from '../stale-attribute-heal.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     healStaleAttributes: OmitThisParameter<typeof healStaleAttributes>;

@@ -3,9 +3,9 @@ description: the shared ResourceDeleteResult helpers
 paths:
   - 'src/deployment/delete-outcome.ts'
   - 'src/deployment/deploy-engine.ts'
-  - 'src/deployment/deploy-engine-delete.ts'
-  - 'src/deployment/deploy-engine-update.ts'
-  - 'src/deployment/deploy-engine-replacement.ts'
+  - 'src/deployment/deploy-engine/delete.ts'
+  - 'src/deployment/deploy-engine/update.ts'
+  - 'src/deployment/deploy-engine/replacement.ts'
   - 'src/deployment/rollback-executor.ts'
   - 'src/cli/commands/destroy-runner.ts'
   - 'src/provisioning/cloud-control-provider.ts'

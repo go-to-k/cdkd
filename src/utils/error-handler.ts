@@ -533,7 +533,7 @@ export class PartialFailureError extends CdkdError {
  * even reached.
  *
  * Marking in the CONSTRUCTOR rather than at each `throw` is deliberate: ~20
- * providers raise this from inside the `update()` call `deploy-engine-update.ts`
+ * providers raise this from inside the `update()` call `deploy-engine/update.ts`
  * wraps in `withRetry` (plus `drift.ts`'s `--revert` update), and a per-site
  * marker is one forgotten call away from re-opening the hole for exactly one
  * provider.

@@ -4616,7 +4616,7 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
 // `NAMELESS_DYNAMIC_REFERENCE_MARKERS` and `DYNAMIC_REFERENCE_PREFIX` used to
 // be declared here. Neither is imported any more: scrub delegates the whole
 // PREDICATE to `isNamelessDynamicReferenceError`, which lives in
-// `intrinsic-resolver-support.ts`, beside the resolver whose throws it reads
+// `intrinsic-resolver/support.ts`, beside the resolver whose throws it reads
 // (issue go-to-k/cdkd#3181). They moved
 // BESIDE the throws when the resolver grew the same partition internally: two
 // spellings of one predicate is what issue #1936 forbids, and the consumer

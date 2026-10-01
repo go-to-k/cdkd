@@ -640,7 +640,7 @@ await executor.execute(concurrency, async (node) => {
 Intrinsic function resolution (shared with Analysis Layer). The class lives
 here with its options interface; its other module-scope helpers and types,
 including `ResolverContext`, live in
-`intrinsic-resolver-support.ts`.
+`intrinsic-resolver/support.ts`.
 
 **Resolution Context**:
 

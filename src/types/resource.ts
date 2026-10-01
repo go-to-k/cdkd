@@ -729,7 +729,7 @@ export interface UpdateContext extends SecretMaskingContext {
    * for the same reason `DeleteContext` itself lives in `region-check.ts`:
    * that module owns the check, this module owns the interface the
    * `ResourceProvider` contract hands to `update()`. Threaded today by
-   * `deploy-engine-update.ts` (the in-place UPDATE), `rollback-executor.ts` (both
+   * `deploy-engine/update.ts` (the in-place UPDATE), `rollback-executor.ts` (both
    * revert arms) and `drift.ts` (`--revert`); `CloudControlProvider.update`
    * is the only consumer so far, and the SDK providers' own twin is issue
    * #2245.
@@ -747,7 +747,7 @@ export interface UpdateContext extends SecretMaskingContext {
    * `RepositoryId`, go-to-k/cdkd#4042).
    *
    * Threaded by every `update()` caller, each from the record whose
-   * `physicalId` it passes: `deploy-engine-update.ts` (the in-place UPDATE),
+   * `physicalId` it passes: `deploy-engine/update.ts` (the in-place UPDATE),
    * `rollback-executor.ts` (both revert arms) and `drift.ts` (`--revert`).
    *
    * Read-only evidence. ABSENT, or a key missing from it, means "no recorded

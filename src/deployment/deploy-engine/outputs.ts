@@ -1,7 +1,7 @@
-import { collectSkippedOutputs } from '../analyzer/skipped-outputs.js';
-import type { CloudFormationTemplate } from '../types/resource.js';
-import type { ResourceState } from '../types/state.js';
-import { DeployEngine, EMPTY_SECRETS } from './deploy-engine.js';
+import { collectSkippedOutputs } from '../../analyzer/skipped-outputs.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
+import type { ResourceState } from '../../types/state.js';
+import { DeployEngine, EMPTY_SECRETS } from '../deploy-engine.js';
 import {
   collectPublishedOutputNames,
   exportAliasCollisionWarning,
@@ -9,8 +9,8 @@ import {
   isExportAliasCollision,
   isOutputSuppressedByCondition,
   secretBearingExportNameWarning,
-} from './outputs-export-alias.js';
-import { markNonRetryable } from './retryable-errors.js';
+} from '../outputs-export-alias.js';
+import { markNonRetryable } from '../retryable-errors.js';
 import {
   markSameGenerationBag,
   maskSecretsInError,
@@ -18,12 +18,12 @@ import {
   shareLogOnlyValues,
   unionOfSecretBags,
   type RecordedSecretValues,
-} from './secret-redaction.js';
+} from '../secret-redaction.js';
 
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
-type RedactedAttributeRead = import('./intrinsic-function-resolver.js').RedactedAttributeRead;
+type RedactedAttributeRead = import('../intrinsic-function-resolver.js').RedactedAttributeRead;
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     handleOutputResolutionFailure: OmitThisParameter<typeof handleOutputResolutionFailure>;

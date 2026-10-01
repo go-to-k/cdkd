@@ -40,16 +40,16 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
     const modules = mixinModules();
     expect(modules.map((m) => m.file)).toEqual(
       expect.arrayContaining([
-        'deploy-engine-create.ts',
-        'deploy-engine-delete.ts',
-        'deploy-engine-heal.ts',
-        'deploy-engine-masking.ts',
-        'deploy-engine-name-collision.ts',
-        'deploy-engine-observed-capture.ts',
-        'deploy-engine-outputs.ts',
-        'deploy-engine-replacement.ts',
-        'deploy-engine-rollback.ts',
-        'deploy-engine-update.ts',
+        'deploy-engine/create.ts',
+        'deploy-engine/delete.ts',
+        'deploy-engine/heal.ts',
+        'deploy-engine/masking.ts',
+        'deploy-engine/name-collision.ts',
+        'deploy-engine/observed-capture.ts',
+        'deploy-engine/outputs.ts',
+        'deploy-engine/replacement.ts',
+        'deploy-engine/rollback.ts',
+        'deploy-engine/update.ts',
       ])
     );
     for (const { file, names } of modules) {

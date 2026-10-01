@@ -1,11 +1,11 @@
-import { type DeployEngine, crossStackReadsForPartialSave } from './deploy-engine.js';
-import { explicitNamePropertyFor, getCurrentSkipPrefix } from '../provisioning/resource-name.js';
-import { getCdkdVersion } from '../state/deployment-events-store.js';
-import type { CloudFormationTemplate } from '../types/resource.js';
-import type { RollbackJournalSegment } from '../types/rollback-journal.js';
-import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
-import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
-import { pasteableCommand, quotedOrDescribed } from '../utils/pasteable-command.js';
+import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
+import { explicitNamePropertyFor, getCurrentSkipPrefix } from '../../provisioning/resource-name.js';
+import { getCdkdVersion } from '../../state/deployment-events-store.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
+import type { RollbackJournalSegment } from '../../types/rollback-journal.js';
+import type { ResourceState, StackOrphanRecord, StackState } from '../../types/state.js';
+import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { pasteableCommand, quotedOrDescribed } from '../../utils/pasteable-command.js';
 import {
   NESTED_PENDING_PARENT_REASON,
   type SettledNestedRows,
@@ -13,28 +13,28 @@ import {
   dropSettledNestedJournals,
   nestedPendingSnapshot,
   withNestedRevertRun,
-} from './nested-child-journal.js';
+} from '../nested-child-journal.js';
 import {
   type OrphanAdoptionOutcome,
   makeSiblingClaimReader,
   planOrphanAdoption,
-} from './orphan-adoption.js';
-import { type ProducerRegionEvidence, inheritProducerRegions } from './producer-regions-scope.js';
+} from '../orphan-adoption.js';
+import { type ProducerRegionEvidence, inheritProducerRegions } from '../producer-regions-scope.js';
 import {
   type CompletedOperation,
   type FailedOperation,
   type RollbackExecutorContext,
   producerRegionsFromState,
   replayRollback,
-} from './rollback-executor.js';
+} from '../rollback-executor.js';
 import {
   STATE_SOURCED_READBACK_RULES,
   markSameGenerationBag,
   redactSecretsForState,
   scrubResourceRecord,
-} from './secret-redaction.js';
+} from '../secret-redaction.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     adoptRollbackOrphans: OmitThisParameter<typeof adoptRollbackOrphans>;

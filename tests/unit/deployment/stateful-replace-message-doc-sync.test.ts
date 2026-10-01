@@ -31,7 +31,7 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const SOURCE_PATHS = {
   engine: join(repoRoot, 'src', 'deployment', 'deploy-engine.ts'),
-  engineOptions: join(repoRoot, 'src', 'deployment', 'deploy-engine-options.ts'),
+  engineOptions: join(repoRoot, 'src', 'deployment', 'deploy-engine/options.ts'),
   // `renderStatefulReason` lives here, so the data-loss reason every refusal
   // interpolates is NOT in the engine source at all — a fence that looked only
   // at the engine could never see it drift.
@@ -174,15 +174,15 @@ describe('the stateful-replace refusal and its documented example stay in sync',
   ) as Record<keyof typeof SOURCE_PATHS, string>;
   // `engine` is `DeployEngine`'s whole source: the class file plus the mixin
   // modules that augment it (#4200), where the provisioning arms now live.
-  const deploymentDir = join(repoRoot, 'src', 'deployment');
+  const mixinDir = join(repoRoot, 'src', 'deployment', 'deploy-engine');
   sources.engine = flattenWhitespace(
     [
       readFileSync(SOURCE_PATHS.engine, 'utf8'),
-      ...readdirSync(deploymentDir)
-        .filter((f) => f.endsWith('.ts') && f !== 'deploy-engine.ts')
+      ...readdirSync(mixinDir)
+        .filter((f) => f.endsWith('.ts'))
         .sort()
-        .map((f) => readFileSync(join(deploymentDir, f), 'utf8'))
-        .filter((src) => src.includes("declare module './deploy-engine.js'")),
+        .map((f) => readFileSync(join(mixinDir, f), 'utf8'))
+        .filter((src) => src.includes("declare module '../deploy-engine.js'")),
     ].join('\n')
   );
   const doc = readFileSync(docPath, 'utf8');
@@ -221,7 +221,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     );
   });
 
-  it("the doc sentence deploy-engine-options.ts's JSDoc quotes still exists", () => {
+  it("the doc sentence deploy-engine/options.ts's JSDoc quotes still exists", () => {
     // `DeployEngineOptions.forceStatefulRecreation`'s JSDoc defers the
     // EXEMPTION enumeration to this page by quoting the sentence that
     // introduces it, rather than restating the list. Nothing else reds when a
@@ -261,8 +261,8 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     //   recreate-targets.ts        -> --recreate-via-cc-api,
     //                                 --recreate-via-sdk-provider
     //                                 (one pre-flight probe, two flags)
-    //   deploy-engine-update.ts (diff) -> property-driven replacement
-    //   deploy-engine-update.ts (update- -> --replace,
+    //   deploy-engine/update.ts (diff) -> property-driven replacement
+    //   deploy-engine/update.ts (update- -> --replace,
     //     failure fallback)           Cloud Control auto-fallback
     //                                 (one guard, two triggers)
     //   rollback-executor.ts       -> NO row. It is an ADVISORY reader: it
@@ -358,8 +358,8 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     expect(readers.length).toBeGreaterThanOrEqual(5);
     expect(readers.map((f) => f.slice(repoRoot.length + 1)).sort()).toEqual([
       'src/cli/commands/recreate-confirm-prompt.ts',
-      'src/deployment/deploy-engine-update.ts',
-      'src/deployment/deploy-engine-update.ts',
+      'src/deployment/deploy-engine/update.ts',
+      'src/deployment/deploy-engine/update.ts',
       'src/deployment/recreate-targets.ts',
       'src/deployment/rollback-executor.ts',
     ]);

@@ -614,7 +614,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     // The sibling call already had this fence in `analyzer/outputs-diff.test.ts`;
     // the identical one was not written here.
     const engineSource = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/deployment/deploy-engine-outputs.ts'),
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/deployment/deploy-engine/outputs.ts'),
       'utf8'
     );
     const args = /exportAliasCollisionWarning\(([\s\S]*?)\)\s*\);/.exec(engineSource)?.[1] ?? '';

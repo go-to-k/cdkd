@@ -317,8 +317,8 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     const byFile = [...new Set(governed.map((s) => s.file))].sort();
     expect(byFile).toEqual([
       'cli/commands/destroy-runner.ts',
-      'deployment/deploy-engine-delete.ts',
-      'deployment/deploy-engine-update.ts',
+      'deployment/deploy-engine/delete.ts',
+      'deployment/deploy-engine/update.ts',
       'provisioning/cloud-control-provider.ts',
     ]);
     // FOUR governed sites: the engine's DELETE and UPDATE arms (one each, in
@@ -337,8 +337,8 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
         'NOT resolve this by editing the expected list, which drops the site from the ' +
         'population permanently.'
     ).toHaveLength(4);
-    expect(governed.filter((s) => s.file === 'deployment/deploy-engine-delete.ts')).toHaveLength(1);
-    expect(governed.filter((s) => s.file === 'deployment/deploy-engine-update.ts')).toHaveLength(1);
+    expect(governed.filter((s) => s.file === 'deployment/deploy-engine/delete.ts')).toHaveLength(1);
+    expect(governed.filter((s) => s.file === 'deployment/deploy-engine/update.ts')).toHaveLength(1);
     expect(governed.filter((s) => s.file === 'cli/commands/destroy-runner.ts')).toHaveLength(1);
   });
 
@@ -542,7 +542,7 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     // Round 8 measured this arm deletable-green: `createSourceFile` does not
     // throw, so an unparseable file yields ZERO candidate expressions, which is
     // byte-identical to a file with no classifier in it. Silently dropping the
-    // real `deploy-engine-update.ts` or `deploy-engine-delete.ts` that way
+    // real `deploy-engine/update.ts` or `deploy-engine/delete.ts` that way
     // would take a governed site out of the population and leave every
     // assertion above passing.
     expect(() => candidateExpressions('const x = (;;', 'broken.ts')).toThrow(/scan REFUSED/);

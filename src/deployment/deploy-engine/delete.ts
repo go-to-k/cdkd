@@ -1,17 +1,21 @@
-import type { DeployEngine } from './deploy-engine.js';
-import type { ProvisionCounts, ResourceOutcomeSignal } from './deploy-engine.js';
-import { effectiveDeletionPolicy } from '../provisioning/final-snapshot.js';
-import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
-import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
-import type { CloudFormationTemplate, ResourceDeleteResult } from '../types/resource.js';
-import { type ResourceChange, type ResourceState, shouldRetainResource } from '../types/state.js';
-import { getLiveRenderer } from '../utils/live-renderer.js';
-import { pasteableCommand } from '../utils/pasteable-command.js';
-import { formatResourceLine } from '../utils/resource-line.js';
-import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
-import { isMarkedNonRetryable } from './retryable-errors.js';
+import type { DeployEngine } from '../deploy-engine.js';
+import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
+import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
+import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
+import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
+import type { CloudFormationTemplate, ResourceDeleteResult } from '../../types/resource.js';
+import {
+  type ResourceChange,
+  type ResourceState,
+  shouldRetainResource,
+} from '../../types/state.js';
+import { getLiveRenderer } from '../../utils/live-renderer.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { formatResourceLine } from '../../utils/resource-line.js';
+import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
+import { isMarkedNonRetryable } from '../retryable-errors.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     provisionDelete: OmitThisParameter<typeof provisionDelete>;

@@ -1,4 +1,4 @@
-import { type DeployEngine, InterruptedError } from './deploy-engine.js';
+import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -7,21 +7,21 @@ import {
   createPreDeleteFinalSnapshot,
   replacementDeletePolicy,
   unsupportedFinalSnapshotError,
-} from '../provisioning/final-snapshot.js';
-import type { ProvisionedBy } from '../provisioning/provider-registry.js';
-import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
+} from '../../provisioning/final-snapshot.js';
+import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
+import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
 import type {
   CreateContext,
   ResourceCreateResult,
   ResourceDeleteResult,
   ResourceProvider,
-} from '../types/resource.js';
-import type { ResourceState } from '../types/state.js';
-import { getAwsClients } from '../utils/aws-clients.js';
-import { green } from '../utils/colors.js';
-import { displayAwsMessage, displaySafe, safeMsg } from '../utils/display-safe.js';
-import { CdkdError } from '../utils/error-handler.js';
-import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
+} from '../../types/resource.js';
+import type { ResourceState } from '../../types/state.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
+import { green } from '../../utils/colors.js';
+import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { CdkdError } from '../../utils/error-handler.js';
+import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import {
   type ReplacementNameChange,
   probeErrorMeansNameHeld,
@@ -32,22 +32,22 @@ import {
   replacementOrderIsCaseSensitive,
   renderReplacementNameChange,
   replacementRequestsDifferentName,
-} from './replacement-name-holder.js';
-import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
-import { withRetry } from './retry.js';
+} from '../replacement-name-holder.js';
+import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { withRetry } from '../retry.js';
 import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
   markNonRetryable,
-} from './retryable-errors.js';
+} from '../retryable-errors.js';
 import {
   type RecordedSecretValues,
   SECRET_MASK,
   createSecretMasker,
   maskSecretsInText,
-} from './secret-redaction.js';
+} from '../secret-redaction.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     replacementDeleteContext: OmitThisParameter<typeof replacementDeleteContext>;

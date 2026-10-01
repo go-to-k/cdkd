@@ -20,7 +20,7 @@
  *
  * The excluded set is cdkd-AUTHORED prose, which is what makes matching it
  * sound: those strings are built in the resolver (`intrinsic-function-resolver.ts`
- * and its `intrinsic-resolver-*.ts` modules), so they change only when this
+ * and its `intrinsic-resolver/*.ts` modules), so they change only when this
  * repo changes them, and the cases below red when one does. The INCLUDED set is left unnamed because it is AWS's — naming it is
  * what round 1 got wrong, and a name AWS adds later would silently rejoin the
  * false-clean population the issue is about.

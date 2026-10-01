@@ -2,7 +2,7 @@
 description: 'The refusal class that propagates out of Fn::Sub and its throw sites'
 paths:
   - 'src/deployment/intrinsic-function-resolver.ts'
-  - 'src/deployment/intrinsic-resolver-*.ts'
+  - 'src/deployment/intrinsic-resolver/**'
   - 'src/utils/error-handler.ts'
   - 'src/deployment/secret-region-classification.ts'
   - 'src/cli/commands/scrub.ts'
