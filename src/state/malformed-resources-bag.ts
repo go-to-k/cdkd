@@ -236,8 +236,9 @@ export function safeRegion(value: string): string {
 }
 
 /**
- * A CloudFormation logical id, as it appears in a LIST of ids — which is the
- * only way this module and its callers print one.
+ * A CloudFormation logical id, as it appears in a LIST of ids printed OUTSIDE
+ * this module; this module's own lists take {@link namedLogicalId}, which
+ * builds on it.
  *
  * NOT {@link safeIdentifier}, although it is the obvious third sibling, and it
  * used to be exactly that. `displaySafe` TRIMS, so a sanitize-then-quote pair
@@ -4875,7 +4876,7 @@ function sharesLogicalId(record: unknown, shared: ReadonlySet<string>): boolean 
 
 /**
  * How every `orphans` ROW helper names a row: its `logicalId`, or `''`
- * (rendered as the `UNRENDERABLE` stand-in) when it has no string one.
+ * (described by {@link namedLogicalId}) when it has no string one.
  */
 function orphanRowName(record: unknown): string {
   return orphanRowId(record) ?? '';
@@ -4946,7 +4947,7 @@ export function isReadableOrphanRecord(record: unknown): boolean {
  * into `resources` — so which part of it is torn does not change what a caller
  * can do with it. Returns `[]` for a container that is not a list, which is
  * {@link hasReadableOrphans}'s to report. Each record is named by its
- * `logicalId`, or `''` (rendered as the `UNRENDERABLE` stand-in) when it has
+ * `logicalId`, or `''` (described by {@link namedLogicalId}) when it has
  * no string one — the convention {@link malformedOrphanRecordsWarning} takes.
  */
 export function unreadableOrphanRecords(state: Pick<StackState, 'orphans'>): readonly string[] {

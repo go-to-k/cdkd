@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  CLAUSE_BREAK_PAYLOAD,
   PASTE_PAYLOADS,
   filesTouchedBy,
   spansThatRun,
@@ -5482,7 +5483,9 @@ describe('every id list in the module describes a non-plain logical id (go-to-k/
     ['orphan records refusal', (i) => malformedOrphanRecordsRefusalMessage('S', 'us-east-1', i)],
     ['orphan records destroy refusal', (i) => malformedOrphanRecordsForDestroyRefusalMessage('S', 'us-east-1', i)],
     ['orphan rows kept warning', (i) => malformedOrphanRowsKeptWarning('S', 'us-east-1', i)],
-    ['orphans-list orphan refusal', (i) => malformedOrphansForOrphanRefusalMessage('S', 'us-east-1', i)],
+    ['orphans-list orphan refusal', (i) => malformedOrphansForOrphanRefusalMessage('S', 'us-east-1', i)],    // No pasteable command beside it (a `cdkd diff --fail` / `--json` reason),
+    // so a shape case only.
+    ['orphan rows exit-3 reason', (i) => deployRefusesOrphanRowsReason(i)],
   ];
 
   for (const [label, build] of TEXTS) {
@@ -5490,6 +5493,7 @@ describe('every id list in the module describes a non-plain logical id (go-to-k/
       expect(build(['A'])).toContain('— A —');
       const values = [
         ...PASTE_PAYLOADS.map((p) => p.value),
+        CLAUSE_BREAK_PAYLOAD.value,
         // `displayIdent` renders these unchanged, but tilde expansion reads
         // them, so only the `isInertUnquoted` half describes them.
         '~root',
@@ -5508,7 +5512,9 @@ describe('every id list in the module describes a non-plain logical id (go-to-k/
   // The export properties refusal's paste case lives beside its other export
   // renders (`export-identifier-render.test.ts`). One case per text, so each
   // stays inside the harness's 120 s bound.
-  for (const [label, build] of TEXTS.filter(([l]) => l !== 'export properties refusal')) {
+  for (const [label, build] of TEXTS.filter(
+    ([l]) => l !== 'export properties refusal' && l !== 'orphan rows exit-3 reason'
+  )) {
     it(`${label}: no pasted span runs under no flip, the ' flip or the " flip`, () => {
       const messages = PASTE_PAYLOADS.map(({ value }) => ({ value, message: build([value]) }));
       withPasteDir((dir) => {
