@@ -245,7 +245,11 @@ const EXPECTED_STACK_NAME_RENDERS = 5;
 // Went 54 -> 50 in go-to-k/cdkd#3760's rollback rows: the plan header, the
 // prompt and both completion lines name their region through
 // `stackRegionShown`.
-const EXPECTED_SAFE_REFERENCES = 50;
+//
+// Went 50 -> 49 in its parent review round: the nested-child preview's
+// failed-read line renders the backend's error through `backendErrorText`,
+// which withholds text re-spelling a padded child name.
+const EXPECTED_SAFE_REFERENCES = 49;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the role-ARN renders of
@@ -958,7 +962,8 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
       it('a pasted Type-change row, or the pair dragged from its brackets, redirects nothing (go-to-k/cdkd#4239)', async () => {
         // Pasted, ` -> ` was `-` plus a `>` redirect onto the OLD type, so the
         // pair alone created a file named after it, even for a real type. The
-        // whole row is inert either way: its `(` stops both shells first.
+        // whole row is inert under bash, whose `(` stops it first; a non-plain
+        // type inside it is the #3950 display residual (go-to-k/cdkd#4229).
         installReplacementStack({
           oldResourceRetained: false,
           previousType: 'AWS::SSM::Parameter',
@@ -2916,10 +2921,66 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     const lines = info.mock.calls.map((c) => String(c[0]));
     expect(
       lines.some((l) =>
-        l.includes('(nested stack a name that is not a plain identifier: no journal record')
+        l.includes('(a nested stack whose name is not a plain identifier: no journal record')
       )
     ).toBe(true);
     expect(lines.join('\n')).not.toContain('cdkd destroy');
+  });
+
+  it('a nested-child preview whose read fails withholds the backend text naming a padded child (go-to-k/cdkd#3760)', async () => {
+    // The PARENT is plain; only the child's journal-sourced logical id is
+    // padded, so the header prints no pointer and the child line owes its own.
+    // The backend's message re-spells the child's name with its padding.
+    const paddedId = `Child${' '.repeat(60)}Re-run with: cdkd destroy --all --force #`;
+    const child = `S~${paddedId}`;
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as ReturnType<typeof vi.fn>;
+    info.mockClear();
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockImplementation(async (name: string) => {
+        if (name === 'S') {
+          return { ...parentState, state: { ...parentState.state, resources: { [paddedId]: nestedRecord } } };
+        }
+        throw new Error(`Failed to get legacy state for stack ${displayStackName(name)}: AccessDenied`);
+      }),
+      loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+        name === 'S'
+          ? {
+              journalVersion: 1,
+              stackName: 'S',
+              region: 'us-east-1',
+              segments: [
+                {
+                  runId: 'r1',
+                  timestamp: 1,
+                  reason: 'no-rollback-failure',
+                  initialDeploy: false,
+                  operations: [{ ...updateOp('old'), logicalId: paddedId }],
+                },
+              ],
+            }
+          : null
+      ),
+    });
+
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    const preview = lines.find((l) => l.includes('could not preview its revert'));
+    // The premise: the failing read was reached and rendered.
+    expect(preview).toContain(
+      '(a nested stack whose name is not a plain identifier: could not preview its revert: ' +
+        'its error text names a stack or region that is not a plain identifier, so it is not shown)'
+    );
+    expect(child).toContain('cdkd destroy');
+    // Only the preview's own lines: the plan ROW above it displays the padded
+    // logical id, the residual recorded on go-to-k/cdkd#3760.
+    const previewLines = lines.filter((l) => /^ {6,}\(/.test(l));
+    expect(previewLines).toHaveLength(2);
+    expect(previewLines.join('\n')).not.toContain('cdkd destroy');
+    expect(previewLines[1]).toContain("The nested stack's name is not a plain identifier");
+    expect(lines.some((l) => l.includes('The stack name or region is not a plain identifier'))).toBe(false);
   });
 
   it('--skip-final-snapshot reaches the nested context a child revert replays through', async () => {
@@ -3703,8 +3764,10 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
       for (const { value, site, message } of rendered) {
         const label = `${site}: ${value}`;
         // The boundary, pinned DIRECTLY: the paste alone cannot see it where a
-        // parenthesis after the name aborts the span anyway. The two blocks
-        // that carry a remedy describe the name instead (the S1 cases below).
+        // parenthesis after the name aborts the span anyway. The
+        // `DESCRIBING_SITES` describe the name instead: the two blocks that
+        // carry a remedy (the S1 cases below) and the four lines printed in a
+        // run that can end in a `Re-run with:` row (go-to-k/cdkd#3760).
         if (DESCRIBING_SITES.has(site)) {
           expect(message, label).toContain('a stack name that is not a plain identifier (us-east-1)');
           expect(message, label).not.toContain(value);

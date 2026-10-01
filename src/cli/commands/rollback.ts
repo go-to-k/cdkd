@@ -129,6 +129,11 @@ function stackRegionIsPlain(stackName: string, region: string): boolean {
   return isPasteableIdent(stackName) && isPasteableIdent(region);
 }
 
+/** Printed under a nested-child plan line whose child name was described. */
+const NESTED_NAME_DESCRIBED_NOTE =
+  "(The nested stack's name is not a plain identifier, so it is described, not named; " +
+  "list the records as stored with 'cdkd state list --long'.)";
+
 /** Printed under the plan header when {@link stackRegionShown} described a value. */
 const STACK_REGION_DESCRIBED_NOTE =
   '  (The stack name or region is not a plain identifier, so it is described, not named; ' +
@@ -1449,13 +1454,20 @@ async function previewNestedChildRevert(
 ): Promise<string[]> {
   // Named only when plain, described otherwise, for the reason
   // `stackRegionShown` gives: this line is part of the run that can end in a
-  // `Re-run with:` row (go-to-k/cdkd#3760).
-  const shown = plainOrDescribed(childStackName, 'name');
+  // `Re-run with:` row (go-to-k/cdkd#3760). A described child carries the
+  // same `cdkd state list --long` pointer the header does, since the parent's
+  // name can be plain while the child's journal-sourced logical id is not.
+  const plain = isPasteableIdent(childStackName);
+  const shown = plain
+    ? `nested stack ${childStackName}`
+    : 'a nested stack whose name is not a plain identifier';
+  const withPointer = (lines: string[]): string[] =>
+    plain ? lines : [...lines, `        ${NESTED_NAME_DESCRIBED_NOTE}`];
   if (runId === undefined) {
-    return [
-      `      (nested stack ${shown}: this segment carries no deploy run id — its revert will FAIL ` +
+    return withPointer([
+      `      (${shown}: this segment carries no deploy run id — its revert will FAIL ` +
         `and the segment is kept)`,
-    ];
+    ]);
   }
   try {
     const [childState, journal] = await Promise.all([
@@ -1464,25 +1476,28 @@ async function previewNestedChildRevert(
     ]);
     const segments = (journal?.segments ?? []).filter((s) => s.runId === runId);
     if (!childState || segments.length === 0) {
-      return [
-        `      (nested stack ${shown}: no journal record for this run — its revert will FAIL ` +
+      return withPointer([
+        `      (${shown}: no journal record for this run — its revert will FAIL ` +
           `and the segment is kept)`,
-      ];
+      ]);
     }
     const view: Record<string, ResourceState> = { ...childState.state.resources };
-    const lines = [`      nested stack ${shown} replays its own journal:`];
+    const lines = [`      ${shown} replays its own journal:`];
     for (let s = segments.length - 1; s >= 0; s--) {
       const childPlan = planRollback(segments[s]!.operations, view, new Set<string>());
       for (const item of childPlan) lines.push(`    ${actionLabel(item, skipFinalSnapshot)}`);
       applyPlanToPreview(childPlan, view, skipFinalSnapshot);
     }
     if (lines.length === 1) lines.push('        (nothing to undo)');
-    return lines;
+    return withPointer(lines);
   } catch (error) {
-    return [
-      `      (nested stack ${shown}: could not preview its revert: ` +
-        `${safe(error instanceof Error ? error.message : String(error))})`,
-    ];
+    // `backendErrorText`, not `safe()`: the backend's message re-spells the
+    // child's name, padding included, so a padded name is withheld whole
+    // (go-to-k/cdkd#3760).
+    return withPointer([
+      `      (${shown}: could not preview its revert: ` +
+        `${backendErrorText(error, childStackName, region)})`,
+    ]);
   }
 }
 

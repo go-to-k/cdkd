@@ -94,8 +94,8 @@ roll back in the first place.
    or region that is not a plain identifier (which only a hand-written state
    key can be) is described rather than shown in the plan header, the
    confirmation prompt, the completion lines and the nested-stack plan
-   lines, with a pointer to `cdkd state list --long` under the plan header
-   when the stack name or region itself is described.
+   lines, with a pointer to `cdkd state list --long` under each line that
+   described one.
 5. Confirm (skipped by `--force` / `-y`).
 6. Replay the segments newest-first, saving state after each operation and
    popping each segment once it finishes cleanly.
