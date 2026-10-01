@@ -2181,7 +2181,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
     expect(warnText).toContain(
       '1 stack(s) had intrinsic-valued Parameter(s) that cdkd could not resolve at IMPORT'
     );
-    expect(warnText).toContain('Root~Child (RefValued)');
+    expect(warnText).toContain("'Root~Child' ('RefValued')");
   });
 
   // The #464 follow-up: a parent-side {Ref: <rootParam>} child Parameter now
@@ -2666,7 +2666,7 @@ describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', ()
     // Described rather than quoted by hand since go-to-k/cdkd#3950: a name
     // that is not a plain identifier is not shown at all.
     expect(message).toContain(
-      'No cdkd state found for stack (not shown: it is not a plain identifier) (us-east-1).'
+      "No cdkd state found for stack (not shown: it is not a plain identifier) ('us-east-1')."
     );
   });
 

@@ -17,7 +17,7 @@ and nothing inside, so a consumer reaches the bag as an unchecked cast.
 
 | Container | Predicate | Write-capable | Read-only |
 | --- | --- | --- | --- |
-| `resources` | `hasReadableResources` | `refuseMalformedState` +2 | `repairMalformedResourcesForReadOnly` |
+| `resources` | `hasReadableResources` | `refuseMalformedState` +3 | `repairMalformedResourcesForReadOnly` |
 | `outputs` | `hasReadableOutputs` | `refuseMalformedOutputs` + two siblings | `repairMalformedOutputsForReadOnly` |
 | `orphans` | `hasReadableOrphans` | `refuseMalformedOrphans` + destroy and `cdkd orphan` siblings | `repairMalformedOrphansForReadOnly` |
 

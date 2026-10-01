@@ -124,8 +124,8 @@ eventbridge-pipes	2026-09-29T02:38:06Z	PASS	180	verify.sh	PR #4028 round 2 (#397
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
-export	2026-10-01T05:37:57Z	PASS	311	verify.sh	PR #4286 deploy-engine replacement + heal mixins; rc ok, orph clean
-export-nested-stack	2026-09-30T04:31:44Z	PASS	256	verify.sh	PR #4179 (#3188 malformed resources-bag refusal at root and every nested node) @1aeac5a; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+export	2026-10-01T08:35:50Z	PASS	220	verify.sh	rc ok, orph clean (#4245)
+export-nested-stack	2026-10-01T08:35:50Z	PASS	191	verify.sh	rc ok, orph clean (#4245)
 fifo-sqs-event-source	2026-09-27T12:27:25Z	PASS	105	verify.sh	rc ok, orph clean (#3861)
 fsx-lustre	2026-09-29T11:59:09Z	PASS	872	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 fsx-ontap	2026-08-02T06:33:37Z	PASS	1704	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup

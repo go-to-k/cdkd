@@ -330,10 +330,17 @@ describe('Phase 1A with nothing imported names no shell-active stack in its two 
     const messages: Array<[string, string]> = [];
     // The payload as the cdkd name (with a valid CloudFormation override, as
     // the name check requires) and as the override itself.
-    const shapes = PASTE_PAYLOADS.flatMap(({ label, value }) => [
-      { label: `${label} cdkd name`, value, cfn: 'RootCfn' },
-      { label: `${label} cfn override`, value: 'Root', cfn: value },
-    ]);
+    const shapes = [
+      ...PASTE_PAYLOADS.flatMap(({ label, value }) => [
+        { label: `${label} cdkd name`, value, cfn: 'RootCfn' },
+        { label: `${label} cfn override`, value: 'Root', cfn: value },
+      ]),
+      // Inert to the SHELL, acted on by the AWS CLI itself (go-to-k/cdkd#4199):
+      // the nested call site goes through `awsStackNameArg` (G4 of the
+      // go-to-k/cdkd#4245 review).
+      { label: 'file:// cfn override', value: 'Root', cfn: 'file://x' },
+      { label: '@= cfn override', value: 'Root', cfn: 'a@=b' },
+    ];
     for (const { label, value, cfn } of shapes) {
       waitChangeSetCreate.mockRejectedValue(new Error("the stack's changeset was rejected"));
       const tree: CdkdStateStackTree = {
@@ -1144,7 +1151,7 @@ describe('a nested child policy naming a role through a Parameter is CHECKED (se
 });
 
 describe('the nested pre-delete wrapper renders a forged logical id with its own boundary (test-n1)', () => {
-  it('JSON-quotes it', async () => {
+  it('describes it: the sentence carries recovery commands (go-to-k/cdkd#4245 review)', async () => {
     iamSend.mockRejectedValue(new Error('AccessDenied'));
     const forged = "Handler Policy'x";
     const root = state('Root', {
@@ -1183,7 +1190,60 @@ describe('the nested pre-delete wrapper renders a forged logical id with its own
       },
       (e: unknown) => e as Error
     );
-    expect(err.message).toContain(`pre-delete of ${JSON.stringify(forged)} (AWS::IAM::Policy,`);
+    // Described, not displayed (`plainOrNotShown`): behind an operator's
+    // unpaired quote a shell-quoted JSON display runs its `$( )`.
+    expect(err.message).toContain(
+      'pre-delete of (not shown: it is not a plain identifier) (AWS::IAM::Policy,'
+    );
+    expect(err.message).not.toContain(forged);
+  });
+});
+
+describe('the nested pre-delete failure describes a non-inert recorded physical id (T1, go-to-k/cdkd#4229)', () => {
+  it.each(['Handler$Policy', 'x$(touch OWNED)'])('describes %s', async (physicalId) => {
+    iamSend.mockRejectedValue(new Error('AccessDenied'));
+    const root = state('Root', {
+      MyBucket: bucket('b1'),
+      HandlerPolicy: {
+        physicalId,
+        resourceType: 'AWS::IAM::Policy',
+        properties: { PolicyName: physicalId, Roles: ['RoleA'] },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    const err = await runPerStackImportLoop({
+      lockRecovery: {},
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree: { stackName: 'Root', region: 'us-east-1', state: root, nestedChildren: new Map() },
+      rootTemplate: {
+        Resources: {
+          MyBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+          HandlerPolicy: {
+            Type: 'AWS::IAM::Policy',
+            Properties: { PolicyName: physicalId, Roles: ['RoleA'] },
+          },
+        },
+      },
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: deps(cfnClient()),
+      options: OPTIONS,
+    }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (e: unknown) => e as Error
+    );
+    expect(err.message).toContain(
+      'pre-delete of HandlerPolicy (AWS::IAM::Policy, physicalId: ' +
+        '(not shown: it is not a plain identifier)) failed:'
+    );
+    expect(err.message).not.toContain(`physicalId: ${physicalId}`);
+    expect(err.message).not.toContain(`physicalId: ${JSON.stringify(physicalId)}`);
   });
 });
 
@@ -2394,6 +2454,50 @@ describe('every failure after a Phase 1A IMPORT gives the recovery, and names on
       );
     }
   );
+
+  it("B: a forged child logical id in the adoption-preparation head is described (go-to-k/cdkd#4245 review)", async () => {
+    // The production call site of `adoptionPreparingLabel`, driven end to end:
+    // the child row's logical id carries a quote, and its CloudFormation name
+    // comes from `--cfn-child-stack-name`, the one way such an id reaches here.
+    const forged = "Child'x";
+    const t = childTree(tmp, LEAF_CHILD, { ChildBucket: bucket('b2') });
+    const childNode = t.tree.nestedChildren.get('Child')!;
+    const childName = `Root~${forged}`;
+    childNode.stackName = childName;
+    (childNode.state as unknown as Record<string, unknown>)['stackName'] = childName;
+    (childNode.state as unknown as Record<string, unknown>)['parentLogicalId'] = forged;
+    t.tree.nestedChildren.delete('Child');
+    t.tree.nestedChildren.set(forged, childNode);
+    const rootResources = t.tree.state.resources as Record<string, unknown>;
+    rootResources[forged] = rootResources['Child'];
+    delete rootResources['Child'];
+    const rootRows = (t.rootTemplate as { Resources: Record<string, unknown> }).Resources;
+    rootRows[forged] = rootRows['Child'];
+    delete rootRows['Child'];
+    const message = await runPerStackImportLoop({
+      lockRecovery: {},
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: { [forged]: t.childPath },
+      rootTemplateFormat: 'json',
+      tree: t.tree,
+      rootTemplate: t.rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map([[childName, 'Root-Child']]) },
+      rootParameters: [],
+      deps: deps(cfnClient({ getTemplateThrows: true })),
+      options: OPTIONS,
+    }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (e: unknown) => (e as Error).message
+    );
+    expect(message).toContain(
+      'Preparing the adoption of nested child (not shown: it is not a plain identifier) failed ' +
+        "for cdkd stack 'Root'"
+    );
+    expect(message).not.toContain(forged);
+  });
 
   it('the pre-delete failure prints its deletes once, in its head', async () => {
     iamSend.mockRejectedValue(new Error('denied'));
