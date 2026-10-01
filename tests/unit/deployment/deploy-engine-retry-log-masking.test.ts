@@ -444,6 +444,172 @@ describe('DeployEngine - the retry give-up summary is masked (issue #2038)', () 
 
     expect(errors).toContain('Failed to create Pool: Bad Request: something ordinary failed');
   });
+
+  it('the --replace delete-first re-create retries with a MASKED line (#4292)', async () => {
+    // `--replace` delete-first: the create-first returns the OLD physical id
+    // (a name-idempotent create), so the old resource is deleted and the
+    // re-create retried while its name is still being released. That retry
+    // has its own logger, bound to the resource's resolved bag; the message
+    // it echoes quotes the resolved value back.
+    const oldRecord = {
+      physicalId: 'pool-old',
+      resourceType: RESOURCE_TYPE,
+      properties: { UserPoolName: 'pool', EnabledMfas: 'previous' },
+      attributes: {},
+      dependencies: [],
+    };
+    mockStateBackend.getState!.mockResolvedValue({
+      state: {
+        version: 9,
+        stackName,
+        region: 'us-east-1',
+        resources: { Pool: oldRecord },
+        outputs: {},
+        lastModified: 1,
+      },
+      etag: 'e',
+    });
+    let creates = 0;
+    mockProvider.create!.mockImplementation(async () => {
+      creates += 1;
+      if (creates === 1) return { physicalId: 'pool-old' };
+      if (creates === 2) throw new Error(`Pool '${SECRET_PLAINTEXT}' already exists`);
+      return { physicalId: 'pool-new' };
+    });
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Pool',
+          {
+            logicalId: 'Pool',
+            changeType: 'UPDATE',
+            resourceType: RESOURCE_TYPE,
+            desiredProperties: secretProps,
+            currentProperties: oldRecord.properties,
+            propertyChanges: [
+              {
+                path: 'EnabledMfas',
+                oldValue: 'previous',
+                newValue: SECRET_PLAINTEXT,
+                requiresReplacement: true,
+              },
+            ],
+          } as ResourceChange,
+        ],
+      ])
+    );
+    const template: CloudFormationTemplate = {
+      Resources: { Pool: { Type: RESOURCE_TYPE, Properties: secretProps } },
+    };
+    await new DeployEngine(
+      mockStateBackend as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      { dryRun: false, noRollback: true, replace: true, forceStatefulRecreation: true },
+      'us-east-1'
+    )
+      .deploy(stackName, template)
+      .catch((e) => {
+        thrown.push(e);
+      });
+
+    // Non-vacuity: delete-first ran, the re-create was retried once, and the
+    // deploy completed.
+    expect(thrown).toEqual([]);
+    expect(mockProvider.delete).toHaveBeenCalledTimes(1);
+    expect(creates).toBe(3);
+    const attemptLine = debugs.find((m) => m.includes('Retrying Pool in'));
+    expect(attemptLine).toBeDefined();
+    expect(attemptLine).not.toContain(SECRET_PLAINTEXT);
+    expect(attemptLine).toContain(SECRET_MASK);
+  });
+
+  it('the --recreate-via-cc-api re-create retries with a MASKED line (#4300 review)', async () => {
+    // Destroy-then-create under a recreate target: the old resource is deleted
+    // first, then the re-create is retried while its name is still being
+    // released. Same logger contract as the --replace delete-first above, on a
+    // separate call site.
+    // The recreate pre-flight asks whether Cloud Control can take the type.
+    mockProviderRegistry.ccRouteUnavailableReason = vi.fn().mockReturnValue(undefined);
+    const oldRecord = {
+      physicalId: 'pool-old',
+      resourceType: RESOURCE_TYPE,
+      properties: { UserPoolName: 'pool', EnabledMfas: 'previous' },
+      attributes: {},
+      dependencies: [],
+    };
+    mockStateBackend.getState!.mockResolvedValue({
+      state: {
+        version: 9,
+        stackName,
+        region: 'us-east-1',
+        resources: { Pool: oldRecord },
+        outputs: {},
+        lastModified: 1,
+      },
+      etag: 'e',
+    });
+    let creates = 0;
+    mockProvider.create!.mockImplementation(async () => {
+      creates += 1;
+      if (creates === 1) throw new Error(`Pool '${SECRET_PLAINTEXT}' already exists`);
+      return { physicalId: 'pool-new' };
+    });
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Pool',
+          {
+            logicalId: 'Pool',
+            changeType: 'UPDATE',
+            resourceType: RESOURCE_TYPE,
+            desiredProperties: secretProps,
+            currentProperties: oldRecord.properties,
+          } as ResourceChange,
+        ],
+      ])
+    );
+    const template: CloudFormationTemplate = {
+      Resources: { Pool: { Type: RESOURCE_TYPE, Properties: secretProps } },
+    };
+    await new DeployEngine(
+      mockStateBackend as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      {
+        dryRun: false,
+        noRollback: true,
+        forceStatefulRecreation: true,
+        recreateTargets: {
+          stackName,
+          viaCcApi: new Set(['Pool']),
+          viaSdkProvider: new Set<string>(),
+        },
+      },
+      'us-east-1'
+    )
+      .deploy(stackName, template)
+      .catch((e) => {
+        thrown.push(e);
+      });
+
+    // Non-vacuity: destroy ran BEFORE the create, the create was retried once,
+    // and the deploy completed.
+    expect(thrown).toEqual([]);
+    expect(mockProvider.delete).toHaveBeenCalledTimes(1);
+    expect(creates).toBe(2);
+    expect(mockProvider.delete!.mock.invocationCallOrder[0]).toBeLessThan(
+      mockProvider.create!.mock.invocationCallOrder[0]!
+    );
+    const attemptLine = debugs.find((m) => m.includes('Retrying Pool in'));
+    expect(attemptLine).toBeDefined();
+    expect(attemptLine).not.toContain(SECRET_PLAINTEXT);
+    expect(attemptLine).toContain(SECRET_MASK);
+  });
 });
 
 // Issue #2038 review, item 3. The `maskingRetryLogger` JSDoc calls the
