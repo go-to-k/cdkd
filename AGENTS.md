@@ -121,9 +121,14 @@ is no `package.json` `scripts` block. Setup and the full task list:
 
 ## Reporting
 
-- **Decide routine calls yourself.** Reserve questions for the genuinely urgent,
-  unexpected, or high-blast-radius — destructive, irreversible, or
-  outward-facing. "Which verification depth?" is not one. When a decision
+- **File only what a user can hit.** An issue names a path from a CDK app or a
+  documented command to a wrong result, a deploy or destroy that fails where
+  the AWS CDK CLI succeeds, a lost or orphaned resource, state that disagrees
+  with AWS, or an exposure [SECURITY.md](SECURITY.md) puts in scope. Wording, an
+  input no CDK app produces, and SECURITY.md's out-of-scope class are a line in
+  the PR body, never an issue.
+- **Decide routine calls yourself.** Reserve questions for the destructive,
+  irreversible, or outward-facing. When a decision
   genuinely is the user's, ask it through your host's structured question tool
   (`AskUserQuestion` in Claude Code) — a question left in prose reads as a
   stopped turn and never resumes the work when answered.
@@ -147,10 +152,9 @@ is no `package.json` `scripts` block. Setup and the full task list:
 
 ## Tooling Policy
 
-The agent-tooling layer — hooks, markgate gates, `.claude/rules/**`,
-`.claude/skills/**`, prose fences — once grew until maintaining it crowded out
-maintaining cdkd. **These rules exist so it does not grow back.** State an
-exception in the PR body for the maintainer to decide.
+The agent-tooling layer (hooks, gates, `.claude/rules/**`, `.claude/skills/**`,
+prose fences) once crowded out cdkd itself; these rules keep it from growing
+back. State an exception in the PR body for the maintainer to decide.
 
 1. **Default answer: do not build it.** A new hook, gate, CI fence, rule
    paragraph, skill step or test-of-prose is added only on the **second**

@@ -32,3 +32,24 @@ cdkd deploys AWS resources with the caller's AWS credentials and stores
 deployment state in the caller's own S3 bucket. Reports about the handling
 of sensitive data in state files, logs, or CLI output are in scope and
 welcome.
+
+In scope:
+
+- A secret (a `NoEcho` parameter, a `{{resolve:...}}` dynamic reference, a
+  value derived from one) reaching state, logs, CLI output, deployment events
+  or an exports index in plaintext.
+- Terminal control characters or escape sequences from a resource, state or
+  AWS value reaching the terminal unstripped.
+- cdkd itself passing an untrusted value to a shell or a child process.
+- Deletion or modification of a resource cdkd does not own.
+
+Out of scope:
+
+- **A value cdkd prints that would run if an operator copied the line into a
+  shell.** The values in question — logical ids, stack names, physical ids,
+  state keys, AWS error text — come from the operator's own CDK app (which
+  already runs arbitrary code at synth), the operator's own state bucket
+  (whose writers can already make cdkd change any resource), or a principal
+  in the account who can already change the deployed resources directly. The
+  attack also needs the operator to paste a crafted line. The AWS CDK CLI
+  prints the same values as-is.

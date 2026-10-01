@@ -93,6 +93,9 @@ command, a template, or a query.
 - General code quality unrelated to security (code reviewer) — but if a code
   smell IS the security defect, flag it.
 - Documentation prose.
+- **SECURITY.md's out-of-scope class**: a printed value that would run if an
+  operator pasted the line into a shell. Raise none, at any severity. Its
+  in-scope list is your scope.
 
 ## Report format
 

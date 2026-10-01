@@ -41,11 +41,19 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
 
 const MAX_AGENTS_MD_BYTES = 12_000;
+// A maintainer-set line cap beside the byte ceiling; down-only like it.
+const MAX_AGENTS_MD_LINES = 200;
 
 describe('AGENTS.md size budget', () => {
   it('stays under the down-only whole-file ceiling', () => {
     const bytes = Buffer.byteLength(readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8'), 'utf8');
     expect(bytes).toBeGreaterThan(0);
     expect(bytes).toBeLessThanOrEqual(MAX_AGENTS_MD_BYTES);
+  });
+
+  it('stays under the down-only line cap', () => {
+    const lines = readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8').split('\n').length;
+    expect(lines).toBeGreaterThan(0);
+    expect(lines).toBeLessThanOrEqual(MAX_AGENTS_MD_LINES);
   });
 });

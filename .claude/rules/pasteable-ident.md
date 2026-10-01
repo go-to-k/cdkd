@@ -8,6 +8,9 @@ paths:
 
 # A value cdkd tells an operator to PASTE
 
+The paste hazard these helpers address is out of scope (SECURITY.md). Keep
+their current behavior; do not extend them to new sites or add refusals for it.
+
 Rest of `src/utils/`: [layout-utils.md](layout-utils.md). The `cdkd gc` /
 `cdkd bootstrap --destroy` family this started in:
 [layout-cli.md](layout-cli.md). Index of every area:
