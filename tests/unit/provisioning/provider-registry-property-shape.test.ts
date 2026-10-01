@@ -98,6 +98,30 @@ describe('ProviderRegistry.validateResourceProperties: property shapes', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
+  it('refuses the shape before any routing line, on a type nested-required does not cover', () => {
+    const { registry, logger } = makeRegistry();
+    // The unknown key alone makes reportSilentDropDecisions log a routing line.
+    expect(() =>
+      registry.validateResourceProperties([
+        {
+          logicalId: 'Queue',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { Tags: {}, CdkdUnknownKey: 'x' },
+        },
+      ])
+    ).toThrow('#/Tags: expected type: JSONArray, found: JSONObject');
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('the routing control: the same queue, correctly shaped, does log its routing line', () => {
+    const { registry, logger } = makeRegistry();
+    registry.validateResourceProperties([
+      { logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', properties: { Tags: [], CdkdUnknownKey: 'x' } },
+    ]);
+    expect(logger.info.mock.calls.length + logger.warn.mock.calls.length).toBeGreaterThan(0);
+  });
+
   it('the control: the same block as an OBJECT reaches the nested required check', () => {
     const { registry } = makeRegistry();
     expect(() =>
