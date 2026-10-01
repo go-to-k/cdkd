@@ -1,0 +1,806 @@
+import {
+  type DeployEngine,
+  type ProvisionCounts,
+  type ResourceOutcomeSignal,
+  InterruptedError,
+  crossStackReadsForPartialSave,
+} from '../deploy-engine.js';
+import type { DagBuilder } from '../../analyzer/dag-builder.js';
+import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
+import {
+  type ResourceChange,
+  type ResourceState,
+  STATE_SCHEMA_VERSION_CURRENT,
+  type StackOrphanRecord,
+  type StackState,
+  exportNamesCarriedFrom,
+  orphansAfterRollback,
+  orphansCarriedFrom,
+  skippedOutputsCarriedFrom,
+} from '../../types/state.js';
+import { cyan, red } from '../../utils/colors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { DagExecutor } from '../dag-executor.js';
+import { withSharedDrainBudget } from '../drain-budget.js';
+import type { SettledNestedRows } from '../nested-child-journal.js';
+import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
+
+declare module '../deploy-engine.js' {
+  interface DeployEngine {
+    /** @internal */
+    executeDeployment: OmitThisParameter<typeof executeDeployment>;
+    /** @internal */
+    persistStateAfterOutputFailure: OmitThisParameter<typeof persistStateAfterOutputFailure>;
+  }
+}
+
+/**
+ * Execute deployment by processing resources via event-driven DAG dispatch.
+ *
+ * - CREATE/UPDATE follow forward dependency order (a node starts as soon as
+ *   ALL of its dependencies are completed — does not wait for unrelated
+ *   siblings in the same "level")
+ * - DELETE follows reverse dependency order (a node starts as soon as all
+ *   resources that depend ON it have finished deleting)
+ */
+export async function executeDeployment(
+  this: DeployEngine,
+  template: CloudFormationTemplate,
+  currentState: StackState,
+  changes: Map<string, ResourceChange>,
+  dag: ReturnType<DagBuilder['buildGraph']>,
+  executionLevels: string[][],
+  stackName: string,
+  /** The pre-resolution snapshot for the skipped-outputs digests (issue #2740); see `doDeploy`. */
+  outputsDigestSource: CloudFormationTemplate,
+  parameterValues?: Record<string, unknown>,
+  conditions?: Record<string, boolean>,
+  currentEtag?: string,
+  progress?: { current: number; total: number },
+  migrationPending = false
+): Promise<{
+  state: StackState;
+  actualCounts: ProvisionCounts;
+  /** Issue #3754: journaled by a NESTED engine on success. */
+  completedOperations: CompletedOperation[];
+}> {
+  const concurrency = this.options.concurrency!;
+  this.deployChanges = changes;
+  const newResources: Record<string, ResourceState> = { ...currentState.resources };
+  const actualCounts: ProvisionCounts = {
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    skipped: 0,
+    deleteSkipped: 0,
+    updatePartial: 0,
+  };
+  const completedOperations: CompletedOperation[] = [];
+  // #1198: the op(s) that FAILED mid-deploy (usually one; concurrent
+  // siblings can add more). Journaled alongside completedOperations so
+  // `cdkd rollback --revert-failed` can optionally revert them.
+  const failedOperations: FailedOperation[] = [];
+  // Tracked here so the FIRST per-resource save sweeps the legacy key; we
+  // don't want to delete it on every save.
+  let pendingMigration = migrationPending;
+
+  // Serialize per-resource state saves to avoid ETag conflicts from concurrent writes
+  let saveChain: Promise<void> = Promise.resolve();
+  const saveStateAfterResource = (logicalId: string): void => {
+    if (currentEtag === undefined) return;
+    saveChain = saveChain.then(async () => {
+      try {
+        const partialState: StackState = {
+          version: STATE_SCHEMA_VERSION_CURRENT,
+          region: this.stackRegion,
+          stackName: currentState.stackName,
+          resources: newResources,
+          outputs: currentState.outputs,
+          ...exportNamesCarriedFrom(currentState),
+          ...skippedOutputsCarriedFrom(currentState),
+          ...orphansCarriedFrom(currentState),
+          // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+          // session resolved. See `crossStackReadsForPartialSave` — writing the
+          // snapshot alone left a failed deploy's persisted record denying a
+          // cross-stack read its own resources were built from.
+          ...crossStackReadsForPartialSave(
+            currentState,
+            this.recordedImports,
+            this.recordedOutputReads,
+            this.crossStackReadKeyNormalizer()
+          ),
+          lastModified: Date.now(),
+        };
+        // Migration is a one-shot tail on the first save; subsequent saves
+        // overwrite the new key in-place under optimistic locking.
+        const migrate = pendingMigration;
+        const expectedEtag = migrate ? undefined : currentEtag;
+        currentEtag = await this.stateBackend.saveState(
+          stackName,
+          this.stackRegion,
+          this.withParentInfo(partialState),
+          { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
+        );
+        if (migrate) pendingMigration = false;
+        this.logger.debug(`State saved after ${logicalId}`);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to save state after ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    });
+  };
+
+  // Separate DELETE operations from CREATE/UPDATE
+  const deleteChanges = new Set(
+    Array.from(changes.entries())
+      .filter(([_, change]) => change.changeType === 'DELETE')
+      .map(([logicalId]) => logicalId)
+  );
+
+  try {
+    // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
+    // A node starts as soon as ALL of its dependencies are completed, rather
+    // than waiting for an entire "level" of unrelated siblings to finish.
+    const createUpdateIds: string[] = [];
+    for (const [id, change] of changes.entries()) {
+      if (deleteChanges.has(id)) continue;
+      if (change.changeType === 'NO_CHANGE') continue;
+      createUpdateIds.push(id);
+    }
+
+    if (createUpdateIds.length > 0) {
+      this.logger.info(
+        `${cyan('Deploying')} ${cyan(createUpdateIds.length)} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
+      );
+
+      const createUpdateExecutor = new DagExecutor<ResourceChange>();
+      const provisionable = new Set(createUpdateIds);
+      for (const id of createUpdateIds) {
+        const allDeps = this.dagBuilder.getDirectDependencies(dag, id);
+        // Only carry deps that are themselves being provisioned in this phase;
+        // NO_CHANGE / DELETE / non-DAG deps are already satisfied.
+        const deps = new Set(allDeps.filter((d) => provisionable.has(d)));
+        createUpdateExecutor.add({
+          id,
+          dependencies: deps,
+          state: 'pending',
+          data: changes.get(id)!,
+        });
+      }
+
+      try {
+        await createUpdateExecutor.execute(
+          concurrency,
+          async (node) => {
+            const logicalId = node.id;
+            const change = node.data;
+
+            const previousState = currentState.resources[logicalId]
+              ? { ...currentState.resources[logicalId] }
+              : undefined;
+
+            try {
+              await this.provisionResource(
+                logicalId,
+                change,
+                newResources,
+                stackName,
+                template,
+                parameterValues,
+                conditions,
+                actualCounts,
+                progress
+              );
+            } catch (provisionError) {
+              // Signal interruption so that long-running operations (e.g., CloudFront
+              // waitForDeployed) in sibling tasks abort promptly instead of blocking
+              // until their own polling timeouts fire.
+              this.interrupted = true;
+              this.interruptCause ??= 'sibling-failure';
+              // #1198: journal the failed op's pre-op state + attempted
+              // properties so `cdkd rollback --revert-failed` can act on it.
+              failedOperations.push({
+                logicalId,
+                changeType: change.changeType as 'CREATE' | 'UPDATE',
+                resourceType: change.resourceType,
+                provisionedBy:
+                  newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
+                ...(previousState && { previousState }),
+                physicalId: newResources[logicalId]?.physicalId ?? previousState?.physicalId,
+                attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+              });
+              throw provisionError;
+            }
+
+            completedOperations.push({
+              logicalId,
+              changeType: change.changeType as 'CREATE' | 'UPDATE',
+              resourceType: change.resourceType,
+              // Snapshot the routing layer just landed on the resource
+              // (CREATE = the auto-route decision; UPDATE = the state's
+              // sticky / re-evaluated layer). Threads into rollback so a
+              // CC-routed CREATE rolls back via the CC delete path —
+              // closing the silent-data-corruption hazard the v7 schema
+              // bump was designed to prevent.
+              provisionedBy: newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
+              previousState,
+              physicalId: newResources[logicalId]?.physicalId,
+              properties: newResources[logicalId]?.properties,
+              // Issue #2603: the retain verdict this deploy ACTED ON, so the
+              // rollback classifier stops re-deriving it from
+              // `previousState.updateReplacePolicy` — a different source
+              // that disagrees on exactly the deploy which adds or drops the
+              // attribute. Stamped on every UPDATE, including a `false` for
+              // a replacement that deleted the old resource: an ABSENT field
+              // is what a pre-#2603 journal looks like, and the classifier
+              // falls back to the old (wrong) read for those, so recording
+              // only the `true` case would leave the DROP direction live.
+              ...(change.changeType === 'UPDATE' && {
+                oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
+              }),
+              // Issue #2668: `resourceType` above is the TEMPLATE's type, so
+              // on a Type change the journal would otherwise name only the
+              // NEW one and the rollback would re-create the OLD resource
+              // through the new type's provider. Stamped on every UPDATE that
+              // has a previous record, for the reason `oldResourceRetained`
+              // is: ABSENT then means "written by a binary that predates this
+              // field" and nothing else.
+              ...(change.changeType === 'UPDATE' &&
+                previousState !== undefined && {
+                  previousResourceType: previousState.resourceType,
+                }),
+            });
+
+            saveStateAfterResource(logicalId);
+          },
+          () => this.interrupted
+        );
+      } finally {
+        // Wait for any pending per-resource state saves before the next phase or
+        // before propagating an error — prevents partial-save races.
+        await saveChain;
+      }
+
+      // If SIGINT fired AND there is still un-provisioned work (some nodes
+      // remained pending because dispatch was cancelled), surface it as an
+      // explicit interruption so the catch path saves partial state.
+      // If every node already completed before SIGINT landed, treat the deploy
+      // as fully successful — matches the prior level-loop's "loop exits, no
+      // check" behaviour at the very end of execution.
+      if (this.interrupted && this.hasPending(createUpdateExecutor)) {
+        throw new InterruptedError(this.interruptCause ?? 'user');
+      }
+    }
+
+    // Step 2: Process DELETE operations in reverse dependency order.
+    if (deleteChanges.size > 0) {
+      this.logger.info(`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
+
+      const deleteDeps = this.buildDeletionDependencies(deleteChanges, currentState);
+      const deleteExecutor = new DagExecutor<ResourceChange>();
+      for (const id of deleteChanges) {
+        deleteExecutor.add({
+          id,
+          dependencies: deleteDeps.get(id) ?? new Set(),
+          state: 'pending',
+          data: changes.get(id)!,
+        });
+      }
+
+      try {
+        await deleteExecutor.execute(
+          concurrency,
+          async (node) => {
+            const logicalId = node.id;
+            const change = node.data;
+
+            const previousState = currentState.resources[logicalId]
+              ? { ...currentState.resources[logicalId] }
+              : undefined;
+
+            let deleteOutcome: ResourceOutcomeSignal | void;
+            try {
+              deleteOutcome = await this.provisionResource(
+                logicalId,
+                change,
+                newResources,
+                stackName,
+                template,
+                parameterValues,
+                conditions,
+                actualCounts,
+                progress
+              );
+            } catch (provisionError) {
+              this.interrupted = true;
+              this.interruptCause ??= 'sibling-failure';
+              // #1198: a failed DELETE leaves the resource in place — the
+              // record documents it in the journal (no revert needed).
+              failedOperations.push({
+                logicalId,
+                changeType: 'DELETE',
+                resourceType: change.resourceType,
+                provisionedBy: previousState?.provisionedBy,
+                ...(previousState && { previousState }),
+                physicalId: previousState?.physicalId,
+              });
+              throw provisionError;
+            }
+
+            // Issue #1762: a skipped DELETE is NOT a completed operation.
+            // Journaling it would make `cdkd rollback` re-CREATE a resource
+            // that was never deleted — colliding on its name at best, and
+            // producing a second live copy at worst. The state record was
+            // kept, so there is nothing to revert and nothing to persist
+            // beyond what is already there.
+            if (deleteOutcome) return;
+
+            completedOperations.push({
+              logicalId,
+              changeType: 'DELETE',
+              resourceType: change.resourceType,
+              provisionedBy: previousState?.provisionedBy,
+              previousState,
+            });
+
+            saveStateAfterResource(logicalId);
+          },
+          () => this.interrupted
+        );
+      } finally {
+        await saveChain;
+      }
+
+      if (this.interrupted && this.hasPending(deleteExecutor)) {
+        throw new InterruptedError(this.interruptCause ?? 'user');
+      }
+    }
+  } catch (error) {
+    // `initialDeploy` (issue #1183): the failed deploy was the FIRST deploy
+    // (no prior state loaded). Captured BEFORE the partial-state save below,
+    // which reassigns `currentEtag`. Recorded on the journal segment so
+    // `cdkd rollback` deletes state.json entirely once everything is unwound.
+    const initialDeploy = currentEtag === undefined;
+
+    // Save partial state BEFORE rollback to track all successfully provisioned
+    // resources (including those that completed concurrently with the one that
+    // failed). This prevents orphaned resources — resources that exist in AWS
+    // but not in the state file.
+    try {
+      const preRollbackState: StackState = {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        region: this.stackRegion,
+        stackName: currentState.stackName,
+        resources: newResources,
+        outputs: currentState.outputs,
+        ...exportNamesCarriedFrom(currentState),
+        ...skippedOutputsCarriedFrom(currentState),
+        ...orphansCarriedFrom(currentState),
+        // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+        // session resolved. See `crossStackReadsForPartialSave` — writing the
+        // snapshot alone left a failed deploy's persisted record denying a
+        // cross-stack read its own resources were built from.
+        ...crossStackReadsForPartialSave(
+          currentState,
+          this.recordedImports,
+          this.recordedOutputReads,
+          this.crossStackReadKeyNormalizer()
+        ),
+        lastModified: Date.now(),
+      };
+      const migrate = pendingMigration;
+      const expectedEtag = migrate ? undefined : currentEtag;
+      currentEtag = await this.stateBackend.saveState(
+        stackName,
+        this.stackRegion,
+        this.withParentInfo(preRollbackState),
+        { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
+      );
+      if (migrate) pendingMigration = false;
+      this.logger.debug('Partial state saved before rollback (orphaned resource tracking)');
+    } catch (saveError) {
+      this.logger.warn(
+        `Failed to save partial state before rollback: ${saveError instanceof Error ? saveError.message : String(saveError)}`
+      );
+    }
+
+    // Set true when an automatic rollback replayed with zero per-op
+    // failures — gates the post-save journal deletion below.
+    let autoRollbackClean = false;
+    // Resources this deploy's rollback left in AWS under `DeletionPolicy: Retain`
+    // (issue #2934). Stays empty when no rollback ran, so the saves below
+    // spread nothing and a stack that never orphaned keeps a byte-identical
+    // record.
+    let rollbackOrphans: StackOrphanRecord[] = [];
+    // The nested rows the automatic rollback actually reverted (issue
+    // #3754): only their children's pending segments are settled with it.
+    let rollbackSettledNested: SettledNestedRows = new Map();
+
+    // On SIGINT, skip rollback — just save partial state, record a rollback
+    // journal segment so the interrupted deploy is REVERTIBLE (not just
+    // resumable), and let the caller exit.
+    //
+    // A user interrupt reaches this catch in three shapes, and all three must
+    // take this branch — the other one rolls the stack back on a Ctrl-C:
+    //
+    //  - the engine's own `InterruptedError`, raised by its between-ops poll;
+    //  - an `InterruptedWaitError` from a provider's wait, WRAPPED by the
+    //    provider's `ProvisioningError` (issue #2040), which
+    //    `isInterruptedWaitError` finds on the cause chain;
+    //  - an `InterruptedError` WRAPPED by `provisionResource`'s own
+    //    `ProvisioningError`: one raised by this engine's retry backoff
+    //    (`onInterrupted`), or by a NESTED child engine's poll, which reaches
+    //    the parent through `NestedStackProvider` (go-to-k/cdkd#3875).
+    //
+    // The last shape is keyed on this engine's own `interruptCause`, not on
+    // the class: `InterruptedError` does not carry its cause, and a child's
+    // `'sibling-failure'` one must still roll back. The SIGINT handler sets
+    // `'user'` before any poll or backoff can observe the signal, and a row
+    // failure's `??= 'sibling-failure'` never overwrites it.
+    if (
+      error instanceof InterruptedError ||
+      isInterruptedWaitError(error) ||
+      this.interruptCause === 'user'
+    ) {
+      await this.writeRollbackJournalSegment(
+        stackName,
+        completedOperations,
+        failedOperations,
+        'interrupted',
+        initialDeploy
+      );
+      this.logger.info(
+        `Partial state saved (${Object.keys(newResources).length} resources). ` +
+          "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
+      );
+      throw error;
+    }
+
+    // Deployment failed — attempt rollback unless --no-rollback is set
+    if (this.options.noRollback) {
+      // Record a journal segment so `cdkd rollback` can revert the failed
+      // deploy later instead of only fixing forward / destroying.
+      await this.writeRollbackJournalSegment(
+        stackName,
+        completedOperations,
+        failedOperations,
+        'no-rollback-failure',
+        initialDeploy
+      );
+      this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
+      this.logger.warn(
+        safeMsg`Partial state has been saved. ${this.recoveryHint(
+          "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+        )}`
+      );
+    } else {
+      // Automatic in-process rollback. Write a journal segment FIRST so a
+      // rollback that dies partway (crash / network / per-op failure)
+      // leaves the segment behind and becomes resumable via `cdkd
+      // rollback`; the segment is deleted after a clean replay + save.
+      await this.writeRollbackJournalSegment(
+        stackName,
+        completedOperations,
+        failedOperations,
+        'auto-rollback-started',
+        initialDeploy
+      );
+      const rollbackResult = await this.performRollback(
+        completedOperations,
+        newResources,
+        stackName,
+        currentState
+      );
+      autoRollbackClean = rollbackResult.failures === 0;
+      // Hoisted out of this block because both saves below sit outside it
+      // (issue #2934) — the post-rollback save and its ETag-mismatch retry —
+      // and neither can see `rollbackResult`.
+      rollbackOrphans = rollbackResult.orphaned;
+      rollbackSettledNested = rollbackResult.settledNested;
+    }
+
+    // Save state after rollback (reflects rolled-back resource state).
+    // This is critical: if rollback deleted resources, the state must reflect
+    // that. Otherwise, next deploy will think deleted resources still exist.
+    try {
+      const postRollbackState: StackState = {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        region: this.stackRegion,
+        stackName: currentState.stackName,
+        resources: newResources,
+        outputs: currentState.outputs,
+        ...exportNamesCarriedFrom(currentState),
+        ...skippedOutputsCarriedFrom(currentState),
+        ...orphansAfterRollback(currentState, rollbackOrphans),
+        // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+        // session resolved. See `crossStackReadsForPartialSave` — writing the
+        // snapshot alone left a failed deploy's persisted record denying a
+        // cross-stack read its own resources were built from.
+        ...crossStackReadsForPartialSave(
+          currentState,
+          this.recordedImports,
+          this.recordedOutputReads,
+          this.crossStackReadKeyNormalizer()
+        ),
+        lastModified: Date.now(),
+      };
+      await this.stateBackend.saveState(
+        stackName,
+        this.stackRegion,
+        this.withParentInfo(postRollbackState),
+        {
+          ...(currentEtag !== undefined && { expectedEtag: currentEtag }),
+        }
+      );
+      this.logger.debug('State saved after deployment failure');
+      // Auto-rollback replayed cleanly AND the post-rollback state save
+      // succeeded — the pre-deploy baseline is restored, so settle the
+      // journal (issue #1183): drop it entirely, or — when the segment
+      // carries failed in-flight op(s) — keep a failed-only segment so
+      // `cdkd rollback --revert-failed` still works (issue #1208). A
+      // partial / failed rollback keeps the full segment so `cdkd
+      // rollback` can resume.
+      if (autoRollbackClean) {
+        await this.settleNestedChildrenAfterCleanRollback(
+          stackName,
+          rollbackSettledNested,
+          await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
+        );
+      }
+    } catch (saveError) {
+      // ETag mismatch from per-resource saves — force overwrite with fresh ETag
+      this.logger.debug(
+        `Retrying state save after rollback (ETag mismatch): ${saveError instanceof Error ? saveError.message : String(saveError)}`
+      );
+      try {
+        const freshState = await this.stateBackend.getState(stackName, this.stackRegion);
+        const freshEtag = freshState?.etag;
+        const postRollbackState: StackState = {
+          version: STATE_SCHEMA_VERSION_CURRENT,
+          region: this.stackRegion,
+          stackName: currentState.stackName,
+          resources: newResources,
+          outputs: currentState.outputs,
+          ...exportNamesCarriedFrom(currentState),
+          ...skippedOutputsCarriedFrom(currentState),
+          ...orphansAfterRollback(currentState, rollbackOrphans),
+          // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+          // session resolved. See `crossStackReadsForPartialSave` — writing the
+          // snapshot alone left a failed deploy's persisted record denying a
+          // cross-stack read its own resources were built from.
+          ...crossStackReadsForPartialSave(
+            currentState,
+            this.recordedImports,
+            this.recordedOutputReads,
+            this.crossStackReadKeyNormalizer()
+          ),
+          lastModified: Date.now(),
+        };
+        await this.stateBackend.saveState(
+          stackName,
+          this.stackRegion,
+          this.withParentInfo(postRollbackState),
+          {
+            ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
+          }
+        );
+        this.logger.debug('State saved after deployment failure (retry succeeded)');
+        if (autoRollbackClean) {
+          await this.settleNestedChildrenAfterCleanRollback(
+            stackName,
+            rollbackSettledNested,
+            await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
+          );
+        }
+      } catch (retryError) {
+        this.logger.warn(
+          `Failed to save state after rollback: ${retryError instanceof Error ? retryError.message : String(retryError)}`
+        );
+      }
+    }
+
+    throw error;
+  }
+
+  // Resolve outputs. Under --strict-getatt an unresolvable Output makes
+  // resolveOutputs THROW (instead of warn-and-skip). By this point EVERY
+  // resource operation already succeeded in AWS, and the throw would
+  // propagate through doDeploy's catch-less try — skipping the final
+  // saveState. On a FIRST deploy `currentEtag` is undefined so the
+  // incremental per-resource saves were no-ops too: rethrowing without a
+  // save would leave every created resource invisible to cdkd (no state,
+  // no rollback; a re-run collides with "already exists"). Persist the
+  // provisioning result FIRST, then rethrow so the deploy still fails
+  // (review blocker on issue #1111 item 2).
+  let outputs: Record<string, unknown>;
+  try {
+    // ONE drain budget for the whole pass, not one per output (issue
+    // #2563). `resolveOutputs` walks `template.Outputs` sequentially and
+    // calls `resolve` per output, so without this the DRAIN GRACE spendable
+    // here -- after every resource exists in AWS, before `saveState`, with
+    // the S3 lock held -- was `#outputs x` the cap rather than the cap, and
+    // CloudFormation allows 200 outputs. It bounds the GRACE, not the pass:
+    // the cap arms on a rejection, so a lookup that hangs without one is as
+    // unbounded here as it ever was. The trade the wrap makes is on
+    // `withSharedDrainBudget`.
+    outputs = await withSharedDrainBudget(() =>
+      this.resolveOutputs(
+        template,
+        newResources,
+        stackName,
+        outputsDigestSource,
+        parameterValues,
+        conditions
+      )
+    );
+    // Redact resolved secrets out of outputs before they flow to the exports
+    // index / deploy summary / state (GHSA fix). The state save
+    // (`withParentInfo`), the exports-index `updateForStack` and
+    // `buildDisplayOutputs` each redact this bag again when they read it
+    // (issue #2814). `redactOutputs` folds the outputs pass map into
+    // `this.outputSecrets` — the outputs' own substituted references — and
+    // `resolveOutputs` filled `this.outputsTemplateSource` with the
+    // unresolved values that position
+    // them (#1910).
+    const resolvedOutputsBeforeRedaction = outputs;
+    outputs = this.redactOutputs(outputs);
+    // Issue #2274: remember, FOR THIS PROCESS ONLY, the plaintext behind any
+    // output the redaction just replaced with the mask. Every cross-stack
+    // route — a nested stack's `Outputs.<Key>`, `Fn::ImportValue`,
+    // `Fn::GetStackOutput` — reads the producer's PERSISTED outputs, so
+    // without this the first deploy of a consumer whose producer exports a
+    // `NoEcho` custom-resource value would land on `***` and be refused: a
+    // template that deployed before this feature. See
+    // `recoverableMaskedOutputs` for why the key is a COORDINATE and not a
+    // bare plaintext.
+    // ONE call site, and it is here: an output that a LATER `redactOutputs`
+    // newly masks — one folding in a needle a part recorded after this
+    // point (issue #2814) — never enters the recoverable store. An
+    // in-process cross-stack consumer of that output is then refused on
+    // `***` instead of being served the plaintext, which is the fail-safe
+    // direction and the reason this is stated rather than fixed.
+    this.rememberRecoverableMaskedOutputs(stackName, resolvedOutputsBeforeRedaction, outputs);
+  } catch (outputError) {
+    await this.persistStateAfterOutputFailure(
+      stackName,
+      currentState,
+      newResources,
+      currentEtag,
+      pendingMigration
+    );
+    // Every resource op succeeded here — provisioning was clean, only
+    // output resolution failed — so rolling back is a legitimate use case
+    // (issue #1183). Record a journal segment so `cdkd rollback` can revert.
+    await this.writeRollbackJournalSegment(
+      stackName,
+      completedOperations,
+      failedOperations,
+      'no-rollback-failure',
+      currentEtag === undefined
+    );
+    throw outputError;
+  }
+
+  return {
+    state: {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: this.stackRegion,
+      stackName: currentState.stackName,
+      resources: newResources,
+      ...orphansCarriedFrom(currentState),
+      outputs,
+      // Always written, `[]` included: on this path the bag was re-resolved,
+      // so the set is KNOWN (issue #2193). Absent would read as "not known".
+      exportNames: [...this.resolvedExportNames],
+      // This pass's skipped set, omitted when empty (issue #2740). Copied,
+      // like the `exportNames` / `imports` spreads beside it.
+      ...(this.skippedOutputs && { skippedOutputs: { ...this.skippedOutputs } }),
+      ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
+      ...(this.recordedOutputReads.length > 0 && {
+        outputReads: [...this.recordedOutputReads],
+      }),
+      lastModified: Date.now(),
+    },
+    actualCounts,
+    completedOperations,
+  };
+}
+
+/**
+ * Persist state after provisioning fully succeeded but output resolution
+ * threw (only reachable under `--strict-getatt`, whose promotion fires
+ * AFTER the rollback catch block). The persisted shape mirrors the
+ * success-path state EXCEPT for outputs:
+ *
+ * - `resources`: this run's provisioning result (`newResources`) — every
+ *   create/update/delete landed in AWS, so state must record it.
+ * - `imports` / `outputReads`: this run's `recordedImports` /
+ *   `recordedOutputReads` (the provisioning that produced them succeeded;
+ *   dropping them would desync the strong-reference records from AWS —
+ *   matters on the update-deploy path where the pre-deploy snapshot may
+ *   be stale).
+ * - `outputs`: the PREVIOUSLY persisted map — resolveOutputs threw before
+ *   producing a new one, mirroring what a resource-failure persist keeps.
+ *   The exports index is deliberately NOT updated (it stays consistent
+ *   with the old outputs that remain in state).
+ *
+ * ETag handling mirrors the post-rollback save: expected-ETag first (or
+ * unconditional when `pendingMigration` — same as the per-resource save),
+ * then a fresh-ETag retry, then warn. Best-effort: the deploy error being
+ * rethrown is the primary signal; a failed save only warns.
+ */
+export async function persistStateAfterOutputFailure(
+  this: DeployEngine,
+  stackName: string,
+  currentState: StackState,
+  newResources: Record<string, ResourceState>,
+  currentEtag: string | undefined,
+  pendingMigration: boolean
+): Promise<void> {
+  const buildState = (): StackState => ({
+    version: STATE_SCHEMA_VERSION_CURRENT,
+    region: this.stackRegion,
+    stackName: currentState.stackName,
+    resources: newResources,
+    outputs: currentState.outputs,
+    ...exportNamesCarriedFrom(currentState),
+    ...skippedOutputsCarriedFrom(currentState),
+    ...orphansCarriedFrom(currentState),
+    // Issue #2057: the UNION, like every other non-success save. This one
+    // used to write `[...this.recordedImports]` WHOLESALE, copying the
+    // SUCCESS path's shape onto a path that is not one — provisioning
+    // succeeded, but output resolution threw, and the caller writes a
+    // rollback journal segment and rethrows, so `cdkd rollback` reads
+    // exactly this record. A deploy that no longer re-resolves a
+    // cross-stack read (the reference moved, or the resource holding it had
+    // no diff this run) therefore came through here with an EMPTY
+    // `recordedOutputReads`, the field was omitted, and the producer region
+    // the previous record carried was erased from under a
+    // `properties.Value` that still holds the producer's region-less
+    // spelling. `producerRegionsFromState` then returned `[]` and the replay
+    // resolved it locally.
+    ...crossStackReadsForPartialSave(
+      currentState,
+      this.recordedImports,
+      this.recordedOutputReads,
+      this.crossStackReadKeyNormalizer()
+    ),
+    lastModified: Date.now(),
+  });
+  try {
+    const expectedEtag = pendingMigration ? undefined : currentEtag;
+    await this.stateBackend.saveState(
+      stackName,
+      this.stackRegion,
+      this.withParentInfo(buildState()),
+      {
+        ...(expectedEtag !== undefined && { expectedEtag }),
+        migrateLegacy: pendingMigration,
+      }
+    );
+    this.logger.debug('State saved after output resolution failure');
+  } catch (saveError) {
+    this.logger.debug(
+      `Retrying state save after output resolution failure (ETag mismatch): ${saveError instanceof Error ? saveError.message : String(saveError)}`
+    );
+    try {
+      const freshState = await this.stateBackend.getState(stackName, this.stackRegion);
+      const freshEtag = freshState?.etag;
+      await this.stateBackend.saveState(
+        stackName,
+        this.stackRegion,
+        this.withParentInfo(buildState()),
+        {
+          ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
+        }
+      );
+      this.logger.debug('State saved after output resolution failure (retry succeeded)');
+    } catch (retryError) {
+      this.logger.warn(
+        `Failed to save state after output resolution failure: ${retryError instanceof Error ? retryError.message : String(retryError)} — resources were provisioned but not recorded; run deploy again to reconcile.`
+      );
+    }
+  }
+}

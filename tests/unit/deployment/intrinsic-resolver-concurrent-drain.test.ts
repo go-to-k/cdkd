@@ -1715,7 +1715,8 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
 
 describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
   it.each([
-    ['src/deployment/deploy-engine.ts', 'resolveOutputs', 2],
+    ['src/deployment/deploy-engine/deploy-flow.ts', 'resolveOutputs', 1],
+    ['src/deployment/deploy-engine/execute.ts', 'resolveOutputs', 1],
     ['src/cli/commands/import.ts', 'resolveImportedProperties', 2],
     ['src/cli/commands/export.ts', 'buildResolvedParametersPerStack', 1],
     ['src/cli/commands/scrub.ts', 'resolveCrossStackReads', 3],

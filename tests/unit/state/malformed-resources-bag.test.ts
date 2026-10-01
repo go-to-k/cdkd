@@ -3069,7 +3069,7 @@ describe('the user-facing text', () => {
  * them to disagree (go-to-k/cdkd#3500).
  */
 const ORPHAN_READER_FILES = [
-  'src/deployment/deploy-engine.ts',
+  'src/deployment/deploy-engine/deploy-flow.ts',
   'src/cli/commands/destroy-runner.ts',
   'src/cli/commands/rollback.ts',
   'src/cli/commands/scrub.ts',
@@ -3085,14 +3085,14 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
    * protects nothing. So each write-capable file is anchored on the expression
    * its guard must precede.
    *
-   * `deploy-engine.ts` is anchored on its first SAVE rather than on a lexical
-   * dereference, and that is the measured exception: `redactStateForPersist`
-   * reads the container higher up the file than the guard, but is reachable
-   * only from the save path below it. Anchoring it lexically would fence a
-   * position the code never executes in that order.
+   * The engine's deploy flow (`deploy-engine/deploy-flow.ts`, #4350) is
+   * anchored on its first SAVE: the flow guards, then adopts, then saves, and
+   * the engine's other container reads (`redactStateForPersist` in the host,
+   * the save sites in `deploy-engine/execute.ts`) are reachable only from saves
+   * this flow makes after its guard. Both are excluded below and pinned.
    */
   const ANCHORS: Record<string, string> = {
-    'src/deployment/deploy-engine.ts': 'await this.stateBackend.saveState(',
+    'src/deployment/deploy-engine/deploy-flow.ts': 'await this.stateBackend.saveState(',
     'src/cli/commands/destroy-runner.ts': 'state.orphans ?? []',
     'src/cli/commands/rollback.ts': 'orphansAfterRollback(',
     'src/cli/commands/scrub.ts': 'state.orphans ?? []',
@@ -3156,6 +3156,12 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // `this.adoptRollbackOrphans(` — the ROW anchor below, pinned under the
       // engine's guard. Pinned in the next case.
       if (file === 'src/deployment/deploy-engine/rollback.ts') return false;
+      // The engine host reads the container only in `redactStateForPersist`,
+      // and `deploy-engine/execute.ts` only inside `executeDeployment` /
+      // `persistStateAfterOutputFailure`, both reached only through the deploy
+      // flow's single `this.executeDeployment(` below its guard. Pinned below.
+      if (file === 'src/deployment/deploy-engine.ts') return false;
+      if (file === 'src/deployment/deploy-engine/execute.ts') return false;
       return /[A-Za-z]*[Ss]tate\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
     });
     expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
@@ -3173,17 +3179,37 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'diff.ts now loads state itself, so it owes its own guard rather than inheriting ' +
         "diff-recursive's repair."
     ).not.toContain('getState(');
-    // `deploy-engine.ts` is anchored on its first SAVE because its only read
-    // above the guard is `redactStateForPersist`, which is reachable only from
-    // the save path. A second read landing above the guard would break that.
+    // The engine host's only container read is `redactStateForPersist`, which
+    // runs only on a save, and every save follows the deploy flow's guard.
+    const reads = (text: string): number =>
+      text.split(/[A-Za-z]*[Ss]tate\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/).length - 1;
     const engine = code('src/deployment/deploy-engine.ts');
-    const guardAt = engine.indexOf('refuseMalformedOrphans(');
-    const above = engine.slice(0, guardAt).split(/[A-Za-z]*[Ss]tate\.orphans\b/).length - 1;
+    const redactAt = engine.indexOf('redactStateForPersist(state: StackState)');
+    expect(redactAt, 'redactStateForPersist moved or was renamed').toBeGreaterThan(-1);
+    const redactBody = engine.slice(redactAt, engine.indexOf('\n  }\n', redactAt));
+    expect(reads(engine), 'the engine host no longer reads the container').toBeGreaterThan(0);
     expect(
-      above,
-      'deploy-engine.ts reads the container above its guard somewhere other than ' +
-        'redactStateForPersist, so the save anchor no longer covers every read.'
-    ).toBe(1);
+      reads(engine),
+      'deploy-engine.ts reads the orphans container outside redactStateForPersist, on a path ' +
+        'the deploy-flow anchor does not cover: give it its own ANCHORS entry.'
+    ).toBe(reads(redactBody));
+    // `deploy-engine/execute.ts` reads it only in the two methods the deploy
+    // flow reaches through ONE call, placed below that flow's guard.
+    const flow = code('src/deployment/deploy-engine/deploy-flow.ts');
+    expect(flow.split('this.executeDeployment(').length - 1, 'the deploy flow calls executeDeployment more than once').toBe(1);
+    expect(flow.indexOf('refuseMalformedOrphans(')).toBeLessThan(flow.indexOf('this.executeDeployment('));
+    const execCallers = spawnSync(
+      'git',
+      ['grep', '-l', '-e', 'executeDeployment(', '-e', 'persistStateAfterOutputFailure(', '--', 'src'],
+      { cwd: repoRoot, encoding: 'utf8' }
+    )
+      .stdout.split('\n')
+      .filter(Boolean)
+      .sort();
+    expect(execCallers, 'executeDeployment / persistStateAfterOutputFailure gained a caller').toEqual([
+      'src/deployment/deploy-engine/deploy-flow.ts',
+      'src/deployment/deploy-engine/execute.ts',
+    ]);
     // `deploy-engine/rollback.ts` is excluded because every container read it
     // holds is inside `adoptRollbackOrphans`, whose only caller is the engine's
     // ROW-anchored `this.adoptRollbackOrphans(`. A read anywhere else in that
@@ -3194,10 +3220,8 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     const fnEnd = rollback.indexOf('\n}\n', fnAt);
     expect(fnEnd, 'the end of adoptRollbackOrphans was not found').toBeGreaterThan(fnAt);
     const fnBody = rollback.slice(fnAt, fnEnd);
-    // The SAME pattern the population derivation matches, so every shape the
-    // exclusion hides is counted — not only a direct container dereference.
-    const reads = (text: string): number =>
-      text.split(/[A-Za-z]*[Ss]tate\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/).length - 1;
+    // The SAME pattern the population derivation matches (`reads` above), so
+    // every shape the exclusion hides is counted.
     expect(reads(rollback), 'the rollback mixin no longer reads the container').toBeGreaterThan(0);
     expect(
       reads(rollback),
@@ -3215,7 +3239,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       .filter(Boolean)
       .sort();
     expect(callers, 'adoptRollbackOrphans gained a caller outside the engine').toEqual([
-      'src/deployment/deploy-engine.ts',
+      'src/deployment/deploy-engine/deploy-flow.ts',
       'src/deployment/deploy-engine/rollback.ts',
     ]);
     expect(
@@ -3223,7 +3247,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'the rollback mixin calls adoptRollbackOrphans itself, outside the engine guard'
     ).toBe(1);
     expect(
-      code('src/deployment/deploy-engine.ts').split('this.adoptRollbackOrphans(').length - 1,
+      code('src/deployment/deploy-engine/deploy-flow.ts').split('this.adoptRollbackOrphans(').length - 1,
       'the engine calls adoptRollbackOrphans more than once; each call owes the ROW anchor'
     ).toBe(1);
   });
@@ -3248,7 +3272,7 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     // `redactStateForPersist` row walk sits textually higher and is the SAME
     // measured exception the container fence pins: reachable only from the save
     // path below the guard.
-    'src/deployment/deploy-engine.ts': 'this.adoptRollbackOrphans(',
+    'src/deployment/deploy-engine/deploy-flow.ts': 'this.adoptRollbackOrphans(',
     // The pre-confirmation listing, the one thing a destroy does with the rows.
     'src/cli/commands/destroy-runner.ts': 'displaySafe(entry.logicalId)',
     // The merge that keys on each row's `logicalId`.
@@ -3583,11 +3607,11 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // carrying its own TEXT, because neither does what
     // `malformedStateRefusalMessage` describes: `destroy-runner.ts` DELETES the
     // record down an empty-stack fast path rather than saving over it, and
-    // `deploy-engine.ts` re-provisions the whole stack before the save the
+    // the engine deploy flow re-provisions the whole stack before the save the
     // shared text names. Both delegate to `hasReadableResources`, so the
     // VERDICT stays singular while the message varies — the same shape the
     // `outputs` half took under go-to-k/cdkd#3207.
-    'src/deployment/deploy-engine.ts',
+    'src/deployment/deploy-engine/deploy-flow.ts',
     'src/cli/commands/destroy-runner.ts',
   ];
   // A THIRD write-capable reader exists and is deliberately NOT in that list:
@@ -3764,11 +3788,12 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // go-to-k/cdkd#3161. Each anchor is the LOADED record's bag, which is what
     // the guard is about.
     //
-    // `deploy-engine.ts`'s is the debug line that reports the resource count —
+    // The engine deploy flow's (`deploy-engine/deploy-flow.ts`) is the debug
+    // line that reports the resource count —
     // the first read of `currentState`, and the one that raised the bare
     // `TypeError` on a `null` bag. `currentState` is local to `deploy()`, so no
     // earlier occurrence of this spelling exists to make the bound vacuous.
-    'src/deployment/deploy-engine.ts': 'Object.keys(currentState.resources).length',
+    'src/deployment/deploy-engine/deploy-flow.ts': 'Object.keys(currentState.resources).length',
     // `destroy-runner.ts`'s is the COUNT the whole defect turns on: the
     // empty-stack fast path that deletes `state.json` sits immediately below
     // it, so a guard anywhere under this line refuses a record it has already
@@ -4073,7 +4098,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // failure-path saves; `destroy-runner` writes a trimmed record and
     // `deleteState`s the original. They were left out of go-to-k/cdkd#3192 for
     // being in a real-AWS integ gate scope, not for taking a different answer.
-    'src/deployment/deploy-engine.ts',
+    'src/deployment/deploy-engine/deploy-flow.ts',
     'src/cli/commands/destroy-runner.ts',
   ];
 
@@ -4099,13 +4124,13 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // go-to-k/cdkd#3207. The anchor is the LOADED record's bag in each file,
     // which is what the guard is about.
     //
-    // `deploy-engine.ts` also has `redactStateForPersist`'s
+    // The engine host (`deploy-engine.ts`) has `redactStateForPersist`'s
     // `this.redactOutputs(state.outputs)` textually EARLIER, and it is
     // deliberately not the anchor: that is a helper reading whatever bag it is
     // HANDED, the same relationship `orphan.ts`'s `rewriteResourceReferences`
     // has, and every state it is handed is derived from `currentState` after
     // this guard. `currentState.outputs` is the first read of the loaded bag.
-    'src/deployment/deploy-engine.ts': 'currentState.outputs',
+    'src/deployment/deploy-engine/deploy-flow.ts': 'currentState.outputs',
     // The strong-reference decision, which is the ONLY thing this runner does
     // with the bag.
     'src/cli/commands/destroy-runner.ts': 'state.outputs && Object.keys(',
