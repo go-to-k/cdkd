@@ -1,5 +1,5 @@
 /**
- * EVERY provider CREATE / UPDATE site in `deploy-engine.ts` binds the
+ * EVERY provider CREATE / UPDATE site of `DeployEngine` binds the
  * async-local secrets scope `NestedStackProvider` reads to seed a nested CHILD
  * engine (issue [#1903](https://github.com/go-to-k/cdkd/issues/1903), review
  * round 2).
@@ -13,7 +13,7 @@
  * not see it either (its second deploy is a no-op, so
  * `NestedStackProvider.update` never fires).
  *
- * Six sites, one case each, because they are six code paths and a binding
+ * Seven sites, one case each, because they are seven code paths and a binding
  * applied to one says nothing about the others:
  *
  *  1. ordinary CREATE
@@ -22,6 +22,7 @@
  *  4. `--replace` delete-first fallback, after a create-first name collision
  *  5. `--recreate-via-cc-api` destroy-then-create
  *  6. UPDATE-not-supported fallback (DELETE -> CREATE)
+ *  7. the create-first of a replacement that moves its name (#4183, #4292)
  *
  * The observation seam is the one `NestedStackProvider.runChildDeploy` actually
  * uses — `getCurrentResourceSecrets()` read from INSIDE the provider call —
@@ -423,6 +424,57 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     // so a fix that wrapped the retry loop instead of the call would leave one
     // of them unbound and only a per-attempt assertion could see it.
     expect(seenCreate).toEqual([EXPECTED_BAG, EXPECTED_BAG]);
+    expectBoundBagsAreResolverBags();
+  });
+
+  it('site 7 — the create-first of a replacement that moves its name (#4183, #4292)', async () => {
+    // `--recreate-via-cc-api` destroy-then-create exists to free a name the old
+    // resource holds; when the template moves the name instead, the engine
+    // creates under the NEW name first and deletes the old one after —
+    // `createFirstThenDeleteOld`, a call site of its own.
+    primeUpdate(true, 'old-phys');
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          LOGICAL,
+          {
+            logicalId: LOGICAL,
+            changeType: 'UPDATE',
+            resourceType: TYPE,
+            desiredProperties: { ...desiredProperties, Name: 'new-name' },
+            currentProperties: {
+              Type: 'String',
+              Value: 'stale-previous-value',
+              Name: 'old-phys',
+            },
+            propertyChanges: [
+              { path: 'Name', oldValue: 'old-phys', newValue: 'new-name', requiresReplacement: true },
+            ],
+          } as ResourceChange,
+        ],
+      ])
+    );
+    const renamed: CloudFormationTemplate = {
+      ...template,
+      Resources: {
+        [LOGICAL]: {
+          Type: TYPE,
+          Properties: { Type: 'String', Name: 'new-name', Value: { Ref: PARAM } },
+        },
+      },
+    };
+    await engine({
+      forceStatefulRecreation: true,
+      recreateTargets: {
+        stackName: STACK,
+        viaCcApi: new Set([LOGICAL]),
+        viaSdkProvider: new Set<string>(),
+      },
+    }).deploy(STACK, renamed);
+
+    expect(mockProvider.create).toHaveBeenCalledOnce();
+    expect(mockProvider.delete).toHaveBeenCalled();
+    expect(seenCreate).toEqual([EXPECTED_BAG]);
     expectBoundBagsAreResolverBags();
   });
 
