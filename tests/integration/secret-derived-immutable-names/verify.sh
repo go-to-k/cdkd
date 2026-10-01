@@ -400,16 +400,16 @@ assert_gone "GraphQL API ${GQL_API_ID} still exists after destroy" \
   aws appsync get-graphql-api --region "${REGION}" --api-id "${GQL_API_ID}"
 # SQS may answer for a deleted queue for up to 60 seconds.
 QUEUE_GONE=0
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
   if gone_probe aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
     --attribute-names QueueArn; then
     QUEUE_GONE=1
     break
   fi
-  sleep 5
+  [ "${attempt}" = 14 ] || sleep 5
 done
 if [ "${QUEUE_GONE}" != "1" ]; then
-  echo "FAIL: queue ${QUEUE_URL} still exists 70s after destroy" >&2
+  echo "FAIL: queue ${QUEUE_URL} still exists 65s after destroy" >&2
   exit 1
 fi
 # `describe-services` / `describe-clusters` do not error for a deleted one:

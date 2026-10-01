@@ -135,15 +135,27 @@ export function isStdoutReservedForPayload(): boolean {
 }
 
 /**
- * Render a log call's extra args. Under a masker, each string LEAF is masked
- * before `JSON.stringify` escapes it (a secret holding `"` or `\` no longer
- * occurs in the finished JSON), then the joined text is masked for the object
- * keys a replacer cannot rewrite.
+ * Render a log call's extra args. Under a masker, every string LEAF and object
+ * KEY is masked before `JSON.stringify` escapes it (a secret holding `"` or
+ * `\` no longer occurs in the finished JSON), a number or boxed string by its
+ * text, and the joined text once more as a backstop.
  */
 function renderArgs(args: unknown[], mask: LogLineMasker | undefined): string {
   if (mask === undefined) return args.map((a) => JSON.stringify(a)).join(' ');
-  const replacer = (_key: string, value: unknown): unknown =>
-    typeof value === 'string' ? mask(value) : value;
+  const replacer = (_key: string, value: unknown): unknown => {
+    if (typeof value === 'string') return mask(value);
+    if (value instanceof String) return mask(String(value));
+    if (typeof value === 'number') {
+      const masked = mask(String(value));
+      return masked === String(value) ? value : masked;
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+    // Rebuild only when a KEY changes: a copy per visit would turn a circular
+    // arg's TypeError into unbounded recursion.
+    const entries = Object.entries(value);
+    if (entries.every(([k]) => mask(k) === k)) return value;
+    return Object.fromEntries(entries.map(([k, v]) => [mask(k), v]));
+  };
   return mask(args.map((a) => JSON.stringify(a, replacer)).join(' '));
 }
 

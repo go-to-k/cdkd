@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { setLogLineMaskerSource } from '../utils/log-line-masker.js';
-import { hasMaskableValues, maskSecretsInText } from './secret-redaction.js';
+import { installLogLineMaskerSource } from '../utils/log-line-masker.js';
+import { createUnionSecretMasker, hasMaskableValues } from './secret-redaction.js';
 import type { RecordedSecretValues } from './secret-redaction.js';
 
 /**
@@ -46,21 +46,33 @@ import type { RecordedSecretValues } from './secret-redaction.js';
 const currentResourceSecretsStore = new AsyncLocalStorage<RecordedSecretValues>();
 
 /**
+ * Every bag bound on the current async chain, outermost first. A nested-stack
+ * child engine runs INSIDE its parent's `NestedStackProvider` call, so the
+ * child's per-resource bag shadows the parent's in
+ * {@link currentResourceSecretsStore}; the log sink masks with all of them,
+ * since a parent secret the child never resolved can still reach a child line.
+ */
+const boundSecretBagsStore = new AsyncLocalStorage<readonly RecordedSecretValues[]>();
+
+/**
  * The logger's SINK masker (issue
  * [#2177](https://github.com/go-to-k/cdkd/issues/2177)): every log line emitted
  * while a bag is bound — a provider's own `this.logger.*` line included — is
- * masked with the printing masker `createSecretMasker` hands the provider,
- * so a provider call site that forgets to thread `maskSecrets` no longer prints
- * the plaintext. Registered at module load: every binder imports this module,
- * so the source is installed before any bag can be bound.
+ * masked with the printing masker (`maskSecretsInText`'s two arms, log-only
+ * needles included) over every bound bag, so a provider call site that forgets
+ * to thread `maskSecrets` no longer prints the plaintext. Installed at module
+ * load: every binder imports this module, so the source is in place before any
+ * bag can be bound.
  *
  * Unbound or empty is one store read and an `undefined`, which the logger
- * takes as "leave the line alone".
+ * takes as "leave the line alone". A bound line gets a FRESH union masker, so
+ * its needle regex is built at most once per line and never outlives it: a
+ * bag can only change between lines, never while one is formatted.
  */
-setLogLineMaskerSource(() => {
-  const secrets = currentResourceSecretsStore.getStore();
-  if (secrets === undefined || !hasMaskableValues(secrets)) return undefined;
-  return (text: string) => maskSecretsInText(text, secrets);
+installLogLineMaskerSource(() => {
+  const bags = boundSecretBagsStore.getStore();
+  if (bags === undefined || !bags.some((bag) => hasMaskableValues(bag))) return undefined;
+  return createUnionSecretMasker(bags);
 });
 
 /**
@@ -70,7 +82,10 @@ setLogLineMaskerSource(() => {
  * `CreateContext`.
  */
 export function withCurrentResourceSecrets<T>(secrets: RecordedSecretValues, fn: () => T): T {
-  return currentResourceSecretsStore.run(secrets, fn);
+  const outer = boundSecretBagsStore.getStore() ?? [];
+  return boundSecretBagsStore.run([...outer, secrets], () =>
+    currentResourceSecretsStore.run(secrets, fn)
+  );
 }
 
 /**

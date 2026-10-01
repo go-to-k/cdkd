@@ -25,9 +25,11 @@ export type LogLineMasker = (text: string) => string;
 let source: (() => LogLineMasker | undefined) | undefined;
 
 /**
- * Install (or, with `undefined`, remove) the masker source.
+ * Install the masker source. ONCE: a second install throws rather than
+ * silently replacing (or weakening) the masking every line relies on.
  */
-export function setLogLineMaskerSource(next: (() => LogLineMasker | undefined) | undefined): void {
+export function installLogLineMaskerSource(next: () => LogLineMasker | undefined): void {
+  if (source !== undefined) throw new Error('log line masker source is already installed');
   source = next;
 }
 

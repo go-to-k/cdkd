@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { ConsoleLogger, getLogger, setLogger } from '../../../src/utils/logger.js';
 import { runStackBuffered } from '../../../src/utils/stack-context.js';
+import { installLogLineMaskerSource } from '../../../src/utils/log-line-masker.js';
 import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import {
   recordLogOnlyValue,
@@ -145,7 +146,7 @@ describe('ConsoleLogger masks bound resource secrets at the sink (issue #2177)',
     expect(String(spies.info.mock.calls[0]?.[0])).toBe('value ***');
   });
 
-  it('a nested scope masks with its own bag, and the outer bag resumes after it', () => {
+  it('a nested scope (a nested-stack child) masks with its own AND every outer bag', () => {
     withCurrentResourceSecrets(bag(OTHER), () => {
       withCurrentResourceSecrets(bag(SECRET), () => {
         getLogger().info(`inner ${SECRET} ${OTHER}`);
@@ -153,8 +154,37 @@ describe('ConsoleLogger masks bound resource secrets at the sink (issue #2177)',
       getLogger().info(`outer ${SECRET} ${OTHER}`);
     });
 
-    expect(String(spies.info.mock.calls[0]?.[0])).toBe(`inner *** ${OTHER}`);
+    expect(String(spies.info.mock.calls[0]?.[0])).toBe('inner *** ***');
     expect(String(spies.info.mock.calls[1]?.[0])).toBe(`outer ${SECRET} ***`);
+  });
+
+  it('a nested scope with an EMPTY bag still masks with the outer bag', () => {
+    withCurrentResourceSecrets(bag(OTHER), () => {
+      withCurrentResourceSecrets(new Map(), () => {
+        getLogger().info(`inner ${OTHER}`);
+      });
+    });
+
+    expect(String(spies.info.mock.calls[0]?.[0])).toBe('inner ***');
+  });
+
+  it('masks an escaping object KEY, a boxed string and a short numeric leaf in an arg', () => {
+    const quotedKey = 'ke"y-secret';
+    withCurrentResourceSecrets(bag(quotedKey, SECRET, '123'), () => {
+      // eslint-disable-next-line no-new-wrappers
+      getLogger().info('payload', { [quotedKey]: 1, boxed: new String(SECRET), pin: 123, n: 1234 });
+    });
+
+    const line = String(spies.info.mock.calls[0]?.[0]);
+    expect(line).not.toContain('ke\\"y');
+    expect(line).not.toContain(SECRET);
+    expect(line).toContain('{"***":1,"boxed":"***","pin":"***","n":1234}');
+  });
+
+  it('refuses a second masker source rather than replacing the installed one', () => {
+    expect(() => installLogLineMaskerSource(() => undefined)).toThrow(/already installed/);
+    withCurrentResourceSecrets(bag(SECRET), () => getLogger().info(`still ${SECRET}`));
+    expect(String(spies.info.mock.calls[0]?.[0])).toBe('still ***');
   });
 
   it('concurrent resource scopes do not see each other’s needles', async () => {
