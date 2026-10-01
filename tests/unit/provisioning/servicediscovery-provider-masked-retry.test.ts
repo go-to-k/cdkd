@@ -4,6 +4,7 @@ import {
   CreateHttpNamespaceCommand,
   CreatePublicDnsNamespaceCommand,
   CreateServiceCommand,
+  GetOperationCommand,
   UpdatePrivateDnsNamespaceCommand,
   UpdateHttpNamespaceCommand,
   UpdatePublicDnsNamespaceCommand,
@@ -191,4 +192,64 @@ describe('ServiceDiscoveryProvider: a masked failure still classifies as retryab
       expect(retryable(failure)).toBe(false);
     }
   );
+});
+
+/**
+ * Issue #4299: a FAILED operation surfaces through `pollOperation`, whose
+ * `ProvisioningError` the arms re-throw verbatim. Its text is AWS's
+ * `Operation.ErrorMessage`, not a caught error, so the unmasked text must be
+ * attached as the `cause` for the stamp to have a chain to point at.
+ */
+describe('ServiceDiscoveryProvider: a masked FAILED operation keeps its classification (issue #4299)', () => {
+  let provider: ServiceDiscoveryProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ServiceDiscoveryProvider();
+  });
+
+  function failOperation(errorMessage: string): void {
+    mockSend.mockImplementation((sent: unknown) => {
+      if (sent instanceof CreateHttpNamespaceCommand) {
+        return Promise.resolve({ OperationId: 'op-4299' });
+      }
+      if (sent instanceof GetOperationCommand) {
+        return Promise.resolve({ Operation: { Status: 'FAIL', ErrorMessage: errorMessage } });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  it('the stamp keeps a masked retry wording retryable', async () => {
+    failOperation(TRANSIENT);
+    const failure = await thrown(
+      provider.create('Ns', HTTP_NS, { Name: 'ns-http' }, { maskSecrets: retryMasker })
+    );
+    // Non-vacuity: the failure came from the poll's FAIL arm.
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof GetOperationCommand)).toBe(true);
+    expect(failure.message).toContain('Operation failed for Ns');
+    // Premise: the mask cut the retry wording out of the message itself.
+    expect(failure.message).not.toContain('does not exist');
+    expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect(retryable(failure)).toBe(true);
+  });
+
+  it('classifies exactly as the unmasked message does', async () => {
+    failOperation(TRANSIENT);
+    const unmasked = await thrown(provider.create('Ns', HTTP_NS, { Name: 'ns-http' }));
+    expect(unmasked.message).toContain('does not exist');
+    expect(hasRedactedCause(unmasked)).toBe(false);
+    expect(retryable(unmasked)).toBe(true);
+  });
+
+  it('a FAILED message the mask left unchanged is not stamped', async () => {
+    failOperation('Bad request parameter');
+    const failure = await thrown(
+      provider.create('Ns', HTTP_NS, { Name: 'ns-http' }, { maskSecrets: retryMasker })
+    );
+    expect(failure.message).toContain('Bad request parameter');
+    expect(hasRedactedCause(failure)).toBe(false);
+    expect(retryable(failure)).toBe(false);
+  });
 });
