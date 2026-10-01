@@ -12,8 +12,10 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy, ctorArgs } = vi.hoisted(() => ({
+const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy, ctorArgs, regionFails } = vi.hoisted(() => ({
   mockSend: vi.fn(),
+  /** How many upcoming `config.region()` reads reject, across every client. */
+  regionFails: { remaining: 0 },
   /** Every `ApiGatewayV2Client` constructor's options, in order. */
   ctorArgs: [] as Array<{ region?: unknown }>,
   warnSpy: vi.fn(),
@@ -38,7 +40,13 @@ vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
     ApiGatewayV2Client: vi.fn().mockImplementation((options: { region?: unknown }) => {
       ctorArgs.push(options);
       const config = {
-        region: () => Promise.resolve(options.region ?? 'us-east-1'),
+        region: () => {
+          if (regionFails.remaining > 0) {
+            regionFails.remaining--;
+            return Promise.reject(new Error('Region is missing'));
+          }
+          return Promise.resolve(options.region ?? 'us-east-1');
+        },
         retryStrategy: async (): Promise<unknown> => baseStrategy,
       };
       return {
@@ -277,6 +285,7 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
     debugSpy.mockReset();
     sentVia.length = 0;
     ctorArgs.length = 0;
+    regionFails.remaining = 0;
     // Not the SDK's fallback, so a client built without the stack region is told apart.
     savedRegion = process.env['AWS_REGION'];
     process.env['AWS_REGION'] = 'eu-west-3';
@@ -530,6 +539,20 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       const line = reportFor('CreateIntegration')!;
       expect(line).toContain('--integration-id int1');
       expect(line).not.toContain('incomplete');
+    });
+
+    it('omits --region from the commands when the client region cannot be read', async () => {
+      aws.loseNextCreateResponse = transient500();
+      // CreateIntegration reads no region, so the one failing read is the report's.
+      regionFails.remaining = 1;
+
+      await createWithRetry('AWS::ApiGatewayV2::Integration', INT_PROPS);
+
+      const line = reportFor('CreateIntegration')!;
+      expect(line).toContain(
+        'aws apigatewayv2 get-integration --api-id httpapi1 --integration-id int1.'
+      );
+      expect(regionFails.remaining).toBe(0);
     });
 
     it('matches an integration with no URI only to a create with none', async () => {
