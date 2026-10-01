@@ -1,0 +1,200 @@
+import type { DeployEngine } from './deploy-engine.js';
+import type { ProvisionCounts, ResourceOutcomeSignal } from './deploy-engine.js';
+import type { CloudFormationTemplate } from '../types/resource.js';
+import type { ResourceChange, ResourceState } from '../types/state.js';
+import { getLiveRenderer } from '../utils/live-renderer.js';
+import { formatResourceLine } from '../utils/resource-line.js';
+import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
+import { createSecretMasker, recordNestedStackParameterExpressions } from './secret-redaction.js';
+
+declare module './deploy-engine.js' {
+  interface DeployEngine {
+    /** @internal */
+    provisionCreate: OmitThisParameter<typeof provisionCreate>;
+  }
+}
+
+/** The `CREATE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
+export async function provisionCreate(
+  this: DeployEngine,
+  logicalId: string,
+  change: ResourceChange,
+  stateResources: Record<string, ResourceState>,
+  stackName: string,
+  template?: CloudFormationTemplate,
+  parameterValues?: Record<string, unknown>,
+  conditions?: Record<string, boolean>,
+  counts?: ProvisionCounts,
+  progress?: { current: number; total: number }
+): Promise<ResourceOutcomeSignal | void> {
+  const resourceType = change.resourceType;
+  const renderer = getLiveRenderer();
+  const desiredProps = change.desiredProperties || {};
+
+  // Resolve intrinsic functions in properties
+  const context = this.buildResolverContext(
+    {
+      template: template!,
+      resources: stateResources,
+      ...(parameterValues && { parameters: parameterValues }),
+      ...(conditions && { conditions }),
+      // ONE OF THE TWO SITES THAT OPT IN. The bag's presence is what lets
+      // the resolver skip a masked `Ref` state key, and this arm calls
+      // `refuseRedactedAttributeReads` below — the reader that makes the
+      // skip safe. See the field's doc on `buildResolverContext`.
+      redactedAttributeReads: [],
+    },
+    stackName
+  );
+
+  // Store the secrets substituted during THIS resource's resolution so the
+  // save choke point (and the async observed-capture drain) redact this
+  // record only with its own secrets (GHSA fix — see perResourceSecrets).
+  //
+  // Issue #2038 review: registered BEFORE `resolve`, not after. The
+  // resolver MUTATES `context.recordedSecretValues` in place, so the map
+  // this line publishes is the very one the resolution fills — but a
+  // throw from INSIDE `resolve()`, after a secret was already
+  // substituted, used to reach the catch in this method with NO entry for
+  // this resource, so the error line, the durable event and the
+  // `ProvisioningError` cause all masked against an EMPTY bag. No
+  // resolver throw is known to inline a resolved value, so this closes a
+  // WINDOW rather than a demonstrated leak. The hoist cannot expose a
+  // STALE bag: the map is keyed by logical id, `deploy()` resets it per
+  // run, and each logical id is provisioned once — so this key has no
+  // prior entry and the only thing another reader can observe earlier is
+  // this resource's own map, empty, which every masking site treats
+  // identically to an absent entry.
+  if (context.recordedSecretValues) {
+    this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
+  }
+  const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
+    string,
+    unknown
+  >;
+  // Issue #2274: before ANY of the resolved bag reaches a provider, refuse
+  // if the resolution had to serve an attribute a previous deploy
+  // redacted. See the helper — the value would be the literal `***`.
+  this.refuseRedactedAttributeReads(logicalId, resourceType, context);
+  // Capture the UNRESOLVED bag as the redaction position source (#1904).
+  this.perResourceTemplateProps.set(logicalId, desiredProps);
+  this.perResourceResolvedType.set(logicalId, resourceType);
+  // Named so the provider call below can bind the SAME bag into its
+  // masker (issue #1932 item 3), mirroring `updateSecrets` on the UPDATE
+  // path. `?? new Map()` rather than a conditional: `buildResolverContext`
+  // always sets the field, so the fallback is unreachable in practice,
+  // but a masker bound to a real map is what keeps the provider call
+  // shape identical on both paths.
+  const createSecrets = context.recordedSecretValues ?? new Map<string, string>();
+  // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
+  // `{{resolve:...}}` expression each `Parameters` entry was resolved
+  // FROM, keyed by the child's parameter NAME. The bag above is keyed by
+  // PLAINTEXT, so two parameters resolving to one value have already
+  // collapsed there — the parent's own template is the only uncollapsed
+  // source left, and this is the last point at which both it and the
+  // resolved values are in hand. `withCurrentResourceSecrets` binds THIS
+  // bag around the provider call below, so the child engine reads the
+  // associations off the same object. No-op for every other type.
+  recordNestedStackParameterExpressions(createSecrets, resourceType, resolvedProps, desiredProps);
+
+  this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
+
+  // #1198: snapshot the attempted (resolved) properties so a failed
+  // CREATE can be journaled with what it tried to apply.
+  this.attemptedResolvedProps.set(logicalId, resolvedProps);
+
+  // #614 routing: consult the registry with the resolved properties.
+  // If the SDK provider would silent-drop a top-level key (and the
+  // user has not overridden it via `--allow-unsupported-properties`),
+  // we auto-route via Cloud Control API. The chosen `provisionedBy`
+  // is persisted on state so the next update / delete uses the
+  // same layer.
+  const createDecision = this.providerRegistry.getProviderFor({
+    resourceType,
+    properties: resolvedProps,
+  });
+  const createProvider = createDecision.provider;
+  const createProps =
+    createDecision.provisionedBy === 'cc-api'
+      ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+      : resolvedProps;
+
+  const result = await this.withRetry(
+    () =>
+      // Issue #1903: the SAME bag, bound to this call's async chain so
+      // `NestedStackProvider` can seed it into the child engine it
+      // builds. Inside the retry arrow, so every attempt is scoped.
+      withCurrentResourceSecrets(createSecrets, () =>
+        createProvider.create(logicalId, resourceType, createProps, {
+          // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
+          // so a `{{resolve:secretsmanager:...}}` property is plaintext by
+          // now; a provider that echoes one into its own warn is outside
+          // both existing masking boundaries (this engine's error/reason
+          // text and the resolver's debug line). Give it the capability
+          // rather than the bag — see `SecretMaskingContext`.
+          maskSecrets: createSecretMasker(createSecrets),
+        })
+      ),
+    logicalId,
+    undefined,
+    undefined,
+    createProvider
+  );
+
+  // Issue #2274: BEFORE the record is built, so the needles exist by the
+  // time anything is persisted, and before any dependent resolves against
+  // this resource's fresh attributes.
+  this.registerNoEchoAttributes(logicalId, result, createSecrets, resolvedProps);
+
+  // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
+  // so that deletion order is correct even without implicit type-based deps
+  const dependencies = this.extractAllDependencies(template, logicalId);
+  const templateAttrs = this.extractTemplateAttributes(template, logicalId);
+
+  stateResources[logicalId] = {
+    physicalId: result.physicalId,
+    resourceType,
+    properties: this.propertiesToRecord(
+      resolvedProps,
+      result,
+      resourceType,
+      createDecision.provisionedBy
+    ),
+    // The REAL attribute values, deliberately: this in-memory record is
+    // what `Fn::GetAtt` serves to dependents in this same run, and
+    // CloudFormation delivers a `NoEcho` custom resource's `Data` to a
+    // dependent in the clear (issue #2274, measured). Masking happens at
+    // the PERSIST choke point, from the needles registered above.
+    ...(result.attributes && { attributes: result.attributes }),
+    ...(dependencies && dependencies.length > 0 && { dependencies }),
+    ...templateAttrs,
+    provisionedBy: createDecision.provisionedBy,
+  };
+  this.recordInlinePolicyWrite(logicalId, 'create');
+
+  const createCaptureSiblings = await this.buildObservedCaptureSiblings(
+    resourceType,
+    logicalId,
+    result.physicalId,
+    template,
+    stateResources,
+    stackName,
+    parameterValues,
+    conditions
+  );
+  this.kickOffObservedCapture(
+    createProvider,
+    logicalId,
+    result.physicalId,
+    resourceType,
+    resolvedProps,
+    { ...createCaptureSiblings, afterOwnWrite: true }
+  );
+
+  if (counts) counts.created++;
+  if (progress) progress.current++;
+  const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+  renderer.removeTask(logicalId);
+  this.logger.info(`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`);
+  return;
+}

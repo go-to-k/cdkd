@@ -92,7 +92,7 @@ export function replacementNameOrigin(
  * every case it cannot vouch for:
  *
  * - not a CREATE. A replacement collision DOES arrive here — the
- *   `NAMED_REPLACEMENT_COLLISION` throws happen inside `provisionResourceBody`,
+ *   `NAMED_REPLACEMENT_COLLISION` throws happen inside `provisionUpdate`,
  *   which the caller invokes inside the same `try`, and this method's own
  *   suite asserts their line was logged. What refuses them is the
  *   `ProvisioningError` check below (they throw `CdkdError`), so deleting

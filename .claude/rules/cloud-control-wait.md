@@ -43,8 +43,8 @@ command — SANITIZE, QUOTE, then SUPPRESS (issue
 2. **Already-deleted classifiers on the state-drop path test
    `isWaitAbandonedError` BEFORE their substring match**, treating true as "not
    already deleted". FOUR governed sites drop the state row on true:
-   `cloud-control-provider.ts`'s `delete()` catch, `deploy-engine.ts`'s
-   replacement and template-removal delete arms, and `destroy-runner.ts`'s
+   `cloud-control-provider.ts`'s `delete()` catch, `deploy-engine-update.ts`'s
+   replacement delete and `deploy-engine-delete.ts`'s template-removal delete, and `destroy-runner.ts`'s
    delete loop. Wording is not the protection; the marker lives in
    `src/provisioning/wait-abandoned.ts`, a LEAF.
 3. **CREATE is non-retryable; DELETE and UPDATE are not**: a CREATE replay

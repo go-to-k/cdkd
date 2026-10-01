@@ -113,14 +113,14 @@ const WRITE = new RegExp(
  */
 const ALLOWED: Array<{ statement: string; rationale: string }> = [
   {
-    statement: 'result.interrupted = draining;',
+    statement: 'result.interrupted = lock.interrupted;',
     rationale:
       'The authoritative in-`try` read, taken AFTER the level loop so a signal ' +
       'that arrived while the final level drained is still observed. This is ' +
       'the assignment; everything else may only ever turn false into true.',
   },
   {
-    statement: 'result.interrupted ||= draining && statePreserved;',
+    statement: 'result.interrupted ||= lock.interrupted && statePreserved;',
     rationale:
       'The outer `finally` re-sync, for a signal landing after the in-`try` ' +
       'read (renderer teardown / state flush / lock release). `&& statePreserved` ' +
@@ -293,8 +293,8 @@ describe('DestroyRunnerResult.interrupted write sites are enumerated mechanicall
     // used, and a rename of the local is the likeliest future edit — so the
     // renamed forms are pinned too.
     for (const write of [
-      'result.interrupted = draining;',
-      'result.interrupted ||= draining && statePreserved;',
+      'result.interrupted = lock.interrupted;',
+      'result.interrupted ||= lock.interrupted && statePreserved;',
       'result.interrupted ??= x;',
       'result.interrupted &&= x;',
       'runResult.interrupted = true;',

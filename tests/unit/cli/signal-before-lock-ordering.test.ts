@@ -20,6 +20,8 @@ import { dirname, join } from 'node:path';
 // acquire), but for the wrong reason, and it would have gone quiet again the
 // moment the two happened to be ordered coincidentally. Pairing each acquire
 // with its own handler is what makes the pin mean what it says.
+// go-to-k/cdkd#2174 then moved both of those sites onto ONE guard,
+// `stack-lock-guard.ts`, which is pinned here as a site of its own.
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 function liveSource(relPath: string): string {
@@ -51,16 +53,14 @@ interface LockSite {
 
 const sites: LockSite[] = [
   {
-    file: 'src/cli/commands/destroy-runner.ts',
-    label: 'empty-state cleanup (issue #2171)',
-    handler: 'emptySigintHandler',
-    acquire: 'ctx.lockManager.acquireLock(',
-  },
-  {
-    file: 'src/cli/commands/destroy-runner.ts',
-    label: 'main destroy',
+    // Both `destroy-runner.ts` sites (the main destroy and the issue #2171
+    // empty-state cleanup) take the lock through this ONE guard since
+    // go-to-k/cdkd#2174; `destroy-runner.ts` itself is pinned to hold no
+    // acquire of its own below.
+    file: 'src/cli/commands/stack-lock-guard.ts',
+    label: 'acquireStackLock (destroy)',
     handler: 'sigintHandler',
-    acquire: 'ctx.lockManager.acquireLock(',
+    acquire: 'lockManager.acquireLock(',
   },
   {
     file: 'src/deployment/deploy-engine.ts',
@@ -153,22 +153,32 @@ describe('SIGINT handler registration precedes lock acquisition (issue #1348)', 
     }
   });
 
-  it('destroy-runner gates every force-quit best-effort release on lock ownership', () => {
+  it('destroy-runner takes the lock ONLY through the stack-lock guard (go-to-k/cdkd#2174)', () => {
+    // The per-file count above cannot see this file once it holds no pinned
+    // site, so a hand-rolled acquire re-added here would inherit no pin at
+    // all — the duplicated contract #2174 removed. Both former sites must call
+    // the guard instead.
+    const live = liveSource('src/cli/commands/destroy-runner.ts');
+    expect(live.split(/\.acquireLock(?:WithRetry)?\(/).length - 1).toBe(0);
+    expect(live.includes(`process.on('SIGINT'`)).toBe(false);
+    expect(live.split(/\bacquireStackLock\(/).length - 1).toBe(2);
+  });
+
+  it('the stack-lock guard gates its force-quit best-effort release on lock ownership', () => {
     // `releaseLock` deletes the lock key unconditionally. Before OUR acquire
     // succeeds the key may belong to another process (that is exactly what a
-    // conflicting acquire is waiting on), so each force-quit path must only
-    // fire the best-effort release once ITS lock is ours.
-    const live = liveSource('src/cli/commands/destroy-runner.ts');
-    for (const flag of ['lockHeld', 'emptyLockHeld']) {
-      expect(live.includes(`let ${flag} = false`), `${flag} not declared false`).toBe(true);
-      expect(live.includes(`${flag} = true`), `${flag} never set`).toBe(true);
-      const gateIdx = live.indexOf(`if (${flag}) {`);
-      expect(gateIdx, `${flag}: no ownership gate in a force-quit handler`).toBeGreaterThan(-1);
-      const releaseIdx = live.indexOf('void ctx.lockManager.releaseLock(', gateIdx);
-      expect(
-        releaseIdx,
-        `${flag}: best-effort release must come AFTER the ownership gate`
-      ).toBeGreaterThan(gateIdx);
-    }
+    // conflicting acquire is waiting on), so the force-quit path must only
+    // fire the best-effort release once the lock is ours.
+    const live = liveSource('src/cli/commands/stack-lock-guard.ts');
+    const flag = 'lockHeld';
+    expect(live.includes(`let ${flag} = false`), `${flag} not declared false`).toBe(true);
+    expect(live.includes(`${flag} = true`), `${flag} never set`).toBe(true);
+    const gateIdx = live.indexOf(`if (${flag}) {`);
+    expect(gateIdx, `${flag}: no ownership gate in a force-quit handler`).toBeGreaterThan(-1);
+    const releaseIdx = live.indexOf('void lockManager.releaseLock(', gateIdx);
+    expect(
+      releaseIdx,
+      `${flag}: best-effort release must come AFTER the ownership gate`
+    ).toBeGreaterThan(gateIdx);
   });
 });

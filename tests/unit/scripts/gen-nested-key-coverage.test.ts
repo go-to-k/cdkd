@@ -3511,6 +3511,152 @@ describe('shape pass (synthetic)', () => {
   });
 });
 
+describe('shape pass: a literal does not vouch for a member a generic converter forwards (PR #4324)', () => {
+  // `ecs-provider.ts`' shape: `LoadBalancer.AdvancedConfiguration` is a real SDK
+  // member the provider names, while `VpcLatticeConfigurations` goes whole
+  // through `pascalToCamelCaseKeys` into an SDK interface with no such member.
+  const iface = (members: Record<string, SdkMemberType>): Map<string, SdkMemberType> =>
+    new Map(Object.entries(members));
+  const lowerFresh: NestedKeyTarget = { ...freshTarget, keyStyle: 'lower-first' };
+  const sdk = new Map<string, Map<string, SdkMemberType>>([
+    [
+      'CreateServiceRequest',
+      iface({
+        loadBalancers: { kind: 'array', refName: 'LoadBalancer' },
+        vpcLatticeConfigurations: { kind: 'array', refName: 'VpcLatticeConfiguration' },
+        pair: { kind: 'ref', refName: 'Pair' },
+      }),
+    ],
+    ['Pair', iface({ roleArn: { kind: 'scalar' } })],
+    [
+      'LoadBalancer',
+      iface({
+        advancedConfiguration: { kind: 'ref', refName: 'AdvancedConfiguration' },
+        targetGroupArn: { kind: 'scalar' },
+      }),
+    ],
+    [
+      'VpcLatticeConfiguration',
+      iface({ roleArn: { kind: 'scalar' }, targetGroupArn: { kind: 'scalar' } }),
+    ],
+    ['AdvancedConfiguration', iface({ testListenerRule: { kind: 'scalar' } })],
+  ]);
+  const definitions = {
+    LoadBalancer: { AdvancedConfiguration: 'object', TargetGroupArn: 'scalar' },
+    VpcLatticeConfiguration: {
+      AdvancedConfiguration: 'object',
+      RoleArn: 'scalar',
+      TargetGroupArn: 'scalar',
+    },
+  };
+  const nestedKeys = [
+    ...keyPaths('LoadBalancers', 'AdvancedConfiguration', 'TargetGroupArn'),
+    ...keyPaths('VpcLatticeConfigurations', 'AdvancedConfiguration', 'RoleArn', 'TargetGroupArn'),
+  ];
+  const latticeBucket = (
+    defs: Readonly<Record<string, Record<string, string>>>,
+    paths: readonly string[] | undefined
+  ): string | undefined =>
+    classifyTargetShapes(
+      lowerFresh,
+      defs,
+      sdk,
+      new Set(['AdvancedConfiguration']),
+      new Map(),
+      paths === undefined ? undefined : { nestedKeys, paths: new Set(paths) }
+    ).entries.find((e) => e.definition === 'VpcLatticeConfiguration')?.bucket;
+
+  it('withdraws the rescue when the definition is handed off whole and another definition explains the literal', () => {
+    expect(
+      latticeBucket(definitions, ['VpcLatticeConfigurations.AdvancedConfiguration'])
+    ).toBe('definition-member-missing');
+  });
+
+  it('keeps the rescue without whole-delivery evidence', () => {
+    expect(latticeBucket(definitions, undefined)).toBe('provider-handled');
+    expect(latticeBucket(definitions, [])).toBe('provider-handled');
+  });
+
+  it('keeps the rescue when the whole-delivered path is an instance of ANOTHER definition', () => {
+    expect(latticeBucket(definitions, ['LoadBalancers.AdvancedConfiguration'])).toBe(
+      'provider-handled'
+    );
+  });
+
+  it('keeps the rescue when nothing else explains the literal (a relocating converter)', () => {
+    const { LoadBalancer: _explainer, ...withoutExplainer } = definitions;
+    expect(
+      latticeBucket(withoutExplainer, ['VpcLatticeConfigurations.AdvancedConfiguration'])
+    ).toBe('provider-handled');
+  });
+
+  it('the key pass reports a path whose parent is handed off, never a per-member hand-off', () => {
+    const whole = new Set<string>();
+    classifyTarget(
+      lowerFresh,
+      nestedKeys,
+      new Set(['advancedConfiguration', 'roleArn', 'targetGroupArn']),
+      new Set<string>(),
+      new Map(),
+      writeEvidence({ loadBalancers: ['targetGroupArn'] }, [
+        'vpcLatticeConfigurations',
+        'loadBalancers.advancedConfiguration',
+      ]),
+      undefined,
+      undefined,
+      whole
+    );
+    expect([...whole].sort()).toEqual([
+      'VpcLatticeConfigurations.AdvancedConfiguration',
+      'VpcLatticeConfigurations.RoleArn',
+      'VpcLatticeConfigurations.TargetGroupArn',
+    ]);
+  });
+
+  it('the key pass reports a spread-and-patch parent for every member it does not delete', () => {
+    const whole = new Set<string>();
+    classifyTarget(
+      lowerFresh,
+      nestedKeys,
+      new Set(['advancedConfiguration', 'roleArn', 'targetGroupArn']),
+      new Set<string>(),
+      new Map(),
+      {
+        ...writeEvidence({ vpcLatticeConfigurations: ['roleArn'] }, ['vpcLatticeConfigurations']),
+        handoffExclusions: new Map([['vpcLatticeConfigurations', new Set(['rolearn'])]]),
+      },
+      undefined,
+      undefined,
+      whole
+    );
+    expect([...whole].sort()).toEqual([
+      'VpcLatticeConfigurations.AdvancedConfiguration',
+      'VpcLatticeConfigurations.TargetGroupArn',
+    ]);
+  });
+
+  it('a smaller definition does not claim a larger definition’s whole-delivered parent', () => {
+    // `Pair` fits inside the lattice parent's children, but the parent is an
+    // instance of `VpcLatticeConfiguration`, the larger shape it carries whole.
+    const withPair = {
+      ...definitions,
+      Pair: { AdvancedConfiguration: 'object', RoleArn: 'scalar' },
+    };
+    const pairBucket = classifyTargetShapes(
+      lowerFresh,
+      withPair,
+      sdk,
+      new Set(['AdvancedConfiguration']),
+      new Map(),
+      { nestedKeys, paths: new Set(['VpcLatticeConfigurations.AdvancedConfiguration']) }
+    ).entries.find((e) => e.definition === 'Pair')?.bucket;
+    expect(pairBucket).toBe('provider-handled');
+    expect(
+      latticeBucket(withPair, ['VpcLatticeConfigurations.AdvancedConfiguration'])
+    ).toBe('definition-member-missing');
+  });
+});
+
 describe('extractDefinitionShapes (fixture capture)', () => {
   it('classifies members to terminal kinds, resolving refs with a cycle guard', () => {
     const schema = JSON.stringify({
@@ -4345,6 +4491,27 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
   const ecsInterfaces = collectSdkInterfaces(
     resolve(repoRoot, 'node_modules/@aws-sdk/client-ecs/dist-types/models')
   );
+
+  it('reports VpcLatticeConfigurations as delivered whole, which the shape pass relies on (PR #4324)', () => {
+    const ecsService = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::ECS::Service')!;
+    const whole = new Set<string>();
+    classifyTarget(
+      ecsService,
+      keyPaths('VpcLatticeConfigurations', 'PortName', 'RoleArn', 'TargetGroupArn'),
+      new Set(['portName', 'roleArn', 'targetGroupArn']),
+      new Set<string>(),
+      new Map(),
+      evidenceFor('ecs-provider.ts'),
+      undefined,
+      undefined,
+      whole
+    );
+    expect([...whole].sort()).toEqual([
+      'VpcLatticeConfigurations.PortName',
+      'VpcLatticeConfigurations.RoleArn',
+      'VpcLatticeConfigurations.TargetGroupArn',
+    ]);
+  });
 
   it('credits the members of LinuxParameters, and ONLY through the walk', () => {
     // The issue's headline case, against the real `ecs-provider.ts`:

@@ -342,4 +342,173 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
       logs.debug.mockReset();
     }
   });
+  it('releases the lock when the nested-child secret-principal WARNING throws (EPIPE on stderr)', async () => {
+    // The warning is computed from the record the lock now protects, so it
+    // runs with the lock HELD; it used to run before the main `try`, where a
+    // throw (stderr closed under `2>&1 | head`) stranded the lock for its TTL
+    // and leaked the SIGINT listener.
+    const before = process.listeners('SIGINT');
+    const { ctx, releaseLock } = ctxObservingRelease();
+    const child = {
+      ...makeState('Q'),
+      resources: {
+        Q: {
+          physicalId: 'p',
+          resourceType: 'AWS::IAM::Policy',
+          properties: { PolicyName: 'p', Roles: ['{{resolve:secretsmanager:n:SecretString:r::}}'] },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      parentStack: 'Parent',
+    } as unknown as StackState;
+    logs.warn.mockImplementation((msg: unknown) => {
+      if (String(msg).includes('secret-derived principal records')) {
+        throw new Error('EPIPE: broken pipe');
+      }
+    });
+
+    try {
+      await expect(
+        runDestroyForStack('Parent~Child', child, {
+          ...ctx,
+          resolveSecretDerivedPrincipals: {},
+        } as typeof ctx)
+      ).rejects.toThrow(/EPIPE/);
+      expect(releaseLock).toHaveBeenCalledOnce();
+      expect(process.listeners('SIGINT')).toEqual(before);
+    } finally {
+      logs.warn.mockReset();
+    }
+  });
+
+  it('drains a pending incremental state write BEFORE releasing, even when the loop throws', async () => {
+    // A throw between scheduling a per-resource persist and the in-`try`
+    // flush leaves that write pending; the release step must await it, or the
+    // write lands after the lock is gone (issue #804's chain).
+    const order: string[] = [];
+    const base = makeCtx(vi.fn().mockResolvedValue(undefined));
+    const ctx = {
+      ...base.ctx,
+      stateBackend: {
+        ...base.ctx.stateBackend,
+        saveState: vi.fn(
+          () =>
+            new Promise((resolve) =>
+              setTimeout(() => {
+                order.push('save');
+                resolve('"etag"');
+              }, 20)
+            )
+        ),
+      } as unknown as S3StateBackend,
+      lockManager: {
+        acquireLock: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn(async () => {
+          order.push('release');
+        }),
+      } as unknown as LockManager,
+    };
+    // Two levels: B (depends on A) is deleted first and schedules a persist;
+    // the second level's log line then throws out of the loop.
+    const state = makeState('A');
+    state.resources['B'] = { ...state.resources['A']!, dependencies: ['A'] };
+    logs.debug.mockImplementation((msg: unknown) => {
+      if (String(msg).startsWith('Deletion level 2/')) throw new Error('EPIPE: broken pipe');
+    });
+
+    try {
+      await expect(runDestroyForStack('TestStack', state, ctx)).rejects.toThrow(/EPIPE/);
+    } finally {
+      logs.debug.mockReset();
+    }
+
+    expect(order).toEqual(['save', 'release']);
+  });
+
+  /**
+   * The strong-ref refusal path (go-to-k/cdkd#2174): a consumer that appears
+   * between the pre-flight scan and the under-lock one makes the runner release
+   * on its own path, before the main `try` opens. It owes the same ordering.
+   */
+  function strongRefRefusalCtx(releaseImpl: () => Promise<undefined>) {
+    const base = makeCtx(vi.fn().mockResolvedValue(undefined));
+    const releaseLock = vi.fn().mockImplementation(releaseImpl);
+    const consumerState = {
+      ...makeState('Other'),
+      stackName: 'Consumer',
+      imports: [{ sourceStack: 'TestStack', sourceRegion: REGION, exportName: 'Out' }],
+    };
+    return {
+      releaseLock,
+      ctx: {
+        ...base.ctx,
+        stateBackend: {
+          ...base.ctx.stateBackend,
+          // Pre-flight scan: no consumers. Under-lock scan: one.
+          listStacks: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockResolvedValue([{ stackName: 'Consumer', region: REGION }]),
+          getState: vi.fn().mockResolvedValue({ state: consumerState, etag: '"e"' }),
+        } as unknown as S3StateBackend,
+        lockManager: {
+          acquireLock: vi.fn().mockResolvedValue(true),
+          releaseLock,
+        } as unknown as LockManager,
+      },
+    };
+  }
+
+  function producerState(): StackState {
+    return { ...makeState('Table'), outputs: { Out: 'v' } };
+  }
+
+  it('the strong-ref REFUSAL keeps the handler armed across its release, then removes it', async () => {
+    const before = process.listeners('SIGINT');
+    let during = -1;
+    const { ctx, releaseLock } = strongRefRefusalCtx(async () => {
+      during = process.listeners('SIGINT').length;
+      return undefined;
+    });
+
+    await expect(runDestroyForStack('TestStack', producerState(), ctx)).rejects.toThrow(
+      /Consumer/
+    );
+
+    expect(releaseLock).toHaveBeenCalledOnce();
+    expect(during).toBe(before.length + 1);
+    expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('a FAILING strong-ref release warns with its own wording and the refusal still surfaces', async () => {
+    logs.warn.mockClear();
+    const before = process.listeners('SIGINT');
+    const { ctx } = strongRefRefusalCtx(async () => {
+      throw new Error('SlowDown');
+    });
+
+    await expect(runDestroyForStack('TestStack', producerState(), ctx)).rejects.toThrow(
+      /Consumer/
+    );
+
+    expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Failed to release lock after strong-ref refusal/failure: '
+    );
+    expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('a FAILING main release warns naming the stack', async () => {
+    logs.warn.mockClear();
+    const { ctx } = makeCtx(vi.fn().mockResolvedValue(undefined));
+    (ctx.lockManager as unknown as { releaseLock: unknown }).releaseLock = vi
+      .fn()
+      .mockRejectedValue(new Error('SlowDown'));
+
+    await runDestroyForStack('TestStack', makeState('Table'), ctx);
+
+    expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Failed to release lock for stack TestStack: '
+    );
+  });
 });
