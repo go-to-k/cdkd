@@ -393,7 +393,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   } else if (crossAccount) {
     logger.info(
       `Cross-account ECR pull: image account ${parsed.accountId} != caller ${callerAccount}. ` +
-        "Using the caller's credentials; pass --ecr-role-arn <arn> if AWS rejects with AccessDenied."
+        "Using the caller's credentials; pass --ecr-role-arn '<arn>' if AWS rejects with AccessDenied."
     );
   }
 

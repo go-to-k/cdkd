@@ -179,9 +179,9 @@ export class ResourceTimeoutError extends CdkdError {
     // accept it: the parser reads the same pattern.
     const remedy =
       hasResourceTypeShape(resourceType) && TIMEOUT_FLAG_RESOURCE_TYPE.test(resourceType)
-        ? safeMsg`slow ENI provisioning. Re-run with --resource-timeout ${resourceType}=<DURATION>\n` +
+        ? safeMsg`slow ENI provisioning. Re-run with --resource-timeout ${resourceType}='<DURATION>'\n` +
           'to bump the budget for this resource type only, or --verbose to see the\n'
-        : 'slow ENI provisioning. Re-run with a larger --resource-timeout <DURATION>,\n' +
+        : "slow ENI provisioning. Re-run with a larger --resource-timeout '<DURATION>',\n" +
           'or --verbose to see the\n';
     super(
       safeMsg`Resource ${shownId} (${shownType}) in ${region} timed out after ${timeoutLabel} during ${operation} (elapsed ${elapsedLabel}).\n` +

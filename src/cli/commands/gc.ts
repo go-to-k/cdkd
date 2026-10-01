@@ -112,7 +112,7 @@ export function parseOlderThan(value: string): number {
   const match = /^(\d+(?:\.\d+)?)([dh])$/.exec(value.trim());
   if (!match) {
     throw new Error(
-      `Invalid --older-than "${value}": expected <number>d or <number>h (e.g. 30d, 12h)`
+      `Invalid --older-than "${value}": expected '<number>d' or '<number>h' (e.g. 30d, 12h)`
     );
   }
   const num = Number(match[1]);

@@ -23,6 +23,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, normalizeAwsTagsToCfn, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
@@ -543,10 +544,12 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
       await sleep(this.pollIntervalMs);
     }
 
+    // Names `--resource-timeout`, so the logical id and the ARN are shown only
+    // when plain and the duration is a quoted hole (go-to-k/cdkd#4295).
     throw new Error(
-      `MicroVM image ${logicalId} (${imageArn}) did not finish ${operation} within ` +
+      `MicroVM image ${logicalIdShown(logicalId)} ${isPlainImportValue(imageArn) ? `(${imageArn})` : VALUE_NOT_SHOWN} did not finish ${operation} within ` +
         `${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s. ` +
-        `Increase --resource-timeout AWS::Lambda::MicrovmImage=<duration> or set CDKD_NO_WAIT=true.`
+        `Increase --resource-timeout AWS::Lambda::MicrovmImage=${commandHole('duration')} or set CDKD_NO_WAIT=true.`
     );
   }
 
@@ -625,8 +628,11 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
   ): ProvisioningError {
     if (error instanceof ProvisioningError) return error;
     const cause = error instanceof Error ? error : undefined;
+    // The wrapped message can carry a pasteable flag (the poll-cap refusal's
+    // `--resource-timeout`) on this same line, so the logical id is shown only
+    // when plain (go-to-k/cdkd#4295).
     return new ProvisioningError(
-      `Failed to ${operation} MicroVM image ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to ${operation} MicroVM image ${logicalIdShown(logicalId)}: ${error instanceof Error ? error.message : String(error)}`,
       resourceType,
       logicalId,
       physicalId,

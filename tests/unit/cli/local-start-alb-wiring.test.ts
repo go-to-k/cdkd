@@ -196,7 +196,7 @@ const EXPECTED_WARNING_WITH_ECS_NOTE =
   'group(s): ApiFnE0725F78. Their Environment.Variables keep any Ref / Fn::GetAtt / ' +
   'Fn::Sub / Fn::ImportValue intrinsics unresolved, and each is then dropped with its own ' +
   'warning. The ECS service targets behind this ALB DO honor --from-state. The only state ' +
-  'source the Lambda path reads is --from-cfn-stack <name>, which REPLACES --from-state ' +
+  "source the Lambda path reads is --from-cfn-stack '<name>', which REPLACES --from-state " +
   '(the two are mutually exclusive) and reaches both target kinds on a ' +
   'CloudFormation-deployed stack; otherwise override the affected variables with ' +
   '--env-vars. Tracked as go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).';

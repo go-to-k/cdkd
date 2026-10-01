@@ -1,4 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
@@ -260,6 +266,55 @@ describe('cdkd drift', () => {
 
   afterEach(() => {
     exitSpy.mockRestore();
+  });
+
+  it('quotes the --stack-region hole and describes a payload stack or region (go-to-k/cdkd#4295)', async () => {
+    mockListStacks.mockResolvedValueOnce([
+      { stackName: 'TestStack', region: 'us-east-1' },
+      { stackName: 'TestStack', region: 'eu-west-1' },
+    ]);
+    const reported = (): string =>
+      errorSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes('has state in multiple regions')) ?? '';
+    errorSpy.mockClear();
+    await runDrift(['TestStack']);
+    const plainMessage = reported();
+    expect(plainMessage).toContain(
+      "Stack 'TestStack' has state in multiple regions: us-east-1, eu-west-1. Re-run with --stack-region '<region>' to disambiguate."
+    );
+    for (const { value } of PASTE_PAYLOADS) {
+      mockListStacks.mockResolvedValueOnce([
+        { stackName: value, region: 'us-east-1' },
+        { stackName: value, region: `eu${value}` },
+      ]);
+      errorSpy.mockClear();
+      await runDrift([value]);
+      const message = reported();
+      expect(message, value).toContain(
+        'Stack a stack name that is not a plain identifier has state in multiple regions: us-east-1, a region that is not a plain identifier.'
+      );
+      withPasteDir((dir) => {
+        expectNoCommandBesideDisplay(message, value);
+        expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+      });
+    }
+  }, 120_000);
+
+  it('describes a plain region over the 255-character cap (go-to-k/cdkd#4295)', async () => {
+    const long = 'a'.repeat(256);
+    mockListStacks.mockResolvedValueOnce([
+      { stackName: 'TestStack', region: 'us-east-1' },
+      { stackName: 'TestStack', region: long },
+    ]);
+    errorSpy.mockClear();
+    await runDrift(['TestStack']);
+    const message =
+      errorSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes('has state in multiple regions')) ?? '';
+    expect(message).toContain('multiple regions: us-east-1, a region that is not a plain identifier.');
+    expect(message).not.toContain(long);
   });
 
   it('prints "no drift detected" when every resource matches AWS', async () => {

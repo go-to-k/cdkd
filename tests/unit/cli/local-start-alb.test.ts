@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vite-plus/test';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -263,6 +269,20 @@ describe('warnUnresolvedLambdaTargetEnv (issue #2602)', () => {
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain('ApiFn');
   });
+
+  it('names no payload Lambda logical id beside --from-cfn-stack / --env-vars (go-to-k/cdkd#4295)', () => {
+    for (const { value } of PASTE_PAYLOADS) {
+      const plan: FrontDoorPlan = {
+        listeners: [listener({ defaultTargets: [lambdaTarget(value)] })],
+      };
+      const [warning] = lambdaWarnings(run(stubStrategy(plan), true).warnings);
+      expect(warning, value).toContain('target group(s): a logical id that is not a plain identifier.');
+      withPasteDir((dir) => {
+        expectNoCommandBesideDisplay(warning!, value);
+        expect(spansThatRun(warning!, dir), `${value}: ${warning}`).toEqual([]);
+      });
+    }
+  }, 120_000);
 
   it('walks listener RULE actions too, not just the default action', () => {
     // The discriminator for a collector that only reads `defaultAction`: the
@@ -545,7 +565,7 @@ describe('non-forward listener actions (issue #2602)', () => {
       "--from-state does not reach the container environment of this ALB's Lambda target " +
         'group(s): ApiFn. Their Environment.Variables keep any Ref / Fn::GetAtt / Fn::Sub / ' +
         'Fn::ImportValue intrinsics unresolved, and each is then dropped with its own warning. ' +
-        'The only state source the Lambda path reads is --from-cfn-stack <name>, which ' +
+        "The only state source the Lambda path reads is --from-cfn-stack '<name>', which " +
         'REPLACES --from-state (the two are mutually exclusive) and reaches both target kinds ' +
         'on a CloudFormation-deployed stack; otherwise override the affected variables with ' +
         '--env-vars. Tracked as go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).'

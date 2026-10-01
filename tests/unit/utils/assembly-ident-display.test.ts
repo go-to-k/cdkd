@@ -27,6 +27,12 @@ import { indexGrandchildTemplatePaths } from '../../../src/cli/commands/import.j
 import { resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
 import { resolveLambdaByLogicalId } from '../../../src/cli/commands/local-start-api.js';
 import { resolveFileAssetSourcePath } from '../../../src/assets/asset-manifest-loader.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { resolveDockerContextDirectory } from '../../../src/assets/docker-build.js';
 import { resolveVerboseTemplatePath } from '../../../src/cli/commands/synth.js';
 import { AssetManifestLoader } from '../../../src/assets/asset-manifest-loader.js';
@@ -271,14 +277,41 @@ describe("cdkd local invoke: a Lambda's logical id", () => {
     return messageOf(() => resolveLambdaTarget(`Stk:${logicalId}`, [stack]));
   }
 
-  it('keeps a forging logical id inside one boundary', () => {
+  it('describes a forging logical id beside --output instead of printing it', () => {
     const message = refuse(FORGED);
-    expect(message).toContain(`Lambda ${SHOWN} has no Metadata['aws:asset:path']`);
+    // The line names `--output`, so since go-to-k/cdkd#4295 a logical id that
+    // is not plain is described rather than shown in a boundary.
+    expect(message).toContain("Lambda a logical id that is not a plain identifier has no Metadata['aws:asset:path']");
     expect(outside(message)).not.toContain('Contained and healthy');
+  });
+
+  it('names no payload logical id beside --output (go-to-k/cdkd#4295)', () => {
+    for (const { value } of PASTE_PAYLOADS) {
+      const message = refuse(value);
+      expect(message, value).toContain(
+        "Lambda a logical id that is not a plain identifier has no Metadata['aws:asset:path']"
+      );
+      withPasteDir((dir) => {
+        expectNoCommandBesideDisplay(message, value);
+        expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+      });
+    }
+  }, 120_000);
+
+  // `~root` and `-rf` survive `displayIdent` unchanged, yet a pasted shell
+  // expands the one and reads the other as an option, so they are described.
+  it.each(['~root', '-rf'])('describes %s beside --output (go-to-k/cdkd#4295)', (name) => {
+    const message = refuse(name);
+    expect(message).toContain(
+      "Lambda a logical id that is not a plain identifier has no Metadata['aws:asset:path']"
+    );
+    expect(message).not.toContain(`Lambda ${name} `);
   });
 
   it('renders an ordinary logical id bare', () => {
     expect(refuse('Fn')).toContain("Lambda Fn has no Metadata['aws:asset:path']");
+    // The remedy's hole is quoted (go-to-k/cdkd#4295).
+    expect(refuse('Fn')).toContain("(without `--output '<stale-dir>'`)");
   });
 });
 

@@ -694,6 +694,8 @@ function collectAritySites(files: string[]): { sites: AritySite[]; unresolved: s
  * same file keeps the count and passes.
  */
 const KNOWN_DARK: Record<string, number> = {
+  // `runDrift([value])`: the stack operand is a paste-payload loop variable.
+  'tests/unit/cli/drift.test.ts': 1,
   // `...baseArgs()` and `...nestedTree(...)`: spreads of a call's result.
   'tests/unit/cli/export-non-interactive-confirm.test.ts': 1,
   // `dryRunArgs()` / `realRunArgs()` call results passed to `runExport`.

@@ -920,4 +920,72 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
       expect(lines).not.toContain(OLD_CLUSTER);
     });
   });
+  describe('the --full-wait lines name no payload logical id (go-to-k/cdkd#4295)', () => {
+    it('the accepted line, the full-wait refusal and the cleanup warning', async () => {
+      const { PASTE_PAYLOADS, expectNoCommandBesideDisplay, spansThatRun, withPasteDir } =
+        await import('../utils/paste-harness.js');
+      for (const { value } of PASTE_PAYLOADS) {
+        infoSpy.mockReset();
+        warnSpy.mockReset();
+        mockSend.mockReset();
+        delete process.env['CDKD_FULL_WAIT'];
+        process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
+        fakeEcs({
+          CreateServiceCommand: () => ({
+            service: { serviceArn: serviceArn('c', 's'), serviceName: 's' },
+          }),
+        });
+        try {
+          await provider.create(value, 'AWS::ECS::Service', {
+            Cluster: 'c',
+            ServiceName: 's',
+            TaskDefinition: 'td:1',
+          });
+        } finally {
+          delete process.env['CDKD_WAIT_FLAGS_AVAILABLE'];
+        }
+        const accepted = infoSpy.mock.calls
+          .map((c) => String(c[0]))
+          .find((l) => l.includes('accepted (not waiting'))!;
+        expect(accepted, value).toContain(
+          'ECS service a logical id that is not a plain identifier accepted (not waiting'
+        );
+
+        mockSend.mockReset();
+        warnSpy.mockReset();
+        process.env['CDKD_FULL_WAIT'] = 'true';
+        waitUntilServicesStableMock.mockRejectedValue(new Error('Waiter has timed out'));
+        fakeEcs({
+          CreateServiceCommand: () => ({
+            // A payload ARN too, so the cleanup line's ARN gate is exercised.
+            service: { serviceArn: serviceArn('c', value), serviceName: 's' },
+          }),
+          DeleteServiceCommand: throwing(new Error('AccessDenied')),
+        });
+        const refusal = await thrownMessage(
+          provider.create(value, 'AWS::ECS::Service', {
+            Cluster: 'c',
+            ServiceName: 's',
+            TaskDefinition: 'td:1',
+          })
+        );
+        delete process.env['CDKD_FULL_WAIT'];
+        expect(refusal, value).toContain(
+          'ECS service a logical id that is not a plain identifier did not reach steady state under --full-wait'
+        );
+        const cleanup = warnSpy.mock.calls
+          .map((c) => String(c[0]))
+          .find((l) => l.includes('Failed to clean up partially-created ECS service'))!;
+        expect(cleanup, value).toContain(
+          'partially-created ECS service a logical id that is not a plain identifier (not shown: it is not a plain identifier):'
+        );
+        withPasteDir((dir) => {
+          for (const message of [accepted, refusal, cleanup]) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
+  });
 });
