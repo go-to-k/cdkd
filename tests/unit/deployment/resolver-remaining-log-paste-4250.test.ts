@@ -1094,17 +1094,35 @@ describe('a JSON render whose mask unbalanced its quotes is described (#4250)', 
   // A recorded secret holding a `"` of the structure: the text mask runs AFTER
   // the JSON encoding, so the masked render lost a quote, and printed bare it
   // paired with the next line's and released that line's payload. The next
-  // line is a refusal cdkd still JSON-quotes a name in: inert on its own.
+  // lines are the ones `resolver-resolved-line-paste-4161.test.ts` pastes
+  // below such a render: a JSON object (quotes to pair with) and a described
+  // payload. The description pin below is what reds a revert; the paste
+  // pins that the block as printed runs nothing.
   async function nextLine(): Promise<string> {
-    const lines = await linesOf(() =>
+    const object = await linesOf(() =>
       resolver().resolve(
-        { 'Fn::GetStackOutput': { StackName: 'x; touch OWNED; #', OutputName: 'Out' } },
-        ctx({ stateBackend: backend([]) })
+        { 'Fn::GetAtt': ['T', 'Obj'] },
+        ctx({
+          template: { Resources: { T: { Type: 'AWS::S3::Bucket' } } },
+          resources: {
+            T: {
+              physicalId: 'bucket',
+              resourceType: 'AWS::S3::Bucket',
+              properties: {},
+              attributes: { Obj: { a: 1 } },
+              dependencies: [],
+            },
+          },
+        })
       )
     );
-    const next = lines.find((l) => l.startsWith('Fn::GetStackOutput: stack "'));
-    expect(next, JSON.stringify(lines)).toBeDefined();
-    return next!;
+    const join = await linesOf(() => resolver().resolve({ 'Fn::Join': ['', ['a; touch OWNED; #']] }, ctx()));
+    const lines = [
+      object.find((l) => l.startsWith('Resolved Fn::GetAtt from attributes: ')),
+      join.find((l) => l.startsWith('Resolved Fn::Join: ')),
+    ];
+    expect(lines.every((l) => l !== undefined), JSON.stringify([object, join])).toBe(true);
+    return lines.join('\n');
   }
 
   it.each([
@@ -1162,14 +1180,6 @@ describe('a JSON render whose mask unbalanced its quotes is described (#4250)', 
       expect(spansThatRun(`${line!}\n${next}`, dir)).toEqual([]);
     });
     expect(line).toBe(`Resolved VPC Ipv6CidrBlocks for vpc-0abc: ${UNSHOWABLE_VALUE}`);
-  }, 60_000);
-
-  it('CONTROL: the next line is inert alone and runs below an unpaired quote', async () => {
-    const next = await nextLine();
-    withPasteDir((dir) => {
-      expect(spansThatRun(next, dir)).toEqual([]);
-      expect(spansThatRun(`${DQ_FLIP}\n${next}`, dir).length).toBeGreaterThan(0);
-    });
   }, 60_000);
 
   it('CONTROL: a balanced JSON render still prints', async () => {
