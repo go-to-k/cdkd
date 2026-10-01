@@ -47,6 +47,7 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
         'deploy-engine/name-collision.ts',
         'deploy-engine/observed-capture.ts',
         'deploy-engine/outputs.ts',
+        'deploy-engine/provision.ts',
         'deploy-engine/replacement.ts',
         'deploy-engine/rollback.ts',
         'deploy-engine/update.ts',
@@ -68,6 +69,7 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
         'provisionCreate',
         'provisionUpdate',
         'provisionDelete',
+        'provisionResource',
       ])
     );
   });
