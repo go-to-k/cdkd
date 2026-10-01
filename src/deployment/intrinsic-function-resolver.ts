@@ -3127,6 +3127,24 @@ function isLogInertJson(text: string): boolean {
 }
 
 /**
+ * The bound `logRender` applies, over text a caller ALREADY masked and made
+ * display-safe: `shown` when {@link isLogInert} (or, `structured`,
+ * {@link isLogInertJson}) admits it, otherwise `UNSHOWABLE_VALUE`. For a log
+ * line whose masker is not `displayMasked` (`resolveParameters`'
+ * `maskInherited`, a region's pre-masked log text), so it is held to the same
+ * rule (go-to-k/cdkd#4250). `redacted` is `logRender`'s: the caller produced
+ * the `<redacted>` token itself.
+ */
+function boundLogText(
+  shown: string,
+  opts: { readonly structured?: boolean; readonly redacted?: boolean } = {}
+): string {
+  if (opts.redacted === true && shown === '<redacted>') return shown;
+  const inert = opts.structured === true ? isLogInertJson(shown) : isLogInert(shown);
+  return inert ? shown : UNSHOWABLE_VALUE;
+}
+
+/**
  * A render that would be a shell ASSIGNMENT word where it starts a pasted
  * clause (`Resolved Fn::Join: HISTFILE=~/victim`): it runs nothing the paste
  * harness sees, yet an interactive bash then truncates `~/victim` at exit,
@@ -3664,7 +3682,11 @@ export class IntrinsicFunctionResolver {
     // gate one arm up is a claim about the region cdkd will put in a hostname,
     // not about the text printed for it.
     // not-in-class(displaySafe(loggedTarget)): a REGION's log text, masked by the caller that built the region from a template (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
-    this.logger.debug(`Using region-scoped AWS clients for ${displaySafe(loggedTarget)}`);
+    // Bounded like a `Resolved …` value (go-to-k/cdkd#4250): the gate above
+    // checked `target`, not this log text.
+    this.logger.debug(
+      `Using region-scoped AWS clients for ${boundLogText(displaySafe(loggedTarget))}`
+    );
     return scoped;
   }
 
@@ -3814,6 +3836,11 @@ export class IntrinsicFunctionResolver {
 
     for (const [name, definition] of Object.entries(templateParameters)) {
       const paramDef = definition as ParameterDefinition;
+      // The name on this loop's five debug lines, bounded like a `Resolved …`
+      // name (go-to-k/cdkd#4250): masked by `maskInherited`, then described
+      // when it is not shell-inert. The required-parameter throw keeps the
+      // masked name, which it names no command beside.
+      const logName = boundLogText(maskInherited(name));
 
       // No value provided and no default - this is an error. Decided by the
       // SHARED {@link isUnboundTemplateParameter} rather than by the shape of
@@ -3875,11 +3902,14 @@ export class IntrinsicFunctionResolver {
           this.refuseCoercedInheritedSecret(name, paramDef, userValue, inheritedSecrets);
           parameters[name] = this.coerceParameterValue(userValue, paramDef.Type);
           this.logger.debug(
-            `Parameter ${maskInherited(name)}: using user-provided value ${maskInherited(
-              stringifyParameterForLog(
-                paramDef,
-                this.maskValueLeaves(userValue, inheritedLogContext)
-              )
+            `Parameter ${logName}: using user-provided value ${boundLogText(
+              maskInherited(
+                stringifyParameterForLog(
+                  paramDef,
+                  this.maskValueLeaves(userValue, inheritedLogContext)
+                )
+              ),
+              { structured: isStructured(userValue), redacted: paramDef.NoEcho === true }
             )}`
           );
           continue;
@@ -3901,7 +3931,7 @@ export class IntrinsicFunctionResolver {
           referencedNames ??= collectReferencedParameterNames(template);
           if (!referencedNames.has(name)) {
             this.logger.debug(
-              `Parameter ${maskInherited(name)}: skipping SSM resolution (not referenced by Resources/Outputs/Conditions)`
+              `Parameter ${logName}: skipping SSM resolution (not referenced by Resources/Outputs/Conditions)`
             );
             continue;
           }
@@ -3910,7 +3940,7 @@ export class IntrinsicFunctionResolver {
           // template -- the same untrusted JSON the NAME comes from, so it takes
           // the same pass.
           this.logger.debug(
-            `Parameter ${maskInherited(name)}: resolving SSM parameter path ${maskInherited(ssmPath)}`
+            `Parameter ${logName}: resolving SSM parameter path ${boundLogText(maskInherited(ssmPath))}`
           );
           const resolved = await this.resolveSSMParameter(ssmPath);
           // Coerced against the INNER type peeled out of `Value<...>`, never
@@ -3938,8 +3968,9 @@ export class IntrinsicFunctionResolver {
               ? resolved
               : this.coerceParameterValue(resolved, resolvedType);
           this.logger.debug(
-            `Parameter ${maskInherited(name)}: resolved SSM value ${maskInherited(
-              stringifyParameterForLog(paramDef, resolved)
+            `Parameter ${logName}: resolved SSM value ${boundLogText(
+              maskInherited(stringifyParameterForLog(paramDef, resolved)),
+              { redacted: paramDef.NoEcho === true }
             )}`
           );
           continue;
@@ -3951,8 +3982,9 @@ export class IntrinsicFunctionResolver {
         // {@link coerceParameterDefault} for the measured parsed shapes.
         parameters[name] = coerceParameterDefault(paramDef.Default, paramDef.Type);
         this.logger.debug(
-          `Parameter ${maskInherited(name)}: using default value ${maskInherited(
-            stringifyParameterForLog(paramDef, paramDef.Default)
+          `Parameter ${logName}: using default value ${boundLogText(
+            maskInherited(stringifyParameterForLog(paramDef, paramDef.Default)),
+            { structured: isStructured(paramDef.Default), redacted: paramDef.NoEcho === true }
           )}`
         );
         continue;
@@ -4129,7 +4161,7 @@ export class IntrinsicFunctionResolver {
         // A `{Condition: X}` reference to an undeclared condition. Match the
         // Fn::If not-found behavior: warn and treat as false.
         this.logger.warn(
-          `Condition ${this.displayMasked(name, maskingContext)} not found in template, assuming false`
+          `Condition ${this.logRender(name, maskingContext)} not found in template, assuming false`
         );
         conditions[name] = false;
         assumed.add(name);
@@ -4148,9 +4180,7 @@ export class IntrinsicFunctionResolver {
         const value = Boolean(result);
         conditions[name] = value;
         // `value` carries nothing: it is `Boolean(result)`.
-        this.logger.debug(
-          `Evaluated condition ${this.displayMasked(name, maskingContext)} = ${value}`
-        );
+        this.logger.debug(`Evaluated condition ${this.logRender(name, maskingContext)} = ${value}`);
         return value;
       } finally {
         inProgress.delete(name);
@@ -4233,11 +4263,10 @@ export class IntrinsicFunctionResolver {
         // a tally here had missed, and `.claude/rules/layout-deployment-secrets.md`
         // records five rounds on go-to-k/cdkd#2803 refuting the same shape of
         // sentence. Do not restore a count.
+        // The name bounded like a `Resolved …` name (go-to-k/cdkd#4250); the
+        // caught message is prose, masked as before.
         this.logger.warn(
-          this.displayMasked(
-            `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
-            maskingContext
-          )
+          safeMsg`Failed to evaluate condition ${this.logRender(name, maskingContext)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), maskingContext)}, assuming false`
         );
         conditions[name] = false;
         assumed.add(name);
@@ -4890,7 +4919,7 @@ export class IntrinsicFunctionResolver {
     if (this.nameIsNeverAResource(logicalId, context)) {
       if (Object.hasOwn(context.resources, logicalId)) {
         this.logger.debug(
-          safeMsg`Ignoring the state record named ${this.displayMasked(logicalId, context)}: that name is a parameter, not a resource`
+          safeMsg`Ignoring the state record named ${this.logRender(logicalId, context)}: that name is a parameter, not a resource`
         );
       }
       return undefined;
@@ -5545,7 +5574,7 @@ export class IntrinsicFunctionResolver {
             flatValue,
             nestedStackChildRegionFromLocalArn(resource.physicalId),
             context,
-            `nested stack ${logicalId} ${this.displayLeaf(attributeName, context)}`,
+            `nested stack ${this.logRender(logicalId, context)} ${this.logLeaf(attributeName, context)}`,
             crossStackSourceKey({ 'Fn::GetAtt': getAtt })
           );
         }
@@ -6458,8 +6487,9 @@ export class IntrinsicFunctionResolver {
             // RECORD, which is not always AWS-assigned (`cdkd import --resource
             // <id>=<physicalId>`, a record another binary or a hand edit
             // wrote), so being an id answers the secret question, not the
-            // control-character one. Bound once for the five renders below.
-            const loggedId = this.displayMasked(physicalId, context);
+            // control-character one. Bound once for the four renders below, and
+            // described when it is not shell-inert (go-to-k/cdkd#4250).
+            const loggedId = this.logRender(physicalId, context);
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
               const associations = resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet || [];
@@ -6468,7 +6498,7 @@ export class IntrinsicFunctionResolver {
                 .map((a) => a.Ipv6CidrBlock);
               if (blocks.length > 0) {
                 this.logger.debug(
-                  `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${this.displayMasked(JSON.stringify(this.maskValueLeaves(blocks, context)), context)}`
+                  `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${this.logRender(JSON.stringify(this.maskValueLeaves(blocks, context)), context, { structured: true })}`
                 );
                 return blocks;
               }
@@ -6496,9 +6526,15 @@ export class IntrinsicFunctionResolver {
             // `InvalidVpcID.NotFound` ECHOES the requested id, so sanitizing
             // only the id above would leave its copy in the message raw.
             // Rebuilt here rather than reusing `loggedId`, which the `try`
-            // scopes away.
+            // scopes away. The echo takes the id's bounded render too
+            // (go-to-k/cdkd#4250), so a described id is not printed in full
+            // inside the message beside it.
+            const shownId = this.logRender(physicalId, context);
             this.logger.warn(
-              `Failed to fetch VPC Ipv6CidrBlocks for ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+              `Failed to fetch VPC Ipv6CidrBlocks for ${shownId}: ` +
+                this.namedRequestMasks([[physicalId, shownId]], context).text(
+                  error instanceof Error ? error.message : String(error)
+                )
             );
             return [];
           }
@@ -7521,9 +7557,16 @@ export class IntrinsicFunctionResolver {
         } catch (err) {
           // The id through the builder (issue #3479), as the SDK message
           // beside it already was: a state-record id is not always
-          // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm).
+          // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm). Bounded, and its
+          // echo in the SDK message with it, as that arm's (go-to-k/cdkd#4250).
+          // The attribute name is masked although it equals one of two
+          // literals: an `Fn::Sub` can assemble that literal around a secret.
+          const shownId = this.logRender(physicalId, context);
           this.logger.warn(
-            `DescribeLaunchTemplates(${this.displayMasked(physicalId, context)}) failed for ${this.displayMasked(attributeName, context)}: ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
+            `DescribeLaunchTemplates(${shownId}) failed for ${this.logRender(attributeName, context)}: ` +
+              this.namedRequestMasks([[physicalId, shownId]], context).text(
+                err instanceof Error ? err.message : String(err)
+              )
           );
         }
         // Fallback to "$Latest" / "$Default" — both are AWS-accepted
@@ -7920,7 +7963,8 @@ export class IntrinsicFunctionResolver {
     // Every path below renders the type, and this helper is where a type NO
     // routing table matched lands (the final `default` of
     // `constructAttribute`), so it is arbitrary template text: through the
-    // builder once, for all four renders (issue #3441).
+    // builder once, for the two refusals (issue #3441). The two warns below
+    // bound it as a `Resolved …` value instead (go-to-k/cdkd#4250).
     const loggedType = this.displayMasked(resourceType, context);
     const expectsArnShape = attributeName.endsWith('Arn') && !physicalId.startsWith('arn:');
     const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
@@ -7970,8 +8014,8 @@ export class IntrinsicFunctionResolver {
       // would be a guess: the record may simply be stale and the re-read that
       // would have said so did not complete. Say what was observed instead.
       this.logger.warn(
-        `The state record for ${this.displayMasked(logicalId, context)} (${loggedType}) holds no ` +
-          `${this.displayMasked(attributeName, context)}, returning physical ID. ` +
+        `The state record for ${this.logRender(logicalId, context)} (${this.logRender(resourceType, context)}) holds no ` +
+          `${this.logRender(attributeName, context)}, returning physical ID. ` +
           this.staleRecordRemedy(healOutcome, context)
       );
       return physicalId;
@@ -7986,7 +8030,7 @@ export class IntrinsicFunctionResolver {
         ? `. ${this.withheldRemedy(context)}`
         : '';
     this.logger.warn(
-      `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${loggedType}, returning physical ID${withheld}`
+      `Unknown attribute ${this.logRender(attributeName, context)} for resource type ${this.logRender(resourceType, context)}, returning physical ID${withheld}`
     );
     return physicalId;
   }
@@ -9136,7 +9180,7 @@ export class IntrinsicFunctionResolver {
       // round 3, measured). Coercing keeps the pre-existing behaviour and
       // sanitizes what it produces.
       this.logger.warn(
-        `Condition ${this.displayMasked(String(conditionName), context)} not found in context, assuming false`
+        `Condition ${this.logRender(String(conditionName), context)} not found in context, assuming false`
       );
       return await resolveBranch(valueIfFalse);
     }
@@ -9222,7 +9266,7 @@ export class IntrinsicFunctionResolver {
     // The sibling of the `Fn::If` warn above, on the CONDITION-REFERENCE path,
     // and default-verbosity for the same reason.
     this.logger.warn(
-      `Condition ${this.displayMasked(conditionName, context)} not found in context, assuming false`
+      `Condition ${this.logRender(conditionName, context)} not found in context, assuming false`
     );
     return false;
   }
@@ -9753,7 +9797,7 @@ export class IntrinsicFunctionResolver {
     scoped.producerRegionGuest = true;
     scoped.explicitRegionLogText = guestRegionText;
     this.producerRegionResolvers.set(target, scoped);
-    this.logger.debug(`Using a producer-region resolver for ${guestRegionText}`);
+    this.logger.debug(`Using a producer-region resolver for ${boundLogText(guestRegionText)}`);
     return scoped;
   }
 
@@ -9795,7 +9839,10 @@ export class IntrinsicFunctionResolver {
     // export name assembled from a secret is a resolved secret in every line
     // that names it. Same treatment as `Fn::Join` / `Fn::Sub` already give
     // their results.
-    const loggedExportName = this.displayMasked(exportName, context);
+    // Bounded like a `Resolved …` name (go-to-k/cdkd#4250): described when it
+    // is not shell-inert. The not-found refusal below quotes it, and a
+    // described name falls to `quotedRender`'s description there.
+    const loggedExportName = this.logRender(exportName, context);
     this.logger.debug(`Resolving Fn::ImportValue: ${loggedExportName}`);
 
     // Hot path: consult the persistent exports index for O(1) lookup.
@@ -9849,14 +9896,14 @@ export class IntrinsicFunctionResolver {
         // logging (redacted vs literal) and discloses nothing.
         this.logger.info(
           `Resolved Fn::ImportValue: ${loggedExportName} (from index: ` +
-            `${this.displayMasked(entry.producerStack, context)} / ${this.displayMasked(entry.producerRegion, context)}; ` +
+            `${this.logRender(entry.producerStack, context)} / ${this.logRender(entry.producerRegion, context)}; ` +
             `${carriesDynamicReference(entry.value) ? 'redacted dynamic reference' : 'literal value'})`
         );
         return await this.reresolveCrossStackValue(
           entry.value,
           entry.producerRegion,
           context,
-          `Fn::ImportValue ${quotedRender(this.displayLeaf(exportName, context), "'")} (producer ${this.displayLeaf(entry.producerStack, context)} / ${this.displayLeaf(entry.producerRegion, context)})`,
+          `Fn::ImportValue ${quotedRender(this.logLeaf(exportName, context), "'")} (producer ${this.logLeaf(entry.producerStack, context)} / ${this.logLeaf(entry.producerRegion, context)})`,
           sourceKey,
           // Issue #2274: the coordinate the value was READ from, so an in-run
           // producer's masked output can be recovered rather than refused. The
@@ -9889,7 +9936,7 @@ export class IntrinsicFunctionResolver {
     for (const ref of allStacks) {
       const { stackName: refStack, region: refRegion } = ref;
       if (context.stackName && refStack === context.stackName) {
-        this.logger.debug(`Skipping current stack: ${this.displayMasked(refStack, context)}`);
+        this.logger.debug(`Skipping current stack: ${this.logRender(refStack, context)}`);
         continue;
       }
 
@@ -9897,14 +9944,14 @@ export class IntrinsicFunctionResolver {
         const lookupRegion = refRegion ?? this.resolverRegion ?? '';
         if (!lookupRegion) {
           this.logger.debug(
-            `No region available for stack ${quotedRender(this.displayMasked(refStack, context), "'")} — skipping (cdkd cannot read state without a region)`
+            `No region available for stack ${this.quotedLogRender(refStack, context, "'")} — skipping (cdkd cannot read state without a region)`
           );
           continue;
         }
         const stateData = await context.stateBackend.getState(refStack, lookupRegion);
         if (!stateData) {
           this.logger.debug(
-            `No state found for stack: ${this.displayMasked(refStack, context)} (${this.displayMasked(lookupRegion, context)})`
+            `No state found for stack: ${this.logRender(refStack, context)} (${this.logRender(lookupRegion, context)})`
           );
           continue;
         }
@@ -9929,7 +9976,7 @@ export class IntrinsicFunctionResolver {
             // whenever a producer stack is NAMED after a value this pass
             // resolved. Masking a non-needle is a no-op, so this costs
             // nothing on an ordinary stack.
-            `Resolved Fn::ImportValue: ${loggedExportName} (from stack: ${this.displayMasked(refStack, context)} / ${this.displayMasked(lookupRegion, context)}; ` +
+            `Resolved Fn::ImportValue: ${loggedExportName} (from stack: ${this.logRender(refStack, context)} / ${this.logRender(lookupRegion, context)}; ` +
               `${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
           );
           // Patch the index with the just-discovered entry so subsequent
@@ -9951,7 +9998,7 @@ export class IntrinsicFunctionResolver {
                   // quieter. An index write failure quotes the KEY it could
                   // not write, which is built from the export name.
                   `Failed to patch exports index for ` +
-                    `${quotedRender(this.displayMasked(exportName, context), "'", 'an export whose name is not a plain identifier')}: ` +
+                    `${quotedRender(loggedExportName, "'", 'an export whose name is not a plain identifier')}: ` +
                     `${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
                 );
               });
@@ -9961,14 +10008,18 @@ export class IntrinsicFunctionResolver {
           break;
         }
       } catch (error) {
+        // Both halves masked (issue
+        // [#2827](https://github.com/go-to-k/cdkd/issues/2827)): the sibling
+        // of the index line above, and the one warn of the four that masked
+        // NEITHER operand. `refStack` is a state-derived stack name and the
+        // caught message quotes the state key it failed on, so the stack's
+        // bounded render (go-to-k/cdkd#4250) replaces that echo too.
+        const shownStack = this.logRender(refStack, context);
         this.logger.warn(
-          // Both halves masked (issue
-          // [#2827](https://github.com/go-to-k/cdkd/issues/2827)): the sibling
-          // of the index line above, and the one warn of the four that masked
-          // NEITHER operand. `refStack` is a state-derived stack name and the
-          // caught message quotes the state key it failed on.
-          `Failed to read state for stack ${this.displayMasked(refStack, context)}: ` +
-            `${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+          `Failed to read state for stack ${shownStack}: ` +
+            this.namedRequestMasks([[refStack, shownStack]], context).text(
+              error instanceof Error ? error.message : String(error)
+            )
         );
         continue;
       }
@@ -9983,7 +10034,7 @@ export class IntrinsicFunctionResolver {
         found.value,
         found.lookupRegion,
         context,
-        `Fn::ImportValue ${quotedRender(this.displayLeaf(exportName, context), "'")} (producer ${this.displayLeaf(found.refStack, context)} / ${this.displayLeaf(found.lookupRegion, context)})`,
+        `Fn::ImportValue ${quotedRender(this.logLeaf(exportName, context), "'")} (producer ${this.logLeaf(found.refStack, context)} / ${this.logLeaf(found.lookupRegion, context)})`,
         sourceKey,
         // Issue #2274 — see the index arm above. Same bag, reached by scanning
         // state instead of the index, so the same coordinate applies.
@@ -10014,7 +10065,9 @@ export class IntrinsicFunctionResolver {
         this.logger.info(
           `Resolved Fn::ImportValue: ${loggedExportName} ` +
             `(from CloudFormation exports${
-              cfnExport.exportingStackId ? `; exporting stack: ${cfnExport.exportingStackId}` : ''
+              cfnExport.exportingStackId
+                ? `; exporting stack: ${this.logRender(cfnExport.exportingStackId, context)}`
+                : ''
             }; weak reference — producer is not cdkd-managed)`
         );
         // Deliberately NOT re-resolved (issue #1934). The re-resolution exists
@@ -10090,7 +10143,7 @@ export class IntrinsicFunctionResolver {
         // MASKED for the reason `resolveImportValue`'s own lines are (issue
         // #2133 review), and this one prints at DEFAULT verbosity.
         `Fn::ImportValue: CloudFormation ListExports fallback failed for export ` +
-          `${quotedRender(this.displayMasked(exportName, context), "'")} ` +
+          `${this.quotedLogRender(exportName, context, "'")} ` +
           // The caught message is masked too since issue #2827, and this is
           // the one site of the five where that half is DEFENCE IN DEPTH
           // rather than a closed leak — recorded rather than left for the next
@@ -10103,7 +10156,7 @@ export class IntrinsicFunctionResolver {
           // `StackName`, and an AccessDenied names the resource it refused),
           // so the two are spelled the same on purpose: a uniform pair is what
           // stops a future reader deciding this one may be dropped.
-          `(region ${this.resolverRegion}): ` +
+          `(region ${this.logRender(this.resolverRegion, context)}): ` +
           `${this.displayMasked(error instanceof Error ? error.message : String(error), context)}. ` +
           `Grant cloudformation:ListExports to resolve exports from CloudFormation-managed stacks, ` +
           `or pass --no-cfn-fallback to disable the fallback.`
@@ -10220,14 +10273,16 @@ export class IntrinsicFunctionResolver {
       // masks) and left these pairs on the bare masker, so the same name could
       // render two ways in one message — bare in the AWS echo this rewrites,
       // stripped where we print it ourselves. go-to-k/cdkd#3426 removed that
-      // second spelling from the file entirely. The pairs' replacement is the
-      // PRE-BOUNDARY masked spelling (the line below bounds it further through
-      // `displayMaskedIdent`), as at `maskStateReadError`'s call site: it
-      // rewrites text another module rendered, where a second boundary would
-      // only nest quotes.
+      // second spelling from the file entirely. Since go-to-k/cdkd#4250 both
+      // are the `logRender` bound, the same render the line prints: masked,
+      // and described when not shell-inert, in the AWS echo as well, since
+      // this warn ends on a flag to paste. A description has no quotes to
+      // nest.
+      const shownStackName = this.logRender(stackName, context);
+      const shownRegion = this.logRender(loggedRegionText, context);
       const cfnNameMask = this.positionalNameMask([
-        [stackName, this.displayMasked(stackName, context)],
-        [region, this.displayMasked(loggedRegionText, context)],
+        [stackName, shownStackName],
+        [region, shownRegion],
       ]);
       this.logger.warn(
         // MASKED, the exact twin of `lookupCfnExport`'s own line (issue #2133
@@ -10256,8 +10311,7 @@ export class IntrinsicFunctionResolver {
           // prints at DEFAULT verbosity where a throw at least accompanies a
           // failure. Measured emitting a live `ESC[2K` + CR from a hostile
           // `StackName`.
-          `${this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS)} ` +
-          `(${this.displayMaskedIdent(loggedRegionText, context)}): ` +
+          `${shownStackName} (${shownRegion}): ` +
           // The AWS text is BOUNDED as well: `DescribeStacks` quotes the
           // submitted stack name back, so its length is the template author's
           // choice — the same reason `role-arn.ts` bounds STS's reply.
@@ -10647,10 +10701,22 @@ export class IntrinsicFunctionResolver {
     const shownRoleArn = roleArn
       ? displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
       : '';
-    // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
+    // The renders on the `Resolving` / `Resolved Fn::GetStackOutput` lines,
+    // bounded like a `Resolved …` value (go-to-k/cdkd#4250): described when
+    // not shell-inert, never JSON-quoted as `displayMaskedIdent` and
+    // `displayIdent` quote for the refusals, since an unpaired `"` above a
+    // pasted line turns a JSON boundary inside out. The malformed-record
+    // refusal, which ends on a command to paste, takes them too.
+    const lineStackName = this.logRender(stackName, context);
+    const lineOutputName = this.logRender(outputName, context);
+    const lineRegion = this.logRender(loggedRegionText, context);
+    const lineRoleArn = roleArn
+      ? boundLogText(displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))
+      : '';
+    // not-in-class(roleArn ? `, RoleArn=${lineRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
     this.logger.debug(
-      `Resolving Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
-        `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
+      `Resolving Fn::GetStackOutput: StackName=${lineStackName}, Region=${lineRegion}, ` +
+        `OutputName=${lineOutputName}${roleArn ? `, RoleArn=${lineRoleArn}` : ''}`
     );
 
     // Cross-account branch: assume the role, derive the producer's
@@ -10722,8 +10788,8 @@ export class IntrinsicFunctionResolver {
           // CloudFormation fallback: a CFn stack output never passed through
           // cdkd's redaction, so it is whatever the producer resolved.
           this.logger.info(
-            `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
-              `OutputName=${loggedOutputName} ` +
+            `Resolved Fn::GetStackOutput: StackName=${lineStackName}, Region=${lineRegion}, ` +
+              `OutputName=${lineOutputName} ` +
               `(from CloudFormation stack outputs; weak reference — producer is not cdkd-managed)`
           );
           // Deliberately NOT recorded into `recordedOutputReads` —
@@ -10786,8 +10852,8 @@ export class IntrinsicFunctionResolver {
     if (!hasReadableOutputs(stateData.state)) {
       throw markNonRetryable(
         new MalformedProducerRecordRefusalError(
-          `Fn::GetStackOutput: the state record of producer stack ${loggedStackName} ` +
-            `(${displayIdent(loggedRegion)}) has no readable 'outputs' map — the record is malformed or ` +
+          `Fn::GetStackOutput: the state record of producer stack ${lineStackName} ` +
+            `(${lineRegion}) has no readable 'outputs' map — the record is malformed or ` +
             `truncated. cdkd refuses to resolve from it rather than reading it as a map: ` +
             `'Object.hasOwn' answers TRUE for '0' on a string and for an index on a list, so ` +
             `continuing would resolve ONE CHARACTER or element of the record as this ` +
@@ -10815,10 +10881,10 @@ export class IntrinsicFunctionResolver {
     // state holds the `{{resolve:...}}` EXPRESSION" is a property of
     // POST-#1934 state, and `cdkd scrub`'s whole population is state written
     // before that, holding the plaintext.
-    // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
+    // not-in-class(roleArn ? `, RoleArn=${lineRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
     this.logger.info(
-      `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
-        `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''} ` +
+      `Resolved Fn::GetStackOutput: StackName=${lineStackName}, Region=${lineRegion}, ` +
+        `OutputName=${lineOutputName}${roleArn ? `, RoleArn=${lineRoleArn}` : ''} ` +
         `(${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
     );
     // Schema v8 (issue #668): record same-account reads so
@@ -10913,7 +10979,7 @@ export class IntrinsicFunctionResolver {
       // not write a glob in a comment in this file; the fence in
       // `tests/unit/deployment/resolver-display-masked-population.test.ts`
       // will refuse it, and its message will say so.)
-      `Fn::GetStackOutput ${quotedRender(this.displayLeaf(outputName, context), "'")} (producer ${this.displayLeaf(stackName, context)} / ${this.displayLeaf(loggedRegionText, context)})`,
+      `Fn::GetStackOutput ${quotedRender(this.logLeaf(outputName, context), "'")} (producer ${this.logLeaf(stackName, context)} / ${this.logLeaf(loggedRegionText, context)})`,
       sourceKey,
       // Issue #2274: this read is `outputs[outputName]` of that producer's
       // state, so the coordinate is exact — see the ImportValue arms. A
@@ -12793,10 +12859,23 @@ export class IntrinsicFunctionResolver {
     context: ResolverContext | undefined,
     opts: { readonly structured?: boolean; readonly redacted?: boolean } = {}
   ): string {
-    const shown = this.displayMasked(value, context);
-    if (opts.redacted === true && shown === '<redacted>') return shown;
-    const inert = opts.structured === true ? isLogInertJson(shown) : isLogInert(shown);
-    return inert ? shown : UNSHOWABLE_VALUE;
+    return boundLogText(this.displayMasked(value, context), opts);
+  }
+
+  /**
+   * {@link logRender} inside a quote of cdkd's own: `quotedRender` over it, so
+   * the value is quoted only when it is inert AND quotable, and otherwise
+   * `described`. `quotedRender` alone admits `|`, `<`, `>` and `*`, literal
+   * inside the quote but bare once a pasted line's quote parity flips
+   * (go-to-k/cdkd#4250, the `splitDelimiterRender` reason).
+   */
+  private quotedLogRender(
+    value: string,
+    context: ResolverContext | undefined,
+    quote: "'" | '"',
+    described?: string
+  ): string {
+    return quotedRender(this.logRender(value, context), quote, described);
   }
 
   /**
@@ -12859,6 +12938,17 @@ export class IntrinsicFunctionResolver {
    */
   private displayLeaf(value: string, context?: ResolverContext): string {
     return this.displayMasked(this.logTextOfLeaf(value, context), context);
+  }
+
+  /**
+   * {@link displayLeaf}, bounded as {@link logRender} bounds a value: the
+   * render when it is shell-inert, otherwise `UNSHOWABLE_VALUE`. For the
+   * cross-stack ORIGIN labels, which print on the `Re-resolving dynamic
+   * reference(s) in …` line and in the refusals that name a redacted read
+   * (go-to-k/cdkd#4250).
+   */
+  private logLeaf(value: string, context?: ResolverContext): string {
+    return boundLogText(this.displayLeaf(value, context));
   }
 
   /**
@@ -13404,11 +13494,9 @@ export class IntrinsicFunctionResolver {
               )
             );
           }
+          // Bounded like a `Resolved …` value (go-to-k/cdkd#4250).
           this.logger.warn(
-            this.displayMasked(
-              `Unsupported dynamic reference service: ${this.displayMasked(nameLogText(String(service)), context)}`,
-              context
-            )
+            safeMsg`Unsupported dynamic reference service: ${this.logRender(nameLogText(String(service)), context)}`
           );
           complete = false;
           continue;
@@ -13642,10 +13730,15 @@ export class IntrinsicFunctionResolver {
     const loggedSecretId = this.displayMasked(nameLogText(secretId), context);
     const loggedJsonKey = this.displayMasked(nameLogText(jsonKey), context);
 
+    // Each part bounded like a `Resolved …` value (go-to-k/cdkd#4250). The
+    // two bindings above keep their masked spelling: they are also the
+    // replacements the AWS text's echo of the name takes, and the refusals'
+    // `quotedRender` bounds them there.
     this.logger.debug(
-      `Resolving dynamic reference: secretsmanager:${loggedSecretId}:SecretString:${loggedJsonKey}:` +
-        `${this.displayMasked(nameLogText(versionStage), context)}:` +
-        `${this.displayMasked(nameLogText(versionId), context)}`
+      `Resolving dynamic reference: secretsmanager:${this.logRender(nameLogText(secretId), context)}:` +
+        `SecretString:${this.logRender(nameLogText(jsonKey), context)}:` +
+        `${this.logRender(nameLogText(versionStage), context)}:` +
+        `${this.logRender(nameLogText(versionId), context)}`
     );
 
     // Region-sensitive, and the reason issue #1957 is a security defect rather
@@ -13755,7 +13848,9 @@ export class IntrinsicFunctionResolver {
     this.logger.debug(
       // Leaf-masked like the refusal above (issue #2827 review): `ipBlock`
       // comes back from `resolveValue`.
-      `Resolving Fn::Cidr: ipBlock=${this.displayMasked(JSON.stringify(this.maskValueLeaves(ipBlock, context)), context)}, count=${this.displayMasked(String(count), context)}, cidrBits=${this.displayMasked(String(cidrBits), context)}`
+      // Bounded like a `Resolved …` value (go-to-k/cdkd#4250); the JSON one
+      // kept only while the masked text still parses with inert leaves.
+      `Resolving Fn::Cidr: ipBlock=${this.logRender(JSON.stringify(this.maskValueLeaves(ipBlock, context)), context, { structured: true })}, count=${this.logRender(String(count), context)}, cidrBits=${this.logRender(String(cidrBits), context)}`
     );
 
     const isIpv6 = ipBlock.includes(':');
@@ -13834,7 +13929,7 @@ export class IntrinsicFunctionResolver {
     // TODAY rather than of the site: the day this pushes something it did not
     // compute, the leaf walk is the mask that still works.
     this.logger.debug(
-      `Fn::Cidr result: ${this.displayMasked(JSON.stringify(this.maskValueLeaves(results, context)), context)}`
+      `Fn::Cidr result: ${this.logRender(JSON.stringify(this.maskValueLeaves(results, context)), context, { structured: true })}`
     );
     return results;
   }
@@ -13973,7 +14068,11 @@ export class IntrinsicFunctionResolver {
     const loggedParameterName = this.displayMasked(nameLogText(parameterName), context);
 
     // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
-    this.logger.debug(`Resolving dynamic reference: ${service}:${loggedParameterName}`);
+    // Bounded like a `Resolved …` value (go-to-k/cdkd#4250). The binding
+    // keeps its masked spelling for the AWS text's echo and the refusals.
+    this.logger.debug(
+      `Resolving dynamic reference: ${service}:${this.logRender(nameLogText(parameterName), context)}`
+    );
 
     // Region-sensitive in BOTH of its outputs: the value, and the `Type` this
     // method reports back. A region-B `SecureString` classified against a
@@ -14046,13 +14145,13 @@ export class IntrinsicFunctionResolver {
       const reported =
         paramType === undefined
           ? '(absent)'
-          : quotedRender(this.displayMasked(String(paramType), context), "'");
+          : this.quotedLogRender(String(paramType), context, "'");
       // Masked like the debug echo above (issue #2728), and per RAW VALUE
       // since issue #2827: the name may have been assembled from a value this
       // pass resolved out of a secret.
       // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
       this.logger.warn(
-        `SSM parameter ${quotedRender(loggedParameterName, "'")} reported an unrecognized Type ${reported} — treating ` +
+        `SSM parameter ${this.quotedLogRender(nameLogText(parameterName), context, "'")} reported an unrecognized Type ${reported} — treating ` +
           `its value as a secret, so cdkd will persist the {{resolve:${service}:...}} expression rather ` +
           `than the resolved value. Declare the parameter as String / StringList if it is ` +
           `public config.`

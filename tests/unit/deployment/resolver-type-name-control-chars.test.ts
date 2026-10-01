@@ -34,6 +34,7 @@ import {
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -89,6 +90,18 @@ function expectSanitized(text: string, what: string): void {
   // would satisfy every negative above.
   expect(text, `${what} lost the type's printable head`).toContain('Prod');
   expect(text, `${what} lost the type's printable tail`).toContain('ilX');
+}
+
+/**
+ * For a log line (go-to-k/cdkd#4250): the sanitized type still holds a space
+ * (`U+2028` becomes one), so it is not shell-inert and the line DESCRIBES it.
+ * Nothing of it may reach the line, and the description must be there, so a
+ * line that stopped rendering the slot cannot pass.
+ */
+function expectDescribed(text: string, what: string): void {
+  expectClean(text, what);
+  expect(text, `${what} printed part of the type`).not.toContain('Prod');
+  expect(text, `${what} lost its description`).toContain(UNSHOWABLE_VALUE);
 }
 
 /** How many times the sanitized payload's tail appears — one per render of it. */
@@ -197,7 +210,7 @@ describe('a hostile resource TYPE is sanitized where an arbitrary type reaches t
     const got = await getAtt(EVIL_TYPE, 'Whatever', { context: healer });
     const warn = got.lines.find((l) => l.startsWith('The state record for Thing ('));
     expect(warn, `no stale-record warn: ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(warn ?? '', 'the stale-record warn');
+    expectDescribed(warn ?? '', 'the stale-record warn');
 
     const control = await getAtt('AWS::SQS::Queue', 'Whatever', { context: healer });
     expect(control.lines.some((l) => l.startsWith('The state record for Thing (AWS::SQS::Queue) holds no'))).toBe(true);
@@ -207,7 +220,7 @@ describe('a hostile resource TYPE is sanitized where an arbitrary type reaches t
     const got = await getAtt(EVIL_TYPE, 'Whatever');
     const warn = got.lines.find((l) => l.startsWith('Unknown attribute Whatever for resource type '));
     expect(warn, `no unknown-attribute warn: ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(warn ?? '', 'the unknown-attribute warn');
+    expectDescribed(warn ?? '', 'the unknown-attribute warn');
 
     const control = await getAtt('AWS::SQS::Queue', 'Whatever');
     expect(control.lines).toContain(
@@ -448,9 +461,9 @@ describe('a CONSTRAINED type render is reached only by an exact literal — driv
     expect(emitted, 'a near-miss type reached the DBProxy refusal').not.toContain(
       'the state record holds no VpcId'
     );
-    // It reached the shared fallback's warn, which this change sanitizes.
+    // It reached the shared fallback's warn, which describes the type.
     const warn = near.lines.find((l) => l.startsWith('Unknown attribute VpcId for resource type '));
     expect(warn, `did not land on the fallback: ${JSON.stringify(near)}`).toBeDefined();
-    expectSanitized(warn ?? '', 'the fallback warn a near-miss DBProxy type lands on');
+    expectDescribed(warn ?? '', 'the fallback warn a near-miss DBProxy type lands on');
   });
 });

@@ -7,6 +7,7 @@ import {
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 
 /**
  * The BINDING route: a masked value bound to a local and interpolated later
@@ -85,6 +86,13 @@ const HOSTILE = `Prod${ESC}[2K\rEvil`;
 
 /** U+2028: `stripControlChars` does NOT touch it; `displaySafe` does. */
 const LS = ' ';
+
+/**
+ * ESC alone, with no `[` or CR: shell-inert as raw text, so a log line prints
+ * it unless a sanitizer removed the ESC first (`stripControlChars` deletes it,
+ * leaving `ProdcEvil`).
+ */
+const SNEAKY = `Prod${ESC}cEvil`;
 
 /** A state backend holding no stacks at all, so every export lookup misses. */
 function emptyBackend(): S3StateBackend {
@@ -177,14 +185,10 @@ describe('Fn::ImportValue renders its export name through the display builder (g
   });
 
   it('strips the class `stripControlChars` does NOT cover — U+2028', async () => {
-    // The discriminator between the two halves of the builder. A repair that
-    // reached only `maskThenStripThenMask` passes both cases above and fails
-    // this one, which is exactly the near-miss the builder exists to prevent:
-    // a JSON log viewer reads U+2028 as a line terminator.
-    //
-    // Read off the DEBUG line, which still renders the binding: since
-    // go-to-k/cdkd#3950 the throw describes an altered name instead of quoting
-    // it, so the throw alone could no longer tell the two halves apart.
+    // A JSON log viewer reads U+2028 as a line terminator. This case was the
+    // discriminator between the builder's two halves until go-to-k/cdkd#4250:
+    // the debug line now DESCRIBES a name holding whitespace, U+2028 included,
+    // so it pins only that the character never reaches the line.
     const debugged = await captureLog('debug', async () => {
       const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
       await resolver
@@ -193,11 +197,11 @@ describe('Fn::ImportValue renders its export name through the display builder (g
     });
     const line = debugged.split('\n').find((l) => l.startsWith('Resolving Fn::ImportValue: '));
     expect(line, 'the binding debug line never fired, so this case proves nothing').toBeDefined();
-    expect(line).toContain('Prod');
-    // Anchored PAST the character: a sanitizer that TRUNCATED there would
-    // satisfy the assertion after this one.
-    expect(line).toContain('Evil');
     expect(line, 'U+2028 reached the binding').not.toContain(LS);
+    // Since go-to-k/cdkd#4250 the line describes the name: U+2028 is
+    // whitespace, so the bound refuses it whether `displaySafe` turned it into
+    // a space or not, and this case no longer tells the two halves apart.
+    expect(line).toBe(`Resolving Fn::ImportValue: ${UNSHOWABLE_VALUE}`);
   });
 
   it('leaves an ORDINARY export name byte-identical', async () => {
@@ -263,25 +267,26 @@ describe('the parameter-value debug lines sanitize too (go-to-k/cdkd#3426 sweep)
       const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
       await resolver.resolveParameters({
         Resources: {},
-        Parameters: { Stage: { Type: 'String', Default: HOSTILE } },
+        Parameters: { Stage: { Type: 'String', Default: SNEAKY } },
       });
     });
 
     // BOUND THE ARM: three branches render through this closure, and the two
     // others print a different sentence.
     expect(logged, 'the default-value parameter line never fired').toContain('using default value');
-    expect(logged).toContain('Prod');
-    expect(logged).toContain('Evil');
+    // SNEAKY rather than HOSTILE since go-to-k/cdkd#4250: HOSTILE's `[` and
+    // CR make the line describe it whatever this closure does, and SNEAKY is
+    // shell-inert once its ESC is gone, so it prints, stripped.
+    expect(logged).toContain('using default value ProdcEvil');
     expect(logged, 'a raw ESC reached the parameter debug line').not.toContain(ESC);
     expect(logged, 'a raw CR reached the parameter debug line').not.toContain('\r');
   });
 
   it("strips U+2028 there too, which is the half stripControlChars cannot do", async () => {
-    // THE DISCRIMINATOR between the closure's two halves, and the reason the
-    // case above is not enough: `stripControlChars` already removes ESC and CR,
-    // so deleting the `displaySafe` pass leaves that case green. U+2028 is the
-    // character only `displaySafe` touches, so this one reds instead — measured
-    // both ways during go-to-k/cdkd#3426's review.
+    // U+2028 is the character only `displaySafe` touches. Until
+    // go-to-k/cdkd#4250 this case told the closure's two halves apart; the
+    // line now describes a value holding whitespace whatever the closure
+    // does, so it pins only that the character never reaches the line.
     const logged = await captureLog('debug', async () => {
       const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
       await resolver.resolveParameters({
@@ -291,11 +296,10 @@ describe('the parameter-value debug lines sanitize too (go-to-k/cdkd#3426 sweep)
     });
 
     expect(logged, 'the default-value parameter line never fired').toContain('using default value');
-    expect(logged).toContain('Prod');
-    // Anchored PAST the character: a sanitizer that TRUNCATED there would
-    // satisfy the assertions around this one.
-    expect(logged).toContain('Evil');
     expect(logged, 'U+2028 reached the parameter debug line').not.toContain(LS);
+    // Described since go-to-k/cdkd#4250, which a deleted `displaySafe` pass
+    // would not change: see the ImportValue case above.
+    expect(logged).toContain(`using default value ${UNSHOWABLE_VALUE}`);
   });
 });
 

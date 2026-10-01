@@ -952,7 +952,9 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
     expect(everyLine()).toContain(
       'Resolving Fn::GetStackOutput: StackName=Producer, Region=us-west-***, OutputName=Out'
     );
-    expect(everyLine().some((l) => l.includes('fallback failed for stack Producer ("us-west-***")'))).toBe(true);
+    // The warn's region bare since go-to-k/cdkd#4250: a masked render is
+    // shell-inert, and the bound no longer JSON-quotes.
+    expect(everyLine().some((l) => l.includes('fallback failed for stack Producer (us-west-***)'))).toBe(true);
     expectNowhere(`us-west-${PIN}`, message);
   });
 
@@ -996,7 +998,7 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       logSpies.info.mock.calls
         .map((c) => String(c[0]))
         .some((l) =>
-          l.startsWith('Resolved Fn::GetStackOutput: StackName="stack-***", Region=us-east-1, OutputName="out-***" (from CloudFormation')
+          l.startsWith('Resolved Fn::GetStackOutput: StackName=stack-***, Region=us-east-1, OutputName=out-*** (from CloudFormation')
         )
     ).toBe(true);
     expectNowhere(`-${PIN}`);
@@ -1024,10 +1026,12 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
       makeContext({ stateBackend: emptyBackend() })
     );
     expect(message).toContain('stack "stack-***" not found in region');
+    // The log lines' names bare since go-to-k/cdkd#4250 (a masked render is
+    // shell-inert); the refusal above keeps its JSON-quoted identifier.
     expect(everyLine()).toContain(
-      'Resolving Fn::GetStackOutput: StackName="stack-***", Region=us-east-1, OutputName="out-***"'
+      'Resolving Fn::GetStackOutput: StackName=stack-***, Region=us-east-1, OutputName=out-***'
     );
-    expect(everyLine().some((l) => l.includes('fallback failed for stack "stack-***" (us-east-1)'))).toBe(true);
+    expect(everyLine().some((l) => l.includes('fallback failed for stack stack-*** (us-east-1)'))).toBe(true);
     expectNowhere(`stack-${PIN}`, message);
   });
 
@@ -1069,7 +1073,7 @@ describe('issue #3150: Fn::GetStackOutput names and region', () => {
     expect(
       logSpies.info.mock.calls
         .map((c) => String(c[0]))
-        .some((l) => l.startsWith('Resolved Fn::GetStackOutput: StackName="stack-***", Region=us-east-***, OutputName="out-***"'))
+        .some((l) => l.startsWith('Resolved Fn::GetStackOutput: StackName=stack-***, Region=us-east-***, OutputName=out-***'))
     ).toBe(true);
     expect(everyLine()).toContain(
       "Re-resolving dynamic reference(s) in Fn::GetStackOutput 'out-***' (producer stack-*** / us-east-***)"

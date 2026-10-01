@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 
+import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 
 /**
@@ -103,9 +104,9 @@ describe('the region-scoped clients renders sanitize (go-to-k/cdkd#3426 sweep)',
     expect(logged, 'the region-scoped clients line never fired').toContain(
       'Using region-scoped AWS clients for'
     );
-    expect(logged).toContain('eu-west-1');
-    // Still identifies the text it was given...
-    expect(logged).toContain('Evil');
+    // The sanitized text holds a space (`U+2028` becomes one), so the line
+    // DESCRIBES it rather than printing it (go-to-k/cdkd#4250)...
+    expect(logged).toBe(`Using region-scoped AWS clients for ${UNSHOWABLE_VALUE}`);
     // ...and carries none of the mechanism.
     expect(logged, 'U+2028 reached the region-scoped clients debug line').not.toContain(LS);
   });

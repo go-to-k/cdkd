@@ -6,6 +6,7 @@ import {
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 
 /**
  * `Fn::GetStackOutput`'s messages strip control characters from the NAMES, not
@@ -303,7 +304,11 @@ describe('the CFn-fallback WARN strips control characters too (round 2 blocker)'
       expect(warned, 'the CFn fallback warn never fired, so this case proves nothing').toContain(
         'CloudFormation DescribeStacks fallback failed'
       );
-      expect(warned).toContain('Prod');
+      // Described, not stripped-and-shown (go-to-k/cdkd#4250): this warn ends
+      // on a flag to paste. The name AND its echo in the AWS text.
+      expect(warned).not.toContain('Prod');
+      expect(warned).toContain(`fallback failed for stack ${UNSHOWABLE_VALUE} (us-east-1): `);
+      expect(warned).toContain(`Stack with id ${UNSHOWABLE_VALUE} does not exist`);
       expect(warned, 'a raw ESC reached the warn line').not.toContain(ESC);
       expect(warned, 'a raw CR reached the warn line').not.toContain('\r');
     } finally {
@@ -356,7 +361,10 @@ describe('Fn::GetStackOutput keeps a FORGING name inside one boundary (go-to-k/c
     const m = await messageOf({ 'Fn::GetStackOutput': { StackName: FSTACK, OutputName: 'A' } }, [
       { stackName: FSTACK, region: 'us-east-1', outputs: 'torn' as never },
     ]);
-    expect(m).toContain(`the state record of producer stack ${JSON.stringify(FSTACK)} (us-east-1)`);
+    // Described, not JSON-quoted (go-to-k/cdkd#4250): this refusal ends on a
+    // command to paste, and an unpaired `"` above it would turn a JSON
+    // boundary inside out.
+    expect(m).toContain(`the state record of producer stack ${UNSHOWABLE_VALUE} (us-east-1)`);
     expect(outside(m)).not.toContain('nothing missing');
   });
 
@@ -393,7 +401,8 @@ describe('Fn::GetStackOutput keeps a FORGING name inside one boundary (go-to-k/c
         )
         .catch(() => undefined);
       const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warned).toContain(`fallback failed for stack ${JSON.stringify(FSTACK)} (us-east-1): `);
+      // Described since go-to-k/cdkd#4250, as the malformed-record refusal's.
+      expect(warned).toContain(`fallback failed for stack ${UNSHOWABLE_VALUE} (us-east-1): `);
       expect(outside(warned)).not.toContain('nothing missing');
     } finally {
       got.warn = previous;

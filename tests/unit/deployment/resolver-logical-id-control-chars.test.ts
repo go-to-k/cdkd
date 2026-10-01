@@ -570,14 +570,14 @@ describe('a template-declared PARAMETER or CONDITION name is sanitized too (#343
     const fromDefault = await capture(() => resolver.resolveParameters(template, {}));
     const defaultLine = fromDefault.lines.find((l) => l.includes('using default value'));
     expect(defaultLine, `no default line: ${JSON.stringify(fromDefault)}`).toBeDefined();
-    expectSanitized(defaultLine ?? '', 'the parameter default-value debug line');
+    expectDescribed(defaultLine ?? '', 'the parameter default-value debug line');
 
     const fromUser = await capture(() =>
       resolver.resolveParameters(template, { [EVIL]: 'supplied' })
     );
     const userLine = fromUser.lines.find((l) => l.includes('using user-provided value'));
     expect(userLine, `no user-value line: ${JSON.stringify(fromUser)}`).toBeDefined();
-    expectSanitized(userLine ?? '', 'the parameter user-value debug line');
+    expectDescribed(userLine ?? '', 'the parameter user-value debug line');
   });
 
   it('sanitizes the undeclared-condition WARN, which prints at default verbosity', async () => {
@@ -597,7 +597,7 @@ describe('a template-declared PARAMETER or CONDITION name is sanitized too (#343
 
     const warn = got.lines.find((l) => l.includes('not found in template'));
     expect(warn, `no undeclared-condition warn: ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(warn ?? '', 'the undeclared-condition warn');
+    expectDescribed(warn ?? '', 'the undeclared-condition warn');
   });
 
   it('sanitizes the condition-evaluated debug line', async () => {
@@ -614,7 +614,7 @@ describe('a template-declared PARAMETER or CONDITION name is sanitized too (#343
 
     const line = got.lines.find((l) => l.startsWith('Evaluated condition'));
     expect(line, `no evaluated-condition line: ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(line ?? '', 'the condition-evaluated debug line');
+    expectDescribed(line ?? '', 'the condition-evaluated debug line');
   });
 
   it("sanitizes Fn::If's not-in-context WARN, which prints at default verbosity", async () => {
@@ -636,7 +636,7 @@ describe('a template-declared PARAMETER or CONDITION name is sanitized too (#343
 
     const warn = got.lines.find((l) => l.includes('not found in context'));
     expect(warn, `no not-in-context warn: ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(warn ?? '', "Fn::If's not-in-context warn");
+    expectDescribed(warn ?? '', "Fn::If's not-in-context warn");
   });
 
   it("sanitizes Fn::If's selected-branch debug line", async () => {

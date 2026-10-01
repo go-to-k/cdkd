@@ -102,6 +102,22 @@ function expectSanitized(text: string, what: string): void {
 }
 
 /** How many times the sanitized payload's tail appears — one per render of it. */
+function describedRenders(text: string): number {
+  return text.split(UNSHOWABLE_VALUE).length - 1;
+}
+
+/**
+ * For a log line (go-to-k/cdkd#4250): the sanitized id still holds a space
+ * (`U+2028` becomes one), so it is not shell-inert and the line DESCRIBES it.
+ * Nothing of it may reach the line, and the description must be there, so a
+ * line that stopped rendering the slot cannot pass.
+ */
+function expectDescribed(text: string, what: string): void {
+  expectClean(text, what);
+  expect(text, `${what} printed part of the id`).not.toContain('Prod');
+  expect(text, `${what} lost its description`).toContain(UNSHOWABLE_VALUE);
+}
+
 function renders(text: string): number {
   return text.split('ilX').length - 1;
 }
@@ -244,7 +260,7 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
         ],
       });
       const got = await getAtt('AWS::EC2::VPC', 'Ipv6CidrBlocks', EVIL_ID);
-      expectSanitized(line(got, 'Resolved VPC Ipv6CidrBlocks for '), 'the resolved debug line');
+      expectDescribed(line(got, 'Resolved VPC Ipv6CidrBlocks for '), 'the resolved debug line');
 
       const control = await getAtt('AWS::EC2::VPC', 'Ipv6CidrBlocks', 'vpc-0abc');
       expect(control.some((l) => l.startsWith('Resolved VPC Ipv6CidrBlocks for vpc-0abc: '))).toBe(
@@ -255,7 +271,7 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
     it('sanitizes the no-associations DEBUG line', async () => {
       aws.ec2 = async () => ({ Vpcs: [{ Ipv6CidrBlockAssociationSet: [] }] });
       const got = await getAtt('AWS::EC2::VPC', 'Ipv6CidrBlocks', EVIL_ID);
-      expectSanitized(
+      expectDescribed(
         line(got, 'No IPv6 CIDR associations found for VPC '),
         'the no-associations line'
       );
@@ -283,10 +299,10 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
         return lines;
       };
       const got = await run(EVIL_ID);
-      expectSanitized(line(got, 'VPC vpc-Prod'), 'the still-associating line');
+      expectDescribed(line(got, `VPC ${UNSHOWABLE_VALUE} IPv6 CIDR still`), 'the still-associating line');
       const gaveUp = got.find((l) => l.includes("IPv6 CIDR did not reach 'associated' state"));
       expect(gaveUp, JSON.stringify(got)).toBeDefined();
-      expectSanitized(gaveUp ?? '', 'the gave-up warn');
+      expectDescribed(gaveUp ?? '', 'the gave-up warn');
 
       const control = await run('vpc-0abc');
       expect(control).toContain(
@@ -303,10 +319,11 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
       };
       const got = await getAtt('AWS::EC2::VPC', 'Ipv6CidrBlocks', EVIL_ID);
       const warn = line(got, 'Failed to fetch VPC Ipv6CidrBlocks for ');
-      expectSanitized(warn, 'the failure warn');
-      // Both renders survived — the id and its echo — so reverting EITHER
-      // leaves a forbidden byte, and dropping either fails the count.
-      expect(renders(warn)).toBe(2);
+      expectDescribed(warn, 'the failure warn');
+      // Both renders are described, the id and its echo in the SDK message
+      // (go-to-k/cdkd#4250), so reverting EITHER prints part of the id, and
+      // dropping either fails the count.
+      expect(describedRenders(warn)).toBe(2);
 
       const control = await getAtt('AWS::EC2::VPC', 'Ipv6CidrBlocks', 'vpc-0abc');
       expect(control).toContain(
@@ -366,8 +383,8 @@ describe('a state-record PHYSICAL ID is sanitized at every resolver render (#347
     const type = 'AWS::EC2::LaunchTemplate';
     const got = await getAtt(type, 'LatestVersionNumber', `lt-${EVIL}`);
     const warn = line(got, 'DescribeLaunchTemplates(');
-    expectSanitized(warn, 'the DescribeLaunchTemplates warn');
-    expect(renders(warn)).toBe(2);
+    expectDescribed(warn, 'the DescribeLaunchTemplates warn');
+    expect(describedRenders(warn)).toBe(2);
 
     const control = await getAtt(type, 'LatestVersionNumber', 'lt-0abc');
     expect(control).toContain(

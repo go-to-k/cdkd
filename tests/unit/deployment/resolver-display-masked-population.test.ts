@@ -282,8 +282,11 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     //
     // A FLOOR rather than an equality: adding a render is ordinary work and
     // must not red. What must red is the population EMPTYING, which is what a
-    // revert to per-site spellings looks like from here.
-    const rendered = code.match(/this\.displayMasked\(/g) ?? [];
+    // revert to per-site spellings looks like from here. `logRender` and
+    // `quotedLogRender` count as the builder: each is `displayMasked` plus the
+    // go-to-k/cdkd#4161 bound, and go-to-k/cdkd#4250 moved log renders onto
+    // them.
+    const rendered = code.match(/this\.(?:displayMasked|logRender|quotedLogRender)\(/g) ?? [];
     expect(rendered.length, 'display-builder call sites').toBeGreaterThanOrEqual(107);
   });
 
