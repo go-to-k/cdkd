@@ -12,8 +12,7 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
  * after its level loop. The runner's outer `finally` re-syncs it
  * (`result.interrupted ||= lock.interrupted && statePreserved`) and that line
  * is marked TACTICAL in the source: it narrows the window, it does not close
- * it. Two gaps survive, and
- * these cases drive both:
+ * it. Two gaps survive, and these cases drive both:
  *
  *  - the runner removes its SIGINT listener BEFORE the re-sync and its
  *    `return`, so a signal there is seen by nobody;
