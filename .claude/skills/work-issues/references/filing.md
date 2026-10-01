@@ -97,5 +97,8 @@ write from filing whatever sat at that path, and heredoc → file → `--body-fi
 in ONE QUOTED-delimiter call is the shape — the two-line form files an issue
 with NO body.
 
-**Not a filing threshold** (§10-0: unfiled is worse than filed) — only WHERE
-it is written changes.
+**The filing bar is AGENTS.md's "File only what a user can hit"** — apply it
+BEFORE the duplicate search. A finding below it (wording, an input no CDK app
+produces, SECURITY.md's out-of-scope paste class) is one line in the PR body
+and is neither filed nor folded into an umbrella. A reviewer's finding meets
+the same bar.

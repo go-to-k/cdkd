@@ -62,33 +62,8 @@
  * own callers: `src/utils/**` imports nothing from `src/state/**`, so the
  * shared helper could not reach them the other way round.
  *
- * ## The CATEGORIES not covered yet, as of go-to-k/cdkd#3436's first half
- *
- * Re-derive the members with that issue's greps rather than trusting a list:
- * these are kinds of site, and each kind has more members than the examples.
- *
- * - **Its own copy of the gate.** Others in `deployment/deploy-engine.ts` and
- *   `deployment/rollback-executor.ts` (`cli/commands/gc.ts`,
- *   `buildForceUnlockCommand`, `cli/commands/export.ts`'s `orphanCommandFor`
- *   and the `cdkd orphan` properties refusal in `state/malformed-resources-bag.ts`
- *   left this list in go-to-k/cdkd#3436's second half). They behave the same way; they are not this function, so a rule
- *   change reaches them only by hand.
- * - **A command in prose quotes with a RAW value**, outside the modules
- *   migrated here — `provisioning/providers/**` (Route 53, DynamoDB),
- *   `cli/config-loader.ts` and `cli/commands/orphan.ts` are where the greps land
- *   today.
- *
- * Three entries left this list in go-to-k/cdkd#3613 and saying so is the point:
- * the `cdkd drift` sites of
- * [#3307](https://github.com/go-to-k/cdkd/issues/3307) ALL build through this
- * function now and `drift.ts`'s own `stackCommandFor` is gone; the S3 Tables
- * provider's raw-value prose was fixed there too; and a bare-`<hole>` synopsis
- * is no longer uncovered, because the source fence that finds that shape
- * EXISTS — `scripts/check-pasteable-command-shapes.ts`, whose unit test is its
- * enforcement. A list of what is not yet covered goes stale the moment
- * something is, so derive it rather than reading it: the fence reports the
- * shapes, and its `EXEMPTIONS` (empty today) name any site deliberately left
- * for a follow-up PR.
+ * The paste hazard this module guards is out of scope (SECURITY.md): keep its
+ * current behavior and do not extend it to new sites.
  */
 
 import {

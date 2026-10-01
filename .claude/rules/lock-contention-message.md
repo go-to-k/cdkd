@@ -47,25 +47,13 @@ one SIGINT + lock guard) included.
   take the DENYLIST while stack and region take `asciiOnly`, since a profile
   name legitimately is not ASCII (issue
   [#3377](https://github.com/go-to-k/cdkd/issues/3377)).
-- The command is emitted LAST and UNWRAPPED, and that is a SECURITY rule: pasted
+- The command is emitted LAST and UNWRAPPED: pasted
   inside a `'...'` wrapper, a `shellQuote`d value turns inside out and
   `--state-bucket 'b; printf X; #'` RUNS `printf X`. A `Parent~Child` name also becomes
   unpastable that way; `~` is deliberately NOT in the unquoted class. A message
   that must show several commands prints them on trailing labelled lines.
-- **The rule reaches a shell-quoted VALUE in PROSE, and a PLACEHOLDER in prose,
-  not only a command in a wrapper.** No wrapper is needed: an English apostrophe
-  anywhere before the value flips quote parity, so deleting one apostrophe fixes
-  a sentence but not the class. A value goes on a labelled trailing line
-  instead, and a placeholder in prose is QUOTED like `commandHole`'s — a bare
-  `<prefix>` in a sentence is a shell redirection
-  ([#3440](https://github.com/go-to-k/cdkd/issues/3440)).
-- **A fence for this pastes SENTENCES and CLAUSES, never lines alone, and plants
-  DECOYS.** A line-level paste misses a payload that sits after a syntax error
-  on the same line (`record(s)`'s `(`), and an execution sentinel alone is
-  blind to REDIRECTION — compare the whole directory against decoys named for
-  every placeholder. Exempt only what the SPLITTER makes out of one value in
-  isolation: "contained in a value" and "contained but not equal" both miss
-  regressions, the second because `displaySafe` TRIMS.
+- The paste hazard above is out of scope (SECURITY.md): keep the current
+  behavior, and do not extend it to new prose or build fences for it.
 - A value sanitizing to EMPTY suppresses the WHOLE command; `--stack-region ''`
   reads as "not supplied" and widens to every region holding the name. An empty
   `--state-prefix` is the exception and IS emitted as `--state-prefix ''`, since

@@ -47,6 +47,7 @@ import type {
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import {
   onlySecretDerived,
   readPrincipalLists,
@@ -383,11 +384,31 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     const newDescription = properties['Description'] as string | undefined;
     const oldDescription = previousProperties['Description'] as string | undefined;
 
-    // ManagedPolicyName, Path, and Description are all immutable on AWS.
-    const needsReplacement =
-      newPolicyName !== oldPolicyName ||
-      newPath !== oldPath ||
-      (newDescription ?? '') !== (oldDescription ?? '');
+    // ManagedPolicyName, Path, and Description are all immutable on AWS. A
+    // secret-derived Path / Description is recorded as its `{{resolve:...}}`
+    // reference and handed here resolved, which is no change, so it must not
+    // REPLACE the policy (go-to-k/cdkd#4275). The name is already compared with
+    // the one the ARN carries; the ARN carries the path too. The description
+    // has no non-secret identity, so it takes the masker arm.
+    const pathChanged =
+      newPath !== oldPath &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'Path',
+        desired: newPath,
+        previous: previousProperties['Path'],
+        physicalName: derivePolicyPathFromArn(physicalId),
+      }));
+    const descriptionChanged =
+      (newDescription ?? '') !== (oldDescription ?? '') &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'Description',
+        desired: newDescription,
+        previous: oldDescription,
+        maskSecrets: context?.maskSecrets,
+      }));
+    const needsReplacement = newPolicyName !== oldPolicyName || pathChanged || descriptionChanged;
 
     // Issue #4023: the replacement arm re-derives the name inside `create()`,
     // so on a revert it would still create under the derived name and delete
@@ -395,7 +416,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     if (needsReplacement && context?.desiredFromAwsReadback === true) {
       throw markNonRetryable(
         new ProvisioningError(
-          `IAM managed policy ${logicalId}: ${newPath !== oldPath ? 'Path' : 'Description'} ` +
+          `IAM managed policy ${logicalId}: ${pathChanged ? 'Path' : 'Description'} ` +
             `cannot be reverted — it cannot change in place, and a drift revert never replaces ` +
             `the policy ${v(physicalId)}. Nothing was changed; deploy the stack to replace it.`,
           resourceType,
@@ -409,7 +430,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       const reason =
         newPolicyName !== oldPolicyName
           ? 'ManagedPolicyName'
-          : newPath !== oldPath
+          : pathChanged
             ? 'Path'
             : 'Description';
       log.debug(
@@ -1112,4 +1133,17 @@ function derivePolicyNameFromArn(arn: string): string {
   // never looks left of the last '/', so no partition literal is involved.
   const ix = arn.lastIndexOf('/');
   return ix >= 0 ? arn.slice(ix + 1) : arn;
+}
+
+/**
+ * The `Path` a policy ARN carries (`policy/team/a/Name` -> `/team/a/`, a bare
+ * `policy/Name` -> `/`), or `undefined` when the physical id is not a policy
+ * ARN, so the caller keeps its own comparison (go-to-k/cdkd#4275).
+ */
+function derivePolicyPathFromArn(arn: string): string | undefined {
+  const marker = ':policy/';
+  const at = arn.indexOf(marker);
+  if (at < 0) return undefined;
+  const resource = arn.slice(at + marker.length - 1);
+  return resource.slice(0, resource.lastIndexOf('/') + 1);
 }

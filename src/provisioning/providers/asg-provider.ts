@@ -54,7 +54,7 @@ import {
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import {
@@ -65,6 +65,8 @@ import {
   type ProtectionFlipRecord,
   type ProtectionGuardSite,
 } from './deletion-protection-compensation.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 
 // ─── List reads (go-to-k/cdkd#3948) ─────────────────────────────────
 //
@@ -1009,15 +1011,30 @@ export class ASGProvider implements ResourceProvider {
         physicalId
       );
     }
-    this.logger.debug(`Updating AutoScalingGroup ${logicalId}: ${physicalId}`);
+    // The physical id is the group name, which can be secret-derived.
+    this.logger.debug(
+      `Updating AutoScalingGroup ${logicalId}: ${maskerOrIdentity(context?.maskSecrets)(physicalId)}`
+    );
 
     // Reject diffs on fields AWS does not support modifying via
     // UpdateAutoScalingGroup. The replacement-detection layer typically
     // catches AutoScalingGroupName changes earlier; this is defense-in-
     // depth + the only place to surface the equivalent error for
     // sub-resource fields the caller may reasonably expect to round-trip.
+    // A secret-derived name is recorded as its `{{resolve:...}}` reference
+    // and handed here resolved, which is no change: the physical id, which IS
+    // the group name, decides instead (go-to-k/cdkd#4275).
     const stringEq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-    if (!stringEq(properties['AutoScalingGroupName'], previousProperties['AutoScalingGroupName'])) {
+    if (
+      !stringEq(properties['AutoScalingGroupName'], previousProperties['AutoScalingGroupName']) &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'AutoScalingGroupName',
+        desired: properties['AutoScalingGroupName'],
+        previous: previousProperties['AutoScalingGroupName'],
+        physicalName: physicalId,
+      }))
+    ) {
       // Issue [#2610] site 8. `--replace` alone cannot succeed on a group whose
       // recorded `DeletionProtection` is `'prevent-all-deletion'` (see the
       // level analysis below for why that is the ONLY blocking level): the
@@ -1363,15 +1380,36 @@ export class ASGProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false, attributes };
     } catch (error) {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update AutoScalingGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, context?.maskSecrets);
     }
+  }
+
+  /**
+   * The `update()` failure wrap. AWS can quote the group name, which can be
+   * secret-derived (go-to-k/cdkd#4275), so its text goes through the masker,
+   * stamped exactly when the mask changed it so the retry classifiers read
+   * the unmasked cause.
+   */
+  private wrapUpdateError(
+    error: unknown,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string,
+    maskSecrets: MaskerFn | undefined
+  ): ProvisioningError {
+    const cause = error instanceof Error ? error : undefined;
+    return wrapMaskedAwsError(
+      maskerOrIdentity(maskSecrets),
+      error,
+      (text) =>
+        new ProvisioningError(
+          `Failed to update AutoScalingGroup ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        )
+    );
   }
 
   /**

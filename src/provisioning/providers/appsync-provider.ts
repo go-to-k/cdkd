@@ -101,6 +101,9 @@ import {
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { isSecretDerivedValue } from '../masked-retry-logger.js';
+import { markRedactedCause, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 
 /**
  * Retry-safety state for `CreateGraphqlApi`, which has no idempotency token
@@ -535,16 +538,21 @@ export class AppSyncProvider implements ResourceProvider {
    */
   private async childUpdateResult(
     resourceType: string,
-    physicalId: string
+    physicalId: string,
+    // The composite physical id can carry a secret-derived name
+    // (go-to-k/cdkd#4275); absent means unmasked.
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): Promise<ResourceUpdateResult> {
     let attributes: Record<string, unknown> | undefined;
     try {
       attributes = await this.childRefAttributes(resourceType, physicalId);
     } catch (error) {
       this.logger.warn(
-        `Updated ${resourceType} (${physicalId}) but could not rebuild its ARN attribute: ` +
-          `${describeAwsFailure(error).detail}. ` +
-          `The previously recorded attributes are kept.`
+        mask(
+          `Updated ${resourceType} (${physicalId}) but could not rebuild its ARN attribute: ` +
+            `${describeAwsFailure(error).detail}. ` +
+            `The previously recorded attributes are kept.`
+        )
       );
     }
     return { physicalId, wasReplaced: false, ...(attributes && { attributes }) };
@@ -736,7 +744,8 @@ export class AppSyncProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          maskerOrIdentity(context?.maskSecrets)
         );
       case 'AWS::AppSync::ApiKey':
         return this.updateApiKey(
@@ -744,7 +753,8 @@ export class AppSyncProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          maskerOrIdentity(context?.maskSecrets)
         );
       default:
         throw new ProvisioningError(
@@ -844,6 +854,89 @@ export class AppSyncProvider implements ResourceProvider {
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
+  /**
+   * Is a GraphqlApi `Name` "change" only a secret reference the record keeps
+   * and the desired side resolved (go-to-k/cdkd#4275)? The physical id is the
+   * API id, so nothing recorded carries the name; AWS is asked for it, and the
+   * resolved value must be exactly the API's live name. That also keeps a
+   * secret ROTATED under an unchanged reference refused, as a rename is. Only
+   * a recorded `{{resolve:...}}` reference (or its mask) is asked about: an
+   * ordinary recorded name keeps the plain comparison, with no call.
+   *
+   * A lookup FAILURE (or an answer with no name) is no evidence either way, so
+   * it refuses as a
+   * `ProvisioningError` (not `ResourceUpdateNotSupportedError`, which
+   * `--replace` turns into a replacement) naming the failure's class, with
+   * the AWS failure as a stamped cause so a throttle stays retryable.
+   */
+  private async graphQLApiNameUnchangedBehindSecret(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    desired: unknown,
+    previous: unknown,
+    mask: MaskerFn
+  ): Promise<boolean> {
+    if (!isSecretDerivedValue(previous, maskerOrIdentity(undefined))) return false;
+    let liveName: string | undefined;
+    try {
+      const response = await this.getClient().send(new GetGraphqlApiCommand({ apiId: physicalId }));
+      liveName = response.graphqlApi?.name;
+    } catch (error) {
+      throw this.wrapGraphQLApiNameLookupError(error, logicalId, physicalId, resourceType, mask);
+    }
+    // An answer with no name is no evidence either, refused the same way.
+    if (liveName === undefined) {
+      throw this.wrapGraphQLApiNameLookupError(
+        undefined,
+        logicalId,
+        physicalId,
+        resourceType,
+        mask
+      );
+    }
+    return unchangedBehindSecretReference({
+      resourceType,
+      key: 'Name',
+      desired,
+      previous,
+      physicalName: liveName,
+    });
+  }
+
+  /** The refusal for a failed live-name lookup (see the method above). */
+  private wrapGraphQLApiNameLookupError(
+    error: unknown,
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    mask: MaskerFn
+  ): ProvisioningError {
+    // `undefined`: AWS answered, with no name.
+    const failureClass =
+      error === undefined
+        ? 'an answer with no name'
+        : error instanceof Error && error.name !== ''
+          ? error.name
+          : 'an unreadable failure';
+    // A NotFound answer will not change on a re-run: the API is gone.
+    const next =
+      failureClass === 'NotFoundException'
+        ? `the API ${physicalId} no longer exists; check it with 'cdkd drift' before deploying again`
+        : 're-run once the lookup can succeed';
+    return markRedactedCause(
+      new ProvisioningError(
+        `Name of AWS::AppSync::GraphQLApi ${logicalId} is secret-derived, and whether the value ` +
+          `its secret resolves to is still the API's name could not be confirmed ` +
+          `(${mask(failureClass)}) — ${next}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      )
+    );
+  }
+
   private async updateGraphQLApi(
     logicalId: string,
     physicalId: string,
@@ -866,7 +959,15 @@ export class AppSyncProvider implements ResourceProvider {
     if (
       properties['Name'] !== undefined &&
       previousProperties['Name'] !== undefined &&
-      properties['Name'] !== previousProperties['Name']
+      properties['Name'] !== previousProperties['Name'] &&
+      !(await this.graphQLApiNameUnchangedBehindSecret(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties['Name'],
+        previousProperties['Name'],
+        maskerOrIdentity(context?.maskSecrets)
+      ))
     ) {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
@@ -1018,7 +1119,14 @@ export class AppSyncProvider implements ResourceProvider {
       try {
         await this.getClient().send(new UpdateGraphqlApiCommand(input));
       } catch (error) {
-        throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'GraphqlApi');
+        throw this.wrapUpdateError(
+          error,
+          resourceType,
+          logicalId,
+          physicalId,
+          'GraphqlApi',
+          maskerOrIdentity(context?.maskSecrets)
+        );
       }
     }
 
@@ -1134,11 +1242,27 @@ export class AppSyncProvider implements ResourceProvider {
     mask: MaskerFn
   ): Promise<ResourceUpdateResult> {
     // Identity fields are immutable: ApiId / Name / Type. Reject diffs in
-    // defense-in-depth against a missing replacement-rule entry.
+    // defense-in-depth against a missing replacement-rule entry. A
+    // secret-derived value is recorded as its `{{resolve:...}}` reference and
+    // handed here resolved, which is no change: the `<apiId>|<name>` physical
+    // id decides ApiId and Name instead (go-to-k/cdkd#4275).
+    const [idApiId, idName] = physicalId.split('|');
     for (const field of ['ApiId', 'Name', 'Type'] as const) {
       const next = properties[field];
       const prev = previousProperties[field];
-      if (next !== undefined && prev !== undefined && next !== prev) {
+      if (
+        next !== undefined &&
+        prev !== undefined &&
+        next !== prev &&
+        !(await unchangedBehindSecretReference({
+          resourceType,
+          key: field,
+          desired: next,
+          previous: prev,
+          physicalName: field === 'ApiId' ? idApiId : field === 'Name' ? idName : undefined,
+          maskSecrets: mask,
+        }))
+      ) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
@@ -1186,7 +1310,7 @@ export class AppSyncProvider implements ResourceProvider {
     );
 
     if (!wantUpdate) {
-      return this.childUpdateResult(resourceType, physicalId);
+      return this.childUpdateResult(resourceType, physicalId, mask);
     }
 
     const input: UpdateDataSourceCommandInput = {
@@ -1200,10 +1324,10 @@ export class AppSyncProvider implements ResourceProvider {
     try {
       await this.getClient().send(new UpdateDataSourceCommand(input));
     } catch (error) {
-      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'DataSource');
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'DataSource', mask);
     }
 
-    return this.childUpdateResult(resourceType, physicalId);
+    return this.childUpdateResult(resourceType, physicalId, mask);
   }
 
   private async updateResolver(
@@ -1211,13 +1335,30 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: MaskerFn
   ): Promise<ResourceUpdateResult> {
-    // Identity fields are immutable: ApiId / TypeName / FieldName.
-    for (const field of ['ApiId', 'TypeName', 'FieldName'] as const) {
+    // Identity fields are immutable: ApiId / TypeName / FieldName. A
+    // secret-derived value is recorded as its `{{resolve:...}}` reference and
+    // handed here resolved, which is no change: the
+    // `<apiId>|<typeName>|<fieldName>` physical id decides instead
+    // (go-to-k/cdkd#4275).
+    const identity = physicalId.split('|');
+    for (const [index, field] of (['ApiId', 'TypeName', 'FieldName'] as const).entries()) {
       const next = properties[field];
       const prev = previousProperties[field];
-      if (next !== undefined && prev !== undefined && next !== prev) {
+      if (
+        next !== undefined &&
+        prev !== undefined &&
+        next !== prev &&
+        !(await unchangedBehindSecretReference({
+          resourceType,
+          key: field,
+          desired: next,
+          previous: prev,
+          physicalName: identity.length === 3 ? identity[index] : undefined,
+        }))
+      ) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
@@ -1268,7 +1409,7 @@ export class AppSyncProvider implements ResourceProvider {
     );
 
     if (!wantUpdate) {
-      return this.childUpdateResult(resourceType, physicalId);
+      return this.childUpdateResult(resourceType, physicalId, mask);
     }
 
     const input: UpdateResolverCommandInput = {
@@ -1295,10 +1436,10 @@ export class AppSyncProvider implements ResourceProvider {
     try {
       await this.getClient().send(new UpdateResolverCommand(input));
     } catch (error) {
-      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'Resolver');
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'Resolver', mask);
     }
 
-    return this.childUpdateResult(resourceType, physicalId);
+    return this.childUpdateResult(resourceType, physicalId, mask);
   }
 
   private async updateApiKey(
@@ -1306,13 +1447,23 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: MaskerFn
   ): Promise<ResourceUpdateResult> {
-    // ApiId is immutable identity.
+    // ApiId is immutable identity. A secret-derived one is recorded as its
+    // `{{resolve:...}}` reference and handed here resolved, which is no
+    // change: the `<apiId>|<keyId>` physical id decides (go-to-k/cdkd#4275).
     if (
       properties['ApiId'] !== undefined &&
       previousProperties['ApiId'] !== undefined &&
-      properties['ApiId'] !== previousProperties['ApiId']
+      properties['ApiId'] !== previousProperties['ApiId'] &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'ApiId',
+        desired: properties['ApiId'],
+        previous: previousProperties['ApiId'],
+        physicalName: physicalId.split('|')[0],
+      }))
     ) {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
@@ -1337,7 +1488,7 @@ export class AppSyncProvider implements ResourceProvider {
     const oldExp = previousProperties['Expires'] as number | undefined;
 
     if (newDesc === oldDesc && newExp === oldExp) {
-      return this.childUpdateResult(resourceType, physicalId);
+      return this.childUpdateResult(resourceType, physicalId, mask);
     }
 
     const input: UpdateApiKeyCommandInput = {
@@ -1350,10 +1501,10 @@ export class AppSyncProvider implements ResourceProvider {
     try {
       await this.getClient().send(new UpdateApiKeyCommand(input));
     } catch (error) {
-      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'ApiKey');
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'ApiKey', mask);
     }
 
-    return this.childUpdateResult(resourceType, physicalId);
+    return this.childUpdateResult(resourceType, physicalId, mask);
   }
 
   /**
@@ -1432,15 +1583,25 @@ export class AppSyncProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     physicalId: string,
-    subType: string
+    subType: string,
+    // AWS can quote a child's secret-derived name back (go-to-k/cdkd#4275);
+    // absent means unmasked.
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
-    return new ProvisioningError(
-      `Failed to update AppSync ${subType} ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-      resourceType,
-      logicalId,
-      physicalId,
-      cause
+    // Stamped exactly when the mask changed AWS's text, so the retry
+    // classifiers read the unmasked cause (go-to-k/cdkd#2302).
+    return wrapMaskedAwsError(
+      mask,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `Failed to update AppSync ${subType} ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        )
     );
   }
 
