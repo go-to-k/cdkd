@@ -2,6 +2,7 @@ import { getLogger } from '../utils/logger.js';
 import { pasteableCommand } from '../utils/pasteable-command.js';
 import { withProducerRegions } from './producer-regions-scope.js';
 import { logicalIdShown } from '../provisioning/composite-id.js';
+import { hasOwnLines } from './collision-text.js';
 import {
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
@@ -3484,7 +3485,12 @@ export class DeployEngine {
           ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
           : labelRouting && { provisionedBy: labelRouting }),
         durationMs: Date.now() - resourceStartedAt,
-        error: extractDeploymentEventError(error),
+        // `ownLines` only for the engine's own name-collision refusals (keyed
+        // on identity), whose line breaks are all cdkd's: `cdkd events` then
+        // keeps their command off the provider-text line (go-to-k/cdkd#4291).
+        error: hasOwnLines(error)
+          ? { ...extractDeploymentEventError(error), ownLines: true }
+          : extractDeploymentEventError(error),
       });
 
       // Issue #2038 review: the CAUSE is masked too, and that is a THIRD sink

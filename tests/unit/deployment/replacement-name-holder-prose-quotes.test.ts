@@ -27,11 +27,16 @@ const base: ReplacementNameChange = {
   physicalId: 'my-fn',
 };
 
-/** The sentence as `deploy-engine-replacement.ts` throws it, remedy included. */
+/**
+ * The head line as `deploy-engine-update.ts`'s #3808 refusal throws it, remedy
+ * included (the provider text is on its own line since go-to-k/cdkd#4291, and
+ * the command carries no backtick wrapper).
+ */
 function thrown(change: ReplacementNameChange): string {
   return (
-    `Fn (AWS::Lambda::Function) requires replacement, but the create-first attempt collided: ` +
-    `exists. ${renderNameHeldElsewhere(change)} — so \`cdkd deploy --replace\` would delete ` +
+    `Fn (AWS::Lambda::Function) requires replacement, but the create-first attempt collided ` +
+    `(the provider text is on the Underlying collision line below). ` +
+    `${renderNameHeldElsewhere(change)} — so cdkd deploy --replace would delete ` +
     `this resource and still collide. Choose a name no other resource holds, or delete the ` +
     `resource holding it if it is yours.`
   );

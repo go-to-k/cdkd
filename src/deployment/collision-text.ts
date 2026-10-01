@@ -7,6 +7,28 @@
 import { displayAwsMessage, displaySafe } from '../utils/display-safe.js';
 
 /**
+ * The deploy engine's own name-collision refusals whose every line break is
+ * cdkd's: the provider text is JSON-escaped on its `Underlying collision:`
+ * line and the diagnosis is display-safe. Keyed on the error OBJECT, never on
+ * its code or text, so a provider message cannot claim it. The deploy engine
+ * records such an error with `ownLines: true`, so `cdkd events` keeps its
+ * lines apart (go-to-k/cdkd#4291; the rollback executor's own refusals use
+ * `OWN_REMEDY_ERRORS` for the same purpose).
+ */
+const OWN_LINES_ERRORS = new WeakSet<Error>();
+
+/** Register one of those refusals, and return it. */
+export function markOwnLines<E extends Error>(error: E): E {
+  OWN_LINES_ERRORS.add(error);
+  return error;
+}
+
+/** Whether `error` is one of those refusals. */
+export function hasOwnLines(error: unknown): boolean {
+  return error instanceof Error && OWN_LINES_ERRORS.has(error);
+}
+
+/**
  * The AWS rejection text quoted in the collision refusal: sanitized, every
  * run of BLANK-RENDERING characters collapsed to one space, and capped (M8 and
  * M10 of the go-to-k/cdkd#3764 review). The refusal's labelled `To orphan it:`

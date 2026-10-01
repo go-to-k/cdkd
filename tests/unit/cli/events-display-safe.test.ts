@@ -1447,6 +1447,24 @@ describe('cdkd events keeps a persisted refusal one line per line (go-to-k/cdkd#
     }
   });
 
+  it("the deploy engine's --replace refusal, recorded with ownLines, keeps its command off the provider line (go-to-k/cdkd#4291)", () => {
+    withPasteDir((dir) => {
+      for (const { value: payload } of PASTE_PAYLOADS) {
+        infoSpy.mockReset();
+        const message =
+          'Stream (AWS::Kinesis::Stream) requires replacement, but the create-first attempt collided ' +
+          '(why is on the Collision diagnosis line below) — so if another resource holds the name it ' +
+          'collided on, deleting the resource being replaced would destroy it and collide again. ' +
+          'Nothing was deleted, and cdkd deploy --replace would refuse the same way rather than delete it.' +
+          `\nCollision diagnosis: the create asked for Name "q", while the resource being replaced (${JSON.stringify(payload)}) holds "q2"` +
+          `\nUnderlying collision: ${JSON.stringify(`Stream ${payload} already exists.`)}`;
+        const out = render(message).join('\n');
+        expectNoCommandBesideDisplay(out, payload);
+        expectOnlyDisplayResidual(out, dir, payload);
+      }
+    });
+  }, 240_000);
+
   it('an own refusal recorded before the marker existed folds safely (old events stay readable)', () => {
     const lines = render(refusal('x'), 'absent');
     const head = lines.filter((l) => l.includes('Cannot reverse the replacement of B'));

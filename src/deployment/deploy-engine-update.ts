@@ -34,8 +34,9 @@ import { CdkdError, ResourceUpdateNotSupportedError } from '../utils/error-handl
 import { getLiveRenderer } from '../utils/live-renderer.js';
 import { formatResourceLine } from '../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
-import { collisionLine } from './collision-text.js';
+import { collisionLine, markOwnLines } from './collision-text.js';
 import { logicalIdShown, resourceTypeShown } from '../provisioning/composite-id.js';
+import { physicalIdShownBesideCommand } from '../utils/pasteable-command.js';
 import {
   type FreshNoEchoCeilingVerdict,
   type FreshNoEchoReadback,
@@ -1096,29 +1097,36 @@ export async function provisionUpdate(
           // Marked: a template value and a recorded name decide it, and
           // the message quotes the create's collision text, which the
           // recreate retry classifier treats as retryable.
-          throw markNonRetryable(
-            new CdkdError(
-              // The provider's text is on its own line below, and the command
-              // carries no backtick wrapper: pasted, a backtick span is command
-              // SUBSTITUTION (go-to-k/cdkd#3436, go-to-k/cdkd#4291).
-              `${refusalHead} requires replacement, but the create-first ` +
-                `attempt collided (the provider text is on the Underlying collision line ` +
-                `below). ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
-                (this.options.replace === true
-                  ? ` — so --replace was NOT applied and nothing was deleted.`
-                  : updateReplacePolicy === 'Retain'
-                    ? ` — so removing UpdateReplacePolicy: Retain and re-running with ` +
-                      `cdkd deploy --replace would delete this resource and still collide.`
-                    : ` — so cdkd deploy --replace would delete this resource and still ` +
-                      `collide.`) +
-                ` Choose a name no other resource holds, or delete the resource holding it if ` +
-                `it is yours.` +
-                `\nUnderlying collision: ${createCollisionLine}`,
-              'NAMED_REPLACEMENT_COLLISION',
-              // Chained like the fallback twin, so the persisted event
-              // names the AWS rejection; safe because the refusal is
-              // marked, which the retry classifiers read first.
-              createError instanceof Error ? createError : undefined
+          throw markOwnLines(
+            markNonRetryable(
+              new CdkdError(
+                // The provider's text is on its own line below, and the command
+                // carries no backtick wrapper: pasted, a backtick span is command
+                // SUBSTITUTION (go-to-k/cdkd#3436, go-to-k/cdkd#4291). Masked at
+                // construction, like the holder refusal below: the names come
+                // from the resolved bag.
+                maskSecretsInText(
+                  `${refusalHead} requires replacement, but the create-first ` +
+                    `attempt collided (the provider text is on the Underlying collision line ` +
+                    `below). ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
+                    (this.options.replace === true
+                      ? ` — so --replace was NOT applied and nothing was deleted.`
+                      : updateReplacePolicy === 'Retain'
+                        ? ` — so removing UpdateReplacePolicy: Retain and re-running with ` +
+                          `cdkd deploy --replace would delete this resource and still collide.`
+                        : ` — so cdkd deploy --replace would delete this resource and still ` +
+                          `collide.`) +
+                    ` Choose a name no other resource holds, or delete the resource holding it if ` +
+                    `it is yours.` +
+                    `\nUnderlying collision: ${createCollisionLine}`,
+                  updateSecrets
+                ),
+                'NAMED_REPLACEMENT_COLLISION',
+                // Chained like the fallback twin, so the persisted event
+                // names the AWS rejection; safe because the refusal is
+                // marked, which the retry classifiers read first.
+                createError instanceof Error ? createError : undefined
+              )
             )
           );
         }
@@ -1160,72 +1168,87 @@ export async function provisionUpdate(
                   `cdkd deploy --replace would refuse the same way rather than delete it.`
                 : ` Nothing was deleted, and cdkd deploy --replace would refuse the ` +
                   `same way rather than delete it.`;
-          throw markNonRetryable(
-            new CdkdError(
-              // Masked at construction: the create's collision text can
-              // echo a resolved value.
-              maskSecretsInText(
-                // The rollback twin's shape (go-to-k/cdkd#4214, here
-                // go-to-k/cdkd#4291): the diagnosis quotes names from the
-                // records in JSON quotes and the provider text can echo a
-                // template value, so each is on a line of its own, and this
-                // line, which names cdkd deploy --replace, shows neither.
-                `${refusalHead} requires ` +
-                  `replacement, but the create-first attempt collided (why is on the ` +
-                  `Collision diagnosis line below) — ` +
-                  (holder.known
-                    ? `so another resource holds the colliding name (an orphan of an ` +
-                      `earlier attempt, or one made outside this stack), and deleting the ` +
-                      `resource being replaced would destroy it and collide again.` +
-                      flagClause +
-                      ` Remove or rename the resource holding that name if it is yours, ` +
-                      `then re-run the deploy.`
-                    : `so if another resource holds the name it collided on (an orphan of an ` +
-                      `earlier attempt, or one made outside this stack), deleting the ` +
-                      `resource being replaced would destroy it and collide again.` +
-                      flagClause +
-                      ` Remove or rename whatever holds that name if it is yours — if ` +
-                      `that is the resource being replaced itself, delete it by hand — ` +
-                      `then re-run the deploy.`) +
-                  `\nCollision diagnosis: ${holder.diagnosis}` +
-                  `\nUnderlying collision: ${createCollisionLine}`,
-                updateSecrets
-              ),
-              'NAMED_REPLACEMENT_COLLISION',
-              // Chained like the #3808 refusal above: marked, so the
-              // retry classifiers never read the collision text.
-              createError instanceof Error ? createError : undefined
+          throw markOwnLines(
+            markNonRetryable(
+              new CdkdError(
+                // Masked at construction: the create's collision text can
+                // echo a resolved value.
+                maskSecretsInText(
+                  // The rollback twin's shape (go-to-k/cdkd#4214, here
+                  // go-to-k/cdkd#4291): the diagnosis quotes names from the
+                  // records in JSON quotes and the provider text can echo a
+                  // template value, so each is on a line of its own, and this
+                  // line, which names cdkd deploy --replace, shows neither.
+                  `${refusalHead} requires ` +
+                    `replacement, but the create-first attempt collided (why is on the ` +
+                    `Collision diagnosis line below) — ` +
+                    (holder.known
+                      ? `so another resource holds the colliding name (an orphan of an ` +
+                        `earlier attempt, or one made outside this stack), and deleting the ` +
+                        `resource being replaced would destroy it and collide again.` +
+                        flagClause +
+                        ` Remove or rename the resource holding that name if it is yours, ` +
+                        `then re-run the deploy.`
+                      : `so if another resource holds the name it collided on (an orphan of an ` +
+                        `earlier attempt, or one made outside this stack), deleting the ` +
+                        `resource being replaced would destroy it and collide again.` +
+                        flagClause +
+                        ` Remove or rename whatever holds that name if it is yours — if ` +
+                        `that is the resource being replaced itself, delete it by hand — ` +
+                        `then re-run the deploy.`) +
+                    `\nCollision diagnosis: ${holder.diagnosis}` +
+                    `\nUnderlying collision: ${createCollisionLine}`,
+                  updateSecrets
+                ),
+                'NAMED_REPLACEMENT_COLLISION',
+                // Chained like the #3808 refusal above: marked, so the
+                // retry classifiers never read the collision text.
+                createError instanceof Error ? createError : undefined
+              )
             )
           );
         }
         if (updateReplacePolicy === 'Retain') {
+          // No command on this line: the id is shown as recorded.
+          const retainNameOrigin = this.replacementNameOrigin(
+            logicalId,
+            currentResource.physicalId,
+            {
+              besideCommand: false,
+            }
+          );
           throw new CdkdError(
             `${logicalId} (${resourceType}) requires replacement, but its physical name ` +
               `is still held by the existing resource AND UpdateReplacePolicy: Retain ` +
-              `pins that resource in place. ${nameOrigin.descriptor}. ` +
-              `${nameOrigin.remedy} — with Retain, the old resource keeps the name, so a ` +
+              `pins that resource in place. ${retainNameOrigin.descriptor}. ` +
+              `${retainNameOrigin.remedy} — with Retain, the old resource keeps the name, so a ` +
               `same-name replacement can never proceed.`,
             'NAMED_REPLACEMENT_COLLISION'
           );
         }
         if (this.options.replace !== true) {
-          throw new CdkdError(
-            // As the two refusals above: the head and the physical id (in
-            // `nameOrigin.descriptor`) are shown only when plain, the provider
-            // text is on its own line, and the command has no backtick wrapper
-            // (go-to-k/cdkd#4291).
-            `${refusalHead} requires replacement, but the create-first ` +
-              `attempt collided with the existing resource (the provider text is on the ` +
-              `Underlying collision line below). ` +
-              `${nameOrigin.descriptor}, so the CloudFormation-style safe replacement ` +
-              `order (create the new resource before deleting the old) cannot reuse the ` +
-              `occupied name — CloudFormation refuses this shape with "cannot update a ` +
-              `stack when a custom-named resource requires replacing". ` +
-              `${nameOrigin.remedy}, or re-run with cdkd deploy --replace to delete ` +
-              `the old resource FIRST and recreate it under the same name (the resource ` +
-              `is briefly unavailable while it is recreated).` +
-              `\nUnderlying collision: ${createCollisionLine}`,
-            'NAMED_REPLACEMENT_COLLISION'
+          throw markOwnLines(
+            new CdkdError(
+              // As the two refusals above: the head and the physical id (in
+              // `nameOrigin.descriptor`) are shown only when plain, the provider
+              // text is on its own line, the command has no backtick wrapper,
+              // and the whole is masked at construction (go-to-k/cdkd#4291).
+              maskSecretsInText(
+                `${refusalHead} requires replacement, but the create-first ` +
+                  `attempt collided with the existing resource (the provider text is on the ` +
+                  `Underlying collision line below). ` +
+                  `${nameOrigin.descriptor}, so the CloudFormation-style safe replacement ` +
+                  `order (create the new resource before deleting the old) cannot reuse the ` +
+                  `occupied name — CloudFormation refuses this shape with "cannot update a ` +
+                  `stack when a custom-named resource requires replacing". ` +
+                  `${nameOrigin.remedy}, or re-run with cdkd deploy --replace to delete ` +
+                  `the old resource FIRST and recreate it under the same name (the resource ` +
+                  `is briefly unavailable while it is recreated).` +
+                  `\nUnderlying collision: ${createCollisionLine}`,
+                updateSecrets
+              ),
+              'NAMED_REPLACEMENT_COLLISION'
+            )
           );
         }
         // --replace opt-in: the user accepts delete-first semantics
@@ -1278,11 +1301,14 @@ export async function provisionUpdate(
         !deletedOldFirst &&
         createResult.physicalId === currentResource.physicalId
       ) {
-        const idempotentNameOrigin = this.replacementNameOrigin(
-          logicalId,
-          currentResource.physicalId
-        );
         if (updateReplacePolicy === 'Retain') {
+          // No command on this line: the id is shown as recorded, in both
+          // places it appears.
+          const idempotentNameOrigin = this.replacementNameOrigin(
+            logicalId,
+            currentResource.physicalId,
+            { besideCommand: false }
+          );
           throw new CdkdError(
             `${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
               `name-idempotent: the create-first attempt returned the existing resource ` +
@@ -1295,18 +1321,33 @@ export async function provisionUpdate(
           );
         }
         if (this.options.replace !== true) {
+          // This line names `cdkd deploy --replace`: the head and both copies
+          // of the physical id are shown only when plain, the command carries
+          // no backtick wrapper, and the whole is masked at construction
+          // (go-to-k/cdkd#4291's sibling, code review of #4342).
+          const idempotentNameOrigin = this.replacementNameOrigin(
+            logicalId,
+            currentResource.physicalId
+          );
+          const returnedId =
+            physicalIdShownBesideCommand(currentResource.physicalId) ??
+            'a physical id that is not a plain identifier';
           throw new CdkdError(
-            `${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
-              `name-idempotent: the create-first attempt returned the EXISTING resource ` +
-              `(${currentResource.physicalId}) instead of creating a new one, so deleting ` +
-              `the "old" resource would silently destroy the resource the deploy just ` +
-              `reported as created. ${idempotentNameOrigin.descriptor}; ` +
-              `${idempotentNameOrigin.remedy}, or re-run with ` +
-              `\`cdkd deploy --replace\` to delete the old resource FIRST and recreate ` +
-              `it under the same name (the resource is briefly unavailable while it is ` +
-              `recreated). Note: this branch is also reached when the old resource was ` +
-              `deleted out-of-band and the physical id is name-derived — there the ` +
-              `create was a genuine fresh create; \`--replace\` converges that case too.`,
+            maskSecretsInText(
+              `${logicalIdShown(logicalId)} (${resourceTypeShown(resourceType)}) requires ` +
+                `replacement, but its Create API is ` +
+                `name-idempotent: the create-first attempt returned the EXISTING resource ` +
+                `(${returnedId}) instead of creating a new one, so deleting ` +
+                `the "old" resource would silently destroy the resource the deploy just ` +
+                `reported as created. ${idempotentNameOrigin.descriptor}; ` +
+                `${idempotentNameOrigin.remedy}, or re-run with ` +
+                `cdkd deploy --replace to delete the old resource FIRST and recreate ` +
+                `it under the same name (the resource is briefly unavailable while it is ` +
+                `recreated). Note: this branch is also reached when the old resource was ` +
+                `deleted out-of-band and the physical id is name-derived — there the ` +
+                `create was a genuine fresh create; --replace converges that case too.`,
+              updateSecrets
+            ),
             'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
           );
         }
@@ -2131,7 +2172,10 @@ export async function provisionUpdate(
               )
             );
           }
-          const nameOrigin = this.replacementNameOrigin(logicalId, currentResource.physicalId);
+          // No command on this line: the id is shown as recorded.
+          const nameOrigin = this.replacementNameOrigin(logicalId, currentResource.physicalId, {
+            besideCommand: false,
+          });
           // Verbatim the property-driven twin's verdict and code: with
           // Retain the old resource keeps the name, so a same-name
           // replacement can never proceed — under ANY flag, since the
@@ -2185,9 +2229,11 @@ export async function provisionUpdate(
               newProperties: resolvedProps,
             })
           ) {
+            // No command on this line: the id is shown as recorded.
             const idempotentNameOrigin = this.replacementNameOrigin(
               logicalId,
-              currentResource.physicalId
+              currentResource.physicalId,
+              { besideCommand: false }
             );
             // Marked for the same reason as its collision sibling: the
             // verdict is two recorded physical ids plus a template
