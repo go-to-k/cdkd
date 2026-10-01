@@ -426,8 +426,8 @@ describe('provider error-cause critic — probes against the REAL providers tree
     mutate(
       dir,
       'iam-role-provider.ts',
-      '        roleName,\n        cause\n      );',
-      '        roleName\n      );'
+      '            roleName,\n            cause\n          )',
+      '            roleName\n          )'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
@@ -440,8 +440,8 @@ describe('provider error-cause critic — probes against the REAL providers tree
     mutate(
       dir,
       'iam-role-provider.ts',
-      '        roleName,\n        cause\n      );',
-      '        roleName,\n        undefined\n      );'
+      '            roleName,\n            cause\n          )',
+      '            roleName,\n            undefined\n          )'
     );
     expect(runCheck(dir).status).toBe(1);
   }, SPAWN_TIMEOUT_MS);

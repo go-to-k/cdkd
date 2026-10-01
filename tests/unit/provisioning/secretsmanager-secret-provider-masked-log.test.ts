@@ -53,6 +53,11 @@ import {
 import { SecretsManagerSecretProvider } from '../../../src/provisioning/providers/secretsmanager-secret-provider.js';
 import { createSecretMasker } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::SecretsManager::Secret';
 const TINY = 'qx';
@@ -564,5 +569,78 @@ describe('SecretsManagerSecretProvider update() masking (#2177)', () => {
     );
     expect(err.message.startsWith(MARK)).toBe(true);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('a masked failure still classifies as retryable (issue #4244)', () => {
+  let provider: SecretsManagerSecretProvider;
+  /** AWS's wording for a name still held by a secret pending deletion. */
+  const TRANSIENT =
+    "You can't create this secret because a secret with this name is already scheduled for deletion.";
+  const retryable = (error: Error): boolean =>
+    isRetryableTransientError(error, retryClassificationText(error));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new SecretsManagerSecretProvider();
+  });
+
+  function expectStampedRetryable(failure: Error, cut: string): void {
+    // Premise: the mask cut the retry wording out of the message itself.
+    expect(failure.message).not.toContain(cut);
+    expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect(retryable(failure)).toBe(true);
+  }
+
+  const create = (name: string, masker: (t: string) => string) =>
+    thrown(() =>
+      provider.create('Secret', TYPE, { Name: name, SecretString: 'v' }, { maskSecrets: masker })
+    );
+  const update = (masker: (t: string) => string) =>
+    thrown(() =>
+      provider.update(
+        'Secret',
+        arnOf('plain'),
+        TYPE,
+        { Name: 'plain', SecretString: 'new' },
+        { Name: 'plain', SecretString: 'old' },
+        { maskSecrets: masker }
+      )
+    );
+
+  it('create(): a recorded secret spelling the retry wording', async () => {
+    mockSend.mockRejectedValue(new Error(TRANSIENT));
+    expectStampedRetryable(
+      await create('plain', createSecretMasker(bagOf('scheduled'))),
+      'scheduled for deletion'
+    );
+  });
+
+  it('update(): a recorded secret spelling the retry wording', async () => {
+    mockSend.mockRejectedValue(new Error(TRANSIENT));
+    expectStampedRetryable(
+      await update(createSecretMasker(bagOf('scheduled'))),
+      'scheduled for deletion'
+    );
+  });
+
+  it('create(): a 3-character secret Name whose needle cuts the retry wording', async () => {
+    // `del` is below the masker's substring floor, so only the Name needle
+    // masks it -- inside `deletion`.
+    mockSend.mockRejectedValue(new Error(TRANSIENT));
+    const failure = await create('del', createSecretMasker(bagOf('del')));
+    expect(failure.message).toContain('***etion');
+    expectStampedRetryable(failure, 'scheduled for deletion');
+  });
+
+  it('does not stamp a failure the mask left unchanged', async () => {
+    mockSend.mockRejectedValue(new Error('Bad request parameter'));
+    const masker = createSecretMasker(bagOf('scheduled'));
+    for (const failure of [await create('plain', masker), await update(masker)]) {
+      expect(failure.message).toContain('Bad request parameter');
+      expect(hasRedactedCause(failure)).toBe(false);
+      expect(retryable(failure)).toBe(false);
+    }
   });
 });

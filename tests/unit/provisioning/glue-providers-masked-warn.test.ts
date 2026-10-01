@@ -94,6 +94,11 @@ import {
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
 
 /** A name-safe secret, long enough for the message-level substring arm. */
 const SECRET = 'glue-secret-name';
@@ -1294,5 +1299,162 @@ describe('the sibling-specific Glue message sites (issue #2177)', () => {
     // Pins the KNOWN residual, not a contract: flip this when #2007 threads a
     // masker into delete().
     expect(allLines()).toContain(`Glue Job ${SHORT} does not exist`);
+  });
+});
+
+describe('a masked failure still classifies as retryable (issue #4244)', () => {
+  /** Glue's IAM-propagation wording, a retry-table entry. */
+  const TRANSIENT =
+    "Service is unable to assume provided role. Please verify role's TrustPolicy";
+  const CUT = 'is unable to assume provided role';
+  /** A recorded secret that spells part of that wording. */
+  const retryMasker = createSecretMasker(bagOf('provided'));
+  const retryable = (error: Error): boolean =>
+    isRetryableTransientError(error, retryClassificationText(error));
+  const transient = (): Error => awsEcho(TRANSIENT);
+
+  function expectStampedRetryable(failure: unknown): void {
+    expect(failure).toBeInstanceOf(Error);
+    const error = failure as Error;
+    // Premise: the mask cut the retry wording out of the message itself.
+    expect(error.message).not.toContain(CUT);
+    expect(isRetryableTransientError(error, error.message)).toBe(false);
+    expect(hasRedactedCause(error)).toBe(true);
+    expect(retryable(error)).toBe(true);
+  }
+
+  type Masker = (text: string) => string;
+  const db = new GlueProvider();
+  const DB_UPDATE = { DatabaseInput: { Description: 'd' } };
+  const TABLE = { DatabaseName: 'db', TableInput: { Name: 'tbl' } };
+  /** Each masked wrap in the Glue family, and the call that reaches it. */
+  const SITES: ReadonlyArray<{
+    site: string;
+    arm: (failure: Error) => void;
+    run: (mask: Masker) => Promise<unknown>;
+  }> = [
+    {
+      site: 'Database create()',
+      arm: (f) => answerGlue({ CreateDatabaseCommand: f }),
+      run: (m) =>
+        db.create('Db', 'AWS::Glue::Database', { DatabaseInput: { Name: 'db' } }, { maskSecrets: m }),
+    },
+    {
+      site: 'Database update()',
+      arm: (f) =>
+        answerGlue({ GetDatabaseCommand: { Database: { Parameters: {} } }, UpdateDatabaseCommand: f }),
+      run: (m) => db.update('Db', 'db', 'AWS::Glue::Database', DB_UPDATE, {}, { maskSecrets: m }),
+    },
+    {
+      site: 'Database pre-update read',
+      arm: (f) => answerGlue({ GetDatabaseCommand: f }),
+      run: (m) => db.update('Db', 'db', 'AWS::Glue::Database', DB_UPDATE, {}, { maskSecrets: m }),
+    },
+    {
+      site: 'Database catalog-move account lookup (STS)',
+      arm: (f) => {
+        answerGlue();
+        mockStsSend.mockReset();
+        mockStsSend.mockRejectedValue(f);
+      },
+      run: (m) =>
+        new GlueProvider().update(
+          'Db',
+          'db',
+          'AWS::Glue::Database',
+          DB_UPDATE,
+          { CatalogId: '222222222222' },
+          { maskSecrets: m }
+        ),
+    },
+    {
+      site: 'Table create()',
+      arm: (f) => answerGlue({ CreateTableCommand: f }),
+      run: (m) => db.create('Tbl', 'AWS::Glue::Table', TABLE, { maskSecrets: m }),
+    },
+    {
+      site: 'Table update()',
+      arm: (f) => answerGlue({ GetTableCommand: { Table: {} }, UpdateTableCommand: f }),
+      run: (m) => db.update('Tbl', 'db|tbl', 'AWS::Glue::Table', TABLE, {}, { maskSecrets: m }),
+    },
+    {
+      site: 'Table pre-update read',
+      arm: (f) => answerGlue({ GetTableCommand: f }),
+      run: (m) => db.update('Tbl', 'db|tbl', 'AWS::Glue::Table', TABLE, {}, { maskSecrets: m }),
+    },
+    {
+      site: 'SecurityConfiguration create()',
+      arm: (f) => answerGlue({ CreateSecurityConfigurationCommand: f }),
+      run: (m) =>
+        new GlueSecurityConfigurationProvider().create(
+          'Sc',
+          'AWS::Glue::SecurityConfiguration',
+          { Name: 'sc', EncryptionConfiguration: {} },
+          { maskSecrets: m }
+        ),
+    },
+    ...SIBLINGS.flatMap((row) => [
+      {
+        site: `${row.label} create()`,
+        arm: (f: Error) => answerGlue({ [row.createCommand]: f }),
+        run: (m: Masker) =>
+          row.make().create('Res', row.type, row.createBag('plain'), { maskSecrets: m }),
+      },
+      {
+        site: `${row.label} update()`,
+        arm: (f: Error) => answerGlue({ [row.updateCommand]: f }),
+        run: (m: Masker) =>
+          row.make().update('Res', 'plain', row.type, row.updateBag, {}, { maskSecrets: m }),
+      },
+    ]),
+  ];
+
+  it.each(SITES)('$site: the stamp keeps it retryable', async ({ arm, run }) => {
+    arm(transient());
+    expectStampedRetryable(await caught(run(retryMasker)));
+  });
+
+  it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ arm, run }) => {
+    arm(awsEcho('Bad request parameter'));
+    const failure = (await caught(run(retryMasker))) as Error;
+    expect(failure.message).toContain('Bad request parameter');
+    expect(hasRedactedCause(failure)).toBe(false);
+    expect(retryable(failure)).toBe(false);
+  });
+
+  it('does not stamp cdkd own create-path refusal: it names the shape, never the value', async () => {
+    // `buildDatabaseInput` runs INSIDE create()'s wrapped try, so its refusal
+    // reaches `wrapMaskedError`; it stays unstamped only because its text
+    // quotes no value the masker could change.
+    answerGlue();
+    const failure = (await caught(
+      db.create(
+        'Db',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'db', TargetDatabase: 'provided' } },
+        { maskSecrets: retryMasker }
+      )
+    )) as Error;
+    expect(mockGlueSend).not.toHaveBeenCalled();
+    expect(failure.message).toContain('Failed to create Glue Database Db:');
+    expect(failure.message).toContain('TargetDatabase must be an object');
+    expect(hasRedactedCause(failure)).toBe(false);
+    expect(retryable(failure)).toBe(false);
+  });
+
+  it('a 3-character secret Name whose needle cuts the retry wording', async () => {
+    // `sum` is below the masker's substring floor, so only the Name needle
+    // masks it -- inside `assume`.
+    answerGlue({ CreateDatabaseCommand: transient() });
+    const failure = await caught(
+      db.create(
+        'Db',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'sum' } },
+        { maskSecrets: createSecretMasker(bagOf('sum')) }
+      )
+    );
+    expect((failure as Error).message).toContain('unable to as***e provided');
+    expectStampedRetryable(failure);
   });
 });
