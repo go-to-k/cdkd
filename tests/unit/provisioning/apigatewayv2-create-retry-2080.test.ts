@@ -363,6 +363,29 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       expect(warnLines().some((l) => l.includes('cut at 20 pages'))).toBe(true);
     });
 
+    it('a report naming a candidate still says the listing was cut short', async () => {
+      aws.pageSize = 1;
+      aws.loseNextCreateResponse = transient500();
+      // The orphan is the first item; 25 more arrive behind it, past the ceiling.
+      aws.onList = () => {
+        for (let i = 0; i < 25; i++) {
+          aws.apis.push({
+            ApiId: `x${i}`,
+            Name: `o${i}`,
+            ProtocolType: 'HTTP',
+            CreatedDate: new Date(Date.now()),
+          });
+        }
+        aws.onList = undefined;
+      };
+
+      await createWithRetry('AWS::ApiGatewayV2::Api', API_PROPS);
+
+      const line = reportFor('CreateApi')!;
+      expect(line).toContain('api1');
+      expect(line).toContain('cut at 20 pages');
+    });
+
     it('masks a short secret-derived API name as a WHOLE value', async () => {
       aws.loseNextCreateResponse = transient500();
 
