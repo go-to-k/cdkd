@@ -458,6 +458,29 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       }
     });
 
+    it('two ambiguous attempts in a row: the second report dates from the FIRST attempt', async () => {
+      aws.loseNextCreateResponse = transient500();
+      aws.onList = () => {
+        aws.loseNextCreateResponse = transient500();
+        aws.onList = undefined;
+      };
+
+      await withRetry(
+        () => provider.create('Res', 'AWS::ApiGatewayV2::Integration', INT_PROPS),
+        'Res',
+        {
+          sleep: (): Promise<void> => {
+            vi.setSystemTime(Date.now() + 30_000);
+            return Promise.resolve();
+          },
+        }
+      );
+
+      const lines = warnLines().filter((l) => l.includes('earlier CreateIntegration attempt'));
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toContain('(at 2026-09-30T23:59:55.000Z)');
+    });
+
     it('a DEFINITE CreateIntegration failure (a 4xx) triggers no lookup', async () => {
       aws.failNext.set('CreateIntegrationCommand', [propagationDenied()]);
 
@@ -496,6 +519,29 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       for (const id of [earlier.physicalId, 'othername', 'othertype']) {
         expect(line).not.toContain(` ${id}`);
       }
+    });
+
+    it('two ambiguous attempts in a row: the second report dates from the FIRST attempt', async () => {
+      aws.loseNextCreateResponse = transient500();
+      aws.onList = () => {
+        aws.loseNextCreateResponse = transient500();
+        aws.onList = undefined;
+      };
+
+      await withRetry(
+        () => provider.create('Res', 'AWS::ApiGatewayV2::Authorizer', AUTH_PROPS),
+        'Res',
+        {
+          sleep: (): Promise<void> => {
+            vi.setSystemTime(Date.now() + 30_000);
+            return Promise.resolve();
+          },
+        }
+      );
+
+      const lines = warnLines().filter((l) => l.includes('earlier CreateAuthorizer attempt'));
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toContain('(at 2026-09-30T23:59:55.000Z)');
     });
 
     it('a throttled CreateAuthorizer triggers no lookup', async () => {

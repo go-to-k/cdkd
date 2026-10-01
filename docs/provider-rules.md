@@ -1152,8 +1152,10 @@ Where the API has no token and nothing can be deleted safely,
   covered.
 - **Bound the window on BOTH ends.** The latch records the ambiguous
   attempt's start AND end (each widened by a skew margin) and expires after
-  `AMBIGUOUS_LATCH_TTL_MS`: a same-named resource created later -- by another
-  process, after this one gave up -- is never a candidate.
+  `AMBIGUOUS_LATCH_TTL_MS`: where the resource carries a creation date, a
+  same-named resource created later -- by another process, after this one
+  gave up -- is never a candidate. A lookup over a type with no creation date
+  cannot apply the window, and its report says so.
 - **Adopt only on EXACT attribution, which a lookup never has.** The one
   adoption in this family is a KMS key id that came back in this process's own
   response before a follow-up call failed, bound to a digest of its inputs.
@@ -1164,7 +1166,8 @@ Where the API has no token and nothing can be deleted safely,
 - **Lead the report with a READ command**, and offer a delete command only
   after it, conditional on confirming the candidate is this deploy's orphan: a
   candidate may belong to another deploy. Where there is no window at all
-  (`GraphqlApi` has no creation date) print no delete command.
+  (no creation date: `GraphqlApi`, an API Gateway authorizer, an API Gateway
+  v2 integration) print no delete command.
 - **A lookup that fails, transiently or not, warns and lets the create
   proceed**: nothing adopts, so a failed lookup has no stake worth failing a
   create over. Say only what was LISTED: list APIs are eventually

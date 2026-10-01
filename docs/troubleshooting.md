@@ -2560,7 +2560,8 @@ may have made and warns about each match, with a read command first:
 
 cdkd neither adopts nor deletes a candidate, and then creates the resource
 again. An orphaned authorizer, integration or deployment is deleted with its
-API. The lookup needs `apigateway:GET` on the API; without it cdkd warns that
+API. The lookup needs `apigateway:GET` (on the API, or on the API list for
+`CreateApi`); without it cdkd warns that
 it could not look, and the deploy proceeds. A reset connection or a timeout
 after the request was sent is not covered, as for the three creates above.
 

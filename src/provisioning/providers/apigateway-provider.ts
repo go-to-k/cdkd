@@ -249,22 +249,26 @@ export class ApiGatewayProvider implements ResourceProvider {
     this.apiGatewayClient = awsClients.apiGateway;
   }
 
-  private createClient: APIGatewayClient | undefined;
+  private createClient: Promise<APIGatewayClient> | undefined;
 
   /**
    * The client `CreateAuthorizer` and `CreateDeployment` go through: SDK
    * retries on, except a 5xx (`withoutServerErrorRetries`, issue #2080).
    * Separate so every other call keeps the full SDK retry, and built in the
    * shared client's REGION (read from it, as `config.region()` resolves it) so
-   * the create cannot land in another region than the calls around it.
+   * the create cannot land in another region than the calls around it. The
+   * PROMISE is cached, so two creates on a cold provider build one client; a
+   * rejected region read is not cached, so the next create retries it.
    */
-  private async getCreateClient(): Promise<APIGatewayClient> {
-    if (!this.createClient) {
-      const region = await this.apiGatewayClient.config.region();
-      this.createClient = withoutServerErrorRetries(
-        new APIGatewayClient({ ...ambientClientDefaults(), region })
-      );
-    }
+  private getCreateClient(): Promise<APIGatewayClient> {
+    this.createClient ??= this.apiGatewayClient.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(new APIGatewayClient({ ...ambientClientDefaults(), region })),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
     return this.createClient;
   }
 

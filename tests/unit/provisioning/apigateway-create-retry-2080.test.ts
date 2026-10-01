@@ -30,7 +30,9 @@ const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy } = vi.hoisted(() => 
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => {
-  const config = { region: () => Promise.resolve('us-east-1') };
+  // Not the ambient default, so a create client built from `ambientRegion()`
+  // instead of the shared client's region is told apart.
+  const config = { region: () => Promise.resolve('ap-southeast-2') };
   return {
     getAwsClients: () => ({
       apiGateway: {
@@ -158,6 +160,8 @@ class FakeApiGateway {
     const queued = this.failNext.get(name);
     if (queued && queued.length > 0) throw queued.shift();
     const input = command.input;
+    // Before the list is read, so a hook can add to what this page lists.
+    if (name.startsWith('Get')) this.onList?.();
     switch (name) {
       case 'CreateAuthorizerCommand': {
         const created: FakeAuthorizer = {
@@ -206,7 +210,6 @@ class FakeApiGateway {
   }
 
   private page<T>(all: T[], position: unknown): { items: T[]; position?: string } {
-    this.onList?.();
     const start = position === undefined ? 0 : Number(position);
     const end = start + this.pageSize;
     return {
@@ -351,6 +354,62 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
       const line = reportFor('CreateAuthorizer')!;
       expect(line).toContain('auth1');
       expect(line).not.toContain('named zq');
+    });
+
+    it('a lookup that finds nothing in a complete listing stays at debug', async () => {
+      // The 5xx is thrown BEFORE the fake creates anything: nothing to find.
+      aws.failNext.set('CreateAuthorizerCommand', [transient500()]);
+
+      await createWithRetry('AWS::ApiGateway::Authorizer', AUTH_PROPS);
+
+      expect(aws.count('GetAuthorizersCommand')).toBe(1);
+      expect(warnLines()).toEqual([]);
+      expect(debugSpy.mock.calls.some((c) => String(c[0]).includes('No listed authorizer(s)'))).toBe(
+        true
+      );
+    });
+
+    it('a report naming a candidate still says the listing was cut short', async () => {
+      aws.pageSize = 1;
+      aws.loseNextCreateResponse = transient500();
+      // The orphan is the first item; 25 more arrive behind it, past the ceiling.
+      aws.onList = () => {
+        for (let i = 0; i < 25; i++) {
+          aws.authorizers.push({ id: `x${i}`, restApiId: 'rest1', name: `o${i}`, type: 'TOKEN' });
+        }
+        aws.onList = undefined;
+      };
+
+      await createWithRetry('AWS::ApiGateway::Authorizer', AUTH_PROPS);
+
+      const line = reportFor('CreateAuthorizer')!;
+      expect(line).toContain('auth1');
+      expect(line).toContain('cut at 20 pages');
+    });
+
+    it('two ambiguous attempts in a row: the second report dates from the FIRST attempt', async () => {
+      aws.loseNextCreateResponse = transient500();
+      aws.onList = () => {
+        aws.loseNextCreateResponse = transient500();
+        aws.onList = undefined;
+      };
+
+      await withRetry(
+        () => provider.create('Child', 'AWS::ApiGateway::Authorizer', AUTH_PROPS),
+        'Child',
+        {
+          sleep: (): Promise<void> => {
+            vi.setSystemTime(Date.now() + 30_000);
+            return Promise.resolve();
+          },
+        }
+      );
+
+      const lines = warnLines().filter((l) => l.includes('earlier CreateAuthorizer attempt'));
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toContain('(at 2026-09-30T23:59:55.000Z)');
+      expect(lines[1]).toContain('auth1');
+      expect(lines[1]).toContain('auth2');
     });
 
     it('a throttled CreateAuthorizer triggers no lookup', async () => {
@@ -512,7 +571,7 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
       ]);
       const { APIGatewayClient } = await import('@aws-sdk/client-api-gateway');
       expect(vi.mocked(APIGatewayClient).mock.calls.at(-1)![0]).toMatchObject({
-        region: 'us-east-1',
+        region: 'ap-southeast-2',
       });
     }
   );
