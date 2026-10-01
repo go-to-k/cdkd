@@ -113,8 +113,10 @@ const safeCount = (value: unknown): string => (typeof value === 'number' ? Strin
  * pruned. `docs/deployment-events.md` classes `deployments/*.jsonl` as
  * sensitive, which is what makes the distinction worth a line of output.
  *
- * Deliberately NOT appended to the "no runs matched" arm: that arm returns
- * before any `deleteRawObjects` call, so there is no delete to qualify.
+ * Deliberately NOT appended to the "no runs matched" arm: that arm deleted no
+ * object the prune's listing held, so there is no delete to qualify. The count
+ * path reaches it before any `deleteRawObjects` call; `--all` on an empty
+ * prefix reaches it after sending only the absent index key.
  *
  * The converse holds too: `pruneRuns` reports `indexDeleted` only for an index
  * that EXISTED in its listing (issue #2624), not because the idempotent
