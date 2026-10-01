@@ -133,6 +133,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
+import { readResolverFamily } from '../../_resolver-family.js';
 
 const REGION = 'us-east-1';
 const CONSUMER = 'Consumer';
@@ -1491,17 +1492,10 @@ describe('only the PERMANENT refusal is a finding — a user-fixable one refuses
     // Source-read, the technique `intrinsic-refusal-non-retryable.test.ts` uses
     // for the same reason: the real path needs an assumed role and a second
     // state bucket.
-    const source = readFileSync(
-      fileURLToPath(
-        new URL(
-          '../../../../src/deployment/intrinsic-function-resolver.ts',
-          import.meta.url
-        )
-      ),
-      'utf8'
-    );
-    const arm = source.slice(source.indexOf('is a ' + 'CROSS-ACCOUNT reference (RoleArn'));
-    expect(arm).not.toBe('');
+    const source = readResolverFamily();
+    // `indexOf` is -1 when the message is gone, and `slice(-1)` is then the
+    // last character rather than '', so assert the index itself.
+    expect(source.indexOf('is a ' + 'CROSS-ACCOUNT reference (RoleArn')).toBeGreaterThan(-1);
     // The construction is the ~4 lines ABOVE the message, so search backwards
     // from it rather than forwards.
     const upTo = source.slice(0, source.indexOf('is a ' + 'CROSS-ACCOUNT reference (RoleArn'));

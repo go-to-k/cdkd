@@ -4,7 +4,7 @@
  * cdkd used to hold TWO independent answers to this question (issue
  * [#2347](https://github.com/go-to-k/cdkd/issues/2347)):
  *
- * - `coerceParameterTypedValue` in `src/deployment/intrinsic-function-resolver.ts`
+ * - `coerceParameterTypedValue` in `src/deployment/intrinsic-resolver-support.ts`
  *   named exactly two list types (`List<Number>`, `CommaDelimitedList`) in a
  *   `switch`, so every other `List<...>` spelling fell to `default` and a
  *   `Ref` to it resolved to the raw comma-joined STRING;

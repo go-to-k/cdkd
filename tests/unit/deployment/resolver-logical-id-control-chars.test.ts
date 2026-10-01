@@ -74,6 +74,7 @@ import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { readResolverFamily } from '../_resolver-family.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -829,10 +830,7 @@ describe('the pseudo-parameter render keeps its marker, and the premise is drive
     // was the only cwd-relative `src/` read under `tests/unit`, and it reads as
     // a "source file missing" failure from any other working directory. The
     // sibling suite added in the same PR already spells it this way.
-    const source = readFileSync(
-      fileURLToPath(new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url)),
-      'utf8'
-    );
+    const source = readResolverFamily();
     const start = source.indexOf('private async resolvePseudoParameter(');
     expect(start, 'resolvePseudoParameter was renamed or removed').toBeGreaterThan(-1);
     // Brace-match the method body rather than scanning a fixed window: the

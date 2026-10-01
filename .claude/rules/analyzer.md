@@ -2,6 +2,7 @@
 description: cdkd analyzer layer (intrinsic resolution, dependency analysis, DAG)
 paths:
   - 'src/analyzer/**'
+  - 'src/deployment/intrinsic-resolver-support.ts'
 ---
 
 # Analyzer
