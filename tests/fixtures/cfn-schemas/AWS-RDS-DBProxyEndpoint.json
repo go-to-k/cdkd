@@ -80,5 +80,11 @@
       "DBProxyName",
       "VpcSubnetIds"
     ]
+  },
+  "propertyShapes": {
+    "Tags": "array",
+    "Tags[]": "object",
+    "VpcSecurityGroupIds": "array",
+    "VpcSubnetIds": "array"
   }
 }

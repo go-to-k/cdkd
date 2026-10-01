@@ -171,5 +171,15 @@
     "Targets": [
       "Id"
     ]
+  },
+  "propertyShapes": {
+    "LoadBalancerArns": "array",
+    "Matcher": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "TargetGroupAttributes": "array",
+    "TargetGroupAttributes[]": "object",
+    "Targets": "array",
+    "Targets[]": "object"
   }
 }

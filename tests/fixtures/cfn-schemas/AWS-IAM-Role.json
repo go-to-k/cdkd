@@ -98,5 +98,12 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "ManagedPolicyArns": "array",
+    "Policies": "array",
+    "Policies[]": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

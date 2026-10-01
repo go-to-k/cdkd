@@ -150,5 +150,15 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "DnsConfig": "object",
+    "DnsConfig.DnsRecords": "array",
+    "DnsConfig.DnsRecords[]": "object",
+    "HealthCheckConfig": "object",
+    "HealthCheckCustomConfig": "object",
+    "ServiceAttributes": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

@@ -74,5 +74,9 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

@@ -150,5 +150,16 @@
     "Tags": [
       "Key"
     ]
+  },
+  "propertyShapes": {
+    "LoadBalancerAttributes": "array",
+    "LoadBalancerAttributes[]": "object",
+    "MinimumLoadBalancerCapacity": "object",
+    "SecurityGroups": "array",
+    "SubnetMappings": "array",
+    "SubnetMappings[]": "object",
+    "Subnets": "array",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

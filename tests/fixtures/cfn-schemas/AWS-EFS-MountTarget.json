@@ -57,5 +57,8 @@
       "SecurityGroups",
       "SubnetId"
     ]
+  },
+  "propertyShapes": {
+    "SecurityGroups": "array"
   }
 }

@@ -47,5 +47,8 @@
     "CloudFrontOriginAccessIdentityConfig": [
       "Comment"
     ]
+  },
+  "propertyShapes": {
+    "CloudFrontOriginAccessIdentityConfig": "object"
   }
 }

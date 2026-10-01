@@ -212,5 +212,20 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "CacheSecurityGroupNames": "array",
+    "ConfigurationEndpoint": "object",
+    "LogDeliveryConfigurations": "array",
+    "LogDeliveryConfigurations[]": "object",
+    "LogDeliveryConfigurations[].DestinationDetails": "object",
+    "LogDeliveryConfigurations[].DestinationDetails.CloudWatchLogsDetails": "object",
+    "LogDeliveryConfigurations[].DestinationDetails.KinesisFirehoseDetails": "object",
+    "PreferredAvailabilityZones": "array",
+    "RedisEndpoint": "object",
+    "SnapshotArns": "array",
+    "Tags": "array",
+    "Tags[]": "object",
+    "VpcSecurityGroupIds": "array"
   }
 }

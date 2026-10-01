@@ -162,5 +162,17 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "BackupPolicy": "object",
+    "FileSystemPolicy": "object",
+    "FileSystemProtection": "object",
+    "FileSystemTags": "array",
+    "FileSystemTags[]": "object",
+    "LifecyclePolicies": "array",
+    "LifecyclePolicies[]": "object",
+    "ReplicationConfiguration": "object",
+    "ReplicationConfiguration.Destinations": "array",
+    "ReplicationConfiguration.Destinations[]": "object"
   }
 }

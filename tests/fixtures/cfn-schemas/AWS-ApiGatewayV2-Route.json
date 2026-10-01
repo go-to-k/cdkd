@@ -74,5 +74,11 @@
     "RequestParameters": [
       "Required"
     ]
+  },
+  "propertyShapes": {
+    "AuthorizationScopes": "array",
+    "RequestModels": "object",
+    "RequestParameters": "object",
+    "RequestParameters[]": "object"
   }
 }

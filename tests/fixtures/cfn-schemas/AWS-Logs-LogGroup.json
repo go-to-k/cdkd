@@ -70,5 +70,13 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "DataProtectionPolicy": "object",
+    "FieldIndexPolicies": "array",
+    "FieldIndexPolicies[]": "object",
+    "ResourcePolicyDocument": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

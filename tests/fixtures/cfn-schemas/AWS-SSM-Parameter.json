@@ -46,5 +46,8 @@
       "Type",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Tags": "object"
   }
 }

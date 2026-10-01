@@ -26,5 +26,8 @@
       "PolicyDocument",
       "Topics"
     ]
+  },
+  "propertyShapes": {
+    "Topics": "array"
   }
 }

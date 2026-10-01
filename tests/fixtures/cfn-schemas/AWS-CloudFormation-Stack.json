@@ -122,5 +122,15 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Capabilities": "array",
+    "NotificationARNs": "array",
+    "Outputs": "array",
+    "Outputs[]": "object",
+    "Parameters": "object",
+    "StackPolicyBody": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

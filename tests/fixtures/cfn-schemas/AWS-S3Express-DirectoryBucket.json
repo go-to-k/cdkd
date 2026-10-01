@@ -256,5 +256,23 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "BucketEncryption": "object",
+    "BucketEncryption.ServerSideEncryptionConfiguration": "array",
+    "BucketEncryption.ServerSideEncryptionConfiguration[]": "object",
+    "BucketEncryption.ServerSideEncryptionConfiguration[].ServerSideEncryptionByDefault": "object",
+    "InventoryConfigurations": "array",
+    "InventoryConfigurations[]": "object",
+    "InventoryConfigurations[].Destination": "object",
+    "InventoryConfigurations[].OptionalFields": "array",
+    "LifecycleConfiguration": "object",
+    "LifecycleConfiguration.Rules": "array",
+    "LifecycleConfiguration.Rules[]": "object",
+    "LifecycleConfiguration.Rules[].AbortIncompleteMultipartUpload": "object",
+    "MetricsConfigurations": "array",
+    "MetricsConfigurations[]": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

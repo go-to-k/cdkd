@@ -154,5 +154,18 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "EncryptionConfiguration": "object",
+    "MetricsConfiguration": "object",
+    "ReplicationConfiguration": "object",
+    "ReplicationConfiguration.Rules": "array",
+    "ReplicationConfiguration.Rules[]": "object",
+    "ReplicationConfiguration.Rules[].Destinations": "array",
+    "ReplicationConfiguration.Rules[].Destinations[]": "object",
+    "StorageClassConfiguration": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "UnreferencedFileRemoval": "object"
   }
 }

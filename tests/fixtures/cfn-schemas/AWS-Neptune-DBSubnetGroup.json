@@ -58,5 +58,10 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "SubnetIds": "array",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

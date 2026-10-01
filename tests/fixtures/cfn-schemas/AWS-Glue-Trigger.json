@@ -134,5 +134,16 @@
     "EventBatchingCondition": [
       "BatchSize"
     ]
+  },
+  "propertyShapes": {
+    "Actions": "array",
+    "Actions[]": "object",
+    "Actions[].Arguments": "object",
+    "Actions[].NotificationProperty": "object",
+    "EventBatchingCondition": "object",
+    "Predicate": "object",
+    "Predicate.Conditions": "array",
+    "Predicate.Conditions[]": "object",
+    "Tags": "object"
   }
 }

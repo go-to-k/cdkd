@@ -339,5 +339,31 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "AlpnPolicy": "array",
+    "Certificates": "array",
+    "Certificates[]": "object",
+    "DefaultActions": "array",
+    "DefaultActions[]": "object",
+    "DefaultActions[].AuthenticateCognitoConfig": "object",
+    "DefaultActions[].AuthenticateCognitoConfig.AuthenticationRequestExtraParams": "object",
+    "DefaultActions[].AuthenticateOidcConfig": "object",
+    "DefaultActions[].AuthenticateOidcConfig.AuthenticationRequestExtraParams": "object",
+    "DefaultActions[].FixedResponseConfig": "object",
+    "DefaultActions[].ForwardConfig": "object",
+    "DefaultActions[].ForwardConfig.TargetGroupStickinessConfig": "object",
+    "DefaultActions[].ForwardConfig.TargetGroups": "array",
+    "DefaultActions[].ForwardConfig.TargetGroups[]": "object",
+    "DefaultActions[].JwtValidationConfig": "object",
+    "DefaultActions[].JwtValidationConfig.AdditionalClaims": "array",
+    "DefaultActions[].JwtValidationConfig.AdditionalClaims[]": "object",
+    "DefaultActions[].JwtValidationConfig.AdditionalClaims[].Values": "array",
+    "DefaultActions[].RedirectConfig": "object",
+    "ListenerAttributes": "array",
+    "ListenerAttributes[]": "object",
+    "MutualAuthentication": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

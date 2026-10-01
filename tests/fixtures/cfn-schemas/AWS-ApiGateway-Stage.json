@@ -148,5 +148,15 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "AccessLogSetting": "object",
+    "CanarySetting": "object",
+    "CanarySetting.StageVariableOverrides": "object",
+    "MethodSettings": "array",
+    "MethodSettings[]": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Variables": "object"
   }
 }

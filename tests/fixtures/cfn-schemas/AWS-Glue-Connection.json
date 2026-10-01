@@ -188,5 +188,25 @@
     "ConnectionInput.AuthenticationConfiguration": [
       "AuthenticationType"
     ]
+  },
+  "propertyShapes": {
+    "ConnectionInput": "object",
+    "ConnectionInput.AthenaProperties": "object",
+    "ConnectionInput.AuthenticationConfiguration": "object",
+    "ConnectionInput.AuthenticationConfiguration.BasicAuthenticationCredentials": "object",
+    "ConnectionInput.AuthenticationConfiguration.CustomAuthenticationCredentials": "object",
+    "ConnectionInput.AuthenticationConfiguration.OAuth2Properties": "object",
+    "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.AuthorizationCodeProperties": "object",
+    "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2ClientApplication": "object",
+    "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials": "object",
+    "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.TokenUrlParametersMap": "object",
+    "ConnectionInput.ConnectionProperties": "object",
+    "ConnectionInput.MatchCriteria": "array",
+    "ConnectionInput.PhysicalConnectionRequirements": "object",
+    "ConnectionInput.PhysicalConnectionRequirements.SecurityGroupIdList": "array",
+    "ConnectionInput.PythonProperties": "object",
+    "ConnectionInput.SparkProperties": "object",
+    "ConnectionInput.ValidateForComputeEnvironments": "array",
+    "Tags": "object"
   }
 }

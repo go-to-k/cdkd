@@ -162,5 +162,13 @@
       "OwnerUid",
       "Permissions"
     ]
+  },
+  "propertyShapes": {
+    "AccessPointTags": "array",
+    "AccessPointTags[]": "object",
+    "PosixUser": "object",
+    "PosixUser.SecondaryGids": "array",
+    "RootDirectory": "object",
+    "RootDirectory.CreationInfo": "object"
   }
 }

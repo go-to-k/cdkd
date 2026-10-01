@@ -68,5 +68,10 @@
       "AuthorizerType",
       "Name"
     ]
+  },
+  "propertyShapes": {
+    "IdentitySource": "array",
+    "JwtConfiguration": "object",
+    "JwtConfiguration.Audience": "array"
   }
 }

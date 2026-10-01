@@ -148,5 +148,12 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "BlockPublicAccessStates": "object",
+    "Ipv6CidrBlocks": "array",
+    "PrivateDnsNameOptionsOnLaunch": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

@@ -83,5 +83,11 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "DeadLetterConfig": "object",
+    "LogConfig": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

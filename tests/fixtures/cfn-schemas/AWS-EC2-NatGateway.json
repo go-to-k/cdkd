@@ -127,5 +127,14 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "AvailabilityZoneAddresses": "array",
+    "AvailabilityZoneAddresses[]": "object",
+    "AvailabilityZoneAddresses[].AllocationIds": "array",
+    "SecondaryAllocationIds": "array",
+    "SecondaryPrivateIpAddresses": "array",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

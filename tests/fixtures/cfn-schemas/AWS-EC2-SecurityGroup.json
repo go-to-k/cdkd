@@ -154,5 +154,13 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "SecurityGroupEgress": "array",
+    "SecurityGroupEgress[]": "object",
+    "SecurityGroupIngress": "array",
+    "SecurityGroupIngress[]": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

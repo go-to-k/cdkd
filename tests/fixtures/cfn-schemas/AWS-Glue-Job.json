@@ -127,5 +127,15 @@
       "Command",
       "Role"
     ]
+  },
+  "propertyShapes": {
+    "Command": "object",
+    "Connections": "object",
+    "Connections.Connections": "array",
+    "DefaultArguments": "object",
+    "ExecutionProperty": "object",
+    "NonOverridableArguments": "object",
+    "NotificationProperty": "object",
+    "Tags": "object"
   }
 }

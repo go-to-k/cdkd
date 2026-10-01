@@ -78,5 +78,10 @@
     "DestinationConfig.OnSuccess": [
       "Destination"
     ]
+  },
+  "propertyShapes": {
+    "DestinationConfig": "object",
+    "DestinationConfig.OnFailure": "object",
+    "DestinationConfig.OnSuccess": "object"
   }
 }

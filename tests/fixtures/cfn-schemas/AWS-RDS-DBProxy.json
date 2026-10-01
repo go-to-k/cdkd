@@ -115,5 +115,13 @@
       "RoleArn",
       "VpcSubnetIds"
     ]
+  },
+  "propertyShapes": {
+    "Auth": "array",
+    "Auth[]": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "VpcSecurityGroupIds": "array",
+    "VpcSubnetIds": "array"
   }
 }

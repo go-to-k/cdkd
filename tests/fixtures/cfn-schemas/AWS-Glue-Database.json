@@ -93,5 +93,15 @@
       "CatalogId",
       "DatabaseInput"
     ]
+  },
+  "propertyShapes": {
+    "DatabaseInput": "object",
+    "DatabaseInput.CreateTableDefaultPermissions": "array",
+    "DatabaseInput.CreateTableDefaultPermissions[]": "object",
+    "DatabaseInput.CreateTableDefaultPermissions[].Permissions": "array",
+    "DatabaseInput.CreateTableDefaultPermissions[].Principal": "object",
+    "DatabaseInput.FederatedDatabase": "object",
+    "DatabaseInput.Parameters": "object",
+    "DatabaseInput.TargetDatabase": "object"
   }
 }

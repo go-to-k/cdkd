@@ -58,5 +58,10 @@
       "PolicyDocument",
       "PolicyName"
     ]
+  },
+  "propertyShapes": {
+    "ManagedPolicyArns": "array",
+    "Policies": "array",
+    "Policies[]": "object"
   }
 }

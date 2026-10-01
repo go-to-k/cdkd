@@ -32,5 +32,10 @@
       "PolicyDocument",
       "PolicyName"
     ]
+  },
+  "propertyShapes": {
+    "Groups": "array",
+    "Roles": "array",
+    "Users": "array"
   }
 }

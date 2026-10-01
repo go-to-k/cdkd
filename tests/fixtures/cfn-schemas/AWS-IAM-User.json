@@ -104,5 +104,14 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Groups": "array",
+    "LoginProfile": "object",
+    "ManagedPolicyArns": "array",
+    "Policies": "array",
+    "Policies[]": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

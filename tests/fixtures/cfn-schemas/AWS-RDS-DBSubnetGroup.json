@@ -60,5 +60,10 @@
     "Tags": [
       "Key"
     ]
+  },
+  "propertyShapes": {
+    "SubnetIds": "array",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

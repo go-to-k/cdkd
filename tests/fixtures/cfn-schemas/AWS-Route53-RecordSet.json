@@ -141,5 +141,11 @@
       "CollectionId",
       "LocationName"
     ]
+  },
+  "propertyShapes": {
+    "AliasTarget": "object",
+    "CidrRoutingConfig": "object",
+    "GeoLocation": "object",
+    "ResourceRecords": "array"
   }
 }

@@ -89,5 +89,13 @@
     "Tags": [
       "Key"
     ]
+  },
+  "propertyShapes": {
+    "ConnectionPoolConfigurationInfo": "object",
+    "ConnectionPoolConfigurationInfo.SessionPinningFilters": "array",
+    "DBClusterIdentifiers": "array",
+    "DBInstanceIdentifiers": "array",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

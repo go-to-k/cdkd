@@ -91,5 +91,10 @@
       "S3Bucket",
       "S3Key"
     ]
+  },
+  "propertyShapes": {
+    "CompatibleArchitectures": "array",
+    "CompatibleRuntimes": "array",
+    "Content": "object"
   }
 }

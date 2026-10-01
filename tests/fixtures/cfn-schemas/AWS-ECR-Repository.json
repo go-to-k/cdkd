@@ -142,5 +142,14 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "EncryptionConfiguration": "object",
+    "ImageScanningConfiguration": "object",
+    "ImageTagMutabilityExclusionFilters": "array",
+    "ImageTagMutabilityExclusionFilters[]": "object",
+    "LifecyclePolicy": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

@@ -28,5 +28,9 @@
       "Name": "scalar",
       "MaxConcurrentRuns": "scalar"
     }
+  },
+  "propertyShapes": {
+    "DefaultRunProperties": "object",
+    "Tags": "object"
   }
 }

@@ -335,5 +335,19 @@
     "Tags": [
       "Key"
     ]
+  },
+  "propertyShapes": {
+    "AssociatedRoles": "array",
+    "AssociatedRoles[]": "object",
+    "AvailabilityZones": "array",
+    "EnableCloudwatchLogsExports": "array",
+    "Endpoint": "object",
+    "MasterUserSecret": "object",
+    "ReadEndpoint": "object",
+    "ScalingConfiguration": "object",
+    "ServerlessV2ScalingConfiguration": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "VpcSecurityGroupIds": "array"
   }
 }

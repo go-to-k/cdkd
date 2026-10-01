@@ -446,5 +446,27 @@
     "Tags": [
       "Key"
     ]
+  },
+  "propertyShapes": {
+    "AdditionalStorageVolumes": "array",
+    "AdditionalStorageVolumes[]": "object",
+    "AssociatedRoles": "array",
+    "AssociatedRoles[]": "object",
+    "CertificateDetails": "object",
+    "DBSecurityGroups": "array",
+    "DomainDnsIps": "array",
+    "EnableCloudwatchLogsExports": "array",
+    "Endpoint": "object",
+    "ListenerEndpoint": "object",
+    "MasterUserSecret": "object",
+    "ProcessorFeatures": "array",
+    "ProcessorFeatures[]": "object",
+    "ReadReplicaDBClusterIdentifiers": "array",
+    "ReadReplicaDBInstanceIdentifiers": "array",
+    "StatusInfos": "array",
+    "StatusInfos[]": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "VPCSecurityGroups": "array"
   }
 }

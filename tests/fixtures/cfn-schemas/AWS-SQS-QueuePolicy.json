@@ -26,5 +26,8 @@
       "PolicyDocument",
       "Queues"
     ]
+  },
+  "propertyShapes": {
+    "Queues": "array"
   }
 }

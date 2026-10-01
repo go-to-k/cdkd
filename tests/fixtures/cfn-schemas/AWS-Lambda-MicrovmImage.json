@@ -246,5 +246,23 @@
     "Tags": [
       "Key"
     ]
+  },
+  "propertyShapes": {
+    "AdditionalOsCapabilities": "array",
+    "CodeArtifact": "object",
+    "CpuConfigurations": "array",
+    "CpuConfigurations[]": "object",
+    "EgressNetworkConnectors": "array",
+    "EnvironmentVariables": "array",
+    "EnvironmentVariables[]": "object",
+    "Hooks": "object",
+    "Hooks.MicrovmHooks": "object",
+    "Hooks.MicrovmImageHooks": "object",
+    "Logging": "object",
+    "Logging.CloudWatch": "object",
+    "Resources": "array",
+    "Resources[]": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

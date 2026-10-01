@@ -135,5 +135,19 @@
       "KmsKeyId": "scalar",
       "LogConfiguration": "object"
     }
+  },
+  "propertyShapes": {
+    "CapacityProviders": "array",
+    "ClusterSettings": "array",
+    "ClusterSettings[]": "object",
+    "Configuration": "object",
+    "Configuration.ExecuteCommandConfiguration": "object",
+    "Configuration.ExecuteCommandConfiguration.LogConfiguration": "object",
+    "Configuration.ManagedStorageConfiguration": "object",
+    "DefaultCapacityProviderStrategy": "array",
+    "DefaultCapacityProviderStrategy[]": "object",
+    "ServiceConnectDefaults": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

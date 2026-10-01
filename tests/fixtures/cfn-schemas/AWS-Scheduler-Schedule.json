@@ -288,5 +288,30 @@
       "Name",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "FlexibleTimeWindow": "object",
+    "Target": "object",
+    "Target.DeadLetterConfig": "object",
+    "Target.EcsParameters": "object",
+    "Target.EcsParameters.CapacityProviderStrategy": "array",
+    "Target.EcsParameters.CapacityProviderStrategy[]": "object",
+    "Target.EcsParameters.NetworkConfiguration": "object",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration": "object",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups": "array",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets": "array",
+    "Target.EcsParameters.PlacementConstraints": "array",
+    "Target.EcsParameters.PlacementConstraints[]": "object",
+    "Target.EcsParameters.PlacementStrategy": "array",
+    "Target.EcsParameters.PlacementStrategy[]": "object",
+    "Target.EcsParameters.Tags": "array",
+    "Target.EcsParameters.Tags[]": "object",
+    "Target.EventBridgeParameters": "object",
+    "Target.KinesisParameters": "object",
+    "Target.RetryPolicy": "object",
+    "Target.SageMakerPipelineParameters": "object",
+    "Target.SageMakerPipelineParameters.PipelineParameterList": "array",
+    "Target.SageMakerPipelineParameters.PipelineParameterList[]": "object",
+    "Target.SqsParameters": "object"
   }
 }

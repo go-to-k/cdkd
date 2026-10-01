@@ -106,5 +106,12 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "DomainValidationOptions": "array",
+    "DomainValidationOptions[]": "object",
+    "SubjectAlternativeNames": "array",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

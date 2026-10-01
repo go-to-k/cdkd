@@ -103,5 +103,11 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "RequestParameters": "object",
+    "RequestTemplates": "object",
+    "ResponseParameters": "object",
+    "TlsConfig": "object"
   }
 }

@@ -37,5 +37,8 @@
     "#top": [
       "Roles"
     ]
+  },
+  "propertyShapes": {
+    "Roles": "array"
   }
 }

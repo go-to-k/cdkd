@@ -118,5 +118,15 @@
       "VPCId",
       "VPCRegion"
     ]
+  },
+  "propertyShapes": {
+    "HostedZoneConfig": "object",
+    "HostedZoneFeatures": "object",
+    "HostedZoneTags": "array",
+    "HostedZoneTags[]": "object",
+    "NameServers": "array",
+    "QueryLoggingConfig": "object",
+    "VPCs": "array",
+    "VPCs[]": "object"
   }
 }

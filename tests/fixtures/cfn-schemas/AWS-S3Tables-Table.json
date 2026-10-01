@@ -309,5 +309,27 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Compaction": "object",
+    "IcebergMetadata": "object",
+    "IcebergMetadata.IcebergPartitionSpec": "object",
+    "IcebergMetadata.IcebergPartitionSpec.Fields": "array",
+    "IcebergMetadata.IcebergPartitionSpec.Fields[]": "object",
+    "IcebergMetadata.IcebergSchema": "object",
+    "IcebergMetadata.IcebergSchema.SchemaFieldList": "array",
+    "IcebergMetadata.IcebergSchema.SchemaFieldList[]": "object",
+    "IcebergMetadata.IcebergSchemaV2": "object",
+    "IcebergMetadata.IcebergSchemaV2.IdentifierFieldIds": "array",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList": "array",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList[]": "object",
+    "IcebergMetadata.IcebergSortOrder": "object",
+    "IcebergMetadata.IcebergSortOrder.Fields": "array",
+    "IcebergMetadata.IcebergSortOrder.Fields[]": "object",
+    "IcebergMetadata.TableProperties": "object",
+    "SnapshotManagement": "object",
+    "StorageClassConfiguration": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

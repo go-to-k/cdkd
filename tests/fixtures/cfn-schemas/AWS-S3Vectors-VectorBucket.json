@@ -75,5 +75,10 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "EncryptionConfiguration": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

@@ -92,5 +92,12 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Properties": "object",
+    "Properties.DnsProperties": "object",
+    "Properties.DnsProperties.SOA": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

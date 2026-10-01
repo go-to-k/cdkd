@@ -73,5 +73,12 @@
       "AuthType",
       "TargetFunctionArn"
     ]
+  },
+  "propertyShapes": {
+    "Cors": "object",
+    "Cors.AllowHeaders": "array",
+    "Cors.AllowMethods": "array",
+    "Cors.AllowOrigins": "array",
+    "Cors.ExposeHeaders": "array"
   }
 }

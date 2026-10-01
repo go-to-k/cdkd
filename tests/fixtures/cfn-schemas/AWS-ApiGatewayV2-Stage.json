@@ -88,5 +88,12 @@
       "ApiId",
       "StageName"
     ]
+  },
+  "propertyShapes": {
+    "AccessLogSettings": "object",
+    "DefaultRouteSettings": "object",
+    "RouteSettings": "object",
+    "StageVariables": "object",
+    "Tags": "object"
   }
 }

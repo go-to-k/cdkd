@@ -163,5 +163,18 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Definition": "object",
+    "DefinitionS3Location": "object",
+    "DefinitionSubstitutions": "object",
+    "EncryptionConfiguration": "object",
+    "LoggingConfiguration": "object",
+    "LoggingConfiguration.Destinations": "array",
+    "LoggingConfiguration.Destinations[]": "object",
+    "LoggingConfiguration.Destinations[].CloudWatchLogsLogGroup": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "TracingConfiguration": "object"
   }
 }

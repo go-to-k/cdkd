@@ -70,5 +70,10 @@
     "#top": [
       "PolicyDocument"
     ]
+  },
+  "propertyShapes": {
+    "Groups": "array",
+    "Roles": "array",
+    "Users": "array"
   }
 }

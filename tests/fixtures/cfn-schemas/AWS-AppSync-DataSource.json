@@ -270,5 +270,18 @@
       "AwsSecretStoreArn",
       "DbClusterIdentifier"
     ]
+  },
+  "propertyShapes": {
+    "DynamoDBConfig": "object",
+    "DynamoDBConfig.DeltaSyncConfig": "object",
+    "ElasticsearchConfig": "object",
+    "EventBridgeConfig": "object",
+    "HttpConfig": "object",
+    "HttpConfig.AuthorizationConfig": "object",
+    "HttpConfig.AuthorizationConfig.AwsIamConfig": "object",
+    "LambdaConfig": "object",
+    "OpenSearchServiceConfig": "object",
+    "RelationalDatabaseConfig": "object",
+    "RelationalDatabaseConfig.RdsHttpEndpointConfig": "object"
   }
 }

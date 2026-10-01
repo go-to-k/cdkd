@@ -126,5 +126,15 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "ArchivePolicy": "object",
+    "DataProtectionPolicy": "object",
+    "DeliveryStatusLogging": "array",
+    "DeliveryStatusLogging[]": "object",
+    "Subscription": "array",
+    "Subscription[]": "object",
+    "Tags": "array",
+    "Tags[]": "object"
   }
 }

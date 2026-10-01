@@ -150,5 +150,14 @@
     "SyncConfig": [
       "ConflictDetection"
     ]
+  },
+  "propertyShapes": {
+    "CachingConfig": "object",
+    "CachingConfig.CachingKeys": "array",
+    "PipelineConfig": "object",
+    "PipelineConfig.Functions": "array",
+    "Runtime": "object",
+    "SyncConfig": "object",
+    "SyncConfig.LambdaConflictHandlerConfig": "object"
   }
 }

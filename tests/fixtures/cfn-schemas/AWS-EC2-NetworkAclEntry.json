@@ -84,5 +84,9 @@
       "RuleAction",
       "RuleNumber"
     ]
+  },
+  "propertyShapes": {
+    "Icmp": "object",
+    "PortRange": "object"
   }
 }
