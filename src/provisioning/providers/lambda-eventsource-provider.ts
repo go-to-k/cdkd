@@ -26,6 +26,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   createMaskedLogSinks,
@@ -407,19 +408,26 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
    * The masked sinks ONE `create()` / `update()` logs and refuses through
    * (issue #2177, `.claude/rules/provider-masking.md`): `createMaskedLogSinks`
    * over the context's masker, extended by `withDerivedNameMasks` so a short
-   * secret-derived `FunctionName` is masked where AWS quotes it back. The
+   * secret-derived `FunctionName`, or the bare name inside a secret ARN, is
+   * masked where AWS quotes it back. The
    * physical id is an AWS-assigned UUID, so no recorded name needs a needle.
    * Built per call; never cached on the provider, which serves concurrent
    * resources.
    */
   private operationSinks(
     maskSecrets: MaskerFn | undefined,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties?: Record<string, unknown>
   ): MaskedLogSinks {
-    const functionName = properties['FunctionName'];
-    return withDerivedNameMasks(this.logger, createMaskedLogSinks(this.logger, maskSecrets), [
-      [functionName, typeof functionName === 'string' ? functionName : undefined],
-    ]);
+    // `FunctionName` is mutable in place, so on update() the previous side
+    // names a function AWS may still quote. Each as written and by its bare
+    // name: AWS may quote the function by name, not by ARN.
+    const pairs: Array<readonly [unknown, string | undefined]> = [];
+    for (const raw of [properties['FunctionName'], previousProperties?.['FunctionName']]) {
+      if (typeof raw !== 'string') continue;
+      pairs.push([raw, raw], [raw, lambdaFunctionNameForMask(raw)]);
+    }
+    return withDerivedNameMasks(this.logger, createMaskedLogSinks(this.logger, maskSecrets), pairs);
   }
 
   /**
@@ -643,7 +651,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     // Issue #2177: every update() line and failure goes through this one sink
     // set.
-    const log = this.operationSinks(context?.maskSecrets, properties);
+    const log = this.operationSinks(context?.maskSecrets, properties, previousProperties);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     // update() never names ConsumptionMode (kafkaConfigForUpdate), so only a

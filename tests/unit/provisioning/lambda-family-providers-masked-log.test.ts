@@ -21,10 +21,12 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockSend, warnSpy, debugSpy } = vi.hoisted(() => ({
+const { mockSend, warnSpy, debugSpy, infoSpy, errorSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   warnSpy: vi.fn(),
   debugSpy: vi.fn(),
+  infoSpy: vi.fn(),
+  errorSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -36,18 +38,18 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: debugSpy,
-    info: vi.fn(),
+    info: infoSpy,
     warn: warnSpy,
-    error: vi.fn(),
+    error: errorSpy,
     child: vi.fn().mockReturnThis(),
   };
   return {
     getLogger: () => ({
       child: () => childLogger,
       debug: debugSpy,
-      info: vi.fn(),
+      info: infoSpy,
       warn: warnSpy,
-      error: vi.fn(),
+      error: errorSpy,
     }),
   };
 });
@@ -98,9 +100,11 @@ const awsAuthored = (name: string, message: string): Error =>
 const commandName = (command: unknown): string =>
   (command as { constructor: { name: string } }).constructor.name;
 
-/** Every debug and warn line the provider wrote, joined. */
+/** Every line the provider wrote at any level, joined. */
 const transcript = (): string =>
-  [...debugSpy.mock.calls, ...warnSpy.mock.calls].map((args) => String(args[0])).join('\n');
+  [...debugSpy.mock.calls, ...infoSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
+    .map((args) => String(args[0]))
+    .join('\n');
 
 type Handler = (input: Record<string, unknown>) => unknown;
 
@@ -149,6 +153,8 @@ beforeEach(() => {
   mockSend.mockReset();
   debugSpy.mockReset();
   warnSpy.mockReset();
+  infoSpy.mockReset();
+  errorSpy.mockReset();
 });
 
 describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
@@ -165,6 +171,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
       new LambdaUrlProvider().create('Url', type, { TargetFunctionArn: TINY }, { maskSecrets })
     );
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
     expect(hasRedactedCause(error)).toBe(true);
     expect((error as { cause?: unknown }).cause).toBe(raw);
   });
@@ -191,6 +198,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
     );
     expect(transcript()).toContain('Updating Lambda URL Url');
     expect(transcript()).not.toContain(ROTATED);
+    expect(transcript()).toContain('***');
     expectMaskedFailure(error, raw, ROTATED);
   });
 
@@ -212,6 +220,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
       )
     );
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -315,6 +324,27 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
     ).toBe(true);
   });
 
+  it('masks the template-path AuthType refusal and never stamps it', async () => {
+    const spy = spyMasker();
+    fakeLambda({});
+    const error = await thrown(
+      new LambdaUrlProvider().update(
+        'Url',
+        fnArn(PUBLIC),
+        type,
+        { TargetFunctionArn: fnArn(PUBLIC), AuthType: 7 },
+        { TargetFunctionArn: fnArn(PUBLIC), AuthType: 'AWS_IAM' },
+        { maskSecrets: spy.mask }
+      )
+    );
+    expect(spy.seen().some((t) => t.startsWith('AWS::Lambda::Url AuthType must be'))).toBe(true);
+    expect(hasRedactedCause(error)).toBe(false);
+    expect(error.message.endsWith('Nothing was applied to Lambda URL Url; fix the template value')).toBe(
+      true
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('leaves an unthreaded call unmasked and unstamped (absent means identity)', async () => {
     const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${fnArn(LONG)}`);
     fakeLambda({
@@ -348,6 +378,26 @@ describe('LambdaLayerVersionProvider masked log sinks (issue #2177)', () => {
     );
     expect(transcript()).toContain('Successfully created Lambda layer version Layer');
     expect(transcript()).not.toContain(`layer:${TINY}:`);
+    expect(transcript()).toContain('layer:***:');
+  });
+
+  it('masks the bare name of a layer ARN given as a secret LayerName', async () => {
+    const layerArn = 'arn:aws:lambda:us-east-1:123456789012:layer:secret-layer-name';
+    const raw = awsAuthored('InvalidParameterValueException', 'Layer secret-layer-name is not valid');
+    fakeLambda({
+      PublishLayerVersionCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaLayerVersionProvider().create(
+        'Layer',
+        type,
+        { LayerName: layerArn, Content: content },
+        { maskSecrets: createSecretMasker(bagOf(layerArn)) }
+      )
+    );
+    expectMaskedFailure(error, raw, 'secret-layer-name');
   });
 
   it('routes the create path lines through the masker', async () => {
@@ -401,6 +451,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
       new LambdaPermissionProvider().create('Perm', type, props(TINY), { maskSecrets })
     );
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -437,6 +488,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
     );
     expect(transcript()).toContain('Updating Lambda permission Perm');
     expect(transcript()).not.toContain(ROTATED);
+    expect(transcript()).toContain('***');
     // The re-adding create() masks with the forwarded masker.
     expectMaskedFailure(error, raw, LONG);
   });
@@ -454,6 +506,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
       })
     );
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -519,6 +572,23 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
     expectMaskedFailure(error, raw, ROTATED);
   });
 
+  it('masks a short secret PREVIOUS FunctionName the remove targets under an SDK-written id', async () => {
+    const raw = awsAuthored('AccessDeniedException', `Not authorized on ${fnArn(TINY)}`);
+    fakeLambda({
+      RemovePermissionCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaPermissionProvider().update('Perm', 'PermStatement', type, props(PUBLIC), props(TINY), {
+        maskSecrets,
+      })
+    );
+    expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
+    expect(hasRedactedCause(error)).toBe(true);
+  });
+
   it('masks a rotated recorded function AWS quotes back when the remove fails', async () => {
     const physicalId = `${fnArn(ROTATED)}|PermStatement`;
     const raw = awsAuthored('AccessDeniedException', `Not authorized on ${fnArn(ROTATED)}`);
@@ -555,6 +625,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     );
     expect(transcript()).toContain('Successfully created Lambda EventInvokeConfig Eic');
     expect(transcript()).not.toContain(`${TINY}|`);
+    expect(transcript()).toContain('***|');
   });
 
   it('masks a secret AWS quotes back on a create failure', async () => {
@@ -614,10 +685,12 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     );
     expect(error.message).toContain('Refusing to update Lambda EventInvokeConfig Eic in place');
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
     expect(isMarkedNonRetryable(error)).toBe(true);
     // cdkd's own refusal: masked, never stamped retryable.
     expect(hasRedactedCause(error)).toBe(false);
     expect(transcript()).not.toContain(`function:${TINY}`);
+    expect(transcript()).toContain('***');
   });
 
   it('masks a secret AWS quotes back when the re-spelling probe fails', async () => {
@@ -639,6 +712,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     );
     expect(error.message).toContain('could not resolve its FunctionName');
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('***');
     expect(hasRedactedCause(error)).toBe(true);
     expect((error as { cause?: unknown }).cause).toBe(raw);
   });
@@ -655,6 +729,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     );
     expect(transcript()).toContain('Updating Lambda EventInvokeConfig Eic');
     expect(transcript()).not.toContain(ROTATED);
+    expect(transcript()).toContain('***');
   });
 
   it('masks a short secret desired FunctionName AWS quotes back on an update failure', async () => {
@@ -675,6 +750,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
       )
     );
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -688,6 +764,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     );
     expect(transcript()).toContain('Successfully created Lambda EventInvokeConfig Eic');
     expect(transcript()).not.toContain(`|${TINY}`);
+    expect(transcript()).toContain('|***');
   });
 
   it('masks a short secret Qualifier AWS quotes back on an update failure (the desired, recorded and self pairs together)', async () => {
@@ -708,6 +785,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
       )
     );
     expect(error.message).not.toContain(`:${TINY}`);
+    expect(error.message).toContain(':***');
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -748,6 +826,24 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     expect(routed(spy.seen(), 'Successfully created Lambda EventInvokeConfig Eic')).toBe(true);
   });
 
+  it('masks the create-path separator refusal with the operation masker (derived needles included)', async () => {
+    fakeLambda({});
+    const error = await thrown(
+      new LambdaEventInvokeConfigProvider().create(
+        'Eic',
+        type,
+        // The secret is the 2-character Qualifier; only its derived needle
+        // (not the base masker) reaches the `qx` inside the FunctionName.
+        { FunctionName: `${TINY}|y`, Qualifier: TINY },
+        { maskSecrets }
+      )
+    );
+    expect(error.message).toContain("contains '|'");
+    expect(error.message).not.toContain(`${TINY}|y`);
+    expect(error.message).toContain('***|y');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('refuses a separator in the new FunctionName as cdkd, not as an AWS failure, masked', async () => {
     fakeLambda({});
     const error = await thrown(
@@ -763,6 +859,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     expect(error.message).toContain("contains '|'");
     expect(error.message).not.toContain('Failed to update Lambda EventInvokeConfig');
     expect(error.message).not.toContain(LONG);
+    expect(error.message).toContain('***');
     expect(hasRedactedCause(error)).toBe(false);
   });
 
@@ -844,6 +941,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     );
     expect(transcript()).toContain('Updating Lambda EventInvokeConfig Eic');
     expect(transcript()).not.toContain(ROTATED);
+    expect(transcript()).toContain('***');
     expectMaskedFailure(error, raw, ROTATED);
   });
 });
@@ -868,8 +966,47 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
       )
     );
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
     expect(hasRedactedCause(error)).toBe(true);
     expect((error as { cause?: unknown }).cause).toBe(raw);
+  });
+
+  it('masks the bare name of a whole-ARN secret AWS quotes back on a create failure', async () => {
+    const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${ARN_SECRET_NAME}`);
+    fakeLambda({
+      CreateEventSourceMappingCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaEventSourceMappingProvider().create(
+        'Esm',
+        type,
+        { FunctionName: ARN_SECRET, EventSourceArn: queueArn },
+        { maskSecrets }
+      )
+    );
+    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+  });
+
+  it('masks the bare name of a PREVIOUS whole-ARN secret function on an update failure', async () => {
+    const raw = awsAuthored('ResourceConflictException', `Still attached to ${ARN_SECRET_NAME}`);
+    fakeLambda({
+      UpdateEventSourceMappingCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaEventSourceMappingProvider().update(
+        'Esm',
+        '11111111-2222-3333-4444-555555555555',
+        type,
+        { FunctionName: fnArn(PUBLIC), EventSourceArn: queueArn },
+        { FunctionName: ARN_SECRET, EventSourceArn: queueArn },
+        { maskSecrets }
+      )
+    );
+    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks a short secret FunctionName AWS quotes back on an update failure', async () => {
@@ -890,6 +1027,7 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
       )
     );
     expect(error.message).not.toContain(`function:${TINY}`);
+    expect(error.message).toContain('function:***');
     expect(hasRedactedCause(error)).toBe(true);
     expect((error as { cause?: unknown }).cause).toBe(raw);
   });

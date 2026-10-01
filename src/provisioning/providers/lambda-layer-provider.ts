@@ -64,6 +64,15 @@ const DEPLOY_SKIP_CAVEAT =
   `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, remove the resource by hand.`;
 
 /**
+ * The layer NAME inside a layer ARN (`arn:...:layer:<name>[:<version>]`), or
+ * `undefined` for any other spelling. A secret-masking needle only (issue
+ * #2177).
+ */
+function layerNameSegment(value: string): string | undefined {
+  return /:layer:([^:]+)/.exec(value)?.[1];
+}
+
+/**
  * AWS Lambda LayerVersion Provider
  *
  * Implements resource provisioning for AWS::Lambda::LayerVersion using the Lambda SDK.
@@ -116,7 +125,11 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
     const log = withDerivedNameMasks(
       this.logger,
       createMaskedLogSinks(this.logger, context?.maskSecrets),
-      [[properties['LayerName'], layerName]]
+      [
+        [properties['LayerName'], layerName],
+        // `LayerName` may be a layer ARN; AWS may quote the bare name.
+        [properties['LayerName'], layerNameSegment(layerName)],
+      ]
     );
     log.debug(`Creating Lambda layer version ${logicalId}`);
 

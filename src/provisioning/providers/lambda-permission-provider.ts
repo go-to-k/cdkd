@@ -75,6 +75,16 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+/** `[value, value]` and `[value, its bare function name]`, for a string `value`. */
+function functionNamePairs(value: unknown): Array<readonly [unknown, string | undefined]> {
+  return typeof value === 'string'
+    ? [
+        [value, value],
+        [value, lambdaFunctionNameForMask(value)],
+      ]
+    : [];
+}
+
 /**
  * AWS Lambda Permission Provider
  *
@@ -280,8 +290,12 @@ export class LambdaPermissionProvider implements ResourceProvider {
       // The bare name too: AWS may quote the function by name, not by ARN.
       [properties['FunctionName'], recordedFunctionName],
       [previousProperties['FunctionName'], recordedFunctionName],
-      // The remove falls back to the desired name when none was recorded.
-      [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
+      // The remove targets the previous `FunctionName` (the desired one when
+      // none was recorded) whatever the physical id's shape: an SDK-written id
+      // is the bare statement id and names no function. Each as written and
+      // by its bare name.
+      ...functionNamePairs(previousProperties['FunctionName']),
+      ...functionNamePairs(properties['FunctionName']),
     ]);
     log.debug(`Updating Lambda permission ${logicalId}: ${physicalId}`);
 
