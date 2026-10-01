@@ -51,11 +51,16 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  isRetryableTransientError,
+  markNonRetryable,
+  markRedactedCause,
+} from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -63,8 +68,325 @@ import type {
   ResourceImportResult,
   UpdateContext,
 } from '../../types/resource.js';
-import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  isSecretDerivedValue,
+  maskDeep,
+  MASK_WALK_DEPTH_CAP_MARKER,
+  MASK_WALK_MAX_DEPTH,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+
+/** `[raw template value, function name it became]` (see {@link lambdaOperationSinks}). */
+type NamePair = readonly [raw: unknown, name: string | undefined];
+
+/**
+ * Shortest function name {@link lambdaOperationSinks} makes a SUBSTRING needle.
+ * A needle is replaced wherever it occurs, cdkd's own fixed wording included,
+ * so a very short secret would mask letters of `Updating Lambda function` and
+ * the masked positions would hint at it. The same floor as the Glue slice
+ * (`glue-provider.ts`); it narrows that hint rather than closing it.
+ *
+ * Below the floor a secret name is still hidden at every site cdkd interpolates
+ * it: those sites mask the value RAW, and the sinks render a secret-derived name
+ * as `***` by whole-value equality, including a ROTATED recorded name whose old
+ * plaintext is in no bag of this deploy. Only an AWS echo of a 1-2 character
+ * name goes unmasked.
+ */
+const SELF_NEEDLE_MIN_LENGTH = 3;
+
+/**
+ * The masked sinks ONE Lambda `create()` / `update()` logs and refuses through
+ * (issue [#2177](https://github.com/go-to-k/cdkd/issues/2177)):
+ * `createMaskedLogSinks` over the context's masker, extended by `pairs`. A
+ * function name is used verbatim (never rewritten from a secret), so what the
+ * base masker cannot know is only a name RECORDED from a previous secret: state
+ * persists that value as its `{{resolve:` reference (or as `***`), and after a
+ * rotation the old plaintext is in no bag of this deploy. Each name whose raw
+ * value is secret-derived (`isSecretDerivedValue`) is:
+ *
+ *  - rendered as `***` wherever a sink masks it as a WHOLE value, at any length;
+ *  - and, at {@link SELF_NEEDLE_MIN_LENGTH} or longer, a substring needle, so it
+ *    is also masked where it OCCURS inside other text (an AWS echo, an ARN).
+ *
+ * Built per call; never cached on the provider, which serves concurrent
+ * resources.
+ */
+function lambdaOperationSinks(
+  logger: { debug(message: string): void; warn(message: string): void },
+  maskSecrets: MaskerFn | undefined,
+  namePairs: readonly NamePair[],
+  bag?: unknown
+): MaskedLogSinks {
+  const base = createMaskedLogSinks(logger, maskSecrets);
+  const pairs = [...namePairs, ...jsonEscapedPairs(bag)];
+  const secretNames = new Set<string>();
+  for (const [raw, name] of pairs) {
+    if (typeof name === 'string' && name !== '' && isSecretDerivedValue(raw, base.mask)) {
+      secretNames.add(name);
+    }
+  }
+  // The ORIGINAL pairs, not `[name, name]`: a rotated recorded name qualifies
+  // only through its PREVIOUS raw value, so the name alone would fail the
+  // predicate and an AWS error quoting it would print it.
+  const needled = withDerivedNameMasks(
+    logger,
+    base,
+    pairs.filter(
+      (pair): pair is readonly [unknown, string] =>
+        typeof pair[1] === 'string' && pair[1].length >= SELF_NEEDLE_MIN_LENGTH
+    )
+  );
+  if (secretNames.size === 0) return needled;
+  const mask: MaskerFn = (text: string) =>
+    secretNames.has(text) ? MASK_WALK_DEPTH_CAP_MARKER : needled.mask(text);
+  return {
+    mask,
+    value: (value: unknown) => mask(String(value)),
+    debug: (message: string) => logger.debug(mask(message)),
+    warn: (message: string) => logger.warn(mask(message)),
+  };
+}
+
+/**
+ * `[leaf, its JSON-escaped spelling]` for every string leaf of `bag` that
+ * `JSON.stringify` would change, plus the twice-escaped spelling (JSON inside a
+ * JSON string). A literal masker cannot find a secret once `"`, `\` or a
+ * newline in it is escaped, and AWS quotes request content back that way: the
+ * `Environment` 4 KB refusal prints the whole variables map as JSON. Fed to
+ * {@link lambdaOperationSinks} as derived-name pairs, so a leaf counts only
+ * when it is secret-derived and is masked base-first, like any other needle.
+ */
+function jsonEscapedPairs(bag: unknown): NamePair[] {
+  const out: NamePair[] = [];
+  const walk = (value: unknown, depth: number): void => {
+    if (typeof value === 'string') {
+      const once = JSON.stringify(value).slice(1, -1);
+      // An escape-free leaf adds nothing here: its literal spelling is the
+      // base masker's (and the name pairs') job, with their floors.
+      if (once === value) return;
+      out.push([value, once]);
+      out.push([value, JSON.stringify(once).slice(1, -1)]);
+      return;
+    }
+    if (depth >= MASK_WALK_MAX_DEPTH || typeof value !== 'object' || value === null) return;
+    for (const entry of Array.isArray(value) ? value : Object.values(value)) {
+      walk(entry, depth + 1);
+    }
+  };
+  walk(bag, 0);
+  return out;
+}
+
+/**
+ * The function's own status fields out of a `GetFunction` response, as
+ * `Key=value` parts. Literal reads, not a loop over a key table: only
+ * AWS-authored status fields, never a template-derived one.
+ */
+function lambdaStatusParts(response: unknown): string[] {
+  const config = (response as { Configuration?: unknown } | null | undefined)?.Configuration;
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return [];
+  const fields = config as Record<string, unknown>;
+  const status: Array<[string, unknown]> = [
+    ['State', fields['State']],
+    ['StateReasonCode', fields['StateReasonCode']],
+    ['StateReason', fields['StateReason']],
+    ['LastUpdateStatus', fields['LastUpdateStatus']],
+    ['LastUpdateStatusReasonCode', fields['LastUpdateStatusReasonCode']],
+    ['LastUpdateStatusReason', fields['LastUpdateStatusReason']],
+  ];
+  const parts: string[] = [];
+  for (const [key, value] of status) {
+    if (typeof value === 'string' && value !== '') parts.push(`${key}=${value}`);
+  }
+  return parts;
+}
+
+/**
+ * An `@smithy/util-waiter` error, described without its payload, or
+ * `undefined` when `error` is not one (its message is not a JSON object
+ * carrying a `state`).
+ *
+ * - A FAILURE throws `JSON.stringify(result)`, whose `reason` is the whole
+ *   `GetFunction` response: `Configuration.Environment.Variables` in
+ *   plaintext and the presigned `Code.Location`. `JSON.stringify` escapes a
+ *   secret containing `"`, `\\` or a newline out of literal reach,
+ *   `Code.Location` is in no secrets bag, and a function still holding a
+ *   ROTATED secret's old plaintext holds one no bag of this deploy knows. So
+ *   `reason` is WITHHELD: only the function's status fields, or an
+ *   error-matching acceptor's exception name and `Message`, are kept.
+ * - A TIMEOUT or ABORT carries a fixed `reason` and `observedResponses`, keyed
+ *   by `createMessageFromResponse`: `<status>: OK` for a successful poll,
+ *   `<status>: <AWS message>` for an error poll. Those status lines are the
+ *   diagnosis (and the retry wording, such as `not authorized to perform`),
+ *   so they are KEPT. A key that is itself a JSON document (a response with no
+ *   status, which the SDK never produces) or that quotes a response body
+ *   (`Deserialization error for body:`) is withheld instead.
+ *
+ * Everything kept goes through the operation's masker afterwards.
+ */
+function describeLambdaWaiterFailure(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(error.message);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || !('state' in parsed)) return undefined;
+  const result = parsed as { state?: unknown; reason?: unknown; observedResponses?: unknown };
+  const parts = lambdaStatusParts(result.reason);
+  const reason = result.reason;
+  if (typeof reason === 'object' && reason !== null) {
+    // An error-matching acceptor hands back the SDK exception. Its own
+    // `message` is non-enumerable and so never serialized; `Message` is the
+    // AWS-modelled field that is.
+    const r = reason as { name?: unknown; Message?: unknown };
+    const name = typeof r.name === 'string' ? r.name : undefined;
+    const message = typeof r.Message === 'string' ? r.Message : undefined;
+    if (name !== undefined || message !== undefined) {
+      parts.push(`error=${[name, message].filter((v) => v !== undefined).join(': ')}`);
+    }
+  }
+  const observed = result.observedResponses;
+  if (typeof observed === 'object' && observed !== null && !Array.isArray(observed)) {
+    let withheldKeys = 0;
+    const statusLines: Array<{ line: string; classifies: boolean }> = [];
+    for (const [key, count] of Object.entries(observed)) {
+      if (isResponseBodyKey(key)) {
+        withheldKeys += 1;
+        continue;
+      }
+      statusLines.push({
+        line: `${key} (x${String(count)})`,
+        classifies: classifiesAsRetryable(key),
+      });
+    }
+    // Bounded: a service varying its error text per poll must not turn one
+    // line into hundreds of entries. Two budgets, each keeping its LAST lines
+    // (insertion order is first-seen order): lines carrying retry wording the
+    // classifiers read (`not authorized to perform`, a throttle, ...) are
+    // capped separately, so an early one is not crowded out by later plain
+    // lines. First-seen order is kept in the output.
+    const keep = new Set<number>();
+    for (const classifies of [true, false]) {
+      const indexes = statusLines.flatMap((entry, i) =>
+        entry.classifies === classifies ? [i] : []
+      );
+      for (const i of indexes.slice(-MAX_OBSERVED_STATUS_LINES)) keep.add(i);
+    }
+    const omittedKeys = statusLines.length - keep.size;
+    if (omittedKeys > 0) parts.push(`${omittedKeys} more observed status line(s) omitted`);
+    parts.push(...statusLines.flatMap((entry, i) => (keep.has(i) ? [entry.line] : [])));
+    if (withheldKeys > 0) parts.push(`${withheldKeys} observed response(s) withheld`);
+  }
+  const state = typeof result.state === 'string' ? result.state : 'failure';
+  const fixed = typeof reason === 'string' && reason !== '' ? `: ${reason}` : '';
+  return (
+    `waiter ${state}${fixed} ` +
+    `(${parts.length > 0 ? parts.join(', ') : 'no function status reported'}). ` +
+    `Any response payload is withheld because it embeds the whole GetFunction ` +
+    `response, environment variables included; run \`aws lambda get-function\` for the detail.`
+  );
+}
+
+/**
+ * Is an `observedResponses` key a response BODY rather than a status line: a
+ * JSON document (`createMessageFromResponse`'s last resort for a response with
+ * no status) or a deserialization failure quoting the body?
+ */
+function isResponseBodyKey(key: string): boolean {
+  if (/(?:^|: )Deserialization error for body:/.test(key)) return true;
+  // Shaped like a document, parseable or not: withhold rather than guess. A
+  // status line always starts with its status code. `reason` is always an
+  // object, so smithy's body key starts with `{`; `[` is defensive.
+  return key.startsWith('{') || key.startsWith('[');
+}
+
+/**
+ * How many distinct observed status lines a waiter description keeps, per
+ * budget (retry-wording lines and the rest).
+ */
+const MAX_OBSERVED_STATUS_LINES = 5;
+
+/**
+ * Does a status line carry wording `withRetry`'s substring classifiers read?
+ * `RETRYABLE_ERROR_MESSAGE_PATTERNS` already spreads the IAM-propagation
+ * patterns, so no separate `isIamPropagationError` arm is needed.
+ */
+function classifiesAsRetryable(line: string): boolean {
+  return isRetryableTransientError(undefined, line);
+}
+
+/**
+ * If `error` is a failed Lambda waiter, overwrite its `message` (and the first
+ * line of its `stack`) IN PLACE with the MASKED
+ * {@link describeLambdaWaiterFailure} text, and return both spellings;
+ * otherwise return `undefined` and leave `error` alone.
+ *
+ * In place, not by wrapping, because the caught error must stay the direct
+ * `cause` (the classifiers read its fields through the chain, and
+ * `scripts/check-provider-error-cause.ts` requires the caught value itself).
+ * MASKED there, with the OPERATION's masker, because a printer rendering the
+ * provider error prints this link as its `Caused by:` line, and only the
+ * operation's masker knows the derived needles (a 3-character name, a rotated
+ * recorded name, a JSON-escaped secret) the engine's bag does not.
+ *
+ * The UNMASKED described text (payload-free: state, status fields and AWS
+ * status lines only) rides one level deeper, as this link's own `cause`, when
+ * the mask changed it. That is the link `retryClassificationText` reads to keep
+ * AWS's wording whole (a needle cutting `not authorized to perform` must not
+ * turn a retryable failure terminal). `formatError` prints one cause level and
+ * never reaches it. The only multi-level renderer, `runCli`'s fatal
+ * `console.error('Fatal error:', error)` (`src/cli/run-cli.ts`), would print
+ * it in full, and is reachable only if a command escapes `withErrorHandling`
+ * (whose `handleError` always exits): every `.action(` is wrapped today.
+ */
+function withholdWaiterPayload(
+  error: unknown,
+  mask: MaskerFn
+): { masked: string; described: string } | undefined {
+  const described = describeLambdaWaiterFailure(error);
+  if (described === undefined || !(error instanceof Error)) return undefined;
+  const text = mask(described);
+  const original = error.message;
+  const header = `${error.name}: ${original}`;
+  const stack = typeof error.stack === 'string' ? error.stack : '';
+  try {
+    Object.defineProperty(error, 'message', {
+      value: text,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+    Object.defineProperty(error, 'stack', {
+      value: stack.startsWith(header)
+        ? `${error.name}: ${text}${stack.slice(header.length)}`
+        : `${error.name}: ${text}`,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+    // Unprinted only while every command stays inside `withErrorHandling`:
+    // `runCli`'s fatal `console.error` would `util.inspect` this link.
+    if (text !== described && (error as { cause?: unknown }).cause === undefined) {
+      Object.defineProperty(error, 'cause', {
+        value: new Error(described),
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+    }
+  } catch {
+    // A frozen error cannot be rewritten: the wrap's message still withholds
+    // the payload, but the `Caused by:` line would not. Unreachable for
+    // `@smithy/util-waiter`, which throws a plain, extensible `Error`.
+  }
+  return { masked: text, described };
+}
 
 /**
  * Attempts the create path's atomicity cleanup makes when DeleteFunction is
@@ -275,15 +597,25 @@ export class LambdaFunctionProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Lambda function ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-
     const functionName =
       (properties['FunctionName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 64 });
+    // Issue #2177: every create() line and refusal goes through this one sink
+    // set. A provider's own logger reaches no engine mask.
+    const log = lambdaOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      [[properties['FunctionName'], functionName]],
+      properties
+    );
+
+    log.debug(`Creating Lambda function ${logicalId}`);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
+    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+
     const code = properties['Code'] as Record<string, unknown> | undefined;
     const role = properties['Role'] as string | undefined;
 
@@ -396,6 +728,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             logicalId,
             resourceType,
             functionName,
+            log,
           }
         );
       }
@@ -426,6 +759,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             logicalId,
             resourceType,
             functionName,
+            log,
           }
         );
       }
@@ -474,6 +808,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             logicalId,
             resourceType,
             functionName,
+            log,
           }
         );
       }
@@ -493,7 +828,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // gated to the only path that needs it (`waitUntilFunctionActiveV2`
       // immediately before the synchronous Invoke). See PR #121 for the
       // bug report this addresses and the follow-up that moved the wait.
-      this.logger.debug(`Successfully created Lambda function ${logicalId}: ${functionName}`);
+      log.debug(`Successfully created Lambda function ${logicalId}: ${log.value(functionName)}`);
 
       return {
         physicalId: response.FunctionName || functionName,
@@ -504,15 +839,46 @@ export class LambdaFunctionProvider implements ResourceProvider {
       };
     } catch (error) {
       if (functionCreated) markAuxiliaryFailure(error, logicalId);
+      // The cause stays unmasked: a masked message is stamped so the retry
+      // classifiers read the chain (`wrapMaskedError`).
+      // A non-Error throw still gets a cause, so a stamp has a chain to read.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Lambda function ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        functionName,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Lambda function ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            functionName,
+            cause ?? new Error(String(error))
+          )
       );
     }
+  }
+
+  /**
+   * A failure wrap whose message quotes `error`'s text MASKED: AWS quotes request
+   * values (a role, a layer, a subnet) back in its own words.
+   *
+   * When the mask changed that text, the wrap is stamped `markRedactedCause`, so
+   * `withRetry`'s substring classifiers read the unmasked cause chain rather than
+   * the masked message (the `concurrent update operation` / `currently in the
+   * following state` wording a secret needle could otherwise cut). A method,
+   * not a module function, so `gen-update-wrap-coverage` sees the catch that
+   * throws it as a `ProvisioningError` wrap factory.
+   */
+  private wrapMaskedError(
+    log: MaskedLogSinks,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const raw = error instanceof Error ? error.message : String(error);
+    // A failed waiter's payload is withheld in the caught error itself.
+    const text = withholdWaiterPayload(error, log.mask)?.masked ?? log.mask(raw);
+    const wrapped = build(text);
+    return text === raw ? wrapped : markRedactedCause(wrapped);
   }
 
   /**
@@ -542,8 +908,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
       logicalId: string;
       resourceType: string;
       functionName: string;
+      /** The create operation's sinks (issue #2177): every line below goes through them. */
+      log: MaskedLogSinks;
     }
   ): Promise<void> {
+    const { log } = ctx;
     try {
       await send();
     } catch (error) {
@@ -556,9 +925,22 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // ten for exactly that reason before counting them from the throws.
       // `.detail` keeps AWS's own sentence, and the disclosure question for
       // every site of that shape is issue go-to-k/cdkd#2319's.
-      const message = describeAwsFailure(error).detail;
+      //
+      // Masked before it joins either line (issue #2177): AWS quotes request
+      // values back, and the warn below reaches no engine sink at all.
+      //
+      // The Active wait below can fail with the waiter's whole GetFunction
+      // payload as its message: that is withheld, not relayed
+      // (`describeLambdaWaiterFailure`).
+      const rawMessage = describeAwsFailure(error).detail;
+      const withheld = withholdWaiterPayload(error, log.mask);
+      const message = withheld?.masked ?? log.mask(rawMessage);
+      // Masked once, over the finished line, like the cleanup line below: it
+      // is built from the UNMASKED described text.
       this.logger.warn(
-        `${ctx.apiName} failed for ${ctx.logicalId}: ${message} — deleting partially-created function to maintain atomicity`
+        log.mask(
+          `${ctx.apiName} failed for ${ctx.logicalId}: ${withheld?.described ?? rawMessage} — deleting partially-created function to maintain atomicity`
+        )
       );
       // The cleanup delete is RETRIED on a still-settling function. When the
       // failure above was an Active-wait TIMEOUT, the function is by
@@ -598,17 +980,25 @@ export class LambdaFunctionProvider implements ResourceProvider {
         }
       }
       if (cleanupFailure !== undefined) {
+        // `error` has no sink of its own: the finished line goes through the
+        // same masker. The classifier above read the RAW text.
         this.logger.error(
-          `Cleanup DeleteFunction failed for ${ctx.logicalId} after ${ctx.apiName} failure — function may be orphaned: ${cleanupFailure}`
+          log.mask(
+            `Cleanup DeleteFunction failed for ${ctx.logicalId} after ${ctx.apiName} failure — function may be orphaned: ${cleanupFailure}`
+          )
         );
       }
-      throw new ProvisioningError(
+      const cause = error instanceof Error ? error : undefined;
+      const refusal = new ProvisioningError(
         `Failed to set ${ctx.propertyName} on Lambda function ${ctx.logicalId} (function was deleted to maintain atomicity): ${message}`,
         ctx.resourceType,
         ctx.logicalId,
         ctx.functionName,
-        error instanceof Error ? error : undefined
+        cause ?? new Error(rawMessage)
       );
+      // The retry wording this message keeps on purpose (see create()) must
+      // still classify when the mask cut it: read the cause chain instead.
+      throw message === rawMessage ? refusal : markRedactedCause(refusal);
     }
   }
 
@@ -646,15 +1036,31 @@ export class LambdaFunctionProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // Issue #2178: the sink for the line that QUOTES a value read off the bag.
-    // `properties` arrives RESOLVED, and the RuntimeManagementConfig echo below
-    // puts a slice of it into a log line NO engine sink ever sees. Absent means
-    // unmasked. The other `this.logger.debug` lines here name the function
-    // rather than a property value and belong to issue #2177's TIER A sweep.
-    const mask = maskerOrIdentity(context?.maskSecrets);
-    const debug = (message: string): void => this.logger.debug(mask(message));
+    // Issues #2178 / #2177: every update() line and refusal goes through this
+    // one sink set. `properties` arrives RESOLVED, and a provider's own logger
+    // reaches no engine mask. Absent means unmasked. The recorded name is
+    // secret-derived when this deploy's bag holds it, or when the PREVIOUS
+    // `FunctionName` was a secret (state keeps its `{{resolve:` reference, or
+    // `***`, so a rotated name's plaintext is in no bag of this deploy). There
+    // is no desired `FunctionName` pair: it could only mark `physicalId`, and
+    // these two pairs already catch every redacted state record (a name still
+    // in this deploy's bag, or one recorded from a previous secret).
+    const log = lambdaOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      [
+        [physicalId, physicalId],
+        [previousProperties['FunctionName'], physicalId],
+      ],
+      properties
+    );
 
-    this.logger.debug(`Updating Lambda function ${logicalId}: ${physicalId}`);
+    // Typed as the capability so `audit:provider-secret-mask` sees the
+    // `maskDeep` below reach a masker (a `log.mask` property read off a
+    // non-`this` receiver is not one it accepts).
+    const operationMask: MaskerFn = log.mask;
+
+    log.debug(`Updating Lambda function ${logicalId}: ${log.value(physicalId)}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
@@ -831,14 +1237,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
         };
 
         await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
-        this.logger.debug(`Updated configuration for Lambda function ${physicalId}`);
+        log.debug(`Updated configuration for Lambda function ${log.value(physicalId)}`);
         // Wait for the configuration update to fully apply before any
         // follow-up call. UpdateFunctionConfiguration is async; an
         // immediate UpdateFunctionCode (or any downstream Invoke) against
         // the in-flight update fails with "The operation cannot be
         // performed at this time. The function is currently in the
         // following state: Pending" / "...InProgress".
-        await this.waitForFunctionUpdated(logicalId, resourceType, physicalId);
+        await this.waitForFunctionUpdated(logicalId, resourceType, physicalId, log);
       }
 
       // CodeSigningConfigArn DETACH must precede the code update below.
@@ -858,8 +1264,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
         await this.lambdaClient.send(
           new DeleteFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
         );
-        this.logger.debug(
-          `Detached CodeSigningConfigArn from Lambda function ${physicalId} (template removed the property)`
+        log.debug(
+          `Detached CodeSigningConfigArn from Lambda function ${log.value(physicalId)} (template removed the property)`
         );
       }
 
@@ -903,11 +1309,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
         };
 
         await this.lambdaClient.send(new UpdateFunctionCodeCommand(codeParams));
-        this.logger.debug(`Updated code for Lambda function ${physicalId}`);
+        log.debug(`Updated code for Lambda function ${log.value(physicalId)}`);
         // Same reason as above: UpdateFunctionCode is async too, and
         // downstream resources / a subsequent deploy must not race the
         // in-flight code swap.
-        await this.waitForFunctionUpdated(logicalId, resourceType, physicalId);
+        await this.waitForFunctionUpdated(logicalId, resourceType, physicalId, log);
       }
 
       // RecursiveLoop is set via a SEPARATE `PutFunctionRecursionConfig`
@@ -924,8 +1330,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
             RecursiveLoop: newRecursiveLoop,
           })
         );
-        this.logger.debug(
-          `Updated RecursiveLoop for Lambda function ${physicalId} to '${newRecursiveLoop}'`
+        log.debug(
+          `Updated RecursiveLoop for Lambda function ${log.value(physicalId)} to '${log.value(newRecursiveLoop)}'`
         );
       }
 
@@ -950,8 +1356,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
           await this.lambdaClient.send(
             new DeleteFunctionConcurrencyCommand({ FunctionName: physicalId })
           );
-          this.logger.debug(
-            `Cleared ReservedConcurrentExecutions for Lambda function ${physicalId} (template removed the property)`
+          log.debug(
+            `Cleared ReservedConcurrentExecutions for Lambda function ${log.value(physicalId)} (template removed the property)`
           );
         } else {
           await this.lambdaClient.send(
@@ -960,8 +1366,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
               ReservedConcurrentExecutions: newReservedConcurrentExecutions,
             })
           );
-          this.logger.debug(
-            `Updated ReservedConcurrentExecutions for Lambda function ${physicalId} to ${newReservedConcurrentExecutions}`
+          log.debug(
+            `Updated ReservedConcurrentExecutions for Lambda function ${log.value(physicalId)} to ${log.value(newReservedConcurrentExecutions)}`
           );
         }
       }
@@ -979,8 +1385,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
             CodeSigningConfigArn: newCodeSigningConfigArn,
           })
         );
-        this.logger.debug(
-          `Updated CodeSigningConfigArn for Lambda function ${physicalId} to ${newCodeSigningConfigArn}`
+        log.debug(
+          `Updated CodeSigningConfigArn for Lambda function ${log.value(physicalId)} to ${log.value(newCodeSigningConfigArn)}`
         );
       }
 
@@ -1010,9 +1416,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
           physicalId,
           newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
         );
-        debug(
-          `Updated RuntimeManagementConfig for Lambda function ${physicalId} to ${JSON.stringify(
-            maskDeep(newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }, mask)
+        log.debug(
+          `Updated RuntimeManagementConfig for Lambda function ${log.value(physicalId)} to ${JSON.stringify(
+            maskDeep(newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }, operationMask)
           )}`
         );
       }
@@ -1029,10 +1435,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // state holds Tags in CFn shape ([{ Key, Value }]).
       await this.applyTagDiff(
         functionArn,
+        physicalId,
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        log
       );
 
       return {
@@ -1048,12 +1456,17 @@ export class LambdaFunctionProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Lambda function ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Lambda function ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause ?? new Error(String(error))
+          )
       );
     }
   }
@@ -1299,17 +1712,19 @@ export class LambdaFunctionProvider implements ResourceProvider {
    */
   private async applyTagDiff(
     functionArn: string | undefined,
+    functionName: string,
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    log: MaskedLogSinks
   ): Promise<void> {
     if (!functionArn) return;
 
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
+      log.warn(tagWarning);
     }
     const tagsToAdd = Object.fromEntries(plan.set);
     const tagsToRemove = plan.remove;
@@ -1318,16 +1733,19 @@ export class LambdaFunctionProvider implements ResourceProvider {
       await this.lambdaClient.send(
         new UntagResourceCommand({ Resource: functionArn, TagKeys: tagsToRemove })
       );
-      this.logger.debug(
-        `Removed ${tagsToRemove.length} tag(s) from Lambda function ${functionArn}`
+      // The function NAME through `value`, not the ARN: the ARN embeds the
+      // name, and a secret name below the substring needle floor would print
+      // inside it.
+      log.debug(
+        `Removed ${tagsToRemove.length} tag(s) from Lambda function ${log.value(functionName)}`
       );
     }
     if (Object.keys(tagsToAdd).length > 0) {
       await this.lambdaClient.send(
         new TagResourceCommand({ Resource: functionArn, Tags: tagsToAdd })
       );
-      this.logger.debug(
-        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Lambda function ${functionArn}`
+      log.debug(
+        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Lambda function ${log.value(functionName)}`
       );
     }
   }
@@ -1335,7 +1753,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
   private async waitForFunctionUpdated(
     logicalId: string,
     resourceType: string,
-    functionName: string
+    functionName: string,
+    log: MaskedLogSinks
   ): Promise<void> {
     try {
       await waitUntilFunctionUpdatedV2(
@@ -1353,14 +1772,17 @@ export class LambdaFunctionProvider implements ResourceProvider {
       );
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Lambda function ${logicalId} update did not complete: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        resourceType,
-        logicalId,
-        functionName,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Lambda function ${logicalId} update did not complete: ${text}`,
+            resourceType,
+            logicalId,
+            functionName,
+            cause ?? new Error(String(error))
+          )
       );
     }
   }

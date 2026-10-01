@@ -124,7 +124,7 @@
   "src/provisioning/providers/kms-provider.ts": 24,
   "src/provisioning/providers/lambda-event-invoke-config-provider.ts": 7,
   "src/provisioning/providers/lambda-eventsource-provider.ts": 10,
-  "src/provisioning/providers/lambda-function-provider.ts": 31,
+  "src/provisioning/providers/lambda-function-provider.ts": 17,
   "src/provisioning/providers/lambda-layer-provider.ts": 7,
   "src/provisioning/providers/lambda-microvm-image-provider.ts": 13,
   "src/provisioning/providers/lambda-permission-provider.ts": 10,
