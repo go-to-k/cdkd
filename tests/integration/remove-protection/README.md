@@ -21,9 +21,13 @@ must be back to `ACTIVE` afterwards: cdkd turned it off, the delete
 failed, so cdkd puts it back (issue #2204). The pool's
 `AllowAdminCreateUserOnly` must still be `true` too: `UpdateUserPool`
 resets members a call omits, so the flip and the re-enable echo the pool's
-own configuration back (issue #4066). The log group has no such arm,
-because no terminal `DeleteLogGroup` refusal can be constructed from
-outside; its compensation is unit-tested only.
+own configuration back (issue #4066). The same destroy covers ELBv2: an
+out-of-band VPC endpoint service backed by the NLB makes
+`DeleteLoadBalancer` refuse terminally, and the NLB's
+`deletion_protection.enabled` must read `true` afterwards. The log group
+and the Auto Scaling group have no such arm, because no terminal
+`DeleteLogGroup` / `DeleteAutoScalingGroup(ForceDelete)` refusal can be
+constructed from outside; their compensation is unit-tested only.
 
 ## What it covers
 
@@ -37,6 +41,7 @@ of scope — see "Why no RDS" below):
 | `AWS::Cognito::UserPool` | `DeletionProtection: 'ACTIVE'` (BREAKING — was silently bypassed pre-#205) |
 | `AWS::EC2::Instance` | `DisableApiTermination: true` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` (ALB) | `LoadBalancerAttributes.deletion_protection.enabled = true` |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` (NLB) | The same attribute. The compensation arm's target: only an NLB (or a GWLB), not an ALB, can back the endpoint service that makes its delete refuse. |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection: 'prevent-all-deletion'` (new SDK provider — never deployed via cdkd before #205). Launches one `t3.nano` whose launch template sets `DisableApiTermination: true`, so the bypass must also flip EC2-level termination protection off on the launched instance before `ForceDelete` (regression target for #796). verify.sh captures the instance id post-deploy and asserts it terminates post-destroy. |
 
 Stack-level `terminationProtection` is intentionally **not** exercised
@@ -66,7 +71,8 @@ state bucket as `cdkd-state-${accountId}` (override via the
 
 On any assertion failure the cleanup trap re-attempts
 `cdkd destroy --remove-protection --force` so a botched run does not
-leak ALB / EC2 / ASG / Cognito UserPool resources.
+leak ALB / NLB / EC2 / ASG / Cognito UserPool resources, or the
+out-of-band domain and endpoint service step 4b creates.
 
 ## Resource count + timing
 
@@ -74,9 +80,11 @@ leak ALB / EC2 / ASG / Cognito UserPool resources.
   scale-down to 0 keep the rest fast)
 - Negative destroy: ~30s (every per-resource delete fails fast with
   AWS's protection rejection)
-- Compensation destroy: deletes everything but the user pool, so the ALB
-  delete is now its long pole
+- Compensation destroy: deletes everything but the user pool, the NLB and
+  the subnets / VPC the NLB holds, which run out the 6-minute
+  `--resource-timeout`
 - Positive destroy: deletes what the compensation destroy left (the user
-  pool, plus anything the IGW public-IP release lag held back)
+  pool, the NLB and its VPC, plus anything the IGW public-IP release lag
+  held back)
 - Total: not yet re-measured since the compensation arm was added (it was
   ~10-12 min before)

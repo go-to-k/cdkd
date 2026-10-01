@@ -49,6 +49,7 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
 import {
   protectedReplacementAdvice,
   pasteableAwsCommand,
+  WITHHELD_AWS_COMMAND,
 } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -56,6 +57,14 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+import {
+  ProtectionFlipRegistry,
+  deleteWithProtectionCompensation,
+  observeThenDisableProtection,
+  protectionFlipKey,
+  type ProtectionFlipRecord,
+  type ProtectionGuardSite,
+} from './deletion-protection-compensation.js';
 
 // ─── List reads (go-to-k/cdkd#3948) ─────────────────────────────────
 //
@@ -424,11 +433,71 @@ export function foldMetricsCollection(value: unknown): FoldedMetrics[] {
   });
 }
 
+/**
+ * The {@link ProtectionGuardSite} for an `AWS::AutoScaling::AutoScalingGroup`
+ * whose `--remove-protection` delete failed terminally (issue #2204).
+ *
+ * `removedLevel` answers the `DeletionProtection` value the flip removed,
+ * read when a line is rendered: the restore command must put back THAT level,
+ * and a command that cannot name it is withheld rather than guessed.
+ * `--region` is rendered whenever the state records one, for the reason
+ * `rdsFamilyProtectionSite` gives.
+ */
+export function autoScalingGroupProtectionSite(
+  groupName: string,
+  region: string | undefined,
+  removedLevel: () => string | undefined
+): ProtectionGuardSite {
+  return {
+    subject: 'AutoScalingGroup',
+    guardName: 'DeletionProtection',
+    noun: 'group',
+    // Auto Scaling has no typed not-found error: a missing group is a
+    // `ValidationError` whose message says so.
+    isNotFound: (error) => {
+      if (typeof error !== 'object' || error === null) return false;
+      const { name, message } = error as { name?: unknown; message?: unknown };
+      return (
+        name === 'ValidationError' &&
+        typeof message === 'string' &&
+        /not found|does not exist/i.test(message)
+      );
+    },
+    notFoundMeaning:
+      'Auto Scaling answered that the group was not found. That most commonly means the ' +
+      'group is gone, and it can also mean it is not in this region or account.',
+    commands: () => {
+      const aws = pasteableAwsCommand();
+      const regionArg = region ? aws` --region ${region}` : aws``;
+      const level = removedLevel();
+      const restore =
+        level === undefined
+          ? WITHHELD_AWS_COMMAND
+          : aws`aws autoscaling update-auto-scaling-group --auto-scaling-group-name ${groupName}${regionArg} --deletion-protection ${level}`.render();
+      return {
+        check:
+          aws`aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names ${groupName}${regionArg}`.render(),
+        restoreAfterNotFound: restore,
+        restoreLive: restore,
+      };
+    },
+  };
+}
+
 export class ASGProvider implements ResourceProvider {
   private asgClient?: AutoScalingClient;
   private ec2Client?: EC2Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ASGProvider');
+  /** `--remove-protection` flips per group, kept across `delete()` re-entry (#2204). */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
+  /**
+   * The `DeletionProtection` level each flip record's flip removed. Keyed by
+   * the RECORD, not the group, so it lives and dies with it: the registry
+   * hands a re-entered `delete()` the same record (and so this level), and a
+   * released or aged-out record takes its level with it.
+   */
+  private readonly removedProtection = new WeakMap<ProtectionFlipRecord, string>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1305,12 +1374,63 @@ export class ASGProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Delete an Auto Scaling group.
+   *
+   * The compensation boundary (issue #2204): a `--remove-protection` flip of
+   * `DeletionProtection` to `none` whose delete then fails terminally is undone
+   * here — back to the value the pre-flip readback saw — so a destroy that did
+   * not happen does not leave a live group with its guard stripped.
+   */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
+  ): Promise<void> {
+    // The record `run` was handed, so the re-enable and the site's commands
+    // can read the value this record's flip removed.
+    let current: ProtectionFlipRecord | undefined;
+    const removedValue = (): string | undefined =>
+      current ? this.removedProtection.get(current) : undefined;
+    await deleteWithProtectionCompensation({
+      registry: this.protectionFlips,
+      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
+      run: (flip) => {
+        current = flip;
+        return this.deleteOnce(logicalId, physicalId, resourceType, context, flip);
+      },
+      compensation: {
+        logicalId,
+        physicalId,
+        logger: this.logger,
+        site: autoScalingGroupProtectionSite(physicalId, context?.expectedRegion, removedValue),
+        reEnable: async () => {
+          const value = removedValue();
+          // Unreachable while the record is only ever set together with the
+          // value (`deleteOnce`); throwing keeps the LOUD "could NOT
+          // re-enable" line rather than guessing a level the user never had.
+          if (value === undefined) {
+            throw new Error('the DeletionProtection value removed by this run was not recorded');
+          }
+          await this.getClient().send(
+            new UpdateAutoScalingGroupCommand({
+              AutoScalingGroupName: physicalId,
+              DeletionProtection: value as DeletionProtection,
+            })
+          );
+        },
+      },
+    });
+  }
+
+  private async deleteOnce(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    flip: ProtectionFlipRecord
   ): Promise<void> {
     this.logger.debug(`Deleting AutoScalingGroup ${logicalId}: ${physicalId}`);
 
@@ -1322,15 +1442,39 @@ export class ASGProvider implements ResourceProvider {
     // or DeletionProtection set, surfacing as ProvisioningError. The
     // flip-off is idempotent — AWS accepts UpdateAutoScalingGroup
     // (DeletionProtection: 'none') even when protection is already
-    // disabled, so we always issue it under the flag.
+    // disabled, so we always issue it under the flag. The pre-flip readback is
+    // what lets a terminal failure restore ONLY a guard this run turned off,
+    // and to the level it had: `prevent-force-deletion` and
+    // `prevent-all-deletion` are both "on", and putting back the wrong one
+    // would be a configuration change of cdkd's own.
     if (context?.removeProtection === true) {
       try {
-        await this.getClient().send(
-          new UpdateAutoScalingGroupCommand({
-            AutoScalingGroupName: physicalId,
-            DeletionProtection: 'none' as never,
-          })
-        );
+        let observed: string | undefined;
+        await observeThenDisableProtection({
+          flip,
+          logger: this.logger,
+          physicalId,
+          guardName: 'DeletionProtection',
+          observe: async () => {
+            const group = await this.describeGroup(physicalId);
+            const value = group?.DeletionProtection;
+            observed = typeof value === 'string' && value !== 'none' ? value : undefined;
+            return observed !== undefined;
+          },
+          disable: async () => {
+            await this.getClient().send(
+              new UpdateAutoScalingGroupCommand({
+                AutoScalingGroupName: physicalId,
+                DeletionProtection: 'none' as never,
+              })
+            );
+          },
+        });
+        // Recorded only once AWS accepted the flip (a rejected one threw out of
+        // `observeThenDisableProtection` above), and never CLEARED here: a
+        // re-entered attempt observes `none` because the previous one turned it
+        // off, so overwriting would lose the level the latch still owes.
+        if (observed !== undefined) this.removedProtection.set(flip, observed);
         this.logger.debug(
           `Disabled DeletionProtection on AutoScalingGroup ${logicalId} before delete`
         );
@@ -1359,6 +1503,9 @@ export class ASGProvider implements ResourceProvider {
           ForceDelete: context?.removeProtection === true,
         })
       );
+      // AWS took the delete, so a throw from the wait below is a WAIT failing,
+      // not the delete: the group is going and its guard must not be put back.
+      flip.deleteAccepted = true;
 
       this.logger.debug(`Successfully initiated deletion of AutoScalingGroup ${logicalId}`);
 
