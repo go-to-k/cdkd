@@ -322,6 +322,17 @@ const SITES: readonly Site[] = [
     drive: (v) => linesOf(() => resolver().resolve({ 'Fn::Sub': `a-\${${v}.Arn}` }, ctx())),
     pick: starts('Fn::Sub variable '),
   },
+  {
+    // A control character in the name: the caught reason spells the name
+    // through `displayMasked`, which deletes it, so its echo must be keyed on
+    // that spelling too.
+    site: 'Fn::Sub keep-placeholder WARN, a name holding a control character',
+    drive: (v) =>
+      linesOf(() =>
+        resolver().resolve({ 'Fn::Sub': `a-\${x\u001b${v}} b-\${y\u0007${v}.Arn}` }, ctx())
+      ),
+    pick: starts('Fn::Sub variable '),
+  },
   // ---- a state record named like a parameter -----------------------------
   {
     site: 'ignored state record named like a parameter',
@@ -985,6 +996,22 @@ describe('a name the display sanitizer ALTERED is described, not shown trimmed (
     expect(lines).toContain(
       `Resolving Fn::GetStackOutput: StackName=${UNSHOWABLE_VALUE}, Region=us-east-1, OutputName=${UNSHOWABLE_VALUE}`
     );
+  });
+
+  it('keeps a masked render as the mask, whatever the secret holds', async () => {
+    // The altered-value test reads the RAW text; for a masked render that
+    // would disclose whether the secret holds such a character.
+    const secret = 'pass\u00a0word';
+    const lines = await linesOf(() =>
+      resolver().resolve(
+        { 'Fn::GetStackOutput': { StackName: secret, OutputName: 'Out' } },
+        ctx({
+          stateBackend: backend([]),
+          recordedSecretValues: new Map([[secret, '{{resolve:ssm:/x}}']]),
+        })
+      )
+    );
+    expect(lines).toContain('Resolving Fn::GetStackOutput: StackName=***, Region=us-east-1, OutputName=Out');
   });
 
   it('CONTROL: an unaltered plain name prints', async () => {

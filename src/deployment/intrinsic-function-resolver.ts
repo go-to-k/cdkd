@@ -3142,9 +3142,13 @@ function boundLogText(shown: string, opts: LogBoundOptions = {}): string {
   // A value the display sanitizer ALTERED (trimmed, blanked, non-ASCII) is
   // described, never printed: `Prod<NBSP>` would print as a bare `Prod`,
   // byte-identical to another stack's name (the go-to-k/cdkd#3164 spoof,
-  // go-to-k/cdkd#4250 review). The test reads `original` only as a boolean.
+  // go-to-k/cdkd#4250 review). The test reads `original` only as a boolean,
+  // and is skipped for a render holding the mask: there the raw text is (in
+  // part) a secret, and the verdict would tell one bit about it, while a
+  // masked render cannot pass for another name's spelling anyway.
   if (
     opts.original !== undefined &&
+    !shown.includes(SECRET_MASK) &&
     displaySafe(opts.original, { asciiOnly: true }) !== opts.original
   ) {
     return UNSHOWABLE_VALUE;
@@ -8215,12 +8219,19 @@ export class IntrinsicFunctionResolver {
     // is its echo in the caught reason (`Ref <name> not found`, or the logical
     // id half of a dotted name in `Resource <id> not found for Fn::GetAtt`).
     // The reason is masked as a whole after, as it was.
+    // Keyed on the raw name AND on the `displayMasked` spelling the caught
+    // reason carries (`Ref <masked> not found`), which deletes a control
+    // character where the positional pass's sanitized key blanks it.
     const shown = this.logRender(varName, context);
     const dot = varName.indexOf('.');
-    const pairs: Array<readonly [string, string]> = [[varName, shown]];
+    const pairs: Array<readonly [string, string]> = [
+      [varName, shown],
+      [this.displayMasked(varName, context), shown],
+    ];
     if (dot > 0) {
       const head = varName.slice(0, dot);
-      pairs.push([head, this.logRender(head, context)]);
+      const shownHead = this.logRender(head, context);
+      pairs.push([head, shownHead], [this.displayMasked(head, context), shownHead]);
     }
     return `Fn::Sub variable ${shown} could not be resolved (${this.namedRequestMasks(pairs, context).text(reason)}), keeping placeholder`;
   }
