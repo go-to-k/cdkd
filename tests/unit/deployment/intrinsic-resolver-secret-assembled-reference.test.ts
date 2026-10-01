@@ -303,7 +303,7 @@ describe('issue #4166: the twin half through each wrapper', () => {
   ] as const) {
     it(`refuses a same-pass secret reaching the token through ${wrapper}`, async () => {
       const bag: RecordedSecretValues = new Map();
-      const context = { ...contextFor(bag, false) };
+      const context = contextFor(bag, false);
       const message = await refusalOf(new IntrinsicFunctionResolver('us-east-1').resolve({ A: value }, context as never));
       expect(message).toBe(`Refusing to resolve {{resolve:ssm:/app/***}}: ${REFUSAL_TAIL}`);
       expect(context.inheritedSecrets, 'premise: no inherited bag, so the needle half cannot fire').toBeUndefined();
