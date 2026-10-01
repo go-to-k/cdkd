@@ -5498,8 +5498,8 @@ describe('every properties text describes a non-plain logical id (go-to-k/cdkd#4
         );
         expect(before.length, label).toBeGreaterThan(0);
         for (const { value, message } of messages) {
-          expect(message, value).toContain(NOT_SHOWN);
           expect(spansThatRunUnderEitherFlip(message, dir), `${value}: ${message}`).toEqual([]);
+          expect(message, value).toContain(NOT_SHOWN);
         }
       });
     }, 120_000);
