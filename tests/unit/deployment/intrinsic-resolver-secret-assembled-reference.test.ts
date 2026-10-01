@@ -289,6 +289,30 @@ describe('issue #4166: a resolvable token assembled from a secret is refused', (
   }
 });
 
+// A secret this pass resolved reaches the token through a wrapper other than
+// `Fn::Sub`. The needle half reads the inherited bag only, so the twin each
+// wrapper carries is what refuses these; the secret is sub-floor, so no
+// needle could see it anyway.
+describe('issue #4166: the twin half through each wrapper', () => {
+  const secretRef = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:name}}`;
+  const joined = (part: unknown) => ({ 'Fn::Join': ['', ['port:{{resolve:ssm:/app/', part, '}}']] });
+  for (const [wrapper, value] of [
+    ['an Fn::Join part', joined(secretRef)],
+    ['an Fn::Select of an Fn::Split piece inside Fn::Join', joined({ 'Fn::Select': [0, { 'Fn::Split': [',', secretRef] }] })],
+    ['an intrinsic Fn::Sub variable', { 'Fn::Sub': ['port:{{resolve:ssm:/app/${N}}}', { N: { 'Fn::Join': ['', [secretRef]] } }] }],
+  ] as const) {
+    it(`refuses a same-pass secret reaching the token through ${wrapper}`, async () => {
+      const bag: RecordedSecretValues = new Map();
+      const context = contextFor(bag, false);
+      const message = await refusalOf(new IntrinsicFunctionResolver('us-east-1').resolve({ A: value }, context as never));
+      expect(message).toBe(`Refusing to resolve {{resolve:ssm:/app/***}}: ${REFUSAL_TAIL}`);
+      expect(context.inheritedSecrets, 'premise: no inherited bag, so the needle half cannot fire').toBeUndefined();
+      expect(ssmCalls.count, 'premise: the assembled token was looked up').toBe(1);
+      expect(bag.has('q7')).toBe(false);
+    });
+  }
+});
+
 describe('issue #4166: what the refusal leaves alone', () => {
   // Review M0: `DB_USER` resolves first and records `myapp`, which the
   // `DB_PASSWORD` token spells literally. Literal template text discloses
@@ -322,6 +346,22 @@ describe('issue #4166: what the refusal leaves alone', () => {
         { A: { 'Fn::Sub': 'port:{{resolve:ssm:/app/${Name}}}' } },
         context as never
       );
+    };
+    await compare(true);
+    expect(ssmCalls.count, 'premise: the comparison path looked the parameter up').toBe(1);
+    expect(isRecordedSecretExpression(token)).toBe(false);
+    await compare(false);
+    expect(isRecordedSecretExpression(token)).toBe(true);
+  });
+
+  it('the comparison path does not pin a literal token spelling an inherited secret: the needle half', async () => {
+    // The case above reaches the gate through `${Name}`, which the twin half
+    // already catches; a literal spelling has no twin, so only the inherited
+    // needle half keeps it unpinned. CONTROL: no inherited bag, pinned.
+    const token = `{{resolve:ssm:/app/${NAME}}}`;
+    const compare = async (secret: boolean): Promise<void> => {
+      const context = { ...contextFor(new Map(), secret), skipDynamicReferences: true };
+      await new IntrinsicFunctionResolver('us-east-1').resolve({ A: `port:${token}` }, context as never);
     };
     await compare(true);
     expect(ssmCalls.count, 'premise: the comparison path looked the parameter up').toBe(1);
@@ -395,8 +435,8 @@ describe('issue #4166: what the refusal leaves alone', () => {
     }
     expect(ssmCalls.count, 'premise: the sibling looked up once').toBe(2);
     for (const line of everyLine()) expect(line).not.toContain(NAME);
-    // CONTROL: the same text as a TEMPLATE leaf is refused. Its name spells a
-    // recorded four-or-more-character secret, the bound issue #2743 set.
+    // CONTROL: the same text as a TEMPLATE leaf is refused. Its name spells an
+    // INHERITED four-or-more-character secret, the needle half's bound.
     const message = await refusalOf(persist({ A: `port:{{resolve:ssm:/app/${NAME}}}` }, true));
     expect(message).toBe(`Refusing to resolve {{resolve:ssm:/app/***}}: ${REFUSAL_TAIL}`);
   });
