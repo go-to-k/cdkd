@@ -1148,7 +1148,8 @@
         "ec2-instance-fanout",
         "import-migrate-vpc",
         "propagation-races-2",
-        "remove-protection"
+        "remove-protection",
+        "remove-protection-compensation"
       ],
       "signals": {
         "deletion-ordering-complex": [
@@ -1168,6 +1169,10 @@
         ],
         "remove-protection": [
           "l2",
+          "literal"
+        ],
+        "remove-protection-compensation": [
+          "l1",
           "literal"
         ]
       }

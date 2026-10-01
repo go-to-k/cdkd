@@ -29,8 +29,16 @@
  * (`DescribeTable` / `UpdateTable` / `DeleteTable`) as its running example. For
  * the RDS family read `Describe*` / `Modify*` / `Delete*` on a cluster or an
  * instance, for a log group `DescribeLogGroups` / `PutLogGroupDeletionProtection`
- * / `DeleteLogGroup`, and for a Cognito user pool `DescribeUserPool` /
- * `UpdateUserPool` / `DeleteUserPool`; the argument is the same.
+ * / `DeleteLogGroup`, for a Cognito user pool `DescribeUserPool` /
+ * `UpdateUserPool` / `DeleteUserPool`, for an EMR cluster `DescribeCluster` /
+ * `SetTerminationProtection` / `TerminateJobFlows`, for an ELBv2 load balancer
+ * `DescribeLoadBalancerAttributes` / `ModifyLoadBalancerAttributes` /
+ * `DeleteLoadBalancer`, for an Auto Scaling group `DescribeAutoScalingGroups` /
+ * `UpdateAutoScalingGroup` / `DeleteAutoScalingGroup`, for an EC2 instance
+ * (both delete routes) `DescribeInstanceAttribute` / `ModifyInstanceAttribute`
+ * / the delete, and for a Cloud Control protection-registry type
+ * `GetResource` / an `UpdateResource` patch / `DeleteResource`; the argument
+ * is the same.
  */
 
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -90,7 +98,10 @@ export interface ProtectionFlipRecord {
    * already gone.
    *
    * Latching for the same reason as the field above: an accepted delete stays
-   * accepted across the outer loop's re-entry.
+   * accepted across the outer loop's re-entry. The Cloud Control adopter is the
+   * exception and decides it per attempt, since each attempt issues a fresh
+   * `DeleteResource` whose handler can refuse
+   * (`CloudControlProvider.deleteThroughCloudControl`).
    */
   deleteAccepted: boolean;
 }
@@ -227,7 +238,7 @@ export function protectionFlipKey(
 
 /**
  * How long a flip record of any {@link deleteWithProtectionCompensation}
- * caller (the RDS family, the log group, the user pool) may sit idle between two `delete()`
+ * caller may sit idle between two `delete()`
  * attempts of one retry sequence before a later delete no longer inherits it.
  *
  * The 30-minute default per-resource deadline, which is what bounds a retry
@@ -237,7 +248,9 @@ export function protectionFlipKey(
  * compensated is SHORT — a readback, a `Modify*`, and a `Delete*` that AWS
  * refused — because once AWS accepts the `Delete*` the record's
  * `deleteAccepted` latch ends compensation for good, whatever the wait after
- * it costs.
+ * it costs. The Cloud Control path is the exception: its handler refuses a
+ * delete only by reporting FAILED at the end of a wait, so an attempt there
+ * spans that wait, which a slow type's poll budget can stretch past this window.
  */
 export const PROTECTION_FLIP_REUSE_WINDOW_MS = 30 * 60_000;
 
@@ -282,12 +295,16 @@ export const PROTECTION_FLIP_REUSE_WINDOW_MS = 30 * 60_000;
  *  3. **The compensation itself is unbounded.** `reEnable` is one control-plane
  *     write with no timeout of its own, so on Ctrl-C it adds one SDK call per
  *     flipped resource to a teardown the user has already asked to end. Left
- *     unbounded on purpose: it is a single round trip (no polling, no wait),
- *     the SDK's own retry/timeout config already applies to it, and it is the
- *     ONLY thing standing between a Ctrl-C and a live resource with its guard
- *     stripped — a timeout short enough to be felt during teardown would mostly
- *     convert successful restores into the "could NOT re-enable" line. Revisit
- *     if the compensation ever grows a WAIT.
+ *     unbounded on purpose: it is a single round trip, the SDK's own
+ *     retry/timeout config already applies to it, and it is the ONLY thing
+ *     standing between a Ctrl-C and a live resource with its guard stripped — a
+ *     timeout short enough to be felt during teardown would mostly convert
+ *     successful restores into the "could NOT re-enable" line. The ONE adopter
+ *     that waits is the Cloud Control registry path, whose `UpdateResource` is
+ *     asynchronous: its wait is not interruptible, gives up on a transport
+ *     outage after the flip's own short transient grace, and otherwise waits
+ *     out an update that stays in progress for the type's full Cloud Control
+ *     poll budget (15 minutes, longer for a known-slow type).
  */
 export function isTerminalDeleteFailure(error: unknown): boolean {
   if (isInterruptedWaitError(error)) return true;
@@ -295,15 +312,26 @@ export function isTerminalDeleteFailure(error: unknown): boolean {
   // Deliberately reads the TOP-LEVEL message, unlike `destroy-runner.ts`'s and
   // `retry.ts`'s twins of this same two-arm shape, which issue #2302 moved onto
   // `retryClassificationText`. The difference is the population, not the
-  // pattern: those two classify errors from ANY provider, so a provider that
-  // redacts its thrown message (only `S3BucketProvider` does today) empties
-  // what they match on. This one classifies only the delete throws of its
-  // adopters (the DynamoDB pair, RDS, DocDB, Neptune, the Logs log group and
-  // the Cognito user pool), which carry their
-  // cause's text verbatim -- so the chain read would be a no-op here, and
-  // `retryClassificationText` is opt-in anyway (nothing on these paths stamps
-  // itself with `markRedactedCause`). Move it onto the chain text the moment an
-  // adopter's throw starts redacting; the shape is otherwise identical.
+  // pattern: those two classify errors from ANY provider, and several providers
+  // stamp a redacted message with `markRedactedCause`, which empties what they
+  // match on. This one classifies only the delete throws of its adopters, and
+  // all but one carry their cause's text verbatim, unstamped, so the chain read
+  // would be a no-op for them. (The ELBv2, Logs log group and DynamoDB
+  // GlobalTable providers do call `wrapMaskedAwsError`, but on their create and
+  // update paths only; their delete throws are verbatim.)
+  //
+  // The one stampable delete throw is the Cloud Control abandoned-wait error
+  // (`CloudControlProvider.abandonWait`, DELETE included), stamped when
+  // `describePollFailure` reduced a real cause such as an
+  // `AccessDeniedException`. For it this answer can be "terminal" while the
+  // loop's is "retryable". An abandoned delete wait sets `flip.deleteAccepted`,
+  // so nothing is re-enabled and the stand-down warning is written; the record
+  // is released, and a retry the loop still makes gets a fresh record whose
+  // pre-flip read sees the guard already OFF, so a refusal on that retry is NOT
+  // compensated. A known, documented limit (docs/cli-destroy.md, issue #4318).
+  // Reading the chain here instead is not the fix: a persistent redacted deny
+  // would then never be terminal, so the loop would run to its attempt cap with
+  // no stand-down warning at all, where this read at least writes it once.
   const message = error instanceof Error ? error.message : String(error);
   return !(isRetryableTransientError(error, message) || message.includes('Too Many Requests'));
 }
@@ -694,7 +722,9 @@ export async function observeThenDisableProtection(opts: {
  * Run one resource's delete under the compensation boundary (property 1).
  *
  * `run` performs the whole delete — flip, `Delete*`, wait — and must set
- * `flip.deleteAccepted` the moment AWS accepts the `Delete*`. A normal return
+ * `flip.deleteAccepted` the moment AWS accepts the `Delete*` (on the Cloud
+ * Control path, the moment the handler may be deleting: see
+ * `CloudControlProvider.deleteThroughCloudControl`). A normal return
  * (deleted, or already gone) releases the record. A throw is compensated,
  * then re-thrown UNCHANGED; the record is released only when the failure is
  * terminal AND the compensation did not fail, for the reasons on

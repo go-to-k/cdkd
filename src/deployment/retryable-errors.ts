@@ -1173,6 +1173,16 @@ const AMBIGUOUS_CC_HANDLER_ERROR_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Whether a Cloud Control handler `ErrorCode` leaves open that the service
+ * acted ({@link AMBIGUOUS_CC_HANDLER_ERROR_CODES}). Also read by the
+ * `--remove-protection` compensation (issue #2204), where an ambiguous DELETE
+ * may already be deleting and an ambiguous flip-off UPDATE may have landed.
+ */
+export function isAmbiguousCcHandlerErrorCode(code: string | undefined): boolean {
+  return code !== undefined && AMBIGUOUS_CC_HANDLER_ERROR_CODES.has(code);
+}
+
+/**
  * True when a call ended WITHOUT telling cdkd whether the service acted on it
  * (issue [#3978](https://github.com/go-to-k/cdkd/issues/3978)): the request
  * may have succeeded server-side, so a replay of a create can meet the

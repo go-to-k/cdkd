@@ -69,14 +69,17 @@ describe('ccProtectionProperty registry', () => {
     expect(ccProtectionProperty(DSQL)).toEqual({
       property: 'DeletionProtectionEnabled',
       offValue: false,
+      onValue: true,
     });
     expect(ccProtectionProperty('AWS::NeptuneGraph::Graph')).toEqual({
       property: 'DeletionProtection',
       offValue: false,
+      onValue: true,
     });
     expect(ccProtectionProperty('AWS::SMSVOICE::ProtectConfiguration')).toEqual({
       property: 'DeletionProtectionEnabled',
       offValue: false,
+      onValue: true,
     });
   });
 
@@ -89,6 +92,7 @@ describe('ccProtectionProperty registry', () => {
       expect(ccProtectionProperty(type)).toEqual({
         property: 'DeletionProtection',
         offValue: false,
+        onValue: true,
       });
     }
   });
@@ -97,6 +101,7 @@ describe('ccProtectionProperty registry', () => {
     expect(ccProtectionProperty('AWS::VerifiedPermissions::PolicyStore')).toEqual({
       property: 'DeletionProtection',
       offValue: { Mode: 'DISABLED' },
+      onValue: { Mode: 'ENABLED' },
     });
   });
 

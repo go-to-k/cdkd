@@ -403,12 +403,12 @@ effectively a no-op there.
 | `AWS::Neptune::DBInstance` | `DeletionProtection` | `ModifyDBInstance(DeletionProtection=false, ApplyImmediately=true)` (Neptune SDK) |
 | `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then `DescribeTable` poll until `ACTIVE` |
 | `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then a wait until the table is `ACTIVE`. If the delete then fails, protection is turned back on, but only when it was on before the flip. |
-| `AWS::EC2::Instance` | `DisableApiTermination` | `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
+| `AWS::EC2::Instance` | `DisableApiTermination` | `DescribeInstanceAttribute` read, then `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` with the pool's own settings from `DescribeUserPool` sent back alongside. See [the Cognito notes](#cognito-user-pools) below. |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)`, so AWS terminates running instances as part of the delete |
 | `AWS::EMR::Cluster` | `Instances.TerminationProtected` | `SetTerminationProtection(TerminationProtected=false)`, then `TerminateJobFlows` |
-| `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` |
+| `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `GetResource` read, then an `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` |
 | `AWS::NeptuneGraph::Graph` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
 | `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
 | `AWS::VerifiedPermissions::PolicyStore` | `DeletionProtection` (`{Mode: ENABLED\|DISABLED}`) | Same generic CC patch flip with `value: {Mode: DISABLED}` then `DeleteResource` |
@@ -478,6 +478,16 @@ stripped.
 | `AWS::Neptune::DBCluster`, `AWS::Neptune::DBInstance` | `DeletionProtection` |
 | `AWS::Logs::LogGroup` | `DeletionProtectionEnabled` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` |
+| `AWS::EMR::Cluster` | `Instances.TerminationProtected` |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` |
+| `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection`, restored to the level the flip removed (`prevent-force-deletion` or `prevent-all-deletion`) |
+| `AWS::EC2::Instance` (SDK and Cloud Control routes) | `DisableApiTermination` |
+| `AWS::DSQL::Cluster`, `AWS::SMSVOICE::ProtectConfiguration` (Cloud Control) | `DeletionProtectionEnabled` |
+| `AWS::NeptuneGraph::Graph`, `AWS::EKS::Cluster`, `AWS::RDS::GlobalCluster`, `AWS::DocDB::GlobalCluster` (Cloud Control) | `DeletionProtection` |
+| `AWS::VerifiedPermissions::PolicyStore` (Cloud Control) | `DeletionProtection`, value `{"Mode":"ENABLED"}` |
+
+The `DisableApiTermination` flip on the instances an Auto Scaling group
+launched is not restored.
 
 On the DynamoDB pair a Ctrl-C landing in a wait after the flip is compensated
 too. Four limits are deliberate:
@@ -487,16 +497,45 @@ too. Four limits are deliberate:
   failed, is left alone.
 - It keys on how the delete ENDS, not on individual retries, and it does not
   run once AWS has ACCEPTED the delete call — a failure after that point is a
-  wait giving up on a resource that is already being deleted.
+  wait giving up on a resource that is already being deleted. On a Cloud
+  Control-routed delete this is decided per delete attempt, and "accepted"
+  means the handler may already be deleting: an abandoned wait, or a failure
+  whose handler code leaves that open (`NotStabilized`, `ServiceTimeout`,
+  `InternalFailure`, `GeneralServiceException` and the like), or a conflict
+  after an earlier attempt that may have been deleting. cdkd then does not
+  write the guard back, and warns that it cannot tell, naming the check and
+  restore commands. Any other handler failure is a refusal and is
+  compensated, as is an EC2 instance's termination-protection refusal under
+  any code.
 - It does not run when a retryable failure exhausts the destroy loop's attempt
   cap, nor when a per-resource `--resource-timeout` fires. Both leave the guard
-  off.
+  off. A related case on a Cloud Control type: when cdkd stops waiting for a
+  delete whose status it could not read and AWS's reason is withheld from the
+  message (an access denial, say), cdkd counts that delete as possibly running
+  and drops what it recorded about the flip, while the destroy loop may still
+  retry the delete. It warns at that point, with the check and restore
+  commands, but if AWS then refuses the retry the guard is not turned back
+  on.
 - It is best-effort. The delete failure stays the reported outcome, and a
   re-enable that itself fails is reported as a separate ERROR line naming the
   resource and its restore command. A re-enable that fails with the service's
-  not-found error is reported at **warn** instead and names a `describe-*`
-  check first, because that error also covers a resource that is still live —
+  not-found error is reported at **warn** instead and names a check command
+  first (`describe-*`, or `aws cloudcontrol get-resource` on a Cloud Control
+  type), because that error also covers a resource that is still live —
   in another region, or (DynamoDB) whose status is merely not `ACTIVE`.
+
+The pre-flip read needs its own read permission beside the flip and the
+delete: `ec2:DescribeInstanceAttribute` for an EC2 instance,
+`elasticloadbalancing:DescribeLoadBalancerAttributes` for a load balancer,
+`autoscaling:DescribeAutoScalingGroups` for an Auto Scaling group, and
+`cloudformation:GetResource` (the IAM action behind Cloud Control's
+`GetResource`), plus whatever the type's read handler calls, for a Cloud
+Control type. A read that is refused leaves the delete running and
+compensates nothing.
+
+For a Cloud Control-routed EC2 instance the flip goes through EC2, so cdkd
+refuses the delete, before flipping anything, when its EC2 client targets a
+different region than the Cloud Control client the region check vetted.
 
 To restore the guard by hand:
 
@@ -506,6 +545,14 @@ aws rds modify-db-cluster --db-cluster-identifier <id> --deletion-protection --a
 aws rds modify-db-instance --db-instance-identifier <id> --deletion-protection --apply-immediately
 aws logs put-log-group-deletion-protection --log-group-identifier <name> --deletion-protection-enabled
 aws cognito-idp update-user-pool --user-pool-id <id> --deletion-protection ACTIVE
+aws emr modify-cluster-attributes --cluster-id <id> --termination-protected
+aws elbv2 modify-load-balancer-attributes --load-balancer-arn <arn> --attributes Key=deletion_protection.enabled,Value=true
+aws autoscaling update-auto-scaling-group --auto-scaling-group-name <name> --deletion-protection <prevent-force-deletion|prevent-all-deletion>
+aws ec2 modify-instance-attribute --instance-id <id> --disable-api-termination
+aws cloudcontrol update-resource --type-name AWS::DSQL::Cluster --identifier <id> \
+  --patch-document '[{"op":"add","path":"/DeletionProtectionEnabled","value":true}]'
+aws cloudcontrol update-resource --type-name AWS::VerifiedPermissions::PolicyStore --identifier <id> \
+  --patch-document '[{"op":"add","path":"/DeletionProtection","value":{"Mode":"ENABLED"}}]'
 ```
 
 A command cdkd prints carries the run's `--profile` when you passed one
@@ -514,7 +561,10 @@ placeholder to fill in when the run assumed a role with `--role-arn` (with or wi
 `--profile`); add yours to the commands above
 when you type them by hand, or they run against your default profile. DocDB and
 Neptune take the same `modify-db-cluster` / `modify-db-instance` form under
-`aws docdb` / `aws neptune`. `update-user-pool` resets the pool
+`aws docdb` / `aws neptune`. The other Cloud Control types take the DSQL
+form with their own property from the table and the value `true`. Put an Auto
+Scaling group back at the level it had; the line cdkd prints names it.
+`update-user-pool` resets the pool
 settings it omits (self sign-up, Lambda triggers and advanced security among
 them), so send the pool's complete configuration alongside
 `--deletion-protection` rather than the flag alone.

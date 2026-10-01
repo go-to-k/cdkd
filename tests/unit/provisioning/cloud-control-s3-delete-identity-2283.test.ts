@@ -63,7 +63,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
  * production answer.
  */
 let injectedS3ProtectionEntry: CcProtectionEntry | undefined;
-vi.mock('../../../src/provisioning/cc-protection-properties.js', () => ({
+vi.mock('../../../src/provisioning/cc-protection-properties.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/provisioning/cc-protection-properties.js')>()),
   ccProtectionProperty: (type: string) =>
     type === 'AWS::S3::Bucket' ? injectedS3ProtectionEntry : undefined,
 }));
@@ -574,7 +575,11 @@ describe('CloudControlProvider.delete -- the confirmation precedes --remove-prot
   // against a run that was never going to issue one, and pass vacuously. This
   // case fails if the injected entry is not reaching the provider.
   it('the injected protection entry really does reach the provider', async () => {
-    injectedS3ProtectionEntry = { property: 'DeletionProtectionEnabled', offValue: false };
+    injectedS3ProtectionEntry = {
+      property: 'DeletionProtectionEnabled',
+      offValue: false,
+      onValue: true,
+    };
     wireBucketLocation('us-east-1');
     const provider = new CloudControlProvider();
 
@@ -591,7 +596,11 @@ describe('CloudControlProvider.delete -- the confirmation precedes --remove-prot
     // With an entry injected, a guard placed below the protection blocks would
     // have already issued the `UpdateResourceCommand` by the time it refused --
     // a write against a resource cdkd has just decided it must not touch.
-    injectedS3ProtectionEntry = { property: 'DeletionProtectionEnabled', offValue: false };
+    injectedS3ProtectionEntry = {
+      property: 'DeletionProtectionEnabled',
+      offValue: false,
+      onValue: true,
+    };
     wireBucketLocation('us-west-2');
     const provider = new CloudControlProvider();
 
@@ -794,6 +803,26 @@ describe('CloudControlProvider.delete -- indeterminate guards are REPORTED (issu
       expectedRegion: 'us-east-1',
     });
 
+    expect(deleteIndeterminateGuards(result)).toHaveLength(1);
+  });
+
+  it('carries the guard out of the --remove-protection compensation boundary too (issue #2204)', async () => {
+    // A protection flip runs the delete inside `deleteWithProtectionCompensation`,
+    // whose own return is `void`: the result has to be carried out of it.
+    injectedS3ProtectionEntry = {
+      property: 'DeletionProtectionEnabled',
+      offValue: false,
+      onValue: true,
+    };
+    wireBucketLocationError('AccessDenied', 'Access Denied');
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete('Bucket', BUCKET, S3, undefined, {
+      expectedRegion: 'us-east-1',
+      removeProtection: true,
+    });
+
+    expect(ccCallNames()).toContain('UpdateResourceCommand');
     expect(deleteIndeterminateGuards(result)).toHaveLength(1);
   });
 
