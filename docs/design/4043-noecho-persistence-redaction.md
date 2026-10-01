@@ -52,12 +52,12 @@ They write through `S3StateBackend.saveState`
 | `resources[*].observedProperties` | same save; readback installed by `drainObservedCaptures` | `scrubResourceRecord`, map only | yes, when AWS echoes it |
 | `resources[*].attributes` | same save; provider `result.attributes` | `scrubResourceRecord`, map only | yes, when a provider echoes it |
 | `resources[*].physicalId` | same save | none, by design | yes, when the value names the resource |
-| `outputs` values | `outputs[outputKey] = resolved`, `deploy-engine.ts:10451` | `redactOutputs`, `deploy-engine-masking.ts` | yes |
+| `outputs` values | `outputs[outputKey] = resolved`, `deploy-engine.ts:10451` | `redactOutputs`, `deploy-engine/masking.ts` | yes |
 | `outputs` alias KEY and `exportNames` | `deploy-engine.ts:10640`, `:10645` | refusal `exportNameSecretExposure` reads the map only (`outputs-export-alias.ts:666`) | yes |
 | `orphans[*].state` | `redactStateForPersist`, `deploy-engine.ts:2852` | `scrubResourceRecord`, map only | yes |
 | `imports[].exportName`, `outputReads[]` names | resolver records; redacted at `deploy-engine.ts:2935` | `redactSecretsForState`, map only | yes, when a name embeds it |
 | Exports index | `ExportIndexStore.writeIndex`, `src/state/export-index-store.ts:592` | values from `redactOutputs`; keys never redacted | yes, value and key |
-| Rollback journal | `appendRollbackJournalSegment`, `s3-state-backend.ts:1124`, from `writeRollbackJournalSegment` in `deploy-engine-rollback.ts` | `redactOperationsForJournal`, `deploy-engine-rollback.ts` | yes |
+| Rollback journal | `appendRollbackJournalSegment`, `s3-state-backend.ts:1124`, from `writeRollbackJournalSegment` in `deploy-engine/rollback.ts` | `redactOperationsForJournal`, `deploy-engine/rollback.ts` | yes |
 | Nested journal `previousOutputs` | copied from the previous state | none (a copy) | when that state held it |
 | `deployments/*.jsonl` events | deploy `deploy-engine.ts:6452`; rollback `src/cli/commands/rollback.ts:907`; destroy `src/cli/commands/destroy-runner.ts:2091` | per writer, in the note below | `physicalId`; a rollback or destroy message quoting the value |
 | `cdkd state refresh-observed` | `src/cli/commands/state.ts:3986` | position walk with an empty map (`state.ts:3952`) | yes |
@@ -196,7 +196,7 @@ interface ResourceState {
 | exports index values | inherits `redactOutputs` (`deploy-engine.ts:4543`, `:4750`) | unchanged callers |
 | `outputs` alias keys, `exportNames` | none: the alias is refused (section 5) | `resolveOutputs` |
 | `imports[]` / `outputReads[]` names | `***` via the value arm | `redactCrossStackReads` |
-| rollback journal `properties` / `attemptedProperties` | both arms (the journal already positions by the template bag, `redactOperationsForJournal` in `deploy-engine-rollback.ts`) | `redactOperationsForJournal` |
+| rollback journal `properties` / `attemptedProperties` | both arms (the journal already positions by the template bag, `redactOperationsForJournal` in `deploy-engine/rollback.ts`) | `redactOperationsForJournal` |
 | rollback journal `previousState` | carries the record, marker included (`scrubResourceRecord`, `:2596`) | unchanged |
 | `orphans[*].state` | carries the record | unchanged |
 | `deployments/*.jsonl` | unchanged: the map entry now masks `error.message` / `reason` without the log-only set | `maskSecretsInEvent` |
@@ -214,7 +214,7 @@ CONSUMER's bag only for an attribute listed in `noEchoAttributeResources`
 (`:5684-5697`), which today only custom resources and nested stacks fill. Left
 alone, a consumer of `Fn::GetAtt NoEchoConsumer.Value` would persist the
 plaintext on its first deploy, then read the producer's persisted `***` and be
-refused by `refuseRedactedAttributeReads` (`deploy-engine-masking.ts`) on every
+refused by `refuseRedactedAttributeReads` (`deploy-engine/masking.ts`) on every
 later one.
 
 So at the producer's create or update site, an attribute is added
@@ -244,7 +244,7 @@ So a `held` producer serves the declared attributes through a SIDE map for
 this run:
 
 - **Source.** The #1852 read primitive, `provider.import({ knownPhysicalId })`
-  (`readStaleAttributes` in `deploy-engine-heal.ts`). It is read-only, memoized per record per
+  (`readStaleAttributes` in `deploy-engine/heal.ts`). It is read-only, memoized per record per
   deploy, and it returns the ATTRIBUTE map. The `held` readback
   (`readCurrentState`, `src/types/resource.ts:1142-1148`) returns properties,
   whose keys coincide with attribute names only by accident (SSM `Value`, but
@@ -304,12 +304,12 @@ masked resource diffs as UPDATE forever. `cdkd diff` has the same gap
    walk the persist side runs. Both arms apply, with the parameter values
    registered as fresh mask-only needles. A positioned leaf then diffs `***`
    against `***`. The nested-child precedent is `redactParametersForDiff`
-   (`deploy-engine-masking.ts`, wired from `deploy-engine.ts`). It redacts the parameter bag
+   (`deploy-engine/masking.ts`, wired from `deploy-engine.ts`). It redacts the parameter bag
    instead of the resolved property, which cannot flatten an embedding leaf.
    The resolved-property form is the one that matches the persist side.
 2. `calculateDiff`'s `freshParameters` (`diff-calculator.ts:261-268`) is today
    passed only by a nested child (`deploy-engine.ts:4222`, from
-   `freshNoEchoParameters` in `deploy-engine-masking.ts`). It becomes EVERY `NoEcho: true`
+   `freshNoEchoParameters` in `deploy-engine/masking.ts`). It becomes EVERY `NoEcho: true`
    parameter, at every level. Arm 5 (`diff-calculator.ts:1136-1148`) then
    promotes each reader to a speculative UPDATE, so the engine re-resolves it
    and decides.
@@ -346,7 +346,7 @@ today. Its printing masker (#4126) is unchanged.
 ### 4.2 Update vs replace
 
 **Readback, generalized.** `readReaderForFreshNoEchoCeiling`
-(`deploy-engine-masking.ts`) today reads a resource only for a create-only path
+(`deploy-engine/masking.ts`) today reads a resource only for a create-only path
 under a replacement ceiling (`deploy-engine.ts:7276-7353`). It hands the provider the RECORD's
 masked `properties`, is capped by a timeout, and persists nothing. Its safety
 properties are kept verbatim. The change is that it runs once per resource
@@ -477,7 +477,7 @@ redeployed. `--dry-run --fail` reports an unmasked `NoEcho` leaf as a finding.
 An output served by a `NoEcho` parameter persists `***`, and the exports index
 inherits it through `redactOutputs`.
 
-- **In process.** `rememberRecoverableMaskedOutputs` (`deploy-engine-masking.ts`)
+- **In process.** `rememberRecoverableMaskedOutputs` (`deploy-engine/masking.ts`)
   already remembers the plaintext for every `***` output of this run.
   `reresolveCrossStackValue` (`intrinsic-function-resolver.ts:9163`, mask arm
   at `:9225`) recovers it for a consumer in the same `cdkd deploy`, and

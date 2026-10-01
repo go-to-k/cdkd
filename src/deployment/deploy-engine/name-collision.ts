@@ -1,12 +1,15 @@
-import { isInertUnquoted, pasteableCommand } from '../utils/pasteable-command.js';
-import { getCurrentStackName, looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';
-import type { ChangeType } from '../types/state.js';
-import { displaySafe } from '../utils/display-safe.js';
-import { ProvisioningError } from '../utils/error-handler.js';
-import type { DeployEngine } from './deploy-engine.js';
-import { isNameCollisionErrorFrom } from './retryable-errors.js';
+import { isInertUnquoted, pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  getCurrentStackName,
+  looksLikeCdkdGeneratedName,
+} from '../../provisioning/resource-name.js';
+import type { ChangeType } from '../../types/state.js';
+import { displaySafe } from '../../utils/display-safe.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { DeployEngine } from '../deploy-engine.js';
+import { isNameCollisionErrorFrom } from '../retryable-errors.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     replacementNameOrigin: OmitThisParameter<typeof replacementNameOrigin>;
@@ -92,7 +95,7 @@ export function replacementNameOrigin(
  * every case it cannot vouch for:
  *
  * - not a CREATE. A replacement collision DOES arrive here — the
- *   `NAMED_REPLACEMENT_COLLISION` throws happen inside `provisionResourceBody`,
+ *   `NAMED_REPLACEMENT_COLLISION` throws happen inside `provisionUpdate`,
  *   which the caller invokes inside the same `try`, and this method's own
  *   suite asserts their line was logged. What refuses them is the
  *   `ProvisioningError` check below (they throw `CdkdError`), so deleting

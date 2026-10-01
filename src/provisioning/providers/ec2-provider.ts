@@ -82,6 +82,7 @@ import {
   type Instance,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -101,10 +102,19 @@ import {
   type CompositeIdOptions,
 } from '../composite-id.js';
 import {
-  disableInstanceApiTermination,
+  ec2InstanceProtectionSite,
   isTerminationProtectionPropagationError,
+  observeThenDisableInstanceApiTermination,
+  reDisableInstanceApiTermination,
+  reEnableInstanceApiTermination,
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from '../ec2-termination-protection.js';
+import {
+  ProtectionFlipRegistry,
+  deleteWithProtectionCompensation,
+  protectionFlipKey,
+  type ProtectionFlipRecord,
+} from './deletion-protection-compensation.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import {
   planTagDiff,
@@ -465,6 +475,8 @@ export function describedInstanceAttributes(
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   private logger = getLogger().child('EC2Provider');
+  /** `--remove-protection` flips, keyed so a re-entered instance delete keeps them (#2204). */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -4515,11 +4527,51 @@ export class EC2Provider implements ResourceProvider {
     return keysA.every((k) => ra[k] === rb[k]);
   }
 
+  /**
+   * The compensation boundary (issue #2204): a `--remove-protection` flip of
+   * `DisableApiTermination` whose terminate then fails terminally is undone
+   * here, so a destroy that did not happen does not leave a live instance with
+   * its termination protection stripped.
+   */
   private async deleteInstance(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
+  ): Promise<void> {
+    // The region the compensation's commands name: the state's, else the
+    // client's own (a pre-v2 state record carries none), so a pasted command
+    // never falls back to the operator's default region. Resolved only under
+    // `--remove-protection`, the one case those commands can be printed.
+    let commandRegion = context?.expectedRegion?.trim() || undefined;
+    if (commandRegion === undefined && context?.removeProtection === true) {
+      try {
+        commandRegion =
+          canonicalizeRegion((await this.ec2Client.config.region())?.trim()) || undefined;
+      } catch {
+        commandRegion = undefined;
+      }
+    }
+    await deleteWithProtectionCompensation({
+      registry: this.protectionFlips,
+      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
+      run: (flip) => this.terminateInstance(logicalId, physicalId, resourceType, context, flip),
+      compensation: {
+        logicalId,
+        physicalId,
+        logger: this.logger,
+        site: ec2InstanceProtectionSite(physicalId, commandRegion),
+        reEnable: () => reEnableInstanceApiTermination(this.ec2Client, physicalId),
+      },
+    });
+  }
+
+  private async terminateInstance(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    flip: ProtectionFlipRecord
   ): Promise<void> {
     this.logger.debug(`Terminating EC2 Instance ${logicalId}: ${physicalId}`);
 
@@ -4535,14 +4587,26 @@ export class EC2Provider implements ResourceProvider {
     // protected instance WITHOUT `--remove-protection` must fail fast so the
     // user is told to pass the flag), so retry it locally and ONLY when
     // `--remove-protection` was requested — re-flipping each attempt.
-    if (removeProtection) {
-      await disableInstanceApiTermination(this.ec2Client, physicalId, this.logger);
-    }
+    //
+    // The first flip reads the attribute first (issue #2204), so a terminal
+    // failure below restores ONLY a guard this run turned off.
+    const observedOn = removeProtection
+      ? await observeThenDisableInstanceApiTermination(
+          this.ec2Client,
+          physicalId,
+          flip,
+          this.logger
+        )
+      : false;
 
     const maxTerminateAttempts = removeProtection ? TERMINATION_PROTECTION_MAX_ATTEMPTS : 1;
     for (let attempt = 1; ; attempt++) {
       try {
         await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [physicalId] }));
+        // AWS took the terminate. What can still throw after this is the
+        // termination WAIT, against an instance already shutting down, so it
+        // must not re-enable the guard.
+        flip.deleteAccepted = true;
         this.logger.debug(`Terminate requested for EC2 Instance ${logicalId}, waiting...`);
 
         // Wait for instance to reach terminated state so ENIs are released
@@ -4588,7 +4652,13 @@ export class EC2Provider implements ResourceProvider {
           this.logger.debug(
             `Terminate of EC2 Instance ${logicalId} raced the DisableApiTermination flip-off (attempt ${attempt}/${maxTerminateAttempts}); re-flipping and retrying`
           );
-          await disableInstanceApiTermination(this.ec2Client, physicalId, this.logger);
+          await reDisableInstanceApiTermination(
+            this.ec2Client,
+            physicalId,
+            flip,
+            observedOn,
+            this.logger
+          );
           await this.sleep(3000 * attempt);
           continue;
         }

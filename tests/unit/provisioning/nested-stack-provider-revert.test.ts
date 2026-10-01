@@ -202,6 +202,23 @@ describe('NestedStackProvider.update() — rollback revert (#3754)', () => {
     });
   });
 
+  it('a child name whose logical id is not plain is described in the PARTIAL reason (go-to-k/cdkd#4265)', async () => {
+    // The reason is shown beside a flag or a `cdkd` command, so a selection
+    // starting at the `. ` inside the name would run the planter's words.
+    reverts.warnings = 1;
+    const provider = new NestedStackProvider();
+
+    const result = await withNestedStackContext(context(true), () =>
+      withNestedRevertRun('run-9', () =>
+        provider.update('Child. touch OWNED', ARN, 'AWS::CloudFormation::Stack', {}, {}, { replayingState: true })
+      )
+    );
+
+    expect((result as { reason: string }).reason).toBe(
+      'nested stack a stack name that is not a plain identifier skipped 1 operation(s) of its revert'
+    );
+  });
+
   it('a runId-less run is forwarded to the journal replay (which refuses it)', async () => {
     const provider = new NestedStackProvider();
 

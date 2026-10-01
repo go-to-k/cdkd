@@ -19,6 +19,7 @@ import {
 } from '../utils/assembly-path.js';
 import { displayIdent } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
+import { plainOrDescribed } from '../utils/pasteable-command.js';
 
 /**
  * Result of resolving a `cdkd local invoke <target>` argument back to a
@@ -1002,9 +1003,9 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new LocalInvokeResolutionError(
-      `Lambda ${displayIdent(logicalId)} has no Metadata['aws:asset:path']. ` +
+      `Lambda ${plainOrDescribed(logicalId, 'logical id')} has no Metadata['aws:asset:path']. ` +
         'cdkd local invoke needs this hint to find the local asset directory. ' +
-        'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
+        "Re-synthesize the app (without `--output '<stale-dir>'`) and retry."
     );
   }
 
@@ -1279,7 +1280,7 @@ export type LayerArnClassification =
  * future partition is rejected rather than mis-attributed to commercial, which
  * is the same trade every other consumer of that table makes.
  *
- * Deliberately NOT `isClientSafeRegion` (`intrinsic-function-resolver.ts`):
+ * Deliberately NOT `isClientSafeRegion` (`intrinsic-resolver/support.ts`):
  * that predicate is charset-based because its job is to keep a value inside a
  * hostname label, so it accepts anything lower-case alphanumeric — including
  * strings no region grammar would admit. See the note it carries.

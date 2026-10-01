@@ -1,25 +1,25 @@
-import type { DeployEngine } from './deploy-engine.js';
+import type { DeployEngine } from '../deploy-engine.js';
 import {
   type ParameterNamingVerdict,
   resourcesNamingDeclaredParameter,
-} from '../analyzer/parameter-dependence.js';
-import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
+} from '../../analyzer/parameter-dependence.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
 import {
   type ResourceState,
   type StackState,
   hasReasonlessBaselineRefusal,
-} from '../types/state.js';
-import { safeMsg } from '../utils/display-safe.js';
+} from '../../types/state.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   isMaskedBaselineRecaptureCandidate,
   persistedTokenResolverContext,
   recaptureMaskedBaseline,
   resolveRecordSecrets,
-} from './masked-baseline-recapture.js';
-import { producerRegionsFromState } from './rollback-executor.js';
-import { markSameGenerationBag } from './secret-redaction.js';
+} from '../masked-baseline-recapture.js';
+import { producerRegionsFromState } from '../rollback-executor.js';
+import { markSameGenerationBag } from '../secret-redaction.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     kickOffObservedCapture: OmitThisParameter<typeof kickOffObservedCapture>;
@@ -60,7 +60,7 @@ export function kickOffObservedCapture(
   physicalId: string,
   resourceType: string,
   resolvedProps: Record<string, unknown>,
-  context?: import('../types/resource.js').ReadCurrentStateContext
+  context?: import('../../types/resource.js').ReadCurrentStateContext
 ): void {
   if (this.options.captureObservedState !== true) return;
   // A capture that cannot run still SUPERSEDES the deploy-start refresh task
@@ -232,7 +232,7 @@ export async function buildObservedCaptureSiblings(
   stackName: string,
   parameterValues?: Record<string, unknown>,
   conditions?: Record<string, boolean>
-): Promise<import('../types/resource.js').ReadCurrentStateContext | undefined> {
+): Promise<import('../../types/resource.js').ReadCurrentStateContext | undefined> {
   // Capture disabled (kickOffObservedCapture would ignore the context) —
   // skip the template walk / resolver work entirely.
   if (this.options.captureObservedState !== true) return undefined;
@@ -251,7 +251,7 @@ export async function buildObservedCaptureSiblings(
   // Built lazily — only a non-literal `PolicyName` (rare; e.g. an
   // Fn::Sub) needs the resolver, and the overwhelmingly common case
   // (a literal Default-Policy name) never touches it.
-  let resolverContext: import('./intrinsic-function-resolver.js').ResolverContext | undefined;
+  let resolverContext: import('../intrinsic-function-resolver.js').ResolverContext | undefined;
 
   const isRefTo = (value: unknown, logicalId: string): boolean =>
     typeof value === 'object' &&
@@ -259,8 +259,9 @@ export async function buildObservedCaptureSiblings(
     !Array.isArray(value) &&
     (value as Record<string, unknown>)['Ref'] === logicalId;
 
-  const siblings: NonNullable<import('../types/resource.js').ReadCurrentStateContext['siblings']> =
-    {};
+  const siblings: NonNullable<
+    import('../../types/resource.js').ReadCurrentStateContext['siblings']
+  > = {};
   for (const [lid, res] of Object.entries(resources)) {
     if (lid === capturedLogicalId) continue;
     if (res.Type !== 'AWS::IAM::Policy') continue;
@@ -580,7 +581,7 @@ export function kickOffMaskedBaselineRecapture(
   logicalId: string,
   resource: ResourceState,
   producerRegions: readonly string[],
-  context: import('../types/resource.js').ReadCurrentStateContext
+  context: import('../../types/resource.js').ReadCurrentStateContext
 ): void {
   const previous = resource.observedProperties;
   const readCurrentState = provider.readCurrentState?.bind(provider);

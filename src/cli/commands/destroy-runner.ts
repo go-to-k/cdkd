@@ -29,11 +29,8 @@ import {
 } from '../../provisioning/final-snapshot.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockManager } from '../../state/lock-manager.js';
-import {
-  buildLockContentionMessage,
-  forceQuitRecoveryClause,
-  type LockRecoveryContext,
-} from '../../state/lock-contention-message.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
+import { acquireStackLock } from './stack-lock-guard.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -628,6 +625,15 @@ export async function runDestroyForStack(
     stateBucket: ctx.stateBucket,
     statePrefix: ctx.statePrefix,
   };
+  // The lock BOTH sites below take — the empty-state cleanup and the main
+  // destroy — through `stack-lock-guard.ts` (go-to-k/cdkd#2174).
+  const stackLockBase = {
+    lockManager: ctx.lockManager,
+    stackName,
+    region: regionForState,
+    operation: 'destroy',
+    recovery: refusalRecovery,
+  };
   // AT THE TOP OF THE DESTROY, and ABOVE THE COUNT BELOW (issue #3161).
   //
   // `parseStateBody` validates the root object and the schema version and
@@ -739,104 +745,23 @@ export async function runDestroyForStack(
     // taken by the caller before any of this, so emptiness has to be
     // re-established under the lock rather than inherited from it.
     logger.info(`Stack ${displayStackName(stackName)} has no resources, cleaning up state...`);
-    // Issue #1348's rule applies to THIS acquire too, and the fence in
-    // `tests/unit/cli/signal-before-lock-ordering.test.ts` caught the first
-    // cut of this fix without one: register the handler BEFORE acquiring, or a
-    // Ctrl-C landing between the acquire and the release strands the lock for
-    // its full TTL. The window is short but it covers an S3 read and two S3
-    // writes. `lockHeld` gates the release exactly as the main path's does, so
-    // a signal arriving before the acquire returns cannot delete a lock this
-    // process does not own.
-    let emptyLockHeld = false;
-    let emptyInterrupted = false;
-    const emptySigintHandler = (): void => {
-      // TWO-SIGNAL contract, matching the main handler below. The first cut of
-      // this branch force-quit on the FIRST signal, which is a REGRESSION and
-      // not merely impolite: a nested-stack child reaches here through
-      // `NestedStackProvider.delete`, listeners fire in registration order, so
-      // the PARENT's handler sets its drain flag and returns and then this one
-      // would kill the process -- the parent's `finally` never runs and ITS
-      // lock is stranded for the full TTL. Recording the signal and letting
-      // three S3 round-trips finish is both graceful and correct here.
-      if (emptyInterrupted) {
-        if (emptyLockHeld) {
-          void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
-            /* best-effort: the recovery line below is the real guarantee */
-          });
-          process.stderr.write(
-            // cdkd-profile-display: the `ctx.profile` below is an ARGUMENT to
-            // `forceQuitRecoveryClause`, not a value this line interpolates.
-            // What is rendered is that helper's RETURN, and it sanitizes every
-            // `LockRecoveryContext` fragment itself -- `displaySafe` plus an
-            // EXACTNESS test, suppressing the whole command rather than naming a
-            // fragment whose rendering changed (issue go-to-k/cdkd#3377; the
-            // behavioural proof is in
-            // `tests/unit/state/lock-contention-message.test.ts`). Sanitizing
-            // here as well would be wrong, not merely redundant: the helper
-            // compares the fragment against the RAW value to decide whether the
-            // command can be shown at all, so a pre-sanitized argument would make
-            // every altered value compare EXACT and re-open the hole.
-            `\nForce-quit: stack lock may not be released.` +
-              `${forceQuitRecoveryClause(stackName, regionForState, {
-                profile: ctx.profile,
-                stateBucket: ctx.stateBucket,
-                statePrefix: ctx.statePrefix,
-              })}\n`
-          );
-        }
-        process.exit(130);
-      }
-      emptyInterrupted = true;
-      // stderr, NOT `logger.info`, for two reasons the main handler already
-      // acts on: `logger.info` reaches stdout and can EPIPE, and a throw inside
-      // a SIGINT listener is UNCAUGHT -- the process would die holding the lock
-      // with no recovery line; and under `cdkd deploy` (nested-stack removal)
+    // The lock, its SIGINT handler and the release ordering are
+    // `acquireStackLock`'s (go-to-k/cdkd#2174). A first Ctrl-C only records the
+    // interrupt: the remaining three S3 round-trips finish, which is both
+    // graceful and the only correct answer for a nested-stack child, whose
+    // PARENT's handler has merely set its drain flag.
+    const emptyLock = await acquireStackLock({
+      ...stackLockBase,
+      // stderr, NOT `logger.info`: under `cdkd deploy` (nested-stack removal)
       // the logger writes into the per-stack buffer that is only flushed at
-      // stack end, so the first Ctrl-C would produce no feedback at all.
-      try {
+      // stack end, so the first Ctrl-C would show nothing.
+      onFirstSignal: () => {
         process.stderr.write(
           `\nInterrupt received - finishing the state cleanup for ${displayStackName(stackName)} ` +
             `(press Ctrl-C again to force-quit)\n`
         );
-      } catch {
-        /* the drain itself is what matters; the notice is best-effort */
-      }
-    };
-    process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
-    process.on('SIGINT', emptySigintHandler);
-    let emptyAcquired: boolean;
-    try {
-      emptyAcquired = await ctx.lockManager.acquireLock(
-        stackName,
-        regionForState,
-        undefined,
-        'destroy'
-      );
-    } catch (acquireErr) {
-      // `acquireLock` THROWS (a LockError) on an S3 failure, as distinct from
-      // returning `false` on contention -- and only the boolean path below
-      // removed the listener, so a 5xx / AccessDenied leaked a handler that
-      // then pre-empts every later drain. Both sibling sites already wrap
-      // their acquire for exactly this.
-      process.removeListener('SIGINT', emptySigintHandler);
-      throw acquireErr;
-    }
-    if (!emptyAcquired) {
-      process.removeListener('SIGINT', emptySigintHandler);
-      throw new Error(
-        await buildLockContentionMessage({
-          lockManager: ctx.lockManager,
-          stackName,
-          region: regionForState,
-          recovery: {
-            profile: ctx.profile,
-            stateBucket: ctx.stateBucket,
-            statePrefix: ctx.statePrefix,
-          },
-        })
-      );
-    }
-    emptyLockHeld = true;
+      },
+    });
     try {
       const recheck = await ctx.stateBackend.getState(stackName, regionForState);
       // The SECOND record this function counts, and it needs the same guard as
@@ -914,18 +839,9 @@ export async function runDestroyForStack(
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.info(`${green('✓')} State deleted`);
     } finally {
-      // Release BEFORE unregistering, matching the strong-ref path below: the
-      // reverse order leaves the lock held with no handler, so a Ctrl-C in the
-      // release round-trip becomes a 30-minute stranded lock.
-      try {
-        await ctx.lockManager.releaseLock(stackName, regionForState);
-      } catch (releaseErr) {
-        logger.warn(
-          `Failed to release lock after empty-state cleanup: ${describeAwsFailure(releaseErr).detail}`
-        );
-      } finally {
-        process.removeListener('SIGINT', emptySigintHandler);
-      }
+      await emptyLock.release({
+        failureMessage: 'Failed to release lock after empty-state cleanup',
+      });
     }
     result.skippedEmpty = true;
     // NOTHING is published to `result.interrupted` here, and that absence is
@@ -935,15 +851,16 @@ export async function runDestroyForStack(
     // "it finished". There is no preserved state to re-run against and no
     // resource left to delete; the stack's record is gone.
     //
-    // A `||= emptyInterrupted` used to sit here, and it reproduced the exact
-    // defect the outer re-sync's `&& statePreserved` gate was added to close,
-    // ~950 lines above the gate and BEFORE the main `try`/`finally` that
-    // carries it. `destroy.ts` then threw `Destroy interrupted by Ctrl-C.
-    // State preserved -- re-run 'cdkd destroy' to finish` and exited 2 over a
-    // stack whose state file no longer exists, and (since `--purge-events`
-    // moved onto this same per-stack flag) additionally skipped the purge for
-    // a stack with no state left to post-mortem. Both halves of that sentence
-    // false, for the same reason they were false on the main path.
+    // A `||= emptyInterrupted` (today: `emptyLock.interrupted`) used to sit
+    // here, and it reproduced the exact defect the outer re-sync's
+    // `&& statePreserved` gate was added to close, ~950 lines above the gate
+    // and BEFORE the main `try`/`finally` that carries it. `destroy.ts` then threw
+    // `Destroy interrupted by Ctrl-C. State preserved -- re-run 'cdkd destroy'
+    // to finish` and exited 2 over a stack whose state file no longer exists,
+    // and (since `--purge-events` moved onto this same per-stack flag)
+    // additionally skipped the purge for a stack with no state left to
+    // post-mortem. Both halves of that sentence false, for the same reason they
+    // were false on the main path.
     //
     // Its stated purpose -- "otherwise `destroy --all` walks on to the next
     // stack" -- is served by the command-scoped `watchCommandInterrupt`, which
@@ -1224,36 +1141,23 @@ export async function runDestroyForStack(
   const renderer = getLiveRenderer();
 
   // Graceful SIGINT handling (issue #816, Terraform parity). The first
-  // Ctrl-C flips `draining` true: the reverse-DAG delete loop below stops
+  // Ctrl-C sets `lock.interrupted`: the reverse-DAG delete loop below stops
   // SCHEDULING new deletes (it checks the flag before each level and before
   // dispatching each resource), but the already-dispatched in-flight
   // `provider.delete` calls in the current level are awaited to completion.
   // Control then falls through to the `finally` block, which flushes the
   // incremental save-chain (issue #804) — leaving a clean, minimal preserved
-  // state — and releases the stack lock. Without this the process would die
-  // mid-destroy, skip the `finally`, and strand the lock for its 30m TTL.
+  // state — and releases the stack lock. A SECOND Ctrl-C force-quits.
   //
-  // A SECOND Ctrl-C bypasses graceful shutdown entirely (`process.exit(130)`)
-  // — the user has decided not to wait for the in-flight call.
+  // The handler, its registration before the acquire (issue #1348; the
+  // under-lock strong-reference scan below is a second S3 round-trip in that
+  // window), the ownership gate on the force-quit release, and the
+  // release-then-unregister ordering are `acquireStackLock`'s
+  // (go-to-k/cdkd#2174). Nested-stack destroys recurse into
+  // `runDestroyForStack`, registering one handler per level — Node delivers
+  // SIGINT to every listener, so the first Ctrl-C drains the parent AND every
+  // in-flight child, which is the intended behavior.
   //
-  // Registered BEFORE `acquireLock` (issue #1348): the acquire itself plus
-  // the under-lock strong-reference scan below take an S3 round-trip each,
-  // and a signal landing in that window used to hit the unhandled default
-  // (or the #1342 forwarder's exit-143 fallback) and strand the just-written
-  // lock for its full TTL. With the handler armed first, an interrupt during
-  // acquisition simply flips `draining` — the delete loop then starts no
-  // work and the `finally` releases the lock. `lockHeld` gates the
-  // force-quit path's best-effort release: before our acquire succeeds the
-  // lock key may belong to ANOTHER process (that is what a conflicting
-  // acquire is waiting on), and `releaseLock` deletes unconditionally.
-  //
-  // The handler reads/writes ONLY this call's closure state, and is removed in
-  // the `finally` below, so no listener leaks across stacks. Nested-stack
-  // destroys recurse into `runDestroyForStack`, registering one handler per
-  // level — Node delivers SIGINT to every listener, so the first Ctrl-C drains
-  // the parent AND every in-flight child, which is the intended behavior.
-  let draining = false;
-  let lockHeld = false;
   // "Did this stack finish, or is there work left in it?" — the ONE per-stack
   // answer, and the gate on the outer `finally`'s interrupt re-sync below.
   //
@@ -1264,125 +1168,30 @@ export async function runDestroyForStack(
   // point must therefore NOT be able to report this stack as interrupted; see
   // the re-sync's own comment for the window that made it possible.
   let statePreserved = false;
-  const sigintHandler = (): void => {
-    if (draining) {
-      // Second Ctrl-C: force-quit without waiting for the in-flight delete.
-      // The synchronous `process.exit(130)` bypasses the `finally` below,
-      // so the stack lock is NOT released through the normal path (issue
-      // #816). Fire a best-effort, un-awaited release first — it MAY land
-      // before the process dies on a fast network — but always print the
-      // exact recovery command so the user can recover deterministically if
-      // it does not (a force-quit leaving a stranded lock would otherwise
-      // re-introduce the 30m-TTL wait this issue fixes, just on this path).
-      // Skipped entirely while the lock is not ours yet (issue #1348).
-      if (lockHeld) {
-        void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
-          /* best-effort: the recovery line below is the real guarantee */
-        });
-        process.stderr.write(
-          // cdkd-profile-display: the `ctx.profile` below is an ARGUMENT to
-          // `forceQuitRecoveryClause`, not a value this line interpolates.
-          // What is rendered is that helper's RETURN, and it sanitizes every
-          // `LockRecoveryContext` fragment itself -- `displaySafe` plus an
-          // EXACTNESS test, suppressing the whole command rather than naming a
-          // fragment whose rendering changed (issue go-to-k/cdkd#3377; the
-          // behavioural proof is in
-          // `tests/unit/state/lock-contention-message.test.ts`). Sanitizing
-          // here as well would be wrong, not merely redundant: the helper
-          // compares the fragment against the RAW value to decide whether the
-          // command can be shown at all, so a pre-sanitized argument would make
-          // every altered value compare EXACT and re-open the hole.
-          `\nForce-quit: stack lock may not be released.` +
-            // Region-qualified for the same reason the contention messages are
-            // (issue #2170), and it matters MORE here: by this point
-            // `deleteState` may already have removed the record `force-unlock`
-            // would otherwise infer the region from. Through the shared clause
-            // so a suppressed command cannot leave the banner ending in `run: `.
-            `${forceQuitRecoveryClause(stackName, regionForState, {
-              profile: ctx.profile,
-              stateBucket: ctx.stateBucket,
-              statePrefix: ctx.statePrefix,
-            })}\n`
-        );
-      }
-      process.exit(130);
-    }
-    draining = true;
+  const lock = await acquireStackLock({
+    ...stackLockBase,
     // Route the notice through the live renderer so it doesn't collide with
     // the in-flight task display.
-    renderer.printAbove(() => {
-      process.stderr.write(
-        '\nInterrupted — finishing in-flight deletes, then flushing state and releasing the lock ' +
-          '(press Ctrl-C again to force-quit)...\n'
-      );
-    });
-  };
-  // Each nested-stack level recurses into `runDestroyForStack` and registers
-  // its own SIGINT listener, and each in-flight provider that installs its own
-  // SIGINT handler adds one more. That set is closed and regenerated by
-  // `grep -rn "process.on('SIGINT'" src/provisioning/providers/` — today
-  // `custom-resource-provider.ts`, `cloudfront-distribution-provider.ts` and
-  // `acm-certificate-provider.ts`, NOT Route53, whose provider registers none.
-  // Deep nesting + high `--concurrency` can legitimately exceed Node's default
-  // 10-listener cap and emit a scary MaxListenersExceededWarning that is NOT a
-  // leak (every listener is removed in its own `finally`). Raise the ceiling
-  // with generous headroom for real fan-out while still leaving the warning
-  // active above it so an ACTUAL listener leak is not masked. `Math.max` keeps
-  // this safe under recursion (never lowers an already-raised limit).
-  process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
-  process.on('SIGINT', sigintHandler);
-
-  try {
-    // Inside the `try` (not before it): `logger.info` reaches
-    // `process.stdout.write`, which can EPIPE (`cdkd destroy | head`) — and this
-    // sits after `regionSwitched = true` and the SIGINT registration, so a throw
-    // outside the `try` would leak the listener and the cross-region globals,
-    // the same two leaks this fix closes everywhere else (same reasoning as
-    // `renderer.start()` below).
-    logger.info(`\nAcquiring lock for stack ${displayStackName(stackName)}...`);
-    // Check the boolean return (issue #2161): `acquireLock` returns `false`
-    // WITHOUT throwing when a live foreign lock is held, and the discarding
-    // call this replaced treated that as success — so `destroy` ran against a
-    // stack another process (e.g. an in-flight `cdkd deploy`) held the lock on
-    // and released that process's lock on the way out. Throwing on `!acquired`
-    // aborts before `lockHeld = true`, so the release path never runs and the
-    // foreign lock is untouched. Mirrors the fail-fast pattern `cdkd export`
-    // already uses.
-    const acquired = await ctx.lockManager.acquireLock(
-      stackName,
-      regionForState,
-      undefined,
-      'destroy'
-    );
-    if (!acquired) {
-      // Plain `Error`, matching the sibling sites (import / orphan / state /
-      // drift / export), so identical contention surfaces the same way across
-      // every command (issue #2161). The text — including the holder's
-      // identity and the fully-qualified recovery command — is built in one
-      // place so the nine sites cannot drift apart again (issue #2170).
-      throw new Error(
-        await buildLockContentionMessage({
-          lockManager: ctx.lockManager,
-          stackName,
-          region: regionForState,
-          recovery: {
-            profile: ctx.profile,
-            stateBucket: ctx.stateBucket,
-            statePrefix: ctx.statePrefix,
-          },
-        })
-      );
-    }
-  } catch (error) {
-    // The main try/finally (which owns the listener removal + region restore)
-    // starts further below — clean up here so an acquire failure does not leak
-    // the SIGINT handler NOR the process-global region / AWS clients this
-    // function switched for a cross-region stack (issue #2161).
-    restoreBaseRegionAndClients();
-    process.removeListener('SIGINT', sigintHandler);
-    throw error;
-  }
-  lockHeld = true;
+    onFirstSignal: () => {
+      renderer.printAbove(() => {
+        process.stderr.write(
+          '\nInterrupted — finishing in-flight deletes, then flushing state and releasing the lock ' +
+            '(press Ctrl-C again to force-quit)...\n'
+        );
+      });
+    },
+    // Inside the guarded acquire (not before it): `logger.info` reaches
+    // `process.stdout.write`, which can EPIPE (`cdkd destroy | head`), and a
+    // throw here must still restore the cross-region globals below.
+    beforeAcquire: () => {
+      logger.info(`\nAcquiring lock for stack ${displayStackName(stackName)}...`);
+    },
+    // The main try/finally (which owns the region restore) starts further
+    // below, so an acquire failure — contention included (issue #2161) — must
+    // not leak the process-global region / AWS clients this function switched
+    // for a cross-region stack.
+    onAcquireFailure: restoreBaseRegionAndClients,
+  });
 
   // Second strong-reference scan, now under the producer's lock. The
   // pre-flight scan above is a UX optimization (fast-fail before the
@@ -1398,28 +1207,20 @@ export async function runDestroyForStack(
   // limitation. Documented in docs/cross-stack-references.md.
   if (needsStrongRefCheck) {
     // Any exit out of this block happens BEFORE the main try/finally that
-    // owns the lock release + listener removal, so both are done manually
-    // here — for the refusal throw AND for an unexpected scan failure
-    // (`listStacks` is not caught inside `scanActiveConsumers`). Release
-    // FIRST, remove the listener LAST: while the release round-trip is in
-    // flight the handler stays armed, so a SIGTERM landing there is still
-    // forwarded gracefully instead of hitting the exit-143 fallback with
-    // the lock held.
+    // owns the lock release, so it releases here — for the refusal throw AND
+    // for an unexpected scan failure (`listStacks` is not caught inside
+    // `scanActiveConsumers`). `release()` keeps the handler armed across the
+    // round-trip and unregisters it last.
     const releaseThenUnregister = async (): Promise<void> => {
-      try {
-        await ctx.lockManager.releaseLock(stackName, regionForState);
-      } catch (releaseErr) {
-        logger.warn(
-          `Failed to release lock after strong-ref refusal/failure: ${describeAwsFailure(releaseErr).detail}`
-        );
-      }
+      await lock.release({
+        failureMessage: 'Failed to release lock after strong-ref refusal/failure',
+      });
       // This exit also happens BEFORE the main try/finally that restores the
       // process-global region / clients, so a cross-region destroy refused (or
       // failed) at the strong-ref scan would otherwise leak them for the rest
       // of a `--all` run — the same class as the acquire-failure path above
       // (issue #2161).
       restoreBaseRegionAndClients();
-      process.removeListener('SIGINT', sigintHandler);
     };
     let consumers: Awaited<ReturnType<typeof scanActiveConsumers>>;
     try {
@@ -1551,25 +1352,10 @@ export async function runDestroyForStack(
   // export-index-store.ts), but the canonical state.json no longer carries
   // the phantom outputs.
   // go-to-k/cdkd#4150: read ONCE, from the record as loaded, before a
-  // snapshot below can strip the evidence.
-  // A nested child destroyed ON ITS OWN (`cdkd state destroy
-  // '<parent>~<child>'`) has no parent to hand down the regions its parent
-  // reads from, so its evidence is incomplete: it resolves nothing (skips).
-  const secretPrincipalRegions =
-    ctx.resolveSecretDerivedPrincipals !== undefined &&
-    (state.parentStack === undefined ||
-      ctx.resolveSecretDerivedPrincipals.inheritedProducerRegions !== undefined)
-      ? destroyProducerRegions(state, ctx.resolveSecretDerivedPrincipals.inheritedProducerRegions)
-      : undefined;
-  if (
-    ctx.resolveSecretDerivedPrincipals !== undefined &&
-    secretPrincipalRegions === undefined &&
-    Object.values(state.resources ?? {}).some((r) => holdsSecretDerivedPrincipalRecord(r))
-  ) {
-    logger.warn(
-      safeMsg`${stackName}: this nested child's secret-derived principal records resolve when destroyed through its parent stack; destroyed on its own they are skipped.`
-    );
-  }
+  // snapshot below can strip the evidence. ASSIGNED at the top of the main
+  // `try` below, not here: the lock is held by now, and its warning writes to
+  // stderr, which can EPIPE — a throw before that `try` would strand the lock.
+  let secretPrincipalRegions: string[] | undefined;
   const buildDestroySnapshot = (): StackState => {
     // Strip `imports` / `outputReads` entirely (rather than writing `[]`) to
     // keep the persisted shape identical to a freshly-deployed stack that
@@ -1618,14 +1404,32 @@ export async function runDestroyForStack(
   };
 
   try {
+    // A nested child destroyed ON ITS OWN (`cdkd state destroy
+    // '<parent>~<child>'`) has no parent to hand down the regions its parent
+    // reads from, so its evidence is incomplete: it resolves nothing (skips).
+    secretPrincipalRegions =
+      ctx.resolveSecretDerivedPrincipals !== undefined &&
+      (state.parentStack === undefined ||
+        ctx.resolveSecretDerivedPrincipals.inheritedProducerRegions !== undefined)
+        ? destroyProducerRegions(state, ctx.resolveSecretDerivedPrincipals.inheritedProducerRegions)
+        : undefined;
+    if (
+      ctx.resolveSecretDerivedPrincipals !== undefined &&
+      secretPrincipalRegions === undefined &&
+      Object.values(state.resources ?? {}).some((r) => holdsSecretDerivedPrincipalRecord(r))
+    ) {
+      logger.warn(
+        safeMsg`${stackName}: this nested child's secret-derived principal records resolve when destroyed through its parent stack; destroyed on its own they are skipped.`
+      );
+    }
+
     // Start the live area only now — the earlier phases (lock, strong-ref
     // scan) log plain lines; the renderer itself was created before the lock
     // acquisition above so the SIGINT handler could reference it. Started
     // INSIDE this `try` (issue #2161): `start()` writes to stdout and can throw
-    // (EPIPE on `cdkd destroy | head`), and this is the first statement after
-    // `lockHeld = true`, so a throw outside the `try` would strand the lock and
-    // leak the cross-region region/clients — the main `finally` below releases
-    // and restores both.
+    // (EPIPE on `cdkd destroy | head`), and the lock is held by now, so a throw
+    // outside the `try` would strand the lock and leak the cross-region
+    // region/clients — the main `finally` below releases and restores both.
     renderer.start();
 
     logger.info('Building dependency graph...');
@@ -1711,7 +1515,7 @@ export async function runDestroyForStack(
       // deletion level. Any level already in flight finished via its own
       // `Promise.all` below; remaining levels are left untouched and their
       // resources stay in the preserved state for a clean re-run.
-      if (draining) {
+      if (lock.interrupted) {
         logger.debug('Interrupted (draining) — not scheduling further deletion levels');
         break;
       }
@@ -1732,7 +1536,7 @@ export async function runDestroyForStack(
         // (Deletes already in flight when the interrupt arrives are NOT
         // cancelled — they run to completion; only not-yet-dispatched ones
         // bail here.)
-        if (draining) return;
+        if (lock.interrupted) return;
 
         const resource = state.resources[logicalId];
         if (!resource) {
@@ -2220,7 +2024,7 @@ export async function runDestroyForStack(
     // Carry the graceful-interrupt outcome (issue #816) into the result so the
     // CLI surfaces a non-zero exit. Read AFTER the level loop so a SIGINT that
     // arrived while the final level was draining is still observed.
-    result.interrupted = draining;
+    result.interrupted = lock.interrupted;
 
     // Flush pending incremental persists BEFORE the final state decision so
     // a chained write can never land after deleteState and re-create the
@@ -2420,91 +2224,63 @@ export async function runDestroyForStack(
       );
     }
   } finally {
-    // RELEASE FIRST, REMOVE THE LISTENER LAST — the same ordering the
-    // strong-ref refusal path above states and for a stronger reason than it
-    // had. This block used to unregister first, which left a window from the
-    // removal until the release resolved where THIS command had no SIGINT
-    // handler at all while the lock was still held: `destroy.ts` / `state.ts`
-    // register none of their own, so a Ctrl-C there was answered by the
-    // provider-side interrupt watch's last-listener force-quit
+    // `lock.release()` releases FIRST and removes the listener LAST, in its own
+    // `finally` (go-to-k/cdkd#2174). This block used to unregister first,
+    // which left the lock held with NO handler of this command's until the
+    // release resolved: a Ctrl-C there was answered by the provider-side
+    // interrupt watch's last-listener force-quit
     // (`src/provisioning/interrupt-watch.ts`), the process exited 130, and the
-    // release below never ran — stranding the lock for its full 30-minute TTL.
-    // On a `--all` run the watch is armed by the first stack that waits, so
-    // every later stack inherited the exposure. That is the issue #1348 class
-    // this file already claims to have closed.
+    // release never ran — stranding the lock for its full 30-minute TTL (the
+    // issue #1348 class). A SIGTERM landing mid-release is likewise still
+    // forwarded through the handler rather than hitting the exit-143 fallback.
     //
-    // Keeping the handler armed across the release is also what the graceful
-    // path wants: a SIGTERM landing mid-release is still forwarded through it
-    // rather than hitting the exit-143 fallback with the lock held.
+    // `beforeRelease` runs with the handler still armed, and a throw in it
+    // still removes the listener — one leaked per stack would keep the shared
+    // watch from ever being alone, silently disabling its force-quit.
     //
-    // The removal sits in its own `finally` so a throwing STEP cannot leak the
-    // listener — one leaked per stack would additionally keep the shared watch
-    // from ever being alone, silently disabling the force-quit.
-    //
-    // The `try` opens at `renderer.stop()` rather than at the release, because
-    // `stop()` writes to stdout and CAN throw (EPIPE on a closed pipe). Covering
-    // only the release left the exact double-badness this comment argues
-    // against: measured `threw=EPIPE releaseLock=0 leakedListeners=1` — the lock
-    // stranded AND the handler leaked.
+    // Awaiting `release()` adds no window after the removal: its resolution is
+    // a microtask, and a signal is delivered only from the event loop. DO NOT
+    // add an I/O `await` between it and this function's return —
+    // `watchCommandInterrupt` (issue #2117) takes over once the handler is
+    // gone, and its force-quit prints only the hedged
+    // `cdkd force-unlock <stack-name>` placeholder, on exactly the path where
+    // a FAILED release (warned, not thrown) left the lock stranded.
     try {
-      // Stop live renderer before releasing the lock so any pending in-flight
-      // task lines are cleared cleanly.
-      //
-      // CAUGHT rather than allowed to propagate, which the `try` above alone
-      // does not achieve: `stop()` writes to stdout, so an EPIPE on a closed
-      // pipe (`cdkd destroy | head`) would skip the release below entirely and
-      // strand the lock. The enclosing `finally` protects the LISTENER from
-      // that; only this catch protects the LOCK. A teardown write failing is
-      // also the single most swallowable error on this path — the terminal is
-      // already gone — so nothing is being hidden that anyone could act on.
-      try {
-        renderer.stop();
-      } catch (rendererError) {
-        logger.debug(
-          `Live renderer teardown failed (continuing to release the lock): ` +
-            `${describeAwsFailure(rendererError).detail}`
-        );
-      }
+      await lock.release({
+        failureMessage: `Failed to release lock for stack ${displayStackName(stackName)}`,
+        beforeRelease: async () => {
+          // Stop live renderer before releasing the lock so any pending
+          // in-flight task lines are cleared cleanly.
+          //
+          // CAUGHT rather than allowed to propagate: `stop()` writes to stdout,
+          // so an EPIPE on a closed pipe (`cdkd destroy | head`) would skip the
+          // release entirely and strand the lock. `release()`'s `finally`
+          // protects the LISTENER from that; only this catch protects the LOCK
+          // (measured before both: `threw=EPIPE releaseLock=0
+          // leakedListeners=1`). A teardown write failing is also the single
+          // most swallowable error on this path — the terminal is already gone.
+          try {
+            renderer.stop();
+          } catch (rendererError) {
+            logger.debug(
+              `Live renderer teardown failed (continuing to release the lock): ` +
+                `${describeAwsFailure(rendererError).detail}`
+            );
+          }
 
-      // Drain any still-pending incremental persists before releasing the
-      // lock — on the happy path this resolved already (awaited above), but a
-      // throw between scheduling and the flush must not let a state write
-      // land after the lock is gone. Never rejects (links catch internally).
-      await saveChain;
+          // Drain any still-pending incremental persists before releasing the
+          // lock — on the happy path this resolved already (awaited above), but
+          // a throw between scheduling and the flush must not let a state write
+          // land after the lock is gone. Never rejects (links catch internally).
+          await saveChain;
 
-      logger.debug('Releasing lock...');
-      // A failed release must never become the error this command reports.
-      // Since issue #2168 `releaseLock` raises rather than silently dropping
-      // its ownership condition, so a 409 / 503 / throttle here would
-      // otherwise REPLACE a real destroy failure -- and, on a successful
-      // destroy, abort a `--all` run at the first stack over a lock that
-      // lapses on its own. Matches the four sibling sites and
-      // `deploy-engine.ts`.
-      try {
-        await ctx.lockManager.releaseLock(stackName, regionForState);
-      } catch (releaseErr) {
-        logger.warn(
-          `Failed to release lock for stack ${displayStackName(stackName)}: ${describeAwsFailure(releaseErr).detail}`
-        );
-      }
+          logger.debug('Releasing lock...');
+        },
+      });
     } finally {
-      // Each call registers and removes its own function reference — important
-      // for nested-stack recursion, where one handler exists per level.
-      //
-      // DO NOT introduce an `await` between this line and the function's
-      // return. `watchCommandInterrupt` (issue #2117) takes over the moment
-      // this handler is gone, and its force-quit can no longer print the
-      // region-qualified recovery command — only the hedged
-      // `cdkd force-unlock <stack-name>` placeholder, because it has no
-      // per-stack context. Nothing suspends here, so a second Ctrl-C cannot
-      // land in the gap after a `releaseLock` that FAILED (caught and warned
-      // above, not thrown); one added `await` makes it reachable, and the user
-      // would then get the vague line on the one path where the lock really is
-      // stranded and the exact one would have mattered most.
-      process.removeListener('SIGINT', sigintHandler);
-      // Restore the cross-region switch HERE, in the guaranteed `finally`, so a
-      // throwing `releaseLock` above cannot skip it and leak the target region
-      // / global clients into the rest of a `--all` run (issue #2161). The
+      // Restore the cross-region switch HERE, in a guaranteed `finally`, so a
+      // throwing release step cannot skip it and leak the target region /
+      // global clients into the rest of a `--all` run (issue #2161). The
       // helper is idempotent, so any earlier exit-path call is a no-op.
       restoreBaseRegionAndClients();
     }
@@ -2512,10 +2288,10 @@ export async function runDestroyForStack(
     // RE-SYNC the interrupt outcome, because the reordering above MOVED the
     // window it is read in. `result.interrupted` is assigned once, inside the
     // `try`, after the level loop — and everything in this `finally` now runs
-    // with `sigintHandler` still armed, so a FIRST Ctrl-C landing in the
-    // renderer teardown, the state flush or the lock release sets `draining`
-    // AFTER that read. It then stayed false, and `destroy --all` deleted the
-    // NEXT STACK after the user asked to stop.
+    // with the lock's SIGINT handler still armed, so a FIRST Ctrl-C landing in
+    // the renderer teardown, the state flush or the lock release sets
+    // `lock.interrupted` AFTER that read. It then stayed false, and
+    // `destroy --all` deleted the NEXT STACK after the user asked to stop.
     //
     // That trade is worse than the bug the reordering fixed: before it, the same
     // signal hit the interrupt watch's force-quit and exited 130 — stranding the
@@ -2532,7 +2308,7 @@ export async function runDestroyForStack(
     // destroy commands now hold a command-scoped handler
     // (`watchCommandInterrupt`) for their whole run, and their loops read it
     // live, so a signal landing after this `finally` (or after the
-    // `removeListener` above, which this line cannot see either) still stops
+    // guard's own listener removal, which this line cannot see either) still stops
     // the run.
     //
     // `&& statePreserved` is what makes this line mean what its readers need.
@@ -2552,9 +2328,9 @@ export async function runDestroyForStack(
     // channel, and got the per-stack one WRONG. `preserveState` is decided
     // inside the `try` from the in-`try` read; a signal landing after it — in
     // `renderer.stop()`, the `saveChain` flush, the real `deleteState` S3
-    // round-trip, or `releaseLock` — flipped `draining` with the state file
-    // ALREADY DELETED, and the caller then reported "State preserved — re-run
-    // 'cdkd destroy' to finish" and exited 2 over a stack that had fully
+    // round-trip, or `releaseLock` — flipped `lock.interrupted` with the state
+    // file ALREADY DELETED, and the caller then reported "State preserved —
+    // re-run 'cdkd destroy' to finish" and exited 2 over a stack that had fully
     // completed. Both halves of that sentence false. The invariant this gate
     // fences: a stack whose state was deleted never reports `interrupted`.
     //
@@ -2565,7 +2341,7 @@ export async function runDestroyForStack(
     // earlier. `statePreserved` starts false, so a `try` that threw before the
     // preserve decision cannot flip anything — and on that path `result` is
     // never returned anyway.
-    result.interrupted ||= draining && statePreserved;
+    result.interrupted ||= lock.interrupted && statePreserved;
     // (The cross-region region/client restore now runs in the inner `finally`
     // above, so it happens even if `releaseLock` rejected — issue #2161.)
   }

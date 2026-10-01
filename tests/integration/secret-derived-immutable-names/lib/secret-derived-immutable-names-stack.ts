@@ -2,6 +2,9 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as appsync from 'aws-cdk-lib/aws-appsync';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * Immutable NAMES taken from a Secrets Manager secret, updated in place
@@ -26,19 +29,38 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
  *     no VPC, no capacity and runs nothing. The physical id is the service
  *     ARN, which ends with the name.
  *
+ *   - `SecretPolicy` (AWS::IAM::ManagedPolicy), `Path` and `Description`
+ *     from the secret. Both are create-only, and the provider REPLACED the
+ *     policy on every update (a create under the same name and path, which
+ *     IAM refuses). The policy ARN carries the path; the description takes
+ *     the masker arm.
+ *   - `SecretApi` (AWS::AppSync::GraphQLApi), `Name` from the secret: the
+ *     physical id is the API id, so the provider asks AppSync for the live
+ *     name. `SecretDataSource` (AWS::AppSync::DataSource, type NONE), `Name`
+ *     from the secret: the `<apiId>|<name>` physical id carries it.
+ *   - `SecretQueue` (AWS::SQS::Queue), `QueueName` from the secret
+ *     (go-to-k/cdkd#2177): the provider's own update debug lines print the
+ *     queue URL, which carries the name, with no per-site masker. Only the
+ *     logger's sink mask keeps the name out of the `--verbose` log.
+ *
  * A Scheduler Schedule's secret-derived `GroupName` stays refused on purpose
  * (go-to-k/cdkd#4275: nothing non-secret in the record identifies the group),
  * so it is not deployed here.
  *
- * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description` and
- * the Service's `EnableECSManagedTags` (it has no description): an ordinary
- * in-place change, so the update is not a no-op.
+ * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
+ * Service's `EnableECSManagedTags` (it has no description), the Policy's
+ * `PolicyDocument`, the API's `XrayEnabled`, the DataSource's `Description`
+ * and the Queue's `VisibilityTimeout`: ordinary in-place changes, so the update is not a no-op.
  *
  * covers: AWS::ApiGatewayV2::Api
  * covers: AWS::ApiGatewayV2::Stage
  * covers: AWS::ECS::Cluster
  * covers: AWS::ECS::TaskDefinition
  * covers: AWS::ECS::Service
+ * covers: AWS::IAM::ManagedPolicy
+ * covers: AWS::AppSync::GraphQLApi
+ * covers: AWS::AppSync::DataSource
+ * covers: AWS::SQS::Queue
  */
 export class SecretDerivedImmutableNamesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -81,6 +103,38 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       launchType: 'EC2',
       desiredCount: 0,
       enableEcsManagedTags: update,
+    });
+
+    new iam.CfnManagedPolicy(this, 'SecretPolicy', {
+      path: fromSecret('path'),
+      description: fromSecret('policydesc'),
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: update ? ['sts:GetCallerIdentity', 'sts:GetSessionToken'] : 'sts:GetCallerIdentity',
+            Resource: '*',
+          },
+        ],
+      },
+    });
+
+    const graphqlApi = new appsync.CfnGraphQLApi(this, 'SecretApi', {
+      name: fromSecret('api'),
+      authenticationType: 'API_KEY',
+      xrayEnabled: update,
+    });
+    new appsync.CfnDataSource(this, 'SecretDataSource', {
+      apiId: graphqlApi.attrApiId,
+      name: fromSecret('datasource'),
+      type: 'NONE',
+      description,
+    });
+
+    new sqs.CfnQueue(this, 'SecretQueue', {
+      queueName: fromSecret('queue'),
+      visibilityTimeout: update ? 60 : 30,
     });
   }
 }

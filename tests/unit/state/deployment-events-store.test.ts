@@ -657,6 +657,52 @@ describe('DeploymentEventsReader.pruneRuns', () => {
     expect([...objects.keys()].filter((k) => k.includes('/deployments/'))).toEqual([]);
   });
 
+  // Issue #2624: `indexDeleted` must report an index that EXISTED, not the
+  // success of a `DeleteObjects` call, which succeeds on an absent key too.
+  // Both callers (`cdkd events prune`, `purgeEventsAfterDestroy`) print a
+  // removal claim when it is true.
+  it('--all on an empty prefix reports no index deleted (nothing existed)', async () => {
+    const { backend } = makeFakeBackend();
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', { all: true });
+    expect(r.deletedRunIds).toEqual([]);
+    expect(r.remainingRunIds).toEqual([]);
+    expect(r.indexDeleted).toBe(false);
+  });
+
+  it('--all with run streams but no index reports the runs, not an index', async () => {
+    const { backend, objects } = makeFakeBackend();
+    objects.set(`cdkd/S/us-east-1/deployments/${id(0)}.jsonl`, '{}\n');
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', { all: true });
+    expect(r.deletedRunIds).toEqual([id(0)]);
+    expect(r.indexDeleted).toBe(false);
+    expect([...objects.keys()].filter((k) => k.includes('/deployments/'))).toEqual([]);
+  });
+
+  it('--all with only an index (no run streams) reports the index deleted', async () => {
+    const { backend, objects } = makeFakeBackend();
+    objects.set('cdkd/S/us-east-1/deployments/index.json', '{"runs":[]}');
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', { all: true });
+    expect(r.deletedRunIds).toEqual([]);
+    expect(r.indexDeleted).toBe(true);
+    expect(objects.has('cdkd/S/us-east-1/deployments/index.json')).toBe(false);
+  });
+
+  it('--keep 0 with run streams but no index reports no index deleted', async () => {
+    const { backend, objects } = makeFakeBackend();
+    // The count path's empty-remainder branch deletes the index key the same
+    // way the --all arm does, so it owes the same existence-based report.
+    objects.set(`cdkd/S/us-east-1/deployments/${id(0)}.jsonl`, '{}\n');
+    objects.set(`cdkd/S/us-east-1/deployments/${id(1)}.jsonl`, '{}\n');
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', { keep: 0 });
+    expect([...r.deletedRunIds].sort()).toEqual([id(0), id(1)]);
+    expect(r.remainingRunIds).toEqual([]);
+    expect(r.indexDeleted).toBe(false);
+  });
+
   it('--keep retains the newest N and rewrites the index', async () => {
     const { backend, objects } = makeFakeBackend();
     seedRuns(objects, 'us-east-1', [id(0), id(1), id(2), id(3)]);

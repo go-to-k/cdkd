@@ -146,7 +146,7 @@ cd "$target_dir" 2>/dev/null || exit 0
 #   delete SKIPS a removal (go-to-k/cdkd#4156), in words the filter misses.
 #   `provider-registry.ts` joined for the same reason (issue #2720): its
 #   `getProviderFor` picks the provider that DELETES a resource --
-#   `deploy-engine.ts`'s plain delete and its replacement old-delete,
+#   `deploy-engine/delete.ts`'s plain delete, `deploy-engine/update.ts`'s replacement old-delete,
 #   `destroy-runner.ts`, and seven sites in `rollback-executor.ts` all
 #   read it -- so one routing change reroutes DELETE for every resource
 #   in a template. Hunk-filtering it was measured to be a fail-open: five
@@ -214,7 +214,7 @@ if [ -n "$diff_base" ]; then
   # comment for rationale).
   strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor|inline-policy-claims)\.ts$|^src/provisioning/provider-registry\.ts$'
   # Hunk-filtered files — only delete-symbol changes trigger.
-  filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine(-heal|-options|-masking|-name-collision|-observed-capture|-outputs|-replacement|-rollback)?\.ts|src/deployment/(label-routing|deploy-value-equality)\.ts)$'
+  filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine(\.ts|/.*\.ts)|src/deployment/(label-routing|deploy-value-equality)\.ts)$'
   provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'
   # Match a delete-touching symbol on an added/removed line, but NOT inside
   # a single-line comment. This avoids the false positives PR #73 hit

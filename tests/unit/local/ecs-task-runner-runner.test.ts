@@ -247,6 +247,12 @@ import {
 } from '../../../src/local/ecs-task-runner.js';
 import { DockerRunnerError } from '../../../src/local/docker-runner.js';
 import { resetFinchArgvWarningsForTest } from '../../../src/utils/docker-cmd.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 // ---------------------------------------------------------------------
 // Helpers
@@ -397,6 +403,44 @@ describe('runEcsTask — image preparation (G1)', () => {
     const [uri, opts] = ecrStubs.pullEcrImage.mock.calls[0]!;
     expect(uri).toBe('123.dkr.ecr.us-east-1.amazonaws.com/repo:tag');
     expect(opts).toMatchObject({ skipPull: true, region: 'us-east-1' });
+  });
+
+  it('names no payload container name beside --output (go-to-k/cdkd#4295)', async () => {
+    for (const { value } of PASTE_PAYLOADS) {
+      captured.responder = happyDockerResponder();
+      const c = makeContainer({ name: value, image: { kind: 'cdk-asset', assetHash: 'h0' } });
+      const task = makeTask({
+        containers: [c],
+        stack: { stackName: 'S1', displayName: 'S1', artifactId: 'S1', template: { Resources: {} }, dependencyNames: [] },
+      });
+      const message = await runEcsTask(task, baseOptions(), createEcsRunState()).then(
+        () => '',
+        (e: unknown) => (e as Error).message
+      );
+      expect(message, value).toContain('Container a container name that is not a plain identifier uses a CDK asset image');
+      withPasteDir((dir) => {
+        expectNoCommandBesideDisplay(message, value);
+        expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+      });
+    }
+  }, 120_000);
+
+  it('cdk-asset image with no asset manifest quotes the --output hole (go-to-k/cdkd#4295)', async () => {
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    const task = makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+      },
+    });
+    await expect(runEcsTask(task, baseOptions(), createEcsRunState())).rejects.toThrow(
+      "Re-synthesize the app (without `--output '<stale-dir>'`) and retry."
+    );
   });
 
   it('cdk-asset image kind → loadManifest + buildDockerImage with stable tag', async () => {

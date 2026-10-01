@@ -46,6 +46,12 @@ import {
   FORGED_QUOTE,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 describe('CloudFrontDistributionProvider', () => {
   let provider: CloudFrontDistributionProvider;
@@ -634,6 +640,100 @@ describe('CloudFrontDistributionProvider', () => {
       const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warn).toContain('did not reach Deployed');
     });
+
+    it('names no payload logical id or id beside --resource-timeout / --full-wait, and quotes the duration hole (go-to-k/cdkd#4295)', async () => {
+      // Each line names a pasteable flag. Pre-fix they printed the logical id
+      // and the distribution / physical id raw, and a bare `<duration>`.
+      const fullWaitWarn = async (logicalId: string, id: string): Promise<string> => {
+        process.env['CDKD_FULL_WAIT'] = 'true';
+        childLogger.warn.mockClear();
+        mockSend.mockReset();
+        mockSend.mockResolvedValueOnce({ Distribution: { Id: id, DomainName: 'd' } });
+        mockSend.mockResolvedValue({
+          Distribution: { Id: id, Status: 'InProgress', DistributionConfig: { Enabled: true } },
+        });
+        vi.useFakeTimers();
+        try {
+          const p = provider.create(logicalId, 'AWS::CloudFront::Distribution', createInput);
+          await vi.advanceTimersByTimeAsync(21 * 60 * 1000);
+          await p;
+        } finally {
+          vi.useRealTimers();
+          delete process.env['CDKD_FULL_WAIT'];
+        }
+        const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warn).toContain(
+          "Raise the budget with --resource-timeout AWS::CloudFront::Distribution='<duration>'."
+        );
+        return warn;
+      };
+      const acceptedInfo = async (logicalId: string): Promise<string> => {
+        process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
+        childLogger.info.mockClear();
+        mockSend.mockReset();
+        mockSend.mockResolvedValueOnce({ Distribution: { Id: 'E1', DomainName: 'd' } });
+        try {
+          await provider.create(logicalId, 'AWS::CloudFront::Distribution', createInput);
+        } finally {
+          delete process.env['CDKD_WAIT_FLAGS_AVAILABLE'];
+        }
+        return childLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+      };
+      const deleteWarn = async (physicalId: string, enabled: boolean): Promise<string> => {
+        childLogger.warn.mockClear();
+        mockSend.mockReset();
+        mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+          if (cmd.constructor.name === 'GetDistributionCommand') {
+            return Promise.resolve({
+              Distribution: { Id: physicalId, Status: 'InProgress', DistributionConfig: { Enabled: false } },
+            });
+          }
+          if (cmd.constructor.name === 'GetDistributionConfigCommand') {
+            return Promise.resolve({ ETag: 'E', DistributionConfig: { CallerReference: 'o', Enabled: enabled } });
+          }
+          return Promise.resolve({ ETag: 'E2' });
+        });
+        vi.useFakeTimers();
+        try {
+          const p = provider.delete('MyDistribution', physicalId, 'AWS::CloudFront::Distribution');
+          await vi.advanceTimersByTimeAsync(21 * 60 * 1000);
+          await p.catch(() => undefined);
+        } finally {
+          vi.useRealTimers();
+        }
+        const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warn).toContain(
+          "raise the budget with --resource-timeout AWS::CloudFront::Distribution='<duration>'."
+        );
+        return warn;
+      };
+      for (const { value } of PASTE_PAYLOADS) {
+        const messages = [
+          await fullWaitWarn(value, 'E1'),
+          await fullWaitWarn('MyDistribution', `E1${value}`),
+          await acceptedInfo(value),
+          await deleteWarn(value, true),
+          await deleteWarn(value, false),
+        ];
+        expect(messages[0], value).toContain(
+          'CloudFront Distribution a logical id that is not a plain identifier (E1) did not reach Deployed'
+        );
+        expect(messages[1], value).toContain(
+          'CloudFront Distribution MyDistribution (not shown: it is not a plain identifier) did not'
+        );
+        expect(messages[2], value).toContain(
+          'CloudFront Distribution a logical id that is not a plain identifier accepted'
+        );
+        expect(messages[3], value).toContain('Distribution (not shown: it is not a plain identifier) disable');
+        expect(messages[4], value).toContain('Distribution (not shown: it is not a plain identifier) is disabled');
+        withPasteDir((dir) => {
+          for (const message of messages) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 240_000);
   });
 
   describe('update', () => {

@@ -193,7 +193,9 @@ export class SNSTopicProvider implements ResourceProvider {
       // DataProtectionPolicy, per-protocol DeliveryStatusLogging), the
       // topic exists on AWS but cdkd state will NOT (the throw aborts
       // before the success-return). CreateTopic is idempotent on Name
-      // — re-deploy would adopt the orphan rather than fail — so the
+      // — re-deploy would adopt the orphan rather than fail (under a
+      // GENERATED name; an explicit one is refused by the create arm's name
+      // lookup, go-to-k/cdkd#4180) — so the
       // partial-policy state could persist silently across redeploys.
       // Wrap the wiring in an inner try/catch that issues a best-effort
       // `DeleteTopicCommand` before re-throwing the original error.

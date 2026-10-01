@@ -179,9 +179,9 @@ export class ResourceTimeoutError extends CdkdError {
     // accept it: the parser reads the same pattern.
     const remedy =
       hasResourceTypeShape(resourceType) && TIMEOUT_FLAG_RESOURCE_TYPE.test(resourceType)
-        ? safeMsg`slow ENI provisioning. Re-run with --resource-timeout ${resourceType}=<DURATION>\n` +
+        ? safeMsg`slow ENI provisioning. Re-run with --resource-timeout ${resourceType}='<DURATION>'\n` +
           'to bump the budget for this resource type only, or --verbose to see the\n'
-        : 'slow ENI provisioning. Re-run with a larger --resource-timeout <DURATION>,\n' +
+        : "slow ENI provisioning. Re-run with a larger --resource-timeout '<DURATION>',\n" +
           'or --verbose to see the\n';
     super(
       safeMsg`Resource ${shownId} (${shownType}) in ${region} timed out after ${timeoutLabel} during ${operation} (elapsed ${elapsedLabel}).\n` +
@@ -533,7 +533,7 @@ export class PartialFailureError extends CdkdError {
  * even reached.
  *
  * Marking in the CONSTRUCTOR rather than at each `throw` is deliberate: ~20
- * providers raise this from inside the `update()` call `deploy-engine.ts`
+ * providers raise this from inside the `update()` call `deploy-engine/update.ts`
  * wraps in `withRetry` (plus `drift.ts`'s `--revert` update), and a per-site
  * marker is one forgotten call away from re-opening the hole for exactly one
  * provider.

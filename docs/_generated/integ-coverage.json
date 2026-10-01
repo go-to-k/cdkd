@@ -494,10 +494,15 @@
     {
       "resourceType": "AWS::AppSync::DataSource",
       "integs": [
-        "appsync"
+        "appsync",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "appsync": [
+          "l1",
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
           "l1",
           "literal"
         ]
@@ -506,11 +511,16 @@
     {
       "resourceType": "AWS::AppSync::GraphQLApi",
       "integs": [
-        "appsync"
+        "appsync",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "appsync": [
           "l1"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1138,7 +1148,8 @@
         "ec2-instance-fanout",
         "import-migrate-vpc",
         "propagation-races-2",
-        "remove-protection"
+        "remove-protection",
+        "remove-protection-compensation"
       ],
       "signals": {
         "deletion-ordering-complex": [
@@ -1158,6 +1169,10 @@
         ],
         "remove-protection": [
           "l2",
+          "literal"
+        ],
+        "remove-protection-compensation": [
+          "l1",
           "literal"
         ]
       }
@@ -3897,7 +3912,8 @@
         "iam-managed-policy",
         "iam-secret-derived-principals",
         "import-attributes",
-        "import-auto-mode"
+        "import-auto-mode",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "iam-managed-policy": [
@@ -3911,6 +3927,10 @@
           "literal"
         ],
         "import-auto-mode": [
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
           "literal"
         ]
       }
@@ -6054,6 +6074,7 @@
         "s3-analytics-inventory",
         "s3-lifecycle",
         "scheduler-custom-group",
+        "secret-derived-immutable-names",
         "secrets-dynamic-ref",
         "sns-inline-subscription",
         "sns-sqs-event",
@@ -6217,6 +6238,10 @@
         ],
         "scheduler-custom-group": [
           "l2"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ],
         "secrets-dynamic-ref": [
           "l1"

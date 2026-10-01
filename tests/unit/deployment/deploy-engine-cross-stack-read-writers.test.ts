@@ -180,12 +180,12 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
   });
 
   it('no DeployEngine mixin module writes these records or carries the outputs bag (#4200)', () => {
-    // The method groups split out of the engine (`deploy-engine-<group>.ts`)
+    // The method groups split out of the engine (`deploy-engine/<group>.ts`)
     // are outside the positional compare above, which reads one file. A save
     // path moved into one would write here unseen, so every mixin must hold
     // NONE: a save site belongs in the engine, where it is enumerated.
-    const dir = `${REPO_ROOT}src/deployment/`;
-    const mixins = readdirSync(dir).filter((f) => /^deploy-engine-.+\.ts$/.test(f));
+    const dir = `${REPO_ROOT}src/deployment/deploy-engine/`;
+    const mixins = readdirSync(dir).filter((f) => f.endsWith('.ts'));
     expect(mixins.length, 'no mixin module found; this case is reading nothing').toBeGreaterThan(0);
     for (const file of mixins) {
       const source = readFileSync(`${dir}${file}`, 'utf8');
@@ -297,9 +297,9 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
   });
 
   it('counts the union call sites, so a deleted spread reds this test', () => {
-    // The rollback-executor context's call lives in the `deploy-engine-rollback.ts`
+    // The rollback-executor context's call lives in the `deploy-engine/rollback.ts`
     // mixin (#4200), so the count spans both files.
-    const source = [SOURCE, 'src/deployment/deploy-engine-rollback.ts']
+    const source = [SOURCE, 'src/deployment/deploy-engine/rollback.ts']
       .map((file) => stripComments(readFileSync(`${REPO_ROOT}${file}`, 'utf8')))
       .join('\n');
     const calls = source.match(/crossStackReadsForPartialSave\(/g) ?? [];

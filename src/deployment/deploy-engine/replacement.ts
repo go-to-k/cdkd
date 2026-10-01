@@ -1,4 +1,4 @@
-import { type DeployEngine, InterruptedError } from './deploy-engine.js';
+import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -7,21 +7,21 @@ import {
   createPreDeleteFinalSnapshot,
   replacementDeletePolicy,
   unsupportedFinalSnapshotError,
-} from '../provisioning/final-snapshot.js';
-import type { ProvisionedBy } from '../provisioning/provider-registry.js';
-import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
+} from '../../provisioning/final-snapshot.js';
+import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
+import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
 import type {
   CreateContext,
   ResourceCreateResult,
   ResourceDeleteResult,
   ResourceProvider,
-} from '../types/resource.js';
-import type { ResourceState } from '../types/state.js';
-import { getAwsClients } from '../utils/aws-clients.js';
-import { green } from '../utils/colors.js';
-import { displayAwsMessage, displaySafe, safeMsg } from '../utils/display-safe.js';
-import { CdkdError } from '../utils/error-handler.js';
-import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
+} from '../../types/resource.js';
+import type { ResourceState } from '../../types/state.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
+import { green } from '../../utils/colors.js';
+import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { CdkdError } from '../../utils/error-handler.js';
+import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import {
   type ReplacementNameChange,
   probeErrorMeansNameHeld,
@@ -32,22 +32,22 @@ import {
   replacementOrderIsCaseSensitive,
   renderReplacementNameChange,
   replacementRequestsDifferentName,
-} from './replacement-name-holder.js';
-import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
-import { withRetry } from './retry.js';
+} from '../replacement-name-holder.js';
+import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { withRetry } from '../retry.js';
 import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
   markNonRetryable,
-} from './retryable-errors.js';
+} from '../retryable-errors.js';
 import {
   type RecordedSecretValues,
   SECRET_MASK,
   createSecretMasker,
   maskSecretsInText,
-} from './secret-redaction.js';
+} from '../secret-redaction.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     replacementDeleteContext: OmitThisParameter<typeof replacementDeleteContext>;
@@ -310,7 +310,7 @@ export async function replaceDeleteFirstAndRecreate(
     // because `provisionResource`'s catch masks the whole chain further up
     // the stack. NOT "one frame up" as the twin's note says — that wording
     // is exact only there; this throw sits in
-    // `replaceDeleteFirstAndRecreate`, called from `provisionResourceBody`,
+    // `replaceDeleteFirstAndRecreate`, called from `provisionUpdate`,
     // which `provisionResource` invokes through `withResourceDeadline`. The
     // `cause` is what keeps the AWS
     // rejection behind the sentence readable — `extractDeploymentEventError`
@@ -708,7 +708,11 @@ export async function deleteReplacedAfterCreate(
         logicalId,
         currentResource.physicalId,
         skipReason,
-        'while cleaning up the replaced resource'
+        'while cleaning up the replaced resource',
+        // No command on this line, and the id is the only trace left of the
+        // resource: show it, bounded, rather than describe it
+        // (go-to-k/cdkd#4265).
+        { commandFreeLine: true }
       )}. Delete it manually — it is no longer tracked in state.`
     );
   } else if (!deleteFailed) {

@@ -568,7 +568,7 @@ export const MULTI_REGION_RECREATE_BLOCKED_TYPES: ReadonlySet<string> = new Set(
  *    continuation-marker case corrected the claim on screen (it warns
  *    "without settling it" immediately before the refusal). The other,
  *    this module's {@link isStatefulRecreateTargetForReplace}
- *    `AWS::S3::Bucket` arm reached from `deploy-engine.ts`'s two
+ *    `AWS::S3::Bucket` arm reached from `deploy-engine/update.ts`'s two
  *    replacement guards, throws with no warning at all — so the
  *    assertive sentence was the only thing that user saw, and it named
  *    a measurement cdkd never took. The one site that re-derives a

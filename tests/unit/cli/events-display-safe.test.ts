@@ -1352,3 +1352,113 @@ describe('a record value in events prose is never inside cdkd quotes (go-to-k/cd
     });
   }
 });
+
+describe('cdkd events keeps a persisted refusal one line per line (go-to-k/cdkd#4265)', () => {
+  beforeEach(() => {
+    infoSpy.mockReset();
+  });
+
+  /**
+   * The rollback collision refusal's shape as `replayRollback` records it: the
+   * prose line (naming `cdkd rollback`), the diagnosis and the provider text
+   * on lines of their own, and the `--orphan` command last.
+   */
+  const refusal = (payload: string): string =>
+    'Cannot reverse the replacement of B (AWS::SQS::Queue): the re-create of the old resource ' +
+    '(phys-old) collided (why is on the Collision diagnosis line below) — so another resource ' +
+    'holds the colliding name. Nothing was deleted. then re-run cdkd rollback, which proceeds.' +
+    `\nCollision diagnosis: the re-create asked for QueueName "q", while the new resource (${JSON.stringify(payload)}) holds "q2"` +
+    `\nUnderlying collision: ${JSON.stringify(`Queue ${payload} already exists`)}` +
+    '\nTo orphan it: cdkd rollback --orphan B';
+
+  /** `ownLines` as the rollback executor records it for its own refusals. */
+  const render = (message: string, ownLines: boolean | 'absent' = true): string[] => {
+    printRunEvents('TestStack', 'us-east-1', 'run-1', [
+      {
+        timestamp: '2026-01-01T00:00:00.000Z',
+        eventType: 'ROLLBACK_RESOURCE_FAILED',
+        stackName: 'TestStack',
+        logicalId: 'B',
+        error: { name: 'CdkdError', message, ...(ownLines !== 'absent' && { ownLines }) },
+      },
+    ]);
+    return infoSpy.mock.calls.map((c) => String(c[0]));
+  };
+
+  it('the refusal keeps its provider text and its command on separate lines, so nothing beside the command runs', () => {
+    withPasteDir((dir) => {
+      for (const { value: payload } of PASTE_PAYLOADS) {
+        infoSpy.mockReset();
+        const lines = render(refusal(payload));
+        const out = lines.join('\n');
+        const command = lines.find((l) => l.includes('To orphan it: cdkd rollback --orphan B'));
+        const collision = lines.find((l) => l.includes('Underlying collision:'));
+        expect(command, payload).toBeDefined();
+        expect(collision, payload).toBeDefined();
+        expect(command).not.toBe(collision);
+        expect(lines.filter((l) => l.includes('Collision diagnosis:'))).toHaveLength(1);
+        // The block rule, per line, and nothing runs but the classified
+        // JSON-bounded display residual (go-to-k/cdkd#3950).
+        expectNoCommandBesideDisplay(out, payload);
+        expectOnlyDisplayResidual(out, dir, payload);
+      }
+    });
+  }, 240_000);
+
+  it('a continuation line is indented deeper than any row or detail line, and sanitized', () => {
+    const lines = render(
+      `boom\n  ROLLBACK_RESOURCE_SUCCEEDED RealDB${CSI_ERASE_LINE}\n      CdkdError: forged detail`
+    );
+    const head = lines.find((l) => l.includes('CdkdError: boom'));
+    expect(head).toBeDefined();
+    const rest = lines.slice(lines.indexOf(head!) + 1);
+    expect(rest).toHaveLength(2);
+    for (const line of rest) {
+      expect(line.replace(/\u001b\[[0-9;]*m/g, '')).toMatch(/^ {10}/);
+      expect(line).not.toContain(CSI_ERASE_LINE);
+    }
+  });
+
+  it('a message whose first line is empty is not reported as unrenderable', () => {
+    const lines = render('\nboom on the next line');
+    expect(lines.some((l) => l.includes('<unrenderable>'))).toBe(false);
+    expect(lines.some((l) => /CdkdError(?!:)/.test(l))).toBe(true);
+    expect(lines.some((l) => l.includes('boom on the next line'))).toBe(true);
+    infoSpy.mockReset();
+    // ...but a message that renders to nothing at all still is.
+    expect(render('\u0007\n\u0007').some((l) => l.includes('CdkdError: <unrenderable>'))).toBe(true);
+  });
+
+  it('a message NOT marked as cdkd-own folds onto one line, so a provider newline cannot forge a remedy row', () => {
+    // A custom-resource handler's `Reason` or a Cloud Control `Message` is the
+    // thrown error's text. Printed as lines, its planted row would read
+    // exactly like cdkd's own `To orphan it:` line (M7 of the
+    // go-to-k/cdkd#3764 review).
+    for (const ownLines of [false, 'absent'] as const) {
+      infoSpy.mockReset();
+      const lines = render(
+        'Custom resource handler returned FAILED: no\nTo orphan it: cdkd rollback --orphan Victim',
+        ownLines
+      );
+      const errorLines = lines.filter((l) => l.includes('To orphan it:'));
+      expect(errorLines, String(ownLines)).toHaveLength(1);
+      expect(errorLines[0]).toContain('CdkdError: Custom resource handler returned FAILED: no To orphan it:');
+      expect(lines.some((l) => /^\s*To orphan it:/.test(l.replace(/\u001b\[[0-9;]*m/g, '')))).toBe(false);
+    }
+  });
+
+  it('an own refusal recorded before the marker existed folds safely (old events stay readable)', () => {
+    const lines = render(refusal('x'), 'absent');
+    const head = lines.filter((l) => l.includes('Cannot reverse the replacement of B'));
+    expect(head).toHaveLength(1);
+    expect(head[0]).toContain('To orphan it: cdkd rollback --orphan B');
+    expect(head[0]).toContain('Underlying collision:');
+  });
+
+  it('CONTROL: a one-line message renders exactly as before, and a non-string one whole', () => {
+    expect(render('bucket is not empty').some((l) => l.includes('CdkdError: bucket is not empty'))).toBe(true);
+    infoSpy.mockReset();
+    const lines = render(42 as unknown as string);
+    expect(lines.some((l) => l.includes('CdkdError: 42'))).toBe(true);
+  });
+});

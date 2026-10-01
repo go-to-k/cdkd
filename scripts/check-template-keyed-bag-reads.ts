@@ -81,6 +81,7 @@ import { readFileSync } from 'node:fs';
 /** Files this checker scans. A list, never a glob. */
 export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-function-resolver.ts',
+  'src/deployment/intrinsic-resolver/support.ts',
   'src/analyzer/template-parser.ts',
 ];
 

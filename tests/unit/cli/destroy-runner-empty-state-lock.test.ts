@@ -383,6 +383,36 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
     expect(thrown).not.toContain('--state-prefix');
   });
 
+  it('keeps its SIGINT handler armed across the release, then removes it (go-to-k/cdkd#2174)', async () => {
+    const h = makeCtx({ acquired: true, recheck: null });
+    const before = process.listeners('SIGINT');
+    let during = -1;
+    h.releaseLock.mockImplementation(async () => {
+      during = process.listeners('SIGINT').length;
+    });
+
+    await runDestroyForStack('TestStack', emptyState(), h.ctx);
+
+    expect(during).toBe(before.length + 1);
+    expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('a FAILING release warns with the empty-cleanup wording and the cleanup still succeeds', async () => {
+    const h = makeCtx({ acquired: true, recheck: null });
+    h.releaseLock.mockRejectedValue(new Error('SlowDown'));
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const before = process.listeners('SIGINT');
+
+    const result = await runDestroyForStack('TestStack', emptyState(), h.ctx);
+
+    expect(result.skippedEmpty).toBe(true);
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Failed to release lock after empty-state cleanup: '
+    );
+    expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
   it('releases the lock even when the delete itself fails', async () => {
     const h = makeCtx({ acquired: true, recheck: null });
     h.deleteState.mockRejectedValue(new Error('S3 down'));

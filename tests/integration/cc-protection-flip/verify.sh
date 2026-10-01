@@ -118,9 +118,12 @@ cleanup() {
     for sid in ${sids}; do
       [ "${sid}" = "None" ] && continue
       aws verifiedpermissions update-policy-store --policy-store-id "${sid}" \
-        --validation-settings mode=OFF --deletion-protection mode=DISABLED --region "${REGION}" >/dev/null 2>&1
-      aws verifiedpermissions delete-policy-store --policy-store-id "${sid}" --region "${REGION}" >/dev/null 2>&1
-      echo "    deleted leftover PolicyStore ${sid}"
+        --validation-settings mode=OFF --deletion-protection DISABLED --region "${REGION}" >/dev/null 2>&1
+      if aws verifiedpermissions delete-policy-store --policy-store-id "${sid}" --region "${REGION}" >/dev/null 2>&1; then
+        echo "    deleted leftover PolicyStore ${sid}"
+      else
+        echo "    WARN: could not delete leftover PolicyStore ${sid}; delete it by hand" >&2
+      fi
     done
   )
   # RDS / DocDB global cluster shells: deterministic identifier discovery.

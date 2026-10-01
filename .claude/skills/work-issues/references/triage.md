@@ -69,8 +69,7 @@ the fix needs its lines (#3613). The contested cross-cutting files:
 `scripts/check-provider-update-context.ts` and
 `tests/unit/scripts/provider-update-context.test.ts` (the checker's
 `OMITS_UPDATE_CONTEXT` and the test's expected `declaring` list move when a
-provider gains `context?: UpdateContext` — two 2026-09-30 masker lanes both
-needed them).
+provider gains `context?: UpdateContext`).
 **At most one lane of THIS run per cross-cutting file** — map each candidate to
 its target file first.
 
@@ -88,6 +87,8 @@ unreached ones stood down with a four-field comment.
   ONE lane/PR; different files → parallel lanes; otherwise defer one.
 - **Take the LARGEST safe set** — never by forcing a lane into a contested file
   or shortening a verification, and size it against the SHARED account pool.
+  RE-TAKE it after every merge, a peer's too: a candidate held at triage frees
+  when its holder merges (re-run §2's `files` query on the held ones).
 - An old packed body (`Session-fit: <d> — <reason> / Effort: <duration>` on one
   line) is read, not bulk-rewritten: its `Effort:` is an **`Estimate`** and its
   `severity:*` label DERIVED, never `low` by default. Upgrade it to the four-line
@@ -134,8 +135,8 @@ claim says you took it inside the window.
 §2's disjointness and §3-0's quarantine are hard gates, not ranking factors. Rank
 what survives both, in order, moving on only to break a tie:
 
-1. **Security first** — `/review-pr`'s security-surface bullets are the canonical
-   list; when in doubt treat it as security, and split a security umbrella into
+1. **Security first** — SECURITY.md's in-scope list is the canonical list (its
+   out-of-scope class never ranks here); split a security umbrella into
    its sites rather than deferring it.
 2. **Umbrellas last** (except under rule 1): `umbrella` / `audit:` / `Backfill` /
    a TABLE of sites — the test is whether ONE lane can close it completely.

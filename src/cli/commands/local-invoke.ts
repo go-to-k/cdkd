@@ -654,7 +654,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       if (!stateForRoleHint) {
         logger.warn(
           '--assume-role passed without an ARN, but no cdkd state was loaded. ' +
-            'Pair it with --from-state, or pass the ARN explicitly: --assume-role <arn>. ' +
+            "Pair it with --from-state, or pass the ARN explicitly: --assume-role '<arn>'. " +
             "Falling back to the developer's shell credentials."
         );
       } else {
@@ -1907,7 +1907,7 @@ export function resolveBareAssumeRoleFromState(
   }
   logger.warn(
     safeMsg`--assume-role: could not resolve the execution role ARN from cdkd state for ${quotedOrDescribed(logicalId, 'logical id')}. ` +
-      "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
+      "Pass the ARN explicitly: --assume-role '<arn>'. Falling back to the developer's shell credentials."
   );
   return undefined;
 }

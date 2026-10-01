@@ -448,7 +448,7 @@ describe('replacementOldHoldsSentName', () => {
       const other = ask(`${sent}x`);
       expect(other.holds, type).toBe(false);
       expect(other.holds === false && other.diagnosis, type).toContain(
-        `cdkd's rule generates ${property} "${sent}"`
+        `the cdkd naming rule generates ${property} "${sent}"`
       );
       // On the Cloud Control route the bag itself carries whatever was sent.
       expect(ask(sent, 'cc-api').holds, type).toBe(false);
@@ -761,6 +761,7 @@ describe('replacementNameProbe (go-to-k/cdkd#3937)', () => {
       'AWS::CloudWatch::Alarm',
       'AWS::ECS::Cluster',
       'AWS::Events::Rule',
+      'AWS::Logs::LogGroup',
       'AWS::S3::Bucket',
       'AWS::SNS::Topic',
       'AWS::SQS::Queue',

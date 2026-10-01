@@ -175,7 +175,7 @@ describe('reverseReplacementNewHoldsName — the generic name property', () => {
       ask({ requested: {}, generated: { QueueName: 'S-Q' }, recorded: { QueueName: 'other' }, physicalId: 'x' })
     );
     expect(trusted.known).toBe(false);
-    expect(trusted.diagnosis).toContain(`cdkd's rule generates QueueName "S-Q"`);
+    expect(trusted.diagnosis).toContain(`the cdkd naming rule generates QueueName "S-Q"`);
     expect(ask({ generated: { QueueName: 'q' }, requested: {}, recorded: {} })).toEqual({ holds: true });
     // A MATCH on a diverging type proves nothing either: its provider sent
     // `/cdkd/S-LG`, so a new log group holding `S-LG` is not the holder.

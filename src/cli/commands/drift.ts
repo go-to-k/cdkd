@@ -88,9 +88,10 @@ import { shellQuote } from '../../state/lock-contention-message.js';
 import {
   commandHole,
   pasteableCommand,
+  quotedOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import { foldRegionOption, namedCliRegion, regionShown } from '../region-options.js';
 import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -1292,10 +1293,14 @@ function resolveTargetRefs(
       out.push(matches[0]!);
       continue;
     }
-    const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
+    // Names `--stack-region`, so the stack name and every region are shown
+    // only when plain and the hole is quoted (go-to-k/cdkd#4295).
+    const regions = matches
+      .map((r) => (r.region === undefined ? '(legacy)' : regionShown(r.region)))
+      .join(', ');
     throw new Error(
-      `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
-        `Re-run with --stack-region <region> to disambiguate.`
+      `Stack ${quotedOrDescribed(stackName, 'stack name')} has state in multiple regions: ${regions}. ` +
+        `Re-run with --stack-region ${commandHole('region')} to disambiguate.`
     );
   }
   return out;
@@ -4877,7 +4882,7 @@ export function preserveLiveValuesAtUnresolvedTokens(
  *
  * The predicate mirrors the resolver's own rule (a CloudFormation intrinsic is
  * ALWAYS a single-key object; `detectUnknownIntrinsicKey` in
- * `intrinsic-function-resolver.ts` states why single-key is what keeps a real
+ * `intrinsic-resolver/support.ts` states why single-key is what keeps a real
  * property literally named `Ref` from false-positiving). A non-plain object
  * (`Date`, `Uint8Array`) cannot be an intrinsic and is not descended. The scan
  * is scoped to `topLevelKeys` — the DRIFTED keys, the only ones
@@ -6315,9 +6320,11 @@ async function runRevert(
             // for a NoEcho or Base64 value (see `acceptRefusalReason`), which
             // is why the last sentence speaks of this refusal, not the mask.
             // The first two write the mask into `properties` as well, so the
-            // `export.ts`, `rollback-executor.ts` and `deploy-engine.ts`
-            // messages, which omit the `Fn::Base64` writer, are wrong for that
-            // population too; they are issue #2881's remaining checklist items.
+            // sibling refusals reach that population too: `export.ts`'s
+            // blocker, `rollback-executor.ts`'s `refuseMaskedReplayBaseline`
+            // and `deploy-engine/masking.ts`'s `refuseRedactedAttributeReads`
+            // name the `Fn::Base64` writer with a remedy of their own (issue
+            // #2881).
             totalUnresolvable++;
             logger.error(
               `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +

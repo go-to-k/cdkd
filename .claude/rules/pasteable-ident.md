@@ -8,12 +8,15 @@ paths:
 
 # A value cdkd tells an operator to PASTE
 
+The paste hazard these helpers address is out of scope (SECURITY.md). Keep
+their current behavior; do not extend them to new sites or add refusals for it.
+
 Rest of `src/utils/`: [layout-utils.md](layout-utils.md). The `cdkd gc` /
 `cdkd bootstrap --destroy` family this started in:
 [layout-cli.md](layout-cli.md). Index of every area:
 [code-layout.md](code-layout.md).
 
-`src/deployment/deploy-engine-masking.ts` is not in the glob above:
+`src/deployment/deploy-engine/masking.ts` is not in the glob above:
 `maskedRecordRemedyFor`'s two arms say at the site why the command is withheld
 and why sanitizing the id in place would be wrong.
 

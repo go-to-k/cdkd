@@ -1465,6 +1465,32 @@ consumer, which then masks it in its OWN state record. Outside that:
   custom resource actually running (force it to update), or stop marking that
   response `NoEcho`.
 
+**The `Fn::Base64` encoding of a secret is masked the same way, with
+different remedies.** cdkd stores `***` where a value is the `Fn::Base64`
+encoding of a `{{resolve:...}}` reference (an EC2 `UserData` script, for
+example), because the encoding decodes straight back to the secret. No custom
+resource is involved, so forcing one to update does nothing, and cdkd cannot
+tell this mask from a `NoEcho` one: each refusal names both causes.
+
+- `cdkd rollback` refuses to replay such a baseline. A `cdkd deploy` that
+  changes the resource restores the value, because the deploy resolves the
+  reference again and sends the encoding; a re-deploy that leaves the resource
+  unchanged sends nothing. State still holds `***` afterwards, so a later
+  rollback to it refuses again until the secret is no longer encoded into the
+  property — have the resource read the secret at run time instead, not by
+  writing its plaintext into the template.
+- A deploy refuses a resource that reads such a value back out of state, for
+  example through an `AWS::SSM::Parameter`'s `Value` attribute when the
+  parameter is unchanged. Have the reading resource build the value itself
+  from the secret's own reference (the `{{resolve:secretsmanager:...}}` or
+  `{{resolve:ssm-secure:...}}` reference, or a `{{resolve:ssm:...}}` of a
+  `SecureString` parameter, that the encoding was made from) under its own
+  `Fn::Base64`. Do not read the parameter holding the encoding with a
+  `{{resolve:ssm:...}}` reference instead: cdkd treats a `String` parameter as
+  public and would record the encoding in state in the clear. A re-import does
+  not clear this mask.
+- `cdkd export` blocks the resource; see [cdkd export](cli-export.md).
+
 Giving the state file a durable per-attribute `NoEcho` flag — which would let a
 later deploy know WHY the mask is there rather than inferring it from the value
 — is a possible future schema bump, not yet implemented.

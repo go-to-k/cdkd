@@ -33,12 +33,25 @@ import type {
 } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { logicalIdShown } from '../composite-id.js';
+import { isPlainImportValue, VALUE_NOT_SHOWN } from '../import-helpers.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import {
   planTagDiff,
   tagPlanWarning,
   refuseMalformedDesiredTags,
   type CfnTagEntry,
 } from '../tag-list.js';
+
+/**
+ * A distribution id as the lines naming `--resource-timeout`, `--full-wait`
+ * or an `aws` command print it: itself when plain, described otherwise
+ * (go-to-k/cdkd#4295). It is the `state.json` physical id, which nothing
+ * validates, and printed raw beside a pasteable flag its `$( )` ran.
+ */
+function shownId(id: string): string {
+  return isPlainImportValue(id) ? id : VALUE_NOT_SHOWN;
+}
 
 /**
  * Top-level `DistributionConfig` fields that are a BARE ARRAY in the CFn
@@ -571,8 +584,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         const disabled = await this.waitForDistributionStable(physicalId, false);
         if (!disabled) {
           this.logger.warn(
-            `Distribution ${physicalId} disable did not settle (Deployed + disabled) within the wait budget; attempting delete anyway. ` +
-              `If it fails with DistributionNotDisabled, retry the destroy or raise the budget with --resource-timeout AWS::CloudFront::Distribution=<duration>.`
+            `Distribution ${shownId(physicalId)} disable did not settle (Deployed + disabled) within the wait budget; attempting delete anyway. ` +
+              `If it fails with DistributionNotDisabled, retry the destroy or raise the budget with --resource-timeout AWS::CloudFront::Distribution=${commandHole('duration')}.`
           );
         }
 
@@ -591,8 +604,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         const settled = await this.waitForDistributionStable(physicalId, false);
         if (!settled) {
           this.logger.warn(
-            `Distribution ${physicalId} is disabled but its propagation did not settle (Deployed) within the wait budget; attempting delete anyway. ` +
-              `If it fails with DistributionNotDisabled, retry the destroy or raise the budget with --resource-timeout AWS::CloudFront::Distribution=<duration>.`
+            `Distribution ${shownId(physicalId)} is disabled but its propagation did not settle (Deployed) within the wait budget; attempting delete anyway. ` +
+              `If it fails with DistributionNotDisabled, retry the destroy or raise the budget with --resource-timeout AWS::CloudFront::Distribution=${commandHole('duration')}.`
           );
         }
 
@@ -804,9 +817,9 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         // would hand auto-rollback a healthy distribution to disable-and-delete.
         // Warn and proceed instead.
         this.logger.warn(
-          `CloudFront Distribution ${logicalId} (${distributionId}) did not reach Deployed within the wait budget; continuing (propagation finishes in the background). ` +
+          `CloudFront Distribution ${logicalIdShown(logicalId)} ${isPlainImportValue(distributionId) ? `(${distributionId})` : VALUE_NOT_SHOWN} did not reach Deployed within the wait budget; continuing (propagation finishes in the background). ` +
             `To wait manually: ${pasteableAwsCommand()`aws cloudfront wait distribution-deployed --id ${distributionId}`.render()}. ` +
-            `Raise the budget with --resource-timeout AWS::CloudFront::Distribution=<duration>.`
+            `Raise the budget with --resource-timeout AWS::CloudFront::Distribution=${commandHole('duration')}.`
         );
       }
       return;
@@ -819,7 +832,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     const fullWaitHint =
       process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true' ? '; pass --full-wait to wait' : '';
     this.logger.info(
-      `CloudFront Distribution ${logicalId} accepted (not waiting for Deployed${fullWaitHint}). ` +
+      `CloudFront Distribution ${logicalIdShown(logicalId)} accepted (not waiting for Deployed${fullWaitHint}). ` +
         `To wait manually: ${pasteableAwsCommand()`aws cloudfront wait distribution-deployed --id ${distributionId}`.render()}`
     );
   }

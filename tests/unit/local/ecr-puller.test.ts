@@ -1171,6 +1171,34 @@ describe('pullEcrImage', () => {
     }
   });
 
+  it('quotes the --ecr-role-arn hole in the cross-account note (go-to-k/cdkd#4295)', async () => {
+    const infoLines: string[] = [];
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const spy = vi.spyOn(getLogger(), 'child').mockImplementation(
+      () =>
+        ({
+          info: (msg: string) => infoLines.push(msg),
+          debug: () => {},
+          warn: () => {},
+          error: () => {},
+        }) as never
+    );
+    try {
+      stsSendMock.mockResolvedValue({ Account: '111111111111' });
+      ecrSendMock.mockResolvedValue({
+        authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
+      });
+      await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        region: 'us-east-1',
+      });
+      const note = infoLines.find((l) => l.includes('Cross-account ECR pull'));
+      expect(note).toContain("pass --ecr-role-arn '<arn>' if AWS rejects");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('does not log a spurious cross-region pull when only the CASE differs', async () => {
     // `:219` compared the raw caller region against the canonical image
     // region, so `--region US-EAST-1` against a lower-case host reported a

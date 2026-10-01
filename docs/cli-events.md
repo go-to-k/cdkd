@@ -46,7 +46,10 @@ name one.
 
 The human output routes every stored value through cdkd's terminal-sanitising
 helper, so a control byte in a provider `reason`, a logical id or an AWS error
-message cannot repaint a line of the post-mortem; `--json` is not sanitised,
+message cannot repaint a line of the post-mortem. A rollback refusal cdkd
+recorded as its own (it keeps its provider text and its `To orphan it:` command
+on lines of their own) prints one line per line, each indented under the event;
+every other error message is folded onto one line. `--json` is not sanitised,
 since it is machine-consumed, but writes those characters as `\uXXXX` escapes,
 so it parses back to the stored values. See
 [Deployment Events](deployment-events.md#rendering-the-human-path-sanitises-json-output-escapes)

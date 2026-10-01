@@ -2,6 +2,8 @@ import type { Command, Option } from 'commander';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { deprecatedRegionOption, warnIfDeprecatedRegion } from './options.js';
+import { displayIdent } from '../utils/display-safe.js';
+import { plainOrDescribed } from '../utils/pasteable-command.js';
 
 /**
  * ONE region-normalization point for the CLI's command handlers.
@@ -510,4 +512,18 @@ export function adoptDeprecatedRegionFlag(cmd: Command): Command {
   });
 
   return cmd;
+}
+
+/**
+ * A state record's region as a line that also names `--stack-region` prints it
+ * (go-to-k/cdkd#4295): itself when it is a plain identifier within
+ * `displayIdent`'s 255-character default cap, otherwise a description. The
+ * cap matters because a region read out of a planted S3 key segment is
+ * unbounded while a real region's grammar is short; `isPasteableIdent` alone
+ * admits up to the much wider stack-name cap.
+ */
+export function regionShown(region: string): string {
+  return displayIdent(region) === region
+    ? plainOrDescribed(region, 'region')
+    : 'a region that is not a plain identifier';
 }

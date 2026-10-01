@@ -1541,6 +1541,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
         const resp = await this.logsClient.send(
           new DescribeLogGroupsCommand({ logGroupNamePrefix: explicit })
         );
+        // One page is enough: the response is ASCII-sorted by name, so the
+        // exact name sorts first among every name it prefixes.
         const found = resp.logGroups?.find((g) => g.logGroupName === explicit);
         return found ? { physicalId: explicit, attributes: {} } : null;
       } catch (err) {

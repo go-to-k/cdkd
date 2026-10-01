@@ -111,10 +111,11 @@ describe('rollback replay refuses a REDACTED baseline (issue #2274)', () => {
     expect(result.failures).toBe(1);
     expect(warnLines.join('\n')).toContain('redaction mask');
     expect(warnLines.join('\n')).toContain("cdkd deploy");
-    // TWO POPULATIONS reach this refusal since issue #2847, and naming only
+    // MORE THAN ONE POPULATION reaches this refusal since issue #2847 (three
+    // since #2881, whose `Fn::Base64` arm the next case pins), and naming only
     // the NoEcho one was a measured defect at the deploy engine's twin before
     // it was one here. This function tests `properties`, while
-    // `CloudControlProvider.import` masks only `attributes`, so arm (2) is
+    // `CloudControlProvider.import` masks only `attributes`, so arm (3) is
     // about a mask COPIED here from another record — by `cdkd orphan --force`,
     // or by `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over an
     // already-masked value. A record with no custom resource anywhere near it
@@ -130,7 +131,7 @@ describe('rollback replay refuses a REDACTED baseline (issue #2274)', () => {
     // BOTH the current wording and the round-3-REJECTED one, so restoring
     // "The record was written by 'cdkd import' through the Cloud Control
     // fallback" was measured GREEN. That claim is false for a `properties`
-    // refusal and sends the user to re-import THIS record. What arm (2) must
+    // refusal and sends the user to re-import THIS record. What arm (3) must
     // say is that the mask was copied here from ANOTHER record.
     expect(refusal).toContain('SPLICED from a masked record of ANOTHER resource');
     expect(refusal).toContain("'cdkd orphan --force'");
@@ -153,6 +154,52 @@ describe('rollback replay refuses a REDACTED baseline (issue #2274)', () => {
     // again is the positive above, which pins the proposition.
     expect(refusal).not.toMatch(
       /(record|baseline)[^.]{0,40}(written|adopted)[^.]{0,40}(Cloud Control|cdkd import)/i
+    );
+  });
+
+  it('names the Fn::Base64 encoding of a secret as a cause, with the remedy true of it (issue #2881)', async () => {
+    // The deploy persists `***` into a resource's OWN `properties` where they
+    // hold the `Fn::Base64` encoding of a secret
+    // (`deploy-engine-base64-secret-noop.test.ts` pins that), so a failed
+    // update of an EC2 `UserData` built around a `{{resolve:...}}` reference
+    // rolls back onto this refusal with no custom resource anywhere near it.
+    const update = vi.fn();
+    const ctx = makeCtx({ update });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Param',
+        changeType: 'UPDATE',
+        resourceType: PARAM_TYPE,
+        physicalId: 'phys',
+        previousState: res({ properties: { Name: '/app/ud', Value: SECRET_MASK } }),
+      },
+    ];
+
+    const result = await replayRollback(
+      ops,
+      { Param: res({ properties: { Name: '/app/ud', Value: 'ZW5jb2RlZA==' } }) },
+      'S',
+      ctx
+    );
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    const refusal = warnLines.join('\n');
+    expect(refusal).toContain('three ways a baseline comes to hold it');
+    expect(refusal).toContain('(2) The Fn::Base64 encoding of a secret value');
+    // The restore: a deploy that CHANGES the resource sends the encoding
+    // again; an unchanged re-deploy sends nothing (the encoding of an ordinary
+    // secret is deliberately not marked fresh).
+    expect(refusal).toContain("restore the property with a 'cdkd deploy' that changes this resource");
+    expect(refusal).toContain('a re-deploy that leaves this resource unchanged sends it nothing');
+    // ...and the change that ends the refusals, since the record keeps `***`
+    // after that deploy too. It must not steer the user to the plaintext.
+    expect(refusal).toContain('stop encoding the secret into the property');
+    expect(refusal).toContain("not by writing the secret's plaintext into the template");
+    // The arms stay in order, so the remedy a reader finds under (2) is (2)'s.
+    expect(refusal.indexOf('(1) A NoEcho')).toBeLessThan(refusal.indexOf('(2) The Fn::Base64'));
+    expect(refusal.indexOf('(2) The Fn::Base64')).toBeLessThan(
+      refusal.indexOf('(3) The value was SPLICED')
     );
   });
 

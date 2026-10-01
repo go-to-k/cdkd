@@ -36,6 +36,7 @@ import {
 } from '../../../src/deployment/retryable-errors.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { readResolverFamily } from '../_resolver-family.js';
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -210,10 +211,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // happened to type. Reading the source is the same technique
     // `outputs-diff.test.ts` uses to fence its mirrored deploy-engine
     // semantics.
-    const source = readFileSync(
-      new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url),
-      'utf8'
-    );
+    const source = readResolverFamily();
     const lines = source.split('\n');
 
     // Matches the base class AND any SUBCLASS of it (issue #2133 review added
@@ -266,10 +264,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // pinned at the SOURCE: a guard moved back below its cache read would
     // re-open the read the delta review measured, and the cache must not be
     // the thing that fails.
-    const source = readFileSync(
-      new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url),
-      'utf8'
-    );
+    const source = readResolverFamily();
     for (const cache of [
       'cachedEc2InstanceAttributes',
       'cachedVpcDefaultSecurityGroups',
@@ -295,10 +290,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // either a string literal, a `describeFailureObserved(...)` call, or a
     // template literal whose only holes are `this.displayMasked(...)` and
     // `observedState` (the EC2 state enum). A fourth shape fails here.
-    const source = readFileSync(
-      new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url),
-      'utf8'
-    );
+    const source = readResolverFamily();
     const observedArgs = [...source.matchAll(/^\s*observed:\s*(.+?),?\n/gm)]
       .map((m) => m[1]!)
       // The helper's own parameter type (`observed: string;`) is the one

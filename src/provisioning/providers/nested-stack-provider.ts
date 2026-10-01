@@ -405,7 +405,11 @@ export class NestedStackProvider implements ResourceProvider {
         physicalId,
         wasReplaced: false,
         outcome: 'partial',
-        reason: `nested stack ${displaySafe(childStackName)} skipped ${warnings} operation(s) of its revert`,
+        // `plainOrDescribed`, not `displaySafe`: a skip or partial reason is
+        // shown beside a flag or a `cdkd` command, and the child name holds a
+        // state.json logical id, whose words would otherwise be the command a
+        // pasted clause runs (go-to-k/cdkd#4265).
+        reason: `nested stack ${plainOrDescribed(childStackName, 'stack name')} skipped ${warnings} operation(s) of its revert`,
       };
     }
     return { physicalId, wasReplaced: false };
@@ -608,8 +612,9 @@ export class NestedStackProvider implements ResourceProvider {
     //    the residual is ACCEPTED, not fixed, and saying otherwise would
     //    overstate what the mark below achieves.
     //  - Interrupted: the child stopped early because the user pressed
-    //    Ctrl-C. `draining` in `destroy-runner.ts` is a per-INVOCATION local
-    //    with a per-invocation SIGINT listener, so a retry starts a FRESH
+    //    Ctrl-C. `destroy-runner.ts` reads `lock.interrupted` from a
+    //    stack-lock guard it acquires per INVOCATION (`acquireStackLock`),
+    //    and that guard owns the SIGINT listener, so a retry starts a FRESH
     //    child destroy with the interrupt forgotten — it does not heal the
     //    failure, it RESUMES work the user just aborted, while the backoff
     //    sleeps hold up the shutdown the interrupt asked for. Terminal by
@@ -651,7 +656,8 @@ export class NestedStackProvider implements ResourceProvider {
       if (childResult.interrupted) causes.push('was interrupted');
       return {
         outcome: 'skipped',
-        reason: `nested stack ${displaySafe(childStackName)} ${causes.join(' and ')}`,
+        // As the partial reason above (go-to-k/cdkd#4265).
+        reason: `nested stack ${plainOrDescribed(childStackName, 'stack name')} ${causes.join(' and ')}`,
       };
     }
   }

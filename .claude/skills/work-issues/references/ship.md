@@ -61,10 +61,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 - **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
   commit ITS output. Take upstream whole when it derives the file from the tree.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
-  upstream-whole drops this lane's row. Its `merge=union` keeps both LOCALLY,
-  but GitHub ignores that driver: a `main` commit adding ledger rows next to
-  this PR's turns it CONFLICTING, and CI never fires. Rebase locally, then
-  normalize before the push (Merge, below).
+  upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so a
+  `main` ledger row turns the PR CONFLICTING: rebase locally, normalize (Merge).
 
 ### Merge
 
@@ -73,15 +71,29 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 # -R on every gh call below too: "Could not resolve to a PullRequest" is no permissions error
 ```
 
-- **Read the merge state before you watch CI**: at `mergeable=CONFLICTING` CI
-  never fires. Poll `gh pr checks <N> --json name,state` (`--watch` returns at
-  once when no check has APPEARED) and require that checks EXIST. It has no sha
-  field — `headRefOid` is `gh pr view`'s: an unknown field exits 1 on EVERY
-  poll, so a loop reading non-zero as pending outlives a green CI. **PUSH FIRST,
-  then run the post-rebase suite while CI drains** — so the suite's ledger test
-  runs only after the push: re-run `vp run integ-ledger-normalize` after EVERY
-  rebase and push only once `git status --porcelain -- docs/_generated/` is
-  empty.
+- **Read the merge state before you watch CI** — at `CONFLICTING` CI never
+  fires, and `--watch` returns at once while no check EXISTS. Wait with THIS, not
+  a hand-written loop (an unknown `--json` field exits 1 on EVERY poll). It
+  re-reads the state every pass and ends non-zero on anything but green CI; the
+  merge verdict is still `CLEAN` (next bullet), not the watch's exit:
+
+  ```bash
+  R=<owner>/<repo>; N=<n>; rc=1; i=0
+  while [ $((i+=1)) -le 60 ]; do   # 15 min: past it, no workflow is coming
+    m=$(gh pr view $N -R $R --json state,mergeable -q '.state+" "+.mergeable') || m=ERR
+    case "$m" in
+      'OPEN MERGEABLE') [ "$(gh pr checks $N -R $R --json state -q length 2>/dev/null || echo 0)" -gt 0 ] \
+        && { gh pr checks $N -R $R --watch; rc=$?; break; } ;;
+      'OPEN CONFLICTING') echo 'CONFLICTING: CI never fires; rebase (above), push, re-run'; break ;;
+      'OPEN UNKNOWN'|ERR) ;;   # ERR to the end: a wrong N/R or dead auth
+      *) echo "$m: not open"; break ;;
+    esac; sleep 15
+  done; echo "m=$m rc=$rc"; [ $rc = 0 ]
+  ```
+
+  **PUSH FIRST, then run the post-rebase suite while CI drains** — so its ledger
+  test runs only after the push: re-run `vp run integ-ledger-normalize` after
+  EVERY rebase; push once `git status --porcelain -- docs/_generated/` is empty.
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,

@@ -1065,8 +1065,8 @@ export async function resolveInboundAuthorization(
 
   if (!header) {
     throw new CdkdError(
-      `Runtime '${resolved.logicalId}' requires an inbound JWT (customJwtAuthorizer). ` +
-        `Pass --bearer-token <jwt>, or --no-verify-auth to skip verification for local dev.`,
+      `Runtime ${quotedOrDescribed(resolved.logicalId, 'logical id')} requires an inbound JWT (customJwtAuthorizer). ` +
+        `Pass --bearer-token '<jwt>', or --no-verify-auth to skip verification for local dev.`,
       'LOCAL_INVOKE_AGENTCORE_AUTH_REQUIRED'
     );
   }
@@ -1139,7 +1139,7 @@ export async function buildSigV4HeadersIfRequested(
   if (!region) {
     throw new CdkdError(
       `--sigv4: no region resolved for the AgentCore signing scope. ` +
-        `Pass --region <region>, set AWS_REGION, or use --from-cfn-stack with a region-bound stack.`,
+        `Pass --region '<region>', set AWS_REGION, or use --from-cfn-stack with a region-bound stack.`,
       'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_REGION'
     );
   }
@@ -1193,9 +1193,9 @@ export function sigv4NoCredentialsRefusal(args: {
   profileAlreadyPassed: boolean;
 }): CdkdError {
   const exportPair = `set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in your shell before running cdkd (the snapshot cdkd puts back is taken before it assumes the role, so exporting them afterwards is too late)`;
-  const profileRemedy = args.profileAlreadyPassed ? '' : `pass --profile <name>, `;
+  const profileRemedy = args.profileAlreadyPassed ? '' : `pass --profile '<name>', `;
   // cdkd-profile-display: `profileRemedy` is a LITERAL, not the user's value --
-  // either the empty string or the fixed advice `pass --profile <name>, `, in
+  // either the empty string or the fixed advice `pass --profile '<name>', `, in
   // which `<name>` is a placeholder the reader substitutes. This function takes
   // two booleans and nothing else, so no argv can reach either interpolation
   // below. Its doc comment above says why it is PURE, which is the same fact.
@@ -1207,9 +1207,9 @@ export function sigv4NoCredentialsRefusal(args: {
           `cdkd deliberately will not sign as that role. Your own credentials carried no static ` +
           `triple before the assume — an SSO / IAM Identity Center, EC2 instance or ECS ` +
           `container chain, or a profile you exported rather than passed — so there is nothing ` +
-          `to put back. To fix: ${profileRemedy}pass --assume-role <arn>, or ${exportPair}.`
+          `to put back. To fix: ${profileRemedy}pass --assume-role '<arn>', or ${exportPair}.`
       : `--sigv4: no AWS credentials available to sign the request. To fix: ` +
-          `${exportPair}, ${profileRemedy}or pass --assume-role <arn>.`,
+          `${exportPair}, ${profileRemedy}or pass --assume-role '<arn>'.`,
     'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_CREDENTIALS'
   );
 }
@@ -1997,7 +1997,7 @@ function resolveAssumeRoleArnUncached(
         (loaded
           ? 'and could not be resolved from the deployed stack state. '
           : 'and no --from-cfn-stack state is available to resolve it. ') +
-        'Pass the ARN explicitly: --assume-role <arn>. ' +
+        "Pass the ARN explicitly: --assume-role '<arn>'. " +
         "Falling back to the developer's shell credentials."
     );
   }

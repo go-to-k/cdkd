@@ -19,9 +19,9 @@
  *    standing CI gate — on a healthy stack, unclearable by the operator.
  *
  * The excluded set is cdkd-AUTHORED prose, which is what makes matching it
- * sound: those strings are built in `intrinsic-function-resolver.ts`, so they
- * change only when this repo changes them, and the cases below red when one
- * does. The INCLUDED set is left unnamed because it is AWS's — naming it is
+ * sound: those strings are built in the resolver (`intrinsic-function-resolver.ts`
+ * and its `intrinsic-resolver/*.ts` modules), so they change only when this
+ * repo changes them, and the cases below red when one does. The INCLUDED set is left unnamed because it is AWS's — naming it is
  * what round 1 got wrong, and a name AWS adds later would silently rejoin the
  * false-clean population the issue is about.
  */
@@ -31,15 +31,13 @@ import { fileURLToPath } from 'node:url';
 
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { readResolverFamily } from '../_resolver-family.js';
 
 const scrubSource = readFileSync(
   fileURLToPath(new URL('../../../src/cli/commands/scrub.ts', import.meta.url)),
   'utf8'
 );
-const resolverSource = readFileSync(
-  fileURLToPath(new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url)),
-  'utf8'
-);
+const resolverSource = readResolverFamily();
 
 /**
  * The patterns as the shipped module spells them, read out of the source rather
@@ -141,7 +139,7 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
         const needle = resolverSpelling.replace(/^`|`$/g, '');
         expect(
           resolverSource.includes(needle),
-          `intrinsic-function-resolver.ts no longer builds "${needle}". The exclusion above is ` +
+          `the resolver family no longer builds "${needle}". The exclusion above is ` +
             'now matching a string nothing raises, so the real throw for this case is being ' +
             'COUNTED again. Re-derive the pattern from the current throw site.'
         ).toBe(true);

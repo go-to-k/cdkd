@@ -31,6 +31,7 @@ import {
   displaySafe,
   displayStackName,
   isPasteableIdent,
+  safeMsg,
   stringifyJsonPayload,
 } from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
@@ -112,15 +113,15 @@ const safeCount = (value: unknown): string => (typeof value === 'number' ? Strin
  * pruned. `docs/deployment-events.md` classes `deployments/*.jsonl` as
  * sensitive, which is what makes the distinction worth a line of output.
  *
- * Deliberately NOT appended to the "no runs matched" arm: that arm returns
- * before any `deleteRawObjects` call, so there is no delete to qualify.
+ * Deliberately NOT appended to the "no runs matched" arm: that arm deleted no
+ * object the prune's listing held, so there is no delete to qualify. The count
+ * path reaches it before any `deleteRawObjects` call; `--all` on an empty
+ * prefix reaches it after sending only the absent index key.
  *
- * The converse does NOT hold, and the gap is tracked on issue #2624 rather than
- * closed here: `pruneRuns({ all: true })` reports `indexDeleted: true`
- * unconditionally (its `DeleteObjects` is idempotent, so it "succeeds" on an
- * empty prefix), so the arms this note IS appended to can fire for a stack that
- * had no history at all. Making that gate truthful is a behaviour change, not a
- * wording one.
+ * The converse holds too: `pruneRuns` reports `indexDeleted` only for an index
+ * that EXISTED in its listing (issue #2624), not because the idempotent
+ * `DeleteObjects` succeeded, so the arms this note IS appended to never fire
+ * for a stack that had no history at all.
  */
 const NONCURRENT_VERSIONS_SURVIVE_NOTE =
   // "bootstrapping with cdkd", never `cdkd bootstrap`: both prune lines this
@@ -698,8 +699,46 @@ export function printRunEvents(
       // false claim on a different input class each round — `<unrenderable>`
       // is a statement about the INPUT, and the cheapest correct way to make
       // it is to ask whether there WAS an input, once, where it matters.
-      const message = e.error.message ? `: ${safeText(e.error.message) || UNRENDERABLE}` : '';
+      //
+      // Rendered PER LINE only when the writer marked every line break as
+      // cdkd's OWN (`ownLines`, go-to-k/cdkd#4265): a rollback refusal keeps a
+      // provider's text, its diagnosis and its `To orphan it:` command on
+      // lines of their own, because a line that displays an untrusted value
+      // carries no command (go-to-k/cdkd#3950's S1 rule), and folding put them
+      // back side by side. Every OTHER message folds onto one line, as before:
+      // its newline may be a provider's (a custom-resource `Reason`, a Cloud
+      // Control `Message`), and printed as a line it could forge a
+      // `To orphan it:` row indistinguishable from cdkd's (M7 of the
+      // go-to-k/cdkd#3764 review). An event written before the marker existed
+      // has none, so it folds. Each split line is sanitized on its own, and
+      // every continuation line is indented deeper than any row or detail line
+      // of this output.
+      //
+      // A non-string `message` (the record came back through `JSON.parse`)
+      // has no lines to split: it renders whole, as before.
+      const [head, ...rest]: unknown[] =
+        e.error.ownLines === true && typeof e.error.message === 'string'
+          ? e.error.message.split('\n')
+          : [e.error.message];
+      // A message whose FIRST line is empty is not unrenderable when a later
+      // line shows: the `: ` clause is left off instead (`<unrenderable>` is a
+      // statement about the input).
+      const headShown = safeText(head);
+      const laterShows = rest.some((line) => safeText(line) !== '');
+      const message = !e.error.message
+        ? ''
+        : headShown !== ''
+          ? `: ${headShown}`
+          : laterShows
+            ? ''
+            : `: ${UNRENDERABLE}`;
       logger.info(`      ${red(`${name}${code}${message}`)}${reqId}`);
+      for (const line of rest) {
+        const shown = safeText(line);
+        // `safeMsg` over the already-sanitized line: the message is built
+        // from cdkd's literal indent and one value (go-to-k/cdkd#3479).
+        if (shown !== '') logger.info(red(safeMsg`          ${shown}`));
+      }
     }
   }
 }

@@ -11,8 +11,8 @@
  * `tests/unit/provisioning/wait-abandoned-guard-population.test.ts`:
  *
  *  - `cloud-control-provider.ts`'s own `delete()` catch,
- *  - `deploy-engine.ts`'s replacement delete-then-CREATE arm,
- *  - `deploy-engine.ts`'s template-removal delete arm,
+ *  - `deploy-engine/update.ts`'s replacement delete-then-CREATE arm,
+ *  - `deploy-engine/delete.ts`'s template-removal delete arm,
  *  - `destroy-runner.ts`'s per-resource delete loop.
  *
  * The FIFTH is `cleanupFailedCreateRemnant`, and it is outside that population

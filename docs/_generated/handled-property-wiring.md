@@ -50,7 +50,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EC2Provider` (ec2-provider.ts) | `computed key in narrowRouteDestinations()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
-| `ELBv2Provider` (elbv2-provider.ts) | `computed key in canonicalizeDriftPair()`, `computed key in updateTargetGroup()`, `stripHandled(...) in updateLoadBalancer()` |
+| `ELBv2Provider` (elbv2-provider.ts) | `computed key in canonicalizeDriftPair()`, `computed key in updateLoadBalancer()`, `computed key in updateTargetGroup()`, `Object.keys(...) in updateLoadBalancer()` |
 | `EMRClusterProvider` (emr-cluster-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceFleetConfigProvider` (emr-instance-fleet-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |

@@ -1129,7 +1129,7 @@ async function deployCommand(
         //
         // The two cases are NOT equally recoverable and the wording must not
         // flatten them. A skipped DELETE keeps its state record on purpose
-        // (see the `deleteSkipped` arm in deploy-engine.ts), so the next
+        // (see the `deleteSkipped` arm in deploy-engine/delete.ts), so the next
         // `cdkd deploy` re-attempts it — that one self-heals. A partial
         // UPDATE's survivor is untracked, because the record now points at
         // the replacement, so nothing will ever retry it.

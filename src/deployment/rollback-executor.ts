@@ -49,6 +49,7 @@
 import {
   commandHole,
   pasteableCommand,
+  physicalIdShownBesideCommand,
   plainOrDescribed,
   quotedOrDescribed,
   withheldTargetClause,
@@ -106,7 +107,6 @@ import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { CdkdError } from '../utils/error-handler.js';
 import {
   IDENT_MAX_CODE_POINTS,
-  ROLE_ARN_MAX_CODE_POINTS,
   displayAwsMessage,
   displayIdent,
   displaySafe,
@@ -261,7 +261,11 @@ function maskedRollbackEventError(error: unknown, mask: MaskerFn): DeploymentEve
   // refusals are masked at CONSTRUCTION bar their re-run and `--orphan`
   // commands, which must reach the reader intact; the unroutable refusal
   // carries no physical id or name at all (logical id, types, fixed prose).
-  if (isOwnRemedyError(error)) return extracted;
+  // `ownLines` tells `cdkd events` that every line break in this message is
+  // cdkd's own, so it may print them as lines (go-to-k/cdkd#4265); any other
+  // message is folded there, since a provider's newline could forge a
+  // `To orphan it:` row (M7 of the go-to-k/cdkd#3764 review).
+  if (isOwnRemedyError(error)) return { ...extracted, ownLines: true };
   // The op's masker (issue #4037), not the bag alone: an arm that resolved no
   // secret still masks a secret-derived physical id. Identity when nothing
   // changed, so an event with nothing to mask keeps its extracted object.
@@ -509,34 +513,22 @@ const DESCRIBED_PHYSICAL_ID = 'a physical id that is not a plain identifier';
 
 /**
  * How the collision refusals name a physical id (already MASKED by the
- * caller): itself when `displayIdent` is the identity on it at the role-ARN
- * cap — an ARN, a URL or a bare name, which the operator needs to delete a
- * resource by hand — and {@link DESCRIBED_PHYSICAL_ID} otherwise. It is state
- * or journal text on a line that names a `cdkd` command (go-to-k/cdkd#4214):
- * a JSON-quoted `$( )` id runs there when pasted into zsh.
- *
- * One exception keeps the mask legible: an id whose only non-plain characters
- * are cdkd's own {@link SECRET_MASK} keeps `displayIdent`'s JSON render
- * (`"***"`). Every other character in it is plain, and a `*` is literal inside
- * the double quotes, so nothing in it expands or runs when pasted.
+ * caller): as `physicalIdShownBesideCommand` (`src/utils/pasteable-command.ts`)
+ * decides, with its mask arm on, and {@link DESCRIBED_PHYSICAL_ID} when it
+ * declines. That helper owns the rule (go-to-k/cdkd#4265): no leading `-`,
+ * inert with its quotes stripped, `displayIdent`'s identity at the role-ARN
+ * cap, and an id whose only non-plain characters are {@link SECRET_MASK} kept
+ * in its JSON render (`"***"`). The id is state or journal text on a line that
+ * names a `cdkd` command (go-to-k/cdkd#4214), where a JSON-quoted `$( )` id
+ * runs when pasted into zsh.
  */
 function refusalPhysicalId(maskedPhysicalId: unknown): string {
-  if (typeof maskedPhysicalId !== 'string') return DESCRIBED_PHYSICAL_ID;
-  const plain = (text: string): boolean =>
-    displayIdent(text, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }) === text;
-  // A leading `-`, `=` or `~` is refused in the shown arm: display-only here,
-  // but the leading position is where the option and tilde shapes live
-  // (`isPasteableIdent`'s rule; review of #4270).
-  if (/^[-=~]/.test(maskedPhysicalId)) return DESCRIBED_PHYSICAL_ID;
-  if (plain(maskedPhysicalId)) return maskedPhysicalId;
-  const rest = maskedPhysicalId.split(SECRET_MASK);
-  const rendered = displayIdent(maskedPhysicalId, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
-  // A render the cap cut carries `[cut: ...]`, which is not the id: describe it.
-  return rest.length > 1 &&
-    rest.every((part) => part === '' || plain(part)) &&
-    rendered === JSON.stringify(maskedPhysicalId)
-    ? rendered
-    : DESCRIBED_PHYSICAL_ID;
+  // The repo's one rule (`physicalIdShownBesideCommand`, shared with the
+  // delete-skip sentence since go-to-k/cdkd#4265), with the mask arm on.
+  return (
+    physicalIdShownBesideCommand(maskedPhysicalId, { maskToken: SECRET_MASK }) ??
+    DESCRIBED_PHYSICAL_ID
+  );
 }
 
 /**
@@ -1390,21 +1382,12 @@ async function prepareCreateRollbackFinalSnapshot(
         }
       );
       return undefined;
-    // Both refusals print the id and type RAW beside `--skip-final-snapshot`
-    // and an `aws` command, and here they are journal text: described when not
-    // plain (go-to-k/cdkd#4214).
+    // Raw values: both builders describe a non-plain id or type themselves
+    // (go-to-k/cdkd#4265), so a value described here would be described twice.
     case 'refuse-cc-routed':
-      throw ccRoutedFinalSnapshotError(
-        shownLogicalId(logicalId),
-        refusalResourceType(resourceType),
-        SKIP_FINAL_SNAPSHOT_FLAG
-      );
+      throw ccRoutedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
     case 'refuse-unsupported-type':
-      throw unsupportedFinalSnapshotError(
-        shownLogicalId(logicalId),
-        refusalResourceType(resourceType),
-        SKIP_FINAL_SNAPSHOT_FLAG
-      );
+      throw unsupportedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
   }
 }
 
@@ -2487,11 +2470,26 @@ function refuseMaskedReplayBaseline(
   logicalId: string
 ): void {
   if (props === undefined || !carriesSecretMask(props)) return;
-  // TWO POPULATIONS REACH THIS REFUSAL, and naming only the first was a
-  // measured defect at the deploy engine's twin (`refuseRedactedAttributeReads`,
-  // issue #2847) before it was one here.
+  // THREE POPULATIONS REACH THIS REFUSAL, each with its own remedy, because
+  // nothing in the record says which wrote the mask (issue
+  // [#2881](https://github.com/go-to-k/cdkd/issues/2881)). Naming only the
+  // first was a measured defect at the deploy engine's twin
+  // (`refuseRedactedAttributeReads`, issue #2847) before it was one here.
   //
-  // ARM (2) IS NARROWER THAN THE FIRST ATTEMPT AT IT, and the correction came
+  // ARM (2), the `Fn::Base64` encoding of a secret, is the one
+  // `resolveBase64` registers as a mask-only needle (issues #2759 / #3119), and
+  // it reaches THIS test directly: the deploy persists `***` into the
+  // resource's own `properties` (`deploy-engine-base64-secret-noop.test.ts`
+  // pins it), so a failed update of an EC2 `UserData` built around a
+  // `{{resolve:...}}` reference rolls back onto this refusal. No custom
+  // resource is involved, so the nonce remedy does nothing. A deploy that
+  // UPDATES the resource sends the encoding again (the recorded `***` differs
+  // from the resolved encoding); one that leaves it unchanged sends nothing,
+  // since the encoding of an ordinary secret is deliberately not marked fresh.
+  // Either way the record keeps `***`, so the next rollback to it refuses too —
+  // which is why the arm also names the change that ends the refusals.
+  //
+  // ARM (3) IS NARROWER THAN THE FIRST ATTEMPT AT IT, and the correction came
   // from a trace rather than from re-reading the prose. This function tests
   // `properties`, while `CloudControlProvider.import` masks only `attributes`
   // (`import.ts` writes the template's own properties into `properties` and the
@@ -2516,11 +2514,18 @@ function refuseMaskedReplayBaseline(
     // `cdkd orphan` and `cdkd import` (go-to-k/cdkd#4214).
     `Cannot roll ${shownLogicalId(logicalId)} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}'), so cdkd would write that literal to the live resource. There are ` +
-      `two ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
+      `three ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
       `there: restore the property with 'cdkd deploy' AFTER forcing that custom resource to ` +
       `update (change one of its properties, e.g. a nonce), so its handler runs again and ` +
       `supplies the real value — an ordinary re-deploy leaves the resource unchanged, so the ` +
-      `handler does not run and the mask stays. (2) The value was SPLICED from a masked ` +
+      `handler does not run and the mask stays. (2) The Fn::Base64 encoding of a secret value ` +
+      `(a {{resolve:...}} dynamic reference under Fn::Base64, such as EC2 UserData), which ` +
+      `cdkd never records: restore the property with a 'cdkd deploy' that changes this ` +
+      `resource, which sends it the encoded value again — a re-deploy that leaves this ` +
+      `resource unchanged sends it nothing. Every rollback to such a baseline refuses, so to ` +
+      `end this, stop encoding the secret into the property (have the resource read the ` +
+      `secret at run time instead — not by writing the secret's plaintext into the template, ` +
+      `which cdkd would then record in state in the clear). (3) The value was SPLICED from a masked ` +
       `record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' resolving ` +
       `an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. Repair the ` +
       `record that HOLDS the mask ('cdkd import <stack> ` +
@@ -2975,11 +2980,11 @@ async function updateWithRollbackRetry(
  * this helper is deliberately the sum of both rather than a copy of either:
  *
  *  - Arm 2 (post-delete-new-first) matches the delete-then-re-create sites,
- *    `deploy-engine.ts`'s `--replace` delete-first fallback and its named
- *    replacement, which nest `this.withRetry(...)` INSIDE an outer
+ *    `deploy-engine/replacement.ts`'s `--replace` delete-first fallback and
+ *    `deploy-engine/update.ts`'s named replacement, which nest `this.withRetry(...)` INSIDE an outer
  *    `isRecreateRetryableError` retry. Same two loops as here.
  *  - Arm 1 (create-first) has NO such twin. Its deploy-engine analogue is the
- *    property-driven create-first at `deploy-engine.ts:3745`, which calls
+ *    property-driven create-first in `provisionUpdate` (`deploy-engine/update.ts`), which calls
  *    `this.withRetry(...)` on its OWN — one default-schedule loop, no outer
  *    custom-classifier loop at all — and whose catch then reads
  *    `isNameCollisionErrorFrom` to reach the delete-first fallback. Arm 1 is that

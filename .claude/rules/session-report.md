@@ -120,8 +120,8 @@ repos in one session".** The framing IS the deferral decision.
 
 ### Severity — what a USER experiences while it is undone
 
-- **`high`** — wrong result, data loss, a security surface, or hit in normal
-  operation.
+- **`high`** — wrong result, data loss, an exposure SECURITY.md puts in scope,
+  or hit in normal operation.
 - **`medium`** — a capability missing with a workaround, or condition-specific.
 - **`low`** — internal tidiness; wrong text that does not execute (docs
   contradicting shipped code) lands here.

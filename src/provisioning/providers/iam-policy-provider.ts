@@ -84,7 +84,9 @@ export const POLICY_MALFORMED_TARGET_SKIP_REASON =
  * of it.
  */
 export const POLICY_SECRET_PRINCIPAL_LACKS_GRANT_SKIP_REASON =
-  "the secret's current value names a principal that lacks this grant; the value may have rotated";
+  // Plain prose (no `'`, no `;`): `deleteSkippedMessage` shows only such a
+  // reason (go-to-k/cdkd#4265).
+  'the current value of the secret names a principal that lacks this grant — the value may have rotated';
 
 /**
  * The deploy-side caveat the skip warning in this file carries (issue

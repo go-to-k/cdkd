@@ -16,6 +16,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { isSettledInstanceState } from '../../../src/provisioning/ec2-instance-state.js';
+import { readResolverFamily } from '../_resolver-family.js';
 
 /**
  * Source with every comment and string / template literal blanked to spaces
@@ -79,9 +80,14 @@ describe('isSettledInstanceState', () => {
   });
 
   it('is the ONLY spelling: both readers assign from a call, and neither compares `stateName` against `pending` in code', () => {
-    const readers = [
-      'src/deployment/intrinsic-function-resolver.ts',
-      'src/provisioning/providers/ec2-provider.ts',
+    // The resolver is read as its whole split family (#4337), so a reader
+    // moved into an `intrinsic-resolver/*.ts` module stays in the scan.
+    const readers: Array<[string, string]> = [
+      ['the resolver family', readResolverFamily()],
+      [
+        'src/provisioning/providers/ec2-provider.ts',
+        readFileSync(new URL('../../../src/provisioning/providers/ec2-provider.ts', import.meta.url), 'utf8'),
+      ],
     ];
     // Widened deliberately: any comparison of `stateName` against the literal,
     // either operand order, `==` / `!=` / `===` / `!==`. A re-spelling by
@@ -92,8 +98,8 @@ describe('isSettledInstanceState', () => {
     const inlineCompare = /stateName\s*[!=]==?\s*'pending'|'pending'\s*[!=]==?\s*stateName/;
     // The CALL, at an assignment position — not a mention.
     const callSite = /=\s*isSettledInstanceState\(stateName\)/;
-    for (const rel of readers) {
-      const code = codeOnly(readFileSync(new URL(`../../../${rel}`, import.meta.url), 'utf8'));
+    for (const [rel, source] of readers) {
+      const code = codeOnly(source);
       // The literal's CONTENT is blanked to spaces (length-preserving), so a
       // comparison against `'pending'` shows in the code view as `'       '`.
       const compare = new RegExp(inlineCompare.source.replaceAll("'pending'", "'\\s*'"));

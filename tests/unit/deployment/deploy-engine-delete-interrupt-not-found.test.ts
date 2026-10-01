@@ -2,7 +2,7 @@
  * Issues #2053 / #1952 — the engine's DELETE path must never read a USER ABORT
  * as "already deleted".
  *
- * `deploy-engine.ts` treats a failed delete as success when the error MESSAGE
+ * `deploy-engine/delete.ts` treats a failed delete as success when the error MESSAGE
  * contains `not found` / `NoSuchEntity` / `NotFoundException`. An interrupt's
  * message embeds a name the USER chose, so a logical id carrying one of those
  * needles made an interrupted delete drop a LIVE resource's state row and

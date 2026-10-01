@@ -777,6 +777,23 @@ describe('NestedStackProvider', () => {
       expect(reason).toContain('was interrupted');
     });
 
+    it("describes a child name whose logical id is not plain, so its words cannot be a pasted clause's command (go-to-k/cdkd#4265)", async () => {
+      childCounts.value = { deletedCount: 0, skippedCount: 1, interrupted: true };
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+      const result = await withNestedStackContext(ctx, () =>
+        provider.delete(
+          'Child. touch OWNED',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack'
+        )
+      );
+      const reason = (result as { reason: string }).reason;
+      expect(reason).toBe(
+        'nested stack a stack name that is not a plain identifier skipped 1 resource(s) and was interrupted'
+      );
+    });
+
     // Issue #1777: the child's `errorCount` is the THIRD field saying "this
     // child stack is NOT gone", and the only one whose honest answer is a
     // THROW. Pre-fix it was swallowed entirely: the parent printed
@@ -1119,8 +1136,9 @@ describe('NestedStackProvider', () => {
 
       // MARKED ARM — the child destroy was INTERRUPTED. A retry would not heal
       // the failure; it would re-enter a destroy the user just aborted
-      // (`draining` in destroy-runner.ts is a per-invocation local, so the
-      // second attempt starts with the interrupt forgotten).
+      // (destroy-runner.ts reads `lock.interrupted` from a stack-lock guard it
+      // acquires per invocation, so the second attempt starts with the
+      // interrupt forgotten).
       it('an INTERRUPTED child failure is NOT retryable, despite the substring', async () => {
         childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: true };
         const err = (await deleteAndCatch(POISON_ID)) as Error;

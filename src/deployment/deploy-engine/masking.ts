@@ -1,17 +1,17 @@
-import { DeployEngine, EMPTY_SECRETS } from './deploy-engine.js';
+import { DeployEngine, EMPTY_SECRETS } from '../deploy-engine.js';
 
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
-type RedactedAttributeRead = import('./intrinsic-function-resolver.js').RedactedAttributeRead;
-import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
-import type { ResourceState } from '../types/state.js';
+type RedactedAttributeRead = import('../intrinsic-function-resolver.js').RedactedAttributeRead;
+import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
+import type { ResourceState } from '../../types/state.js';
 import {
   ambientCredentialConfig,
   credentialFingerprint,
-} from '../utils/ambient-client-defaults.js';
-import { displayIdent, isPasteableIdent, safeMsg } from '../utils/display-safe.js';
-import { commandHole, pasteableCommand, shellQuote } from '../utils/pasteable-command.js';
-import { ProvisioningError } from '../utils/error-handler.js';
-import type { FreshNoEchoReadback } from './deploy-value-equality.js';
+} from '../../utils/ambient-client-defaults.js';
+import { displayIdent, isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
+import { commandHole, pasteableCommand, shellQuote } from '../../utils/pasteable-command.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { FreshNoEchoReadback } from '../deploy-value-equality.js';
 import {
   type RecordedSecretValues,
   type SecretMasker,
@@ -29,9 +29,9 @@ import {
   recordRecoverableMaskedOutput,
   redactSecretsForState,
   wholeStringLeavesOf,
-} from './secret-redaction.js';
+} from '../secret-redaction.js';
 
-declare module './deploy-engine.js' {
+declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     diffLogMasker: OmitThisParameter<typeof diffLogMasker>;
@@ -468,11 +468,11 @@ export function refuseRedactedAttributeReads(
   this: DeployEngine,
   logicalId: string,
   resourceType: string,
-  context: import('./intrinsic-function-resolver.js').ResolverContext
+  context: import('../intrinsic-function-resolver.js').ResolverContext
 ): void {
   const reads = context.redactedAttributeReads;
   if (reads === undefined || reads.length === 0) return;
-  // TWO POPULATIONS REACH THIS REFUSAL, and naming only the first was a
+  // THREE POPULATIONS REACH THIS REFUSAL, and naming only the first was a
   // measured defect (issue
   // [#2847](https://github.com/go-to-k/cdkd/issues/2847) review): since
   // `CloudControlProvider.import` masks the model keys it cannot certify as
@@ -480,9 +480,27 @@ export function refuseRedactedAttributeReads(
   // remedy below is custom-resource-only, so the user was handed three
   // instructions that cannot apply and none that can. The record carries no
   // durable marker saying WHICH population a mask came from (issue #2449 is
-  // that gap), so the message names both rather than guessing.
+  // that gap), so the message names each rather than guessing.
   //
-  // ARM (2) NAMES ONE ACTION AND DOES NOT ENUMERATE CAUSES, and that shape is
+  // ARM (2), the `Fn::Base64` encoding of a secret, is issue
+  // [#2881](https://github.com/go-to-k/cdkd/issues/2881)'s. `resolveBase64`
+  // registers that encoding as a mask-only needle (issues #2759 / #3119), and
+  // `scrubResourceRecord` redacts a record's `attributes` with the same bag as
+  // its `properties` — so a provider echoing the property as an attribute
+  // (`AWS::SSM::Parameter`'s `Value`, which CDK's `StringParameter.stringValue`
+  // reads through `Fn::GetAtt`) persists `***` there, and a later deploy
+  // reading it from state lands here through `noteAttributeSecrecy`
+  // (`deploy-engine-base64-attribute-refusal.test.ts` drives that route end
+  // to end). An Output built over the encoding is the cross-stack twin: the
+  // outputs pass records the needle into the bag {@link redactOutputs} folds
+  // in, so a consumer deployed in a LATER run reads `***` through
+  // `reresolveCrossStackValue`. The encoding is never recorded, so a deploy
+  // that leaves its holder unchanged reads the mask again, and a re-import
+  // cannot supply it either (the SSM provider's `import()` records `Value`
+  // only for a plain literal). The one remedy true of every shape is the
+  // consumer building the value itself.
+  //
+  // ARM (3) NAMES ONE ACTION AND DOES NOT ENUMERATE CAUSES, and that shape is
   // the point rather than brevity. Successive review rounds each rewrote this
   // arm as a cause list with a remedy per cause, and each list was wrong in a
   // NEW way — a remedy that could not apply, then a cause that cannot produce
@@ -528,7 +546,7 @@ export function refuseRedactedAttributeReads(
   // [#2927](https://github.com/go-to-k/cdkd/issues/2927)).
   throw new ProvisioningError(
     `Cannot resolve ${reads.map((read) => read.display).join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
-      `redaction mask there, and the value is not recoverable from state. There are two ways a ` +
+      `redaction mask there, and the value is not recoverable from state. There are three ways a ` +
       `record comes to hold the mask. (1) A custom resource handler declared its response ` +
       `NoEcho: true — the value is generated by the handler, so cdkd has nothing to re-derive ` +
       `it from and must not write the literal mask to AWS. Remedies: force that custom resource ` +
@@ -537,7 +555,17 @@ export function refuseRedactedAttributeReads(
       `response. If the value comes from ANOTHER stack, the producer and this stack must deploy ` +
       `in ONE run (cdkd deploy --all) with the producer's custom resource actually running — ` +
       `re-deploying the producer by itself does not help, because it re-masks the value on the ` +
-      `way into its own state. (2) The resource was adopted by 'cdkd import' through the Cloud ` +
+      `way into its own state. (2) The value holds the Fn::Base64 encoding of a secret value ` +
+      `(a {{resolve:...}} dynamic reference under Fn::Base64, such as EC2 UserData), which cdkd ` +
+      `never records — so a deploy that leaves the resource or output holding it unchanged ` +
+      `reads the mask again, and a re-import does not recover it. Remedy: have this resource ` +
+      `build the value itself from the SECRET's own reference (the ` +
+      `{{resolve:secretsmanager:...}} or {{resolve:ssm-secure:...}} reference, or a ` +
+      `{{resolve:ssm:...}} of a SecureString parameter, that the encoding was made from) under ` +
+      `its own Fn::Base64, instead of reading it from another resource's attribute or another ` +
+      `stack's output — not by a {{resolve:ssm:...}} read of a String parameter holding the ` +
+      `encoding, which cdkd treats as public and would record in state in the clear. ` +
+      `(3) The resource was adopted by 'cdkd import' through the Cloud ` +
       `Control fallback, which records only the attributes the type's CloudFormation schema ` +
       `declares read-only and masks the rest. Either the attribute named above is not one of ` +
       `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
@@ -547,7 +575,7 @@ export function refuseRedactedAttributeReads(
       `See https://github.com/go-to-k/cdkd/issues/2449. ` +
       // LAST: the remedy ends in labelled command lines, and prose after them
       // lands on the final command's line (go-to-k/cdkd#3436).
-      `${DeployEngine.maskedRecordRemedyFor(reads, context.resources)}`,
+      `${DeployEngine.maskedRecordRemedyFor(reads, context.resources, true)}`,
     resourceType,
     logicalId
   );
@@ -755,7 +783,15 @@ export function maskForResource(this: DeployEngine, logicalId: string, text: str
  */
 export function maskedRecordRemedyFor(
   reads: readonly RedactedAttributeRead[],
-  resources: Record<string, { readonly resourceType?: string }>
+  resources: Record<string, { readonly resourceType?: string }>,
+  /**
+   * True only from {@link refuseRedactedAttributeReads}, whose message numbers
+   * its causes: the re-import lead-ins then say they are for cause (3), and
+   * the custom-resource arm points back at cause (1). `refuseMaskedOutputReads`
+   * lists no causes and reaches only `ref-state-key` reads, where a re-import
+   * IS the remedy, so it keeps the unconditional lead-ins (issue #2881).
+   */
+  causeScoped = false
 ): string {
   // Spelled locally rather than imported: the only exported copy lives in
   // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
@@ -892,7 +928,17 @@ export function maskedRecordRemedyFor(
       // put later prose on the same line as a command, which is the layout the
       // rule exists to prevent — and `parts` is space-joined, so a `\n` inside
       // one part does not make the command last.
-      parts.push(`Re-import the record that HOLDS the mask (command(s) below).`);
+      // SCOPED TO CAUSE (3) when the caller numbers its causes (issue
+      // #2881): a re-import cannot clear a NoEcho or `Fn::Base64` mask on a
+      // local non-custom-resource record — the SSM provider's `import()`
+      // records `Value` only for a plain literal, and `reimportedAttributes`
+      // carries the masked one forward. See `causeScoped`.
+      parts.push(
+        causeScoped
+          ? `If cause (3) applies, re-import the record that HOLDS the mask (command(s) below); ` +
+              `a re-import does not clear a cause (1) or (2) mask.`
+          : `Re-import the record that HOLDS the mask (command(s) below).`
+      );
       for (const id of pasteable) {
         // The old form wrapped the whole command in prose quotes AND left
         // `<stack>` / `<physicalId>` bare, which pasted as two redirections.
@@ -922,7 +968,8 @@ export function maskedRecordRemedyFor(
         // about and it should not be modelled in a message that exists to
         // explain the class. The command is DESCRIBED rather than offered,
         // because this arm's whole point is that it is withheld.
-        `Re-import the record that HOLDS the mask for ${withheld.map(shown).join(', ')}, but ` +
+        `${causeScoped ? 'If cause (3) applies, re-import' : 'Re-import'} the record that ` +
+          `HOLDS the mask for ${withheld.map(shown).join(', ')}, but ` +
           `the command is withheld: that is not a plain CloudFormation logical id, so a ` +
           `pasted cdkd import line could be reshaped by the shell or name a different ` +
           `resource. Read the id from 'cdkd state show' and quote it yourself, in ` +
@@ -942,7 +989,8 @@ export function maskedRecordRemedyFor(
     parts.push(
       `Do NOT re-import ${unclearableTargets.map(shown).join(', ')}: a custom resource's ` +
         `import records no attributes, so the masked bag is carried forward unchanged and the ` +
-        `refusal repeats. Cause (1) above is the one that applies to it.`
+        `refusal repeats.` +
+        (causeScoped ? ` Cause (1) above is the one that applies to it.` : '')
     );
   }
   if (foreignReads.length > 0) {
