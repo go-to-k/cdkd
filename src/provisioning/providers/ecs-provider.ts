@@ -16,6 +16,7 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   type DescribeClustersCommandOutput,
+  type DescribeTaskDefinitionCommandOutput,
   type Tag,
   type KeyValuePair,
   type PortMapping,
@@ -241,6 +242,17 @@ export const CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT: Readonly<Threshold
  */
 function isPlainCfnObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Whether a `DescribeTaskDefinition` status means the revision is gone in
+ * cdkd's sense (go-to-k/cdkd#4272). `deleteTaskDefinition` DEREGISTERS, which
+ * leaves the revision describable as `INACTIVE` indefinitely, and
+ * `DELETE_IN_PROGRESS` lies past that. `ACTIVE`, an absent status and any
+ * unknown one stay present.
+ */
+function isDeregisteredTaskDefinitionStatus(status: string | undefined): boolean {
+  return status === 'INACTIVE' || status === 'DELETE_IN_PROGRESS';
 }
 
 /**
@@ -3475,6 +3487,7 @@ export class ECSProvider implements ResourceProvider {
     let resp: {
       clusters?: Array<{
         clusterName?: string;
+        status?: string;
         capacityProviders?: string[];
         defaultCapacityProviderStrategy?: CapacityProviderStrategyItem[];
         configuration?: ClusterConfiguration;
@@ -3503,6 +3516,11 @@ export class ECSProvider implements ResourceProvider {
     }
     const c = resp.clusters?.[0];
     if (!c || !c.clusterName) return undefined;
+    // An `INACTIVE` cluster is a DELETED one that `DescribeClusters` still
+    // lists for a while; reading it as present would make `cdkd drift`
+    // compare a deleted cluster's properties. Same rule as `importCluster`
+    // (go-to-k/cdkd#4272); every other status is a live cluster.
+    if (c.status === 'INACTIVE') return undefined;
 
     const result: Record<string, unknown> = { ClusterName: c.clusterName };
     result['CapacityProviders'] = c.capacityProviders ? [...c.capacityProviders] : [];
@@ -3557,6 +3575,7 @@ export class ECSProvider implements ResourceProvider {
     let resp: {
       services?: Array<{
         serviceName?: string;
+        status?: string;
         clusterArn?: string;
         taskDefinition?: string;
         desiredCount?: number;
@@ -3592,6 +3611,10 @@ export class ECSProvider implements ResourceProvider {
     }
     const s = resp.services?.[0];
     if (!s || !s.serviceName) return undefined;
+    // `DescribeServices` keeps listing a DELETED service as `INACTIVE` for a
+    // while (go-to-k/cdkd#4272, the cluster rule). `DRAINING` is a delete in
+    // progress, but the service still exists, so it stays present.
+    if (s.status === 'INACTIVE') return undefined;
 
     const result: Record<string, unknown> = {};
     if (s.serviceName !== undefined) result['ServiceName'] = s.serviceName;
@@ -3706,6 +3729,7 @@ export class ECSProvider implements ResourceProvider {
     let resp: {
       taskDefinition?: {
         family?: string;
+        status?: string;
         cpu?: string;
         memory?: string;
         networkMode?: string;
@@ -3733,6 +3757,7 @@ export class ECSProvider implements ResourceProvider {
     }
     const td = resp.taskDefinition;
     if (!td) return undefined;
+    if (isDeregisteredTaskDefinitionStatus(td.status)) return undefined;
 
     const result: Record<string, unknown> = {};
     if (td.family !== undefined) result['Family'] = td.family;
@@ -3870,18 +3895,23 @@ export class ECSProvider implements ResourceProvider {
     // `family:revision` ARN. CDK templates rarely encode a stable
     // identifier, so we only support explicit overrides for these.
     if (input.knownPhysicalId) {
+      let resp: DescribeTaskDefinitionCommandOutput;
       try {
-        const resp = await this.getClient().send(
+        resp = await this.getClient().send(
           new DescribeTaskDefinitionCommand({ taskDefinition: input.knownPhysicalId })
         );
-        const arn = resp.taskDefinition?.taskDefinitionArn;
-        return arn ? { physicalId: arn, attributes: {} } : null;
       } catch (err) {
         if (this.isClusterNotFoundException(err) || this.isServiceNotFoundException(err)) {
           return null;
         }
         throw err;
       }
+      // Read OUTSIDE the `try`, as `importCluster` does: its not-found arm
+      // matches message substrings. A deregistered revision is gone in cdkd's
+      // sense, the same answer `readCurrentState` gives (go-to-k/cdkd#4272).
+      if (isDeregisteredTaskDefinitionStatus(resp.taskDefinition?.status)) return null;
+      const arn = resp.taskDefinition?.taskDefinitionArn;
+      return arn ? { physicalId: arn, attributes: {} } : null;
     }
     return null;
   }
