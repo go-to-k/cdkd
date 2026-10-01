@@ -195,8 +195,8 @@ verify, clean up.
 9. **Set the `integ-destroy` markgate marker (only on full clean success)** —
    destroy finished with **0 errors**, step 6 found **0 leftovers**, and step 7
    was skipped or re-checked clean. `mise trust` is UNCONDITIONAL and part of the
-   pasted block: an untrusted `.mise.toml` makes `markgate set` die naming no
-   cause, discarding a real-AWS run that cannot be cheaply repeated.
+   block: an untrusted `.mise.toml` makes `markgate set` die naming no cause,
+   discarding a real-AWS run that cannot be cheaply repeated.
 
    ```bash
    mise trust
@@ -221,9 +221,10 @@ verify, clean up.
    NOT set the marker. **The agent sets the marker, and commits and pushes step
    11's ledger row, itself** — the maintainer explicitly authorizes it. When the
    auto-mode classifier refuses one, retry it ONCE stating that authorization;
-   only if that is refused too, ask the maintainer (`AskUserQuestion`) to
-   authorize it again, then run it yourself. Never hand either command to the
-   maintainer to run.
+   only if that is refused too, ask the maintainer (`AskUserQuestion`) to TYPE
+   the authorization in their own words (a picked option has not always cleared
+   a refusal), then run it yourself. Never hand either command to the
+   maintainer; refused even then, the marker stays unset — stop and report.
 
    **Also set `integ-schema-migration`, and ONLY for a test named
    `schema-v<N>-to-v<N+1>-migration`**, under the same conditions. That test is
@@ -233,7 +234,7 @@ verify, clean up.
    version constant in `src/types/state.ts` until it has run. Never set without that test's clean run.
 
    **The test-name condition is IN the block, not only in the sentence above
-   it.** Step 9's block is unconditional, so pasting both after any clean run
+   it.** Step 9's block is unconditional, so running both after any clean run
    flips this marker too — the substitution the gate refuses, as one binary
    against its own schema proves no round trip. `mise trust` for step 9's reason.
 
