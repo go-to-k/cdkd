@@ -836,6 +836,9 @@ describe('the --replace refusals and the failure wrapper show no untrusted value
               : 'Stream (a resource type that is not a plain identifier) requires replacement'
           );
           expect(rows[0], label).not.toContain(payload);
+          // No backtick wrapper on the command: pasted, the span would run
+          // `cdkd deploy --replace` as a substitution (go-to-k/cdkd#3436).
+          expect(err!.message, label).not.toContain('`cdkd');
           expect(rows.some((r) => r.startsWith('Collision diagnosis: ')), label).toBe(true);
           expect(rows.at(-1), label).toBe(
             `Underlying collision: ${JSON.stringify(`Stream ${payload} already exists.`)}`
