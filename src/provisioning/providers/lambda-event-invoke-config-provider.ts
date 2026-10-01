@@ -10,6 +10,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import {
   canonicalLambdaFunctionName,
+  lambdaFunctionNameForMask,
   sameLambdaFunctionAddress,
 } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -313,8 +314,14 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     // Issue #2177: every create() line and failure goes through this one sink
     // set.
+    const desiredFunction = stringOrUndefined(properties['FunctionName']);
     const log = this.operationSinks(context?.maskSecrets, [
-      [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
+      [properties['FunctionName'], desiredFunction],
+      // The bare name too: AWS may quote the function by name, not by ARN.
+      [
+        properties['FunctionName'],
+        desiredFunction === undefined ? undefined : lambdaFunctionNameForMask(desiredFunction),
+      ],
       [properties['Qualifier'], stringOrUndefined(properties['Qualifier'])],
     ]);
     log.debug(`Creating Lambda EventInvokeConfig ${logicalId}`);
@@ -404,8 +411,8 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       [properties['FunctionName'], recorded.functionName],
       [previousProperties['FunctionName'], recorded.functionName],
       // The bare name too: AWS may quote the function by name, not by ARN.
-      [properties['FunctionName'], canonicalLambdaFunctionName(recorded.functionName)],
-      [previousProperties['FunctionName'], canonicalLambdaFunctionName(recorded.functionName)],
+      [properties['FunctionName'], lambdaFunctionNameForMask(recorded.functionName)],
+      [previousProperties['FunctionName'], lambdaFunctionNameForMask(recorded.functionName)],
       [properties['Qualifier'], recorded.qualifier],
       [previousProperties['Qualifier'], recorded.qualifier],
       [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],

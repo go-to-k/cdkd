@@ -44,3 +44,19 @@ export function sameLambdaFunctionAddress(a: string, b: string): boolean {
 export function canonicalLambdaFunctionName(value: string): string {
   return parseLambdaFunctionAddress(value)?.name ?? value;
 }
+
+/**
+ * The bare function NAME inside any spelling, a QUALIFIED one included
+ * (`arn:...:function:<name>:<qualifier>`, `<account>:function:<name>:<q>`,
+ * `<name>:<q>`), or the value itself when it is no recognized shape. For a
+ * secret-masking needle only (issue #2177): AWS may quote a function by its
+ * bare name, so a provider masking a secret-derived function reference masks
+ * this too. Never use it to ADDRESS a function -- it drops the qualifier.
+ */
+export function lambdaFunctionNameForMask(value: string): string {
+  const qualified =
+    /^(?:arn:[^:]+:lambda:[^:]+:\d{12}:function:|\d{12}:function:)?([A-Za-z0-9_-]+)(?::[^:]+)?$/.exec(
+      value
+    );
+  return qualified?.[1] ?? canonicalLambdaFunctionName(value);
+}

@@ -75,7 +75,11 @@ function bagOf(...values: string[]): RecordedSecretValues {
   return new Map(values.map((v) => [v, `{{resolve:secretsmanager:${v}}}`]));
 }
 
-const maskSecrets = createSecretMasker(bagOf(LONG, TINY));
+/** A secret whose plaintext is a whole function ARN, whose bare name is in no bag. */
+const ARN_SECRET_NAME = 'arn-secret-fn';
+const ARN_SECRET = `arn:aws:lambda:us-east-1:123456789012:function:${ARN_SECRET_NAME}`;
+
+const maskSecrets = createSecretMasker(bagOf(LONG, TINY, ARN_SECRET));
 
 const fnArn = (name: string, account = '123456789012'): string =>
   `arn:aws:lambda:us-east-1:${account}:function:${name}`;
@@ -244,6 +248,70 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
     expect(routed(spy.seen(), 'Successfully created Lambda URL Url')).toBe(true);
   });
 
+  it('masks the bare name of a whole-ARN secret AWS quotes back on a create failure', async () => {
+    const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${ARN_SECRET_NAME}`);
+    fakeLambda({
+      CreateFunctionUrlConfigCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaUrlProvider().create('Url', type, { TargetFunctionArn: ARN_SECRET }, { maskSecrets })
+    );
+    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+  });
+
+  it('masks the bare name of a rotated QUALIFIED recorded function ARN', async () => {
+    const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${ROTATED}`);
+    fakeLambda({
+      UpdateFunctionUrlConfigCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaUrlProvider().update(
+        'Url',
+        `${fnArn(ROTATED)}:live`,
+        type,
+        { TargetFunctionArn: fnArn(PUBLIC), AuthType: 'AWS_IAM' },
+        { TargetFunctionArn: ROTATED_REF, AuthType: 'NONE' },
+        { maskSecrets }
+      )
+    );
+    expectMaskedFailure(error, raw, ROTATED);
+  });
+
+  it('routes the AuthType warnings of a state-borne create and update through the masker', async () => {
+    const spy = spyMasker();
+    fakeLambda({
+      CreateFunctionUrlConfigCommand: () => ({ FunctionUrl: 'https://x', FunctionArn: 'arn:f' }),
+      UpdateFunctionUrlConfigCommand: () => ({ FunctionUrl: 'https://x', FunctionArn: 'arn:f' }),
+    });
+    const provider = new LambdaUrlProvider();
+    await provider.create(
+      'Url',
+      type,
+      { TargetFunctionArn: fnArn(PUBLIC), AuthType: 7 },
+      { maskSecrets: spy.mask, replayingState: true }
+    );
+    expect(spy.seen().some((t) => t.includes('AWS::Lambda::Url AuthType'))).toBe(true);
+    const before = spy.seen().length;
+    await provider.update(
+      'Url',
+      fnArn(PUBLIC),
+      type,
+      { TargetFunctionArn: fnArn(PUBLIC), AuthType: 7 },
+      { TargetFunctionArn: fnArn(PUBLIC), AuthType: 'AWS_IAM' },
+      { maskSecrets: spy.mask, desiredFromAwsReadback: true }
+    );
+    expect(
+      spy
+        .seen()
+        .slice(before)
+        .some((t) => t.includes('existing auth type is kept'))
+    ).toBe(true);
+  });
+
   it('leaves an unthreaded call unmasked and unstamped (absent means identity)', async () => {
     const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${fnArn(LONG)}`);
     fakeLambda({
@@ -331,6 +399,19 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
     );
     expect(error.message).not.toContain(`function:${TINY}`);
     expect(hasRedactedCause(error)).toBe(true);
+  });
+
+  it('masks the bare name of a whole-ARN secret AWS quotes back on a create failure', async () => {
+    const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${ARN_SECRET_NAME}`);
+    fakeLambda({
+      AddPermissionCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaPermissionProvider().create('Perm', type, props(ARN_SECRET), { maskSecrets })
+    );
+    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks a rotated recorded function on update and forwards the masker to the re-add', async () => {
@@ -471,6 +552,24 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     expectMaskedFailure(error, raw, LONG);
   });
 
+  it('masks the bare name of a whole-ARN secret AWS quotes back on a create failure', async () => {
+    const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${ARN_SECRET_NAME}`);
+    fakeLambda({
+      PutFunctionEventInvokeConfigCommand: () => {
+        throw raw;
+      },
+    });
+    const error = await thrown(
+      new LambdaEventInvokeConfigProvider().create(
+        'Eic',
+        type,
+        { FunctionName: ARN_SECRET, Qualifier: '$LATEST' },
+        { maskSecrets }
+      )
+    );
+    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+  });
+
   it('masks the function ARNs the re-spelling refusal quotes, and keeps it non-retryable', async () => {
     fakeLambda({
       GetFunctionCommand: (input) => ({
@@ -568,7 +667,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     expect(transcript()).not.toContain(`|${TINY}`);
   });
 
-  it('masks a short secret desired Qualifier AWS quotes back on an update failure', async () => {
+  it('masks a short secret Qualifier AWS quotes back on an update failure (the desired, recorded and self pairs together)', async () => {
     const raw = awsAuthored('ResourceNotFoundException', `No such qualifier :${TINY}`);
     fakeLambda({
       PutFunctionEventInvokeConfigCommand: () => {
@@ -638,9 +737,32 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
         { maskSecrets }
       )
     );
+    expect(error.message).toContain("contains '|'");
     expect(error.message).not.toContain('Failed to update Lambda EventInvokeConfig');
     expect(error.message).not.toContain(LONG);
     expect(hasRedactedCause(error)).toBe(false);
+  });
+
+  it('routes the replayed separator warning and the update success line through the masker', async () => {
+    const spy = spyMasker();
+    fakeLambda({});
+    const provider = new LambdaEventInvokeConfigProvider();
+    await provider.create(
+      'Eic',
+      type,
+      { FunctionName: `${PUBLIC}|x`, Qualifier: '$LATEST' },
+      { maskSecrets: spy.mask, replayingState: true }
+    );
+    expect(spy.seen().some((t) => t.includes("contains '|'"))).toBe(true);
+    await provider.update(
+      'Eic',
+      `${PUBLIC}|$LATEST`,
+      type,
+      { FunctionName: PUBLIC, Qualifier: '$LATEST', MaximumRetryAttempts: 2 },
+      { FunctionName: PUBLIC, Qualifier: '$LATEST', MaximumRetryAttempts: 1 },
+      { maskSecrets: spy.mask }
+    );
+    expect(routed(spy.seen(), 'Successfully updated Lambda EventInvokeConfig Eic')).toBe(true);
   });
 
   it('masks a rotated recorded function on the update line and failure', async () => {
@@ -729,6 +851,44 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
     expect(routed(spy.seen(), 'Creating event source mapping Esm')).toBe(true);
     expect(spy.seen().some((t) => t.includes('Proceeding without it'))).toBe(true);
     expect(routed(spy.seen(), 'Successfully created event source mapping Esm')).toBe(true);
+  });
+
+  it('routes the update replay warning and the tag lines through the masker', async () => {
+    const spy = spyMasker();
+    fakeLambda({
+      UpdateEventSourceMappingCommand: () => ({ EventSourceMappingArn: 'arn:esm' }),
+    });
+    const provider = new LambdaEventSourceMappingProvider();
+    const uuid = '11111111-2222-3333-4444-555555555555';
+    const base = { FunctionName: 'fn', EventSourceArn: queueArn };
+    await provider.update(
+      'Esm',
+      uuid,
+      type,
+      { ...base, SelfManagedKafkaEventSourceConfig: { ConsumptionMode: 'Queue' } },
+      { ...base },
+      { maskSecrets: spy.mask, replayingState: true }
+    );
+    expect(spy.seen().some((t) => t.includes('Proceeding without it: this update'))).toBe(true);
+    await provider.update(
+      'Esm',
+      uuid,
+      type,
+      { ...base, Tags: [{ Key: 'b', Value: '2' }] },
+      { ...base, Tags: [{ Key: 'a', Value: '1' }] },
+      { maskSecrets: spy.mask }
+    );
+    expect(routed(spy.seen(), 'Removed 1 tag(s) from EventSourceMapping')).toBe(true);
+    expect(routed(spy.seen(), 'Added/updated 1 tag(s) on EventSourceMapping')).toBe(true);
+    await provider.update(
+      'Esm',
+      uuid,
+      type,
+      { ...base, Tags: [{ Key: 'b', Value: '2' }] },
+      { ...base, Tags: 'unreadable' },
+      { maskSecrets: spy.mask }
+    );
+    expect(spy.seen().some((t) => t.includes('is not a list cdkd can read'))).toBe(true);
   });
 
   it('routes the update path lines through the masker', async () => {

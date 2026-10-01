@@ -7,7 +7,7 @@ import {
   type FunctionUrlAuthType,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
-import { canonicalLambdaFunctionName } from '../../utils/lambda-function-name.js';
+import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -152,8 +152,14 @@ export class LambdaPermissionProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     // Issue #2177: every create() line and failure goes through this one sink
     // set.
+    const desiredFunction = stringOrUndefined(properties['FunctionName']);
     const log = this.operationSinks(context?.maskSecrets, [
-      [properties['FunctionName'], stringOrUndefined(properties['FunctionName'])],
+      [properties['FunctionName'], desiredFunction],
+      // The bare name too: AWS may quote the function by name, not by ARN.
+      [
+        properties['FunctionName'],
+        desiredFunction === undefined ? undefined : lambdaFunctionNameForMask(desiredFunction),
+      ],
     ]);
     log.debug(`Creating Lambda permission ${logicalId}`);
 
@@ -267,7 +273,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
       ? physicalId.slice(0, physicalId.lastIndexOf('|')) || undefined
       : undefined;
     const recordedFunctionName =
-      recordedFunction === undefined ? undefined : canonicalLambdaFunctionName(recordedFunction);
+      recordedFunction === undefined ? undefined : lambdaFunctionNameForMask(recordedFunction);
     const log = this.operationSinks(context?.maskSecrets, [
       [properties['FunctionName'], recordedFunction],
       [previousProperties['FunctionName'], recordedFunction],

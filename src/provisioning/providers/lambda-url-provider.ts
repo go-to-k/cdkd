@@ -9,7 +9,7 @@ import {
   type InvokeMode,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
-import { canonicalLambdaFunctionName } from '../../utils/lambda-function-name.js';
+import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
@@ -102,6 +102,13 @@ export class LambdaUrlProvider implements ResourceProvider {
     // answers with, which embeds the function name `TargetFunctionArn` names.
     const log = this.operationSinks(context?.maskSecrets, [
       [targetFunctionArn, typeof targetFunctionArn === 'string' ? targetFunctionArn : undefined],
+      // The bare name too: AWS may quote the function by name, not by ARN.
+      [
+        targetFunctionArn,
+        typeof targetFunctionArn === 'string'
+          ? lambdaFunctionNameForMask(targetFunctionArn)
+          : undefined,
+      ],
     ]);
     log.debug(`Creating Lambda URL ${logicalId}`);
 
@@ -224,8 +231,8 @@ export class LambdaUrlProvider implements ResourceProvider {
       [properties['TargetFunctionArn'], physicalId],
       [previousProperties['TargetFunctionArn'], physicalId],
       // The bare name too: AWS may quote the function by name, not by ARN.
-      [properties['TargetFunctionArn'], canonicalLambdaFunctionName(physicalId)],
-      [previousProperties['TargetFunctionArn'], canonicalLambdaFunctionName(physicalId)],
+      [properties['TargetFunctionArn'], lambdaFunctionNameForMask(physicalId)],
+      [previousProperties['TargetFunctionArn'], lambdaFunctionNameForMask(physicalId)],
       [
         properties['TargetFunctionArn'],
         typeof properties['TargetFunctionArn'] === 'string'
