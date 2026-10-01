@@ -609,15 +609,22 @@ class AttributeFetcher {
     // persisted properties, from where the next deploy sends it to AWS (the
     // #1498 / #1501 corrupted-write class).
     //
-    // TWO POPULATIONS reach the mask here, and the second is why this arm was
-    // added at all. Long-standing: a custom resource whose handler declared its
-    // response `NoEcho`. New with issue
+    // THREE POPULATIONS reach the mask here, and the second is why this arm
+    // was added at all. Long-standing: a custom resource whose handler declared
+    // its response `NoEcho`. New with issue
     // [#2847](https://github.com/go-to-k/cdkd/issues/2847):
     // `CloudControlProvider.import` masks every model key it cannot certify as
     // a read-only attribute, and that class implements NO `getAttribute`, so a
     // Cloud-Control-routed orphan ALWAYS lands in this fallback — widening the
     // population from "a NoEcho custom resource" to "every uncertified key of
-    // every CC-imported resource".
+    // every CC-imported resource". Third (issue
+    // [#2881](https://github.com/go-to-k/cdkd/issues/2881)): an attribute
+    // echoing a property built over the `Fn::Base64` encoding of a secret
+    // (`AWS::SSM::Parameter`'s `Value`), which the deploy redacts with the
+    // mask-only needle `resolveBase64` registers (issues #2759 / #3119). The
+    // re-import remedy reaches only the second: a custom resource's `import()`
+    // records no attributes, and the SSM provider's records `Value` only for a
+    // plain literal, so the warning says which mask a re-import can clear.
     //
     // WARN RATHER THAN REFUSE, matching the arm above: `--force`'s whole
     // contract is "use a possibly-stale cached value", and refusing would
@@ -643,8 +650,9 @@ class AttributeFetcher {
           `'cdkd diff' / 'cdkd deploy' reports a spurious change there (a REPLACEMENT if the ` +
           `property is create-only), 'cdkd rollback' refuses the record as a replay baseline, ` +
           `and 'cdkd export' blocks it. Re-run without --force once the live attribute is ` +
-          `readable, re-import the record that holds the mask, or fix the referring property ` +
-          `by hand.`
+          `readable, re-import the record that holds the mask (only for a mask 'cdkd import' ` +
+          `wrote — a re-import does not recover a NoEcho custom-resource value or the ` +
+          `Fn::Base64 encoding of a secret), or fix the referring property by hand.`
       );
     }
     const cacheKey = injectiveKey(orphanLogicalId, attribute);

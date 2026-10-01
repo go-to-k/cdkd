@@ -228,6 +228,13 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     // says what it can stand behind.
     expect(warned).toContain('would publish a value cdkd cannot confirm');
     expect(warned).not.toContain("would publish the resource's raw physical id");
+    // THIS MESSAGE NUMBERS NO CAUSES, so the shared remedy builder must not
+    // scope its lead-in to "cause (3)" here (issue #2881): that sentence
+    // belongs to `refuseRedactedAttributeReads`, and for this
+    // Cloud-Control-imported record a re-import IS the remedy.
+    expect(warned).toContain('Re-import the record that HOLDS the mask (command(s) below).');
+    expect(warned).not.toContain('cause (3)');
+    expect(warned).not.toContain('cause (1)');
   });
 
   it('is PROMOTED to a deploy error under --strict-getatt', async () => {

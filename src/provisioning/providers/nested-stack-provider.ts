@@ -612,8 +612,9 @@ export class NestedStackProvider implements ResourceProvider {
     //    the residual is ACCEPTED, not fixed, and saying otherwise would
     //    overstate what the mark below achieves.
     //  - Interrupted: the child stopped early because the user pressed
-    //    Ctrl-C. `draining` in `destroy-runner.ts` is a per-INVOCATION local
-    //    with a per-invocation SIGINT listener, so a retry starts a FRESH
+    //    Ctrl-C. `destroy-runner.ts` reads `lock.interrupted` from a
+    //    stack-lock guard it acquires per INVOCATION (`acquireStackLock`),
+    //    and that guard owns the SIGINT listener, so a retry starts a FRESH
     //    child destroy with the interrupt forgotten — it does not heal the
     //    failure, it RESUMES work the user just aborted, while the backoff
     //    sleeps hold up the shutdown the interrupt asked for. Terminal by

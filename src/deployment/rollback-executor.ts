@@ -2470,11 +2470,26 @@ function refuseMaskedReplayBaseline(
   logicalId: string
 ): void {
   if (props === undefined || !carriesSecretMask(props)) return;
-  // TWO POPULATIONS REACH THIS REFUSAL, and naming only the first was a
-  // measured defect at the deploy engine's twin (`refuseRedactedAttributeReads`,
-  // issue #2847) before it was one here.
+  // THREE POPULATIONS REACH THIS REFUSAL, each with its own remedy, because
+  // nothing in the record says which wrote the mask (issue
+  // [#2881](https://github.com/go-to-k/cdkd/issues/2881)). Naming only the
+  // first was a measured defect at the deploy engine's twin
+  // (`refuseRedactedAttributeReads`, issue #2847) before it was one here.
   //
-  // ARM (2) IS NARROWER THAN THE FIRST ATTEMPT AT IT, and the correction came
+  // ARM (2), the `Fn::Base64` encoding of a secret, is the one
+  // `resolveBase64` registers as a mask-only needle (issues #2759 / #3119), and
+  // it reaches THIS test directly: the deploy persists `***` into the
+  // resource's own `properties` (`deploy-engine-base64-secret-noop.test.ts`
+  // pins it), so a failed update of an EC2 `UserData` built around a
+  // `{{resolve:...}}` reference rolls back onto this refusal. No custom
+  // resource is involved, so the nonce remedy does nothing. A deploy that
+  // UPDATES the resource sends the encoding again (the recorded `***` differs
+  // from the resolved encoding); one that leaves it unchanged sends nothing,
+  // since the encoding of an ordinary secret is deliberately not marked fresh.
+  // Either way the record keeps `***`, so the next rollback to it refuses too —
+  // which is why the arm also names the change that ends the refusals.
+  //
+  // ARM (3) IS NARROWER THAN THE FIRST ATTEMPT AT IT, and the correction came
   // from a trace rather than from re-reading the prose. This function tests
   // `properties`, while `CloudControlProvider.import` masks only `attributes`
   // (`import.ts` writes the template's own properties into `properties` and the
@@ -2499,11 +2514,18 @@ function refuseMaskedReplayBaseline(
     // `cdkd orphan` and `cdkd import` (go-to-k/cdkd#4214).
     `Cannot roll ${shownLogicalId(logicalId)} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}'), so cdkd would write that literal to the live resource. There are ` +
-      `two ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
+      `three ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
       `there: restore the property with 'cdkd deploy' AFTER forcing that custom resource to ` +
       `update (change one of its properties, e.g. a nonce), so its handler runs again and ` +
       `supplies the real value — an ordinary re-deploy leaves the resource unchanged, so the ` +
-      `handler does not run and the mask stays. (2) The value was SPLICED from a masked ` +
+      `handler does not run and the mask stays. (2) The Fn::Base64 encoding of a secret value ` +
+      `(a {{resolve:...}} dynamic reference under Fn::Base64, such as EC2 UserData), which ` +
+      `cdkd never records: restore the property with a 'cdkd deploy' that changes this ` +
+      `resource, which sends it the encoded value again — a re-deploy that leaves this ` +
+      `resource unchanged sends it nothing. Every rollback to such a baseline refuses, so to ` +
+      `end this, stop encoding the secret into the property (have the resource read the ` +
+      `secret at run time instead — not by writing the secret's plaintext into the template, ` +
+      `which cdkd would then record in state in the clear). (3) The value was SPLICED from a masked ` +
       `record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' resolving ` +
       `an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. Repair the ` +
       `record that HOLDS the mask ('cdkd import <stack> ` +
