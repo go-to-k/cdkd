@@ -7,7 +7,7 @@
     "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 27
+    "classesWithBlindSpots": 28
   },
   "classes": [
     {
@@ -14326,7 +14326,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "walk(...) in jsonEscapedPairs()"
+      ]
     },
     {
       "file": "lambda-layer-provider.ts",
