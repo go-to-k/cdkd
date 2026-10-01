@@ -3725,8 +3725,11 @@ export function scrubRefusalWording(
     ...new Set(
       built.map((b, i) =>
         b.withheld.length > 0 && maskedNames.has(scrubOrder[i]!)
-          ? ` ${subject} holds a value recorded as a secret, so it is shown masked and is not ` +
-            `named in the command below; list the records as stored with ` +
+          ? ` ${subject} holds a value recorded as a secret, so it is ` +
+            // A masked name the prose ALSO withholds (it carries whitespace)
+            // is not shown at all, so "shown masked" would be false of it.
+            (proseWithholds(scrubOrder[i]!) ? 'not shown above and' : 'shown masked and') +
+            ` is not named in the command below; list the records as stored with ` +
             `'cdkd state list --long' and act on the record whose stack name matches.`
           : withheldTargetClause(b, 'stack', 'cdkd scrub', subject)
       )
@@ -4788,9 +4791,14 @@ function maskedIdent(value: string, secrets: RecordedSecretValues): string {
  * clause says it is "shown masked" with, and all three must still be shown.
  */
 function proseName(logged: string, what: string, opts?: { maxCodePoints?: number }): string {
-  return /\s/.test(displaySafe(logged, { asciiOnly: true }))
+  return proseWithholds(logged)
     ? `(${what} withheld: it holds whitespace or a non-printable character)`
     : displayIdent(logged, opts);
+}
+
+/** The test {@link proseName} withholds on, for a sentence that must agree with it. */
+function proseWithholds(logged: string): boolean {
+  return /\s/.test(displaySafe(logged, { asciiOnly: true }));
 }
 
 /**

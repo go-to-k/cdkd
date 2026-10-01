@@ -221,7 +221,8 @@ describe('scrub producer-plaintext refusal: no name in its prose can wrap into a
     `Prod\n${PAYLOAD}`,
     `Prod${' '.repeat(60)}${PAYLOAD}`,
     `Prod\t${PAYLOAD}`,
-    `Prod ${PAYLOAD}`,
+    // U+00A0, spelled by code so a reader of the diff can see it.
+    `Prod${String.fromCharCode(0xa0)}${PAYLOAD}`,
   ];
   const LABELS = ['Scrub with: ', 'Then re-run: '];
 
@@ -288,6 +289,15 @@ describe('scrub producer-plaintext refusal: no name in its prose can wrap into a
     );
     expect(message).not.toContain('withheld: it holds whitespace');
     expect(message).not.toContain(secret);
+    expect(message).toContain('so it is shown masked and is not named in the command below');
+  });
+
+  it('a long space-free stack name is shown whole, at the stack-name cap rather than the default 255', () => {
+    const long = `Parent~${'Child'.repeat(80)}`;
+    const message = render({ consumer: long, producer: long });
+    expect(message).toContain(`Scrub of ${long} resolved`);
+    expect(message).toContain(`the producer stack ${long} declares`);
+    expect(message.split('\n')[0]).not.toContain('[cut:');
   });
 
   it('a sanitizer-trimmed edge is shown quoted, since no space is left in it', () => {
@@ -348,6 +358,9 @@ describe('scrub producer-plaintext refusal: no name in its prose can wrap into a
       });
       expect(message).toContain(`the producer stack ${withheld('stack name')} declares`);
       expect(message).not.toContain(secret);
+      // The clause must agree with the prose: the name is not shown at all.
+      expect(message).toContain('so it is not shown above and is not named in the command below');
+      expect(message).not.toContain('shown masked');
       expectNoForgedRow(message);
     });
   }

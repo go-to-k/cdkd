@@ -4400,6 +4400,67 @@ describe('the cross-stack pre-pass names every stack, record, path and key insid
     expect(outside(prose, STACK, RES, PROP, PROD, KEY)).not.toContain('nothing refused');
   });
 
+  // The two OUTPUT origins build the same `{ text, prose }` pair as the
+  // resource one above (go-to-k/cdkd#3773); each is pinned through `scrubStack`
+  // so a call site reverted to the bounded-only rendering reds here.
+  const producerApp = (): unknown[] => [
+    {
+      ...makeProducerStackInfo({
+        [OUTPUT_NAME]: { Value: SECRET_EXPR, Export: { Name: KEY } },
+      }),
+      stackName: PROD,
+    },
+  ];
+
+  it('the plaintext-producer refusal withholds a whitespace-bearing OUTPUT name it reads in (go-to-k/cdkd#3773)', async () => {
+    wireProducer({ [KEY]: PLAINTEXT });
+
+    const message = await scrubForged(
+      { MasterUsername: 'admin' },
+      { outputs: { [OUT]: { Value: { 'Fn::ImportValue': KEY } } }, appStacks: producerApp() }
+    );
+
+    expect(message).toContain(
+      'resolved the Fn::ImportValue in output ' +
+        '(output name withheld: it holds whitespace or a non-printable character) to a PLAINTEXT value'
+    );
+    expect(message).not.toContain('nothing refused');
+  });
+
+  it('the plaintext-producer refusal withholds a whitespace-bearing name at an intrinsic Export.Name (go-to-k/cdkd#3773)', async () => {
+    wireProducer({ [KEY]: PLAINTEXT });
+
+    const message = await scrubForged(
+      { MasterUsername: 'admin' },
+      {
+        outputs: { [OUT]: { Value: 'v', Export: { Name: { 'Fn::ImportValue': KEY } } } },
+        appStacks: producerApp(),
+      }
+    );
+
+    expect(message).toContain(
+      'resolved the Fn::ImportValue in Export.Name of output ' +
+        '(output name withheld: it holds whitespace or a non-printable character) to a PLAINTEXT value'
+    );
+    expect(message).not.toContain('nothing refused');
+  });
+
+  it('a debug line beside no labelled row keeps the bounded name, not the withheld description (go-to-k/cdkd#3773)', async () => {
+    // A stored value carrying no text classifies nothing, so the pre-pass
+    // logs the read's `where` and returns: that line prints no command, and
+    // withholding the name there would only cost the reader the location.
+    wireProducer({ [KEY]: '' });
+
+    await scrubForged(
+      { [PROP]: { 'Fn::ImportValue': KEY }, MasterUsername: 'admin' },
+      { appStacks: producerApp() }
+    );
+
+    const line = logLines.find((l) => l.includes('carries no text')) ?? '';
+    expect(line).toContain(`Fn::ImportValue in resource ${shown(RES)} at ${shown(PROP)}`);
+    expect(line).not.toContain('withheld: it holds whitespace');
+  });
+
   it("the decline for a producer OUTSIDE the app bounds the producer's recorded region too", async () => {
     const REGF = F('eu-west-1');
     wireProducer({ [KEY]: PLAINTEXT });
