@@ -14,12 +14,10 @@ import {
   deleteIndeterminateGuards,
   deleteSkipReason,
   deleteSkippedMessage,
-  UNSPECIFIED_SKIP_REASON,
-} from '../../deployment/delete-outcome.js';
-import {
   isDeletableLogicalId,
   NON_PLAIN_LOGICAL_ID_SKIP_REASON,
-} from '../../deployment/deploy-engine-delete.js';
+  UNSPECIFIED_SKIP_REASON,
+} from '../../deployment/delete-outcome.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import {

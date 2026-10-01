@@ -51,7 +51,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 }));
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
-import { NON_PLAIN_LOGICAL_ID_SKIP_REASON } from '../../../src/deployment/deploy-engine-delete.js';
+import { NON_PLAIN_LOGICAL_ID_SKIP_REASON } from '../../../src/deployment/delete-outcome.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const REGION = 'us-east-1';
@@ -169,6 +169,8 @@ describe('runDestroyForStack refuses a non-plain logical id before any provider 
     expect(out).toContain('cdkd did not confirm a logical id that is not a plain identifier');
     expect(out).not.toContain('$(');
     expect(out).not.toContain('touch OWNED');
+    // The nested-stack sentence is for a nested-stack row only.
+    expect(out).not.toContain("its child's state and resources were not touched");
   });
 
   it('names the recovery command for THIS stack, which removes the record without a provider', async () => {

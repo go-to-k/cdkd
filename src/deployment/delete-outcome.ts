@@ -1,5 +1,5 @@
 import type { IndeterminateGuard, ResourceDeleteResult } from '../types/resource.js';
-import { ROLE_ARN_MAX_CODE_POINTS, displayIdent } from '../utils/display-safe.js';
+import { ROLE_ARN_MAX_CODE_POINTS, displayIdent, isPasteableIdent } from '../utils/display-safe.js';
 import { physicalIdShownBesideCommand, plainOrDescribed } from '../utils/pasteable-command.js';
 
 /**
@@ -262,4 +262,31 @@ export function deleteIndeterminateGuards(
     out.push({ guard: trimmedGuard, reason: trimmedReason });
   }
   return out;
+}
+
+/**
+ * The skip reason of a delete REFUSED because its logical id is not a plain
+ * identifier ({@link isDeletableLogicalId}). A fixed constant, plain prose, so
+ * `deleteSkippedMessage` shows it and the already-deleted classifiers never
+ * match it.
+ */
+export const NON_PLAIN_LOGICAL_ID_SKIP_REASON =
+  'the state record logical id is not a plain identifier, so cdkd sent no delete';
+
+/**
+ * May a DELETE of this `state.resources` key reach a provider (go-to-k/cdkd#4175)?
+ * Asked by the destroy runner and the deploy's template-removal DELETE only;
+ * `cdkd rollback`'s journal-keyed deletes are not gated (go-to-k/cdkd#4349).
+ *
+ * The key is state-sourced and validated nowhere (go-to-k/cdkd#2947), and
+ * every provider prints it raw in its delete-path lines and errors, so a
+ * `X$(touch OWNED)` key runs as shell when such a line is pasted. The gate is
+ * at the two delete callers (`deploy-engine-delete.ts`'s DELETE arm and `destroy-runner.ts`), rather
+ * than per provider message: a non-plain key is SKIPPED before any provider
+ * sees it, so the record is KEPT and `cdkd state orphan` (which calls no
+ * provider) still removes it. The predicate is `plainOrDescribed`'s, so a key
+ * refused here is exactly one every other line describes.
+ */
+export function isDeletableLogicalId(logicalId: string): boolean {
+  return isPasteableIdent(logicalId);
 }

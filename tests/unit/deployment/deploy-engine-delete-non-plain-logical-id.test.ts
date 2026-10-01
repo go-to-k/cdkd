@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import { NON_PLAIN_LOGICAL_ID_SKIP_REASON } from '../../../src/deployment/deploy-engine-delete.js';
+import { NON_PLAIN_LOGICAL_ID_SKIP_REASON } from '../../../src/deployment/delete-outcome.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
