@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # verify.sh — a replacement renamed onto a name ANOTHER resource holds must
 # neither adopt that resource nor delete the one being replaced
-# (issues #3937 and #3931).
+# (issues #3937 and #3931), and a plain CREATE onto such a name must not
+# adopt it either (issue #4180).
 #
 # #3937: SQS `CreateQueue` hands back an existing queue of the requested name
 # when the attributes match. A replacement renaming the stack's queue onto an
@@ -40,6 +41,12 @@
 #   E. CONTROL for D: remove REPO_HELD, rename Repo onto REPO_FREE under the
 #      same flag. It must create REPO_FREE BEFORE deleting REPO_A (read off the
 #      log order), and record REPO_FREE on the Cloud Control route.
+#   B5. #4180 ARM. Create NEWQ_HELD out of band, then add NewQueue under that
+#      name. The deploy must FAIL before creating anything: NEWQ_HELD keeps its
+#      CreatedTimestamp and state records no NewQueue. Before the fix the
+#      deploy SUCCEEDED and recorded NEWQ_HELD as the stack's queue.
+#   C5. CONTROL for B5: add NewQueue under the free NEWQ_FREE. It is created
+#      and recorded.
 #   F. Destroy; every queue, topic, cluster, repository and the state file are
 #      gone.
 #
@@ -110,7 +117,11 @@ CLUSTER_FREE="cdkd-integ-rroh-cluster-free"
 REPO_A="cdkd-integ-rroh-repo-a"
 REPO_HELD="cdkd-integ-rroh-repo-held-${RUN_SUFFIX}"
 REPO_FREE="cdkd-integ-rroh-repo-free"
-ALL_QUEUES="${QUEUE_A} ${QUEUE_HELD} ${QUEUE_FREE}"
+NEWQ_HELD="cdkd-integ-rroh-newqueue-held-${RUN_SUFFIX}"
+NEWQ_FREE="cdkd-integ-rroh-newqueue-free"
+# NewQueue's name; empty leaves it out of the stack (phases A to E).
+NEW_QUEUE=""
+ALL_QUEUES="${QUEUE_A} ${QUEUE_HELD} ${QUEUE_FREE} ${NEWQ_HELD} ${NEWQ_FREE}"
 ALL_TOPICS="${TOPIC_A} ${TOPIC_HELD} ${TOPIC_FREE}"
 ALL_CLUSTERS="${CLUSTER_A} ${CLUSTER_HELD} ${CLUSTER_FREE}"
 ALL_REPOS="${REPO_A} ${REPO_HELD} ${REPO_FREE}"
@@ -324,6 +335,7 @@ deploy() { # usage: deploy <log> <QUEUE_NAME> <TOPIC_NAME> <CLUSTER_NAME> <REPO_
   local log="$1" queue="$2" topic="$3" cluster="$4" repo="$5"
   shift 5
   env QUEUE_NAME="${queue}" TOPIC_NAME="${topic}" CLUSTER_NAME="${cluster}" REPO_NAME="${repo}" \
+    NEW_QUEUE_NAME="${NEW_QUEUE}" \
     node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
     --yes "$@" > "${log}" 2>&1
 }
@@ -603,11 +615,54 @@ fi
 echo "[verify] phase E ok: ${REPO_FREE} created before ${REPO_A} was deleted"
 
 # ---------------------------------------------------------------------------
+# PHASE B5: #4180 — a plain CREATE onto an out-of-band queue's name
+# ---------------------------------------------------------------------------
+echo "[verify] phase B5: ${NEWQ_HELD} out of band, then add NewQueue under that name (expect REFUSAL)"
+NEWQ_HELD_URL="$(aws sqs create-queue --queue-name "${NEWQ_HELD}" --region "${REGION}" \
+  --query QueueUrl --output text)"
+NEWQ_HELD_CREATED="$(queue_created_at "${NEWQ_HELD}")"
+NEW_QUEUE="${NEWQ_HELD}"
+set +e
+deploy "${LOG_DIR}/b5.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${CLUSTER_A}" "${REPO_FREE}"
+B5_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/b5.log" || true
+if [ "${B5_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: the create of NewQueue as ${NEWQ_HELD} SUCCEEDED — it adopted the out-of-band queue" >&2
+  exit 1
+fi
+assert_refusal "${LOG_DIR}/b5.log" "already holds that name" \
+  "an existing resource (${NEWQ_HELD_URL})" "phase B5"
+if [ "$(queue_created_at "${NEWQ_HELD}")" != "${NEWQ_HELD_CREATED}" ]; then
+  echo "[verify] FAIL: the out-of-band ${NEWQ_HELD} was deleted or re-created by the refused deploy" >&2
+  exit 1
+fi
+if [ "$(state_field '.resources.NewQueue.physicalId // "absent"')" != "absent" ]; then
+  echo "[verify] FAIL: state records NewQueue after the refused create" >&2
+  exit 1
+fi
+echo "[verify] phase B5 ok: refused before the create, ${NEWQ_HELD} untouched and not recorded"
+
+# ---------------------------------------------------------------------------
+# PHASE C5: CONTROL for B5 — a create under a free name proceeds
+# ---------------------------------------------------------------------------
+echo "[verify] phase C5: add NewQueue under the free ${NEWQ_FREE} (MUST SUCCEED)"
+NEW_QUEUE="${NEWQ_FREE}"
+deploy "${LOG_DIR}/c5.log" "${QUEUE_FREE}" "${TOPIC_FREE}" "${CLUSTER_A}" "${REPO_FREE}" \
+  || { sed 's/^/  /' "${LOG_DIR}/c5.log"; echo "[verify] FAIL: the create under a free name failed — the lookup refused a name nobody holds" >&2; exit 1; }
+if [ "$(state_field '.resources.NewQueue.physicalId')" != "$(queue_url "${NEWQ_FREE}")" ]; then
+  echo "[verify] FAIL: state does not record NewQueue as ${NEWQ_FREE} after phase C5" >&2
+  exit 1
+fi
+echo "[verify] phase C5 ok: NewQueue created as ${NEWQ_FREE}"
+
+# ---------------------------------------------------------------------------
 # PHASE F: destroy
 # ---------------------------------------------------------------------------
 echo "[verify] phase F: destroy ${STACK}"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_queue_gone "${QUEUE_FREE}" "queue ${QUEUE_FREE} still exists after destroy"
+assert_queue_gone "${NEWQ_FREE}" "queue ${NEWQ_FREE} still exists after destroy"
 assert_topic_gone "${TOPIC_FREE}" "topic ${TOPIC_FREE} still exists after destroy"
 assert_cluster_gone "${CLUSTER_A}" "ECS cluster ${CLUSTER_A} still exists after destroy"
 assert_gone "repository ${REPO_FREE} still exists after destroy" \
@@ -620,8 +675,10 @@ aws sns delete-topic --topic-arn "${TOPIC_HELD_ARN}" --region "${REGION}"
 assert_topic_gone "${TOPIC_HELD}" "the out-of-band ${TOPIC_HELD} survived its own delete"
 aws sqs delete-queue --queue-url "${QUEUE_HELD_URL}" --region "${REGION}"
 assert_queue_gone "${QUEUE_HELD}" "the out-of-band ${QUEUE_HELD} survived its own delete"
+aws sqs delete-queue --queue-url "${NEWQ_HELD_URL}" --region "${REGION}"
+assert_queue_gone "${NEWQ_HELD}" "the out-of-band ${NEWQ_HELD} survived its own delete"
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
 
 rm -rf "${LOG_DIR}"
 trap - EXIT INT TERM
-echo "[verify] PASS — a rename onto a held name neither adopted it nor deleted the resource being replaced"
+echo "[verify] PASS — a rename or a create onto a held name neither adopted it nor deleted the resource being replaced"

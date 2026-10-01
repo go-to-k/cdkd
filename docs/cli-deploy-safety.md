@@ -786,6 +786,14 @@ create would otherwise take that resource over and record it as the stack's,
 for a later `cdkd destroy` to delete. A lookup that cannot run fails the same
 way.
 
+A plain create of one of these types with an explicit name looks the name up
+too. When a resource already holds it, or the lookup cannot run, the deploy
+fails with `NAMED_CREATE_COLLISION` and nothing is created, as
+CloudFormation's create fails with "already exists". This holds even when the resource is this stack's
+own, left by an earlier interrupted deploy: nothing in AWS tells the two apart.
+Delete it, or adopt it with [`cdkd import`](import.md), then re-run. A create
+under a name cdkd generates is not looked up.
+
 #### When cdkd cannot show the old resource holds the name
 
 A collision says a name is taken, not who holds it. An orphan left by an earlier

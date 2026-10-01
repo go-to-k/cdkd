@@ -141,9 +141,10 @@ export function replacementRequestsDifferentName(input: {
  * (and the `us-east-1` legacy 200) as success and configures the existing
  * bucket. A replacement renamed onto such a name "succeeds" with
  * someone else's resource, which the deploy then records as its own and a
- * later destroy deletes (go-to-k/cdkd#3937). The create cannot tell a fresh
+ * later destroy deletes (go-to-k/cdkd#3937); a plain CREATE under such a name
+ * does the same (go-to-k/cdkd#4180). The create cannot tell a fresh
  * resource from an existing one, so the caller asks BEFORE it
- * ({@link replacementNameProbe}). Cloud Control is exempt: its handlers
+ * ({@link replacementNameProbe}, {@link createNameQuestion}). Cloud Control is exempt: its handlers
  * refuse an existing identifier with `AlreadyExists`.
  *
  * Not here yet, though their creates adopt too (go-to-k/cdkd#3937 tracks
@@ -208,6 +209,58 @@ export function replacementNameProbe(input: {
   return {
     knownPhysicalId: `arn:${other[1]}:states:${other[2]}:${other[3]}:stateMachine:${input.change.desiredName}`,
   };
+}
+
+/** A plain CREATE's explicit name, for {@link createNameQuestion}. */
+export interface CreateNameQuestion {
+  /** The template's name property, e.g. `QueueName`. */
+  property: string;
+  /** The name the create sends. */
+  desiredName: string;
+}
+
+/**
+ * The plain-CREATE sibling of {@link replacementNameProbe}
+ * (go-to-k/cdkd#4180): the explicit name a name-adopting create is about to
+ * send, which the caller looks up before the create. `undefined` when the
+ * create cannot adopt (another type, the Cloud Control route) or carries no
+ * explicit name.
+ *
+ * A holder found under the name is refused whoever owns it, as
+ * CloudFormation's create fails with "already exists". That includes cdkd's
+ * own orphan from an earlier interrupted deploy: nothing in AWS tells it apart
+ * from a resource made outside the stack, and a template-supplied name may
+ * belong to anyone — the reason the orphan-adoption pre-pass never adopts an
+ * explicitly named resource either. A cdkd-generated name is not asked: it is
+ * derived from the stack and logical id, so its holder is presumed this
+ * stack's own, the premise that pre-pass is built on.
+ */
+export function createNameQuestion(input: {
+  resourceType: string;
+  createdVia: ProvisionedBy | undefined;
+  properties: Record<string, unknown>;
+}): CreateNameQuestion | undefined {
+  if (!replacementCreateAdoptsName(input.resourceType, input.createdVia)) return undefined;
+  const property = explicitNamePropertyFor(input.resourceType);
+  if (property === undefined) return undefined;
+  const desiredName = nameValue(input.properties, property);
+  return desiredName === undefined ? undefined : { property, desiredName };
+}
+
+/**
+ * The ARN a NEW state machine named `name` would take, for
+ * {@link createNameQuestion}'s lookup (Step Functions' `import()` has no name
+ * lookup). `null` when it cannot be built honestly: a name carrying `:`, or an
+ * account `getAccountInfo` FABRICATED because STS was unreachable — a lookup
+ * of a made-up ARN answers "free".
+ */
+export function stateMachineArnForName(
+  name: string,
+  account: { partition: string; region: string; accountId: string; fabricated?: boolean }
+): string | null {
+  if (name.includes(':') || account.fabricated === true) return null;
+  if (!/^\d{12}$/.test(account.accountId) || account.region === '') return null;
+  return `arn:${account.partition}:states:${account.region}:${account.accountId}:stateMachine:${name}`;
 }
 
 /** Any ARN carrying a region and a 12-digit account: partition, region, account. */

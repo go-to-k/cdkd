@@ -1,11 +1,26 @@
 import type { DeployEngine } from './deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from './deploy-engine.js';
-import type { CloudFormationTemplate } from '../types/resource.js';
+import type { ProvisionedBy } from '../provisioning/provider-registry.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import type { ResourceChange, ResourceState } from '../types/state.js';
+import { displayAwsMessage, displaySafe } from '../utils/display-safe.js';
+import { CdkdError } from '../utils/error-handler.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
 import { formatResourceLine } from '../utils/resource-line.js';
+import { getAccountInfo } from './intrinsic-function-resolver.js';
+import {
+  createNameQuestion,
+  probeErrorMeansNameHeld,
+  stateMachineArnForName,
+} from './replacement-name-holder.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
-import { createSecretMasker, recordNestedStackParameterExpressions } from './secret-redaction.js';
+import { markNonRetryable } from './retryable-errors.js';
+import {
+  type RecordedSecretValues,
+  createSecretMasker,
+  maskSecretsInText,
+  recordNestedStackParameterExpressions,
+} from './secret-redaction.js';
 
 declare module './deploy-engine.js' {
   interface DeployEngine {
@@ -119,6 +134,18 @@ export async function provisionCreate(
       ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
       : resolvedProps;
 
+  // go-to-k/cdkd#4180: a create that hands back or overwrites a resource
+  // already holding its explicit name must not run onto one.
+  await refuseTakenCreateName.call(this, {
+    logicalId,
+    resourceType,
+    stackName,
+    createProvider,
+    createdVia: createDecision.provisionedBy,
+    createProps,
+    secrets: createSecrets,
+  });
+
   const result = await this.withRetry(
     () =>
       // Issue #1903: the SAME bag, bound to this call's async chain so
@@ -197,4 +224,119 @@ export async function provisionCreate(
   renderer.removeTask(logicalId);
   this.logger.info(`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`);
   return;
+}
+
+/**
+ * Refuse a plain CREATE whose explicit name another resource already holds,
+ * for a type whose SDK create would hand that resource back or overwrite it
+ * instead of failing (go-to-k/cdkd#4180, {@link createNameQuestion}). Without
+ * it the deploy "succeeds" with the existing resource, records it as this
+ * stack's, and a later `cdkd destroy` deletes it. CloudFormation fails the
+ * same create with "already exists", so this refuses with nothing created —
+ * also when the lookup cannot be made or fails, since a guess either way can
+ * take over someone else's resource.
+ *
+ * The lookup and the create are two calls: a resource created under the name
+ * between them is not seen.
+ */
+async function refuseTakenCreateName(
+  this: DeployEngine,
+  input: {
+    logicalId: string;
+    resourceType: string;
+    stackName: string;
+    createProvider: ResourceProvider;
+    createdVia: ProvisionedBy | undefined;
+    createProps: Record<string, unknown>;
+    secrets: RecordedSecretValues;
+  }
+): Promise<void> {
+  const { logicalId, resourceType, secrets } = input;
+  const question = createNameQuestion({
+    resourceType,
+    createdVia: input.createdVia,
+    properties: input.createProps,
+  });
+  if (question === undefined) return;
+  // Every SDK provider of a name-adopting type implements `import()` (pinned
+  // in `replacement-name-holder.test.ts`); one without it is a test double.
+  const lookup = input.createProvider.import?.bind(input.createProvider);
+  if (lookup === undefined) return;
+
+  const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
+  const named = `${question.property} ${displaySafe(question.desiredName)}`;
+  const adoptsText =
+    `its create API hands back or overwrites an existing resource of that name instead of ` +
+    `refusing it`;
+  const refuse = (message: string, cause?: unknown): never => {
+    throw markNonRetryable(
+      new CdkdError(
+        maskSecretsInText(message, secrets),
+        'NAMED_CREATE_COLLISION',
+        cause instanceof Error ? cause : undefined
+      )
+    );
+  };
+
+  let knownPhysicalId: string | undefined;
+  if (resourceType === 'AWS::StepFunctions::StateMachine') {
+    const arn = stateMachineArnForName(
+      question.desiredName,
+      await getAccountInfo(this.stackRegion)
+    );
+    if (arn === null) {
+      return refuse(
+        `${subject} is created with ${named}, and ${adoptsText}, but cdkd cannot check whether ` +
+          `another resource already holds it (the account is unknown, or the name is not a ` +
+          `plain name). Nothing was created. Re-run the deploy once STS can report the account.`
+      );
+    }
+    knownPhysicalId = arn;
+  }
+
+  let found: Awaited<ReturnType<NonNullable<ResourceProvider['import']>>>;
+  try {
+    found = await this.withRetry(
+      () =>
+        lookup({
+          logicalId,
+          resourceType,
+          stackName: input.stackName,
+          region: this.stackRegion,
+          properties: input.createProps,
+          ...(knownPhysicalId !== undefined && { knownPhysicalId }),
+        }),
+      logicalId,
+      undefined,
+      undefined,
+      input.createProvider
+    );
+  } catch (probeError) {
+    if (probeErrorMeansNameHeld(resourceType, probeError)) {
+      return refuse(
+        `${subject} is created with ${named}, and S3 answered 403 Forbidden for that bucket: ` +
+          `another account owns that name, or a bucket of this account denies this identity ` +
+          `\`s3:ListBucket\`, or the request's credentials were rejected. Nothing was created. ` +
+          `Choose another name, or if the bucket is yours grant \`s3:ListBucket\` on it (or ` +
+          `delete it) and re-run.`,
+        probeError
+      );
+    }
+    return refuse(
+      `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
+        `whether another resource already holds it: ` +
+        `${displayAwsMessage(maskSecretsInText(probeError instanceof Error ? probeError.message : String(probeError), secrets))}. ` +
+        `Nothing was created. Re-run the deploy once the check can succeed.`,
+      probeError
+    );
+  }
+  if (found === null) return;
+  return refuse(
+    `${subject} is created with ${named}, and an existing resource ` +
+      `(${displaySafe(found.physicalId)}) already holds that name. Since ${adoptsText}, ` +
+      `creating it would take that resource over and record it as this stack's, for a later ` +
+      `\`cdkd destroy\` to delete. Nothing was created. Choose a name no other resource holds; ` +
+      `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +
+      `or adopt it with \`cdkd import\` and re-run.`
+  );
 }

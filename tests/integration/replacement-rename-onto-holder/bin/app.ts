@@ -4,7 +4,7 @@ import { ReplacementRenameOntoHolderStack } from '../lib/replacement-rename-onto
 
 const app = new cdk.App();
 new ReplacementRenameOntoHolderStack(app, 'CdkdReplacementRenameOntoHolderExample', {
-  description: 'cdkd replacement renamed onto a held name integ probe (issues #3931, #3937)',
+  description: 'cdkd replacement renamed onto a held name integ probe (issues #3931, #3937, #4180)',
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,
