@@ -383,7 +383,7 @@ describe('scrub producer-plaintext refusal: no name in its prose can wrap into a
   }
 
   it('says why a name with printable non-ASCII INSIDE it is withheld, since the sanitizer blanks it to a space', () => {
-    const message = render({ producer: 'Pro名前d' });
+    const message = render({ producer: 'Pro\u00e9d' });
     expect(message).toContain(
       'the producer stack (stack name withheld: it holds whitespace or a character outside printable ASCII) declares'
     );
