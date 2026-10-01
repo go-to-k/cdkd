@@ -2958,11 +2958,11 @@ async function updateWithRollbackRetry(
  * this helper is deliberately the sum of both rather than a copy of either:
  *
  *  - Arm 2 (post-delete-new-first) matches the delete-then-re-create sites,
- *    `deploy-engine.ts`'s `--replace` delete-first fallback and its named
+ *    `deploy-engine-update.ts`'s `--replace` delete-first fallback and its named
  *    replacement, which nest `this.withRetry(...)` INSIDE an outer
  *    `isRecreateRetryableError` retry. Same two loops as here.
  *  - Arm 1 (create-first) has NO such twin. Its deploy-engine analogue is the
- *    property-driven create-first at `deploy-engine.ts:3745`, which calls
+ *    property-driven create-first in `provisionUpdate` (`deploy-engine-update.ts`), which calls
  *    `this.withRetry(...)` on its OWN — one default-schedule loop, no outer
  *    custom-classifier loop at all — and whose catch then reads
  *    `isNameCollisionErrorFrom` to reach the delete-first fallback. Arm 1 is that

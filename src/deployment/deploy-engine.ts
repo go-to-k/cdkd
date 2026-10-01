@@ -3231,7 +3231,7 @@ export class DeployEngine {
     // `provisionedBy` since delete routing is fully driven by state, not
     // by the template. Routing is based on top-level property NAMES
     // which intrinsic resolution does not change, so the pre-routing
-    // here matches the real decision in `provisionResourceBody`. Errors
+    // here matches the real decision in the provision arms. Errors
     // here never surface — if routing inference fails, we drop the tag
     // and the real `getProviderFor` call later will re-evaluate.
     const labelRouting = this.peekRoutingForLabel(
@@ -3274,7 +3274,7 @@ export class DeployEngine {
     // properties / no state-recorded layer) — it's used solely to read
     // `getMinResourceTimeoutMs`. The real routing decision (which can
     // promote a Tier 1 resource to Cloud Control under #614) happens
-    // inside `provisionResourceBody` via `getProviderFor`.
+    // inside the provision arms via `getProviderFor`.
     const provider = this.providerRegistry.getProvider(resourceType);
     const providerMinTimeoutMs = provider.getMinResourceTimeoutMs?.() ?? 0;
     const warnAfterMs =

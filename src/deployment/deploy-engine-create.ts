@@ -14,7 +14,7 @@ declare module './deploy-engine.js' {
   }
 }
 
-/** The `CREATE` arm of {@link provisionResourceBody} (#4200 phase 3a). */
+/** The `CREATE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
 export async function provisionCreate(
   this: DeployEngine,
   logicalId: string,

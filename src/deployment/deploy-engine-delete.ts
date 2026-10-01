@@ -18,7 +18,7 @@ declare module './deploy-engine.js' {
   }
 }
 
-/** The `DELETE` arm of {@link provisionResourceBody} (#4200 phase 3a). */
+/** The `DELETE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
 export async function provisionDelete(
   this: DeployEngine,
   logicalId: string,

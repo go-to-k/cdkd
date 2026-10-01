@@ -530,7 +530,7 @@ describe('isInterruptedWaitError — the cause-chain classifier', () => {
   it('recognises it under DEEP nesting — there is no ceiling', () => {
     // The depth cap this replaces was sized against a chain that GROWS.
     // `DagExecutor` adds no wrap (`dag-executor.ts:178` collects rather than
-    // wraps) but `deploy-engine.ts:2932` adds one `ProvisioningError` PER
+    // wraps) but `deploy-engine.ts`'s `provisionResource` adds one `ProvisioningError` PER
     // NESTED-STACK LEVEL, so the flat case is 2 and every level adds one. A
     // cap of 5 therefore missed at four levels of nesting — and missing here
     // is not a degraded answer, it is a full automatic rollback on Ctrl-C.

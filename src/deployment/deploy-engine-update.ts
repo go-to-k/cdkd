@@ -1,4 +1,4 @@
-import { DeployEngine, InterruptedError } from './deploy-engine.js';
+import { type DeployEngine, InterruptedError } from './deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from './deploy-engine.js';
 import { withUnchangedSecretPrincipalLists } from '../provisioning/iam-policy-targets.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
@@ -74,7 +74,7 @@ declare module './deploy-engine.js' {
   }
 }
 
-/** The `UPDATE` arm of {@link provisionResourceBody} (#4200 phase 3a). */
+/** The `UPDATE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
 export async function provisionUpdate(
   this: DeployEngine,
   logicalId: string,
@@ -2049,8 +2049,8 @@ export async function provisionUpdate(
             // Chained UNMASKED, unlike the rollback executor's twin which
             // wraps its cause in `maskSecretsInError` -- a deliberate
             // asymmetry, recorded because three separate review passes
-            // raised it. This throw is inside `provisionResourceBody`;
-            // one frame up, `provisionResource`'s catch re-wraps it with
+            // raised it. This throw is inside `provisionUpdate`;
+            // further up, `provisionResource`'s catch re-wraps it with
             // `maskSecretsInError` over the cause CHAIN, so every link
             // the walk reaches is masked before anything leaves that
             // method (bounded — see `maskSecretsInError`'s own contract
