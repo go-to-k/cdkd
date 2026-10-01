@@ -42,6 +42,12 @@ import {
   tryGetCloudFormationResourceMap,
   isStackNotFoundError,
 } from '../../../src/cli/commands/retire-cfn-stack.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 /** CloudFormation's shape for "no such stack" — a ValidationError, no dedicated type. */
 function stackNotFound(stackName: string): Error {
@@ -124,6 +130,55 @@ describe('tryGetCloudFormationResourceMap', () => {
     expect(warnSpy.mock.calls[0]![0]).toContain(message);
     expect(warnSpy.mock.calls[0]![0]).toContain('cloudformation:DescribeStackResources');
   });
+
+  it('puts the --resource remedy on a line of its own, with quoted holes (go-to-k/cdkd#4226)', async () => {
+    // Pre-fix the stack name sat inside cdkd's own `'...'` on the same line as
+    // `--resource <LogicalId>=<physicalId>`, whose bare holes redirect when
+    // pasted. A name that is not plain is now described, AWS's message ends
+    // its own line, and the remedy's holes are quoted.
+    const denied = new Error('not authorized to perform') as Error & { name: string };
+    denied.name = 'AccessDeniedException';
+    const client = fakeClient(async () => {
+      throw denied;
+    });
+    warnSpy.mockReset();
+    await tryGetCloudFormationResourceMap('MyStack', client);
+    const plain = String(warnSpy.mock.calls[0]![0]);
+    expect(plain.split('\n')).toEqual([
+      "Could not read CloudFormation stack 'MyStack' to resolve physical IDs (not authorized to perform).",
+      expect.stringMatching(/ or pass --resource '<LogicalId>'='<physicalId>' for those resources\.$/),
+    ]);
+    for (const { value } of PASTE_PAYLOADS) {
+      warnSpy.mockReset();
+      await tryGetCloudFormationResourceMap(value, client);
+      const warning = String(warnSpy.mock.calls[0]![0]);
+      expect(warning.split('\n')[0], value).toContain(
+        'Could not read a CloudFormation stack whose name is not a plain identifier to resolve'
+      );
+      withPasteDir((dir) => {
+        expectNoCommandBesideDisplay(warning, value);
+        expect(spansThatRun(warning, dir), `${value}: ${warning}`).toEqual([]);
+      });
+      // A real AccessDenied echoes the stack's ARN, name included, so AWS's
+      // message DISPLAYS the payload: only the line split keeps it off the
+      // remedy's line. Its own first line stays raw AWS text (a display
+      // residual outside this fix), so only the block rule is asserted.
+      const echoing = new Error(
+        `User is not authorized to perform: cloudformation:DescribeStackResources on resource: arn:aws:cloudformation:us-east-1:123456789012:stack/${value}/*`
+      ) as Error & { name: string };
+      echoing.name = 'AccessDeniedException';
+      warnSpy.mockReset();
+      await tryGetCloudFormationResourceMap(
+        value,
+        fakeClient(async () => {
+          throw echoing;
+        })
+      );
+      const echoed = String(warnSpy.mock.calls[0]![0]);
+      expect(echoed.split('\n')[0], value).toContain(`stack/${value}/*`);
+      expectNoCommandBesideDisplay(echoed, value);
+    }
+  }, 120_000);
 
   it('does NOT warn when the stack simply does not exist', async () => {
     // The common case for a cdkd-native stack — warning here would be noise on

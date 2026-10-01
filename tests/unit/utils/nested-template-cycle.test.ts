@@ -481,7 +481,7 @@ describe('renderNestedTemplateTreeDefect', () => {
 
     expect(text).toContain("under stack Parent contains a cycle");
     expect(text).toContain(
-      "Child (/out/a.json) -> ToB (/out/b.json) -> BackToA (/out/a.json)"
+      "Child (/out/a.json) then ToB (/out/b.json) then BackToA (/out/a.json)"
     );
     // The OWNING stack of the closing row, derived the way the provider
     // derives a child's name: one `~<logicalId>` per hop above it.

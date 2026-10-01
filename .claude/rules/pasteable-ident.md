@@ -13,7 +13,7 @@ Rest of `src/utils/`: [layout-utils.md](layout-utils.md). The `cdkd gc` /
 [layout-cli.md](layout-cli.md). Index of every area:
 [code-layout.md](code-layout.md).
 
-`src/deployment/deploy-engine.ts` is not in the glob above:
+`src/deployment/deploy-engine-masking.ts` is not in the glob above:
 `maskedRecordRemedyFor`'s two arms say at the site why the command is withheld
 and why sanitizing the id in place would be wrong.
 

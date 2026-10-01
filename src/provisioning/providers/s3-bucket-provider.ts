@@ -6838,7 +6838,7 @@ export class S3BucketProvider implements ResourceProvider {
     // Bucket name is immutable - if changed, requires replacement
     if (newBucketName && newBucketName !== physicalId) {
       this.logger.debug(
-        `Bucket name changed (${this.shown(physicalId)} -> ${this.shown(newBucketName)}), replacement required`
+        `Bucket name changed (from ${this.shown(physicalId)} to ${this.shown(newBucketName)}), replacement required`
       );
       return {
         physicalId,

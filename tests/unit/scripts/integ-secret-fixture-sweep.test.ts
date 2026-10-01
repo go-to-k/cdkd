@@ -924,6 +924,10 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       'the secret provider imports from a module it did not before — trace what it brings in'
     ).toEqual([
       '../../deployment/resource-secrets-scope.js',
+      // go-to-k/cdkd#4244: the retry classifier module (it imports only the
+      // import-free `utils/aws-failure-text.js`; no module state) for
+      // `wrapMaskedAwsError`, which sees only error text.
+      '../../deployment/retryable-errors.js',
       '../../deployment/secret-redaction.js',
       '../../types/resource.js',
       '../../utils/aws-clients.js',

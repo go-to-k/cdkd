@@ -113,8 +113,8 @@ line per server:
 
 ```text
 MyPublicApi (HTTP API)  (http://127.0.0.1:3000)
-  GET  /items      -> ItemsHandler   (HTTP API)
-  POST /admin      -> [501 Not Implemented]  (HTTP API)
+  GET  /items      to ItemsHandler  (HTTP API)
+  POST /admin      to [501 Not Implemented]  (HTTP API)
 
 Server listening on http://127.0.0.1:3000  (MyPublicApi (HTTP API))
 Server listening on http://127.0.0.1:3001  (MyAdminApi (REST API))

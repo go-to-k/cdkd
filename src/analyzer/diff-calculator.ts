@@ -426,7 +426,7 @@ export class DiffCalculator {
           propertyChanges,
         });
         this.logger.debug(
-          `UPDATE (Type change): ${logicalId} (${currentResource.resourceType} -> ${desiredResource.Type})`
+          `UPDATE (Type change): ${logicalId} (from ${currentResource.resourceType} to ${desiredResource.Type})`
         );
       } else {
         // Resource exists with same type -> check properties.
@@ -1428,7 +1428,7 @@ export class DiffCalculator {
             mask(
               // The key and type are masked BEFORE `safeMsg`, which strips
               // control characters and could split a needle out of reach.
-              safeMsg`Property ${mask(key)} of ${mask(resourceType)} requires replacement (${oldText} -> ${newText})`
+              safeMsg`Property ${mask(key)} of ${mask(resourceType)} requires replacement (from ${oldText} to ${newText})`
             )
           );
         }

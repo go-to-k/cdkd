@@ -125,7 +125,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
@@ -917,15 +917,19 @@ async function refuseCatalogMove(args: {
     try {
       callerAccount = await args.callerAccountId();
     } catch (error) {
-      throw new ProvisioningError(
-        `Could not resolve the caller's account id (sts:GetCallerIdentity) to tell whether ` +
-          `CatalogId ${mask(literal)} is this account's default Data Catalog, so cdkd did not ` +
-          `update Glue ${args.noun} ${args.logicalId}: ` +
-          `${mask(error instanceof Error ? error.message : String(error))}`,
-        args.resourceType,
-        args.logicalId,
-        undefined,
-        error instanceof Error ? error : undefined
+      throw wrapMaskedAwsError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Could not resolve the caller's account id (sts:GetCallerIdentity) to tell whether ` +
+              `CatalogId ${mask(literal)} is this account's default Data Catalog, so cdkd did not ` +
+              `update Glue ${args.noun} ${args.logicalId}: ${text}`,
+            args.resourceType,
+            args.logicalId,
+            undefined,
+            error instanceof Error ? error : undefined
+          )
       );
     }
     if (literal === callerAccount) return;
@@ -974,6 +978,22 @@ export class GlueProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueProvider');
+
+  /**
+   * A failure wrap quoting the caught error's text through the operation's
+   * masker (issue #2177), stamped when the mask changed it so the retry
+   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
+   * #4244). Each Glue class carries this member rather than calling the module
+   * function, so `gen-update-wrap-coverage` sees the catch that throws it as a
+   * wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::Glue::Database', new Set(['DatabaseInput', 'DatabaseName', 'CatalogId'])],
@@ -1151,12 +1171,17 @@ export class GlueProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Glue Database ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Database ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1302,12 +1327,17 @@ export class GlueProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Glue Database ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Database ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1539,12 +1569,17 @@ export class GlueProvider implements ResourceProvider {
         );
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Glue Table ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1724,7 +1759,6 @@ export class GlueProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const detail = v(error instanceof Error ? error.message : String(error));
       // A `ConcurrentModificationException` means someone else changed the
       // table under us. Say so explicitly — the generic wrap would leave the
       // user staring at a bare SDK error with no hint that a concurrent
@@ -1733,12 +1767,12 @@ export class GlueProvider implements ResourceProvider {
       // The wording is gated on whether cdkd actually attached the `VersionId`
       // precondition. Without one, AWS raised this on its own and claiming
       // "cdkd refused" would be a lie about our own behavior.
-      let message = `Failed to update Glue Table ${logicalId}: ${detail}`;
+      let hint = '';
       if (error instanceof ConcurrentModificationException) {
-        message +=
+        hint +=
           `. Another writer changed the table between cdkd's pre-update read and its ` +
           `UpdateTable call.`;
-        message +=
+        hint +=
           live.versionId !== undefined
             ? ` cdkd sent the version it read (${live.versionId}) as a precondition and AWS ` +
               `rejected the write, rather than let it put back the AWS-managed Parameters and ` +
@@ -1747,9 +1781,20 @@ export class GlueProvider implements ResourceProvider {
               `rollback).`
             : ` AWS returned no VersionId on the pre-update read, so cdkd could not attach a ` +
               `precondition; AWS rejected the write on its own.`;
-        message += ` Re-run the deploy to pick up the current values.`;
+        hint += ` Re-run the deploy to pick up the current values.`;
       }
-      throw new ProvisioningError(message, resourceType, logicalId, physicalId, cause);
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (detail) =>
+          new ProvisioningError(
+            `Failed to update Glue Table ${logicalId}: ${detail}${hint}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
     }
   }
 
@@ -2116,12 +2161,17 @@ export class GlueProvider implements ResourceProvider {
       if (error instanceof EntityNotFoundException) {
         return { parameters: undefined, storageDescriptor: undefined, versionId: undefined };
       }
-      throw new ProvisioningError(
-        preUpdateReadFailureMessage('Table', 'glue:GetTable', logicalId, error, mask),
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (detail) =>
+          new ProvisioningError(
+            preUpdateReadFailureMessage('Table', 'glue:GetTable', logicalId, detail),
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          )
       );
     }
   }
@@ -2155,12 +2205,17 @@ export class GlueProvider implements ResourceProvider {
       return resp.Database?.Parameters;
     } catch (error) {
       if (error instanceof EntityNotFoundException) return undefined;
-      throw new ProvisioningError(
-        preUpdateReadFailureMessage('Database', 'glue:GetDatabase', logicalId, error, mask),
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (detail) =>
+          new ProvisioningError(
+            preUpdateReadFailureMessage('Database', 'glue:GetDatabase', logicalId, detail),
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          )
       );
     }
   }
@@ -3081,6 +3136,15 @@ export class GlueWorkflowProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueWorkflowProvider');
 
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Glue::Workflow',
@@ -3148,12 +3212,17 @@ export class GlueWorkflowProvider implements ResourceProvider {
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Glue Workflow ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Workflow ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -3210,12 +3279,17 @@ export class GlueWorkflowProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Glue Workflow ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Workflow ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3417,6 +3491,15 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueSecurityConfigurationProvider');
 
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::Glue::SecurityConfiguration', new Set(['Name', 'EncryptionConfiguration'])],
   ]);
@@ -3478,12 +3561,17 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Glue SecurityConfiguration ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue SecurityConfiguration ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -4015,6 +4103,15 @@ export class GlueJobProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueJobProvider');
 
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Glue::Job',
@@ -4114,12 +4211,17 @@ export class GlueJobProvider implements ResourceProvider {
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Glue Job ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Job ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -4166,12 +4268,17 @@ export class GlueJobProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Glue Job ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Job ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -4484,17 +4591,16 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 /**
  * Message for a failed pre-update `Get*` read (issue #1461). Names the IAM
  * action so a permission gap is one line away from fixed, and says what the
- * read is FOR so the failure does not read as gratuitous.
+ * read is FOR so the failure does not read as gratuitous. `detail` is AWS's
+ * text already masked through the update's masker (#2177): AWS quotes the
+ * request back.
  */
 function preUpdateReadFailureMessage(
   kind: 'Table' | 'Database',
   iamAction: string,
   logicalId: string,
-  error: unknown,
-  mask: MaskerFn
+  detail: string
 ): string {
-  // AWS quotes the request back; masked through the update's masker (#2177).
-  const detail = mask(error instanceof Error ? error.message : String(error));
   return (
     `Failed to read the current Glue ${kind} ${logicalId} before update: ${detail}. ` +
     `cdkd reads the live ${kind.toLowerCase()} so AWS-managed Parameters (Apache Iceberg's ` +
@@ -4621,6 +4727,15 @@ export class GlueCrawlerProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueCrawlerProvider');
 
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Glue::Crawler',
@@ -4711,12 +4826,17 @@ export class GlueCrawlerProvider implements ResourceProvider {
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Glue Crawler ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Crawler ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -4777,12 +4897,17 @@ export class GlueCrawlerProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Glue Crawler ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Crawler ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -5148,6 +5273,15 @@ export class GlueConnectionProvider implements ResourceProvider {
   private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueConnectionProvider');
 
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::Glue::Connection', new Set(['ConnectionInput', 'CatalogId'])],
   ]);
@@ -5197,12 +5331,17 @@ export class GlueConnectionProvider implements ResourceProvider {
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Glue Connection ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Connection ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -5274,12 +5413,17 @@ export class GlueConnectionProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Glue Connection ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Connection ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -5485,6 +5629,15 @@ export class GlueTriggerProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueTriggerProvider');
 
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Glue::Trigger',
@@ -5587,12 +5740,17 @@ export class GlueTriggerProvider implements ResourceProvider {
       return { physicalId: name, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Glue Trigger ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Trigger ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -5701,12 +5859,17 @@ export class GlueTriggerProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Glue Trigger ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Trigger ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

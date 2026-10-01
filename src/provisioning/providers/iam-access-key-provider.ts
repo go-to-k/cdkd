@@ -12,9 +12,14 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
-import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type { CreateContext, UpdateContext } from '../../types/resource.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
@@ -68,6 +73,21 @@ const CREATE_DATE_SKEW_MARGIN_MS = 5_000;
 export class IAMAccessKeyProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMAccessKeyProvider');
+
+  /**
+   * A failure wrap quoting the caught error's text through the operation's
+   * masker (issue #2177), stamped when the mask changed it so the retry
+   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
+   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
+   * it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
 
   /**
    * NON_PROVISIONABLE type: Cloud Control has no handlers for it, so the
@@ -269,12 +289,17 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       // during THIS attempt, and no sibling create could have run inside it.
       await this.deleteOrphanFromFailedAttempt(userName, logicalId, baseline, attemptStartMs, log);
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create IAM access key ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create IAM access key ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -553,12 +578,17 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update IAM access key ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update IAM access key ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

@@ -28,6 +28,12 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { S3BucketPolicyProvider } from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
 
 describe('S3BucketPolicyProvider', () => {
@@ -145,7 +151,7 @@ describe('S3BucketPolicyProvider', () => {
           })
         )
       ).rejects.toThrow(
-        /Cannot determine bucket name for AWS::S3::BucketPolicy 'MyBucketPolicy'.*MyStack-MyBucketPolicy-1ABCDEFGHIJKL.*--resource MyBucketPolicy=<bucketName>/s
+        /Cannot determine bucket name for AWS::S3::BucketPolicy MyBucketPolicy\..*MyStack-MyBucketPolicy-1ABCDEFGHIJKL.*--resource MyBucketPolicy='<bucketName>'/s
       );
     });
 
@@ -165,7 +171,7 @@ describe('S3BucketPolicyProvider', () => {
           })
         )
       ).rejects.toThrow(
-        /Cannot determine bucket name.*Properties\.Bucket=\{"Ref":"MyBucket"\}.*--resource MyBucketPolicy=<bucketName>/s
+        /Cannot determine bucket name.*Properties\.Bucket=\{"Ref":"MyBucket"\}.*--resource MyBucketPolicy='<bucketName>'/s
       );
     });
 
@@ -175,7 +181,7 @@ describe('S3BucketPolicyProvider', () => {
           makeInput({ properties: { PolicyDocument: { Version: '2012-10-17', Statement: [] } } })
         )
       ).rejects.toThrow(
-        /Cannot determine bucket name.*Properties\.Bucket is missing.*--resource MyBucketPolicy=<bucketName>/s
+        /Cannot determine bucket name.*Properties\.Bucket is missing.*--resource MyBucketPolicy='<bucketName>'/s
       );
     });
 
@@ -192,5 +198,54 @@ describe('S3BucketPolicyProvider', () => {
         .catch(() => undefined);
       expect(mockSend).not.toHaveBeenCalled();
     });
+  });
+  describe('import refusal paste safety (go-to-k/cdkd#4226)', () => {
+    async function refusal(overrides: Record<string, unknown>): Promise<string> {
+      const input = {
+        logicalId: 'P',
+        resourceType: 'AWS::S3::BucketPolicy',
+        stackName: 'S',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+      const err: unknown = await provider.import(input as never).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err, JSON.stringify(overrides)).toBeInstanceOf(Error);
+      return (err as Error).message;
+    }
+
+    it('shows no payload logical id, type, supplied id or Bucket value beside its --resource remedy', async () => {
+      // The refusal ends in a `--resource` remedy. Pre-fix it printed the
+      // logical id inside cdkd's own `'...'` and raw in the fragment, the
+      // supplied id inside `'...'`, and the Bucket value JSON-quoted, where a
+      // shell still expands `$( )`; each payload family ran when pasted.
+      for (const { value } of PASTE_PAYLOADS) {
+        const byId = await refusal({ logicalId: value });
+        const byType = await refusal({ resourceType: value });
+        const bySupplied = await refusal({ knownPhysicalId: value });
+        const byLiteral = await refusal({ properties: { Bucket: value } });
+        const byIntrinsic = await refusal({ properties: { Bucket: { Ref: value } } });
+        expect(byId, value).toContain('AWS::S3::BucketPolicy a logical id that is not a plain identifier.');
+        expect(byId, value).toContain("--resource '<logicalId>'='<bucketName>'");
+        expect(byType, value).toContain(
+          'for (resource type not shown: it is not a plain identifier) P.'
+        );
+        expect(bySupplied, value).toContain(
+          'Got knownPhysicalId=(not shown: it is not a plain identifier)'
+        );
+        for (const message of [byLiteral, byIntrinsic]) {
+          expect(message, value).toContain('Properties.Bucket (not shown: it is not a plain identifier)');
+        }
+        withPasteDir((dir) => {
+          for (const message of [byId, byType, bySupplied, byLiteral, byIntrinsic]) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
   });
 });

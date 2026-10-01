@@ -9,6 +9,8 @@ import {
   waitUntilStackDeleteComplete,
 } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../utils/logger.js';
+import { isPasteableIdent } from '../../utils/display-safe.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { STABLE_TERMINAL_STATUSES } from '../cfn-stack-states.js';
 import {
@@ -1016,11 +1018,20 @@ export async function tryGetCloudFormationResourceMap(
       return null;
     }
     const reason = err instanceof Error ? err.message : String(err);
+    // The stack name is shown only when plain and described otherwise, and
+    // AWS's message (which can echo it) ends its own line, so the `--resource`
+    // remedy starts the next one, with its holes quoted (go-to-k/cdkd#4226):
+    // inside cdkd's own `'...'` a `'` in the name closed the quote, a
+    // JSON-quoted `$( )` still runs when pasted, and a bare `<physicalId>`
+    // redirects.
+    const subject = isPasteableIdent(stackName)
+      ? `CloudFormation stack '${stackName}'`
+      : 'a CloudFormation stack whose name is not a plain identifier';
     logger.warn(
-      `Could not read CloudFormation stack '${stackName}' to resolve physical IDs (${reason}). ` +
+      `Could not read ${subject} to resolve physical IDs (${reason}).\n` +
         `Falling back to per-resource lookup; resources whose physical name CloudFormation ` +
         `generated may be reported as not found. Grant cloudformation:DescribeStackResources, ` +
-        `or pass --resource <LogicalId>=<physicalId> for those resources.`
+        `or pass --resource ${commandHole('LogicalId')}=${commandHole('physicalId')} for those resources.`
     );
     return null;
   }

@@ -594,7 +594,7 @@ if [[ "${DIFF_OUT_P3A}" != *'          old: "***"'* ]] \
   exit 1
 fi
 # The diff's own --verbose replacement line, which Phase 3 checks on the deploy.
-DIFF_REPLACE_LINE="Property TopicName of AWS::SNS::Topic requires replacement (*** -> \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\")"
+DIFF_REPLACE_LINE="Property TopicName of AWS::SNS::Topic requires replacement (from *** to \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\")"
 if [[ "${DIFF_OUT_P3A}" != *"${DIFF_REPLACE_LINE}"* ]]; then
   echo "FAIL: 'cdkd diff --verbose' does not print the masked 'requires replacement' line for NoEchoRenamed (issue #4049)" >&2
   diag_output "$(grep -F 'requires replacement' <<< "${DIFF_OUT_P3A}" || true)"
@@ -648,7 +648,7 @@ if [[ "${P3_REPLACE_LINES}" == *"${TOKEN}"* ]]; then
 fi
 # The masked line, whole: the new name masked, the old side withheld. The
 # SENTINEL is the engine's own replacement line, which carries no value.
-REPLACE_LINE="Property TopicName of AWS::SNS::Topic requires replacement (*** -> \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\")"
+REPLACE_LINE="Property TopicName of AWS::SNS::Topic requires replacement (from *** to \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\")"
 if [[ "${DEPLOY_OUT_P3}" != *"${REPLACE_LINE}"* ]]; then
   if [[ "${DEPLOY_OUT_P3}" == *"Replacing NoEchoRenamed (AWS::SNS::Topic)"* ]]; then
     echo "FAIL: NoEchoRenamed was replaced but the --verbose log carries no masked 'requires replacement' line for it (issue #4049)" >&2
@@ -691,7 +691,7 @@ if [[ "${P4_REPLACE_LINES}" == *"${TOKEN}"* ]]; then
   echo "FAIL: the Phase 4 'requires replacement' line carries the NoEcho value in plaintext (issue #4049)" >&2
   exit 1
 fi
-REVERT_LINE="Property TopicName of AWS::SNS::Topic requires replacement (\"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\" -> \"cdkd-test-noecho-rename-${ACCOUNT_ID}-a\")"
+REVERT_LINE="Property TopicName of AWS::SNS::Topic requires replacement (from \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\" to \"cdkd-test-noecho-rename-${ACCOUNT_ID}-a\")"
 if [[ "${DEPLOY_OUT_P4}" != *"${REVERT_LINE}"* ]]; then
   if [[ "${DEPLOY_OUT_P4}" == *"Replacing NoEchoRenamed (AWS::SNS::Topic)"* ]]; then
     echo "FAIL: NoEchoRenamed was replaced back but its 'requires replacement' line does not mask the old name (issue #4049)" >&2

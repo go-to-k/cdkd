@@ -28,6 +28,12 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { SQSQueuePolicyProvider } from '../../../src/provisioning/providers/sqs-queue-policy-provider.js';
 
 describe('SQSQueuePolicyProvider', () => {
@@ -109,7 +115,7 @@ describe('SQSQueuePolicyProvider', () => {
           })
         )
       ).rejects.toThrow(
-        /Cannot determine queue URL for AWS::SQS::QueuePolicy 'MyQueuePolicy'.*MyStack-MyQueuePolicy-1ABCDEFGHIJKL.*--resource MyQueuePolicy=<queueUrl>/s
+        /Cannot determine queue URL for AWS::SQS::QueuePolicy MyQueuePolicy\..*MyStack-MyQueuePolicy-1ABCDEFGHIJKL.*--resource MyQueuePolicy='<queueUrl>'/s
       );
     });
 
@@ -129,7 +135,7 @@ describe('SQSQueuePolicyProvider', () => {
           })
         )
       ).rejects.toThrow(
-        /Cannot determine queue URL.*Properties\.Queues\[0\]=\{"Ref":"MyQueue"\}.*--resource MyQueuePolicy=<queueUrl>/s
+        /Cannot determine queue URL.*Properties\.Queues\[0\]=\{"Ref":"MyQueue"\}.*--resource MyQueuePolicy='<queueUrl>'/s
       );
     });
 
@@ -139,7 +145,7 @@ describe('SQSQueuePolicyProvider', () => {
           makeInput({ properties: { PolicyDocument: { Version: '2012-10-17', Statement: [] } } })
         )
       ).rejects.toThrow(
-        /Cannot determine queue URL.*Properties\.Queues is missing or empty.*--resource MyQueuePolicy=<queueUrl>/s
+        /Cannot determine queue URL.*Properties\.Queues is missing or empty.*--resource MyQueuePolicy='<queueUrl>'/s
       );
     });
 
@@ -156,5 +162,57 @@ describe('SQSQueuePolicyProvider', () => {
         .catch(() => undefined);
       expect(mockSend).not.toHaveBeenCalled();
     });
+  });
+  describe('import refusal paste safety (go-to-k/cdkd#4226)', () => {
+    async function refusal(overrides: Record<string, unknown>): Promise<string> {
+      const input = {
+        logicalId: 'P',
+        resourceType: 'AWS::SQS::QueuePolicy',
+        stackName: 'S',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+      const err: unknown = await provider.import(input as never).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err, JSON.stringify(overrides)).toBeInstanceOf(Error);
+      return (err as Error).message;
+    }
+
+    it('shows no payload logical id, type, region, supplied id or Queues value beside its --resource remedy', async () => {
+      // The refusal ends in a `--resource` remedy. Pre-fix it printed the
+      // logical id inside cdkd's own `'...'` and raw in the fragment, the
+      // supplied id inside `'...'`, and the Queues value JSON-quoted, where a
+      // shell still expands `$( )`; each payload family ran when pasted.
+      for (const { value } of PASTE_PAYLOADS) {
+        const byId = await refusal({ logicalId: value });
+        const byType = await refusal({ resourceType: value });
+        // The region comes from the cloud assembly's environment, unvalidated.
+        const byRegion = await refusal({ region: value });
+        const bySupplied = await refusal({ knownPhysicalId: value });
+        const byLiteral = await refusal({ properties: { Queues: [value] } });
+        const byIntrinsic = await refusal({ properties: { Queues: [{ Ref: value }] } });
+        expect(byId, value).toContain('AWS::SQS::QueuePolicy a logical id that is not a plain identifier.');
+        expect(byId, value).toContain("--resource '<logicalId>'='<queueUrl>'");
+        expect(byType, value).toContain(
+          'for (resource type not shown: it is not a plain identifier) P.'
+        );
+        expect(byRegion, value).toContain("'<region>'");
+        expect(bySupplied, value).toContain(
+          'Got knownPhysicalId=(not shown: it is not a plain identifier)'
+        );
+        for (const message of [byLiteral, byIntrinsic]) {
+          expect(message, value).toContain('Properties.Queues[0] (not shown: it is not a plain identifier)');
+        }
+        withPasteDir((dir) => {
+          for (const message of [byId, byType, byRegion, bySupplied, byLiteral, byIntrinsic]) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
   });
 });

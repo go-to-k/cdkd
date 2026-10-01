@@ -1037,7 +1037,7 @@ when a path resolves to a template already on the same nesting chain:
 
 ```text
 SynthesisError: The nested template tree under stack Parent contains a
-cycle: Child (/path/to/cdk.out/child.json) -> Loop
+cycle: Child (/path/to/cdk.out/child.json) then Loop
 (/path/to/cdk.out/child.json). Nested stack Loop (declared in stack
 Parent~Child) resolves to a template that is already on that nesting chain,
 so its Metadata['aws:asset:path'] closes a cycle. CDK emits an acyclic nested

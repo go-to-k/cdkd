@@ -14,8 +14,10 @@ import {
   isUpdateUnsupportedError,
   markNonRetryable,
   markRedactedCause,
+  hasRedactedCause,
   retryClassificationText,
   markNameCollision,
+  wrapMaskedAwsError,
 } from '../../../src/deployment/retryable-errors.js';
 import { ccUnsupportedActionError, handleErrorWrapper } from '../_cc-unsupported-action.js';
 import {
@@ -2353,6 +2355,38 @@ describe('retryClassificationText survives a value String() cannot convert', () 
       retryClassificationText(new Error('Service returned 429 Too Many Requests'))
     ).toContain('Too Many Requests');
     expect(retryClassificationText(new Error(''))).toBe('');
+  });
+});
+
+describe('wrapMaskedAwsError (issue #4244)', () => {
+  const PENDING = 'The function is currently in the following state: Pending';
+  const maskPending = (text: string): string => text.replaceAll('Pending', '***');
+  const wrap =
+    (cause: unknown) =>
+    (text: string): Error =>
+      new Error(`Failed to create X: ${text}`, { cause });
+
+  it('builds from the MASKED text and stamps the wrap when the mask changed it', () => {
+    const cause = new Error(PENDING);
+    const wrapped = wrapMaskedAwsError(maskPending, cause, wrap(cause));
+    expect(wrapped.message).toBe(
+      'Failed to create X: The function is currently in the following state: ***'
+    );
+    expect(hasRedactedCause(wrapped)).toBe(true);
+    expect(isRetryableTransientError(wrapped, retryClassificationText(wrapped))).toBe(true);
+  });
+
+  it('leaves the wrap unstamped when the mask changed nothing', () => {
+    const cause = new Error('Bad request parameter');
+    const wrapped = wrapMaskedAwsError(maskPending, cause, wrap(cause));
+    expect(wrapped.message).toBe('Failed to create X: Bad request parameter');
+    expect(hasRedactedCause(wrapped)).toBe(false);
+  });
+
+  it('reads a non-Error value as String() would', () => {
+    const wrapped = wrapMaskedAwsError(maskPending, 'state: Pending', wrap(undefined));
+    expect(wrapped.message).toBe('Failed to create X: state: ***');
+    expect(hasRedactedCause(wrapped)).toBe(true);
   });
 });
 

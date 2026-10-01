@@ -28,7 +28,7 @@ import { Construct } from 'constructs';
  * - `NoEchoRenamed` (go-to-k/cdkd#4049): an SNS topic whose create-only
  *   `TopicName` is a literal, and under `CDKD_TEST_NOECHO_RENAME=true` embeds
  *   the token, so that redeploy prints the diff's `--verbose`
- *   `requires replacement (<old> -> <new>)` line over it.
+ *   `requires replacement (from <old> to <new>)` line over it.
  * - `NoEchoAliasProbe` (go-to-k/cdkd#4043): the output's `Export.Name` IS a
  *   second `NoEcho` parameter (`CDKD_TEST_NOECHO_ALIAS_TOKEN`), so every
  *   deploy refuses the alias: it reaches neither state nor the exports index,

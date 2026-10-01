@@ -131,7 +131,7 @@ describe('LogsLogGroupProvider LogGroupClass update guard', () => {
         { LogGroupClass: 'STANDARD', RetentionInDays: 30 }
       )
       .catch((e: Error) => e);
-    expect((forward as Error).message).toMatch(/'STANDARD' -> 'INFREQUENT_ACCESS'/);
+    expect((forward as Error).message).toMatch(/\(from STANDARD to INFREQUENT_ACCESS\)/);
 
     const backward = await provider
       .update(
@@ -142,7 +142,7 @@ describe('LogsLogGroupProvider LogGroupClass update guard', () => {
         { LogGroupClass: 'INFREQUENT_ACCESS' }
       )
       .catch((e: Error) => e);
-    expect((backward as Error).message).toMatch(/'INFREQUENT_ACCESS' -> 'STANDARD'/);
+    expect((backward as Error).message).toMatch(/\(from INFREQUENT_ACCESS to STANDARD\)/);
   });
 
   it('names --force-stateful-recreation when the log group retains data (stateful guard)', async () => {
@@ -305,7 +305,7 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
     expect(message).not.toMatch(/stops tracking/);
     // The shared tail is still there — the protection arm must not lose it.
     expect(message).toMatch(/no per-resource granularity/i);
-    expect(message).toMatch(/'STANDARD' -> 'INFREQUENT_ACCESS'/);
+    expect(message).toMatch(/\(from STANDARD to INFREQUENT_ACCESS\)/);
   });
 
   it('treats the boolean-as-string shape `"true"` as protected', async () => {

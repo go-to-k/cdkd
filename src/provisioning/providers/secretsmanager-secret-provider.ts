@@ -24,6 +24,7 @@ import {
 } from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -406,12 +407,17 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create secret ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        name,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create secret ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            name,
+            cause
+          )
       );
     }
   }
@@ -661,14 +667,34 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update secret ${logicalId}: ${v(error instanceof Error ? error.message : String(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update secret ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * through the operation's masker (issue #2177). The `cause` stays unmasked,
+   * and a message the mask changed is stamped so the retry classifiers read
+   * that chain (`wrapMaskedAwsError`, issue #4244). A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
   }
 
   /**

@@ -1643,7 +1643,7 @@ export async function computeStackDiff(
     canonicalizeProperties,
     undefined,
     undefined,
-    // `--verbose`'s `requires replacement (<old> -> <new>)` line prints
+    // `--verbose`'s `requires replacement (from <old> to <new>)` line prints
     // resolved values (go-to-k/cdkd#4049).
     maskForLog
   );

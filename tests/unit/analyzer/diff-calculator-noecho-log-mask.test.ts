@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // go-to-k/cdkd#4049: the deploy's diff resolver resolves a `Ref` to a `NoEcho`
 // parameter to its plaintext and records it as a LOG-ONLY needle. The
-// calculator's `requires replacement (<old> -> <new>)` debug line prints
+// calculator's `requires replacement (from <old> to <new>)` debug line prints
 // resolved values, so it masks with the printing masker the caller passes,
 // while the changes it RETURNS keep the values unmasked.
 const logLines = vi.hoisted(() => [] as string[]);
@@ -117,7 +117,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
     expect(changes.get('R')?.propertyChanges?.[0]?.requiresReplacement).toBe(true);
     const line = replacementLine();
     expect(line).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement (${SECRET_MASK} -> "${SECRET_MASK}")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from ${SECRET_MASK} to "${SECRET_MASK}")`
     );
     // The PREVIOUS value is no needle (only the current one is recorded), so
     // only the withholding keeps it out.
@@ -142,7 +142,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     const line = replacementLine();
-    expect(line).toContain(`-> "p-${SECRET_MASK}")`);
+    expect(line).toContain(`to "p-${SECRET_MASK}")`);
     expect(line).not.toContain(needle);
     expect(line).not.toContain(JSON.stringify(needle).slice(1, -1));
   });
@@ -159,7 +159,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     const line = replacementLine();
-    expect(line).toContain(`-> {"Port":"${SECRET_MASK}"})`);
+    expect(line).toContain(`to {"Port":"${SECRET_MASK}"})`);
     expect(line).not.toContain('739');
   });
 
@@ -175,7 +175,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     expect(replacementLine()).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement (${SECRET_MASK} -> {"Flag":"${SECRET_MASK}"})`
+      `Property Name of AWS::SSM::Parameter requires replacement (from ${SECRET_MASK} to {"Flag":"${SECRET_MASK}"})`
     );
   });
 
@@ -191,7 +191,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     expect(replacementLine()).toBe(
-      'Property Name of AWS::SSM::Parameter requires replacement (undefined -> "new-name")'
+      'Property Name of AWS::SSM::Parameter requires replacement (from undefined to "new-name")'
     );
   });
 
@@ -215,8 +215,8 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     const line = replacementLine();
-    expect(line).toContain('requires replacement ({"a":');
-    expect(line).not.toContain(`requires replacement (${SECRET_MASK} ->`);
+    expect(line).toContain('requires replacement (from {"a":');
+    expect(line).not.toContain(`requires replacement (from ${SECRET_MASK} to`);
   });
 
   it('masks a needle in the property KEY, which only the finished line carries', async () => {
@@ -232,7 +232,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     expect(replacementLine()).toBe(
-      `Property ${SECRET_MASK} of AWS::SSM::Parameter requires replacement ("old-name" -> "new-name")`
+      `Property ${SECRET_MASK} of AWS::SSM::Parameter requires replacement (from "old-name" to "new-name")`
     );
   });
 
@@ -261,7 +261,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     expect(replacementLine()).toBe(
-      `Property ${SECRET_MASK} of Custom::Thing requires replacement ("a" -> "b")`
+      `Property ${SECRET_MASK} of Custom::Thing requires replacement (from "a" to "b")`
     );
   });
 
@@ -288,7 +288,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     expect(replacementLine()).toBe(
-      `Property Prop of ${SECRET_MASK} requires replacement ("a" -> "b")`
+      `Property Prop of ${SECRET_MASK} requires replacement (from "a" to "b")`
     );
   });
 
@@ -305,7 +305,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     expect(replacementLine()).toBe(
-      'Property Name of AWS::SSM::Parameter requires replacement ("old-name" -> "new-name")'
+      'Property Name of AWS::SSM::Parameter requires replacement (from "old-name" to "new-name")'
     );
   });
 
@@ -322,7 +322,7 @@ describe('DiffCalculator - the replacement debug line masks a NoEcho value (go-t
       createSecretMasker(bag)
     );
     expect(replacementLine()).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement ("${SECRET_MASK}" -> "literal-name")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from "${SECRET_MASK}" to "literal-name")`
     );
   });
 

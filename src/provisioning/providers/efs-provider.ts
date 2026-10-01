@@ -48,6 +48,7 @@ import {
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import type {
   ResourceProvider,
@@ -58,7 +59,11 @@ import type {
   CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
-import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
@@ -115,16 +120,6 @@ function sameRootDirectory(
     want.OwnerGid === have.OwnerGid &&
     mode(want.Permissions) === mode(have.Permissions)
   );
-}
-
-/**
- * A caught error's text, masked BEFORE it joins a `create()` / `update()`
- * failure message (issue #2177). AWS quotes a rejected request value back
- * (a subnet, a KMS key, a policy), and those values come off the RESOLVED
- * `properties` bag. Same text as the `instanceof Error ?` ternary it replaced.
- */
-function awsErrorText(error: unknown, log: MaskedLogSinks): string {
-  return log.mask(error instanceof Error ? error.message : String(error));
 }
 
 /**
@@ -197,6 +192,22 @@ export class EFSProvider implements ResourceProvider {
       });
     }
     return this.client;
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked (issue #2177): AWS quotes a rejected request value back (a subnet,
+   * a KMS key, a policy) off the RESOLVED `properties` bag. The `cause` stays
+   * unmasked, and a message the mask changed is stamped so the retry
+   * classifiers read that chain (`wrapMaskedAwsError`, issue #4244). A method,
+   * so `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -427,12 +438,17 @@ export class EFSProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update EFS FileSystem ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EFS FileSystem ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -469,12 +485,17 @@ export class EFSProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update EFS MountTarget ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EFS MountTarget ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -625,12 +646,17 @@ export class EFSProvider implements ResourceProvider {
       }
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create EFS FileSystem ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create EFS FileSystem ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -935,12 +961,17 @@ export class EFSProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create EFS MountTarget ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create EFS MountTarget ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1205,12 +1236,17 @@ export class EFSProvider implements ResourceProvider {
       // `fsx-filesystem-provider.ts`.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create EFS AccessPoint ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create EFS AccessPoint ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }

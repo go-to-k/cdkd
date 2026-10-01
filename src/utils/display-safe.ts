@@ -626,8 +626,23 @@ export function displayStackName(value: unknown): string {
  * because the round-trip alone admits `displayIdent`'s own cut output
  * (go-to-k/cdkd#4109, go-to-k/cdkd#4115).
  */
-export function plainIdentOr(value: string, description: string): string {
-  return !/\s/.test(value) && displayIdent(value) === value ? value : description;
+export function plainIdentOr(
+  value: string,
+  description: string,
+  opts?: { maxCodePoints?: number }
+): string {
+  return isPlainIdent(value, opts) ? value : description;
+}
+
+/**
+ * The predicate {@link plainIdentOr} answers with: no whitespace, and
+ * {@link displayIdent} renders the value unchanged under the caller's cap.
+ * One spelling, so a caller needing a wider cap (an ARN, at
+ * `SECRET_REF_MAX_CODE_POINTS`) passes it here instead of re-spelling the test
+ * (go-to-k/cdkd#4226).
+ */
+export function isPlainIdent(value: string, opts?: { maxCodePoints?: number }): boolean {
+  return !/\s/.test(value) && displayIdent(value, opts) === value;
 }
 
 /**

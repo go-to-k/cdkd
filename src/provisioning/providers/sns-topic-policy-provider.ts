@@ -3,6 +3,16 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { logicalIdShown } from '../composite-id.js';
+import { isPasteableIdent } from '../../utils/display-safe.js';
+import {
+  isPlainImportValue,
+  refusalTypeShown,
+  isPlainImportJson,
+  remedyLogicalId,
+  VALUE_NOT_SHOWN,
+} from '../import-helpers.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -334,17 +344,24 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     //    CFn-generated name into cdkd state for any caller passing
     //    `knownPhysicalId`. Naming the explicit override is the
     //    load-bearing recovery hint.
+    //
+    //    This line carries a `--resource` remedy, so the logical id, the
+    //    supplied id and the template's Topics value are each shown only when
+    //    plain and described otherwise, and the fragment holes a logical id
+    //    that is not plain (go-to-k/cdkd#4226): printed raw or inside cdkd's
+    //    own quotes, a `;`, `$( )` or `'` in one of them ran when the line was
+    //    pasted.
     const knownNote = input.knownPhysicalId
-      ? ` Got knownPhysicalId='${input.knownPhysicalId}' (not a comma-joined list of SNS topic ARNs; CloudFormation returns the policy resource NAME for AWS::SNS::TopicPolicy, which is not the operational identifier).`
+      ? ` Got knownPhysicalId=${isPlainImportValue(input.knownPhysicalId) ? `'${input.knownPhysicalId}'` : VALUE_NOT_SHOWN} (not a comma-joined list of SNS topic ARNs; CloudFormation returns the policy resource NAME for AWS::SNS::TopicPolicy, which is not the operational identifier).`
       : '';
     const topicsNote =
       Array.isArray(topics) && topics.length > 0
-        ? ` Properties.Topics=${JSON.stringify(topics)} did not resolve to a list of literal topic ARNs (intrinsic-valued entries like {Ref: <Topic>} are not resolved at import time).`
+        ? ` Properties.Topics${isPlainImportJson(topics) ? `=${JSON.stringify(topics)}` : ` ${VALUE_NOT_SHOWN}`} did not resolve to a list of literal topic ARNs (intrinsic-valued entries like {Ref: '<Topic>'} are not resolved at import time).`
         : ' Properties.Topics is missing or empty.';
     throw new Error(
-      `Cannot determine topic ARNs for ${input.resourceType} '${input.logicalId}'.${knownNote}${topicsNote} ` +
-        `Re-run with --resource ${input.logicalId}=<comma-joined-topic-ARNs> ` +
-        `(e.g. arn:aws:sns:${input.region}:<account>:<topic-name>) to point cdkd at the topic(s) this policy is attached to.`
+      `Cannot determine topic ARNs for ${refusalTypeShown(input.resourceType)} ${logicalIdShown(input.logicalId)}.${knownNote}${topicsNote} ` +
+        `Re-run with --resource ${remedyLogicalId(input.logicalId)}=${commandHole('comma-joined-topic-ARNs')} ` +
+        `(e.g. arn:aws:sns:${isPasteableIdent(input.region) ? input.region : commandHole('region')}:'<account>':'<topic-name>') to point cdkd at the topic(s) this policy is attached to.`
     );
   }
 

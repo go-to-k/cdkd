@@ -28,6 +28,12 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { SNSTopicPolicyProvider } from '../../../src/provisioning/providers/sns-topic-policy-provider.js';
 
 describe('SNSTopicPolicyProvider', () => {
@@ -137,7 +143,7 @@ describe('SNSTopicPolicyProvider', () => {
           })
         )
       ).rejects.toThrow(
-        /Cannot determine topic ARNs for AWS::SNS::TopicPolicy 'MyTopicPolicy'.*MyStack-MyTopicPolicy-1ABCDEFGHIJKL.*--resource MyTopicPolicy=<comma-joined-topic-ARNs>/s
+        /Cannot determine topic ARNs for AWS::SNS::TopicPolicy MyTopicPolicy\..*MyStack-MyTopicPolicy-1ABCDEFGHIJKL.*--resource MyTopicPolicy='<comma-joined-topic-ARNs>'/s
       );
     });
 
@@ -157,7 +163,7 @@ describe('SNSTopicPolicyProvider', () => {
           })
         )
       ).rejects.toThrow(
-        /Cannot determine topic ARNs.*Properties\.Topics=\[\{"Ref":"MyTopic"\}\].*--resource MyTopicPolicy=<comma-joined-topic-ARNs>/s
+        /Cannot determine topic ARNs.*Properties\.Topics=\[\{"Ref":"MyTopic"\}\].*--resource MyTopicPolicy='<comma-joined-topic-ARNs>'/s
       );
     });
 
@@ -167,7 +173,7 @@ describe('SNSTopicPolicyProvider', () => {
           makeInput({ properties: { PolicyDocument: { Version: '2012-10-17', Statement: [] } } })
         )
       ).rejects.toThrow(
-        /Cannot determine topic ARNs.*Properties\.Topics is missing or empty.*--resource MyTopicPolicy=<comma-joined-topic-ARNs>/s
+        /Cannot determine topic ARNs.*Properties\.Topics is missing or empty.*--resource MyTopicPolicy='<comma-joined-topic-ARNs>'/s
       );
     });
 
@@ -184,5 +190,57 @@ describe('SNSTopicPolicyProvider', () => {
         .catch(() => undefined);
       expect(mockSend).not.toHaveBeenCalled();
     });
+  });
+  describe('import refusal paste safety (go-to-k/cdkd#4226)', () => {
+    async function refusal(overrides: Record<string, unknown>): Promise<string> {
+      const input = {
+        logicalId: 'P',
+        resourceType: 'AWS::SNS::TopicPolicy',
+        stackName: 'S',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+      const err: unknown = await provider.import(input as never).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err, JSON.stringify(overrides)).toBeInstanceOf(Error);
+      return (err as Error).message;
+    }
+
+    it('shows no payload logical id, type, region, supplied id or Topics value beside its --resource remedy', async () => {
+      // The refusal ends in a `--resource` remedy. Pre-fix it printed the
+      // logical id inside cdkd's own `'...'` and raw in the fragment, the
+      // supplied id inside `'...'`, and the Topics value JSON-quoted, where a
+      // shell still expands `$( )`; each payload family ran when pasted.
+      for (const { value } of PASTE_PAYLOADS) {
+        const byId = await refusal({ logicalId: value });
+        const byType = await refusal({ resourceType: value });
+        // The region comes from the cloud assembly's environment, unvalidated.
+        const byRegion = await refusal({ region: value });
+        const bySupplied = await refusal({ knownPhysicalId: value });
+        const byLiteral = await refusal({ properties: { Topics: [value] } });
+        const byIntrinsic = await refusal({ properties: { Topics: [{ Ref: value }] } });
+        expect(byId, value).toContain('AWS::SNS::TopicPolicy a logical id that is not a plain identifier.');
+        expect(byId, value).toContain("--resource '<logicalId>'='<comma-joined-topic-ARNs>'");
+        expect(byType, value).toContain(
+          'for (resource type not shown: it is not a plain identifier) P.'
+        );
+        expect(byRegion, value).toContain("'<region>'");
+        expect(bySupplied, value).toContain(
+          'Got knownPhysicalId=(not shown: it is not a plain identifier)'
+        );
+        for (const message of [byLiteral, byIntrinsic]) {
+          expect(message, value).toContain('Properties.Topics (not shown: it is not a plain identifier)');
+        }
+        withPasteDir((dir) => {
+          for (const message of [byId, byType, byRegion, bySupplied, byLiteral, byIntrinsic]) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
   });
 });

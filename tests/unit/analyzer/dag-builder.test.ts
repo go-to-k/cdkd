@@ -481,10 +481,10 @@ describe('DagBuilder', () => {
 
       const edge = debugSpy.mock.calls
         .map((c) => String(c[0]))
-        .filter((line) => line.startsWith('Added edge:') || line.startsWith('Skipped Parameter'));
+        .filter((line) => line.startsWith('Added edge from ') || line.startsWith('Skipped Parameter'));
       // BOUND THE ARM: one edge line and one skipped-Parameter line, or the
       // byte assertions below hold over an empty string.
-      expect(edge.filter((l) => l.startsWith('Added edge:'))).toHaveLength(1);
+      expect(edge.filter((l) => l.startsWith('Added edge from '))).toHaveLength(1);
       expect(edge.filter((l) => l.startsWith('Skipped Parameter'))).toHaveLength(1);
       const joined = edge.join('\n');
       expect(joined).toContain('Parent');

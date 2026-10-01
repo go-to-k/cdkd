@@ -11,6 +11,15 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { logicalIdShown } from '../composite-id.js';
+import {
+  isPlainImportValue,
+  refusalTypeShown,
+  isPlainImportJson,
+  remedyLogicalId,
+  VALUE_NOT_SHOWN,
+} from '../import-helpers.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 
 /**
  * Matches a CloudFront Origin Access Identity (OAI) principal ARN, e.g.
@@ -524,16 +533,23 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     //    CFn-generated name into cdkd state for any caller passing
     //    `knownPhysicalId`. Naming the explicit override is the
     //    load-bearing recovery hint.
+    //
+    //    This line carries a `--resource` remedy, so the logical id, the
+    //    supplied id and the template's Bucket value are each shown only when
+    //    plain and described otherwise, and the fragment holes a logical id
+    //    that is not plain (go-to-k/cdkd#4226): printed raw or inside cdkd's
+    //    own quotes, a `;`, `$( )` or `'` in one of them ran when the line was
+    //    pasted.
     const knownNote = input.knownPhysicalId
-      ? ` Got knownPhysicalId='${input.knownPhysicalId}' (not a valid S3 bucket name; CloudFormation returns the policy resource NAME for AWS::S3::BucketPolicy, which is not the operational identifier).`
+      ? ` Got knownPhysicalId=${isPlainImportValue(input.knownPhysicalId) ? `'${input.knownPhysicalId}'` : VALUE_NOT_SHOWN} (not a valid S3 bucket name; CloudFormation returns the policy resource NAME for AWS::S3::BucketPolicy, which is not the operational identifier).`
       : '';
     const bucketNote =
       bucket !== undefined
-        ? ` Properties.Bucket=${JSON.stringify(bucket)} did not resolve to a literal bucket name (intrinsic-valued entries like {Ref: <Bucket>} are not resolved at import time).`
+        ? ` Properties.Bucket${isPlainImportJson(bucket) ? `=${JSON.stringify(bucket)}` : ` ${VALUE_NOT_SHOWN}`} did not resolve to a literal bucket name (intrinsic-valued entries like {Ref: '<Bucket>'} are not resolved at import time).`
         : ' Properties.Bucket is missing.';
     throw new Error(
-      `Cannot determine bucket name for ${input.resourceType} '${input.logicalId}'.${knownNote}${bucketNote} ` +
-        `Re-run with --resource ${input.logicalId}=<bucketName> ` +
+      `Cannot determine bucket name for ${refusalTypeShown(input.resourceType)} ${logicalIdShown(input.logicalId)}.${knownNote}${bucketNote} ` +
+        `Re-run with --resource ${remedyLogicalId(input.logicalId)}=${commandHole('bucketName')} ` +
         `(e.g. my-bucket-12345) to point cdkd at the bucket this policy is attached to.`
     );
   }

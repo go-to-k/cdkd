@@ -77,7 +77,8 @@ import {
   isPasteableIdent,
   safeMsg,
 } from '../../utils/display-safe.js';
-import { commandHole } from '../../utils/pasteable-command.js';
+import { commandHole, plainOrDescribed, quotedOrDescribed } from '../../utils/pasteable-command.js';
+import { remedyLogicalId } from '../../provisioning/import-helpers.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
@@ -705,12 +706,16 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       if (!selectiveMode) {
         // Auto / whole-stack: always destructive when state exists.
         if (!options.force) {
+          // Carries `--force` and a `--resource` fragment, so the stack name
+          // and region are shown only when plain and the fragment's holes are
+          // quoted (go-to-k/cdkd#4226): both come from the cloud assembly, and
+          // a bare `<physicalId>` redirects when pasted.
           throw new Error(
-            `State already exists for stack '${stackInfo.stackName}' (${targetRegion}). ` +
+            `State already exists for ${stackShown(stackInfo.stackName)} (${plainOrDescribed(targetRegion, 'region')}). ` +
               `Auto / whole-stack import rebuilds the entire resource map from the template, ` +
               `which would drop any state entry not re-imported. Pass --force to confirm. ` +
               `To add specific resources without affecting unlisted ones, use ` +
-              `--resource <id>=<physicalId> (selective merge — no --force needed).`
+              `--resource ${commandHole('id')}=${commandHole('physicalId')} (selective merge — no --force needed).`
           );
         }
       } else {
@@ -721,9 +726,11 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           Object.prototype.hasOwnProperty.call(existingState.resources, id)
         );
         if (conflicts.length > 0 && !options.force) {
+          // Names `--force` and `--resource`, so each id is shown only when
+          // plain (go-to-k/cdkd#4226).
           throw new Error(
             `Selective import would overwrite resource(s) already in state: ` +
-              `${conflicts.join(', ')}. ` +
+              `${conflicts.map((id) => plainOrDescribed(id, 'logical id')).join(', ')}. ` +
               `Pass --force to confirm the overwrite, or remove these IDs from --resource / --resource-mapping.`
           );
         }
@@ -746,10 +753,13 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // before they land in `overrides`.)
     for (const overrideId of overrides.keys()) {
       if (!templateLogicalIds.has(overrideId)) {
+        // The line opens with the `--resource` flag, so the requested id, the
+        // stack name and every template id listed are shown only when plain
+        // (go-to-k/cdkd#4226): a planted `A$(touch OWNED)` id ran when pasted.
         throw new Error(
-          `--resource / --resource-mapping references logical ID '${overrideId}' ` +
-            `which is not in the synthesized template for stack '${stackInfo.stackName}'. ` +
-            `Available IDs: ${[...templateLogicalIds].join(', ')}`
+          `--resource / --resource-mapping references logical ID ${quotedOrDescribed(overrideId, 'logical id')} ` +
+            `which is not in the synthesized template for ${stackShown(stackInfo.stackName)}. ` +
+            `Available IDs: ${[...templateLogicalIds].map((id) => plainOrDescribed(id, 'logical id')).join(', ')}`
         );
       }
     }
@@ -1148,6 +1158,18 @@ export interface CfnOverrideMergeStats {
   skippedNestedStackRow: number;
   /** CFn rows that survived both filters but were already in `overrides` (user-supplied wins). */
   overriddenByUser: number;
+}
+
+/**
+ * The stack as a refusal carrying a pasteable flag names it: `stack 'X'` when
+ * `isPasteableIdent` admits the name, otherwise a description
+ * (go-to-k/cdkd#4226). The name is the cloud assembly's, and a `'` in it
+ * closed cdkd's own quote on a line that also offers `--resource`.
+ */
+function stackShown(stackName: string): string {
+  return isPasteableIdent(stackName)
+    ? `stack '${stackName}'`
+    : 'a stack whose name is not a plain identifier';
 }
 
 /**
@@ -1559,7 +1581,7 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
         // (go-to-k/cdkd#3950).
         reason:
           'no matching AWS resource — pass --resource ' +
-          `${isPasteableIdent(logicalId) ? logicalId : commandHole('logicalId')}=${commandHole('physicalId')} ` +
+          `${remedyLogicalId(logicalId)}=${commandHole('physicalId')} ` +
           'to adopt it explicitly',
       };
     }
@@ -2504,11 +2526,18 @@ export async function resolveImportedProperties(
       // because a drain released on a spent budget under-redacts here, and
       // that is not a regression -- the merge base has no drain at all, so
       // its grace is zero unconditionally. Do not re-derive it as one.
+      //
+      // A line that displays template text carries no command to paste
+      // (go-to-k/cdkd#3950's S1 rule, go-to-k/cdkd#4226): the logical id and
+      // type are shown only when plain, and the resolver's message, which can
+      // quote any template value, ends its own line, so the remedies naming
+      // `cdkd destroy` / `cdkd orphan` / `cdkd import` start the next one. The
+      // parameter names on that line are shown only when plain too.
       logger.warn(
-        `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}. ` +
+        `Failed to resolve intrinsics in Properties for imported resource ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}.\n` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource from state with 'cdkd orphan <StackPath>/<Path/To/Resource>'.` +
           (unboundParameterNames.length > 0
-            ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
+            ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.map((name) => plainOrDescribed(name, 'parameter name')).join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
             : '')
       );
       threw = true;
@@ -3352,7 +3381,9 @@ export async function captureObservedForImportedResources(
         // Issue #2872: `delete`, so the key is ABSENT from the persisted JSON.
         delete resource.observedProperties;
         logger.debug(
-          `observedProperties capture SKIPPED for preserved ${logicalId} (${resource.resourceType}): a previous 'cdkd import' run refused this record's baseline and this run did not re-import it, so its recorded properties are still the ones that refusal distrusted. Re-import it, or deploy a change to it, to restore a baseline — unless its refusal is an unverifiable-parameter one, which only a replacement or a proving re-import discharges.`
+          // Names `cdkd import`, so the id and type are shown only when plain
+          // (go-to-k/cdkd#4226).
+          `observedProperties capture SKIPPED for preserved ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): a previous 'cdkd import' run refused this record's baseline and this run did not re-import it, so its recorded properties are still the ones that refusal distrusted. Re-import it, or deploy a change to it, to restore a baseline — unless its refusal is an unverifiable-parameter one, which only a replacement or a proving re-import discharges.`
         );
         return;
       }

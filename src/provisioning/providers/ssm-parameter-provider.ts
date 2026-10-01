@@ -37,6 +37,7 @@ import {
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -56,6 +57,21 @@ import type {
 export class SSMParameterProvider implements ResourceProvider {
   private ssmClient: SSMClient;
   private logger = getLogger().child('SSMParameterProvider');
+
+  /**
+   * A failure wrap quoting the caught error's text through the operation's
+   * masker (issue #2176), stamped when the mask changed it so the retry
+   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
+   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
+   * it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -438,24 +454,28 @@ export class SSMParameterProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        // Issue #2176: the AWS message is masked RAW, before interpolation.
-        // `PutParameter` quotes the offending `Name` / `Value` back on an
-        // `AllowedPattern` rejection, and this text reaches the durable
-        // `deployments/*.jsonl`. Stating precisely what this buys, because the
-        // obvious phrasing over-claims: an AWS SENTENCE never equals the
-        // plaintext, so this reaches `maskSecretsInText`'s SUBSTRING arm and
-        // its `MIN_NEEDLE_LENGTH` (4) floor still applies -- a 1-3 character
-        // secret is NOT covered here. It is masked before interpolation anyway
-        // so the engine is not the only boundary. The `cause` is left alone so
-        // the retry classifiers still see the original error object.
-        `Failed to create SSM parameter ${displaySafe(logicalId)}: ${mask(
-          error instanceof Error ? error.message : String(error)
-        )}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      // Issue #2176: the AWS message is masked RAW, before interpolation.
+      // `PutParameter` quotes the offending `Name` / `Value` back on an
+      // `AllowedPattern` rejection, and this text reaches the durable
+      // `deployments/*.jsonl`. Stating precisely what this buys, because the
+      // obvious phrasing over-claims: an AWS SENTENCE never equals the
+      // plaintext, so this reaches `maskSecretsInText`'s SUBSTRING arm and
+      // its `MIN_NEEDLE_LENGTH` (4) floor still applies -- a 1-3 character
+      // secret is NOT covered here. It is masked before interpolation anyway
+      // so the engine is not the only boundary. The `cause` stays unmasked,
+      // and a message the mask changed is stamped so the retry classifiers
+      // read that chain (`wrapMaskedError`, issue #4244).
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create SSM parameter ${displaySafe(logicalId)}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -584,24 +604,18 @@ export class SSMParameterProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        // Issue #2176: the AWS message is masked RAW, before interpolation.
-        // `PutParameter` quotes the offending `Name` / `Value` back on an
-        // `AllowedPattern` rejection, and this text reaches the durable
-        // `deployments/*.jsonl`. Stating precisely what this buys, because the
-        // obvious phrasing over-claims: an AWS SENTENCE never equals the
-        // plaintext, so this reaches `maskSecretsInText`'s SUBSTRING arm and
-        // its `MIN_NEEDLE_LENGTH` (4) floor still applies -- a 1-3 character
-        // secret is NOT covered here. It is masked before interpolation anyway
-        // so the engine is not the only boundary. The `cause` is left alone so
-        // the retry classifiers still see the original error object.
-        `Failed to update SSM parameter ${displaySafe(logicalId)}: ${mask(
-          error instanceof Error ? error.message : String(error)
-        )}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // Issue #2176 -- masked RAW and stamped, as in `create()`.
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update SSM parameter ${displaySafe(logicalId)}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -894,11 +908,13 @@ export class SSMParameterProvider implements ResourceProvider {
     const shown = explicitPlain ? explicit : 'not shown: it is not a plain identifier';
     const howToRead = readCommand
       ? ` Read the name AWS holds with: ${readCommand}`
-      : // The "via the console" wording the sibling sites use, with both reasons
-        // spelled out: this value is user-supplied, so either can fire here.
+      : // The "via the console" wording the sibling sites use (`UNNAMEABLE_ID_CLAUSE`),
+        // with its reasons spelled out: this value is user-supplied, so any of
+        // them can fire here (go-to-k/cdkd#4238).
         ' Read the name AWS holds via the console: the value cdkd was given cannot be reproduced ' +
         'safely on a command line (sanitizing would change it, so a command would read a ' +
-        'different parameter, or it holds a character a pasted shell line would act on).';
+        'different parameter, or it holds a character or prefix a pasted shell line, or the ' +
+        'AWS CLI itself, would act on).';
     throw new ProvisioningError(
       // The logical id and `explicit` are shown only when plain and described
       // otherwise (see `subject` / `shown` above). Neither ever sits inside a
