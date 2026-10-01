@@ -1096,7 +1096,7 @@ describe('INCOMPLETE producer-region evidence: a nested child whose parent is un
     const refusal = logLines.find((l) => l.includes('Rollback failed for Idp'));
     expect(refusal).toContain("property 'ProviderDetails.client_secret'");
     expect(refusal).toContain(SECRET_NAME);
-    expect(refusal).toContain("parent's cross-region reads are not known");
+    expect(refusal).toContain("cross-region reads its parent made are not known");
     expect(logLines.join('\n')).not.toContain(TOKYO_PASSWORD);
     expect(logLines.join('\n')).not.toContain(IRELAND_PASSWORD);
   });
@@ -1153,7 +1153,7 @@ describe('INCOMPLETE producer-region evidence: a nested child whose parent is un
     expect(result.failures).toBe(1);
     const refusal = logLines.find((l) => l.includes('Rollback failed for Idp'));
     expect(refusal).toContain(`producer region(s) on record: ${PRODUCER_REGION}`);
-    expect(refusal).not.toContain("parent's cross-region reads are not known");
+    expect(refusal).not.toContain("cross-region reads its parent made are not known");
   });
 
   it('the incomplete refusal carries ROLLBACK_SECRET_REGION_AMBIGUOUS, and none is thrown when complete', () => {

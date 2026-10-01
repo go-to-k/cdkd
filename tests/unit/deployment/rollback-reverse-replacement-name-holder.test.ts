@@ -379,9 +379,11 @@ describe('the unproven-holder refusal (#3979)', () => {
     expect(failed[0]).toContain('named no ProviderName');
     // Undecided, so it says so rather than claiming another holder -- once,
     // in the diagnosis, followed by the consequence (PR #4028 review nit).
-    expect(failed[0]).toContain(
-      'so cdkd cannot show that the new resource (idp-new) holds it — so if another resource holds it'
-    );
+    // The diagnosis is on its own line since go-to-k/cdkd#4214; the prose
+    // line states only the consequence.
+    expect(failed[0]).toContain('\nCollision diagnosis: ');
+    expect(failed[0]).toMatch(/so cdkd cannot show that the new resource \(idp-new\) holds it\n/);
+    expect(failed[0]).toContain('— so if another resource holds the name it collided on');
     expect(failed[0]).not.toContain('another resource holds the colliding name');
     expect(failed[0].split('cannot show that').length - 1).toBe(1);
     expect(failed[0]).toMatch(/\nTo orphan it: cdkd rollback --orphan Q$/);
@@ -765,7 +767,7 @@ describe('the holder refusal in a nested stack names the right command (#3979, #
     expect(failed).toHaveLength(1);
     expect(failed[0]).toContain('another resource holds the colliding name');
     expect(failed[0]).not.toContain('To orphan it:');
-    expect(failed[0]).toContain('re-run the top-level');
+    expect(failed[0]).toContain('re-run the rollback of the top-level stack');
   });
 
   it("in a nested child's own rollback the command names the child stack", async () => {

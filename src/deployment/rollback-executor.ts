@@ -49,6 +49,7 @@
 import {
   commandHole,
   pasteableCommand,
+  plainOrDescribed,
   quotedOrDescribed,
   withheldTargetClause,
 } from '../utils/pasteable-command.js';
@@ -103,7 +104,15 @@ import {
 import { getAwsClients } from '../utils/aws-clients.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { CdkdError } from '../utils/error-handler.js';
-import { displayAwsMessage, displayIdent, displaySafe } from '../utils/display-safe.js';
+import {
+  IDENT_MAX_CODE_POINTS,
+  ROLE_ARN_MAX_CODE_POINTS,
+  displayAwsMessage,
+  displayIdent,
+  displaySafe,
+  plainIdentOr,
+} from '../utils/display-safe.js';
+import { logicalIdShown, resourceTypeShown } from '../provisioning/composite-id.js';
 import { IntrinsicFunctionResolver, type ResolverContext } from './intrinsic-function-resolver.js';
 import {
   scrubResourceRecord,
@@ -352,8 +361,8 @@ function ownRemedyError<E extends Error>(error: E): E {
  * to remove (issue #3092). The exception is an error in
  * {@link OWN_REMEDY_ERRORS}, bounded by IDENTITY: only the three refusals this
  * module builds are registered, and every value in them is sanitized at the
- * throw (`safe()` for identifiers, {@link collisionText} for the AWS text), so
- * their one line break is cdkd's own, and rendering them per LINE keeps the
+ * throw (described or `safe()` for identifiers, {@link collisionLine} for the
+ * AWS text), so their line breaks are cdkd's own, and rendering them per LINE keeps the
  * `To orphan it:` remedy on a line of its own on the terminal (M1 of the
  * go-to-k/cdkd#3764 review). Each line is still sanitized. An error that
  * merely carries the same code — `deploy-engine.ts`'s collision refusal, or a
@@ -399,6 +408,19 @@ function collisionText(msg: string): string {
 }
 
 /**
+ * {@link collisionText} inside a JSON string boundary, for the refusals'
+ * `Underlying collision:` line (go-to-k/cdkd#4214). That line carries no
+ * command, but the provider's text can echo a payload logical id or name, and
+ * printed bare a `$( )` or a `;` in it ran when the line was pasted. Inside
+ * the boundary it is the classified display residual every `displayIdent`
+ * render shares (go-to-k/cdkd#3950), and JSON escaping keeps an embedded `"`
+ * from closing it.
+ */
+function collisionLine(maskedMsg: string): string {
+  return JSON.stringify(collisionText(maskedMsg));
+}
+
+/**
  * The one shape of `op.logicalId` this executor will print INSIDE a command it
  * invites the user to paste (`cdkd rollback --orphan <id>`): CloudFormation's
  * own logical-id charset and length. Stricter than "`safe()` is the identity
@@ -422,6 +444,113 @@ function refusalLogicalId(logicalId: unknown): string {
   return typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId)
     ? logicalId
     : 'a resource whose logical id is not a plain CloudFormation logical id';
+}
+
+/**
+ * How a message that also names a `cdkd` command or a `--flag` NAMES a logical
+ * id, outside the three `--orphan` refusals ({@link refusalLogicalId}): itself
+ * when `isPasteableIdent` admits it (`composite-id.ts`'s `logicalIdShown`,
+ * which keeps a hyphenated cdkd id legible), a description otherwise
+ * (go-to-k/cdkd#4214). `typeof` first, as {@link refusalLogicalId} does.
+ */
+function shownLogicalId(logicalId: unknown): string {
+  return typeof logicalId === 'string'
+    ? logicalIdShown(logicalId)
+    : 'a logical id that is not a plain identifier';
+}
+
+/** {@link shownLogicalId} for a journal `changeType`. */
+function shownChangeType(changeType: unknown): string {
+  return typeof changeType === 'string'
+    ? plainOrDescribed(changeType, 'change type')
+    : 'a change type that is not a plain identifier';
+}
+
+/**
+ * How the three reverse-replacement refusals, and the unroutable `reason`
+ * their first line quotes, name a resource TYPE: itself when it is a plain
+ * CloudFormation type name (`composite-id.ts`'s `resourceTypeShown` rule), a
+ * description otherwise. The type is journal text, and the line it sits on
+ * names `cdkd deploy` or `cdkd rollback` (go-to-k/cdkd#4214, the S1 rule of
+ * {@link refusalLogicalId}). `typeof` first: the in-process caller reaches
+ * this executor without the journal parser.
+ */
+function refusalResourceType(resourceType: unknown): string {
+  return typeof resourceType === 'string'
+    ? resourceTypeShown(resourceType)
+    : 'a resource type that is not a plain identifier';
+}
+
+/**
+ * `'value'` when `plainIdentOr` admits it — every character literal inside a
+ * single quote, and none of them a `'` — and a description otherwise, for a
+ * template- or state-sourced value quoted in a refusal that names a `cdkd`
+ * command (go-to-k/cdkd#4214). Wider than `quotedOrDescribed`, whose
+ * `isPasteableIdent` refuses the `/` a secret name or the `.` path a property
+ * legitimately carries: this value is SHOWN, never pasted as an argument.
+ */
+function quotedPlainOr(value: unknown, what: string): string {
+  // A property path carries `[<n>]` segments (`walk` builds `${path}[${i}]`),
+  // which `PLAIN_IDENT` refuses: stripped before the test, since a `[` or `]`
+  // is literal inside the single quotes (review of #4270).
+  // The cap on the WHOLE value too: `plainIdentOr` caps only what is left
+  // after the indexes are stripped (review of #4270).
+  if (typeof value !== 'string' || Array.from(value).length > IDENT_MAX_CODE_POINTS) {
+    return `a ${what} that is not a plain identifier`;
+  }
+  const unindexed = value.replace(/\[\d+\]/g, '');
+  return unindexed !== '' && plainIdentOr(unindexed, '') === unindexed
+    ? `'${value}'`
+    : `a ${what} that is not a plain identifier`;
+}
+
+/** What {@link refusalPhysicalId} prints for a physical id it will not show. */
+const DESCRIBED_PHYSICAL_ID = 'a physical id that is not a plain identifier';
+
+/**
+ * How the collision refusals name a physical id (already MASKED by the
+ * caller): itself when `displayIdent` is the identity on it at the role-ARN
+ * cap — an ARN, a URL or a bare name, which the operator needs to delete a
+ * resource by hand — and {@link DESCRIBED_PHYSICAL_ID} otherwise. It is state
+ * or journal text on a line that names a `cdkd` command (go-to-k/cdkd#4214):
+ * a JSON-quoted `$( )` id runs there when pasted into zsh.
+ *
+ * One exception keeps the mask legible: an id whose only non-plain characters
+ * are cdkd's own {@link SECRET_MASK} keeps `displayIdent`'s JSON render
+ * (`"***"`). Every other character in it is plain, and a `*` is literal inside
+ * the double quotes, so nothing in it expands or runs when pasted.
+ */
+function refusalPhysicalId(maskedPhysicalId: unknown): string {
+  if (typeof maskedPhysicalId !== 'string') return DESCRIBED_PHYSICAL_ID;
+  const plain = (text: string): boolean =>
+    displayIdent(text, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }) === text;
+  // A leading `-`, `=` or `~` is refused in the shown arm: display-only here,
+  // but the leading position is where the option and tilde shapes live
+  // (`isPasteableIdent`'s rule; review of #4270).
+  if (/^[-=~]/.test(maskedPhysicalId)) return DESCRIBED_PHYSICAL_ID;
+  if (plain(maskedPhysicalId)) return maskedPhysicalId;
+  const rest = maskedPhysicalId.split(SECRET_MASK);
+  const rendered = displayIdent(maskedPhysicalId, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
+  // A render the cap cut carries `[cut: ...]`, which is not the id: describe it.
+  return rest.length > 1 &&
+    rest.every((part) => part === '' || plain(part)) &&
+    rendered === JSON.stringify(maskedPhysicalId)
+    ? rendered
+    : DESCRIBED_PHYSICAL_ID;
+}
+
+/**
+ * The pointer a collision refusal appends when it described a physical id,
+ * so the operator can still find the resource it would name.
+ */
+function describedPhysicalIdPointer(...shown: readonly string[]): string {
+  return shown.includes(DESCRIBED_PHYSICAL_ID)
+    ? ` A physical id is left out of the prose above: it is not a plain identifier — ` +
+        // No apostrophe: a `'` here would pair with one inside a JSON-quoted
+        // display on the diagnosis or collision line below and leave what
+        // sits between them bare when the block is pasted.
+        `read it from the rollback journal or from the state record of the stack.`
+    : '';
 }
 
 /**
@@ -468,10 +597,13 @@ function orphanRemedy(
           `id — read it from cdkd events.`;
     return {
       offered: false,
+      // No apostrophe (go-to-k/cdkd#4214): the collision refusals put a
+      // JSON-quoted display on the lines below this one, and a `'` here pairs
+      // with one inside it when the block is pasted, leaving a `$( )` bare.
       clause:
-        ` This op is reverted inside a nested stack's revert for its parent's rollback, where ` +
-        `cdkd rollback --orphan cannot reach it: resolve the cause and re-run the top-level ` +
-        `stack's rollback, or re-deploy the top-level stack.${idPointer}`,
+        ` This op is reverted inside the revert of a nested stack for the rollback of its ` +
+        `parent, where cdkd rollback --orphan cannot reach it: resolve the cause and re-run the ` +
+        `rollback of the top-level stack, or re-deploy the top-level stack.${idPointer}`,
       line: '',
     };
   }
@@ -501,9 +633,10 @@ function orphanRemedy(
   const stackClause =
     target === undefined
       ? ''
-      : ` This is the nested stack's own rollback, and only a rollback of the nested stack ` +
-        `itself honours --orphan for this op, so the command names it.` +
-        withheldTargetClause(target, 'stack', 'cdkd rollback', "The nested stack's name");
+      : // No apostrophe, for the reason the nested-revert clause above gives.
+        ` This is the rollback of the nested stack itself, and only a rollback of the nested ` +
+        `stack itself honours --orphan for this op, so the command names it.` +
+        withheldTargetClause(target, 'stack', 'cdkd rollback', 'The name of the nested stack');
   // The stack-less fallback goes through the shared builder too, so it carries
   // the run's typed `--profile` / `--state-bucket` / `--state-prefix`
   // (go-to-k/cdkd#4177).
@@ -665,7 +798,10 @@ export function retainedSurvivorMessages(
       `  ⚠ ${safe(logicalId)} (${safe(resourceType)}) has UpdateReplacePolicy: Retain — the ` +
       `replacement's new physical resource (${displaySafe(survivorId)}) is RETAINED by this ` +
       `rollback and is no longer tracked by cdkd: it keeps running and incurring cost, ` +
-      `and \`cdkd destroy\` will not remove it. Delete it yourself once you no longer ` +
+      // No command on this line (go-to-k/cdkd#4214): it displays journal and
+      // state values, and a displayed `$( )` value runs beside a pasted
+      // command. Destroying the stack is named in words instead.
+      `and destroying the stack will not remove it. Delete it yourself once you no longer ` +
       `need it. ${displaySafe(clause)}`,
     reason:
       `UpdateReplacePolicy: Retain kept the replacement's new ${resourceType} ` +
@@ -1136,7 +1272,9 @@ function requireRestorableBaseline(
   if (isRestorableBag(bag)) return true;
   if (bag === undefined) {
     logger.warn(
-      `  Rollback: Cannot restore ${safe(logicalId)} \u2014 its recorded previous state has no ` +
+      // The id is described when not plain: `remedy` names a `cdkd`
+      // command on this line (go-to-k/cdkd#4214).
+      `  Rollback: Cannot restore ${shownLogicalId(logicalId)} \u2014 its recorded previous state has no ` +
         `\`properties\` bag, so there is nothing to restore it to. An empty desired state ` +
         `would ${consequence}. The resource is therefore left exactly as it is. ${remedy}`
     );
@@ -1155,7 +1293,9 @@ function requireRestorableBaseline(
   // deleting it from this throw measured 0 red in round 2, and the refuse-side
   // rows now pin it.
   throw new CdkdError(
-    `Cannot roll ${safe(logicalId)} back: its recorded previous state has a \`properties\` ` +
+    // Described when not plain: the message names `cdkd deploy` and
+    // `cdkd destroy` (go-to-k/cdkd#4214).
+    `Cannot roll ${shownLogicalId(logicalId)} back: its recorded previous state has a \`properties\` ` +
       `field that is not a property bag (${shape}), so cdkd cannot tell what to restore it to. ` +
       `Replaying it would do one of two things, and cdkd does neither: send the malformed ` +
       `value to the provider as-is, or send an empty desired state (which would ` +
@@ -1250,10 +1390,21 @@ async function prepareCreateRollbackFinalSnapshot(
         }
       );
       return undefined;
+    // Both refusals print the id and type RAW beside `--skip-final-snapshot`
+    // and an `aws` command, and here they are journal text: described when not
+    // plain (go-to-k/cdkd#4214).
     case 'refuse-cc-routed':
-      throw ccRoutedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
+      throw ccRoutedFinalSnapshotError(
+        shownLogicalId(logicalId),
+        refusalResourceType(resourceType),
+        SKIP_FINAL_SNAPSHOT_FLAG
+      );
     case 'refuse-unsupported-type':
-      throw unsupportedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
+      throw unsupportedFinalSnapshotError(
+        shownLogicalId(logicalId),
+        refusalResourceType(resourceType),
+        SKIP_FINAL_SNAPSHOT_FLAG
+      );
   }
 }
 
@@ -1661,7 +1812,10 @@ export function resolveReplacementOldType(
       ok: false,
       reason:
         `the journal names two different types for the old resource ` +
-        `(previousResourceType ${safe(stamped)}, previousState.resourceType ${safe(recorded)})`,
+        // Described, not `safe()`: this reason is quoted on the unroutable
+        // refusal's first line, which names `cdkd deploy` (go-to-k/cdkd#4214).
+        `(previousResourceType ${refusalResourceType(stamped)}, ` +
+        `previousState.resourceType ${refusalResourceType(recorded)})`,
     };
   }
   const oldType = stamped ?? recorded;
@@ -1675,7 +1829,8 @@ export function resolveReplacementOldType(
     return {
       ok: false,
       reason:
-        `it is a Type change between ${safe(oldType)} and ${safe(op.resourceType)}, and cdkd does ` +
+        `it is a Type change between ${refusalResourceType(oldType)} and ` +
+        `${refusalResourceType(op.resourceType)}, and cdkd does ` +
         `not replace a nested stack with, or by, a single resource`,
     };
   }
@@ -1698,7 +1853,8 @@ function unroutableReplacementError(
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(
-        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} (${safe(op.resourceType)}): ` +
+        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+          `(${refusalResourceType(op.resourceType)}): ` +
           `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
           `was changed. The journal is kept: fix forward with cdkd deploy` +
           (remedy.offered
@@ -2356,7 +2512,9 @@ function refuseMaskedReplayBaseline(
   // only `Fn::GetAtt` sent a user grepping their template for one that is not
   // there. The ACTION is unchanged: repair the record that HOLDS the mask.
   throw new CdkdError(
-    `Cannot roll ${logicalId} back: its recorded baseline holds the redaction mask ` +
+    // Described when not plain, never raw: the message names `cdkd deploy`,
+    // `cdkd orphan` and `cdkd import` (go-to-k/cdkd#4214).
+    `Cannot roll ${shownLogicalId(logicalId)} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}'), so cdkd would write that literal to the live resource. There are ` +
       `two ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
       `there: restore the property with 'cdkd deploy' AFTER forcing that custom resource to ` +
@@ -2496,13 +2654,17 @@ function regionAmbiguousReplaySecretError(
   consumerRegion: string,
   execCtx: Pick<RollbackExecutorContext, 'nestedChildStack'>
 ): CdkdError {
-  const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
+  const where =
+    propertyPath === '' ? '' : ` property ${quotedPlainOr(propertyPath, 'property path')}`;
   return new CdkdError(
-    `Rollback of ${logicalId}${where} cannot re-resolve the secret reference ` +
-      `'${secretName}': the reference carries no region of its own, and this stack read ` +
-      `across a region boundary (producer region(s) on record: ` +
-      `${foreignProducerRegions.join(', ')}), so it may have been resolved in one of those ` +
-      `rather than in '${consumerRegion}'. A secret of the same name in two regions is two ` +
+    // Every value is described when not plain, never printed raw: the message
+    // ends by naming `cdkd rollback` (go-to-k/cdkd#4214).
+    `Rollback of ${shownLogicalId(logicalId)}${where} cannot re-resolve the secret reference ` +
+      `${quotedPlainOr(secretName, 'secret name')}: the reference carries no region of its own, ` +
+      `and this stack read across a region boundary (producer region(s) on record: ` +
+      `${foreignProducerRegions.map((r) => plainOrDescribed(r, 'region')).join(', ')}), so it ` +
+      `may have been resolved in one of those ` +
+      `rather than in ${quotedOrDescribed(consumerRegion, 'region')}. A secret of the same name in two regions is two ` +
       `independent values, so replaying this would write the WRONG secret to a live resource. ` +
       `Refusing instead. Resolve the reference in its own region and set the property ` +
       `directly (or spell it as a full ARN, which names its region and is resolved there), ` +
@@ -2552,14 +2714,20 @@ function regionUnknownReplaySecretError(
   consumerRegion: string,
   execCtx: Pick<RollbackExecutorContext, 'nestedChildStack'>
 ): CdkdError {
-  const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
+  const where =
+    propertyPath === '' ? '' : ` property ${quotedPlainOr(propertyPath, 'property path')}`;
   return new CdkdError(
-    `Rollback of ${logicalId}${where} cannot re-resolve the secret reference ` +
-      `'${secretName}': the reference carries no region of its own, and this is a nested ` +
-      `stack whose parent's cross-region reads are not known to this replay, so the parent may ` +
-      `have resolved it in another region than '${consumerRegion}'. A secret of the same name in ` +
+    // Described when not plain, as in `regionAmbiguousReplaySecretError`
+    // (go-to-k/cdkd#4214).
+    `Rollback of ${shownLogicalId(logicalId)}${where} cannot re-resolve the secret reference ` +
+      `${quotedPlainOr(secretName, 'secret name')}: the reference carries no region of its own, ` +
+      // No apostrophe in this prose (review of #4270): a `'` pairs with the
+      // quote around a region or name and leaves what sits between bare.
+      `and this is a nested ` +
+      `stack, and the cross-region reads its parent made are not known to this replay, so the parent may ` +
+      `have resolved it in another region than ${quotedOrDescribed(consumerRegion, 'region')}. A secret of the same name in ` +
       `two regions is two independent values, so replaying this could write the WRONG secret to ` +
-      `a live resource. Refusing instead. Where the top-level stack's journal still holds this ` +
+      `a live resource. Refusing instead. Where the journal of the top-level stack still holds this ` +
       `run, roll back the top-level stack instead, which supplies its regions. Otherwise resolve ` +
       `the reference in its own region and set the property directly (or spell it as a full ` +
       `ARN, which names its region and is resolved there), then re-run ` +
@@ -3865,21 +4033,28 @@ async function replaySingle(
           );
           if (!holder.holds) {
             const remedy = orphanRemedy(op.logicalId, ctx);
+            const oldShown = refusalPhysicalId(mask(prev.physicalId));
             throw ownRemedyError(
               markNonRetryable(
                 new CdkdError(
                   // Masked at construction, like the Retain refusal below:
                   // the diagnosis quotes names from the PLAINTEXT replay bag.
                   mask(
-                    `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} (${safe(op.resourceType)}): ` +
-                      `the re-create of the old resource (${safe(mask(prev.physicalId))}) collided: ` +
-                      `${holder.diagnosis} — so ` +
+                    `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+                      `(${refusalResourceType(op.resourceType)}): ` +
+                      // The diagnosis is on a line of its own below
+                      // (go-to-k/cdkd#4214): it quotes names from the replay
+                      // bag in JSON quotes, and this line names `cdkd
+                      // rollback`, so a `$( )` name would run beside it when
+                      // pasted into zsh.
+                      `the re-create of the old resource (${oldShown}) collided (why is on the ` +
+                      `Collision diagnosis line below) — so ` +
                       // Undecided: the diagnosis already says what cdkd cannot
                       // show, so the clause only states the consequence (the
                       // deploy engine's `--replace` twin words it the same way).
                       (holder.known
                         ? `another resource holds the colliding name`
-                        : `if another resource holds it`) +
+                        : `if another resource holds the name it collided on`) +
                       ` (an orphan of an earlier attempt, or one made outside this stack), ` +
                       `deleting the new resource would destroy it and collide again. Nothing was ` +
                       `deleted. Remove or rename whatever holds that name if it is yours — if that is ` +
@@ -3895,7 +4070,9 @@ async function replaySingle(
                           ? ` To leave THIS resource alone and let the rest of the rollback ` +
                             `proceed, re-run with the command below.`
                           : '') +
-                        `${remedy.clause}\nUnderlying collision: ${collisionText(mask(msg))}`
+                        `${remedy.clause}${describedPhysicalIdPointer(oldShown)}` +
+                        `\nCollision diagnosis: ${holder.diagnosis}` +
+                        `\nUnderlying collision: ${collisionLine(mask(msg))}`
                     ) +
                     // OUTSIDE the mask (review of #4099): it carries only the
                     // vetted logical id, and a short secret-derived id needle
@@ -3936,6 +4113,8 @@ async function replaySingle(
             // name-release budget on a path that cannot succeed (issue #1838's
             // shape).
             const remedy = orphanRemedy(op.logicalId, ctx);
+            const oldShown = refusalPhysicalId(mask(prev.physicalId));
+            const newShown = refusalPhysicalId(mask(current.physicalId));
             throw ownRemedyError(
               markNonRetryable(
                 new CdkdError(
@@ -3953,17 +4132,18 @@ async function replaySingle(
                   // surface. Defense-in-depth, not a tested behavior -- do not
                   // record it in a PR body as one.
                   mask(
-                    `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} (${safe(op.resourceType)}): ` +
-                      // Both physical ids take the identifier rendering, not the
-                      // denylist the outer catch applies: this is the one message
-                      // that carries the pasted `--orphan` remedy, so a planted
-                      // `previousState.physicalId` reading `...\nTo orphan it:
-                      // cdkd rollback --orphan Victim` must show its boundary (the
-                      // sanitizing also turns its newline into a space, so the
-                      // forged label can never start a line), or it stands as a
-                      // forged remedy AHEAD of the guarded one.
-                      `the re-create of the old resource (${safe(mask(prev.physicalId))}) collided with the ` +
-                      `name still held by the new one (${safe(mask(current.physicalId))}), and ` +
+                    `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+                      `(${refusalResourceType(op.resourceType)}): ` +
+                      // Both physical ids are shown only when plain, not through
+                      // the denylist the outer catch applies: this is the one
+                      // message that carries the pasted `--orphan` remedy, so a
+                      // planted `previousState.physicalId` reading `...\nTo
+                      // orphan it: cdkd rollback --orphan Victim` must not stand
+                      // as a forged remedy AHEAD of the guarded one, and this
+                      // line names `cdkd rollback`, beside which a JSON-quoted
+                      // `$( )` id runs when pasted into zsh (go-to-k/cdkd#4214).
+                      `the re-create of the old resource (${oldShown}) collided with the ` +
+                      `name still held by the new one (${newShown}), and ` +
                       `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
                       `not delete it to free the name. Delete the new resource yourself, or ` +
                       `remove UpdateReplacePolicy: Retain, then re-run `
@@ -3986,7 +4166,8 @@ async function replaySingle(
                         // provider's text can echo the logical id, and the prose
                         // line names `cdkd rollback` (go-to-k/cdkd#3950's S1 rule,
                         // judged per line).
-                        `${remedy.clause}\nUnderlying collision: ${collisionText(mask(msg))}`
+                        `${remedy.clause}${describedPhysicalIdPointer(oldShown, newShown)}` +
+                        `\nUnderlying collision: ${collisionLine(mask(msg))}`
                     ) +
                     // OUTSIDE the mask (review of #4099): it carries only the
                     // vetted logical id, and a short secret-derived id needle
@@ -4102,7 +4283,9 @@ async function replaySingle(
                 `Failed to re-create the old ${safe(op.logicalId)} after the new resource ` +
                   `(${mask(current.physicalId)}) was already deleted: ` +
                   `${displaySafe(recreateError instanceof Error ? recreateError.message : String(recreateError))}. ` +
-                  `The resource is now absent — fix forward with 'cdkd deploy'.`
+                  // No command on this line (go-to-k/cdkd#4214): it carries
+                  // the provider's text and the new physical id.
+                  `The resource is now absent — fix forward by re-deploying the stack.`
               ),
               // Issue #2616's sweep reached this third site: without a `cause`
               // the wrap is the LAST link, so `extractDeploymentEventError`
@@ -4184,16 +4367,21 @@ async function replaySingle(
           !deletedNewFirst &&
           createResult.physicalId === current.physicalId;
         if (adoptedLiveNewResource) {
+          // Named only when plain, described otherwise: this line names
+          // `cdkd deploy`, and the physical id used to print through the bare
+          // denylist, where even a `;` ran when pasted (go-to-k/cdkd#4214).
+          const liveShown = refusalPhysicalId(mask(current.physicalId));
           logger.warn(
-            `  ⚠ ${safe(op.logicalId)} (${safe(op.resourceType)}): the re-create returned the LIVE new ` +
-              `resource (${displaySafe(mask(current.physicalId))}) instead of re-creating the old ` +
+            `  ⚠ ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}): ` +
+              `the re-create returned the LIVE new ` +
+              `resource (${liveShown}) instead of re-creating the old ` +
               `one — its ` +
               `Create API is name-idempotent and the new resource still holds the same ` +
               `user-supplied name. Skipping the delete-new step (it would delete that very ` +
               `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
               `state now records the pre-replacement properties, so inspect the drift and ` +
               `run 'cdkd deploy' to reconcile, or rename the resource to make the replacement ` +
-              `reversible.` +
+              `reversible.${describedPhysicalIdPointer(liveShown)}` +
               // `--stack-region` for the same reason the destroy hints carry
               // it: without it `cdkd drift` resolves every region holding this
               // name. Read-only, so no data loss — but it reports on records
@@ -4645,7 +4833,10 @@ async function replaySingle(
     // was the GHSA-p5qg-v9gv-hc7w fence missing on the rollback path.
     logger.warn(
       maskedFailureText(
-        `  Rollback failed for ${safe(op.logicalId)} (${safe(op.changeType)}): `,
+        // Named only when plain, described otherwise: the text after it can
+        // name a `cdkd` command on the same line — every refusal this module
+        // builds does (go-to-k/cdkd#4214).
+        `  Rollback failed for ${shownLogicalId(op.logicalId)} (${shownChangeType(op.changeType)}): `,
         rollbackError,
         mask
       )
@@ -4780,8 +4971,11 @@ async function replayFailedOperationsUnbound(
 
         case 'skip-failed-type-change': {
           logger.warn(
-            `  Rollback: cannot revert failed UPDATE of ${safe(op.logicalId)} in place — it was a ` +
-              `Type change (${safe(op.previousState?.resourceType)} -> ${safe(op.resourceType)}), ` +
+            // Named only when plain, described otherwise: this line names
+            // `cdkd drift` and `cdkd deploy` (go-to-k/cdkd#4214).
+            `  Rollback: cannot revert failed UPDATE of ${shownLogicalId(op.logicalId)} in place — it was a ` +
+              `Type change (${refusalResourceType(op.previousState?.resourceType)} -> ` +
+              `${refusalResourceType(op.resourceType)}), ` +
               `which is a replacement, and its remote state is unknown. Inspect it with ` +
               `\`cdkd drift\` and re-converge with \`cdkd deploy\`. Skipping.`
           );
@@ -5132,7 +5326,8 @@ async function replayFailedOperationsUnbound(
       // its flat arm here; it is called for the one spelling, not for a line.
       logger.warn(
         maskedFailureText(
-          `  Rollback failed for failed-op ${safe(op.logicalId)} (${safe(op.changeType)}): `,
+          // As `replaySingle`'s catch line (go-to-k/cdkd#4214).
+          `  Rollback failed for failed-op ${shownLogicalId(op.logicalId)} (${shownChangeType(op.changeType)}): `,
           revertError,
           mask
         )

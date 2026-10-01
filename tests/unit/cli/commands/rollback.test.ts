@@ -189,7 +189,10 @@ const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 // Went 13 -> 11 in go-to-k/cdkd#3950's S1 rows: the divergent-record-region
 // refusal and the nothing-to-roll-back error carry a remedy, so they name the
 // stack through `plainOrDescribed`, which caps at the stack-ref width itself.
-const EXPECTED_STACK_NAME_RENDERS = 11;
+//
+// Went 11 -> 10 in go-to-k/cdkd#4214: the nested-child refusal names the child
+// through `plainOrDescribed`, beside its `--revert-failed` remedy.
+const EXPECTED_STACK_NAME_RENDERS = 10;
 
 /**
  * Bare `safe` references in the same file -- 1 declaration plus every render of
@@ -228,18 +231,26 @@ const EXPECTED_STACK_NAME_RENDERS = 11;
  * Went 63 -> 61 in go-to-k/cdkd#3950's S1 rows: the same two messages name
  * their region through `plainOrDescribed`.
  */
-const EXPECTED_SAFE_REFERENCES = 61;
+//
+// Went 61 -> 54 in go-to-k/cdkd#4214: the `left as-is` label and the two
+// Snapshot delete labels name their journal values through `logicalIdShown` /
+// `resourceTypeShown` / `plainOrDescribed`, beside `--revert-failed` and
+// `--skip-final-snapshot`.
+const EXPECTED_SAFE_REFERENCES = 54;
 
 /**
- * Bare `safeRoleArn` references -- 1 declaration plus the single role-ARN
- * render (the `--role-arn` note on the journal's newest segment).
+ * Bare `safeRoleArn` references -- 1 declaration plus the role-ARN renders of
+ * the `--role-arn` note on the journal's newest segment.
  *
  * A THIRD exact total rather than folding ARNs into one of the two above, for
  * the reason the `safe` note gives about stack names: a shared count is
  * satisfied by a render moving between helpers, and moving an ARN onto the
  * 255-code-point helper is exactly the regression this file now guards.
  */
-const EXPECTED_ROLE_ARN_RENDERS = 1;
+//
+// Went 1 -> 2 in go-to-k/cdkd#4214: the note tests the render against the raw
+// value before naming it beside `--role-arn`, and describes it otherwise.
+const EXPECTED_ROLE_ARN_RENDERS = 2;
 
 /** A journal + state pair with ONE replayable CREATE, enough to reach the prompt. */
 function installOneCreateSegment(stackName = 'S'): FakeBackend {
@@ -1278,6 +1289,24 @@ describe('rollbackCommand — plan preview vs the refusal matrix (#1366)', () =>
     );
   });
 
+  it('a payload resource type is described on the label that names --skip-final-snapshot (go-to-k/cdkd#4214)', async () => {
+    for (const { value: payload } of PASTE_PAYLOADS) {
+      for (const kind of ['completed', 'failed'] as const) {
+        vi.clearAllMocks();
+        const lines = await planLines(payload, 'sdk', kind);
+        const label = lines.findLast((l) => /--skip-final-snapshot/.test(l) && /- delete/.test(l));
+        expect(label, `${kind} ${payload}`).toContain(
+          '- delete   D (a resource type that is not a plain identifier) ['
+        );
+        expect(label).toContain('re-run with --skip-final-snapshot');
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(label!, payload);
+          expect(spansThatRun(label!, dir), payload).toEqual([]);
+        });
+      }
+    }
+  }, 120_000);
+
   it('--skip-final-snapshot wins over the refusal note (nothing is refused under the opt-out)', async () => {
     const { getLogger } = await import('../../../../src/utils/logger.js');
     const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
@@ -1600,7 +1629,14 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
       expect(line).not.toMatch(INVISIBLE);
     }
-    expect(lines.join('\n')).toContain('CRE ATE');
+    // Described, not shown: the label names `--revert-failed`, and a line
+    // that displays a journal value carries no command (go-to-k/cdkd#4214).
+    const leftAsIs = lines.find((l) => l.includes('(left as-is)'));
+    expect(leftAsIs).toContain(
+      '(left as-is) a logical id that is not a plain identifier (a resource type that is not a ' +
+        'plain identifier) — its a change type that is not a plain identifier FAILED mid-deploy'
+    );
+    expect(leftAsIs).not.toMatch(/Vic|Buc|CRE/);
   });
 
   it('the SEGMENT header cannot inject a row through its reason or run id', async () => {
@@ -1624,9 +1660,58 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(note).toBeDefined();
     expect(note).not.toMatch(CTRL);
     expect(note).not.toMatch(INVISIBLE);
-    expect(note).toContain('role/De ploy');
+    // Described, not shown: the note names `--role-arn` (go-to-k/cdkd#4214).
+    expect(note).toContain(
+      'ran with --role-arn and a role ARN that is not a plain identifier (read it from the rollback journal);'
+    );
+    expect(note).not.toContain('De');
     expect(forgedRowCount(lines)).toBe(0);
   });
+
+  it('a payload id, type, change type or role ARN is described beside --revert-failed / --role-arn (go-to-k/cdkd#4214)', async () => {
+    for (const { value: payload } of PASTE_PAYLOADS) {
+      const lines = await forgedPlanLines(
+        'failed',
+        {},
+        { logicalId: payload, resourceType: payload, changeType: payload },
+        `arn:aws:iam::1:role/${payload}`
+      );
+      // `findLast`: the logger mock accumulates across the loop's runs.
+      const leftAsIs = lines.findLast((l) => l.includes('(left as-is)'));
+      const note = lines.findLast((l) => l.includes('ran with --role-arn'));
+      expect(leftAsIs, payload).toContain('pass --revert-failed');
+      expect(note, payload).toContain('a role ARN that is not a plain identifier');
+      withPasteDir((dir) => {
+        for (const line of [leftAsIs!, note!]) {
+          expect(line, payload).not.toContain(payload);
+          expectNoCommandBesideDisplay(line, payload);
+          expect(spansThatRun(line, dir), payload).toEqual([]);
+        }
+      });
+    }
+    // A plain value that is not a role ARN is described too (review of #4270).
+    // The last one IS a role ARN to `isIamRoleArn` (no space, `[!-~]` path)
+    // but not a plain identifier, so it pins the identity half of the gate.
+    for (const notArn of ['--state-bucket=evil', '~root', 'arn:aws:iam::1:role/x$(id)']) {
+      const lines = await forgedPlanLines('completed', {}, {}, notArn);
+      const note = lines.findLast((l) => l.includes('ran with --role-arn'));
+      expect(note, notArn).toContain('a role ARN that is not a plain identifier');
+      expect(note, notArn).not.toContain(notArn);
+    }
+    // CONTROL: plain values keep their spelling.
+    const plain = await forgedPlanLines(
+      'failed',
+      {},
+      { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', changeType: 'CREATE' },
+      'arn:aws:iam::1:role/Deploy'
+    );
+    expect(plain.findLast((l) => l.includes('(left as-is)'))).toBe(
+      '  - (left as-is) Bucket (AWS::S3::Bucket) — its CREATE FAILED mid-deploy; pass --revert-failed to attempt reverting it'
+    );
+    expect(plain.findLast((l) => l.includes('ran with --role-arn'))).toContain(
+      'ran with --role-arn arn:aws:iam::1:role/Deploy;'
+    );
+  }, 120_000);
 
   it('a field that sanitizes to NOTHING renders the placeholder, not an empty slot', async () => {
     // `logicalId: '\u200b'` is all invisibles. Without the fallback the row
@@ -2029,7 +2114,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const safeStackDecls = code.match(/\bfunction\s+safeStack\b/g) ?? [];
     expect(safeStackDecls).toHaveLength(1);
 
-    // 1 declaration + 12 stack-name renders. The twelfth is the corrupted-state
+    // 1 declaration + the stack-name renders. One of them is the corrupted-state
     // key path, which joined its segments BEFORE sanitizing and so rendered the
     // whole `prefix/stack/region` under the identifier default.
     expect(safeStackRefs).toHaveLength(safeStackDecls.length + EXPECTED_STACK_NAME_RENDERS);
@@ -2789,6 +2874,33 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     expect(backend.saveState).not.toHaveBeenCalled();
     expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
   });
+
+  it('the refusal describes a child whose name carries a payload logical id, beside --revert-failed (go-to-k/cdkd#4214)', async () => {
+    for (const { value: payload } of PASTE_PAYLOADS) {
+      installSetup({
+        listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+        getState: vi.fn().mockImplementation(async (name: string) => (name === 'S' ? parentState : null)),
+        loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+          name === 'S'
+            ? parentJournalWith([
+                { ...failedChildSegment(), failedOperations: [{ ...updateOp('old'), logicalId: payload }] },
+              ])
+            : childFailureJournal
+        ),
+      });
+      const error = await rollbackCommand('S', { ...baseOpts }).catch((e: unknown) => e);
+      const message = (error as Error).message;
+      expect(message, payload).toContain(
+        'Nested stack a nested stack name that is not a plain identifier failed during a deploy'
+      );
+      expect(message).toContain('Re-run with --revert-failed');
+      withPasteDir((dir) => {
+        expect(message, payload).not.toContain(payload);
+        expectNoCommandBesideDisplay(message, payload);
+        expect(spansThatRun(message, dir), payload).toEqual([]);
+      });
+    }
+  }, 120_000);
 
   it('CONTROL: the same journal proceeds with --revert-failed, and the reverted failed row settles its child', async () => {
     const { getNestedRevertRun } = await import('../../../../src/deployment/nested-child-journal.js');

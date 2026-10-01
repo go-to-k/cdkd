@@ -1373,7 +1373,9 @@ describe('replayRollback', () => {
     expect(state.B).toBeUndefined(); // truthfully absent
     // The user's only guidance for this worst case:
     expect(silentLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("fix forward with 'cdkd deploy'")
+      // In words, not as a command: the line displays the provider's text
+      // (go-to-k/cdkd#4214).
+      expect.stringContaining('fix forward by re-deploying the stack')
     );
   });
 

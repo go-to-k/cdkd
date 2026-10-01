@@ -1,4 +1,6 @@
 import { Command, Option } from 'commander';
+import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
+import { isIamRoleArn } from '../../utils/role-arn.js';
 import {
   pasteableCommand,
   plainOrDescribed,
@@ -394,8 +396,10 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
     case 'delete':
       return `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)})${rep}`;
     case 'delete-with-final-snapshot':
+      // Named only when plain, described otherwise: the note can name
+      // `--skip-final-snapshot` (go-to-k/cdkd#4214).
       return (
-        `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
+        `  - delete   ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
         `[${snapshotNote(op.resourceType, item.effectiveProvisionedBy, skipFinalSnapshot)}]`
       );
     case 'orphan-retain':
@@ -460,8 +464,9 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
     case 'delete-failed-create':
       return `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED create]`;
     case 'delete-failed-create-with-final-snapshot':
+      // As `delete-with-final-snapshot` in `actionLabel` (go-to-k/cdkd#4214).
       return (
-        `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED create, ` +
+        `  - delete   ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) [FAILED create, ` +
         `${snapshotNote(op.resourceType, item.effectiveProvisionedBy, skipFinalSnapshot)}]`
       );
     case 'orphan-failed-create-retain':
@@ -710,7 +715,11 @@ export async function rollbackCommand(
             );
             if (unreverted) {
               throw new Error(
-                `Nested stack ${safeStack(child)} failed during a deploy this journal records, and its ` +
+                // Named only when plain, described otherwise: the child's name
+                // carries the journal's logical id, and this line names
+                // `--revert-failed` (go-to-k/cdkd#4214, go-to-k/cdkd#3950's S1
+                // rule).
+                `Nested stack ${plainOrDescribed(child, 'nested stack name')} failed during a deploy this journal records, and its ` +
                   `own journal still holds that deploy's completed operations. Re-run with ` +
                   `--revert-failed so they are reverted in order with the parent's.`
               );
@@ -779,8 +788,19 @@ export async function rollbackCommand(
         // verbatim the failure `ROLE_ARN_MAX_CODE_POINTS` exists to prevent.
         // Not caught by the display fence: it checks that a sanitizer was
         // CALLED, never which cap the call passed.
+        // Named only when `safeRoleArn` is the identity on it, described
+        // otherwise: the journal value sits beside `--role-arn`, the flag the
+        // note asks the operator to pass it to (go-to-k/cdkd#4214).
+        // `isIamRoleArn` too: `PLAIN_IDENT` admits a `--flag=` or `~user`
+        // shape, which is not a role ARN (review of #4270).
+        const roleArnIsPlain =
+          isIamRoleArn(newestSegment.roleArn) &&
+          safeRoleArn(newestSegment.roleArn) === newestSegment.roleArn;
         logger.info(
-          `Note: the failed deploy ran with --role-arn ${safeRoleArn(newestSegment.roleArn)}; ` +
+          (roleArnIsPlain
+            ? `Note: the failed deploy ran with --role-arn ${safeRoleArn(newestSegment.roleArn)}; `
+            : `Note: the failed deploy ran with --role-arn and a role ARN that is not a plain ` +
+              `identifier (read it from the rollback journal); `) +
             `this rollback is running with ambient credentials (pass --role-arn to match).`
         );
       }
@@ -854,8 +874,11 @@ export async function rollbackCommand(
             applyFailedPlanToPreview(failedPlan, planStateView, options.skipFinalSnapshot === true);
           } else {
             for (const fop of segment.failedOperations) {
+              // Each journal value is named only when plain, described
+              // otherwise: the line names `--revert-failed` (go-to-k/cdkd#4214).
               logger.info(
-                `  - (left as-is) ${safe(fop.logicalId)} (${safe(fop.resourceType)}) — its ${safe(fop.changeType)} ` +
+                `  - (left as-is) ${logicalIdShown(fop.logicalId)} (${resourceTypeShown(fop.resourceType)}) ` +
+                  `— its ${plainOrDescribed(fop.changeType, 'change type')} ` +
                   `FAILED mid-deploy; pass --revert-failed to attempt reverting it`
               );
             }
