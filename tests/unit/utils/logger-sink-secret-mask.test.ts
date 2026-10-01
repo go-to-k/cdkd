@@ -181,6 +181,17 @@ describe('ConsoleLogger masks bound resource secrets at the sink (issue #2177)',
     expect(line).toContain('{"***":1,"boxed":"***","pin":"***","n":1234}');
   });
 
+  it('a circular arg with a masked key still throws TypeError, and masked keys never collide', () => {
+    const circular: Record<string, unknown> = { [SECRET]: 1 };
+    circular['self'] = circular;
+    withCurrentResourceSecrets(bag(SECRET, OTHER), () => {
+      expect(() => getLogger().info('payload', circular)).toThrow(TypeError);
+      getLogger().info('payload', { [SECRET]: 1, [OTHER]: 2 });
+    });
+
+    expect(String(spies.info.mock.calls[0]?.[0])).toBe('payload {"***":1,"***#2":2}');
+  });
+
   it('refuses a second masker source rather than replacing the installed one', () => {
     expect(() => installLogLineMaskerSource(() => undefined)).toThrow(/already installed/);
     withCurrentResourceSecrets(bag(SECRET), () => getLogger().info(`still ${SECRET}`));

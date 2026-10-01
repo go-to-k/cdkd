@@ -143,6 +143,7 @@ export function isStdoutReservedForPayload(): boolean {
  */
 function renderArgs(args: unknown[], mask: LogLineMasker | undefined): string {
   if (mask === undefined) return args.map((a) => JSON.stringify(a)).join(' ');
+  const rebuilt = new WeakMap<object, Record<string, unknown>>();
   const replacer = (_key: string, value: unknown): unknown => {
     if (typeof value === 'string') return mask(value);
     if (value instanceof String) return mask(String(value));
@@ -151,11 +152,22 @@ function renderArgs(args: unknown[], mask: LogLineMasker | undefined): string {
       return masked === String(value) ? value : masked;
     }
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
-    // Rebuild only when a KEY changes: a copy per visit would turn a circular
+    // Rebuild only when a KEY changes, and ONE copy per object: a fresh copy
+    // per visit would hide a cycle from `JSON.stringify`, turning a circular
     // arg's TypeError into unbounded recursion.
+    const seen = rebuilt.get(value);
+    if (seen !== undefined) return seen;
     const entries = Object.entries(value);
     if (entries.every(([k]) => mask(k) === k)) return value;
-    return Object.fromEntries(entries.map(([k, v]) => [mask(k), v]));
+    const copy: Record<string, unknown> = {};
+    for (const [k, v] of entries) {
+      // Two keys masking to the same text must not collapse into one entry.
+      let key = mask(k);
+      for (let n = 2; Object.hasOwn(copy, key); n++) key = `${mask(k)}#${n}`;
+      copy[key] = v;
+    }
+    rebuilt.set(value, copy);
+    return copy;
   };
   return args.map((a) => JSON.stringify(a, replacer)).join(' ');
 }
