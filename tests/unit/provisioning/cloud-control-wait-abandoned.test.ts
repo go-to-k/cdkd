@@ -287,6 +287,22 @@ describe('CloudControlProvider.waitForOperation transport fence (#3236)', () => 
       expect(sleeps).toEqual([1000]);
     });
 
+    it('recovers a CREATE whose status poll failed with EADDRNOTAVAIL (#4331)', async () => {
+      // The live repro's wording: an EKS cluster CREATE was abandoned and left
+      // untracked when ONE poll failed this way on a host under parallel load.
+      wireCreate('tok-eks', [
+        transportError('read EADDRNOTAVAIL', 'EADDRNOTAVAIL'),
+        { OperationStatus: 'SUCCESS', Identifier: 'cdkd-eks-cluster' },
+      ]);
+
+      const result = await provider.create('Cluster', 'AWS::EKS::Cluster', { Name: 'x' });
+
+      expect(result.physicalId).toBe('cdkd-eks-cluster');
+      expect(statusTokens()).toEqual(['tok-eks', 'tok-eks']);
+      expect(commandNames().filter((n) => n === 'CreateResourceCommand')).toHaveLength(1);
+      expect(sleeps).toEqual([1000]);
+    });
+
     it('recovers a DELETE whose status poll died in transit', async () => {
       wireDelete('tok-del', [
         transportError('socket hang up', 'ECONNRESET'),
@@ -1607,6 +1623,9 @@ describe('isTransientPollFailure', () => {
     ['ENETUNREACH by code', transportError('connect ENETUNREACH 10.0.0.1:443', 'ENETUNREACH')],
     ['ENETDOWN by code', transportError('connect ENETDOWN 10.0.0.1:443', 'ENETDOWN')],
     ['EPROTO by code', transportError('write EPROTO', 'EPROTO')],
+    // #4331: a local-address failure (`connect` or `read` form); the poll
+    // is a read of the same token, so re-polling is safe either way.
+    ['EADDRNOTAVAIL by code', transportError('read EADDRNOTAVAIL', 'EADDRNOTAVAIL')],
     ['TimeoutError by name', Object.assign(new Error('timed out'), { name: 'TimeoutError' })],
     [
       'RequestTimeout by name',
@@ -1621,6 +1640,10 @@ describe('isTransientPollFailure', () => {
       Object.assign(new Error('aborted'), { name: 'RequestAbortedException' }),
     ],
     ['code only in the message', new Error('connect ECONNREFUSED 100.72.0.170:443')],
+    // The reporter's wording (#4331), with the `code` property dropped by a
+    // wrapper -- the message arm derives from the set, so this is the case a
+    // hand-spelled pattern would have missed.
+    ['EADDRNOTAVAIL only in the message', new Error('read EADDRNOTAVAIL')],
     [
       'one hop down the cause chain',
       Object.assign(new Error('CREATE failed'), {
@@ -1652,6 +1675,10 @@ describe('isTransientPollFailure', () => {
     ['a 400', Object.assign(new Error('x'), { $metadata: { httpStatusCode: 400 } })],
     ['a plain Error', new Error('something went sideways')],
     ['a service message that merely contains an E-word', new Error('ENCRYPTION is required')],
+    // Negative control for the #4331 member: a code that is NOT in the set
+    // (a different EADDR* socket error) stays refused, so the case above is
+    // carried by the set member and not by an `EADDR` prefix match.
+    ['a socket code outside the set', transportError('bind EADDRINUSE 0.0.0.0:443', 'EADDRINUSE')],
     ['undefined', undefined],
     ['null', null],
   ])('refuses %s', (_label, error) => {

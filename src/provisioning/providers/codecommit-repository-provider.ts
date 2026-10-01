@@ -1147,10 +1147,14 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    *   goes ahead with a warn and the guard reported — a denied read, an
    *   `EncryptionKey*` failure, an unexpected error alike, since a destroy of
    *   cdkd's own repository must not wedge on them and the delete was by name
-   *   before this check existed. A throttled, 5xx or connection-level
-   *   failure is rethrown instead, so the caller's retry asks again. A
-   *   connection never made (`ECONNREFUSED`, `ENOTFOUND`) is not ambiguous and
-   *   takes the proceed arm; the delete that follows fails the same way.
+   *   before this check existed. A throttled, 5xx or ambiguous socket
+   *   failure is rethrown instead, so the delete is not sent; a throttle or
+   *   5xx is retried by the caller, a socket error is not (no classifier
+   *   retries one) and fails the delete. A connection never made
+   *   (`ECONNREFUSED`, `ENOTFOUND`) is not ambiguous and takes the proceed
+   *   arm; the delete that follows fails the same way. `EADDRNOTAVAIL` and
+   *   `ETIMEDOUT` rethrow even in their connect form: the code alone cannot
+   *   tell that form from a failure after the request was written.
    *
    * The guard stays on every return, an already-gone repository included: it
    * reports that the check did not run, whatever the delete then found.
@@ -1170,8 +1174,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       holder = await this.getRepositoryMetadata(physicalId);
     } catch (error) {
       // A throttle, a 5xx or a lost connection (`isAmbiguousOutcomeError`
-      // covers both of the last two) is no answer about identity:
-      // rethrown, so the delete is not sent and the caller's retry asks again.
+      // covers both of the last two) is no answer about identity: rethrown,
+      // so the delete is not sent. The caller's retry asks again for a
+      // throttle or 5xx; a socket error is not retried and fails the delete.
       if (
         error instanceof RepositoryDoesNotExistException ||
         isThrottlingError(error) ||

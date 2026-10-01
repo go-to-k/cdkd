@@ -279,9 +279,19 @@ export class CloudControlWaitAbandonedError extends ProvisioningError {
  * Mirrors `@smithy/service-error-classification`'s own
  * `NODEJS_TIMEOUT_ERROR_CODES` (`ECONNRESET` / `ECONNREFUSED` / `EPIPE` /
  * `ETIMEDOUT`), widened by the DNS and route shapes a dropped VPN also
- * produces. The SDK already retries every one of these under STANDARD mode —
- * three attempts, sub-second — so an error that reaches cdkd here is one the
- * SDK's own budget did not outlast, not one it declined to retry.
+ * produces. The SDK retries those four and its `NODEJS_NETWORK_ERROR_CODES`
+ * (`EHOSTUNREACH` / `ENETUNREACH` / `ENOTFOUND`) under STANDARD mode -- three
+ * attempts, sub-second -- so one of THOSE reaching cdkd here is one the SDK's
+ * own budget did not outlast. The rest (`ECONNABORTED`, `EAI_AGAIN`,
+ * `ENETDOWN`, `EPROTO`, `EADDRNOTAVAIL`) the SDK does not classify, so they
+ * arrive on the first failure.
+ *
+ * `EADDRNOTAVAIL` is a LOCAL-address failure: `connect EADDRNOTAVAIL` when the
+ * host could not bind one (ephemeral ports exhausted), `read EADDRNOTAVAIL`
+ * when an established socket's local address went away -- the form issue
+ * [#4331](https://github.com/go-to-k/cdkd/issues/4331) observed. Either way
+ * the status poll is a read of the same token, so re-polling is safe whether
+ * or not the failed request reached Cloud Control.
  */
 const POLL_TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set([
   'ECONNRESET',
@@ -295,6 +305,7 @@ const POLL_TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set([
   'ENETUNREACH',
   'ENETDOWN',
   'EPROTO',
+  'EADDRNOTAVAIL',
 ]);
 
 /** SDK error names for a request that timed out or was aborted in transit. */
