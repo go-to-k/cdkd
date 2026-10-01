@@ -734,7 +734,9 @@ The check runs at pre-flight on every deploy, before any AWS call:
 hatch, because CloudFormation rejects the template too.
 
 ```typescript
-queue.addPropertyOverride('Tags', [{ Key: 'team', Value: 'platform' }]); // a list, not { Key, Value }
+(queue.node.defaultChild as sqs.CfnQueue).addPropertyOverride('Tags', [
+  { Key: 'team', Value: 'platform' }, // a list, not { Key, Value }
+]);
 ```
 
 ### "Resource already exists" Error
