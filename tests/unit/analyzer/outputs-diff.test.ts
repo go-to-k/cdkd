@@ -38,6 +38,7 @@ import {
   type OutputChange,
 } from '../../../src/analyzer/outputs-diff.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { readEngineFamily } from '../_engine-family.js';
 
 /**
  * Resolver stand-in modelled on the REAL one `computeStackDiff` passes.
@@ -1175,17 +1176,10 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
   // behaviors the diff twin mirrors. If one fails, the deploy side moved: port
   // the change into `src/analyzer/outputs-diff.ts` (and its tests above) rather
   // than relaxing the assertion.
-  // `resolveOutputs` lives in the `deploy-engine/outputs.ts` mixin (#4200); the
-  // no-change path's `outputMapsEqual` gate stays in `deploy-engine.ts`. Both
-  // are the deploy side this twin mirrors, so the fence reads both.
-  const source = ['deploy-engine.ts', 'deploy-engine/outputs.ts']
-    .map((f) =>
-      readFileSync(
-        path.join(path.dirname(fileURLToPath(import.meta.url)), `../../../src/deployment/${f}`),
-        'utf8'
-      )
-    )
-    .join('\n');
+  // The deploy side this twin mirrors spans the engine's split modules
+  // (#4200, #4350): `resolveOutputs`, the no-change `outputMapsEqual` gate and
+  // the save that persists the merged bag. The fence reads the whole family.
+  const source = readEngineFamily();
 
   it('deploy still writes the Export.Name alias as a second bag key, and GUARDS it', () => {
     // This fence went VACUOUS once (issue #1919 review) and the way it did is

@@ -42,13 +42,20 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
       expect.arrayContaining([
         'deploy-engine/create.ts',
         'deploy-engine/delete.ts',
+        'deploy-engine/dependencies.ts',
+        'deploy-engine/deploy-flow.ts',
+        'deploy-engine/execute.ts',
         'deploy-engine/heal.ts',
         'deploy-engine/masking.ts',
         'deploy-engine/name-collision.ts',
         'deploy-engine/observed-capture.ts',
         'deploy-engine/outputs.ts',
+        'deploy-engine/provision.ts',
+        'deploy-engine/record-shape.ts',
         'deploy-engine/replacement.ts',
+        'deploy-engine/resolver-context.ts',
         'deploy-engine/rollback.ts',
+        'deploy-engine/routing.ts',
         'deploy-engine/update.ts',
       ])
     );
@@ -68,6 +75,13 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
         'provisionCreate',
         'provisionUpdate',
         'provisionDelete',
+        'provisionResource',
+        'executeDeployment',
+        'doDeployWithPrefetch',
+        'buildResolverContext',
+        'peekRoutingForLabel',
+        'propertiesToRecord',
+        'addImplicitDeleteDependencies',
       ])
     );
   });

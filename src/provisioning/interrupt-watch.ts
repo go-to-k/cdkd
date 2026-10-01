@@ -125,7 +125,7 @@
  * codebase uses to mean "a wait stopped because the user asked us to stop".
  *
  * It has to be a distinct class rather than a bare `Error` because
- * `deploy-engine.ts` decides whether to ROLL BACK by asking what the failure
+ * `deploy-engine/execute.ts` decides whether to ROLL BACK by asking what the failure
  * was. Its own `InterruptedError` is module-private, so a provider cannot
  * produce one; a bare `Error` from a provider therefore read as a genuine
  * resource failure and triggered an automatic rollback of the whole stack on
@@ -157,8 +157,8 @@ export class InterruptedWaitError extends Error {
  * difference decides correctness rather than style. A ceiling has to be sized
  * against the deepest real chain, and that chain GROWS: the flat case is 2 (the
  * provider's own wrap, then the command's), `DagExecutor` adds none — it
- * collects rather than wraps (`dag-executor.ts:178`) — but `deploy-engine.ts`
- * adds one `ProvisioningError` PER NESTED-STACK LEVEL (`deploy-engine.ts:2932`;
+ * collects rather than wraps (`dag-executor.ts:178`) — but the engine adds one
+ * `ProvisioningError` PER NESTED-STACK LEVEL (`deploy-engine/provision.ts`'s `provisionResource`;
  * `NestedStackProvider.create` adds none of its own). A depth-5 cap therefore
  * missed at four levels of nesting, and missing here is not a degraded answer:
  * it is a full automatic rollback on Ctrl-C. The visited set gives the
@@ -280,7 +280,7 @@ function armSharedSigintHandler(): void {
       // Scope the resulting claim precisely, because two looser versions of it
       // were written here first and both were false. What holds is: no
       // lock-holding command THAT REGISTERS A SIGINT HANDLER unregisters it
-      // before releasing, with `deploy-engine.ts` as the one deliberate
+      // before releasing, with `deploy-engine/deploy-flow.ts` as the one deliberate
       // exception (`deploy.ts` holds a top-level handler outliving it, so the
       // set is never empty under its lock). It is NOT true that no stranding
       // window remains anywhere: `import` / `export` / `scrub` / `orphan` /

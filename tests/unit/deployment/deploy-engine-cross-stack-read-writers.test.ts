@@ -1,9 +1,11 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
+import ts from 'typescript-v6';
+import { ENGINE_FAMILY, familyLocation, readEngineFamily } from '../_engine-family.js';
 
 /**
- * Every writer of `imports` / `outputReads` in `deploy-engine.ts` must route
+ * Every writer of `imports` / `outputReads` in the engine must route
  * through `crossStackReadsForPartialSave`, unless it is the ONE success-path
  * save (issue [#2057](https://github.com/go-to-k/cdkd/issues/2057), fix-delta
  * review).
@@ -29,7 +31,9 @@ import { describe, expect, it } from 'vite-plus/test';
  */
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-const SOURCE = 'src/deployment/deploy-engine.ts';
+// The whole engine (#4200, #4350): the class file and every `deploy-engine/*.ts`
+// module, joined in file order. The save sites live in the split modules.
+const SOURCE = 'the engine family';
 
 /**
  * Comments carry example spellings (this rule's own doc does), so drop them.
@@ -56,7 +60,9 @@ function stripComments(source: string): string {
     .split('\n')
     .map((line) => (line.trim().startsWith('//') ? '' : line))
     .join('\n')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
+    // Each block comment becomes as many newlines as it spanned, so a
+    // reported line maps back to the real file.
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ''));
 }
 
 /**
@@ -148,7 +154,7 @@ function scanWriters(source: string): Writer[] {
 }
 
 function collectWriters(): Writer[] {
-  return scanWriters(readFileSync(`${REPO_ROOT}${SOURCE}`, 'utf8'));
+  return scanWriters(readEngineFamily());
 }
 
 /**
@@ -160,11 +166,11 @@ function collectWriters(): Writer[] {
  */
 const ENTITLED_WRITES: readonly string[] = [...REDACTION_WRITES, ...SUCCESS_PATH_WRITES];
 
-describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2057)', () => {
+describe('every cross-stack-read writer in the engine is accounted for (#2057)', () => {
   it('finds ONLY the entitled writes — every other save spreads the helper', () => {
     const writers = collectWriters();
     expect(
-      writers.map((w) => `${SOURCE}:${w.line}  ${w.text}`),
+      writers.map((w) => `${familyLocation(w.line)}  ${w.text}`),
       'these write imports/outputReads directly. Every save EXCEPT the success ' +
         'path must spread `crossStackReadsForPartialSave(currentState, ' +
         'this.recordedImports, this.recordedOutputReads)` instead — see that ' +
@@ -174,36 +180,43 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
         'entries and is listed in REDACTION_WRITES'
     ).toEqual(
       ENTITLED_WRITES.map(
-        (text) => `${SOURCE}:${writers.find((w) => w.text === text)?.line ?? 'MISSING'}  ${text}`
+        (text) => {
+          const line = writers.find((w) => w.text === text)?.line;
+          return `${line === undefined ? 'MISSING' : familyLocation(line)}  ${text}`;
+        }
       )
     );
   });
 
-  it('no DeployEngine mixin module writes these records or carries the outputs bag (#4200)', () => {
-    // The method groups split out of the engine (`deploy-engine/<group>.ts`)
-    // are outside the positional compare above, which reads one file. A save
-    // path moved into one would write here unseen, so every mixin must hold
-    // NONE: a save site belongs in the engine, where it is enumerated.
-    const dir = `${REPO_ROOT}src/deployment/deploy-engine/`;
-    const mixins = readdirSync(dir).filter((f) => f.endsWith('.ts'));
-    expect(mixins.length, 'no mixin module found; this case is reading nothing').toBeGreaterThan(0);
-    for (const file of mixins) {
-      const source = readFileSync(`${dir}${file}`, 'utf8');
-      expect(
-        scanWriters(source).map((w) => `${file}:${w.line}  ${w.text}`),
-        `${file} writes imports / outputReads / exportNames — move that save site into deploy-engine.ts`
-      ).toEqual([]);
-      expect(
-        stripComments(source).includes('outputs: currentState.outputs,'),
-        `${file} carries the outputs bag — move that save site into deploy-engine.ts`
-      ).toBe(false);
-      // Every engine save goes through `withParentInfo` -> `redactStateForPersist`
-      // (the choke point `observed-properties-redaction-population` relies on);
-      // a mixin calling the backend directly would bypass it.
-      expect(
-        stripComments(source).includes('saveState('),
-        `${file} saves state itself — every save belongs in deploy-engine.ts, behind the persist choke point`
-      ).toBe(false);
+  it('every engine save goes through the persist choke point (#4200, #4350)', () => {
+    // `withParentInfo` -> `redactStateForPersist` is the choke point
+    // `observed-properties-redaction-population` relies on. The save sites
+    // moved into the split modules, so the family is read, with a floor so an
+    // emptied scan cannot pass.
+    // Parsed, so a save reached through an alias (`const b = this.stateBackend;
+    // b.saveState(...)`) is counted, and the STATE argument itself is checked
+    // rather than any text inside the call.
+    const calls: { where: string; stateArg: string | undefined }[] = [];
+    for (const rel of ENGINE_FAMILY) {
+      const sf = ts.createSourceFile(rel, readFileSync(`${REPO_ROOT}${rel}`, 'utf8'), ts.ScriptTarget.Latest, true);
+      const walk = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'saveState'
+        ) {
+          const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+          calls.push({ where: `${rel}:${line}`, stateArg: node.arguments[2]?.getText(sf) });
+        }
+        ts.forEachChild(node, walk);
+      };
+      walk(sf);
+    }
+    expect(calls.length, 'the engine save sites moved or vanished — re-derive').toBe(8);
+    for (const { where, stateArg } of calls) {
+      expect(stateArg?.startsWith('this.withParentInfo('), `${where} saves without withParentInfo`).toBe(
+        true
+      );
     }
   });
 
@@ -283,7 +296,7 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
     // written `exportNames: []` denies every consumer of a pre-v9 producer).
     // Derived the same way as the writers above: every carried bag in the
     // file must be followed, on the very next line, by the carry helper.
-    const lines = stripComments(readFileSync(`${REPO_ROOT}${SOURCE}`, 'utf8')).split('\n');
+    const lines = stripComments(readEngineFamily()).split('\n');
     const carriedBags = lines
       .map((raw, i) => ({ line: i + 1, text: raw.trim(), next: (lines[i + 1] ?? '').trim() }))
       .filter((l) => l.text === 'outputs: currentState.outputs,');
@@ -291,17 +304,13 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
     for (const bag of carriedBags) {
       expect(
         bag.next,
-        `${SOURCE}:${bag.line} carries the bag without its export set`
+        `${familyLocation(bag.line)} carries the bag without its export set`
       ).toBe('...exportNamesCarriedFrom(currentState),');
     }
   });
 
   it('counts the union call sites, so a deleted spread reds this test', () => {
-    // The rollback-executor context's call lives in the `deploy-engine/rollback.ts`
-    // mixin (#4200), so the count spans both files.
-    const source = [SOURCE, 'src/deployment/deploy-engine/rollback.ts']
-      .map((file) => stripComments(readFileSync(`${REPO_ROOT}${file}`, 'utf8')))
-      .join('\n');
+    const source = stripComments(readEngineFamily());
     const calls = source.match(/crossStackReadsForPartialSave\(/g) ?? [];
     // 1 declaration + 6 non-success saves + 1 rollback-executor context.
     expect(

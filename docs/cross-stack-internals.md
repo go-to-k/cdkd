@@ -339,7 +339,7 @@ enumeration above is history, not a maintained list: it drifted twice while
 this lane was open (once undercounting the saves, once overcounting the
 post-rollback ones), so the live rule is enforced by
 `tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts`, which
-scans `deploy-engine.ts` for direct `imports:` / `outputReads:` writes and
+scans the engine (`deploy-engine.ts` and `deploy-engine/*.ts`) for direct `imports:` / `outputReads:` writes and
 fails on any that is not allow-listed. Two kinds are: the success-path save,
 and — since issue [#3289](https://github.com/go-to-k/cdkd/issues/3289) — the
 REDACTION that rewrites the template-derived names inside entries that already

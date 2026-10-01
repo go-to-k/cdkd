@@ -26,13 +26,11 @@
  * `rollback-executor-orphan-record.test.ts` carry the behaviour.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { readEngineFamily } from '../_engine-family.js';
 
-const ENGINE = fileURLToPath(
-  new URL('../../../src/deployment/deploy-engine.ts', import.meta.url)
-);
-const source = readFileSync(ENGINE, 'utf8');
+// The whole engine (#4200, #4350): the save sites holding these literals live in
+// the `deploy-engine/*.ts` modules, the redactor in the host.
+const source = readEngineFamily();
 
 describe('orphans redaction fence (#2934)', () => {
   it('redactStateForPersist names the orphans field', () => {
@@ -142,10 +140,11 @@ describe('orphans carry-through fence (#2934)', () => {
     // save that would write it never runs. Adoption trips none of the original
     // triggers, so an entirely clean diff persisted neither the spliced-in
     // resource nor the consumed record.
-    const gate = source.slice(
-      source.indexOf('if (\n            observedRefresh ||'),
-      source.indexOf('const refreshedState: StackState = {')
-    );
-    expect(gate).toContain('orphansChanged');
+    // Whitespace-tolerant: moving the method between files re-indents it.
+    const gateAt = source.search(/if \(\s*observedRefresh \|\|/);
+    const stateAt = source.indexOf('const refreshedState: StackState = {');
+    expect(gateAt, 'the no-change save gate moved or was reworded').toBeGreaterThan(-1);
+    expect(stateAt).toBeGreaterThan(gateAt);
+    expect(source.slice(gateAt, stateAt)).toContain('orphansChanged');
   });
 });

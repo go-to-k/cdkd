@@ -1666,7 +1666,7 @@ Two placement rules go with it:
     serving concurrent resources, so provider-level state is some other
     resource's.
   - **`onInterrupted` returns an `InterruptedWaitError`**, not a bare `Error`.
-    `deploy-engine.ts` decides whether to ROLL BACK by asking what the failure
+    `deploy-engine/execute.ts` decides whether to ROLL BACK by asking what the failure
     was, and its own `InterruptedError` is engine-internal (not re-exported, and
     providers do not import the engine), so a bare `Error` from
     a provider read as a genuine resource failure and rolled the whole stack back
@@ -1721,7 +1721,7 @@ Two placement rules go with it:
     delivered between them, and `unforwardSigterm()` first does not empty the
     SIGINT set anyway because the command's own handler is still registered.
     Order them for readability; the requirement is release-before-unregister.
-    `deploy-engine.ts` is now the only site that still unregisters first, and
+    `deploy-engine/deploy-flow.ts` is now the only site that still unregisters first, and
     is safe only because `deploy.ts` holds a handler that outlives it — stated
     at that call site, because a surviving instance of a corrected anti-pattern
     has to explain itself.

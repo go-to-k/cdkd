@@ -63,7 +63,7 @@ const sites: LockSite[] = [
     acquire: 'lockManager.acquireLock(',
   },
   {
-    file: 'src/deployment/deploy-engine.ts',
+    file: 'src/deployment/deploy-engine/deploy-flow.ts',
     label: 'deploy',
     handler: 'sigintHandler',
     acquire: '.acquireLockWithRetry(',
