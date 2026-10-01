@@ -57,6 +57,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
 
 /** Long enough for the message-level substring arm. */
 const LONG = 'apigw-secret-stage-value';
@@ -649,6 +654,206 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
       expect(sent[0]?.input['resourceArn']).toBe(
         `arn:aws:apigateway:us-east-1::/restapis/${TINY_A}/stages/prod`
       );
+    });
+  });
+
+  describe('a masked failure still classifies as retryable (issue #4259)', () => {
+    /** A secret that spells part of the retry table's `does not exist` wording. */
+    const RETRY_WORD = 'exist';
+    const retryMasker = createSecretMasker(bagOf(RETRY_WORD));
+    const TRANSIENT = 'Invalid deployment identifier specified: dep-1 does not exist';
+    const retryable = (error: Error): boolean =>
+      isRetryableTransientError(error, retryClassificationText(error));
+
+    async function thrown(promise: Promise<unknown>): Promise<Error> {
+      try {
+        await promise;
+      } catch (error) {
+        return error as Error;
+      }
+      throw new Error('expected the operation to throw');
+    }
+
+    type Masker = typeof retryMasker;
+    const SITES = [
+      {
+        site: 'create() Account',
+        command: 'UpdateAccountCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.create('Acct', 'AWS::ApiGateway::Account', { CloudWatchRoleArn: 'arn:r' }, { maskSecrets: m }),
+      },
+      {
+        site: 'update() Account',
+        command: 'UpdateAccountCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.update(
+            'Acct',
+            'ApiGatewayAccount',
+            'AWS::ApiGateway::Account',
+            { CloudWatchRoleArn: 'arn:r' },
+            {},
+            { maskSecrets: m }
+          ),
+      },
+      {
+        site: 'create() Authorizer',
+        command: 'CreateAuthorizerCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.create(
+            'Auth',
+            'AWS::ApiGateway::Authorizer',
+            { RestApiId: 'api-1', Name: 'auth', Type: 'TOKEN', AuthorizerUri: 'uri' },
+            { maskSecrets: m }
+          ),
+      },
+      {
+        site: 'update() Authorizer',
+        command: 'UpdateAuthorizerCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.update(
+            'Auth',
+            'auth-1',
+            'AWS::ApiGateway::Authorizer',
+            { RestApiId: 'api-1', AuthorizerUri: 'new' },
+            { RestApiId: 'api-1', AuthorizerUri: 'old' },
+            { maskSecrets: m }
+          ),
+      },
+      {
+        site: 'create() Resource',
+        command: 'CreateResourceCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.create(
+            'Res',
+            'AWS::ApiGateway::Resource',
+            { RestApiId: 'api-1', ParentId: 'root-1', PathPart: 'users' },
+            { maskSecrets: m }
+          ),
+      },
+      {
+        site: 'create() Deployment',
+        command: 'CreateDeploymentCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.create('Dep', 'AWS::ApiGateway::Deployment', { RestApiId: 'api-1' }, { maskSecrets: m }),
+      },
+      {
+        site: 'create() Stage',
+        command: 'CreateStageCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.create(
+            'Stg',
+            'AWS::ApiGateway::Stage',
+            { RestApiId: 'api-1', StageName: 'prod', DeploymentId: 'dep-1' },
+            { maskSecrets: m }
+          ),
+      },
+      {
+        site: 'update() Stage',
+        command: 'UpdateStageCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.update(
+            'Stg',
+            'prod',
+            'AWS::ApiGateway::Stage',
+            { RestApiId: 'api-1', StageName: 'prod', Description: 'new' },
+            { RestApiId: 'api-1', StageName: 'prod' },
+            { maskSecrets: m }
+          ),
+      },
+      {
+        site: 'create() Method',
+        command: 'PutMethodCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.create(
+            'Mth',
+            'AWS::ApiGateway::Method',
+            { RestApiId: 'api-1', ResourceId: 'res-1', HttpMethod: 'GET' },
+            { maskSecrets: m }
+          ),
+      },
+      {
+        site: 'update() Method',
+        command: 'UpdateMethodCommand',
+        run: (p: ApiGatewayProvider, m: Masker) =>
+          p.update(
+            'Mth',
+            'api-1|res-1|GET',
+            'AWS::ApiGateway::Method',
+            { OperationName: 'op' },
+            {},
+            { maskSecrets: m }
+          ),
+      },
+    ] as const;
+
+    it.each(SITES)('$site: the stamp keeps it retryable', async ({ command, run }) => {
+      fakeApiGateway({ [command]: throwing(awsAuthored('BadRequestException', TRANSIENT)) });
+      const failure = await thrown(run(provider, retryMasker));
+      // Non-vacuity: the rejection came from the site's own command.
+      expect(mockSend.mock.calls.some(([c]) => commandName(c) === command)).toBe(true);
+      // Premise: the mask cut the retry wording out of the message itself.
+      expect(failure.message).not.toContain('does not exist');
+      expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(retryable(failure)).toBe(true);
+    });
+
+    it.each(SITES)(
+      '$site: a failure the mask left unchanged is not stamped',
+      async ({ command, run }) => {
+        fakeApiGateway({
+          [command]: throwing(awsAuthored('BadRequestException', 'Bad request parameter')),
+        });
+        const failure = await thrown(run(provider, retryMasker));
+        expect(failure.message).toContain('Bad request parameter');
+        expect(hasRedactedCause(failure)).toBe(false);
+        expect(retryable(failure)).toBe(false);
+      }
+    );
+
+    it('create() Stage: a 3-character secret StageName cut by the derived-name mask is stamped too', async () => {
+      // Below the substring floor, so only the Stage's derived-name mask (no
+      // floor) reaches AWS's sentence, and it cuts `exist` to `***st`.
+      const NAME = 'exi';
+      fakeApiGateway({
+        CreateStageCommand: throwing(awsAuthored('BadRequestException', TRANSIENT)),
+      });
+      const failure = await thrown(
+        provider.create(
+          'Stg',
+          'AWS::ApiGateway::Stage',
+          { RestApiId: 'api-1', StageName: NAME, DeploymentId: 'dep-1' },
+          { maskSecrets: createSecretMasker(bagOf(NAME)) }
+        )
+      );
+      expect(failure.message).toContain(`does not ${SECRET_MASK}st`);
+      expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(retryable(failure)).toBe(true);
+    });
+
+    it('update() Stage: a 3-character recorded name from a PREVIOUS secret is stamped too', async () => {
+      // The recorded name is in no bag of this deploy; only the previous
+      // side's `{{resolve:` reference marks it secret-derived, so only the
+      // Stage's derived-name mask cuts `exist` to `***st`.
+      const OLD = 'exi';
+      fakeApiGateway({
+        UpdateStageCommand: throwing(awsAuthored('BadRequestException', TRANSIENT)),
+      });
+      const failure = await thrown(
+        provider.update(
+          'Stg',
+          OLD,
+          'AWS::ApiGateway::Stage',
+          { RestApiId: 'api-1', StageName: 'new-stage-name', Description: 'changed' },
+          { RestApiId: 'api-1', StageName: '{{resolve:secretsmanager:stage-name}}' },
+          { maskSecrets: createSecretMasker(bagOf('unrelated-secret-value')) }
+        )
+      );
+      expect(failure.message).toContain(`does not ${SECRET_MASK}st`);
+      expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(retryable(failure)).toBe(true);
     });
   });
 });

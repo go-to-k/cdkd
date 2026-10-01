@@ -56,7 +56,9 @@ import {
   createMaskedLogSinks,
   withDerivedNameMasks,
   type MaskedLogSinks,
+  type MaskerFn,
 } from '../masked-retry-logger.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
@@ -78,17 +80,6 @@ const REST_API_ID_ADDRESSED_TYPES: ReadonlySet<string> = new Set([
   'AWS::ApiGateway::Deployment',
   'AWS::ApiGateway::Stage',
 ]);
-
-/**
- * A caught error's text, masked BEFORE it joins a `create()` / `update()`
- * failure message (issue #2177). AWS quotes a rejected request value back (a
- * stage name, an authorizer URI, a role ARN), and those values come off the
- * RESOLVED `properties` bag. Masking the raw text reaches the masker's
- * whole-value arm, which the assembled sentence cannot.
- */
-function awsErrorText(error: unknown, log: MaskedLogSinks): string {
-  return log.mask(error instanceof Error ? error.message : String(error));
-}
 
 /**
  * The masked sinks ONE Stage `create()` / `update()` logs through (issue
@@ -212,6 +203,23 @@ export class ApiGatewayProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.apiGatewayClient = awsClients.apiGateway;
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked (issue #2177): AWS quotes a rejected request value back (a stage
+   * name, an authorizer URI, a role ARN) off the RESOLVED `properties` bag, and
+   * masking the RAW text reaches the masker's whole-value arm. The `cause`
+   * stays unmasked, and a message the mask changed is stamped so the retry
+   * classifiers read that chain (`wrapMaskedAwsError`, issue #4259). A method,
+   * so `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
   }
 
   /**
@@ -435,12 +443,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway Account ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway Account ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -471,12 +484,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway Account ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway Account ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -644,12 +662,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway Authorizer ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway Authorizer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -761,12 +784,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway Authorizer ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway Authorizer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -884,12 +912,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway Resource ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway Resource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1093,12 +1126,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway Deployment ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway Deployment ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1336,12 +1374,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway Stage ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway Stage ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1677,12 +1720,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway Stage ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway Stage ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2050,12 +2098,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create API Gateway Method ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create API Gateway Method ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -2196,12 +2249,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update API Gateway Method ${logicalId}: ${awsErrorText(error, log)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway Method ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
