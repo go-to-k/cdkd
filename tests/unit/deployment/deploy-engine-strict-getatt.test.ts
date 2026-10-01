@@ -303,7 +303,7 @@ describe('DeployEngine - strict output failure persists provisioning state (#111
       logicalId,
       changeType: 'CREATE',
       resourceType: 'AWS::SSM::Parameter',
-      // provisionResourceBody's CREATE arm resolves `desiredProperties`.
+      // provisionCreate (provisionResourceBody's CREATE arm) resolves `desiredProperties`.
       desiredProperties: properties,
       propertyChanges: [],
     } as unknown as ResourceChange;
