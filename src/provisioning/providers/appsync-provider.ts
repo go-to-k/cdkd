@@ -1,6 +1,7 @@
 import {
   AppSyncClient,
   CreateGraphqlApiCommand,
+  ListGraphqlApisCommand,
   DeleteGraphqlApiCommand,
   CreateDataSourceCommand,
   DeleteDataSourceCommand,
@@ -52,6 +53,7 @@ import {
   type SyncConfig,
   type UserPoolConfig,
   type CreateGraphqlApiCommandInput,
+  type CreateGraphqlApiCommandOutput,
   type CreateDataSourceCommandInput,
   type CreateResolverCommandInput,
   type CreateApiKeyCommandInput,
@@ -92,6 +94,36 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+
+/**
+ * Retry-safety state for `CreateGraphqlApi`, which has no idempotency token
+ * and whose API name AWS does not require to be unique (issue
+ * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
+ * `AppSyncProvider.reportPossibleOrphanApis`. Module-scoped: a provider
+ * instance is per registry, and one process can build several.
+ */
+const createGraphqlApiLatch = new AmbiguousCreateLatch('CreateGraphqlApi');
+/** APIs this process created and recorded, never reported as orphan candidates. */
+const graphqlApisCreatedByThisProcess = new RecentIdSet();
+
+/** Page ceiling for the `ListGraphqlApis` lookup (25 APIs a page). */
+const MAX_GRAPHQL_API_LIST_PAGES = 40;
+
+/** Most API ids one orphan report names. */
+const MAX_REPORTED_ORPHAN_APIS = 5;
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetGraphqlApiCreateRetryStateForTests(): void {
+  createGraphqlApiLatch.resetForTests();
+  graphqlApisCreatedByThisProcess.resetForTests();
+}
 
 /** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
 const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
@@ -174,6 +206,7 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
  */
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
+  private createClient: AppSyncClient | undefined;
   private s3Client: S3Client | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('AppSyncProvider');
@@ -277,6 +310,23 @@ export class AppSyncProvider implements ResourceProvider {
       });
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateGraphqlApi` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #2080). Separate so every other call
+   * keeps the full SDK retry.
+   */
+  private getCreateClient(): AppSyncClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new AppSyncClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
   }
 
   /**
@@ -2668,7 +2718,25 @@ export class AppSyncProvider implements ResourceProvider {
         input.visibility = properties['Visibility'] as GraphQLApiVisibility;
       }
 
-      const response = await this.getClient().send(new CreateGraphqlApiCommand(input));
+      // Issue #2080: after an earlier ambiguous attempt, name the API it may
+      // have made before a second CreateGraphqlApi is sent. Detection only.
+      const orphanWindow = createGraphqlApiLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanApis(
+          logicalId,
+          input,
+          orphanWindow,
+          maskerOrIdentity(context?.maskSecrets)
+        );
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateGraphqlApiCommandOutput;
+      try {
+        response = await this.getCreateClient().send(new CreateGraphqlApiCommand(input));
+      } catch (error) {
+        createGraphqlApiLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
       // Recorded BEFORE any other dereference: if `graphqlApi` came back
       // malformed the API may still exist, and the rollback below is the only
       // thing that keeps it from orphaning.
@@ -2690,6 +2758,7 @@ export class AppSyncProvider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully created GraphQL API ${logicalId}: ${apiId}`);
+      graphqlApisCreatedByThisProcess.add(apiId);
 
       return {
         physicalId: apiId,
@@ -2729,6 +2798,100 @@ export class AppSyncProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * After an attempt at this create ended AMBIGUOUS (in practice a 5xx, the
+   * only ambiguous failure the engine retries: AppSync may have made the API
+   * and lost the answer), name the APIs
+   * that could be its orphan (issue
+   * [#2080](https://github.com/go-to-k/cdkd/issues/2080)). Detection only:
+   * this never adopts and never deletes.
+   *
+   * Why not adopt: `CreateGraphqlApi` has no token, the name is the
+   * template's own and not unique, and `GraphqlApi` carries NO creation date,
+   * so a same-named API from another stack, an earlier run or a console user
+   * cannot be told from this create's orphan. Binding the wrong one would
+   * point this stack's schema, resolvers and `cdkd destroy` at an API it does
+   * not own; an orphan costs nothing while it serves no traffic. The one exact
+   * channel, a cdkd token tag on the create, was rejected: it would make
+   * `appsync:TagResource` a requirement of every API create, collide with tag
+   * policies, and leave a cdkd tag each read path then has to strip.
+   *
+   * With no date to window on, the report says only what it knows: which
+   * APIs carry this name and type, excluding the ones this process recorded.
+   * That set can include this stack's OWN live API (the old one during a
+   * replacement, recorded by an earlier process) or another stack's API of the
+   * same name, so the report prints a READ command per id and no delete
+   * command: nothing here attributes any of them to this create.
+   * Every failure warns and returns: the lookup must never fail a deploy.
+   */
+  private async reportPossibleOrphanApis(
+    logicalId: string,
+    input: CreateGraphqlApiCommandInput,
+    window: AmbiguousCreateWindow,
+    mask: MaskerFn
+  ): Promise<void> {
+    const since = new Date(window.floorMs).toISOString();
+    const name = mask(String(input.name));
+    const wantedType = input.apiType ?? 'GRAPHQL';
+    const candidates: string[] = [];
+    let truncated = false;
+    try {
+      let nextToken: string | undefined;
+      let pages = 0;
+      do {
+        const page = await this.getClient().send(
+          new ListGraphqlApisCommand({ maxResults: 25, ...(nextToken && { nextToken }) })
+        );
+        for (const api of page.graphqlApis ?? []) {
+          if (
+            api.apiId &&
+            api.name === input.name &&
+            (api.apiType ?? 'GRAPHQL') === wantedType &&
+            !graphqlApisCreatedByThisProcess.has(api.apiId)
+          ) {
+            candidates.push(api.apiId);
+          }
+        }
+        nextToken = page.nextToken;
+        pages++;
+      } while (nextToken && pages < MAX_GRAPHQL_API_LIST_PAGES);
+      truncated = nextToken !== undefined;
+    } catch (error) {
+      const failure = describeAwsFailure(error);
+      this.logger.debug(mask(`ListGraphqlApis failed with: ${failure.detail}`));
+      this.logger.warn(
+        mask(
+          `An earlier CreateGraphqlApi attempt for ${logicalId} failed without a definite answer (at ${since}), so AppSync may have created an API named ${name} that no cdkd state records, and cdkd could not list APIs to look for it (${failure.summary}). Creating a new API; check for another API of that name.`
+        )
+      );
+      return;
+    }
+
+    const incomplete = truncated
+      ? ` The search was incomplete: the API list was cut at ${MAX_GRAPHQL_API_LIST_PAGES} pages.`
+      : '';
+    if (candidates.length === 0) {
+      const line = mask(
+        `No listed GraphQL API named ${name} is unrecorded by this deploy, so the listing shows no orphan of the earlier ambiguous CreateGraphqlApi attempt for ${logicalId} (at ${since}).${incomplete}`
+      );
+      if (truncated) {
+        this.logger.warn(line);
+      } else {
+        this.logger.debug(line);
+      }
+      return;
+    }
+    const shown = candidates.slice(0, MAX_REPORTED_ORPHAN_APIS);
+    const aws = pasteableAwsCommand(mask);
+    this.logger.warn(
+      mask(
+        `An earlier CreateGraphqlApi attempt for ${logicalId} failed without a definite answer (at ${since}), and AppSync may have created an API then that no cdkd state records. ${candidates.length} GraphQL API(s) named ${name} exist that this deploy did not record: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. AppSync reports no creation time, so any of them may instead be this stack's own recorded API, another stack's, or older than this deploy; cdkd does not adopt or delete them. Creating a new API. Inspect each before deleting anything: ${shown
+          .map((apiId) => aws`aws appsync get-graphql-api --api-id ${apiId}`.render())
+          .join(' ; ')}${incomplete}`
+      )
+    );
   }
 
   private async deleteGraphQLApi(

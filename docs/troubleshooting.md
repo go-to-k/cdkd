@@ -60,6 +60,7 @@ This document summarizes common issues when using cdkd and their solutions.
 - [Orphaned Resources](#orphaned-resources)
   - [Overview](#overview)
   - [How cdkd Prevents Orphans](#how-cdkd-prevents-orphans)
+  - [A warning that a KMS key, Cognito user pool or AppSync API may be an orphan](#a-warning-that-a-kms-key-cognito-user-pool-or-appsync-api-may-be-an-orphan)
   - [`DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for](#distributionalreadyexists-on-a-cloudfront-deploy-and-a-distribution-you-did-not-ask-for)
   - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
   - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
@@ -2494,6 +2495,43 @@ cdkd uses a multi-layered approach to prevent orphaned resources:
 4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
 
 5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed. This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted: the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it. A nested stack's successful deploy keeps its journal until the top-level stack's deploy succeeds, so a failure of the parent can revert the child from it.
+
+### A warning that a KMS key, Cognito user pool or AppSync API may be an orphan
+
+`CreateKey`, `CreateUserPool` and `CreateGraphqlApi` carry no idempotency
+token. When one fails with HTTP 500 / 502 / 503 / 504, AWS may have created the
+resource and lost only the response, and cdkd's retry creates it again. cdkd
+therefore turns off the AWS SDK's own retry of a 5xx for these three calls, so
+the failure reaches cdkd's retry, and before retrying it looks for what the
+failed attempt may have made:
+
+- a user pool with the same name, a KMS key with the same settings, or a
+  GraphQL API with the same name, created during the failed attempt (AppSync
+  reports no creation time, so for it: any API with that name this deploy did
+  not record);
+- each match is REPORTED at warn, with its id and a read command first
+  (`describe-user-pool`, `describe-key`, `get-graphql-api`). cdkd neither
+  adopts nor deletes it -- a name or a set of settings does not prove which
+  deploy made it -- and creates a new resource, so a user pool name is then
+  shared by two pools.
+
+Inspect each id the warning names, and delete it only after confirming it is
+this deploy's orphan and no other deploy's resource (for a pool: no users, the
+failed attempt's creation time, no tags another stack sets). A KMS key cannot
+be deleted immediately: `aws kms schedule-key-deletion` puts it in a
+7-to-30-day pending window. The lookup needs `kms:ListKeys` + `kms:DescribeKey`,
+`cognito-idp:ListUserPools`, or `appsync:ListGraphqlApis`; without them cdkd
+warns that it could not look, and the deploy proceeds.
+
+Not covered: a reset connection or a timeout after the request was sent is
+just as ambiguous, but the AWS SDK retries it inside one call and cdkd's own
+retry does not, so such a duplicate is neither prevented nor reported.
+
+A related KMS warning -- "KMS key ... was created for ..., but a follow-up
+call failed" -- means `CreateKey` succeeded and a later call on the key
+(`EnableKeyRotation`, `DisableKey`) did not. The retry reuses that key rather
+than creating another, so leave it alone while the deploy is still running;
+only if the deploy then fails is it left out of cdkd state.
 
 ### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
 

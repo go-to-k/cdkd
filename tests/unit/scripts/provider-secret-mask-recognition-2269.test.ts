@@ -950,8 +950,10 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     expect(escapes.bareSinkSites).toBe(0);
 
     // The measured population that makes the escape empty TODAY: the corpus
-    // has exactly six calls taking a bare `JSON.stringify` outside the sink
-    // set, and none builds a message — two hashing / encoding sinks; three
+    // has exactly seven calls taking a bare `JSON.stringify` outside the sink
+    // set, and none builds a message — three hashing / encoding sinks (one is
+    // `kms-provider.ts`'s digest binding a held key to its create input,
+    // issue #2080); three
     // `JSON.parse(JSON.stringify(...))` round-trips feeding an in-memory
     // comparison whose result is compared and dropped, never logged or thrown
     // (`asJson` in `secretsmanager-secret-provider.ts`, issue #2472,
@@ -961,7 +963,7 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     // `displaySafe(JSON.stringify(maskDeep(...)))` only sanitizes a value that
     // is still INTERPOLATED, so the site stays a counted, masked sink (issue
     // #3269). Re-derived here rather than quoted, so the bound's "measured
-    // zero" fails if the corpus grows a seventh.
+    // zero" fails if the corpus grows an eighth.
     const files: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir).sort()) {
@@ -1001,6 +1003,7 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
       'JSON.parse',
       'JSON.parse',
       'JSON.parse',
+      "createHash('sha256').update",
       "createHash('sha256').update",
       'displaySafe',
     ]);
