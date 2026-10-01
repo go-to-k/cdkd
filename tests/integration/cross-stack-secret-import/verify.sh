@@ -1321,8 +1321,8 @@ fi
 # would pin the defect. Anchored to the line start so a mention inside prose
 # cannot satisfy it.
 # Since go-to-k/cdkd#4194 every pasteable hint carries the run's typed
-# --profile / --state-bucket / --state-prefix after the target, so the end
-# anchor admits exactly those flags and nothing else.
+# profile / state-bucket / state-prefix flags after the target, so the end
+# anchor admits exactly those three and nothing else.
 RUN_FLAGS_TAIL="( --(profile|state-bucket|state-prefix) [^ ]+)*"
 if ! printf '%s\n' "${PLAINTEXT_PRODUCER_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?${RUN_FLAGS_TAIL}$"; then
   diag "${PLAINTEXT_PRODUCER_OUT}"
