@@ -81,10 +81,7 @@ import {
 } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { injectiveKey } from '../../state/record-keys.js';
-import {
-  pasteableAwsCommand,
-  type PasteableAwsCommand,
-} from '../replacement-protection-advice.js';
+import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
 import { collectOrphanIds, reportPossibleOrphans } from './apigateway-orphan-report.js';
 import {
   AmbiguousCreateLatch,

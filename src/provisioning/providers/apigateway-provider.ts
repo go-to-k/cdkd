@@ -66,10 +66,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
-import {
-  pasteableAwsCommand,
-  type PasteableAwsCommand,
-} from '../replacement-protection-advice.js';
+import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
   redactedDeleteAddressFields,
