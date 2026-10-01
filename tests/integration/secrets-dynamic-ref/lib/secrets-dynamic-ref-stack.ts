@@ -403,6 +403,15 @@ export class SecretsDynamicRefStack extends cdk.Stack {
           { Pw: `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}` }
         ),
       });
+      // Issue #4266: the same name through `ssm-secure`, a secret by
+      // spelling, is refused BEFORE its lookup, so the password-holding name
+      // is never sent to AWS.
+      new cdk.CfnOutput(this, 'SecretNamedSecureRef', {
+        value: cdk.Fn.sub(
+          `{{resolve:ssm-secure:cdkd-test-dynref-named-${process.env['CDK_DEFAULT_ACCOUNT'] ?? account}-\${Pw}}}`,
+          { Pw: `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}` }
+        ),
+      });
     }
 
     // Issue #2759: `Fn::Base64` over a dynamic reference. The resolver returns

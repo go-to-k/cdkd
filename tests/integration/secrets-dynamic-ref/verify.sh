@@ -1194,6 +1194,36 @@ if [ "${NAMED_PERSISTED}" != "false" ]; then
   exit 1
 fi
 echo "    OK: the secret-named output was refused masked; the log carries no password, state.json only the Secret's own, and no SecretNamedRef key (#4166)"
+# Issue #4266: `SecretNamedSecureRef` names the same SecureString through
+# `ssm-secure`, a secret by spelling, so it is refused BEFORE its lookup. The
+# parameter exists, so a refusal after the lookup would print the same
+# warning: only the absent lookup line tells them apart. The `ssm` arm above
+# IS looked up, so its lookup line is the sentinel that `--verbose` lines
+# reach this log.
+SECURE_SHAPE=$(jq -r --arg prefix "${SECRET_NAMED_PARAM_PREFIX}" '.Outputs.SecretNamedSecureRef.Value["Fn::Sub"][0] // "absent"
+  | if . == ("{{resolve:ssm-secure:" + $prefix + "${Pw}}}") then "ssm-secure" else "other" end' "${SYNTH_TEMPLATE}")
+if [ "${SECURE_SHAPE}" != "ssm-secure" ]; then
+  echo "FAIL: premise: SecretNamedSecureRef did not synthesize as Fn::Sub ['{{resolve:ssm-secure:<prefix>\${Pw}}}', ...] (got ${SECURE_SHAPE}) -- the #4266 arm is not what this deploy exercised" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_NAMED}" != *"Resolving dynamic reference: ssm:${SECRET_NAMED_PARAM_PREFIX}"* ]]; then
+  echo "FAIL: sentinel: the ssm arm's lookup line is not in the --verbose log, so the absence of the ssm-secure one proves nothing (issue #4266)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_NAMED}" == *"Resolving dynamic reference: ssm-secure:"* ]]; then
+  echo "FAIL: the ssm-secure reference assembled from the password was looked up before its refusal (issue #4266)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_NAMED}" != *"Failed to resolve output SecretNamedSecureRef: Refusing to resolve {{resolve:ssm-secure:${SECRET_NAMED_PARAM_PREFIX}***}}: the reference was assembled from a secret value and resolves to a secret"* ]]; then
+  echo "FAIL: the probe deploy did not report 'Failed to resolve output SecretNamedSecureRef: Refusing to resolve {{resolve:ssm-secure:<prefix>***}}: ...' (issue #4266)" >&2
+  diag_output "${DEPLOY_OUT_NAMED}"
+  exit 1
+fi
+if [ "$(jq -r '.outputs | has("SecretNamedSecureRef")' "${NAMED_STATE}")" != "false" ]; then
+  echo "FAIL: state.outputs has a SecretNamedSecureRef key -- a refused output must not be persisted (issue #4266)" >&2
+  exit 1
+fi
+echo "    OK: the ssm-secure secret-named output was refused before its lookup, masked, and not persisted (#4266)"
 
 # --- Phase 1b4: the same token as a RESOURCE PROPERTY (issue #2743) ---------
 # The higher-severity half. Before the fix the provider was handed

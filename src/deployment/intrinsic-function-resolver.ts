@@ -12209,8 +12209,10 @@ export class IntrinsicFunctionResolver {
    * token, or a secret a parent passed in. A secret this pass resolved that
    * merely coincides with a literal token's text is not counted.
    *
-   * Called only once the token has resolved to a secret: a lookup failure
-   * keeps its own masked error, and a public result records no expression.
+   * Called once the token is known to resolve to a secret: before the lookup
+   * for `secretsmanager` / `ssm-secure`, secret by spelling (issue #4266), and
+   * after it for `ssm`, whose failed lookup keeps its own masked error and
+   * whose public result records no expression.
    * The caller exempts persisted text (`cdkd drift`, the rollback replay), as
    * the unsupported-service arm does (issue #2743).
    */

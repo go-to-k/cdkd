@@ -130,6 +130,8 @@ const ec2Behaviour = vi.hoisted(() => ({ mode: 'ok' as 'ok' | 'empty' | 'throw' 
  */
 const vpcBehaviour = vi.hoisted(() => ({ ipv6Block: undefined as string | undefined }));
 const ssmBehaviour = vi.hoisted(() => ({ value: undefined as string | undefined }));
+/** Every `SecretId` a `GetSecretValue` carried, so a case can say which lookups ran. */
+const secretIdsSent = vi.hoisted(() => [] as string[]);
 
 /**
  * The cross-stack cases fall through to the CloudFormation fallback (on by
@@ -216,6 +218,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     secretsManager: {
       send: vi.fn(async (command: { input?: { SecretId?: string } }) => {
         const id = command.input?.SecretId;
+        secretIdsSent.push(String(id));
         if (id === SECRET_ID) {
           return {
             SecretString: JSON.stringify({
@@ -330,6 +333,34 @@ async function messageOf(h: Harness, value: unknown): Promise<string> {
   return (thrown as Error).message;
 }
 
+/**
+ * The secretsmanager throws that run AFTER a lookup, reached on the PERSISTED
+ * route. On the template route a `secretsmanager` token assembled from a
+ * secret is refused before its lookup (issue #4266), so none of those throws
+ * is reachable there any more. The public `resolveDynamicReferences` (`cdkd
+ * drift`, the rollback replay) is exempt from that refusal and still looks the
+ * token up, with the plaintext inside it, and the bag that holds the needle is
+ * the one `assembled` recorded it into first.
+ */
+async function persistedMessageOf(h: Harness, token: string): Promise<string> {
+  expect(
+    await h.resolver.resolve(assembled('password'), h.context as never),
+    'the needle must be recorded first'
+  ).toBe(PASSWORD);
+  const thrown = await h.resolver.resolveDynamicReferences(token, h.context as never).then(
+    (resolved) => ({ [RESOLVED_INSTEAD]: resolved }) as const,
+    (reason: unknown) => reason
+  );
+  if (typeof thrown === 'object' && thrown !== null && RESOLVED_INSTEAD in thrown) {
+    throw new Error(
+      `the site must actually throw, or the case is vacuous — it RESOLVED to ` +
+        `${(thrown as Record<symbol, string>)[RESOLVED_INSTEAD]}`
+    );
+  }
+  expect(thrown, 'the rejection must be an Error to have a message').toBeInstanceOf(Error);
+  return (thrown as Error).message;
+}
+
 /** Every line the resolver logged, at any level. */
 function loggedText(): string {
   return [logSpies.debug, logSpies.info, logSpies.warn, logSpies.error]
@@ -352,44 +383,55 @@ beforeEach(() => {
   vpcBehaviour.ipv6Block = undefined;
   ssmBehaviour.value = undefined;
   cfnBehaviour.mode = 'empty';
+  secretIdsSent.length = 0;
 });
 
 describe('#2827 — dynamic-reference throws mask the RAW value they interpolate', () => {
+  // The three secretsmanager throws below run AFTER a lookup, so they are
+  // driven through `persistedMessageOf` (see its doc): the template-route
+  // `Fn::Sub` assembly these cases used is refused before the lookup since
+  // issue #4266. Each asserts the lookup it depends on was made.
   it('the JSON-KEY position is masked, and the diagnosis around it survives', async () => {
     const h = makeHarness();
-    const message = await messageOf(h, {
-      'Fn::Sub': [`{{resolve:secretsmanager:${SECRET_ID}:SecretString:\${Pw}}}`, { Pw: ref('password') }],
-    });
+    const message = await persistedMessageOf(
+      h,
+      `{{resolve:secretsmanager:${SECRET_ID}:SecretString:${PASSWORD}}}`
+    );
 
     expect(message).not.toContain(PASSWORD);
     expect(message).toContain("key '***' not found");
     // The CONTROL inside the masked span: the secret ID is not a needle here
     // and must come through, so a mask-everything regression reds.
     expect(message).toContain(`not found in secret '${SECRET_ID}'`);
+    expect(secretIdsSent, 'the variable, then the persisted token: the throw follows a lookup').toEqual(
+      [SECRET_ID, SECRET_ID]
+    );
   });
 
   it('the SECRET-ID position is a different throw, masked there too', async () => {
     const h = makeHarness();
-    const message = await messageOf(h, {
-      'Fn::Sub': [`{{resolve:secretsmanager:\${Pw}:SecretString:password}}`, { Pw: ref('password') }],
-    });
+    const message = await persistedMessageOf(
+      h,
+      `{{resolve:secretsmanager:${PASSWORD}:SecretString:password}}`
+    );
 
     expect(message).not.toContain(PASSWORD);
     expect(message).toContain("secret '***' does not contain a SecretString value");
+    expect(secretIdsSent).toEqual([SECRET_ID, PASSWORD]);
   });
 
   it('the not-valid-JSON throw masks BOTH of its interpolations', async () => {
     const h = makeHarness();
-    const message = await messageOf(h, {
-      'Fn::Sub': [
-        `{{resolve:secretsmanager:\${Pw}-notjson:SecretString:\${Pw}}}`,
-        { Pw: ref('password') },
-      ],
-    });
+    const message = await persistedMessageOf(
+      h,
+      `{{resolve:secretsmanager:${PASSWORD}-notjson:SecretString:${PASSWORD}}}`
+    );
 
     expect(message).not.toContain(PASSWORD);
-    expect(message).toContain('is not valid JSON but JSON_KEY');
-    expect(message).toContain('***');
+    expect(message, 'each interpolation masked, the literal beside the id kept').toContain(
+      "secret '***-notjson' is not valid JSON but JSON_KEY '***' was specified"
+    );
+    expect(secretIdsSent).toEqual([SECRET_ID, `${PASSWORD}-notjson`]);
   });
 
   it('CONTROL: an UNRECORDED id and key are reported verbatim', async () => {
@@ -973,33 +1015,34 @@ describe('#2827 review — the SUCCESS-path log lines beside every masked throw'
     // emitted before the lookup either way, so the case drives the resolve and
     // reads the log, which is where the regression would show.
     //
-    // Since issue #4166 the resolved secret is then refused (the reference
-    // was assembled from a secret), AFTER the lookup and its echo.
+    // ON THE PERSISTED ROUTE since issue #4266. On the template route the
+    // `Fn::Sub` assembly this case used is refused before its lookup, and so
+    // before this echo, which is no longer printed there at all. The public
+    // `resolveDynamicReferences` is exempt from that refusal (and from issue
+    // #4166's after the lookup), so it still echoes the token and resolves it.
     const h = makeHarness();
-    const message = await h.resolver
-      .resolve(
-        {
-          'Fn::Sub': [
-            `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password:\${Pw}}}`,
-            { Pw: ref('password') },
-          ],
-        },
-        h.context as never
-      )
-      .then(
-        () => undefined,
-        (e: unknown) => (e instanceof Error ? e.message : String(e))
-      );
-    expect(message, 'the premise: the lookup SUCCEEDS, so only the refusal stops it').toMatch(
-      /^Refusing to resolve \{\{resolve:secretsmanager:[^}]*\}\}: the reference was assembled from a secret value/
+    expect(
+      await h.resolver.resolve(assembled('password'), h.context as never),
+      'the needle must be recorded first'
+    ).toBe(PASSWORD);
+    const resolved = await h.resolver.resolveDynamicReferences(
+      `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password:${PASSWORD}}}`,
+      h.context as never
     );
-    expect(message).not.toContain(PASSWORD);
+    expect(resolved, 'the premise: the persisted token is looked up and RESOLVES').toBe(PASSWORD);
+    expect(secretIdsSent).toEqual([SECRET_ID, SECRET_ID]);
 
-    const echoes = loggedLines().filter((l) =>
-      l.includes('Resolving dynamic reference: secretsmanager:')
+    // The persisted token's echo, not the variable's (whose version stage
+    // defaults, so its line reads `...:password:AWSCURRENT:`).
+    const prefix = `Resolving dynamic reference: secretsmanager:${SECRET_ID}:SecretString:password:`;
+    const echoes = loggedLines().filter(
+      (l) => l.includes(prefix) && !l.includes(`${prefix}AWSCURRENT:`)
     );
-    expect(echoes.length, 'the echo must be in the log, or this is vacuous').toBeGreaterThanOrEqual(2);
-    for (const line of echoes) expect(line).not.toContain(PASSWORD);
+    expect(echoes, 'the echo must be in the log, or this is vacuous').toHaveLength(1);
+    expect(echoes[0]).not.toContain(PASSWORD);
+    expect(echoes[0], 'the VERSION STAGE is masked in place').toContain(
+      `secretsmanager:${SECRET_ID}:SecretString:password:***:`
+    );
   });
 
   it("CONTROL: with nothing recorded, every one of those lines prints in full", async () => {
