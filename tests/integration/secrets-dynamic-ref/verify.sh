@@ -141,7 +141,7 @@ EXPECTED_PASSWORD="cdkd-known-pw-123"
 # that asserts on it. `diag_output` is defined below and first called long before
 # Phase 1b2, and it must be able to WITHHOLD this form from the moment it can be
 # called: on a derived-needle regression the very line the arm would dump is
-# `Resolved Fn::Base64: *** -> <base64(password)>`, which the plaintext arms do
+# `Resolved Fn::Base64: *** resolved to <base64(password)>`, which the plaintext arms do
 # not match. Deriving it at the assertion left a window in which `diag_output`
 # printed a decodable secret into the run log `/run-integ` persists (review round
 # 2). Round-tripped so a host `base64` with different flags cannot make the arm
@@ -411,8 +411,8 @@ assert_diag_output_arms() {
     "$(printf 'non-SGR final byte \033[2K%s tail' "${EXPECTED_PIN}")" \
     "$(printf 'colon params \033[38:5:1m%s tail' "${EXPECTED_PIN}")" \
     "$(printf 'private params \033[?25h%s tail' "${EXPECTED_PIN}")" \
-    "Resolved Fn::Base64: *** -> ${EXPECTED_PASSWORD_B64}" \
-    "Resolved Fn::Base64: port:*** -> ${EXPECTED_PIN_B64}"; do
+    "Resolved Fn::Base64: *** resolved to ${EXPECTED_PASSWORD_B64}" \
+    "Resolved Fn::Base64: port:*** resolved to ${EXPECTED_PIN_B64}"; do
     case "$(diag_output "${diag_probe}" 2>&1)" in
       *WITHHELD*) ;;
       *) echo "FAIL: premise: diag_output would print a diagnostic carrying a secret" >&2; exit 1 ;;
@@ -961,15 +961,20 @@ if [ "${B64_PERSISTED}" != "***" ]; then
   exit 1
 fi
 echo "    OK: the Fn::Base64 output persisted as the mask, not as a decodable secret (#2759)"
-# The LOG half of the same defect: `Resolved Fn::Base64: *** -> <encoding>`
+# The LOG half of the same defect: `Resolved Fn::Base64: *** resolved to <encoding>`
 # masked the input and printed the output in the same breath. `--verbose` is
 # on for this deploy, so the line is in the captured log.
 if [[ "${DEPLOY_OUT_B64}" == *"${EXPECTED_PASSWORD_B64}"* ]]; then
   echo "FAIL: the probe deploy's --verbose log carries the base64 of the resolved password (issue #2759)" >&2
   exit 1
 fi
-if [[ "${DEPLOY_OUT_B64}" != *"Resolved Fn::Base64:"* ]]; then
-  echo "FAIL: premise: the probe deploy logged no 'Resolved Fn::Base64:' line -- the negative above passes for free (issue #2759)" >&2
+# The line itself, asserted PRESENT and masked on both halves, like the #3119
+# arm below. A bare prefix check is not enough: the encoding's `=` padding
+# makes it an assignment-shaped word, which the line DESCRIBES rather than
+# prints (go-to-k/cdkd#4161), so a regressed needle would print a description,
+# pass the negative above and pass a prefix-only premise.
+if [[ "${DEPLOY_OUT_B64}" != *"Resolved Fn::Base64: *** resolved to ***"* ]]; then
+  echo "FAIL: premise: the probe deploy logged no 'Resolved Fn::Base64: *** resolved to ***' line -- the negative above passes for free (issue #2759)" >&2
   diag_output "${DEPLOY_OUT_B64}"
   exit 1
 fi
@@ -1011,8 +1016,8 @@ fi
 # The line itself, asserted PRESENT and masked whole on its right half: the
 # negative above passes for free when the line stopped firing, and a line
 # that printed the encoding would have failed the grep just before.
-if [[ "${DEPLOY_OUT_B64}" != *"Resolved Fn::Base64: port:*** -> ***"* ]]; then
-  echo "FAIL: premise: the probe deploy logged no 'Resolved Fn::Base64: port:*** -> ***' line -- the #3119 log negative passes for free" >&2
+if [[ "${DEPLOY_OUT_B64}" != *"Resolved Fn::Base64: port:*** resolved to ***"* ]]; then
+  echo "FAIL: premise: the probe deploy logged no 'Resolved Fn::Base64: port:*** resolved to ***' line -- the #3119 log negative passes for free" >&2
   diag_output "${DEPLOY_OUT_B64}"
   exit 1
 fi

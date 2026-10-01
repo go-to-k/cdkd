@@ -418,7 +418,7 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // the ENCODED value, and every redaction needle matches the plaintext
     // LITERALLY — so before the derived needle the encoded secret was
     // persisted to `state.json`, decodable with one command, and printed
-    // beside its own mask (`Resolved Fn::Base64: *** -> <the secret>`). This
+    // beside its own mask (`Resolved Fn::Base64: *** resolved to <the secret>`). This
     // is the ordinary CloudFormation spelling for EC2 `UserData`, so it is not
     // a contrived shape.
     //

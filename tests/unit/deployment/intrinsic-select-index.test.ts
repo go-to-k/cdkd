@@ -98,7 +98,7 @@ describe('an index that names an element selects it (#3574)', () => {
     expect(await select('1')).toBe('b');
     expect(await select('2')).toBe('c');
     // The debug line renders the PARSED position.
-    expect(logs.debug).toContain('Resolved Fn::Select: index 2 -> "c"');
+    expect(logs.debug).toContain('Resolved Fn::Select: index 2 resolved to "c"');
   });
 
   it('a Ref to a Number parameter, coerced to a number (pre-fix: undefined)', async () => {
@@ -220,7 +220,7 @@ describe('an index resolved from a SECRET never reaches a log line or the placeh
   it('in bounds: selects, and the debug line masks the index', async () => {
     const list = Array.from({ length: 50 }, (_, i) => `v${i}`);
     expect(await selectSecret('42', list)).toBe('v42');
-    expect(logs.debug).toContain('Resolved Fn::Select: index *** -> "v42"');
+    expect(logs.debug).toContain('Resolved Fn::Select: index *** resolved to "v42"');
     expect(logs.debug.join('\n')).not.toContain('index 42');
   });
 

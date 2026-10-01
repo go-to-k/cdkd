@@ -513,7 +513,9 @@ describe('review round: arms the first cases left open (#4049)', () => {
         Resources: {
           A: {
             Type: 'AWS::SSM::Parameter',
-            Properties: { Value: { 'Fn::Join': ['', ['u=', { Ref: 'P' }]] } },
+            // `u-`, not `u=`: an assignment-shaped render is DESCRIBED on the
+            // line whether or not the mask worked (go-to-k/cdkd#4161).
+            Properties: { Value: { 'Fn::Join': ['', ['u-', { Ref: 'P' }]] } },
           },
         },
       } as CloudFormationTemplate,
@@ -524,7 +526,9 @@ describe('review round: arms the first cases left open (#4049)', () => {
       { parameters: { P: NOECHO }, inheritedSecrets: inherited }
     );
     const logged = loggedText();
-    expect(logged).toContain('***');
+    // POSITIVE: the line printed the MASKED render, so the negative below
+    // cannot pass on a description.
+    expect(logged).toContain('Resolved Fn::Join: u-***');
     expect(logged).not.toContain(NOECHO);
   });
 
@@ -541,11 +545,15 @@ describe('review round: arms the first cases left open (#4049)', () => {
       },
     } as CloudFormationTemplate);
     const logged = loggedText();
-    expect(logged).toContain('***');
+    // POSITIVE, on the line itself: `noecho-plain-7731` is shell-inert, so the
+    // line prints its render rather than a description, and only the mask can
+    // put `***` there. With the log-side masks removed it prints the plaintext
+    // and this reds; the whole-token cases below are described either way.
+    expect(logged).toContain('Resolved Fn::GetAtt from attributes: B.Value resolved to ***');
     expect(logged).not.toContain(NOECHO);
   });
 
-  it('prints a list-typed NoEcho value of whole tokens as its expressions', async () => {
+  it('describes a list-typed NoEcho value of whole tokens on the resolver line (its `{` / `}` are not shell-inert)', async () => {
     const refs = [
       '{{resolve:secretsmanager:prod/a:SecretString:x}}',
       '{{resolve:secretsmanager:prod/b:SecretString:y}}',
@@ -572,7 +580,9 @@ describe('review round: arms the first cases left open (#4049)', () => {
       new DiffCalculator(),
       { parameters: { DbUsers: refs } }
     );
-    expect(loggedText()).toContain(`B.Value -> ${refs[0]}`);
+    // The resolver's own `--verbose` line DESCRIBES the expression, since its
+    // `{` / `}` are not shell-inert (go-to-k/cdkd#4161); it prints no plaintext.
+    expect(loggedText()).toContain('B.Value resolved to a value that cannot be shown safely here');
   });
 
   it('masks a NoEcho value that merely CONTAINS a dynamic reference', async () => {
@@ -665,7 +675,7 @@ describe('review round: arms the first cases left open (#4049)', () => {
     expect(logged).not.toContain(NOECHO);
   });
 
-  it("prints a whole-token NoEcho value as its expression in the resolver's own lines too", async () => {
+  it("describes a whole-token NoEcho value on the resolver's own line (its `{` / `}` are not shell-inert)", async () => {
     const ref = '{{resolve:secretsmanager:prod/db:SecretString:user}}';
     const { backend } = backendOf();
     await computeStackDiff(
@@ -689,7 +699,9 @@ describe('review round: arms the first cases left open (#4049)', () => {
       new DiffCalculator(),
       { parameters: { DbUser: ref } }
     );
-    expect(loggedText()).toContain(`B.Value -> ${ref}`);
+    // The resolver's own `--verbose` line DESCRIBES the expression, since its
+    // `{` / `}` are not shell-inert (go-to-k/cdkd#4161); it prints no plaintext.
+    expect(loggedText()).toContain('B.Value resolved to a value that cannot be shown safely here');
   });
 
   it('masks a deploy-refusal reason quoting the value', async () => {

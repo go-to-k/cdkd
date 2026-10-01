@@ -133,7 +133,7 @@ describe('NoEcho parameter redaction in debug logs (issue #1329)', () => {
     expect(plain).toBe('visible-value');
     const logs = debugLines();
     expect(logs).not.toContain(SECRET);
-    expect(logs).toContain('Resolved Ref to parameter: DbPassword -> <redacted>');
-    expect(logs).toContain('Resolved Ref to parameter: PlainParam -> visible-value');
+    expect(logs).toContain('Resolved Ref to parameter: DbPassword resolved to <redacted>');
+    expect(logs).toContain('Resolved Ref to parameter: PlainParam resolved to visible-value');
   });
 });

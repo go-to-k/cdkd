@@ -168,7 +168,7 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
     expect(value).toBe(`x-port:${PIN}`);
     expect(debugLines('Resolved Fn::Join: ')).toEqual(['Resolved Fn::Join: x-port:***']);
     expect(debugLines('Resolved Ref to parameter: ')).toEqual([
-      'Resolved Ref to parameter: Endpoint -> port:***',
+      'Resolved Ref to parameter: Endpoint resolved to port:***',
     ]);
   });
 
@@ -199,7 +199,7 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
     const encoded = await child.resolve({ 'Fn::Base64': { Ref: 'Endpoint' } }, ctx as never);
 
     expect(encoded).toBe(Buffer.from(`port:${PIN}`).toString('base64'));
-    expect(debugLines('Resolved Fn::Base64: ')).toEqual(['Resolved Fn::Base64: port:*** -> ***']);
+    expect(debugLines('Resolved Fn::Base64: ')).toEqual(['Resolved Fn::Base64: port:*** resolved to ***']);
     // `resolveBase64`'s position detector (issue #3119) reads the same lookup,
     // so the child's own bag now registers the encoding for every persistence
     // reader, as the parent's does for the same encoding.
@@ -237,7 +237,7 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
     await child.resolve({ 'Fn::GetAtt': ['Queue', 'Endpoint'] }, ctx as never);
 
     expect(debugLines('Resolved Fn::GetAtt from attributes: ')).toEqual([
-      'Resolved Fn::GetAtt from attributes: Queue.Endpoint -> port:***',
+      'Resolved Fn::GetAtt from attributes: Queue.Endpoint resolved to port:***',
     ]);
   });
 
@@ -365,15 +365,15 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
     // Split on `r`, so the secret stays inside a longer piece (`t:q7`) rather
     // than becoming a piece of its own that the whole-value mask would catch.
     const value = await child.resolve(
-      { 'Fn::Join': ['|', { 'Fn::Split': ['r', { Ref: 'Endpoint' }] }] },
+      { 'Fn::Join': ['-', { 'Fn::Split': ['r', { Ref: 'Endpoint' }] }] },
       childContext(parentBag, parameterValue) as never
     );
 
-    expect(value).toBe(`po|t:${PIN}`);
+    expect(value).toBe(`po-t:${PIN}`);
     expect(debugLines('Resolved Fn::Split: ')).toEqual([
-      'Resolved Fn::Split: split by "r" -> ["po","t:***"]',
+      'Resolved Fn::Split: split by "r" resolved to ["po","t:***"]',
     ]);
-    expect(debugLines('Resolved Fn::Join: ')).toEqual(['Resolved Fn::Join: po|t:***']);
+    expect(debugLines('Resolved Fn::Join: ')).toEqual(['Resolved Fn::Join: po-t:***']);
   });
 
   it('control: a parameter the parent carried as a whole-value entry stays masked with no registered twin', async () => {
@@ -432,7 +432,7 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
 
     expect(debugLines('Resolved Fn::Join: ')).toEqual(['Resolved Fn::Join: x-port:***']);
     expect(debugLines('Resolved Ref to parameter: ')).toEqual([
-      'Resolved Ref to parameter: Endpoint -> port:***',
+      'Resolved Ref to parameter: Endpoint resolved to port:***',
     ]);
   });
 
@@ -487,16 +487,16 @@ describe('issue #3114 route 2: a string resolved in two stages keeps its first s
     const value = await resolver.resolve(
       {
         'Fn::Join': [
-          '|',
+          '-',
           { 'Fn::Split': [',', `port:${PIN_REF}/{{resolve:ssm:outer}},tail`] },
         ],
       },
       ctx as never
     );
 
-    expect(value).toBe(`port:${PIN}/${PUBLIC_HOST}|tail`);
+    expect(value).toBe(`port:${PIN}/${PUBLIC_HOST}-tail`);
     expect(debugLines('Resolved Fn::Join: ')).toEqual([
-      `Resolved Fn::Join: port:***/${PUBLIC_HOST}|tail`,
+      `Resolved Fn::Join: port:***/${PUBLIC_HOST}-tail`,
     ]);
   });
 
@@ -509,12 +509,12 @@ describe('issue #3114 route 2: a string resolved in two stages keeps its first s
     };
 
     await resolver.resolve(
-      { 'Fn::Join': ['|', { 'Fn::Split': [',', `port:${PIN_REF}/{{resolve:ssm:host}},tail`] }] },
+      { 'Fn::Join': ['-', { 'Fn::Split': [',', `port:${PIN_REF}/{{resolve:ssm:host}},tail`] }] },
       ctx as never
     );
 
     expect(debugLines('Resolved Fn::Join: ')).toEqual([
-      `Resolved Fn::Join: port:***/${PUBLIC_HOST}|tail`,
+      `Resolved Fn::Join: port:***/${PUBLIC_HOST}-tail`,
     ]);
   });
 });

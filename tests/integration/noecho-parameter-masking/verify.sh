@@ -13,7 +13,7 @@
 # to state or the exports index.
 #
 # Phases:
-#   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: token=...` line
+#   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: token-...` line
 #      prints the value masked, AWS holds the REAL value, and state.json holds
 #      it in the clear -- the persistence half of the #1998 decision, asserted
 #      so a change to it is a visible decision, not a silent one.
@@ -249,16 +249,18 @@ SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
 NOECHO_SHAPE=$(jq -r --arg tok "${TOKEN}" '
   (.Parameters.NoEchoToken.NoEcho == true and .Parameters.NoEchoToken.Default == $tok)
   and ([.Resources[] | select(.Type == "AWS::SSM::Parameter") | .Properties.Value
-        | select(type == "object" and .["Fn::Sub"] == "token=${NoEchoToken}")] | length == 1)
+        | select(type == "object" and .["Fn::Sub"] == "token-${NoEchoToken}")] | length == 1)
 ' "${SYNTH_TEMPLATE}")
 if [ "${NOECHO_SHAPE}" != "true" ]; then
   echo "FAIL: premise: the synthesized template does not declare NoEchoToken as NoEcho with this run's Default, consumed through Fn::Sub" >&2
   exit 1
 fi
 # PREMISE: the resolver logged the line this phase reads, masked. Without it
-# the negative below passes for free on a resolver that stopped logging.
-if [[ "${DEPLOY_OUT_P1}" != *"Resolved Fn::Sub: token=***"* ]]; then
-  echo "FAIL: premise: the Phase 1 --verbose log carries no masked 'Resolved Fn::Sub: token=***' line (issue #1998)" >&2
+# the negative below passes for free on a resolver that stopped logging. The
+# frame is `token-` (inert) rather than `token=`: an assignment-shaped value is
+# DESCRIBED on that line (go-to-k/cdkd#4161), which would hide the mask.
+if [[ "${DEPLOY_OUT_P1}" != *'Resolved Fn::Sub: token-***'* ]]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries no masked 'Resolved Fn::Sub: token-***' line (issue #1998)" >&2
   diag_output "${DEPLOY_OUT_P1}"
   exit 1
 fi
@@ -270,8 +272,8 @@ echo "    OK: the --verbose log masks the NoEcho value"
 # AWS received the REAL value: the mask is a print-surface decision only.
 CONSUMER_VALUE=$(aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}" \
   --query 'Parameter.Value' --output text)
-if [ "${CONSUMER_VALUE}" != "token=${TOKEN}" ]; then
-  echo "FAIL: ${CONSUMER_NAME} does not hold 'token=<the NoEcho value>' -- the value AWS received was altered (issue #1998)" >&2
+if [ "${CONSUMER_VALUE}" != "token-${TOKEN}" ]; then
+  echo "FAIL: ${CONSUMER_NAME} does not hold 'token-<the NoEcho value>' -- the value AWS received was altered (issue #1998)" >&2
   exit 1
 fi
 echo "    OK: AWS holds the real value"
@@ -281,7 +283,7 @@ P1_STATE=$(mktemp)
 SCRATCH_FILES+=("${P1_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P1_STATE}" --quiet
 P1_PERSISTED=$(jq -r '.resources.NoEchoConsumer.properties.Value // "<absent>"' "${P1_STATE}")
-if [ "${P1_PERSISTED}" != "token=${TOKEN}" ]; then
+if [ "${P1_PERSISTED}" != "token-${TOKEN}" ]; then
   echo "FAIL: state.json does not hold the consumer's value as deployed -- what cdkd persists changed, which the #1998 decision rules out" >&2
   exit 1
 fi
@@ -421,7 +423,7 @@ if [ "${CHILD_SHAPE}" != "true" ]; then
 fi
 # The child engine's own line for the list, found by its fixed prefix (the
 # SENTINEL: it carries no element), must print neither element.
-P1_LISTIN_LINE=$(grep -m1 -F 'Resolved Ref to parameter: ListIn ->' <<< "${DEPLOY_OUT_P1}" || true)
+P1_LISTIN_LINE=$(grep -m1 -F 'Resolved Ref to parameter: ListIn resolved to' <<< "${DEPLOY_OUT_P1}" || true)
 if [ -z "${P1_LISTIN_LINE}" ]; then
   echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Ref to parameter: ListIn' line -- the child's list arm did not run" >&2
   exit 1

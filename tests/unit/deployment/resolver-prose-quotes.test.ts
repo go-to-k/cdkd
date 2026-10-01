@@ -244,11 +244,11 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
       );
       const split = lineOf('Resolved Fn::Split: split by ');
       if (value === 'Plain-1') {
-        expect(split).toContain('split by "Plain-1" -> ');
+        expect(split).toContain('split by "Plain-1" resolved to ');
         continue;
       }
       rendered.push(
-        { label: `Fn::Split delimiter: ${value}`, value, message: split, described: `split by a delimiter ${NOT_SHOWN} -> ` }
+        { label: `Fn::Split delimiter: ${value}`, value, message: split, described: `split by a delimiter ${NOT_SHOWN} resolved to ` }
       );
     }
     withPasteDir((dir) => {

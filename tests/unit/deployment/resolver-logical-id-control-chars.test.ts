@@ -71,6 +71,7 @@ import {
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
@@ -156,6 +157,21 @@ function expectSanitized(text: string, what: string, tail = 'ilX'): void {
   expect(text, `${what} lost the id's printable tail`).toContain(tail);
 }
 
+/**
+ * For a `--verbose` `Resolved …` render (go-to-k/cdkd#4161): the sanitized id
+ * still holds a space (`U+2028` becomes one), so it is not shell-inert and the
+ * line DESCRIBES it rather than printing it. Nothing of it may reach the line,
+ * control characters least of all, and the description must be there, so a
+ * line that stopped rendering the slot cannot pass.
+ */
+function expectDescribed(text: string, what: string): void {
+  for (const [ch, name] of FORBIDDEN) {
+    expect(text.includes(ch), `${what} still carries ${name}: ${JSON.stringify(text)}`).toBe(false);
+  }
+  expect(text, `${what} printed part of the id`).not.toContain('Prod');
+  expect(text, `${what} lost its description`).toContain(UNSHOWABLE_VALUE);
+}
+
 interface Captured {
   readonly lines: string[];
   readonly error?: string;
@@ -218,7 +234,7 @@ describe('a hostile logical id cannot redraw the terminal through a resolver ren
 
     expect(got.lines).toHaveLength(1);
     expect(got.lines[0]).toContain('Resolved Ref to resource:');
-    expectSanitized(got.lines[0] ?? '', 'the Ref-to-resource debug line');
+    expectDescribed(got.lines[0] ?? '', 'the Ref-to-resource debug line');
   });
 
   it('sanitizes the Ref-to-PARAMETER debug line', async () => {
@@ -239,7 +255,7 @@ describe('a hostile logical id cannot redraw the terminal through a resolver ren
 
     const line = got.lines.find((l) => l.startsWith('Resolved Ref to parameter:'));
     expect(line, `no parameter line in ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(line ?? '', 'the Ref-to-parameter debug line');
+    expectDescribed(line ?? '', 'the Ref-to-parameter debug line');
   });
 
   it('sanitizes the Fn::GetAtt-from-attributes debug line', async () => {
@@ -263,7 +279,7 @@ describe('a hostile logical id cannot redraw the terminal through a resolver ren
 
     const line = got.lines.find((l) => l.startsWith('Resolved Fn::GetAtt from attributes:'));
     expect(line, `no attributes line in ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(line ?? '', 'the Fn::GetAtt-from-attributes debug line');
+    expectDescribed(line ?? '', 'the Fn::GetAtt-from-attributes debug line');
   });
 
   it('sanitizes the resource-not-found THROW, which reaches the user at any verbosity', async () => {
@@ -456,7 +472,8 @@ describe('every remaining sanitized logicalId render, by its emitted bytes (#343
           ? (got.error ?? '')
           : (got.lines.find((l) => l.includes(row.reaches)) ?? '');
       expect(text, `did not reach the arm: ${JSON.stringify(got)}`).toContain(row.reaches);
-      expectSanitized(text, row.label);
+      if (row.label.endsWith('debug line')) expectDescribed(text, row.label);
+      else expectSanitized(text, row.label);
     });
   }
 
@@ -637,7 +654,7 @@ describe('a template-declared PARAMETER or CONDITION name is sanitized too (#343
 
     const line = got.lines.find((l) => l.startsWith('Resolved Fn::If:'));
     expect(line, `no selected-branch line: ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(line ?? '', "Fn::If's selected-branch debug line");
+    expectDescribed(line ?? '', "Fn::If's selected-branch debug line");
   });
 
   it('sanitizes the unsupported-intrinsic THROW, whose id is the template key itself', async () => {
@@ -747,7 +764,50 @@ describe('a template-declared PARAMETER or CONDITION name is sanitized too (#343
 
     const line = got.lines.find((l) => l.includes('resolved to AWS::NoValue'));
     expect(line, `no NoValue line: ${JSON.stringify(got)}`).toBeDefined();
-    expectSanitized(line ?? '', 'the AWS::NoValue omission debug line');
+    expectDescribed(line ?? '', 'the AWS::NoValue omission debug line');
+  });
+});
+
+describe('a `Resolved …` line sanitizes BEFORE it judges inertness (go-to-k/cdkd#4161 review)', () => {
+  // ESC and BEL are not in `PASTE_ARG_UNSAFE`, so an id holding only them and
+  // plain characters is "inert" as raw text. If `logRender` judged the raw
+  // value instead of the `displayMasked` (sanitized) one, the id would print
+  // with its terminal-reset sequence intact. Every other hostile id in this
+  // file carries a space or a bracket and is described either way.
+  const SNEAKY = `Prod${ESC}cEvil${String.fromCharCode(0x07)}X`;
+
+  beforeEach(() => {
+    resetAccountInfoCache();
+  });
+
+  it.each([
+    { intrinsic: { Ref: SNEAKY }, prefix: 'Resolved Ref to resource: ' },
+    { intrinsic: { 'Fn::GetAtt': [SNEAKY, 'Arn'] }, prefix: 'Resolved Fn::GetAtt from attributes: ' },
+  ])('$prefix', async ({ intrinsic, prefix }) => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const template = {
+      Resources: { [SNEAKY]: { Type: 'AWS::S3::Bucket' } },
+    } as unknown as CloudFormationTemplate;
+    const got = await capture(() =>
+      resolver.resolve(
+        intrinsic,
+        contextOf(template, {
+          [SNEAKY]: {
+            physicalId: 'bucket-1',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: { Arn: 'arn:aws:s3:::bucket-1' },
+            dependencies: [],
+          },
+        })
+      )
+    );
+    const line = got.lines.find((l) => l.startsWith(prefix));
+    expect(line, `no ${JSON.stringify(prefix)} line: ${JSON.stringify(got)}`).toBeDefined();
+    expect(line!.includes(ESC), `ESC reached the line: ${JSON.stringify(line)}`).toBe(false);
+    expect(line!.includes(String.fromCharCode(0x07)), `BEL reached the line: ${JSON.stringify(line)}`).toBe(
+      false
+    );
   });
 });
 
@@ -824,7 +884,7 @@ describe('the pseudo-parameter render keeps its marker, and the premise is drive
         .toBeDefined();
       // The id is rendered RAW at this site, and that is the marker's claim:
       // it is one of these literals, so raw and sanitized are the same bytes.
-      expect(line).toContain(`Resolved Ref to pseudo parameter: ${name} -> `);
+      expect(line).toContain(`Resolved Ref to pseudo parameter: ${name} resolved to `);
     }
   });
 

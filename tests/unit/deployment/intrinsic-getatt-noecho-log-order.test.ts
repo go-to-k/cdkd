@@ -105,7 +105,7 @@ describe('Fn::GetAtt notes NoEcho secrecy BEFORE it logs the value (#3659)', () 
       const value = await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Value'] }, context);
 
       expect(value).toBe(NOECHO);
-      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Value -> ***`]);
+      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Value resolved to ***`]);
     });
 
     it('masks a PER-ATTRIBUTE declared nested-stack output, the cross-stack recovery shape', async () => {
@@ -124,9 +124,9 @@ describe('Fn::GetAtt notes NoEcho secrecy BEFORE it logs the value (#3659)', () 
       await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Outputs.Plain'] }, context);
 
       expect(debugLines(PREFIX)).toEqual([
-        `${PREFIX}Cr.Outputs.Token -> ***`,
+        `${PREFIX}Cr.Outputs.Token resolved to ***`,
         // The undeclared sibling stays readable: per attribute, not per bag.
-        `${PREFIX}Cr.Outputs.Plain -> plain-value-3659`,
+        `${PREFIX}Cr.Outputs.Plain resolved to plain-value-3659`,
       ]);
     });
 
@@ -138,7 +138,7 @@ describe('Fn::GetAtt notes NoEcho secrecy BEFORE it logs the value (#3659)', () 
 
       await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Value'] }, context);
 
-      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Value -> ${NOECHO}`]);
+      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Value resolved to ${NOECHO}`]);
     });
   });
 
@@ -157,7 +157,7 @@ describe('Fn::GetAtt notes NoEcho secrecy BEFORE it logs the value (#3659)', () 
       const value = await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Endpoint.Address'] }, context);
 
       expect(value).toBe(NOECHO);
-      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Endpoint.Address -> ***`]);
+      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Endpoint.Address resolved to ***`]);
     });
 
     it('CONTROL: an undeclared value is printed', async () => {
@@ -168,7 +168,7 @@ describe('Fn::GetAtt notes NoEcho secrecy BEFORE it logs the value (#3659)', () 
 
       await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Endpoint.Address'] }, context);
 
-      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Endpoint.Address -> ${NOECHO}`]);
+      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Endpoint.Address resolved to ${NOECHO}`]);
     });
   });
 
@@ -228,7 +228,7 @@ describe('Fn::GetAtt notes NoEcho secrecy BEFORE it logs the value (#3659)', () 
       const value = await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Arn'] }, context);
 
       expect(value).toBe(healedArn);
-      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Arn -> ***`]);
+      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Arn resolved to ***`]);
     });
 
     it('CONTROL: an undeclared value is printed', async () => {
@@ -236,7 +236,7 @@ describe('Fn::GetAtt notes NoEcho secrecy BEFORE it logs the value (#3659)', () 
 
       await resolver.resolve({ 'Fn::GetAtt': ['Cr', 'Arn'] }, context);
 
-      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Arn -> ${healedArn}`]);
+      expect(debugLines(PREFIX)).toEqual([`${PREFIX}Cr.Arn resolved to ${healedArn}`]);
     });
   });
 });

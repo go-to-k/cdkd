@@ -82,7 +82,11 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
     new ssm.CfnParameter(this, 'NoEchoConsumer', {
       name: `cdkd-test-noecho-consumer-${account}`,
       type: 'String',
-      value: cdk.Fn.sub('token=${NoEchoToken}'),
+      // `token-`, not `token=`: the resolver's `--verbose` line prints a value
+      // only when it is shell-inert and not an assignment word, so a `token=`
+      // frame would be DESCRIBED there and the arm could no longer see the
+      // mask (go-to-k/cdkd#4161).
+      value: cdk.Fn.sub('token-${NoEchoToken}'),
     });
 
     new sns.CfnTopic(this, 'NoEchoRenamed', {

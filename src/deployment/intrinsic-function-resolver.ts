@@ -20,7 +20,11 @@ import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { getAwsClients, type AwsClients } from '../utils/aws-clients.js';
-import { stringifyValue, stringifyAttributeForLog } from '../utils/stringify.js';
+import {
+  isSensitiveAttributeName,
+  stringifyValue,
+  stringifyAttributeForLog,
+} from '../utils/stringify.js';
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
@@ -35,7 +39,11 @@ import {
   displayStackName,
   safeMsg,
 } from '../utils/display-safe.js';
-import { shellBoundedDisplay, UNSHOWABLE_VALUE } from '../utils/pasteable-command.js';
+import {
+  isInertUnquoted,
+  shellBoundedDisplay,
+  UNSHOWABLE_VALUE,
+} from '../utils/pasteable-command.js';
 import {
   s3BucketArn,
   s3BucketDomainName,
@@ -3075,6 +3083,68 @@ function boundAltered(original: string, shown: string, maxCodePoints?: number): 
 const QUOTABLE_RENDER = /^[A-Za-z0-9:_@./+=,~|*<>-]*$/;
 
 /**
+ * Whether a masked render may print BARE on a `--verbose` `Resolved …` line
+ * (go-to-k/cdkd#4161): it is inert with its quotes stripped
+ * (`isInertUnquoted`, the one measured predicate every pasted value is held
+ * to, go-to-k/cdkd#4205) and is not a shell assignment word
+ * ({@link LOG_ASSIGNMENT}). The mask `***` is the one exception to
+ * `isInertUnquoted`: a `*` is a glob, but cdkd's own mask must stay readable,
+ * and a glob as a clause's first word is go-to-k/cdkd#4249's class. Anything
+ * else is DESCRIBED, never JSON-quoted (the go-to-k/cdkd#4229 decision): a
+ * double quote still expands `$( )`, a backtick and `!`, and an unpaired `"`
+ * above the selection turns every JSON boundary inside out. Empty is inert.
+ */
+function isLogInert(text: string): boolean {
+  return !LOG_ASSIGNMENT.test(text) && isInertUnquoted(text.split(SECRET_MASK).join('x'));
+}
+
+/**
+ * Whether a JSON render may print as it is: it parses, and every key and
+ * string leaf is {@link isLogInert}. Under an unpaired `"` above the line the
+ * render's quotes flip and its strings come out bare, so each must be inert
+ * on its own. Numbers, booleans and `null` are; the structure is not inert
+ * (`[` / `]` glob and `{` / `}` brace-expand), but it runs nothing as an
+ * argument, and a render as a clause's first word is go-to-k/cdkd#4249's.
+ * A mask that ate a structural `"` (a secret spelled `abcd",`) fails the
+ * parse and the render is described.
+ */
+function isLogInertJson(text: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  const inert = (node: unknown): boolean => {
+    if (typeof node === 'string') return isLogInert(node);
+    if (Array.isArray(node)) return node.every(inert);
+    if (node !== null && typeof node === 'object') {
+      return Object.entries(node).every(([key, child]) => isLogInert(key) && inert(child));
+    }
+    return true;
+  };
+  return inert(parsed);
+}
+
+/**
+ * A render that would be a shell ASSIGNMENT word where it starts a pasted
+ * clause (`Resolved Fn::Join: HISTFILE=~/victim`): it runs nothing the paste
+ * harness sees, yet an interactive bash then truncates `~/victim` at exit,
+ * and `PATH=.` hijacks every later command (go-to-k/cdkd#4243 review). The
+ * APPEND form counts too: `PATH+=:.` appends the working directory to the
+ * search path (on an unset variable `X+=v` is `X=v`). `isInertUnquoted`
+ * admits a mid-word `=`, which is right for a value a command NAMES and wrong
+ * for one that can start a pasted clause, so {@link isLogInert} rejects the
+ * shape on its own.
+ */
+const LOG_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+
+/** Whether `stringifyValue` renders `value` as JSON (an array or object). */
+function isStructured(value: unknown): boolean {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
  * The render inside `quote` when {@link QUOTABLE_RENDER} admits it, otherwise
  * `described` (go-to-k/cdkd#3950).
  *
@@ -4465,7 +4535,7 @@ export class IntrinsicFunctionResolver {
         // `key` is a template object key -- arbitrary JSON, same class as a
         // `Resources` key (go-to-k/cdkd#3435 review round 2).
         this.logger.debug(
-          `Property ${this.displayMasked(key, context)} resolved to AWS::NoValue, omitting from object`
+          `Property ${this.logRender(key, context)} resolved to AWS::NoValue, omitting from object`
         );
       }
     }
@@ -4887,8 +4957,13 @@ export class IntrinsicFunctionResolver {
       // `properties` / `attributes` is not checked, and the builder calls
       // `.replace`. A `SECRET_MASK` read back from a bagless caller renders
       // unchanged.
+      //
+      // `resolved to`, not `->`, on this and every other `Resolved …` line:
+      // pasted, `->` is `-` plus a `>` redirect onto the bare render that
+      // follows, so a template value would choose a file to truncate
+      // (go-to-k/cdkd#4161).
       this.logger.debug(
-        `Resolved Ref to resource: ${this.displayMasked(logicalId, context)} -> ${this.displayMasked(String(refValue), context)}`
+        `Resolved Ref to resource: ${this.logRender(logicalId, context)} resolved to ${this.logRender(String(refValue), context)}`
       );
       return refValue;
     }
@@ -4937,9 +5012,10 @@ export class IntrinsicFunctionResolver {
       // the author's own `NoEcho` declaration, and a CDK-synthesized
       // nested-stack parameter never carries one.
       this.logger.debug(
-        `Resolved Ref to parameter: ${this.displayMasked(logicalId, context)} -> ${this.displayMasked(
+        `Resolved Ref to parameter: ${this.logRender(logicalId, context)} resolved to ${this.logRender(
           stringifyParameterForLog(paramDef, this.maskValueLeaves(value, context)),
-          context
+          context,
+          { structured: isStructured(value), redacted: paramDef?.NoEcho === true }
         )}`
       );
       return value;
@@ -4977,7 +5053,7 @@ export class IntrinsicFunctionResolver {
       // VALUE is not constrained the way its name is -- `AWS::StackName` is the
       // manifest-derived stack name.
       this.logger.debug(
-        `Resolved Ref to pseudo parameter: ${logicalId} -> ${this.displayMasked(valueStr, context)}`
+        `Resolved Ref to pseudo parameter: ${logicalId} resolved to ${this.logRender(valueStr, context)}`
       );
       return pseudoValue;
     }
@@ -5401,7 +5477,7 @@ export class IntrinsicFunctionResolver {
             context
           );
           this.logger.debug(
-            `Normalized legacy Fn::GetAtt attribute: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(nameServers, context)), context)}`
+            `Normalized legacy Fn::GetAtt attribute: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} normalized to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(nameServers, context)), context, { structured: isStructured(nameServers), redacted: isSensitiveAttributeName(attributeName) })}`
           );
           return notedNameServers;
         }
@@ -5418,7 +5494,7 @@ export class IntrinsicFunctionResolver {
           ? flatValue
           : this.noteAttributeSecrecy(logicalId, attributeName, flatValue, context);
         this.logger.debug(
-          `Resolved Fn::GetAtt from attributes: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(flatValue, context)), context)}`
+          `Resolved Fn::GetAtt from attributes: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(flatValue, context)), context, { structured: isStructured(flatValue), redacted: isSensitiveAttributeName(attributeName) })}`
         );
         // A nested-stack child's outputs are read out of the child's PERSISTED
         // state by `NestedStackProvider`, which since PR #1899 holds a
@@ -5510,7 +5586,7 @@ export class IntrinsicFunctionResolver {
           // Noted BEFORE the log line (go-to-k/cdkd#3659); see the flat read.
           const notedCursor = this.noteAttributeSecrecy(logicalId, attributeName, cursor, context);
           this.logger.debug(
-            `Resolved Fn::GetAtt from nested attributes: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(cursor, context)), context)}`
+            `Resolved Fn::GetAtt from nested attributes: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(cursor, context)), context, { structured: isStructured(cursor), redacted: isSensitiveAttributeName(attributeName) })}`
           );
           // NO nested-stack re-resolution arm here, unlike the flat-key lookup
           // above, and that is a REACHABILITY claim rather than a decision:
@@ -5600,7 +5676,7 @@ export class IntrinsicFunctionResolver {
       logicalId
     );
     this.logger.debug(
-      `Resolved Fn::GetAtt: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
+      `Resolved Fn::GetAtt: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
     );
     return value;
   }
@@ -6024,7 +6100,7 @@ export class IntrinsicFunctionResolver {
     // log line (go-to-k/cdkd#3659), as every serving branch is.
     const noted = this.noteAttributeSecrecy(logicalId, attributeName, value, context);
     this.logger.debug(
-      `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
+      `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
     );
     return noted;
   }
@@ -8049,7 +8125,7 @@ export class IntrinsicFunctionResolver {
     });
     this.rememberLogTwin(context, result, twin);
     this.logger.debug(
-      `Resolved Fn::Join: ${this.displayMasked(this.logTwinText(result, twin, context), context)}`
+      `Resolved Fn::Join: ${this.logRender(this.logTwinText(result, twin, context), context)}`
     );
     return result;
   }
@@ -8607,7 +8683,7 @@ export class IntrinsicFunctionResolver {
     this.recordLeafResolution(context, source, { input, output: result, substitutions, complete });
     this.rememberLogTwin(context, result, twin);
     this.logger.debug(
-      `Resolved Fn::Sub: ${this.displayMasked(this.logTwinText(result, twin, context), context)}`
+      `Resolved Fn::Sub: ${this.logRender(this.logTwinText(result, twin, context), context)}`
     );
     return result;
   }
@@ -8696,7 +8772,7 @@ export class IntrinsicFunctionResolver {
       // matches literally — so a mask over the ENCODED text misses exactly the
       // secrets that carry those bytes. Leaf-masking also reaches the
       // whole-value arm, which has no {@link MIN_NEEDLE_LENGTH} floor.
-      `Resolved Fn::Select: index ${loggedPosition} -> ${JSON.stringify(this.maskValueLeaves(result, context))}`
+      `Resolved Fn::Select: index ${loggedPosition} resolved to ${this.logRender(JSON.stringify(this.maskValueLeaves(result, context)), context, { structured: true })}`
     );
     return result;
   }
@@ -9001,7 +9077,7 @@ export class IntrinsicFunctionResolver {
       // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)). The
       // delimiter through the builder (issue #3479): it is raw template text,
       // and a structural operand is still arbitrary JSON.
-      `Resolved Fn::Split: split by ${quotedRender(this.displayMasked(String(delimiter), lineContext), '"', 'a delimiter (not shown: it is not a plain identifier)')} -> ${JSON.stringify(this.maskValueLeaves(pieceTwins, lineContext))}`
+      `Resolved Fn::Split: split by ${this.splitDelimiterRender(String(delimiter), lineContext)} resolved to ${this.logRender(JSON.stringify(this.maskValueLeaves(pieceTwins, lineContext)), lineContext, { structured: true })}`
     );
     return result;
   }
@@ -9070,7 +9146,7 @@ export class IntrinsicFunctionResolver {
 
     // `conditionValue` carries nothing: a boolean, or a list of booleans.
     this.logger.debug(
-      `Resolved Fn::If: condition ${this.displayMasked(String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
+      `Resolved Fn::If: condition ${this.logRender(String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
     );
 
     return await resolveBranch(selectedValue);
@@ -9105,9 +9181,7 @@ export class IntrinsicFunctionResolver {
     this.logger.debug(
       // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
       // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)).
-      `Resolved Fn::Equals: ${JSON.stringify(
-        this.maskValueLeaves(resolved1, context)
-      )} === ${JSON.stringify(this.maskValueLeaves(resolved2, context))} -> ${result}`
+      `Resolved Fn::Equals: ${this.logRender(JSON.stringify(this.maskValueLeaves(resolved1, context)), context, { structured: true })} === ${this.logRender(JSON.stringify(this.maskValueLeaves(resolved2, context)), context, { structured: true })} resolved to ${result}`
     );
 
     return result;
@@ -9176,7 +9250,7 @@ export class IntrinsicFunctionResolver {
 
     // not-in-class(results.join(', ')): a CONDITION verdict -- a boolean, or a list of booleans.
     // not-in-class(result): a CONDITION verdict -- a boolean, or a list of booleans.
-    this.logger.debug(`Resolved Fn::And: [${results.join(', ')}] -> ${result}`);
+    this.logger.debug(`Resolved Fn::And: [${results.join(', ')}] resolved to ${result}`);
 
     return result;
   }
@@ -9204,7 +9278,7 @@ export class IntrinsicFunctionResolver {
 
     // not-in-class(results.join(', ')): a CONDITION verdict -- a boolean, or a list of booleans.
     // not-in-class(result): a CONDITION verdict -- a boolean, or a list of booleans.
-    this.logger.debug(`Resolved Fn::Or: [${results.join(', ')}] -> ${result}`);
+    this.logger.debug(`Resolved Fn::Or: [${results.join(', ')}] resolved to ${result}`);
 
     return result;
   }
@@ -9230,7 +9304,7 @@ export class IntrinsicFunctionResolver {
 
     // not-in-class(Boolean(resolved)): a CONDITION verdict -- a boolean, or a list of booleans.
     // not-in-class(result): a CONDITION verdict -- a boolean, or a list of booleans.
-    this.logger.debug(`Resolved Fn::Not: ${Boolean(resolved)} -> ${result}`);
+    this.logger.debug(`Resolved Fn::Not: ${Boolean(resolved)} resolved to ${result}`);
 
     return result;
   }
@@ -11408,10 +11482,10 @@ export class IntrinsicFunctionResolver {
       // common one — so leaving it bare printed at `--verbose` exactly the
       // values the neighbouring refusals mask. The mapped VALUE is leaf-masked
       // too: a mapping may legitimately hold a value assembled from a secret.
-      `Resolved Fn::FindInMap: ${this.displayMasked(mapName, context)}.` +
-        `${this.displayMasked(topLevelKey, context)}.` +
-        `${this.displayMasked(secondLevelKey, context)} -> ` +
-        `${this.displayMasked(JSON.stringify(this.maskValueLeaves(result, context)), context)}`
+      `Resolved Fn::FindInMap: ${this.logRender(mapName, context)}.` +
+        `${this.logRender(topLevelKey, context)}.` +
+        `${this.logRender(secondLevelKey, context)} resolved to ` +
+        `${this.logRender(JSON.stringify(this.maskValueLeaves(result, context)), context, { structured: true })}`
     );
     return result;
   }
@@ -11527,7 +11601,7 @@ export class IntrinsicFunctionResolver {
     }
 
     this.logger.debug(
-      `Resolved Fn::Base64: ${this.displayMasked(inputLogText, context)} -> ${this.displayMasked(inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
+      `Resolved Fn::Base64: ${this.logRender(inputLogText, context)} resolved to ${this.logRender(inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
     );
     return result;
   }
@@ -11626,7 +11700,7 @@ export class IntrinsicFunctionResolver {
       // cleared `isClientSafeRegion`, which a real plaintext can (issue #2827
       // review).
       this.logger.debug(
-        `Resolved Fn::GetAZs from cache: ${this.displayMasked(loggedRegionText ?? region, context)} -> ${JSON.stringify(this.maskValueLeaves(cached, context))}`
+        `Resolved Fn::GetAZs from cache: ${this.logRender(loggedRegionText ?? region, context)} resolved to ${this.logRender(JSON.stringify(this.maskValueLeaves(cached, context)), context, { structured: true })}`
       );
       return cached;
     }
@@ -11703,7 +11777,7 @@ export class IntrinsicFunctionResolver {
 
     cachedAvailabilityZones.set(azCacheKey, azNames);
     this.logger.debug(
-      `Resolved Fn::GetAZs: ${this.displayMasked(loggedRegionText ?? region, context)} -> ${JSON.stringify(this.maskValueLeaves(azNames, context))}`
+      `Resolved Fn::GetAZs: ${this.logRender(loggedRegionText ?? region, context)} resolved to ${this.logRender(JSON.stringify(this.maskValueLeaves(azNames, context)), context, { structured: true })}`
     );
     return azNames;
   }
@@ -12684,6 +12758,59 @@ export class IntrinsicFunctionResolver {
    */
   private displayMasked(value: string, context?: ResolverContext): string {
     return displaySafe(this.maskThenStripThenMask(value, context));
+  }
+
+  /**
+   * {@link displayMasked} for a value or name on a `--verbose` `Resolved …`
+   * line, bounded so a pasted line cannot run or redirect through it
+   * (go-to-k/cdkd#4161): the masked display when {@link isLogInert} admits it,
+   * so an ordinary value and a `***` mask print as they always did, and
+   * otherwise `UNSHOWABLE_VALUE`, the description cdkd's other pasteable
+   * prose uses (the go-to-k/cdkd#4229 decision). A description runs nothing
+   * under either quote flip, which a JSON-quoted value does not. The mask runs
+   * FIRST, so nothing it hid is shown. Not closed here: a PLAIN name that is
+   * itself a command word right after a `: ` (go-to-k/cdkd#4249).
+   *
+   * Not `displayMaskedIdent`: that quotes every value a mask ALTERED
+   * (`"port:***"`), cuts at 255 characters and blanks non-ASCII, and the
+   * integ fixtures' masked-line checks read the bare mask
+   * (`nested-stack-3level`'s `masked_whole` wants `<prefix>***` at the line's
+   * end).
+   *
+   * Two opt-ins, each set by the CALLER from what produced the text, never
+   * inferred from the text itself (go-to-k/cdkd#4243 review):
+   * - `redacted`: the text is `stringifyParameterForLog` /
+   *   `stringifyAttributeForLog`'s own `<redacted>` token, printed bare as it
+   *   always was. A template value spelled `<redacted>` is a `<` and a `>`
+   *   redirect and is described like any other.
+   * - `structured`: the text is a JSON render (`stringifyValue`'s of an array
+   *   or object, or a `JSON.stringify` the caller built). Kept while
+   *   {@link isLogInertJson} admits it, so a list of plain or masked values
+   *   still reads as one; otherwise described.
+   */
+  private logRender(
+    value: string,
+    context: ResolverContext | undefined,
+    opts: { readonly structured?: boolean; readonly redacted?: boolean } = {}
+  ): string {
+    const shown = this.displayMasked(value, context);
+    if (opts.redacted === true && shown === '<redacted>') return shown;
+    const inert = opts.structured === true ? isLogInertJson(shown) : isLogInert(shown);
+    return inert ? shown : UNSHOWABLE_VALUE;
+  }
+
+  /**
+   * The `Fn::Split` delimiter on its `Resolved` line: `"<d>"` when the masked
+   * delimiter is {@link isLogInert}, otherwise described. `quotedRender`'s
+   * class admits `|`, `<`, `>` and `*` because they are literal INSIDE cdkd's
+   * `"…"`, but an unpaired `"` above the line flips that quote and leaves the
+   * delimiter bare, where `>` redirects (go-to-k/cdkd#4229's `"` flip).
+   */
+  private splitDelimiterRender(delimiter: string, context: ResolverContext | undefined): string {
+    const shown = this.displayMasked(delimiter, context);
+    return isLogInert(shown)
+      ? `"${shown}"`
+      : 'a delimiter (not shown: it is not a plain identifier)';
   }
 
   /**

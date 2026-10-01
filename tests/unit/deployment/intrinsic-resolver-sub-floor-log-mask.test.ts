@@ -524,16 +524,16 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const ctx = freshContext();
     const value = await resolver.resolve(
-      { 'Fn::Join': ['|', { 'Fn::Split': [',', `port:${PIN_REF},tail`] }] },
+      { 'Fn::Join': ['-', { 'Fn::Split': [',', `port:${PIN_REF},tail`] }] },
       ctx as never
     );
 
-    expect(value).toBe(`port:${PIN}|tail`);
+    expect(value).toBe(`port:${PIN}-tail`);
     const splitLines = logSpies.debug.mock.calls
       .map((c) => String(c[0]))
       .filter((l) => l.startsWith('Resolved Fn::Split: '));
-    expect(splitLines).toEqual(['Resolved Fn::Split: split by "," -> ["port:***","tail"]']);
-    expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: port:***|tail']);
+    expect(splitLines).toEqual(['Resolved Fn::Split: split by "," resolved to ["port:***","tail"]']);
+    expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: port:***-tail']);
   });
 
   it('Fn::Split masks every piece when the source and its twin split into different counts', async () => {
@@ -544,19 +544,19 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
     const value = await resolver.resolve(
       {
         'Fn::Join': [
-          '|',
+          '-',
           { 'Fn::Split': [':', `x:{{resolve:secretsmanager:${SECRET_ID}:SecretString:dsn}}`] },
         ],
       },
       ctx as never
     );
 
-    expect(value).toBe(`x|hostA|${PIN}`);
+    expect(value).toBe(`x-hostA-${PIN}`);
     const splitLines = logSpies.debug.mock.calls
       .map((c) => String(c[0]))
       .filter((l) => l.startsWith('Resolved Fn::Split: '));
-    expect(splitLines).toEqual(['Resolved Fn::Split: split by ":" -> ["***","***","***"]']);
-    expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: ***|***|***']);
+    expect(splitLines).toEqual(['Resolved Fn::Split: split by ":" resolved to ["***","***","***"]']);
+    expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: ***-***-***']);
   });
 
   it('a Split piece whose twin splits a 4+ character inherited secret is masked whole', async () => {
@@ -574,7 +574,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
     const splitLines = logSpies.debug.mock.calls
       .map((c) => String(c[0]))
       .filter((l) => l.startsWith('Resolved Fn::Split: '));
-    expect(splitLines).toEqual(['Resolved Fn::Split: split by "," -> ["***","x"]']);
+    expect(splitLines).toEqual(['Resolved Fn::Split: split by "," resolved to ["***","x"]']);
   });
 
   describe('a LIST stringified into a Join part or a Sub placeholder keeps its elements’ masks', () => {
@@ -664,10 +664,10 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       expect(value).toBe(`port:${PIN}`);
       expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: port:***,x']);
       expect(debugLines('Resolved Fn::Split: ')).toEqual([
-        'Resolved Fn::Split: split by "," -> ["port:***","x"]',
+        'Resolved Fn::Split: split by "," resolved to ["port:***","x"]',
       ]);
       expect(debugLines('Resolved Fn::Select: ')).toEqual([
-        'Resolved Fn::Select: index 0 -> "port:***"',
+        'Resolved Fn::Select: index 0 resolved to "port:***"',
       ]);
     });
 
@@ -685,7 +685,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       );
 
       expect(value).toBe(PIN);
-      expect(debugLines('Resolved Fn::Select: ')).toEqual(['Resolved Fn::Select: index 1 -> "***"']);
+      expect(debugLines('Resolved Fn::Select: ')).toEqual(['Resolved Fn::Select: index 1 resolved to "***"']);
     });
 
     it('M1: a leaf whose registered twin splits a 4+ character secret it still holds is masked whole', async () => {
@@ -703,7 +703,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       );
 
       expect(value).toBe(`x-${DSN}`);
-      expect(debugLines('Resolved Fn::Select: ')).toEqual(['Resolved Fn::Select: index 0 -> "***"']);
+      expect(debugLines('Resolved Fn::Select: ')).toEqual(['Resolved Fn::Select: index 0 resolved to "***"']);
     });
 
     it('a THROWN message that interpolates a value through the leaf mask takes the position mask too', async () => {
@@ -738,7 +738,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
 
       expect(value).toBe('ab/cd');
       expect(debugLines('Resolved Fn::Split: ')).toEqual([
-        'Resolved Fn::Split: split by ":" -> ["***","***"]',
+        'Resolved Fn::Split: split by ":" resolved to ["***","***"]',
       ]);
       expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: ***/***']);
     });
@@ -754,7 +754,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       await resolver.resolve({ 'Fn::Split': [':', { Ref: 'Pair' }] }, ctx as never);
 
       expect(debugLines('Resolved Fn::Split: ')).toEqual([
-        'Resolved Fn::Split: split by ":" -> ["***","***"]',
+        'Resolved Fn::Split: split by ":" resolved to ["***","***"]',
       ]);
     });
 
@@ -778,7 +778,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       await resolver.resolve({ 'Fn::Split': [':', { 'Fn::GetAtt': ['Db', 'Pair'] }] }, ctx as never);
 
       expect(debugLines('Resolved Fn::Split: ')).toEqual([
-        'Resolved Fn::Split: split by ":" -> ["***","***"]',
+        'Resolved Fn::Split: split by ":" resolved to ["***","***"]',
       ]);
     });
 
@@ -792,7 +792,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       await resolver.resolve({ 'Fn::Select': [0, [{ [`port:${PIN}`]: 'v' }]] }, ctx as never);
 
       expect(debugLines('Resolved Fn::Select: ')).toEqual([
-        'Resolved Fn::Select: index 0 -> {"port:***":"v"}',
+        'Resolved Fn::Select: index 0 resolved to {"port:***":"v"}',
       ]);
     });
 
@@ -813,7 +813,9 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
 
       expect(value).toBe('p-q-r-s');
       expect(debugLines('Resolved Fn::Split: ')).toEqual([
-        'Resolved Fn::Split: split by "*" -> ["***","***","***","***"]',
+        // `*` is a glob, so the delimiter is described (go-to-k/cdkd#4161); the
+        // pieces are the subject here.
+        'Resolved Fn::Split: split by a delimiter (not shown: it is not a plain identifier) resolved to ["***","***","***","***"]',
       ]);
       expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: ***-***-***-***']);
     });
@@ -827,16 +829,19 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       );
 
       expect(value).toBe(Buffer.from(`port:${PIN}`).toString('base64'));
-      expect(debugLines('Resolved Fn::Base64: ')).toEqual(['Resolved Fn::Base64: port:*** -> ***']);
+      expect(debugLines('Resolved Fn::Base64: ')).toEqual(['Resolved Fn::Base64: port:*** resolved to ***']);
     });
 
     it('M3 control: a Base64 input no write masked prints with its encoding', async () => {
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const ctx = freshContext();
-      await resolver.resolve({ 'Fn::Base64': 'plain-text' }, ctx as never);
+      // Twelve bytes, so the encoding carries no `=` padding: a padded one is an
+      // assignment-shaped word, which the line describes (go-to-k/cdkd#4161),
+      // and this control is about the encoding being PRINTED.
+      await resolver.resolve({ 'Fn::Base64': 'plain-text12' }, ctx as never);
 
       expect(debugLines('Resolved Fn::Base64: ')).toEqual([
-        `Resolved Fn::Base64: plain-text -> ${Buffer.from('plain-text').toString('base64')}`,
+        `Resolved Fn::Base64: plain-text12 resolved to ${Buffer.from('plain-text12').toString('base64')}`,
       ]);
     });
 
@@ -902,7 +907,9 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
     const value = await resolver.resolve({ 'Fn::Sub': 'r:${AWS::Region}:${!Lit}:${}' }, ctx as never);
 
     expect(value).toBe('r:us-east-1:${Lit}:${}');
-    expect(resolvedLines('Sub')).toEqual(['Resolved Fn::Sub: r:us-east-1:${Lit}:${}']);
+    // The TEXT is the value above; the line describes it, since `${` would
+    // expand when pasted (go-to-k/cdkd#4161).
+    expect(resolvedLines('Sub')).toEqual(['Resolved Fn::Sub: a value that cannot be shown safely here']);
     // The empty `${}` takes its OWN arm: skipping it falls through to a failed
     // `Ref` that keeps the same text but warns, so no warning pins the arm.
     expect(logSpies.warn).not.toHaveBeenCalled();

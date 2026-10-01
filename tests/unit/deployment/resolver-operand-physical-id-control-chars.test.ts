@@ -29,6 +29,7 @@ import {
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -213,7 +214,7 @@ describe('the Fn::Select index and Fn::Split delimiter are sanitized (#3479)', (
     expect(renders(error)).toBe(0);
 
     const control = await resolveValue({ 'Fn::Select': [1, ['a', 'b']] });
-    expect(control).toContain('Resolved Fn::Select: index 1 -> "b"');
+    expect(control).toContain('Resolved Fn::Select: index 1 resolved to "b"');
   });
 
   it('keeps a hostile Fn::Split delimiter out of its DEBUG line', async () => {
@@ -221,12 +222,12 @@ describe('the Fn::Select index and Fn::Split delimiter are sanitized (#3479)', (
     // Described rather than quoted by hand since go-to-k/cdkd#3950.
     const debug = line(
       got,
-      'Resolved Fn::Split: split by a delimiter (not shown: it is not a plain identifier) -> '
+      'Resolved Fn::Split: split by a delimiter (not shown: it is not a plain identifier) resolved to '
     );
     expectClean(debug, 'the Fn::Split debug line');
 
     const control = await resolveValue({ 'Fn::Split': [',', 'a,b'] });
-    expect(control).toContain('Resolved Fn::Split: split by "," -> ["a","b"]');
+    expect(control).toContain('Resolved Fn::Split: split by "," resolved to ["a","b"]');
   });
 });
 
@@ -390,7 +391,12 @@ describe('the Ref renders of a state-record id and a pseudo-parameter value are 
 
   it('sanitizes the resource Ref DEBUG line, which renders the physical id from state', async () => {
     const got = await ref('Thing');
-    expectSanitized(line(got, 'Resolved Ref to resource: Thing -> '), 'the resource Ref line');
+    // Not shell-inert (`U+2028` sanitizes to a space), so the line DESCRIBES the
+    // id rather than printing it (go-to-k/cdkd#4161): nothing of it, control
+    // characters least of all, reaches the line.
+    expect(line(got, 'Resolved Ref to resource: Thing resolved to ')).toBe(
+      `Resolved Ref to resource: Thing resolved to ${UNSHOWABLE_VALUE}`
+    );
 
     const control = await capture(() =>
       resolver().resolve({ Ref: 'Thing' }, {
@@ -400,17 +406,16 @@ describe('the Ref renders of a state-record id and a pseudo-parameter value are 
         },
       } as unknown as ResolverContext)
     );
-    expect(control).toContain('Resolved Ref to resource: Thing -> vpc-0abc');
+    expect(control).toContain('Resolved Ref to resource: Thing resolved to vpc-0abc');
   });
 
   it('sanitizes the pseudo-parameter DEBUG line, whose AWS::StackName value is manifest-derived', async () => {
     const got = await ref('AWS::StackName', { stackName: EVIL } as Partial<ResolverContext>);
-    expectSanitized(
-      line(got, 'Resolved Ref to pseudo parameter: AWS::StackName -> '),
-      'the pseudo-parameter line'
+    expect(line(got, 'Resolved Ref to pseudo parameter: AWS::StackName resolved to ')).toBe(
+      `Resolved Ref to pseudo parameter: AWS::StackName resolved to ${UNSHOWABLE_VALUE}`
     );
 
     const control = await ref('AWS::StackName', { stackName: 'MyStack' } as Partial<ResolverContext>);
-    expect(control).toContain('Resolved Ref to pseudo parameter: AWS::StackName -> MyStack');
+    expect(control).toContain('Resolved Ref to pseudo parameter: AWS::StackName resolved to MyStack');
   });
 });
