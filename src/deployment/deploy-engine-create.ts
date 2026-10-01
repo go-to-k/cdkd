@@ -316,7 +316,10 @@ async function refuseTakenCreateName(
           resourceType,
           stackName: input.stackName,
           region: this.stackRegion,
-          properties: input.createProps,
+          // The name as a STRING: a provider's lookup reads only a string
+          // name, so a numeric one (which the create sends as its decimal
+          // spelling) would otherwise look up nothing and read as free.
+          properties: { ...input.createProps, [question.property]: question.desiredName },
           ...(knownPhysicalId !== undefined && { knownPhysicalId }),
         }),
       logicalId,

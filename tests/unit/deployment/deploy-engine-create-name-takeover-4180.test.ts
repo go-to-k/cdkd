@@ -374,7 +374,8 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
 
     expect(err!.code).toBe('NAMED_CREATE_COLLISION');
     expect(h.provider.import).toHaveBeenCalledWith(
-      expect.objectContaining({ properties: expect.objectContaining({ QueueName: 42 }) })
+      // A string: the providers' lookups read a string name only.
+      expect.objectContaining({ properties: expect.objectContaining({ QueueName: '42' }) })
     );
   });
 
