@@ -320,7 +320,7 @@ The timeout error names the resource, type, region, elapsed time and operation:
 ```text
 Resource MyBucket (AWS::S3::Bucket) in us-east-1 timed out after 30m during CREATE (elapsed 30m).
 This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or
-slow ENI provisioning. Re-run with --resource-timeout AWS::S3::Bucket=<DURATION>
+slow ENI provisioning. Re-run with --resource-timeout AWS::S3::Bucket='<DURATION>'
 to bump the budget for this resource type only, or --verbose to see the
 underlying provider activity.
 ```

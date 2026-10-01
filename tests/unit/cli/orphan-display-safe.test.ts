@@ -24,6 +24,12 @@
  * Both polarities per site; the hostile cases carry a DISTINCT marker per
  * interpolated value.
  */
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { setStdinIsTty } from '../../stdin-tty.js';
 
@@ -408,9 +414,12 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await expect(
         runOrphan([`${HOSTILE.stackA.raw}/A`, '--app', 'noop', '--yes'])
       ).rejects.toThrow();
+      // The line names `--stack-region`, so a stack name or region that is not
+      // a plain identifier is described rather than shown in a JSON boundary,
+      // where a pasted `$( )` still expands (go-to-k/cdkd#4295).
       expect(reportedError()).toContain(
-        `Stack ${JSON.stringify(HOSTILE.stackA.clean)} has state in multiple regions: ` +
-          `"${HOSTILE.region.clean}", eu-west-1.`
+        'Stack a stack name that is not a plain identifier has state in multiple regions: ' +
+          'a region that is not a plain identifier, eu-west-1.'
       );
       expectNoForgingIn([reportedError()]);
     });
@@ -429,6 +438,8 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       expect(reportedError()).toContain(
         "Stack MyStack has state in multiple regions: us-east-1, (legacy)."
       );
+      // The remedy's hole is quoted (go-to-k/cdkd#4295).
+      expect(reportedError()).toContain("Re-run with --stack-region '<region>' to disambiguate.");
     });
   });
 
@@ -777,12 +788,11 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       expect(message).not.toContain('characters withheld');
     });
 
-    it('CUTS an over-long region at the TIGHTER default, unlike a construct path', async () => {
-      // The region list keeps `displayIdent`'s 255 default rather than the
-      // wider `STACK_REF_MAX_CODE_POINTS` the path list passes: a region's
-      // grammar is ~25 characters, and a region read out of a planted S3 key
-      // segment is unbounded. This is the case that tells the two caps apart —
-      // a short region cannot, so passing the wider cap here was invisible.
+    it('describes an over-long region on the --stack-region refusal rather than printing it', async () => {
+      // A region read out of a planted S3 key segment is unbounded. The
+      // refusal names `--stack-region`, so since go-to-k/cdkd#4295 a region
+      // that is not a plain identifier is described rather than cut and shown;
+      // the description bounds the line regardless of the region's length.
       const overLong = `us-east-${'9'.repeat(400)}`;
       expect(overLong.length).toBeGreaterThan(255);
       expect(overLong.length).toBeLessThan(STACK_REF_MAX_CODE_POINTS);
@@ -794,7 +804,10 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
         { stackName: 'MyStack', region: 'eu-west-1' },
       ]);
       await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
-      expect(reportedError()).toContain('characters withheld');
+      expect(reportedError()).toContain(
+        'has state in multiple regions: a region that is not a plain identifier, eu-west-1.'
+      );
+      expect(reportedError()).not.toContain(overLong);
     });
 
     it('leaves an ordinary region list uncut', async () => {
@@ -808,6 +821,42 @@ describe('cdkd orphan renders assembly-derived values display-safe (#3479)', () 
       await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
       expect(reportedError()).toContain('multiple regions: us-east-1, eu-west-1.');
       expect(reportedError()).not.toContain('characters withheld');
+    });
+
+    it('names no payload stack beside --stack-region (go-to-k/cdkd#4295)', async () => {
+      for (const { value } of PASTE_PAYLOADS) {
+        errorSpy.mockClear();
+        primeStacks([{ stackName: value, region: undefined, resources: { A: `${value}/A` } }]);
+        mockListStacks.mockResolvedValue([
+          { stackName: value, region: 'us-east-1' },
+          { stackName: value, region: 'eu-west-1' },
+        ]);
+        await expect(runOrphan([`${value}/A`, '--app', 'noop', '--yes'])).rejects.toThrow();
+        const message = reportedError();
+        expect(message, value).toContain(
+          'Stack a stack name that is not a plain identifier has state in multiple regions'
+        );
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+        });
+      }
+    }, 120_000);
+
+    it('describes a printable region a pasted shell would expand (go-to-k/cdkd#4295)', async () => {
+      // `~root` survives `displayIdent` unchanged but expands to a home
+      // directory when pasted bare, so the --stack-region line describes it.
+      primeStacks([
+        { stackName: 'MyStack', region: undefined, resources: { A: 'MyStack/A' } },
+      ]);
+      mockListStacks.mockResolvedValue([
+        { stackName: 'MyStack', region: '~root' },
+        { stackName: 'MyStack', region: 'eu-west-1' },
+      ]);
+      await expect(runOrphan(['MyStack/A', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(reportedError()).toContain(
+        'multiple regions: a region that is not a plain identifier, eu-west-1.'
+      );
     });
   });
 

@@ -150,6 +150,8 @@ describe('resolveBareAssumeRoleFromState (`local invoke --assume-role` bare, fro
     expect(line).toContain(
       'could not resolve the execution role ARN from cdkd state for a logical id that is not a plain identifier.'
     );
+    // The remedy's hole is quoted (go-to-k/cdkd#4295).
+    expect(line).toContain("Pass the ARN explicitly: --assume-role '<arn>'.");
     expect(line).not.toContain(ESC);
     expect(line).not.toContain('\r');
     expect(line).not.toContain('forged');

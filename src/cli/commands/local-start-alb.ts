@@ -12,6 +12,7 @@ import {
 } from './ecs-service-emulator.js';
 import { cdkdExtraStateProviders } from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
+import { plainOrDescribed } from '../../utils/pasteable-command.js';
 
 /**
  * Cdkd-specific extension of cdk-local's `EcsServiceEmulatorOptions` carrying
@@ -166,12 +167,13 @@ export function warnUnresolvedLambdaTargetEnv(
         ...resolved,
         warnings: [
           ...resolved.warnings,
+          // cdkd-raw-beside-safe: `ecsNote` is one of two literals this function chooses; only the logical ids are untrusted, and each goes through `plainOrDescribed`.
           `--from-state does not reach the container environment of this ALB's Lambda ` +
-            `target group(s): ${lambdaIds.join(', ')}. Their Environment.Variables keep any ` +
+            `target group(s): ${lambdaIds.map((id) => plainOrDescribed(id, 'logical id')).join(', ')}. Their Environment.Variables keep any ` +
             'Ref / Fn::GetAtt / Fn::Sub / Fn::ImportValue intrinsics unresolved, and each is ' +
             'then dropped with its own warning. ' +
             ecsNote +
-            'The only state source the Lambda path reads is --from-cfn-stack <name>, which ' +
+            "The only state source the Lambda path reads is --from-cfn-stack '<name>', which " +
             'REPLACES --from-state (the two are mutually exclusive) and reaches both target ' +
             'kinds on a CloudFormation-deployed stack; otherwise override the affected ' +
             'variables with --env-vars. Tracked as go-to-k/cdkd#2602 (upstream ' +
@@ -236,7 +238,7 @@ export function createLocalStartAlbCommand(): Command {
         'ECS or Lambda targets (a Lambda target group is invoked locally via the Lambda RIE). ' +
         'authenticate-cognito / authenticate-oidc actions enforce a local Bearer-JWT check ' +
         '(or AWSELBAuthSessionCookie pass-through) against the same JWKS / OIDC discovery URL ' +
-        'the deployed ALB would; use --bearer-token <jwt> to inject a default token or ' +
+        "the deployed ALB would; use --bearer-token '<jwt>' to inject a default token or " +
         '--no-verify-auth to disable the guard. Omit <targets> in an interactive terminal to ' +
         'multi-select the load balancers from a list.'
     )

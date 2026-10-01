@@ -7,7 +7,7 @@ import { getLogger } from '../utils/logger.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { isIamRoleArn } from '../utils/role-arn.js';
 import { TIMEOUT_FLAG_RESOURCE_TYPE } from '../utils/resource-type-shape.js';
-import { shellBoundedDisplay } from '../utils/pasteable-command.js';
+import { commandHole, shellBoundedDisplay } from '../utils/pasteable-command.js';
 import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { removeProtectionTypeList } from '../provisioning/remove-protection-types.js';
@@ -476,7 +476,7 @@ export function validateResourceTimeouts(opts: {
       getLogger().warn(
         `--resource-warn-after defaulted to ${formatMs(lowered)} because --resource-timeout ` +
           `${formatMs(globalTimeout)} is shorter than the ${formatMs(DEFAULT_RESOURCE_WARN_AFTER_MS)} default. ` +
-          `Pass --resource-warn-after <duration> explicitly to override.`
+          `Pass --resource-warn-after ${commandHole('duration')} explicitly to override.`
       );
     }
   } else if (typeof globalWarn === 'number' && globalWarn >= DEFAULT_RESOURCE_TIMEOUT_MS) {
@@ -485,7 +485,7 @@ export function validateResourceTimeouts(opts: {
     throw new Error(
       `--resource-warn-after (${formatMs(globalWarn)}) must be less than --resource-timeout ` +
         `(default ${formatMs(DEFAULT_RESOURCE_TIMEOUT_MS)}). ` +
-        `Pass --resource-timeout <duration> alongside it to raise the deadline.`
+        `Pass --resource-timeout ${commandHole('duration')} alongside it to raise the deadline.`
     );
   }
 
@@ -521,7 +521,7 @@ export function validateResourceTimeouts(opts: {
       throw new Error(
         `--resource-warn-after for ${t} (${formatMs(explicitPerTypeWarn)}) must be less than ` +
           `--resource-timeout for ${t} (${formatMs(effectiveTimeout)}). ` +
-          `Pass --resource-timeout ${t}=<duration> alongside it to raise the deadline.`
+          `Pass --resource-timeout ${t}=${commandHole('duration')} alongside it to raise the deadline.`
       );
     }
     // Per-type timeout explicit (or both implicit but the inherited warn
@@ -534,7 +534,7 @@ export function validateResourceTimeouts(opts: {
       `--resource-warn-after for ${t} defaulted to ${formatMs(lowered)} because ` +
         `--resource-timeout for ${t} (${formatMs(effectiveTimeout)}) is shorter than ` +
         `the inherited ${formatMs(effectiveWarn)} warn. ` +
-        `Pass --resource-warn-after ${t}=<duration> explicitly to override.`
+        `Pass --resource-warn-after ${t}=${commandHole('duration')} explicitly to override.`
     );
   }
 }
@@ -1074,7 +1074,7 @@ export const forceStatefulRecreationOption = new Option(
     'emptiness probe cannot run there. The two probes differ on failure — the ' +
     'bucket fails open, the log group closed. Destroy + recreate loses ALL ' +
     'data in the resource — no automatic data migration. Full opt-in for CI ' +
-    'use: --recreate-via-cc-api <id> --force-stateful-recreation --yes.'
+    "use: --recreate-via-cc-api '<id>' --force-stateful-recreation --yes."
 ).default(false);
 
 export const replaceOption = new Option(
@@ -1371,7 +1371,7 @@ export function parseAssumeRoleToken(
     const bare = raw.trim();
     if (!isIamRoleArn(bare)) {
       throw new Error(
-        `Invalid --assume-role value ${shownRaw}: expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
+        `Invalid --assume-role value ${shownRaw}: expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId='<arn>'.`
       );
     }
     acc.globalArn = bare;
@@ -1452,7 +1452,7 @@ export function normalizeStartApiAssumeRole(
         `but --assume-role ${quotedArgv(raw.globalArn, ROLE_ARN_MAX_CODE_POINTS)} also names a single global default. ` +
         `These are mutually exclusive on the global slot. Either drop the global ARN ` +
         `to keep --assume-role-auto for every Lambda, or drop --assume-role-auto to keep the global default. ` +
-        `Per-Lambda overrides (--assume-role <LogicalId>=<arn>) are compatible with either side.`
+        `Per-Lambda overrides (--assume-role '<LogicalId>'='<arn>') are compatible with either side.`
     );
   }
   if (autoResolve) raw.bareAutoResolve = true;

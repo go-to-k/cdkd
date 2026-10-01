@@ -242,3 +242,27 @@ describe('--assume-task-role wins over --profile, through the command body (issu
     // so this arm's legitimate file is removed on the failure path too.
   });
 });
+
+describe('bare --assume-task-role with no resolvable TaskRoleArn (go-to-k/cdkd#4295)', () => {
+  it('quotes the hole in its refusal', async () => {
+    // The command reports a refusal through cdkd's error handler rather than
+    // rejecting, so the rendered line is read off stderr.
+    const lines: string[] = [];
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    try {
+      const cmd = createLocalRunTaskCommand();
+      cmd.exitOverride();
+      await cmd
+        .parseAsync(['CdkdUnitStack/TaskDef', '--assume-task-role'], { from: 'user' })
+        .catch(() => undefined);
+    } finally {
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+    expect(lines.join('\n')).toContain("Pass the ARN explicitly: --assume-task-role '<arn>'");
+    expect(runEcsTaskMock).not.toHaveBeenCalled();
+  });
+});

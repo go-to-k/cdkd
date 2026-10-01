@@ -245,6 +245,70 @@ describe('ACMCertificateProvider', () => {
     });
   });
 
+  it('names no payload logical id or ARN beside --resource-timeout on the ISSUED-wait refusal, and quotes its hole (go-to-k/cdkd#4295)', async () => {
+    process.env['CDKD_NO_WAIT'] = '';
+    const refusal = async (logicalId: string, arn: string): Promise<string> => {
+      mockSend.mockReset();
+      mockSend.mockResolvedValueOnce({ CertificateArn: arn });
+      for (let i = 0; i < 12; i++) {
+        mockSend.mockResolvedValueOnce({
+          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+        });
+      }
+      const err: unknown = await provider
+        .create(logicalId, 'AWS::CertificateManager::Certificate', {
+          DomainName: 'example.com',
+          ValidationMethod: 'DNS',
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(err, `${logicalId} ${arn}`).toBeInstanceOf(Error);
+      const message = (err as Error).message;
+      expect(message).toContain('did not reach ISSUED');
+      expect(message).toContain(
+        "--resource-timeout AWS::CertificateManager::Certificate='<duration>', or the engine"
+      );
+      return message;
+    };
+    for (const { value } of PASTE_PAYLOADS) {
+      const byId = await refusal(value, ARN);
+      const byArn = await refusal('MyCert', `${ARN}${value}`);
+      expect(byId, value).toContain(`ACM certificate a logical id that is not a plain identifier (${ARN})`);
+      expect(byArn, value).toContain('ACM certificate MyCert (not shown: it is not a plain identifier) did not');
+      // The survivor note joins the same line when the cleanup delete fails,
+      // and it names the ARN too.
+      mockSend.mockReset();
+      mockSend.mockResolvedValueOnce({ CertificateArn: `${ARN}${value}` });
+      // Exactly the 10-attempt poll cap, so the next call is the delete.
+      for (let i = 0; i < 10; i++) {
+        mockSend.mockResolvedValueOnce({
+          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+        });
+      }
+      mockSend.mockRejectedValue(new Error('AccessDenied: acm:DeleteCertificate'));
+      const survivor = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', {
+          DomainName: 'example.com',
+          ValidationMethod: 'DNS',
+        })
+        .then(
+          () => '',
+          (e: unknown) => (e as Error).message
+        );
+      expect(survivor, value).toContain(
+        'The certificate (not shown: it is not a plain identifier) this attempt created could NOT be deleted'
+      );
+      withPasteDir((dir) => {
+        for (const message of [byId, byArn, survivor]) {
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+        }
+      });
+    }
+  }, 120_000);
+
   // Issue #2169: before this, a create whose ISSUED wait failed threw the ARN
   // away inside a message string. The certificate stayed in AWS with nothing
   // naming it -- absent from state, so `cdkd destroy` could not reach it -- and
@@ -369,6 +433,50 @@ describe('ACMCertificateProvider', () => {
       expect(callsOfType(DeleteCertificateCommand)).toHaveLength(0);
     });
 
+    it('names no payload logical id or ARN beside the survivor note aws command on the terminal-status and raw-failure arms (go-to-k/cdkd#4295)', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      const failed = async (logicalId: string, arn: string, arm: 'terminal' | 'raw'): Promise<string> => {
+        mockSend.mockReset();
+        mockSend.mockResolvedValueOnce({ CertificateArn: arn });
+        if (arm === 'terminal') {
+          mockSend.mockResolvedValueOnce({ Certificate: { Status: 'FAILED', DomainValidationOptions: [] } });
+        } else {
+          mockSend.mockRejectedValueOnce(new Error('DescribeCertificate exploded'));
+        }
+        mockSend.mockRejectedValue(new Error('AccessDenied: acm:DeleteCertificate'));
+        const message = await provider
+          .create(logicalId, 'AWS::CertificateManager::Certificate', PROPS)
+          .then(
+            () => '',
+            (e: unknown) => (e as Error).message
+          );
+        expect(message, `${arm} ${logicalId}`).toContain('could NOT be deleted');
+        return message;
+      };
+      for (const { value } of PASTE_PAYLOADS) {
+        const messages = [
+          await failed(value, ARN, 'terminal'),
+          await failed('MyCert', `${ARN}${value}`, 'terminal'),
+          await failed(value, ARN, 'raw'),
+        ];
+        expect(messages[0], value).toContain(
+          `ACM certificate a logical id that is not a plain identifier (${ARN}) entered terminal status FAILED`
+        );
+        expect(messages[1], value).toContain(
+          'ACM certificate MyCert (not shown: it is not a plain identifier) entered terminal status'
+        );
+        expect(messages[2], value).toContain(
+          'Failed to create ACM certificate a logical id that is not a plain identifier:'
+        );
+        withPasteDir((dir) => {
+          for (const message of messages) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
+
     it('surfaces the survivor when the cleanup delete itself fails', async () => {
       // A cleanup that cannot retire the certificate must say so IN the error
       // the user sees -- a warn line alone is the thing they scroll past -- and
@@ -384,6 +492,8 @@ describe('ACMCertificateProvider', () => {
       expect(message).toMatch(/did not reach ISSUED/);
       expect(message).toMatch(/could NOT be deleted/);
       expect(message).toContain(`aws acm delete-certificate --certificate-arn ${ARN}`);
+      // A plain ARN is still named in the note's prose (go-to-k/cdkd#4295).
+      expect(message).toContain(`The certificate ${ARN} this attempt created could NOT be deleted`);
       // Not wrapped in backticks: a copy including them runs as command
       // substitution (#3136).
       expect(message).not.toContain('`aws acm');
