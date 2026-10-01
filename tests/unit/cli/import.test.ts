@@ -430,8 +430,82 @@ describe('cdkd import', () => {
     // --force required.
     await expect(runImport(['import', '--app', 'x'])).rejects.toThrow();
     expect(errorSpy.mock.calls[0]?.[0]).toMatch(/State already exists.*--force/);
-    expect(errorSpy.mock.calls[0]?.[0]).toMatch(/--resource <id>=<physicalId>/);
+    expect(errorSpy.mock.calls[0]?.[0]).toMatch(/--resource '<id>'='<physicalId>'/);
   });
+
+  it('names no payload stack name, region or logical id beside --force / --resource on the state-exists, unknown-override and overwrite refusals (go-to-k/cdkd#4226)', async () => {
+    // Each refusal carries `--force` or opens with `--resource`. Pre-fix the
+    // assembly's stack name sat inside cdkd's own `'...'`, the region bare, the
+    // `<id>` / `<physicalId>` holes bare, and every template logical id raw in
+    // `Available IDs:`. Driven with each payload family in each role.
+    const refusal = async (args: string[]): Promise<string> => {
+      errorSpy.mockClear();
+      await expect(runImport(args)).rejects.toThrow();
+      return String(errorSpy.mock.calls[0]?.[0]);
+    };
+    const existing = (stackName: string, region: string) => ({
+      state: { version: 2, stackName, region, resources: {}, outputs: {}, lastModified: 0 },
+      etag: '"e"',
+    });
+    const bucket = (id: string) =>
+      template({ [id]: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/B' } } });
+    for (const { value } of PASTE_PAYLOADS) {
+      const messages: string[] = [];
+      // State already exists: the stack name, then the region.
+      for (const [name, region] of [
+        [value, 'us-east-1'],
+        ['S', value],
+      ] as const) {
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo(name, bucket('B'), region)] });
+        mockGetState.mockResolvedValueOnce(existing(name, region));
+        const m = await refusal(['import', '--app', 'x']);
+        expect(m, value).toContain('State already exists for ');
+        expect(m, value).toContain("--resource '<id>'='<physicalId>'");
+        messages.push(m);
+      }
+      // Unknown override: a template logical id, then the stack name.
+      mockHasProvider.mockReturnValue(true);
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', bucket(value))] });
+      const byTemplateId = await refusal(['import', '--app', 'x', '--resource', 'Typo=foo', '--yes']);
+      expect(byTemplateId, value).toContain(
+        'Available IDs: a logical id that is not a plain identifier'
+      );
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo(value, bucket('B'))] });
+      const byStack = await refusal(['import', '--app', 'x', '--resource', 'Typo=foo', '--yes']);
+      expect(byStack, value).toContain(
+        'not in the synthesized template for a stack whose name is not a plain identifier.'
+      );
+      messages.push(byTemplateId, byStack);
+      // Selective overwrite: a listed id that is already in state.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', bucket(value))] });
+      mockGetState.mockResolvedValueOnce({
+        state: {
+          ...existing('S', 'us-east-1').state,
+          resources: {
+            [value]: {
+              physicalId: 'old',
+              resourceType: 'AWS::S3::Bucket',
+              properties: {},
+              attributes: {},
+              dependencies: [],
+            },
+          },
+        },
+        etag: '"e"',
+      });
+      const byConflict = await refusal(['import', '--app', 'x', '--resource', `${value}=new`, '--yes']);
+      expect(byConflict, value).toContain(
+        'already in state: a logical id that is not a plain identifier.'
+      );
+      messages.push(byConflict);
+      withPasteDir((dir) => {
+        for (const m of messages) {
+          expectNoCommandBesideDisplay(m, value);
+          expect(spansThatRun(m, dir), `${value}: ${m}`).toEqual([]);
+        }
+      });
+    }
+  }, 120_000);
 
   it('records the PRE-rewrite asset references in state while still rewriting the template (#1652)', async () => {
     const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
@@ -1876,6 +1950,107 @@ describe('cdkd import', () => {
           expect(spansThatRun(line, dir), `${value}: ${line}`).toEqual([]);
         }
       });
+    }
+  }, 120_000);
+
+  it('names no payload logical id, type or parameter name beside a command on the unresolved-intrinsics warning (go-to-k/cdkd#4226)', async () => {
+    // The warning names `cdkd destroy`, `cdkd orphan`, `cdkd import` and
+    // `cdkd deploy`. Pre-fix it printed the logical id inside cdkd's own
+    // `'...'`, the type raw and the resolver's message (which can quote any
+    // template value) on that same line. Now the id and type are described
+    // when not plain, the resolver's message ends its own line, and the
+    // parameter names beside the commands are described when not plain.
+    // Driven with each payload family as the logical id, as the type, and as
+    // the name of the unbindable parameter.
+    for (const { value } of PASTE_PAYLOADS) {
+      const cases: { tmpl: CloudFormationTemplate; head: string; param?: true; echo?: true }[] = [
+        {
+          tmpl: template({
+            [value]: {
+              Type: 'AWS::Lambda::Permission',
+              Properties: { FunctionName: { 'Fn::GetAtt': ['NotImportedFn', 'Arn'] } },
+              Metadata: { 'aws:cdk:path': 'S/Perm' },
+            },
+          }),
+          head: 'imported resource a logical id that is not a plain identifier (AWS::Lambda::Permission): ',
+        },
+        {
+          tmpl: template({
+            Perm: {
+              Type: value,
+              Properties: { FunctionName: { 'Fn::GetAtt': ['NotImportedFn', 'Arn'] } },
+              Metadata: { 'aws:cdk:path': 'S/Perm' },
+            },
+          }),
+          head: 'imported resource Perm (a resource type that is not a plain identifier): ',
+        },
+        {
+          tmpl: {
+            AWSTemplateFormatVersion: '2010-09-09',
+            Parameters: { [value]: { Type: 'String' } },
+            Resources: {
+              Perm: {
+                Type: 'AWS::Lambda::Permission',
+                Properties: { FunctionName: { 'Fn::GetAtt': ['NotImportedFn', 'Arn'] } },
+                Metadata: { 'aws:cdk:path': 'S/Perm' },
+              },
+            },
+          } as unknown as CloudFormationTemplate,
+          head: 'imported resource Perm (AWS::Lambda::Permission): ',
+          param: true,
+        },
+        {
+          // The resolver's message echoes the unresolved target
+          // (`Resource <target> not found for Fn::GetAtt.`), so the payload is
+          // DISPLAYED on the first line: only the line split keeps it off the
+          // line that names the commands.
+          tmpl: template({
+            Perm: {
+              Type: 'AWS::Lambda::Permission',
+              Properties: { FunctionName: { 'Fn::GetAtt': [value, 'Arn'] } },
+              Metadata: { 'aws:cdk:path': 'S/Perm' },
+            },
+          }),
+          head: 'imported resource Perm (AWS::Lambda::Permission): ',
+          echo: true,
+        },
+      ];
+      for (const { tmpl, head, param, echo } of cases) {
+        warnSpy.mockClear();
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'perm-id', attributes: {} })),
+        });
+        await runImport(['import', '--app', 'x', '--yes']);
+        const warning = warnSpy.mock.calls
+          .map((c) => String(c[0]))
+          .find((l) => l.startsWith('Failed to resolve intrinsics in Properties'));
+        expect(warning, value).toBeDefined();
+        expect(warning, value).toContain(head);
+        const lines = warning!.split('\n');
+        expect(lines, value).toHaveLength(2);
+        expect(lines[1], value).toMatch(/^State will be written with the raw intrinsic shape/);
+        if (param) {
+          expect(lines[1], value).toContain(
+            'an import cannot bind (a parameter name that is not a plain identifier)'
+          );
+        }
+        expectNoCommandBesideDisplay(warning!, value);
+        // The echoing case's first line shows the resolver's text raw, which
+        // runs when that line alone is pasted: a display residual of the
+        // resolver's own messages, outside this fix (tracked in
+        // go-to-k/cdkd#3479). The line that names the commands is still
+        // required to run nothing.
+        const echoes = lines[0]!.includes(value);
+        expect(echoes, value).toBe(echo === true);
+        withPasteDir((dir) => {
+          expect(
+            spansThatRun(echoes ? lines[1]! : warning!, dir),
+            `${value}: ${warning}`
+          ).toEqual([]);
+        });
+      }
     }
   }, 120_000);
 
@@ -5548,7 +5723,7 @@ describe('cdkd import', () => {
       // and no warning either, which is why the assertion above is on the
       // recorded VALUE and not on the absence of a warn.
       expect(warnSpy.mock.calls.flat().join('\n')).not.toContain(
-        "Failed to resolve intrinsics in Properties for imported resource 'MyTopic'"
+        'Failed to resolve intrinsics in Properties for imported resource MyTopic ('
       );
     });
 
@@ -5610,7 +5785,7 @@ describe('cdkd import', () => {
 
       const warned = warnSpy.mock.calls.flat().join('\n');
       expect(warned).toContain(
-        "Failed to resolve intrinsics in Properties for imported resource 'MyQueue'"
+        'Failed to resolve intrinsics in Properties for imported resource MyQueue (AWS::SQS::Queue)'
       );
       // The warn arm still enumerates EXACTLY the genuinely unbound
       // parameters. Asserted on the parsed clause rather than by substring, so
@@ -5871,7 +6046,7 @@ describe('cdkd import', () => {
       // the unresolvable property carries a warn.
       expect(mockSaveState).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/Failed to resolve intrinsics in Properties for imported resource 'MyPerm'/)
+        expect.stringMatching(/Failed to resolve intrinsics in Properties for imported resource MyPerm \(AWS::Lambda::Permission\)/)
       );
       // NEGATIVE CONTROL for the parameter-shaped arm added with issue #2285:
       // this template declares NO parameters, so the failure is purely

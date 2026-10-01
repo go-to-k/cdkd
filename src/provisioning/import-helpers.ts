@@ -21,6 +21,105 @@
  */
 
 import type { ResourceImportInput } from '../types/resource.js';
+import {
+  isPasteableIdent,
+  isPlainIdent,
+  SECRET_REF_MAX_CODE_POINTS,
+} from '../utils/display-safe.js';
+import { commandHole } from '../utils/pasteable-command.js';
+import { COMPOSITE_ID_SEPARATOR, resourceTypeShown } from './composite-id.js';
+
+/**
+ * The logical id as an import refusal's `--resource` fragment names it: itself
+ * when `isPasteableIdent` admits it, otherwise the quoted `'<logicalId>'` hole
+ * (go-to-k/cdkd#4226). A logical id is template text, and printed raw in the
+ * fragment a `;`, `$( )` or `'` in it ran when the line was pasted. The
+ * predicate is the one `composite-id.ts`'s `logicalIdShown` uses, so a refusal
+ * names the id in both its prose and its fragment, or in neither.
+ */
+export function remedyLogicalId(logicalId: string): string {
+  return isPasteableIdent(logicalId) ? logicalId : commandHole('logicalId');
+}
+
+/**
+ * Whether a supplied physical id or a template value may be SHOWN on an import
+ * refusal line that also carries a `--resource` remedy (go-to-k/cdkd#4226):
+ * no whitespace, and `displayIdent` renders it unchanged at the ARN ceiling,
+ * so every character is literal inside cdkd's own `'...'` and a legitimate ARN
+ * or queue URL is never cut. Whitespace is tested first because the round-trip
+ * alone admits a value ending in `displayIdent`'s own cut marker. A value this
+ * refuses is described with {@link VALUE_NOT_SHOWN} instead.
+ */
+export function isPlainImportValue(value: string): boolean {
+  return isPlainIdent(value, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS });
+}
+
+/**
+ * {@link isPlainImportValue} for a value printed inside cdkd's own `'...'`,
+ * where cdkd's `|` separator is literal too: every separated segment is plain
+ * or empty.
+ * A composite id such as `mydb|` or a Glue name carrying cdkd's separator is
+ * then still shown, where the operator needs to see which half is missing.
+ */
+export function isQuotableImportValue(value: string): boolean {
+  return value
+    .split(COMPOSITE_ID_SEPARATOR)
+    .every((segment) => segment === '' || isPlainImportValue(segment));
+}
+
+/**
+ * {@link remedyLogicalId} for a fragment already inside cdkd's own `'...'`
+ * (`--resource '<id>=<a>|<b>'`): the bare `<logicalId>` placeholder, which
+ * those quotes keep literal, in place of the quoted hole.
+ */
+export function quotedRemedyLogicalId(logicalId: string): string {
+  return isPasteableIdent(logicalId) ? logicalId : '<logicalId>';
+}
+
+/**
+ * The resource type at the head of an import refusal: itself when
+ * `composite-id.ts`'s `resourceTypeShown` admits it, otherwise the
+ * parenthesized note `cc-import-identifier.ts`'s refusal head prints, which
+ * reads as an aside before the logical id instead of running into it.
+ */
+export function refusalTypeShown(resourceType: string): string {
+  return resourceTypeShown(resourceType) === resourceType
+    ? resourceType
+    : '(resource type not shown: it is not a plain identifier)';
+}
+
+/** What an import refusal prints in place of a value {@link isPlainImportValue} refuses. */
+export const VALUE_NOT_SHOWN = '(not shown: it is not a plain identifier)';
+
+/**
+ * The characters a template value's JSON may hold to be shown beside a
+ * `--resource` remedy: the plain-identifier set plus JSON's own `"{}[]`. None
+ * of them substitutes, separates, comments or redirects, inside `"..."` or
+ * bare, and there is no whitespace, so no pasted clause starts inside it.
+ *
+ * Wider than `pasteable-command.ts`'s `PASTE_ARG_UNSAFE`, which refuses
+ * `"{}[]` and a `~` after `:` for a value that becomes a command ARGUMENT.
+ * Tolerated here because this JSON is never a command argument: every string
+ * in it sits inside JSON's own `"..."`, and outside those quotes a shell can
+ * only brace-expand or glob the word, which runs nothing.
+ */
+const PLAIN_JSON = /^[A-Za-z0-9"{}[\]:,._@/+=~-]+$/;
+
+/**
+ * Whether a template property value's JSON may be shown on an import refusal
+ * line that also carries a `--resource` remedy (go-to-k/cdkd#4226): a
+ * JSON-quoted `$( )` still runs when pasted, since a shell expands it inside
+ * double quotes. A literal or an intrinsic built from plain names
+ * (`{"Ref":"MyBucket"}`) still passes, bounded at the ARN ceiling. A predicate
+ * rather than a renderer, so each site keeps its own `${JSON.stringify(x)}`
+ * and `scripts/check-provider-secret-mask.ts` still counts it.
+ */
+export function isPlainImportJson(value: unknown): boolean {
+  const json = JSON.stringify(value);
+  return (
+    typeof json === 'string' && json.length <= SECRET_REF_MAX_CODE_POINTS && PLAIN_JSON.test(json)
+  );
+}
 
 /**
  * Read an explicit name field from template properties. Returns `undefined`

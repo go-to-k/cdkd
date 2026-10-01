@@ -7,6 +7,16 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { logicalIdShown } from '../composite-id.js';
+import { isPasteableIdent } from '../../utils/display-safe.js';
+import {
+  isPlainImportValue,
+  refusalTypeShown,
+  isPlainImportJson,
+  remedyLogicalId,
+  VALUE_NOT_SHOWN,
+} from '../import-helpers.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -347,17 +357,24 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     //    the import summary and bake the unusable CFn-generated name into
     //    cdkd state for any caller passing `knownPhysicalId`. Naming the
     //    explicit override is the load-bearing recovery hint.
+    //
+    //    This line carries a `--resource` remedy, so the logical id, the
+    //    supplied id and the template's Queues value are each shown only when
+    //    plain and described otherwise, and the fragment holes a logical id
+    //    that is not plain (go-to-k/cdkd#4226): printed raw or inside cdkd's
+    //    own quotes, a `;`, `$( )` or `'` in one of them ran when the line was
+    //    pasted.
     const knownNote = input.knownPhysicalId
-      ? ` Got knownPhysicalId='${input.knownPhysicalId}' (not a queue URL; CloudFormation returns the policy resource NAME for AWS::SQS::QueuePolicy, which is not the operational identifier).`
+      ? ` Got knownPhysicalId=${isPlainImportValue(input.knownPhysicalId) ? `'${input.knownPhysicalId}'` : VALUE_NOT_SHOWN} (not a queue URL; CloudFormation returns the policy resource NAME for AWS::SQS::QueuePolicy, which is not the operational identifier).`
       : '';
     const queuesNote =
       Array.isArray(queues) && queues.length > 0
-        ? ` Properties.Queues[0]=${JSON.stringify(queues[0])} did not resolve to a literal queue URL (intrinsic-valued entries like {Ref: <Queue>} are not resolved at import time).`
+        ? ` Properties.Queues[0]${isPlainImportJson(queues[0]) ? `=${JSON.stringify(queues[0])}` : ` ${VALUE_NOT_SHOWN}`} did not resolve to a literal queue URL (intrinsic-valued entries like {Ref: '<Queue>'} are not resolved at import time).`
         : ' Properties.Queues is missing or empty.';
     throw new Error(
-      `Cannot determine queue URL for ${input.resourceType} '${input.logicalId}'.${knownNote}${queuesNote} ` +
-        `Re-run with --resource ${input.logicalId}=<queueUrl> ` +
-        `(e.g. https://sqs.${input.region}.amazonaws.com/<account>/<queue-name>) to point cdkd at the queue this policy is attached to.`
+      `Cannot determine queue URL for ${refusalTypeShown(input.resourceType)} ${logicalIdShown(input.logicalId)}.${knownNote}${queuesNote} ` +
+        `Re-run with --resource ${remedyLogicalId(input.logicalId)}=${commandHole('queueUrl')} ` +
+        `(e.g. https://sqs.${isPasteableIdent(input.region) ? input.region : commandHole('region')}.amazonaws.com/'<account>'/'<queue-name>') to point cdkd at the queue this policy is attached to.`
     );
   }
 }

@@ -57,11 +57,12 @@ import {
   isPasteableIdent,
   SECRET_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
+import { COMPOSITE_ID_SEPARATOR, compositeIdSeparatorRefusal } from './composite-id.js';
 import {
-  COMPOSITE_ID_SEPARATOR,
-  compositeIdSeparatorRefusal,
-  resourceTypeShown,
-} from './composite-id.js';
+  isQuotableImportValue,
+  quotedRemedyLogicalId,
+  refusalTypeShown,
+} from './import-helpers.js';
 
 /**
  * Per-type cache of SUCCESSFUL lookups only (same discipline as
@@ -171,7 +172,7 @@ export function toCloudControlIdentifier(input: CcImportIdentifierInput): string
   // takes the pasteable rule the SSM provider's twin of this remedy applies:
   // named only when `isPasteableIdent` admits it, and a `<logicalId>`
   // placeholder otherwise, which the fragment's own quotes keep literal.
-  const remedyId = isPasteableIdent(logicalId) ? logicalId : '<logicalId>';
+  const remedyId = quotedRemedyLogicalId(logicalId);
   const remedy = `Pass the Cloud Control identifier instead: --resource '${remedyId}=${shape}'.`;
   // The three refusals below end in that remedy, and a block that displays
   // an untrusted value carries no pasteable command (go-to-k/cdkd#3950's S1
@@ -181,19 +182,16 @@ export function toCloudControlIdentifier(input: CcImportIdentifierInput): string
   // neither; the resource type by `composite-id.ts`'s `resourceTypeShown` rule
   // (the CloudFormation type shape, which also refuses `./x` or `A=b` at the
   // head of a line); the physical id when every `|`-separated segment is plain in
-  // that set (at the ARN ceiling), so a legitimate composite such as `a|b`
-  // is still shown JSON-quoted, where it is inert. The debug notes further
-  // down carry no command and keep the plain renders above.
-  const plainAtArnCap = (segment: string): boolean =>
-    segment === '' ||
-    (!/\s/.test(segment) &&
-      displayIdent(segment, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS }) === segment);
+  // that set (at the ARN ceiling; `import-helpers.ts`'s `isQuotableImportValue`),
+  // so a legitimate composite such as `a|b` is still shown JSON-quoted, where it
+  // is inert. The debug notes further down carry no command and keep the plain
+  // renders above.
   const refusalHead =
-    `${resourceTypeShown(resourceType) === resourceType ? resourceType : '(resource type not shown: it is not a plain identifier)'} ` +
+    `${refusalTypeShown(resourceType)} ` +
     (isPasteableIdent(logicalId)
       ? logicalId
       : '(logical id not shown: it is not a plain identifier)');
-  const refusalId = physicalId.split(COMPOSITE_ID_SEPARATOR).every(plainAtArnCap)
+  const refusalId = isQuotableImportValue(physicalId)
     ? safeId
     : 'the supplied id (not shown: it is not a plain identifier)';
 
