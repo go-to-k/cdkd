@@ -5475,7 +5475,10 @@ export function classifyTarget(
   // every existing caller (and every unit probe) wants only the verdicts.
   usedSegmentRenames?: Set<string>,
   // Same contract for {@link NestedKeyTarget.terminalRenames} (issue #1540).
-  usedTerminalRenames?: Set<string>
+  usedTerminalRenames?: Set<string>,
+  // OUT-param: the same-spelling paths whose PARENT is handed whole to a
+  // generic converter — the shape pass's `wholeDelivery`.
+  wholeDeliveredPaths?: Set<string>
 ): NestedKeyClassification[] {
   const sdkLower = new Map<string, string>();
   for (const m of sdkMembers) {
@@ -5601,6 +5604,18 @@ export function classifyTarget(
       // Deliberately NOT rescued by `providerLiterals`: the CFn spelling
       // appearing somewhere in the file is the loose heuristic this pass exists
       // to stop trusting.
+      // No terminal: only an ANCESTOR (or the parent itself) handed off counts,
+      // never a scope that names this member — that one is a per-member write.
+      if (
+        isHandoffCovered(
+          writeEvidence.handoffScopes,
+          parentChain.join('.'),
+          undefined,
+          writeEvidence.handoffExclusions
+        )
+      ) {
+        wholeDeliveredPaths?.add(path);
+      }
       const coveredPlain =
         parentPaths.some((p) => writeEvidence.scopes.get(p)?.has(expected) ?? false) ||
         isHandoffCovered(
@@ -5770,7 +5785,12 @@ export function classifyTargetShapes(
   definitionShapes: Readonly<Record<string, Record<string, string>>>,
   sdkInterfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>,
   providerLiterals: ReadonlySet<string>,
-  allowList: ReadonlyMap<string, AllowListEntry> = NESTED_KEY_ALLOW_LIST
+  allowList: ReadonlyMap<string, AllowListEntry> = NESTED_KEY_ALLOW_LIST,
+  /** The key pass's `wholeDeliveredPaths`, with the paths it audited. */
+  wholeDelivery?: {
+    readonly nestedKeys: readonly NestedKeyPath[];
+    readonly paths: ReadonlySet<string>;
+  }
 ): ShapePassResult {
   const wrappers = wrapperInterfaceNames(sdkInterfaces);
   const inputReachable = inputReachableInterfaces(sdkInterfaces);
@@ -5788,6 +5808,47 @@ export function classifyTargetShapes(
 
   const styled = (key: string): string =>
     target.keyStyle === 'lower-first' ? lowerFirst(key) : key;
+
+  // A literal rescues a `definition-member-missing` only as evidence that the
+  // provider CONVERTS the member, and it is withdrawn when both hold:
+  //   - an instance of the definition is handed WHOLE to a generic converter
+  //     (`wholeDelivery`, from the key pass), which forwards the member verbatim
+  //     into an SDK interface that lacks it; and
+  //   - another CFn definition carries the key and its own SDK interface
+  //     declares it, so that same-spelled member already explains the literal.
+  // PR #4324: `ecs-provider.ts` hands `VpcLatticeConfigurations` to
+  // `pascalToCamelCaseKeys` and names `AdvancedConfiguration` only for
+  // `LoadBalancer`, which vouched for `VpcLatticeConfiguration.
+  // AdvancedConfiguration` while the installed SDK's interface had no such
+  // member. A converter that relocates the member (CloudFront's `CachedMethods`)
+  // keeps its credit: nothing else explains its literal.
+  const childrenByParent = new Map<string, Set<string>>();
+  for (const { segments, key } of wholeDelivery?.nestedKeys ?? []) {
+    const parent = segments.slice(0, -1).join('.');
+    const children = childrenByParent.get(parent) ?? new Set<string>();
+    children.add(key);
+    childrenByParent.set(parent, children);
+  }
+  const deliveredWholeAt = (definition: string, key: string): boolean => {
+    const members = Object.keys(definitionShapes[definition] ?? {});
+    return (wholeDelivery?.nestedKeys ?? []).some(
+      ({ path, key: k, segments }) =>
+        k === key &&
+        wholeDelivery!.paths.has(path) &&
+        members.every((m) => childrenByParent.get(segments.slice(0, -1).join('.'))?.has(m))
+    );
+  };
+  const declaredVerbatimElsewhere = (definition: string, key: string): boolean =>
+    Object.entries(definitionShapes).some(
+      ([other, members]) =>
+        key in members &&
+        (resolveDefinitionInterface(other, sdkInterfaces, inputReachable)?.members.has(
+          styled(key)
+        ) ??
+          false)
+    );
+  const literalWithdrawn = (definition: string, key: string): boolean =>
+    deliveredWholeAt(definition, key) && declaredVerbatimElsewhere(definition, key);
 
   const entries: NestedShapeClassification[] = [];
   let cleanCount = 0;
@@ -5807,7 +5868,10 @@ export function classifyTargetShapes(
     let bucket: ShapeBucket;
     let rationale: string | undefined;
     let allowMatchKey: string | undefined;
-    if (shapeLiterals.has(key)) {
+    if (
+      shapeLiterals.has(key) &&
+      !(pass === 'definition' && literalWithdrawn(definition, key))
+    ) {
       bucket = 'provider-handled';
     } else if (allowed) {
       bucket = 'allow-listed';
@@ -6490,15 +6554,9 @@ export function loadReport(
       );
     }
 
-    const shapeResult = classifyTargetShapes(
-      target,
-      fixture.definitionShapes,
-      sdkInterfaces,
-      literals
-    );
-
     const usedSegmentRenames = new Set<string>();
     const usedTerminalRenames = new Set<string>();
+    const wholeDeliveredPaths = new Set<string>();
     const entries = classifyTarget(
       target,
       nestedKeys,
@@ -6507,7 +6565,17 @@ export function loadReport(
       NESTED_KEY_ALLOW_LIST,
       written,
       usedSegmentRenames,
-      usedTerminalRenames
+      usedTerminalRenames,
+      wholeDeliveredPaths
+    );
+
+    const shapeResult = classifyTargetShapes(
+      target,
+      fixture.definitionShapes,
+      sdkInterfaces,
+      literals,
+      NESTED_KEY_ALLOW_LIST,
+      { nestedKeys, paths: wholeDeliveredPaths }
     );
 
     targets.push({
