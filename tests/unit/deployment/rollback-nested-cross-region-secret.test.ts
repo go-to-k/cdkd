@@ -247,7 +247,7 @@ describe("a nested child's rollback replay inherits the parent's producer region
     expect(secretSends).toHaveLength(0);
     expect(result.failures).toBe(1);
     const refusal = logLines.find((l) => l.includes('Rollback failed for Idp'));
-    expect(refusal).toContain("parent's cross-region reads are not known");
+    expect(refusal).toContain("cross-region reads its parent made are not known");
     expect(logLines.join('\n')).not.toContain(LOCAL_PASSWORD);
   });
 

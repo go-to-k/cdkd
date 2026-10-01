@@ -265,7 +265,7 @@ assert_inherited_refusal() {
       exit 1
     fi
   done
-  if grep -qF -- "parent's cross-region reads are not known" "$1"; then
+  if grep -qF -- "cross-region reads its parent made are not known" "$1"; then
     echo "FAIL: $2 refused on INCOMPLETE evidence: the parent's regions never reached the child" >&2
     exit 1
   fi

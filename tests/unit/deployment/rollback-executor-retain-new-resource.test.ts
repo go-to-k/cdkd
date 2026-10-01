@@ -522,7 +522,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         "then re-run the rollback of the nested stack 'Top~Child' itself — the journal is kept"
       );
       for (const message of [collision!, unrouted!]) {
-        expect(message).toContain("This is the nested stack's own rollback, and only a rollback of the nested stack itself honours --orphan for this op");
+        expect(message).toContain('This is the rollback of the nested stack itself, and only a rollback of the nested stack itself honours --orphan for this op');
         expect(message).toContain('command below');
       }
 
@@ -530,7 +530,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       const held = await run('Top~Child; touch OWNED');
       for (const message of held) {
         expect(message).toMatch(/\nTo orphan it: cdkd rollback '<stack>' --stack-region us-east-1 --orphan [BU]$/);
-        expect(message).toContain("The nested stack's name");
+        expect(message).toContain('The name of the nested stack');
       }
 
       // Pasted whole, neither message runs anything.
@@ -669,12 +669,12 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         expect(message).not.toContain('To orphan it:');
         expect(message).not.toContain('command below');
         expect(message).toContain(
-          "where cdkd rollback --orphan cannot reach it: resolve the cause and re-run the top-level stack's rollback"
+          'where cdkd rollback --orphan cannot reach it: resolve the cause and re-run the rollback of the top-level stack'
         );
       }
       // The collision text stays in the prose, and the unroutable refusal's
       // fix-forward pointer ends its sentence rather than offering the command.
-      expect(collision).toContain('Underlying collision: Queue already exists');
+      expect(collision).toContain('Underlying collision: "Queue already exists"');
       expect(unrouted).toContain('fix forward with cdkd deploy. This op is reverted inside');
     });
 

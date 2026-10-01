@@ -590,7 +590,7 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     const failed = lines.find((l) => l.includes('Cannot reverse the replacement of R'));
     // `safe()` quotes a value that is not a plain identifier, the mask included.
     expect(failed).toContain('the re-create of the old resource ("***") collided');
-    expect(failed).toContain('Role with name *** already exists.');
+    expect(failed).toContain('Underlying collision: "Role with name *** already exists."');
     for (const line of lines) expect(leaks(line), line).toBe(false);
     for (const e of events) expect(leaks(e.error?.message ?? '')).toBe(false);
   });
@@ -665,7 +665,9 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
 
     expect(del).not.toHaveBeenCalled();
     expect(result.warnings).toBe(1);
-    expect(lines.some((l) => l.includes('the re-create returned the LIVE new resource (***)'))).toBe(
+    // The mask keeps its JSON render beside the `cdkd deploy` remedy: its
+    // other characters are plain (go-to-k/cdkd#4214).
+    expect(lines.some((l) => l.includes('the re-create returned the LIVE new resource ("***")'))).toBe(
       true
     );
     expect(lines).toContain(
@@ -1077,10 +1079,10 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     await replayKept(() => replayRollback([op], { MyQueue: current }, STACK, ctx));
 
     const failed = lines.find((l) => l.includes('Cannot reverse the replacement'));
-    expect(failed).toContain(pinned ? 'UpdateReplacePolicy: Retain pins' : 'collided: ');
+    expect(failed).toContain(pinned ? 'UpdateReplacePolicy: Retain pins' : '\nCollision diagnosis: ');
     expect(failed).toContain(rerun);
     expect(failed).toMatch(/\nTo orphan it: cdkd rollback --orphan MyQueue$/);
-    expect(failed).toContain('Queue *** already exists.');
+    expect(failed).toContain('Underlying collision: "Queue *** already exists."');
   });
 
   it('a short id adds no lowercased needle: `R` does not eat every `r`', async () => {
@@ -1339,7 +1341,7 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
 
     expect(result.failures).toBe(1);
     const failed = lines.find((l) => l.includes('Cannot reverse the replacement'));
-    expect(failed).toContain('Underlying collision: Role with name *** already exists.');
+    expect(failed).toContain('Underlying collision: "Role with name *** already exists."');
     for (const line of lines) expect(line).not.toMatch(/spaced|alice/);
   });
 

@@ -7,7 +7,6 @@ import {
   type FailedOperation,
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
-import { displayIdent } from '../../../src/utils/display-safe.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
@@ -455,8 +454,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(failLine).toBeDefined();
     expect(failLine!.split('\n')).toHaveLength(1);
     expect(failLine).not.toMatch(INVISIBLE);
-    // The forged tail stays INSIDE the parentheses, flattened onto the same line.
-    expect(failLine).toContain('("CRE ATE   Rollback: forged change type")');
+    // The forged change type is described, not shown: the error text after
+    // it can name a `cdkd` command on the same line (go-to-k/cdkd#4214).
+    expect(failLine).toContain('Rollback failed for D (a change type that is not a plain identifier): ');
+    expect(failLine).not.toContain('CRE');
     expect(failLine).toContain('caf\u00e9');
     expect(forgedLines(lines)).toEqual([]);
   });
@@ -588,13 +589,12 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(skipWarn!.split('\n')).toHaveLength(1);
     expect(skipWarn).not.toMatch(INVISIBLE);
     expect(forgedLines(skipLines)).toEqual([]);
-    // The BOUNDARY, not just the class. Single-line + no-INVISIBLE + no forged
-    // line all still pass under `displaySafe(id, { asciiOnly: true })`, which
-    // is `displayIdent` minus the 255-codepoint cap, minus `UNRENDERABLE` and
-    // minus the quoting -- measured 0 red. Only `displayIdent` QUOTES a
-    // non-plain id, and the quote is what keeps a same-line spoof from reading
-    // as cdkd's own annotation.
-    expect(skipWarn).toContain('"Vic tim');
+    // DESCRIBED, not displayed: the warn's remedy names `cdkd deploy`, and a
+    // line that shows an untrusted value carries no command
+    // (go-to-k/cdkd#4214). The description is what keeps a same-line spoof
+    // from reading as cdkd's own annotation, as the quoting did before.
+    expect(skipWarn).toContain('Cannot restore a logical id that is not a plain identifier');
+    expect(skipWarn).not.toContain('Vic');
 
     const { ctx: throwCtx, lines: throwLines } = makeCtx({ update: vi.fn() });
     const throwResult = await replayRollback(
@@ -617,8 +617,11 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(throwLine!.split('\n')).toHaveLength(1);
     expect(throwLine).not.toMatch(INVISIBLE);
     expect(forgedLines(throwLines)).toEqual([]);
-    // Same boundary on the throw render, which is a separate interpolation.
-    expect(throwLine).toContain('"Vic tim');
+    // Same on the throw render, which is a separate interpolation. The per-op
+    // failure line's `Rollback failed for` head describes the id too
+    // (go-to-k/cdkd#4214), so no copy of it is left anywhere on the line.
+    expect(throwLine).toContain('Cannot roll a logical id that is not a plain identifier back');
+    expect(throwLine).not.toContain('Vic');
   });
 
   it('the readopt-Retain WARN: a field passed through a helper PARAMETER is still sanitized', async () => {
@@ -698,12 +701,12 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists'));
     const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
     const hostile = '\u200bRealDB';
-    // The same message renders the OLD physical id, also journal-sourced. A
-    // planted one that reads as the remedy must show its boundary, or it
-    // stands as a forged `--orphan RealDB` AHEAD of the guarded one. It
-    // spells the remedy's OWN shape — the labelled line — so the case also
-    // pins that the forged label never starts a line: `displayIdent`
-    // sanitizes the planted newline to a space inside its boundary.
+    // The same message names the OLD physical id, also journal-sourced. A
+    // planted one that reads as the remedy must not stand as a forged
+    // `--orphan RealDB` AHEAD of the guarded one. It spells the remedy's OWN
+    // shape — the labelled line — so the case also pins that the forged label
+    // never starts a line: a physical id that is not plain is described, not
+    // shown (go-to-k/cdkd#4214).
     const forgedPhys = 'old).\nTo orphan it: cdkd rollback --orphan RealDB\nx';
     const replacement = (id: string): CompletedOperation => ({
       logicalId: id,
@@ -722,14 +725,15 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       isInterrupted: () => false,
     });
 
-    // Strip the planted physical id, as the executor RENDERED it (sanitized,
-    // then JSON-quoted): what is left is what the executor itself said.
-    const quotedPhys = displayIdent(forgedPhys);
-    expect(quotedPhys).not.toContain('\n');
+    // The planted physical id is described, so everything left is what the
+    // executor itself said.
     const remedies = lines.filter((l) => l.includes('cdkd rollback --orphan'));
     expect(remedies).toHaveLength(2);
-    for (const l of remedies) expect(l).toContain(`(${quotedPhys}) collided`);
-    const own = remedies.map((l) => l.split(quotedPhys).join(''));
+    for (const l of remedies) {
+      expect(l).toContain('(a physical id that is not a plain identifier) collided');
+      expect(l).not.toContain('old).');
+    }
+    const own = remedies;
     // The legitimate op prints its id; the hostile op prints the placeholder.
     //
     // Keyed on the remedy's labelled LAST line, which go-to-k/cdkd#3436 gave
@@ -746,9 +750,8 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(own.filter((l) => l.includes('read it from cdkd events and fill the quoted hole'))).toHaveLength(1);
     for (const l of own) expect(l).not.toContain('`cdkd events`');
     // And never the collapsed form that would paste as the legitimate resource,
-    // nor a second line carrying the forged label: the planted newline is
-    // escaped inside the JSON boundary, so `To orphan it:` starts exactly one
-    // line per message.
+    // nor a second line carrying the forged label: the planted id is not
+    // printed, so `To orphan it:` starts exactly one line per message.
     expect(own.filter((l) => /\nTo orphan it: cdkd rollback --orphan RealDB$/.test(l))).toHaveLength(1);
     for (const l of remedies) expect(l.match(/^To orphan it: /gm)).toHaveLength(1);
   });
@@ -1090,8 +1093,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).not.toContain('isNameCollisionError(msg)');
     expect(src).toContain('.replace(/[\\s\\p{Cf}\\p{Default_Ignorable_Code_Point}\\u2800]{2,}/gu, \' \')');
     expect(src).toMatch(/return displayAwsMessage\(\s*displaySafe\(msg\)\.replace\(/);
-    // Through the op's masker since issue #4037.
-    expect(src).toContain('${collisionText(mask(msg))}');
+    // Through the op's masker since issue #4037, and inside a JSON boundary
+    // since go-to-k/cdkd#4214.
+    expect(src).toContain('${collisionLine(mask(msg))}');
+    expect(src).toContain('return JSON.stringify(collisionText(maskedMsg));');
   });
 
   it('a forged OLD type (issue #2668) cannot forge a line through the Type-change renders', async () => {
@@ -1123,11 +1128,17 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       expect(named.length).toBeGreaterThan(0);
       for (const l of named) {
         // The forged newline is folded; the only line breaks a failure line may
-        // carry are cdkd's OWN: the labelled remedy line, and the collision
-        // refusals' `Underlying collision:` line (go-to-k/cdkd#3950), both
-        // rendered per line by `rollbackFailureText`.
+        // carry are cdkd's OWN: the labelled remedy line, the collision
+        // refusals' `Underlying collision:` line (go-to-k/cdkd#3950) and the
+        // unproven-holder refusal's `Collision diagnosis:` line
+        // (go-to-k/cdkd#4214), all rendered per line by `rollbackFailureText`.
         expect(
-          l.split('\n').filter((r) => !/^(?:To orphan it: cdkd rollback --orphan |Underlying collision: )/.test(r))
+          l
+            .split('\n')
+            .filter(
+              (r) =>
+                !/^(?:To orphan it: cdkd rollback --orphan |Underlying collision: |Collision diagnosis: )/.test(r)
+            )
         ).toHaveLength(1);
         expect(l).not.toMatch(INVISIBLE);
       }
@@ -1217,8 +1228,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     );
     expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(3);
     // The fence sees its input: the wrapped form must be present in numbers.
+    // Lowered from 40 by go-to-k/cdkd#4214, which moved the refusal renders
+    // beside a command onto describing helpers.
     expect((src.match(/\$\{safe\(op\.(?:logicalId|resourceType|changeType)\)\}/g) ?? []).length)
-      .toBeGreaterThan(40);
+      .toBeGreaterThan(30);
   });
 
   it('SOURCE SHAPE: the aliases the first round missed are wrapped', () => {
@@ -1248,10 +1261,13 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // argument to `retainedSurvivorMessages`, which wraps its warn copy itself.
     expect(lines.filter((l) => /\$\{prev\.physicalId\}/.test(l)).length).toBeGreaterThanOrEqual(1);
     // The thrown collision message -- the one carrying the pasted `--orphan`
-    // remedy -- renders both physical ids with a BOUNDARY, not the denylist.
-    // Masked first (issue #4037), so the boundary renders the MASKED id.
-    expect(src).toContain('(${safe(mask(prev.physicalId))}) collided with the');
-    expect(src).toContain('(${safe(mask(current.physicalId))}), and');
+    // remedy -- names both physical ids only when plain, describing them
+    // otherwise (go-to-k/cdkd#4214), never through the denylist. Masked first
+    // (issue #4037), so the test reads the MASKED id.
+    expect(src).toContain('const oldShown = refusalPhysicalId(mask(prev.physicalId));');
+    expect(src).toContain('const newShown = refusalPhysicalId(mask(current.physicalId));');
+    expect(src).toContain('(${oldShown}) collided with the');
+    expect(src).toContain('(${newShown}), and');
     // And the helper's warn half wraps its parameters.
     expect(src).toContain('`  ⚠ ${safe(logicalId)} (${safe(resourceType)}) has UpdateReplacePolicy');
   });
