@@ -37,7 +37,18 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
-    resolve: vi.fn().mockImplementation((value: unknown) => Promise.resolve(value)),
+    // A name carrying SECRETVALUE stands for one resolved from a secret.
+    resolve: vi
+      .fn()
+      .mockImplementation(
+        (value: unknown, ctx?: { recordedSecretValues?: Map<string, string> }) => {
+          const name = (value as { QueueName?: unknown } | null)?.QueueName;
+          if (typeof name === 'string' && name.includes('SECRETVALUE')) {
+            ctx?.recordedSecretValues?.set(name, '{{resolve:secretsmanager:name:SecretString}}');
+          }
+          return Promise.resolve(value);
+        }
+      ),
     resolveParameters: vi.fn().mockReturnValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
@@ -117,7 +128,8 @@ function makeEngine(
 async function create(
   engine: InstanceType<typeof DeployEngine>,
   type: string,
-  props: Record<string, unknown>
+  props: Record<string, unknown>,
+  stateResources: Record<string, unknown> = {}
 ): Promise<Inner | null> {
   const change: ResourceChange = {
     logicalId: 'Res',
@@ -139,7 +151,7 @@ async function create(
       ) => Promise<void>;
     }
   ).provisionResource.bind(engine);
-  return run('Res', change, {}, 'MyStack', template).then(
+  return run('Res', change, stateResources, 'MyStack', template).then(
     () => null,
     (e) => (e as { cause?: unknown }).cause as Inner
   );
@@ -310,6 +322,96 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(err!.message).toContain('cannot check whether another resource already holds it');
     expect(err!.message).toContain('Nothing was created');
     expect(h.callOrder).toEqual([]);
+  });
+
+  it("names this stack's own holder under another logical id, without import/delete advice", async () => {
+    h.importResult = { physicalId: THEIRS };
+
+    const err = await create(
+      makeEngine(h),
+      QUEUE,
+      { QueueName: 'their-queue' },
+      {
+        OldQueue: {
+          physicalId: THEIRS,
+          resourceType: QUEUE,
+          properties: { QueueName: 'their-queue' },
+          attributes: {},
+          dependencies: [],
+          provisionedBy: 'sdk',
+        },
+      }
+    );
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain("which this stack's OldQueue");
+    expect(err!.message).toContain('deploy the removal of OldQueue first');
+    expect(err!.message).not.toContain('adopt it with');
+    expect(h.callOrder).toEqual(['import']);
+  });
+
+  it('keeps the stranger advice when the state record of that id is another type', async () => {
+    h.importResult = { physicalId: THEIRS };
+
+    const err = await create(
+      makeEngine(h),
+      QUEUE,
+      { QueueName: 'their-queue' },
+      {
+        Other: {
+          physicalId: THEIRS,
+          resourceType: 'AWS::SNS::Topic',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+          provisionedBy: 'sdk',
+        },
+      }
+    );
+
+    expect(err!.message).toContain('adopt it with `cdkd import`');
+    expect(err!.message).not.toContain("this stack's Other");
+  });
+
+  it("refuses S3's 301 as a bucket of that name in another region", async () => {
+    h.importResult = Object.assign(new Error('UnknownError'), {
+      name: 'UnknownError',
+      $metadata: { httpStatusCode: 301 },
+    });
+
+    const err = await create(makeEngine(h), 'AWS::S3::Bucket', { BucketName: 'their-bucket' });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain('already exists in another region');
+    expect(err!.message).not.toContain('Re-run the deploy once the check can succeed');
+  });
+
+  it('masks a secret-derived name in the holder and the lookup-failure refusals', async () => {
+    const holder = 'https://sqs.us-east-1.amazonaws.com/123456789012/q-SECRETVALUE';
+    h.importResult = { physicalId: holder };
+    const held = await create(makeEngine(h), QUEUE, { QueueName: 'q-SECRETVALUE' });
+
+    h = makeHarness();
+    h.importResult = new Error('AccessDenied for q-SECRETVALUE');
+    const failed = await create(makeEngine(h), QUEUE, { QueueName: 'q-SECRETVALUE' });
+
+    for (const err of [held!, failed!]) {
+      expect(err.code).toBe('NAMED_CREATE_COLLISION');
+      expect(err.message).toContain('QueueName ***');
+      expect(err.message).not.toContain('SECRETVALUE');
+    }
+    expect(failed!.message).toContain('AccessDenied for ***');
+  });
+
+  it('masks a secret-derived name BEFORE display sanitizing rewrites it', async () => {
+    // A trailing control character is what `displaySafe` strips: sanitized
+    // first, the value no longer matches its needle and would print.
+    h.importResult = new Error('AccessDenied');
+
+    const err = await create(makeEngine(h), QUEUE, { QueueName: 'q-SECRETVALUE\n' });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).not.toContain('SECRETVALUE');
   });
 
   it('creates when the provider has no import() to ask (a test double)', async () => {

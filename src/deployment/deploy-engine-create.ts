@@ -11,6 +11,7 @@ import { getAccountInfo } from './intrinsic-function-resolver.js';
 import {
   createNameQuestion,
   probeErrorMeansNameHeld,
+  probeFoundSameId,
   stateMachineArnForName,
 } from './replacement-name-holder.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
@@ -144,6 +145,7 @@ export async function provisionCreate(
     createdVia: createDecision.provisionedBy,
     createProps,
     secrets: createSecrets,
+    stateResources,
   });
 
   const result = await this.withRetry(
@@ -236,6 +238,11 @@ export async function provisionCreate(
  * also when the lookup cannot be made or fails, since a guess either way can
  * take over someone else's resource.
  *
+ * A holder this stack's state records under ANOTHER logical id (a construct
+ * moved or renamed, keeping its explicit name) is refused with its own
+ * advice: deleting or importing it would hand one resource to two records,
+ * and the plan's later DELETE of the old id would then delete it.
+ *
  * The lookup and the create are two calls: a resource created under the name
  * between them is not seen.
  */
@@ -249,6 +256,7 @@ async function refuseTakenCreateName(
     createdVia: ProvisionedBy | undefined;
     createProps: Record<string, unknown>;
     secrets: RecordedSecretValues;
+    stateResources: Record<string, ResourceState>;
   }
 ): Promise<void> {
   const { logicalId, resourceType, secrets } = input;
@@ -263,8 +271,11 @@ async function refuseTakenCreateName(
   const lookup = input.createProvider.import?.bind(input.createProvider);
   if (lookup === undefined) return;
 
+  // Mask BEFORE sanitizing: `displaySafe` rewrites control characters, after
+  // which a secret-derived value no longer matches its needle.
+  const shown = (value: string): string => displaySafe(maskSecretsInText(value, secrets));
   const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
-  const named = `${question.property} ${displaySafe(question.desiredName)}`;
+  const named = `${question.property} ${shown(question.desiredName)}`;
   const adoptsText =
     `its create API hands back or overwrites an existing resource of that name instead of ` +
     `refusing it`;
@@ -322,6 +333,16 @@ async function refuseTakenCreateName(
         probeError
       );
     }
+    const status = (probeError as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata
+      ?.httpStatusCode;
+    if (resourceType === 'AWS::S3::Bucket' && status === 301) {
+      return refuse(
+        `${subject} is created with ${named}, and S3 answered 301 for that bucket: a bucket of ` +
+          `that name already exists in another region. Nothing was created. Choose another ` +
+          `name, or delete that bucket if it is yours and re-run.`,
+        probeError
+      );
+    }
     return refuse(
       `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
         `whether another resource already holds it: ` +
@@ -331,9 +352,27 @@ async function refuseTakenCreateName(
     );
   }
   if (found === null) return;
+  const holderId = found.physicalId;
+  const ownHolder = Object.entries(input.stateResources).find(
+    ([otherId, record]) =>
+      otherId !== logicalId &&
+      record.resourceType === resourceType &&
+      probeFoundSameId(resourceType, record.physicalId, holderId)
+  );
+  if (ownHolder !== undefined) {
+    return refuse(
+      `${subject} is created with ${named}, which this stack's ${displaySafe(ownHolder[0])} ` +
+        `(${shown(holderId)}) already holds — a construct moved or renamed keeps its explicit ` +
+        `name under a new logical id. Since ${adoptsText}, the create would hand back that ` +
+        `resource and the removal of ${displaySafe(ownHolder[0])} would then delete it. Nothing ` +
+        `was created. Give the new resource another name, or deploy the removal of ` +
+        `${displaySafe(ownHolder[0])} first. Do not delete or import that resource: it is ` +
+        `already this stack's.`
+    );
+  }
   return refuse(
     `${subject} is created with ${named}, and an existing resource ` +
-      `(${displaySafe(found.physicalId)}) already holds that name. Since ${adoptsText}, ` +
+      `(${shown(holderId)}) already holds that name. Since ${adoptsText}, ` +
       `creating it would take that resource over and record it as this stack's, for a later ` +
       `\`cdkd destroy\` to delete. Nothing was created. Choose a name no other resource holds; ` +
       `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +

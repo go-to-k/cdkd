@@ -273,7 +273,9 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       // the rule exists on AWS but cdkd state will NOT (the throw aborts
       // before the success-return). PutRule is idempotent on Name (a
       // re-deploy would UPDATE the existing rule), so the orphan is
-      // structurally self-healing on retry — but only if the user's
+      // structurally self-healing on retry for a GENERATED name only (an
+      // explicit one is refused by the create arm's name lookup,
+      // go-to-k/cdkd#4180) — and only if the user's
       // template hasn't changed AND only if they don't run `cdkd destroy`
       // first (state has no record so destroy would skip the orphan).
       // Wrap the PutTargets call in an inner try/catch that issues
